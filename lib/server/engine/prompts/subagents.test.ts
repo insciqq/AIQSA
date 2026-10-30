@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "@/lib/server/workspace/browserGuidance";
-import { SUBAGENT_ROLE_SECTION, subagentFollowupText, subagentTurnText, systemPromptFor } from "./index";
+import { SUBAGENT_ROLE_SECTION, subagentFollowupText, subagentsPromptSection, subagentTurnText, systemPromptFor } from "./index";
 
 const environment = { now: new Date("2026-10-30T09:00:00Z"), timeZone: "Europe/Madrid" };
 const model = { modelId: "codex-lb:gpt-6-sol", provider: "openai_compatible" };
@@ -25,6 +25,15 @@ describe("sub-agent prompts", () => {
       .toBe(offered);
     expect(offered).toContain("\"browser\": Browses shops thoroughly.");
     expect(systemPromptFor(model, { environment, subagents: facts, tools: [], workspace: true }).stable).not.toContain("# Sub-agents");
+  });
+
+  it("send the main agent to the user's exact custom sub-agent in fixed words, never toward dropping its name", () => {
+    const section = subagentsPromptSection({ models: [{ connection: "Codex LB", efforts: [], id: "pm-luna", name: "GPT-6 Luna" }], types: [] });
+    expect(section).toContain("When the user asks for a custom one, pass its exact name as `type`; if what they name matches none, say so or ask which one they mean. Never start another sub-agent in its place.");
+    expect(section).toContain("otherwise a custom sub-agent runs on its own model and effort when it has them, and any other on yours");
+    expect(section).not.toMatch(/omit/iu);
+    // Fixed: no fact about the user's custom sub-agents or their default enters the system prompt.
+    expect(subagentsPromptSection(undefined)).toContain("names their default when they set one");
   });
 
   it("give a sub-agent its role in place of the AIQSA self-description, stable across turns", () => {

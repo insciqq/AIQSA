@@ -73,6 +73,9 @@ describe("sub-agent production wiring", () => {
     expect(web.types).toBe(types);
     expect(subagentRunPorts(native, { scheduled: true, telegram: false }).background).toBeUndefined();
     expect(subagentRunPorts(native, { scheduled: false, telegram: true }).background).toBeUndefined();
+    // A scheduled occurrence and a Telegram turn follow the same rule for custom sub-agents and the default.
+    expect(subagentRunPorts(native, { scheduled: true, telegram: false }).types).toBe(types);
+    expect(subagentRunPorts(native, { scheduled: false, telegram: true }).types).toBe(types);
     const agent = { kind: "subagent" as const, name: "shop", threadId: "thread-1" };
     expect(web.browserIdentity?.environment(agent)).toMatchObject({ AIQSA_AGENT_ID: "thread-1", AIQSA_AGENT_NAME: "shop" });
     await web.browserIdentity?.release({ agent, chatId: "chat", modelRunId: "run-1", userId: "user" });

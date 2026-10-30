@@ -54,7 +54,7 @@ export type SubagentTypeSnapshot = Readonly<{
   providerModelId: string | null;
   reasoningEffort: string | null;
   revisionId: string;
-  /** Null: every default sub-agent tool. */
+  /** Null: every tool the built-in sub-agent has. */
   toolGroups: readonly SubagentToolGroup[] | null;
 }>;
 
@@ -83,7 +83,7 @@ export type SubagentTurnInput = SubagentChatScope & Readonly<{
   signal: AbortSignal;
   threadId: string;
   turnId: string;
-  /** Null for the default sub-agent. */
+  /** Null for the built-in sub-agent. */
   type: SubagentTypeSnapshot | null;
   /**
    * The user's current message, verbatim: the only authority for irreversible
@@ -372,7 +372,7 @@ export type SubagentTypeEntry = Readonly<{ description: string; name: string }>;
 
 export type SubagentTypeResolution =
   | Readonly<{ kind: "found"; type: SubagentTypeSnapshot }>
-  /** Unknown, deleted, or not usable in this run (`subagent_type_unavailable`). */
+  /** Unknown, deleted or another user's (`subagent_type_unavailable`). */
   | Readonly<{ kind: "unavailable" }>;
 
 /**

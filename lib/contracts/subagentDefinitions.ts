@@ -20,6 +20,10 @@ import { modelWithConnectionLabel } from "./providerConnectionLabels";
 
 export const SUBAGENT_DEFINITIONS_PATH = "/api/me/subagents";
 export const SUBAGENTS_LIBRARY_PATH = "/?library=subagents";
+/** The user's default sub-agent (`UserSettings.defaultSubagentDefinitionId`): read and move it. */
+export const SUBAGENT_DEFAULT_PATH = `${SUBAGENT_DEFINITIONS_PATH}/default`;
+/** Undo of an agent's change that moved the default, its definition change included, in one transaction. */
+export const SUBAGENT_DEFAULT_UNDO_PATH = `${SUBAGENT_DEFAULT_PATH}/undo`;
 
 export function subagentDefinitionPath(definitionId: string): string {
   return `${SUBAGENT_DEFINITIONS_PATH}/${encodeURIComponent(definitionId)}`;
@@ -38,7 +42,9 @@ export const SUBAGENT_DEFINITION_CODES = Object.freeze({
   /** The user's models could not be read now; nothing was saved. */
   catalogUnavailable: "subagent_catalog_unavailable",
   /** The revision to restore is not one of this definition's. */
-  revisionUnknown: "subagent_revision_unknown"
+  revisionUnknown: "subagent_revision_unknown",
+  /** The default moved since the caller read it; nothing was changed. */
+  defaultConflict: "subagent_default_conflict"
 } as const);
 
 export type SubagentDefinitionField = "name" | "description" | "instructions" | "model" | "effort" | "tools";
@@ -106,6 +112,8 @@ export type SubagentDefinitionView = SubagentDefinitionSummary & Readonly<{
 }>;
 
 export type SubagentDefinitionListResponse = Readonly<{
+  /** The listed definition a new sub-agent with no type runs; null is the built-in one. */
+  defaultDefinitionId: string | null;
   definitions: readonly SubagentDefinitionSummary[];
   limit: number;
   models: readonly SubagentModelOption[];
@@ -117,6 +125,33 @@ export type SubagentDefinitionUpdateRequest = Readonly<{ draft: SubagentDefiniti
 export type SubagentDefinitionDeleteRequest = Readonly<{ expectedVersion: number }>;
 export type SubagentDefinitionRestoreRequest = Readonly<{ expectedVersion: number; revisionId: string }>;
 
+export type SubagentDefaultResponse = Readonly<{ defaultDefinitionId: string | null }>;
+/** Studio's switch: moves the default while it is still `expected`; a null `definitionId` is the built-in sub-agent. */
+export type SubagentDefaultUpdateRequest = Readonly<{ definitionId: string | null; expected: string | null }>;
+
+/**
+ * What an Undo does to the default: puts `target` back (null is the built-in sub-agent), only while the default is
+ * still `expected`, what the change left.
+ */
+export type SubagentDefaultRestore = Readonly<{ expected: string | null; target: string | null }>;
+
+/**
+ * An Undo of a change that moved the default. `definition` is the change it reverses with it: a creation is deleted
+ * (`revisionId` null), an edit restores `revisionId`, both at `expectedVersion`; absent, the change moved only the default.
+ */
+export type SubagentDefaultUndoRequest = Readonly<{
+  definition?: Readonly<{ expectedVersion: number; id: string; revisionId: string | null }>;
+  restore: SubagentDefaultRestore;
+}>;
+
+export const SUBAGENT_DEFAULT_UNDO_OUTCOMES = ["restored", "target_gone", "changed"] as const;
+/**
+ * `restored`: the default is back. `target_gone`: what it was no longer exists, so it is the built-in sub-agent.
+ * `changed`: it moved after the change, and that move is kept.
+ */
+export type SubagentDefaultUndoOutcome = (typeof SUBAGENT_DEFAULT_UNDO_OUTCOMES)[number];
+export type SubagentDefaultUndoResponse = Readonly<{ outcome: SubagentDefaultUndoOutcome }>;
+
 /** A refused route call: the stable code, and the field for an invalid draft. */
 export type SubagentDefinitionErrorBody = Readonly<{ error: string; field?: SubagentDefinitionField }>;
 
@@ -125,7 +160,8 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const exact = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(value);
-const positive = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 1;
+const nullableId = (value: unknown): value is string | null => value === null || id(value);
+const positive =(value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 1;
 const boundedText = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length <= max && !value.includes("\0");
 const nullableText = (value: unknown, max: number): value is string | null =>
@@ -181,6 +217,35 @@ export function decodeSubagentDefinitionRestoreRequest(value: unknown): Subagent
     ? { expectedVersion: value.expectedVersion, revisionId: value.revisionId } : null;
 }
 
+export function decodeSubagentDefaultUpdateRequest(value: unknown): SubagentDefaultUpdateRequest | null {
+  return record(value) && exact(value, ["definitionId", "expected"]) && nullableId(value.definitionId) && nullableId(value.expected)
+    ? { definitionId: value.definitionId, expected: value.expected } : null;
+}
+
+export function decodeSubagentDefaultUndoRequest(value: unknown): SubagentDefaultUndoRequest | null {
+  if (!record(value) || !(exact(value, ["restore"]) || exact(value, ["definition", "restore"]))) return null;
+  const restore = value.restore;
+  if (!record(restore) || !exact(restore, ["expected", "target"]) || !nullableId(restore.expected) || !nullableId(restore.target)) return null;
+  const decoded = { restore: { expected: restore.expected, target: restore.target } };
+  const definition = value.definition;
+  if (definition === undefined) return decoded;
+  if (!record(definition) || !exact(definition, ["expectedVersion", "id", "revisionId"]) || !positive(definition.expectedVersion) ||
+    !id(definition.id) || !nullableId(definition.revisionId)) return null;
+  return { ...decoded, definition: { expectedVersion: definition.expectedVersion, id: definition.id, revisionId: definition.revisionId } };
+}
+
+export function decodeSubagentDefaultResponse(value: unknown): SubagentDefaultResponse | null {
+  return record(value) && exact(value, ["defaultDefinitionId"]) && nullableId(value.defaultDefinitionId)
+    ? { defaultDefinitionId: value.defaultDefinitionId } : null;
+}
+
+export function decodeSubagentDefaultUndoResponse(value: unknown): SubagentDefaultUndoResponse | null {
+  if (!record(value) || !exact(value, ["outcome"])) return null;
+  const sent = value.outcome;
+  const outcome = SUBAGENT_DEFAULT_UNDO_OUTCOMES.find((candidate) => candidate === sent);
+  return outcome ? { outcome } : null;
+}
+
 function decodeTools(value: unknown): readonly SubagentToolGroup[] | null | undefined {
   if (value === null) return null;
   return decodeSubagentToolGroups(value) ?? undefined;
@@ -226,13 +291,17 @@ function decodeModelOption(value: unknown): SubagentModelOption | null {
 }
 
 export function decodeSubagentDefinitionListResponse(value: unknown): SubagentDefinitionListResponse | null {
-  if (!record(value) || !exact(value, ["definitions", "limit", "models"]) || !positive(value.limit) ||
-    !Array.isArray(value.definitions) || value.definitions.length > SUBAGENT_DEFINITION_LIMITS.perUser ||
-    !Array.isArray(value.models) || value.models.length > 500) return null;
+  if (!record(value) || !exact(value, ["defaultDefinitionId", "definitions", "limit", "models"]) || !positive(value.limit) ||
+    !nullableId(value.defaultDefinitionId) || !Array.isArray(value.definitions) ||
+    value.definitions.length > SUBAGENT_DEFINITION_LIMITS.perUser || !Array.isArray(value.models) || value.models.length > 500) return null;
   const definitions = value.definitions.map(decodeSubagentDefinitionSummary);
   const models = value.models.map(decodeModelOption);
   if (definitions.some((entry) => entry === null) || models.some((entry) => entry === null)) return null;
-  return { definitions: definitions as SubagentDefinitionSummary[], limit: value.limit, models: models as SubagentModelOption[] };
+  // The default is one of the list, so at most one row reads as the default and never a stale id.
+  const defaultDefinitionId = value.defaultDefinitionId;
+  if (defaultDefinitionId !== null && !definitions.some((entry) => entry?.id === defaultDefinitionId)) return null;
+  return { defaultDefinitionId, definitions: definitions as SubagentDefinitionSummary[], limit: value.limit,
+    models: models as SubagentModelOption[] };
 }
 
 export function decodeSubagentDefinitionResponse(value: unknown): SubagentDefinitionResponse | null {

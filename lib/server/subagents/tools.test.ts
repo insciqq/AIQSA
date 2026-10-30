@@ -7,6 +7,8 @@ import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import {
   SUBAGENT_TOOLS,
   callSubagentTool,
+  createSubagentTool,
+  editSubagentTool,
   parseCallSubagentArguments,
   parseCreateSubagentArguments,
   parseDeleteSubagentArguments,
@@ -66,6 +68,23 @@ describe("call_subagent and stop_subagent arguments", () => {
     for (const [value, code] of cases) expect(parseCallSubagentArguments(value), JSON.stringify(value)?.slice(0, 60)).toMatchObject({ code, ok: false });
   });
 
+  it("never tells the model to drop a type or a model it was refused, which would run another one than the user asked for", () => {
+    expect(parseCallSubagentArguments({ message: "Go", name: "a", type: "Bad Type" })).toEqual({ code: "subagent_type_unavailable", ok: false,
+      message: "type must be the exact name of one of the user's custom sub-agents. Use the right name or tell the user; " +
+        "do not drop type, which would start another sub-agent than the one asked for." });
+    expect(parseCallSubagentArguments({ message: "Go", model: "", name: "a" })).toEqual({ code: "subagent_model_unavailable", ok: false,
+      message: "model must be the exact id of one of the user's models from the context; pass it only when the user asks for a model." });
+    expect(callSubagentTool.description).toContain("never drop type to get past the refusal");
+    expect(callSubagentTool.description).not.toMatch(/omit (it for|type)/iu);
+    expect(JSON.stringify(callSubagentTool.inputSchema)).not.toMatch(/omit for/iu);
+  });
+
+  it("describes the default in fixed words that name no sub-agent, so moving it never changes the tool list", () => {
+    expect(callSubagentTool.description).toContain("else the user's default when the context names one, else the built-in sub-agent; \"built-in\" always starts the built-in one");
+    expect(parseCallSubagentArguments({ message: "Go", name: "a", type: "built-in" })).toEqual({ ok: true, value: { background: false, message: "Go", name: "a",
+      type: "built-in" } });
+  });
+
   it("takes only a name to stop or delete", () => {
     expect(parseStopSubagentArguments({ name: "A" })).toEqual({ ok: true, value: { name: "a" } });
     expect(parseStopSubagentArguments({ name: "a", force: true })).toMatchObject({ ok: false });
@@ -83,6 +102,33 @@ describe("custom sub-agent management arguments", () => {
     expect(parseCreateSubagentArguments({ description: "d", name: "browser" })).toMatchObject({ ok: false });
     expect(parseCreateSubagentArguments({ description: "d", instructions: "i", name: "browser", tools: ["manage_secret"] }))
       .toMatchObject({ ok: false });
+  });
+
+  it("offers default under the rule that only the user's own message asks for a change", () => {
+    for (const tool of [createSubagentTool, editSubagentTool]) {
+      expect(tool.description).toContain("Use it only when the user's own message asks for it");
+      expect(tool.description).toContain("next message on");
+      expect(tool.inputSchema).toMatchObject({ properties: { default: { type: "boolean" } } });
+    }
+  });
+
+  it("makes a new one the default only on an explicit true", () => {
+    const base = { description: "d", instructions: "i", name: "browser" };
+    expect(parseCreateSubagentArguments({ ...base, default: true })).toMatchObject({ ok: true, value: { default: true } });
+    for (const value of [false, null, undefined]) {
+      const parsed = parseCreateSubagentArguments({ ...base, default: value });
+      expect(parsed.ok && "default" in parsed.value).toBe(false);
+    }
+    expect(parseCreateSubagentArguments({ ...base, default: "yes" })).toMatchObject({ code: "subagent_arguments_invalid", ok: false });
+  });
+
+  it("takes default true or false as an edit of its own, and null as none", () => {
+    expect(parseEditSubagentArguments({ default: true, name: "browser" })).toMatchObject({ ok: true, value: { default: true } });
+    expect(parseEditSubagentArguments({ default: false, name: "browser" })).toMatchObject({ ok: true, value: { default: false } });
+    expect(parseEditSubagentArguments({ default: null, name: "browser" })).toMatchObject({ code: "subagent_arguments_invalid", ok: false });
+    expect(parseEditSubagentArguments({ default: 1, name: "browser" })).toMatchObject({ code: "subagent_arguments_invalid", ok: false });
+    const other = parseEditSubagentArguments({ default: null, description: "d", name: "browser" });
+    expect(other.ok && "default" in other.value).toBe(false);
   });
 
   it("edits only what is given, telling a reset from a change", () => {

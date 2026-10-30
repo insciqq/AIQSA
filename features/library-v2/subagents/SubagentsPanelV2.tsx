@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { UiV2Button, UiV2IconButton, UiV2MenuItem } from "@/components/ui-v2";
+import { UiV2Button, UiV2IconButton, UiV2MenuItem, UiV2Switch } from "@/components/ui-v2";
 import { MarkdownEditorV2 } from "@/components/ui-v2/MarkdownEditorV2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
@@ -17,11 +17,13 @@ import {
 } from "@/lib/contracts/subagentDefinitions";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import {
+  SubagentApiError,
   createSubagentDefinition,
   deleteSubagentDefinition,
   getSubagentDefinition,
   listSubagentDefinitions,
   restoreSubagentRevision,
+  setSubagentDefault,
   subagentErrorMessage,
   updateSubagentDefinition
 } from "./subagentsApi";
@@ -31,8 +33,10 @@ import {
  * 2026-10-29, like Claude Code's custom agents). Optional: without one, a
  * sub-agent runs on the chat's model with the chat's tools. Each save is a
  * new version, so the last save offers Undo; deleting asks first and names
- * what it changes. The server owns validation, the model list and the
- * version guard; this view keeps only the draft.
+ * what it changes. One may be the default (operator decision 2026-10-30), which
+ * the agent starts when it names no other; the switch moves it. The server owns
+ * validation, the model list, the default and the version guard; this view
+ * keeps only the draft.
  */
 
 const field = "w-full min-w-0 rounded-lg border border-trace-strong bg-answer-paper px-3 py-2 text-sm leading-6 text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
@@ -69,6 +73,9 @@ function effortOptions(models: readonly SubagentModelOption[], modelId: string):
   if (modelId) return models.find((model) => model.modelId === modelId)?.efforts ?? [];
   return [...new Set(models.flatMap((model) => model.efforts))];
 }
+
+const DEFAULT_SWITCH_FOCUS = "default-switch:";
+const defaultSwitchId = (panelId: string, definitionId: string) => `${panelId}-default-${definitionId}`;
 
 function modelLine(definition: SubagentDefinitionSummary): string {
   const model = definition.modelId === null ? "Chat's model" : definition.modelDisplayName ?? "Unavailable model";
@@ -110,12 +117,14 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
   useEffect(() => {
     if (busy) return;
     const intent = focusIntent.current;
-    const target = intent === "name" ? nameInput.current : intent === "new" ? newButton.current : intent ? editButtons.current.get(intent) : null;
+    const target = intent === "name" ? nameInput.current : intent === "new" ? newButton.current
+      : intent?.startsWith(DEFAULT_SWITCH_FOCUS) ? document.getElementById(defaultSwitchId(panelId, intent.slice(DEFAULT_SWITCH_FOCUS.length)))
+        : intent ? editButtons.current.get(intent) : null;
     if (target) {
       focusIntent.current = null;
       target.focus({ preventScroll: true });
     }
-  }, [busy, editor, state, deleting]);
+  }, [busy, editor, panelId, state, deleting]);
 
   async function perform(action: () => Promise<void>) {
     if (pending.current) return;
@@ -185,13 +194,31 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
     });
   }
   function remove(row: SubagentDefinitionSummary) {
+    const wasDefault = state?.defaultDefinitionId === row.id;
     void perform(async () => {
       await deleteSubagentDefinition(row.id, row.version);
       if (!alive.current) return;
       setDeleting(null); setLastSave(null);
       await reload();
       focusIntent.current = "new";
-      setNotice(`Deleted “${row.name}”.`);
+      setNotice(wasDefault ? `Deleted “${row.name}”. New sub-agents go back to the built-in.` : `Deleted “${row.name}”.`);
+    });
+  }
+  function moveDefault(row: SubagentDefinitionSummary, next: boolean) {
+    const expected = state?.defaultDefinitionId ?? null;
+    void perform(async () => {
+      focusIntent.current = `${DEFAULT_SWITCH_FOCUS}${row.id}`;
+      setDeleting(null); setLastSave(null);
+      try {
+        await setSubagentDefault(next ? row.id : null, expected);
+      } catch (failure) {
+        // Someone else moved it: the switches show where it is now, beside the error.
+        if (failure instanceof SubagentApiError && failure.code === "subagent_default_conflict") await reload().catch(() => undefined);
+        throw failure;
+      }
+      if (!alive.current) return;
+      await reload();
+      setNotice(next ? `“${row.name}” is your default sub-agent from your next message on.` : "New sub-agents use the built-in from your next message on.");
     });
   }
 
@@ -282,7 +309,7 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
   }
 
   return <section className="v2-studio-settings-page" data-testid="studio-subagents">
-    <SectionHeading description="Optional helpers the agent can start for long or separate work, each with its own model, instructions and tools. Without them, sub-agents run on the chat's model with the chat's tools."
+    <SectionHeading description="Optional helpers the agent can start for long or separate work, each with its own model, instructions and tools. Without them, sub-agents run on the chat's model with the chat's tools. The one you make the default starts whenever the agent names no other."
       action={<UiV2Button type="button" tone="primary" icon="plus" ref={newButton} disabled={!state || busy || atLimit}
         aria-describedby={atLimit ? `${panelId}-limit` : undefined} onClick={start}>New sub-agent</UiV2Button>}>Sub-agents</SectionHeading>
     {messages}
@@ -292,17 +319,24 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
     {state && state.definitions.length > 0 ? <ul className="v2-instructions-list" aria-label="Your sub-agents">
       {state.definitions.map((row) => <li className="v2-instructions-row" key={row.id}>
         <span className="v2-instructions-copy">
-          <span className="v2-instructions-title"><strong>{row.name}</strong></span>
+          <span className="v2-instructions-title"><strong>{row.name}</strong>
+            {state.defaultDefinitionId === row.id ? <span className="v2-instructions-active">Default</span> : null}
+          </span>
           <span className="v2-instructions-description" title={row.description}>{row.description}</span>
           <span className="v2-instructions-description">{modelLine(row)}</span>
           {!row.modelAvailable ? <span className="text-xs text-critical">Its model is no longer available to you; the agent cannot start it until you choose another.</span> : null}
+          <label className="v2-subagent-default-control">
+            <UiV2Switch id={defaultSwitchId(panelId, row.id)} checked={state.defaultDefinitionId === row.id} disabled={busy}
+              label={`Make ${row.name} the default sub-agent`} onChange={(next) => moveDefault(row, next)} />
+            <span>Default sub-agent</span>
+          </label>
         </span>
         <UiV2Button type="button" className="v2-instructions-row-action" disabled={busy} aria-label={`Edit ${row.name}`}
           ref={(node) => { if (node) editButtons.current.set(row.id, node); else editButtons.current.delete(row.id); }}
           onClick={() => edit(row)}>Edit</UiV2Button>
         <RowMenu name={row.name} busy={busy} onDelete={() => { setDeleting(row); setNotice(null); setLastSave(null); }} />
         {deleting?.id === row.id ? <div role="alert" className="v2-instructions-delete">
-          <p className="mb-2 text-sm text-ink">Delete “{row.name}” with all its versions? The agent can no longer start it, and sub-agents already started as it in your chats keep their work but cannot be continued. This cannot be undone.</p>
+          <p className="mb-2 text-sm text-ink">Delete “{row.name}” with all its versions? The agent can no longer start it, and sub-agents already started as it in your chats keep their work but cannot be continued.{state.defaultDefinitionId === row.id ? " It is your default sub-agent, so new sub-agents go back to the built-in." : ""} This cannot be undone.</p>
           <div className="flex gap-2">
             <UiV2Button type="button" tone="destructive" disabled={busy} onClick={() => remove(row)}>Delete sub-agent</UiV2Button>
             <UiV2Button type="button" disabled={busy} onClick={() => { focusIntent.current = row.id; setDeleting(null); }}>Keep sub-agent</UiV2Button>

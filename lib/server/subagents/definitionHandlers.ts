@@ -1,5 +1,7 @@
 import {
   SUBAGENT_DEFINITION_CODES,
+  decodeSubagentDefaultUndoRequest,
+  decodeSubagentDefaultUpdateRequest,
   decodeSubagentDefinitionDeleteRequest,
   decodeSubagentDefinitionRestoreRequest,
   decodeSubagentDefinitionUpdateRequest,
@@ -31,7 +33,8 @@ function statusOf(code: string): number {
   switch (code) {
     case CODES.notFound: return 404;
     case CODES.definitionExists:
-    case CODES.definitionConflict: return 409;
+    case CODES.definitionConflict:
+    case CODES.defaultConflict: return 409;
     case CODES.catalogUnavailable: return 503;
     default: return 400;
   }
@@ -136,6 +139,35 @@ export function createSubagentDefinitionHandlers(deps: Readonly<{ resolveAuth: R
       if (!decoded) return error({ error: CODES.definitionInvalid }, 400);
       return guarded(async () => respond(await deps.service.restore(userId, id, decoded.expectedVersion, decoded.revisionId),
         (definition) => json({ definition })));
+    },
+
+    async defaultGET(request: Request): Promise<Response> {
+      const userId = await owner(request);
+      if (userId instanceof Response) return userId;
+      return guarded(async () => json({ defaultDefinitionId: await deps.service.readDefault(userId) }));
+    },
+
+    async defaultPUT(request: Request): Promise<Response> {
+      const userId = await owner(request);
+      if (userId instanceof Response) return userId;
+      const raw = await body(request);
+      const tooLarge = requestBodyErrorResponse(raw);
+      if (tooLarge) return tooLarge;
+      const decoded = decodeSubagentDefaultUpdateRequest(raw);
+      if (!decoded) return error({ error: CODES.definitionInvalid }, 400);
+      return guarded(async () => respond(await deps.service.setDefault(userId, decoded.definitionId, decoded.expected),
+        (defaultDefinitionId) => json({ defaultDefinitionId })));
+    },
+
+    async defaultUndoPOST(request: Request): Promise<Response> {
+      const userId = await owner(request);
+      if (userId instanceof Response) return userId;
+      const raw = await body(request);
+      const tooLarge = requestBodyErrorResponse(raw);
+      if (tooLarge) return tooLarge;
+      const decoded = decodeSubagentDefaultUndoRequest(raw);
+      if (!decoded) return error({ error: CODES.definitionInvalid }, 400);
+      return guarded(async () => respond(await deps.service.undoDefaultChange(userId, decoded), (outcome) => json({ outcome })));
     }
   };
 }

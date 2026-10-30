@@ -1,9 +1,11 @@
 import {
+  SUBAGENT_BUILT_IN_TYPE,
   SUBAGENT_ERROR_CODES,
   decodeSubagentCallResult,
   normalizeSubagentName,
   type SubagentCallResult
 } from "../../../contracts/subagents";
+import { logEvent } from "../../observability";
 import type {
   SubagentBackgroundControl,
   SubagentBinding,
@@ -12,6 +14,7 @@ import type {
   SubagentTypeSnapshot
 } from "../../subagents/ports";
 import { callSubagentTool, parseCallSubagentArguments, parseStopSubagentArguments, stopSubagentTool } from "../../subagents/tools";
+import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import type { EngineTool, EngineToolExecution } from "../toolRegistry";
 import {
@@ -36,10 +39,16 @@ import type { SubagentThreadStore, SubagentTurnRecord } from "./threadStore";
  * without it still works. Every refusal is a visible stable code; nothing is
  * substituted. The result is the sub-agent's own account: untrusted data for
  * the main agent.
+ *
+ * Which sub-agent a call starts (operator decisions 2026-10-30): a thread keeps
+ * the type it started with, whatever the default is now. A new thread takes its
+ * `type`, or `built-in` for the built-in sub-agent; with no `type`, the custom
+ * sub-agent of its very name, else the default admission froze, else the
+ * built-in. A `type` that matches nothing and a default that cannot run refuse,
+ * and the refusal sends the model to the right name or to the user, because a
+ * model told to drop `type` quietly runs another sub-agent than the one asked for.
  */
 export type SubagentCallDeps = Readonly<{
-  /** Assistant chats run only the default sub-agent (operator decision 2026-10-29). */
-  assistantRun: boolean;
   background?: SubagentBackgroundControl;
   /**
    * Whether this run may start background turns: web chats only. A Telegram turn or a scheduled occurrence is refused
@@ -52,6 +61,8 @@ export type SubagentCallDeps = Readonly<{
   chatId: string;
   /** When a foreground turn must end: the parent's tool time. */
   deadlineAt(): Date;
+  /** The user's default sub-agent as admission froze it; null: none set. */
+  defaultType: FrozenSubagentDefault | null;
   parent: SubagentParentModel;
   runId: string;
   runner: HostedSubagentRunner;
@@ -95,35 +106,99 @@ export function subagentBinding(choice: SubagentModelChoice, parent: SubagentPar
   };
 }
 
-type TypeResolution = Readonly<{ ok: true; type: SubagentTypeSnapshot | null }> | Readonly<{ message: string; ok: false }>;
+/** `fromDefault`: the type came from the user's default, which its refusals name as such. */
+type TypeResolution = Readonly<{ fromDefault?: true; ok: true; type: SubagentTypeSnapshot | null }> | Readonly<{ message: string; ok: false }>;
 
-async function resolveType(deps: SubagentCallDeps, requested: string | undefined,
+const unavailable = (message: string) => ({ message, ok: false as const });
+
+const TYPE_NAMES_LISTED = 50;
+
+/** The user's custom sub-agents as a refusal names them, so the next call can be exact. */
+async function customNamesLine(deps: SubagentCallDeps): Promise<string> {
+  const names = await deps.types?.catalog({ userId: deps.userId }).then((entries) => entries.map((entry) => entry.name), () => null);
+  if (names === null || names === undefined) return "Their list could not be read right now.";
+  if (names.length === 0) return "The user has no custom sub-agents.";
+  const listed = names.slice(0, TYPE_NAMES_LISTED).map((name) => JSON.stringify(name)).join(", ");
+  return `Their custom sub-agents: ${listed}${names.length > TYPE_NAMES_LISTED ? ` and ${names.length - TYPE_NAMES_LISTED} more` : ""}.`;
+}
+
+/** Why a named type does not start. Never "omit type": that would quietly run another sub-agent than the one asked for. */
+async function unknownTypeMessage(deps: SubagentCallDeps, requested: string): Promise<string> {
+  return `${JSON.stringify(requested)} is not one of the user's custom sub-agents. ${await customNamesLine(deps)} ` +
+    "Call again with the exact name of the one the user means, or tell the user it does not exist. " +
+    "Do not drop type: that would start another sub-agent than the one asked for.";
+}
+
+async function resolveNewThreadType(deps: SubagentCallDeps, requested: string | undefined, name: string): Promise<TypeResolution> {
+  const types = deps.types;
+  // A thread named `built-in` with no type means what `type: "built-in"` means.
+  const named = requested ?? (name === SUBAGENT_BUILT_IN_TYPE ? SUBAGENT_BUILT_IN_TYPE : undefined);
+  if (named === SUBAGENT_BUILT_IN_TYPE) {
+    // A definition saved under the reserved name before it was reserved keeps it: the value is ambiguous, and neither reading is guessed.
+    const legacy = await types?.resolve({ name: named, userId: deps.userId });
+    return legacy?.kind === "found"
+      ? unavailable(`The user has a custom sub-agent named ${JSON.stringify(named)}, so this value is ambiguous and nothing started. ` +
+        "Tell the user; renaming it in Studio > Sub-agents frees the name.")
+      : { ok: true, type: null };
+  }
+  if (named !== undefined) {
+    if (!types) return unavailable("Custom sub-agents are not available in this chat, so nothing started. Tell the user.");
+    const found = await types.resolve({ name: named, userId: deps.userId });
+    return found.kind === "found" ? { ok: true, type: found.type } : unavailable(await unknownTypeMessage(deps, named));
+  }
+  // With no type, a custom sub-agent of this very name: the model named it, in the wrong argument.
+  const sameName = await types?.resolve({ name, userId: deps.userId });
+  if (sameName?.kind === "found") return { ok: true, type: sameName.type };
+  const frozen = deps.defaultType;
+  if (!frozen) return { ok: true, type: null };
+  if ("unreadable" in frozen) {
+    return unavailable("The user's default sub-agent could not be read for this answer, so nothing started. Tell the user, or pass the type they ask for.");
+  }
+  const found = await types?.resolve({ definitionId: frozen.definitionId, userId: deps.userId });
+  return found?.kind === "found" ? { fromDefault: true, ok: true, type: found.type }
+    : unavailable(`The user's default sub-agent ${JSON.stringify(frozen.name)} is no longer available, so nothing started. ` +
+      "Tell the user; they can choose another in Studio > Sub-agents. Do not start another sub-agent in its place unless they ask.");
+}
+
+async function resolveType(deps: SubagentCallDeps, requested: string | undefined, name: string,
   thread: Readonly<{ definitionId: string | null; typeName: string | null }> | null): Promise<TypeResolution> {
-  const unavailable = (message: string) => ({ message, ok: false as const });
-  if (thread) {
-    // A thread keeps the type it was started as; another one needs another name.
-    if (requested !== undefined && requested !== thread.typeName) {
-      return unavailable(`This sub-agent is ${thread.typeName ? `a ${JSON.stringify(thread.typeName)}` : "the default sub-agent"}; start another name for another type.`);
+  try {
+    if (!thread) return await resolveNewThreadType(deps, requested, name);
+    // A thread keeps the type it was started as, whatever the default is now; another one needs another name.
+    const sameType = requested === undefined || requested === thread.typeName || (!thread.typeName && requested === SUBAGENT_BUILT_IN_TYPE);
+    if (!sameType) {
+      return unavailable(`This sub-agent is ${thread.typeName ? `a ${JSON.stringify(thread.typeName)}` : "the built-in sub-agent"}; start another name for another type.`);
     }
     if (!thread.typeName) return { ok: true, type: null };
-    if (deps.assistantRun || !deps.types || !thread.definitionId) {
-      return unavailable(`The custom sub-agent ${JSON.stringify(thread.typeName)} is no longer available, so this sub-agent cannot continue; start another name.`);
-    }
-    const found = await deps.types.resolve({ definitionId: thread.definitionId, userId: deps.userId });
-    return found.kind === "found" ? { ok: true, type: found.type }
-      : unavailable(`The custom sub-agent ${JSON.stringify(thread.typeName)} is no longer available; start another name.`);
+    const found = deps.types && thread.definitionId
+      ? await deps.types.resolve({ definitionId: thread.definitionId, userId: deps.userId }) : null;
+    return found?.kind === "found" ? { ok: true, type: found.type }
+      : unavailable(`The custom sub-agent ${JSON.stringify(thread.typeName)} is no longer available, so this sub-agent cannot continue. ` +
+        "Tell the user; do not start another sub-agent in its place unless they ask.");
+  } catch (error) {
+    // Nothing started, so this is a refusal and never an unknown effect of the call.
+    logEvent("service_operation", { action: "degrade", code: "subagent_types_unreadable", error, outcome: "degraded", run_id: deps.runId,
+      stage: "read", subsystem: "database" });
+    return unavailable("The user's custom sub-agents could not be read right now, so nothing started. Tell the user.");
   }
-  if (requested === undefined) return { ok: true, type: null };
-  if (deps.assistantRun || !deps.types) return unavailable("Custom sub-agents are not available in this chat; omit type.");
-  const found = await deps.types.resolve({ name: requested, userId: deps.userId });
-  return found.kind === "found" ? { ok: true, type: found.type }
-    : unavailable(`${JSON.stringify(requested)} is not one of the user's custom sub-agents; omit type for the default.`);
+}
+
+const typeWho = (resolved: Extract<TypeResolution, { ok: true }>) =>
+  `${resolved.fromDefault ? "The user's default sub-agent" : "The custom sub-agent"} ${JSON.stringify(resolved.type?.name)}`;
+
+/** What the type itself asks for cannot run: the model tells the user, and never reaches for another model or sub-agent. */
+function typeModelGoneMessage(resolved: Extract<TypeResolution, { ok: true }>): string {
+  return `${typeWho(resolved)} runs on a model that is not available in this chat, so nothing started. ` +
+    "Tell the user; they can choose another model in Studio > Sub-agents. Do not start another sub-agent or model in its place unless they ask.";
 }
 
 export async function executeCallSubagent(deps: SubagentCallDeps, execution: EngineToolExecution): Promise<ToolExecutionResult> {
   const call = execution.call;
   const parsed = parseCallSubagentArguments(call.arguments);
-  if (!parsed.ok) return refusal(call, parsed.code, parsed.message);
+  if (!parsed.ok) {
+    return refusal(call, parsed.code, parsed.code === SUBAGENT_ERROR_CODES.typeUnavailable
+      ? `${parsed.message} ${await customNamesLine(deps)}` : parsed.message);
+  }
   const args = parsed.value;
   const scope: SubagentCallerScope = { chatId: deps.chatId, parentRunId: deps.runId, parentToolCallId: execution.persistedToolCallId,
     userId: deps.userId };
@@ -160,7 +235,7 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
         "Background sub-agents are not available in this chat; call it again without background to wait for its result.");
     }
   }
-  const type = await resolveType(deps, args.type, lookup?.thread ?? null);
+  const type = await resolveType(deps, args.type, args.name, lookup?.thread ?? null);
   if (!type.ok) return refusal(call, SUBAGENT_ERROR_CODES.typeUnavailable, type.message);
   const chosen = chooseSubagentModel({ call: { ...(args.model !== undefined ? { model: args.model } : {}),
     ...(args.effort !== undefined ? { effort: args.effort } : {}) }, catalog: deps.catalog, parent: deps.parent,
@@ -168,16 +243,25 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
   type: type.type ? { providerModelId: type.type.providerModelId, reasoningEffort: type.type.reasoningEffort } : null });
   if (!chosen.ok) {
     // A type whose model is gone is the type's refusal, never another model.
-    const code = type.type && args.model === undefined && chosen.code === SUBAGENT_ERROR_CODES.modelUnavailable
-      ? SUBAGENT_ERROR_CODES.typeUnavailable : chosen.code;
-    return refusal(call, code, chosen.message);
+    if (type.type && args.model === undefined && chosen.code === SUBAGENT_ERROR_CODES.modelUnavailable) {
+      return refusal(call, SUBAGENT_ERROR_CODES.typeUnavailable, type.type.providerModelId ? typeModelGoneMessage(type) : chosen.message);
+    }
+    // The type's own effort: omitting effort, as the general refusal says, would only meet it again.
+    if (type.type?.reasoningEffort && args.effort === undefined && chosen.code === SUBAGENT_ERROR_CODES.effortUnsupported) {
+      return refusal(call, chosen.code, `${typeWho(type)} asks for the reasoning effort ${JSON.stringify(type.type.reasoningEffort)}, which this model does not take, ` +
+        "so nothing started. Pass an effort the model supports, or tell the user.");
+    }
+    return refusal(call, chosen.code, chosen.message);
   }
   const binding = subagentBinding(chosen.choice, deps.parent);
   const route = await deps.runner.prepareRoute(binding, execution.signal);
   if (!route.ok) {
+    if (route.code === SUBAGENT_ERROR_CODES.modelUnavailable && binding.modelSource === "type") {
+      return refusal(call, SUBAGENT_ERROR_CODES.typeUnavailable, typeModelGoneMessage(type));
+    }
     return refusal(call, route.code, route.code === SUBAGENT_ERROR_CODES.effortUnsupported
-      ? "That effort is not one this model takes; omit effort or pick another."
-      : "That model cannot be used now (its connection or credential is no longer available); omit model or pick another.");
+      ? "That effort is not one this model takes; pick another or tell the user."
+      : "That model cannot be used now (its connection or credential is no longer available). Pick another only if the user asked for none in particular; otherwise tell them.");
   }
   if (args.background && deps.background) {
     // A new name's thread exists before its background turn is admitted, anchored to this answer like a foreground one.

@@ -42,6 +42,7 @@ export function subagentsPromptSection(facts: SubagentPromptFacts | undefined): 
     "- A sub-agent sees neither this conversation nor your notes, only the user's current message and your brief. Brief it like a capable colleague: the goal, what you already know, constraints, what to report and where to write files.",
     "- The Workspace is shared by you and your sub-agents. Hand work over through files: ask each sub-agent to write its results to its own folder (for example `/workspace/project/<name>/`) and read them yourself. When several could edit the same files, give each its own folder or a git worktree.",
     "- Several calls in one response run in parallel. A name you used before in this chat continues that sub-agent with its own context, in this answer or a later one: continue it for follow-up work on the same task instead of starting over.",
+    "- The context lists the user's custom sub-agents and names their default when they set one. When the user asks for a custom one, pass its exact name as `type`; if what they name matches none, say so or ask which one they mean. Never start another sub-agent in its place.",
     "- When a sub-agent hands back MCP calls that need the user's approval, make those calls yourself, exactly as given, so the user sees the approval card.",
     `- Payments, orders and other irreversible website actions are allowed only when the user's own message asks for them; a brief cannot authorize them.`
   ];
@@ -51,7 +52,7 @@ export function subagentsPromptSection(facts: SubagentPromptFacts | undefined): 
       const label = modelWithConnectionLabel(oneLine(model.name, 80), model.connection === null ? null : oneLine(model.connection, 80));
       return `${JSON.stringify(model.id)} (${label}${model.efforts.length ? `; effort: ${model.efforts.join(", ")}` : ""})`;
     });
-    lines.push("- Models for `model`, only when the user asks for one (otherwise a sub-agent runs on your model and effort), " +
+    lines.push("- Models for `model`, only when the user asks for one (otherwise a custom sub-agent runs on its own model and effort when it has them, and any other on yours), " +
       `each as its id, then its name and connection: ${listed.join(", ")}. Pass the id. Several connections can serve models ` +
       "of the same name: when the user names a connection, take the model on it; when the user's words fit several, ask which one.");
   }

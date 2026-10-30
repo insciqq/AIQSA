@@ -1653,6 +1653,7 @@
 .v2-instructions-row-action { width: 4rem; justify-content: center; }
 .v2-instructions-menu, .v2-instructions-menu-spacer { width: 2rem; }
 .v2-instructions-delete { grid-column: 1 / -1; }
+.v2-subagent-default-control { display: inline-flex; align-items: center; gap: 0.375rem; width: fit-content; max-width: 100%; color: var(--v2-color-text3); font-size: 0.75rem; cursor: pointer; }
 .v2-library-panel[data-instructions-editor] { display: flex; padding-bottom: 0; -webkit-mask-image: none; mask-image: none; }
 .v2-library-panel[data-instructions-editor] > .v2-library-content { display: flex; min-height: 100%; }
 .v2-instructions-editor-page, .v2-instructions-form, .v2-instructions-fields { display: flex; flex: 1; flex-direction: column; min-width: 0; }
