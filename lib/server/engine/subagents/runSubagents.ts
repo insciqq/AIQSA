@@ -34,7 +34,7 @@ import type { UsageLedger } from "../usage";
 import { subagentEngineTools, type SubagentCallDeps } from "./callTools";
 import { decodeSubagentModels, type FrozenSubagentModels, type SubagentParentModel } from "./modelCatalog";
 import { modelEffortOptions, parentSubagentRoute, type SubagentModelCatalog, type SubagentModelRoute, type SubagentRouteResult } from "./modelRoutes";
-import { registerSubagentBackgroundHost } from "./backgroundRunner";
+import { registerSubagentBackgroundHost, withForegroundTurnStops } from "./backgroundRunner";
 import { createSubagentRunner, WORKSPACE_TURN_GUIDANCE_PREFIX, type HostedSubagentRunner, type SubagentHost } from "./runner";
 import type { SubagentThreadStore } from "./threadStore";
 
@@ -247,7 +247,8 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     usage: (attribution) => input.usage.add(attribution),
     userId: input.scope.userId
   };
-  const runner = createSubagentRunner(foregroundHost);
+  // Its foreground turns are listed for the thread Stop and Stop all, which reach them like background ones.
+  const runner = withForegroundTurnStops(createSubagentRunner(foregroundHost));
   // Background turns this run admits run on a host of their own over the same frozen bindings (`backgroundRunner.ts`).
   const parts = input.backgroundParts;
   const port = input.ports?.background;

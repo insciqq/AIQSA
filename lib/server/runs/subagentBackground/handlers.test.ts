@@ -62,6 +62,26 @@ describe("sub-agent routes", () => {
     expect(bad.status).toBe(400);
   });
 
+  it("says when nothing could be stopped while a sub-agent still runs, and answers an ended one as stopped already", async () => {
+    const { control, deps, views } = setup();
+    control.stopThread.mockResolvedValue(0);
+    control.stopAll.mockResolvedValue(0);
+    const stop = await createSubagentStopHandler(deps("owner"))(new Request(url("/x"), { method: "POST" }),
+      { params: { chatId: "chat-1", threadId: "thread-1" } });
+    expect([stop.status, await stop.json()]).toEqual([409, { error: "subagent_stop_unavailable" }]);
+    const all = await createSubagentStopAllHandler(deps("owner"))(new Request(url("/x"), { method: "POST" }), { params: { chatId: "chat-1" } });
+    expect([all.status, await all.json()]).toEqual([409, { error: "subagent_stop_unavailable" }]);
+    // Nothing runs any more: a repeated Stop is idempotent.
+    const ended = { ...thread, endedAt: "2026-10-30T10:02:00.000Z", outcome: null, reason: "user_stop", state: "stopped" as const };
+    vi.mocked(views.thread).mockResolvedValue(ended);
+    vi.mocked(views.chatThreads).mockResolvedValue({ chatId: "chat-1", running: 0, threads: [ended], truncated: false });
+    const again = await createSubagentStopHandler(deps("owner"))(new Request(url("/x"), { method: "POST" }),
+      { params: { chatId: "chat-1", threadId: "thread-1" } });
+    expect(decodeSubagentStopResponse(await again.json())).toMatchObject({ thread: { state: "stopped" } });
+    const none = await createSubagentStopAllHandler(deps("owner"))(new Request(url("/x"), { method: "POST" }), { params: { chatId: "chat-1" } });
+    expect(decodeSubagentStopAllResponse(await none.json())).toEqual({ stopped: 0 });
+  });
+
   it("stops one thread and all of a chat's sub-agents, idempotently, for the owner only", async () => {
     const { control, deps } = setup();
     const stop = await createSubagentStopHandler(deps("owner"))(new Request(url("/x"), { method: "POST" }),

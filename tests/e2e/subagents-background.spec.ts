@@ -183,6 +183,27 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
       subagentTurnId: { not: null } } })).toBe(0);
   });
 
+  await test.step("the thread view's Stop ends a foreground sub-agent while the main answer waits on it", async () => {
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("Read one more shop and wait for it. [AIQSA_SUBAGENT_E2E:fg:zeta:wait90000]");
+    await composer.press("Enter");
+    await expect(page.getByRole("button", { name: "Stop answer" })).toBeVisible({ timeout: STEP_TIMEOUT });
+    const list = await navigation(page);
+    await expect(list.getByRole("treeitem", { name: "zeta, Running" })).toBeVisible({ timeout: STEP_TIMEOUT });
+    await list.getByRole("treeitem", { name: "zeta, Running" }).click();
+    const view = page.getByTestId("subagent-thread-view");
+    await expect(view.getByRole("heading", { name: "zeta" })).toBeVisible({ timeout: STEP_TIMEOUT });
+    await view.getByRole("button", { name: "Stop" }).click();
+    await expect(list.getByRole("treeitem", { name: "zeta, Stopped" })).toBeVisible({ timeout: STEP_TIMEOUT });
+    await view.getByRole("link", { name: "Back to chat" }).click();
+    // The main answer goes on with the stopped result and completes.
+    await expect(lastAnswer(page)).toContainText("Sub-agents reported: zeta stopped.", { timeout: 60_000 });
+    await expect(lastAnswer(page).locator(".v2-subagent-card[data-state='stopped']")).toContainText("Stopped");
+    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: STEP_TIMEOUT });
+    expect(await prisma.subagentTurn.findFirst({ select: { state: true }, where: { chatId, mode: "foreground" } }))
+      .toEqual({ state: "stopped" });
+  });
+
   await test.step("the tree fits a phone", async () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await navigation(page);

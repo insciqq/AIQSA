@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { backgroundSubagentRunner, registerSubagentBackgroundHost } from "@/lib/server/engine/subagents/backgroundRunner";
+import { backgroundSubagentRunner, registerSubagentBackgroundHost, withForegroundTurnStops } from "@/lib/server/engine/subagents/backgroundRunner";
 import type { SubagentBinding } from "@/lib/server/subagents/ports";
 import type { UsageLimitStatus } from "@/lib/server/usageLimits/repository";
 import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
@@ -60,4 +60,30 @@ describe("background sub-agents composed as in production", () => {
       expect(store.turns[0]).toMatchObject({ callbackRunId: "wake-1", runActive: false, state: "done" });
     });
   }
+
+  it("stops a foreground turn of a running answer from its thread and with Stop all, as it stops a background one", async () => {
+    const { control, store } = compose("parent-fg");
+    // The answer's own runner, as `prepareRunSubagents` wraps it: its foreground turns are reachable by id.
+    const inner = new FakeSubagentRunner();
+    const answer = withForegroundTurnStops(inner);
+    const foreground = (name: string) => {
+      const turnId = `turn-fg-${name}`;
+      store.turns.push({ callbackRunId: null, chatId: "chat-1", endedAt: null, mailbox: [], mode: "foreground", modelId: "fake-model", name,
+        parentAnswerId: "answer-1", parentRunId: "parent-fg", result: null, runActive: true, runId: null, state: "running",
+        threadId: `thread-${name}`, turnId, userId: "user-1" });
+      return answer.start({ binding, brief: `Brief for ${name}`, chatId: "chat-1", deadlineAt: new Date(Date.now() + 60_000),
+        hostRunId: "parent-fg", mode: "foreground", name, parentRunId: "parent-fg", parentToolCallId: `call-${name}`,
+        signal: new AbortController().signal, threadId: `thread-${name}`, turnId, type: null, userId: "user-1", userMessage: "Find it" });
+    };
+    const one = await foreground("reader");
+    const waiting = answer.wait(one);
+    expect(await control.stopThread({ chatId: "chat-1", threadId: "thread-reader", userId: "user-1" })).toBe(1);
+    // The answer that waits on it goes on with the stopped result.
+    await expect(waiting).resolves.toMatchObject({ reason: "user_stop", state: "stopped" });
+
+    const two = await foreground("writer");
+    store.turns.find((turn) => turn.turnId === one.turnId)!.state = "stopped";
+    expect(await control.stopAll({ chatId: "chat-1", userId: "user-1" })).toBe(1);
+    await expect(answer.wait(two)).resolves.toMatchObject({ reason: "stop_all", state: "stopped" });
+  });
 });

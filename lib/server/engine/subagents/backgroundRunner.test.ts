@@ -3,7 +3,9 @@ import { FakeSubagentRunner, endedSubagentResult } from "../../../../tests/suppo
 import type { SubagentTurnInput } from "../../subagents/ports";
 import { workspaceRunOutputDirectory } from "../../../domain/workspace";
 import type { ProviderRunRequest } from "../../providers/types";
-import { backgroundSubagentRunner, hasSubagentBackgroundHost, registerSubagentBackgroundHost } from "./backgroundRunner";
+import {
+  backgroundSubagentRunner, hasForegroundSubagentTurn, hasSubagentBackgroundHost, registerSubagentBackgroundHost, withForegroundTurnStops
+} from "./backgroundRunner";
 import { WORKSPACE_TURN_GUIDANCE_PREFIX } from "./runner";
 import { backgroundSubagentRequest } from "./runSubagents";
 
@@ -41,6 +43,27 @@ describe("the engine's background runner", () => {
     await expect(backgroundSubagentRunner.stop({ turnId: "unknown" }, "user_stop")).resolves.toBeNull();
     await expect(backgroundSubagentRunner.deliver({ turnId: "unknown" }, { nonce: "n", origin: "main_agent", text: "x" }))
       .resolves.toEqual({ kind: "not_found" });
+  });
+
+  it("reaches a foreground turn of a main-agent run here by its id until it ended, so the user's Stop ends it stopped", async () => {
+    const inner = new FakeSubagentRunner();
+    const runner = withForegroundTurnStops(inner);
+    const input = turn({ hostRunId: "parent-run", mode: "foreground" });
+    const handle = await runner.start(input);
+    expect(hasForegroundSubagentTurn(input.turnId)).toBe(true);
+    // The control stops through the background runner's port, which has no host for it but finds the foreground turn.
+    await expect(backgroundSubagentRunner.stop(handle, "user_stop")).resolves.toMatchObject({ reason: "user_stop", state: "stopped" });
+    // The parent's own wait reads the stopped result, and the turn leaves the list once it ended.
+    await expect(runner.wait(handle)).resolves.toMatchObject({ state: "stopped" });
+    await vi.waitFor(() => expect(hasForegroundSubagentTurn(input.turnId)).toBe(false));
+    await expect(backgroundSubagentRunner.stop(handle, "stop_all")).resolves.toBeNull();
+
+    // A continued turn is listed too; one that finished on its own leaves the list.
+    const next = turn({ hostRunId: "parent-run", mode: "foreground" });
+    await runner.continue(next);
+    expect(hasForegroundSubagentTurn(next.turnId)).toBe(true);
+    inner.finish(next.turnId, endedSubagentResult("watcher"));
+    await vi.waitFor(() => expect(hasForegroundSubagentTurn(next.turnId)).toBe(false));
   });
 
   it("drops a host no background start was asked for as soon as its run ended", () => {
