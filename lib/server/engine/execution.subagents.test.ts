@@ -29,7 +29,7 @@ function scriptedAdapter(steps: readonly Step[]) {
   return { adapter, requests };
 }
 
-function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: TranscriptItem[][] }> = {}) {
+function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readonly<{ items: TranscriptItem[]; threadId: string }>[] }> = {}) {
   const appended: Array<{ items: readonly TranscriptItem[]; scope: TranscriptRunScope }> = [];
   const rows = new Map<string, ToolCallRow>();
   const usage: RunUsageAttribution[] = [];
@@ -167,8 +167,8 @@ describe("native run with sub-agents", () => {
   it("fences the main agent with the effects its branch's sub-agents left unknown, until the user speaks", async () => {
     const order = { message: "Order the X1.", name: "buyer" };
     // An earlier turn's sub-agent call whose outcome stayed unknown: a call with no result in its thread's records.
-    const threadEffects: TranscriptItem[][] = [[{ arguments: JSON.stringify(order), callId: "t1", id: "i1", kind: "tool_call",
-      name: CALL_SUBAGENT_TOOL_NAME, recordedAt: new Date("2026-10-29T10:00:00Z") }]];
+    const threadEffects = [{ items: [{ arguments: JSON.stringify(order), callId: "t1", id: "i1", kind: "tool_call" as const,
+      name: CALL_SUBAGENT_TOOL_NAME, recordedAt: new Date("2026-10-29T10:00:00Z") }], threadId: "thread-earlier" }];
     const steps = [{ calls: [{ arguments: order, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }] }, { text: "Outcome: done\nOk." },
       { text: "Done." }];
     // A scheduled occurrence's prompt is no user speech: the equivalent call is not sent again.

@@ -10,7 +10,7 @@ import { dispatchableModelRunStatuses, json } from "../../runs/prismaRepositoryS
 import type { SubagentBinding } from "../../subagents/ports";
 import type { TranscriptItem } from "../transcript";
 import { decodeTranscriptItem } from "../transcriptCodec";
-import { attemptRecordedAt, durableAttemptTimes } from "../transcriptRepository";
+import { attemptFenced, durableAttemptTimes, withRecordedAt } from "../transcriptRepository";
 
 /**
  * Sub-agent threads and turns of a chat (`SubagentThread`, `SubagentTurn`).
@@ -250,7 +250,8 @@ export function createSubagentThreadStore(client: StoreClient) {
      * (`unknownEffects.ts`). Only the fence reads them; they never enter any
      * model's context.
      */
-    async threadEffectItems(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>): Promise<TranscriptItem[][]> {
+    async threadEffectItems(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>):
+      Promise<Readonly<{ items: TranscriptItem[]; threadId: string }>[]> {
       const runIds = [...new Set(input.runIds)];
       if (runIds.length === 0) return [];
       if (runIds.length > EFFECT_RUN_LIMIT) throw new Error("transcript_load_too_large");
@@ -264,18 +265,17 @@ export function createSubagentThreadStore(client: StoreClient) {
       const attempts = new Map<string, ReadonlyMap<string, Date>>();
       for (const threadId of new Set(rows.flatMap((row) => row.subagentThreadId ? [row.subagentThreadId] : []))) {
         attempts.set(threadId, await durableAttemptTimes(client, { callIds: rows.flatMap((row) => row.subagentThreadId === threadId &&
-          row.kind === "tool_call" && row.callId ? [row.callId] : []), runIds, threadId }));
+          row.callId && attemptFenced(decodeTranscriptItem(row)) ? [row.callId] : []), runIds, threadId }));
       }
       const lists = new Map<string, TranscriptItem[]>();
       for (const row of rows) {
         const key = `${row.modelRunId}\n${row.subagentThreadId ?? ""}`;
         const item = decodeTranscriptItem(row);
-        const recorded = item.kind === "tool_call"
-          ? { ...item, recordedAt: attemptRecordedAt(row, attempts.get(row.subagentThreadId ?? "") ?? new Map()) }
-          : item.kind === "tool_result" ? { ...item, recordedAt: row.createdAt } : item;
+        const recorded = withRecordedAt(item, row, attempts.get(row.subagentThreadId ?? "") ?? new Map());
         lists.set(key, [...lists.get(key) ?? [], recorded]);
       }
-      return runIds.flatMap((runId) => [...lists].filter(([key]) => key.startsWith(`${runId}\n`)).map(([, items]) => items));
+      return runIds.flatMap((runId) => [...lists].filter(([key]) => key.startsWith(`${runId}\n`))
+        .map(([key, items]) => ({ items, threadId: key.slice(runId.length + 1) })));
     },
 
     /** The stored result of an ended turn of the chat; null while it runs or when it is not the chat's. */

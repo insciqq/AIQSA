@@ -143,11 +143,11 @@ export type SubagentHost = Readonly<{
   toolTimeLeft(): boolean;
   transcripts: Pick<TranscriptRepository, "append" | "loadRuns" | "nextSequence" | "runLive">;
   /**
-   * The run's one unknown-effect fence, shared with the main agent and every other sub-agent of the run and seeded
-   * with the effects the branch's threads left (`execution.ts`): an effect any of them left unknown fences them all,
-   * and a handed-back retry keeps its approval fence.
+   * A thread's view of the run's agent fences (`createAgentUnknownEffects`), seeded with the effects the branch's
+   * threads left (`execution.ts`): the thread records only into its own fence, in its own order, and finds an effect
+   * any agent of the run left unknown; a handed-back retry keeps its approval fence.
    */
-  unknownEffects: UnknownEffects;
+  unknownEffects(threadId: string): UnknownEffects;
   /** The run's usage ledger. */
   usage(attribution: RunUsageAttribution): void;
   /**
@@ -457,7 +457,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", userMessage: input.userMessage }) };
       // The run's one fence (`SubagentHost.unknownEffects`): only the user's own words count as them speaking, never the
       // main agent's brief or messages.
-      const unknownEffects = host.unknownEffects;
+      const unknownEffects = host.unknownEffects(input.threadId);
       const seenFollowups = threadState.seenFollowups;
       const incoming = async (): Promise<TranscriptUserItem[]> => {
         const added: TranscriptUserItem[] = [];

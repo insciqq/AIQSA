@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TranscriptItem, TranscriptToolCallItem, TranscriptToolResultItem, TranscriptUserItem } from "./transcript";
-import { createUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
+import { createAgentUnknownEffects, createUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 
 const recordedAt = new Date("2026-10-29T12:00:00Z");
 const create = (callId: string, title = "one issue"): TranscriptToolCallItem =>
   ({ arguments: JSON.stringify({ title }), callId, id: `call-${callId}`, kind: "tool_call", recordedAt, name: "mcp_jira_create" });
 const result = (callId: string, outcome: "complete" | "error" | "unknown"): TranscriptToolResultItem =>
   ({ callId, id: `result-${callId}-${outcome}`, kind: "tool_result", recordedAt, name: "mcp_jira_create", outcome, output: "x" });
+const later = new Date(recordedAt.getTime() + 60_000);
 const user = (id: string): TranscriptUserItem => ({ id, kind: "user", text: "Go on" });
 const userAuthored = (item: TranscriptUserItem) => !item.id.startsWith("server-");
 const call = (title = "one issue") => ({ arguments: { title }, name: "mcp_jira_create" });
@@ -53,8 +54,11 @@ describe("unknown effects on a branch", () => {
     // A definite error of a later call does not say whether the first one took effect.
     expect(unknownEffectsOf([create("c1"), result("c1", "unknown"), create("c2"), result("c2", "error")], userAuthored)
       .find(call())).not.toBeNull();
+    // A later completion settles it; one at the same moment does not (ties keep the fence).
+    expect(unknownEffectsOf([create("c1"), result("c1", "unknown"), create("c2"), { ...result("c2", "complete"), recordedAt: later }],
+      userAuthored).find(call())).toBeNull();
     expect(unknownEffectsOf([create("c1"), result("c1", "unknown"), create("c2"), result("c2", "complete")], userAuthored)
-      .find(call())).toBeNull();
+      .find(call())).not.toBeNull();
     expect(unknownEffectsOf([create("c1"), result("c1", "unknown")], userAuthored).find(call("another issue"))).toBeNull();
   });
 
@@ -112,7 +116,8 @@ describe("unknown effects the old core left on a branch", () => {
   });
 
   it("lets a later equivalent call that completed settle it, and keeps it when the old answer stopped without text", () => {
-    const settled = withRetiredEffects([...branch.slice(0, 3), create("n1"), result("n1", "complete"), ...branch.slice(3)], messages,
+    const settled = withRetiredEffects([...branch.slice(0, 3), create("n1"), { ...result("n1", "complete"), recordedAt: later },
+      ...branch.slice(3)], messages,
       retired("q1"));
     expect(unknownEffectsOf(settled, userAuthored).find(call())).toBeNull();
     // An answer left out of the context (no text) still places its records after its question.
@@ -144,23 +149,43 @@ describe("unknown effects the old core left on a branch", () => {
   });
 });
 
-describe("one fence fed by several agents' records", () => {
-  const earlier = new Date("2026-10-29T10:00:00Z");
-  const later = new Date("2026-10-29T11:00:00Z");
+describe("a run's agent fences (integrator decision 2026-10-30)", () => {
+  const at = (ms: number) => new Date(Date.UTC(2026, 9, 30, 10, 0, 0, ms));
 
-  it("keeps a later unknown attempt when an earlier completion of the same call arrives after it", () => {
-    const fence = createUnknownEffects();
-    // The main agent's records first: its latest attempt was lost.
-    unknownEffectsOf([{ ...create("m1"), recordedAt: later }], () => false, fence);
-    // Then a sub-agent thread's, whose equivalent call completed before that.
-    unknownEffectsOf([{ ...create("t1"), recordedAt: earlier }, { ...result("t1", "complete"), recordedAt: earlier }], () => false, fence);
-    expect(fence.find(call())).toEqual({ after: later, userSpokeSince: false });
+  it("delayed persistence must preserve uncertainty: another agent's completion never settles an unknown effect", () => {
+    const fences = createAgentUnknownEffects();
+    // The main agent completed the write at 1000, but its batch persisted the success at 3000.
+    unknownEffectsOf([{ ...create("m1"), recordedAt: at(1000) }, { ...result("m1", "complete"), recordedAt: at(3000) }], () => false,
+      fences.agent("main"));
+    // A sub-agent's equivalent write, sent at 1500, lost its response at 2000.
+    unknownEffectsOf([{ ...create("t1"), recordedAt: at(1500) }, { ...result("t1", "unknown"), recordedAt: at(2000) }], () => false,
+      fences.agent("thread-1"));
+    expect(fences.agent("main").find(call())).toEqual({ after: at(2000), userSpokeSince: false });
+    // Fed the other way round, the same.
+    const reversed = createAgentUnknownEffects();
+    unknownEffectsOf([{ ...create("t1"), recordedAt: at(1500) }, { ...result("t1", "unknown"), recordedAt: at(2000) }], () => false,
+      reversed.agent("thread-1"));
+    unknownEffectsOf([{ ...create("m1"), recordedAt: at(1000) }, { ...result("m1", "complete"), recordedAt: at(3000) }], () => false,
+      reversed.agent("main"));
+    expect(reversed.agent("thread-2").find(call())).toEqual({ after: at(2000), userSpokeSince: false });
   });
 
-  it("lets a later completion settle an earlier unknown attempt that arrives after it", () => {
+  it("unordered ties must preserve uncertainty", () => {
     const fence = createUnknownEffects();
-    unknownEffectsOf([{ ...create("m1"), recordedAt: later }, { ...result("m1", "complete"), recordedAt: later }], () => false, fence);
-    unknownEffectsOf([{ ...create("t1"), recordedAt: earlier }], () => false, fence);
-    expect(fence.find(call())).toBeNull();
+    fence.record(call(), "unknown", at(500));
+    fence.record(call(), "complete", at(500));
+    expect(fence.find(call())).toEqual({ after: at(500), userSpokeSince: false });
+  });
+
+  it("lets an agent's own later completion settle its own unknown effect, and the user speaking reach every fence", () => {
+    const fences = createAgentUnknownEffects();
+    const thread = fences.agent("thread-1");
+    thread.record(call(), "unknown", at(100));
+    fences.agent("main").record(call("other"), "unknown", at(100));
+    fences.agent("main").userSpoke();
+    expect(thread.find(call())).toEqual({ after: at(100), userSpokeSince: true });
+    expect(thread.find(call("other"))).toEqual({ after: at(100), userSpokeSince: true });
+    thread.record(call(), "complete", at(200));
+    expect(fences.agent("main").find(call())).toBeNull();
   });
 });

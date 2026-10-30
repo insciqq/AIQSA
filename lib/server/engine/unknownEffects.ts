@@ -99,12 +99,14 @@ export function withHiddenRunEffects(items: readonly TranscriptItem[],
   return [...items.flatMap((item) => [...(before.get(item.id) ?? []), item]), ...last];
 }
 
+/**
+ * One agent's fence, fed in that agent's own record order, which is linear.
+ * A completion settles an earlier uncertainty only when it is strictly newer:
+ * on a tie the uncertainty stays (fails closed).
+ */
 export function createUnknownEffects(): UnknownEffects {
   // Per effect: the user had spoken since it became unknown.
   const unknown = new Map<string, { after: Date; userSpokeSince: boolean }>();
-  // Per effect: when an equivalent call last completed. Records may arrive out of their order (one agent's records,
-  // then another's), so an outcome changes the fence only when it is not older than the one it would replace.
-  const completed = new Map<string, number>();
   return {
     find(call) {
       const entry = unknown.get(effectKey(call));
@@ -115,20 +117,67 @@ export function createUnknownEffects(): UnknownEffects {
       const key = effectKey(call);
       const timestamp = Number.isFinite(after.getTime()) ? after.getTime() : Date.now();
       if (outcome === "unknown") {
-        // A later completion of the same call settles this earlier uncertainty.
-        if ((completed.get(key) ?? Number.NEGATIVE_INFINITY) > timestamp) return;
         // Never move the fence backwards when concurrent uncertain calls settle out of order.
         const latest = Math.max(unknown.get(key)?.after.getTime() ?? 0, timestamp);
         unknown.set(key, { after: new Date(latest), userSpokeSince: false });
       } else if (outcome === "complete") {
-        completed.set(key, Math.max(completed.get(key) ?? Number.NEGATIVE_INFINITY, timestamp));
-        // An earlier completion never settles a later uncertain attempt.
         const open = unknown.get(key);
-        if (!open || open.after.getTime() <= timestamp) unknown.delete(key);
+        if (open && open.after.getTime() < timestamp) unknown.delete(key);
       }
     },
     userSpoke() {
       for (const entry of unknown.values()) entry.userSpokeSince = true;
+    }
+  };
+}
+
+/**
+ * The fences of a run's agents (integrator decision 2026-10-30): the main
+ * agent and each sub-agent thread record only into their own fence, in their
+ * own linear order, so one agent's outcome never settles another's unknown
+ * effect, whatever the persistence timestamps say. Each agent's view finds an
+ * unknown effect any agent of the run left (the latest attempt's fence; the
+ * user has spoken since only if they have since every one), and the user
+ * speaking reaches every fence. An exact human approval newer than the
+ * attempt still authorizes the retry (`toolBatch.ts`). Fails closed: in the
+ * worst case a call asks a human once more.
+ */
+export type AgentUnknownEffects = Readonly<{
+  /** The view of one agent: `main`, or a sub-agent's thread id. */
+  agent(key: string): UnknownEffects;
+}>;
+
+export function createAgentUnknownEffects(): AgentUnknownEffects {
+  const fences = new Map<string, UnknownEffects>();
+  const own = (key: string) => {
+    let fence = fences.get(key);
+    if (!fence) {
+      fence = createUnknownEffects();
+      fences.set(key, fence);
+    }
+    return fence;
+  };
+  return {
+    agent(key) {
+      const mine = own(key);
+      return {
+        find(call) {
+          let found: UnknownEffect | null = null;
+          for (const fence of fences.values()) {
+            const entry = fence.find(call);
+            if (!entry) continue;
+            found = found ? { after: entry.after > found.after ? entry.after : found.after,
+              userSpokeSince: found.userSpokeSince && entry.userSpokeSince } : entry;
+          }
+          return found;
+        },
+        record(call, outcome, after) {
+          mine.record(call, outcome, after);
+        },
+        userSpoke() {
+          for (const fence of fences.values()) fence.userSpoke();
+        }
+      };
     }
   };
 }

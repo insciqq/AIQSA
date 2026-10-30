@@ -82,6 +82,22 @@ export async function durableAttemptTimes(client: Pick<PrismaClient, "modelRunTo
   return times;
 }
 
+/**
+ * Items whose fence is their durable attempt: a call, and an approval
+ * continuation's in-flight marker, which opens the call again in the
+ * continuation's own run (keyed by the marker's run and call id).
+ */
+export function attemptFenced(item: TranscriptItem): boolean {
+  return item.kind === "tool_call" || item.kind === "tool_result" && item.inFlight === true;
+}
+
+/** A tool item with its record time (`recordedAt`): its durable attempt where that fences it. */
+export function withRecordedAt(item: TranscriptItem, row: Readonly<{ callId: string | null; createdAt: Date; modelRunId: string }>,
+  attempts: ReadonlyMap<string, Date>): TranscriptItem {
+  if (item.kind !== "tool_call" && item.kind !== "tool_result") return item;
+  return { ...item, recordedAt: attemptFenced(item) ? attemptRecordedAt(row, attempts) : row.createdAt };
+}
+
 /** A call item's fence time: its durable attempt when later than the item's own record. */
 export function attemptRecordedAt(row: Readonly<{ callId: string | null; createdAt: Date; modelRunId: string }>,
   attempts: ReadonlyMap<string, Date>): Date {
@@ -162,13 +178,10 @@ export function createTranscriptRepository(client: TranscriptClient) {
         select: { body: true, callId: true, createdAt: true, id: true, kind: true, modelRunId: true },
         where: { chatId: input.chatId, modelRunId: { in: runIds }, subagentThreadId: input.threadId ?? null, userId: input.userId }
       });
-      const attempts = await durableAttemptTimes(client, { callIds: rows.flatMap((row) => row.kind === "tool_call" && row.callId
-        ? [row.callId] : []), runIds, threadId: input.threadId ?? null });
-      for (const row of rows) {
-        const item = decodeTranscriptItem(row);
-        loaded.get(row.modelRunId)?.push(item.kind === "tool_call" || item.kind === "tool_result"
-          ? { ...item, recordedAt: item.kind === "tool_call" ? attemptRecordedAt(row, attempts) : row.createdAt } : item);
-      }
+      const decoded = rows.map((row) => ({ item: decodeTranscriptItem(row), row }));
+      const attempts = await durableAttemptTimes(client, { callIds: decoded.flatMap(({ item, row }) =>
+        row.callId && attemptFenced(item) ? [row.callId] : []), runIds, threadId: input.threadId ?? null });
+      for (const { item, row } of decoded) loaded.get(row.modelRunId)?.push(withRecordedAt(item, row, attempts));
       return loaded;
     },
 

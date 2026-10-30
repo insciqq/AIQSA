@@ -11,7 +11,7 @@ import { SUBAGENT_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
-import { createUnknownEffects, type UnknownEffects } from "../unknownEffects";
+import { createAgentUnknownEffects, type AgentUnknownEffects } from "../unknownEffects";
 import { subagentRequestShape } from "./runSubagents";
 import { workspacePromptContract } from "../../workspace/promptContract";
 import {
@@ -68,7 +68,7 @@ const request = {
 const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", modelSource: "parent", provider: "connection-1",
   providerModelId: "model-1", reasoningEffort: null };
 
-function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; fence?: UnknownEffects;
+function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
   followups?: () => { id: string; text: string }[]; tools?: EngineTool[] }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
   const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
@@ -98,6 +98,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
   const registry: ToolRegistry = { definitions: () => tools.map((entry) => entry.definition),
     resolve: (name) => tools.find((entry) => entry.definition.name === name) };
   const usage: RunUsageAttribution[] = [];
+  const defaultFences = createAgentUnknownEffects();
   const settled: unknown[] = [];
   const controller = new AbortController();
   const host: SubagentHost = {
@@ -134,7 +135,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
       nextSequence: vi.fn(async () => 0),
       runLive: vi.fn(async () => true)
     },
-    unknownEffects: options.fence ?? createUnknownEffects(),
+    unknownEffects: (threadId) => (options.fences ?? defaultFences).agent(threadId),
     usage: (attribution) => usage.push(attribution),
     userFollowups: vi.fn(async () => options.followups?.() ?? []),
     userId: "user"
@@ -251,19 +252,19 @@ describe("sub-agent runner", () => {
     expect(ctx.requests).toHaveLength(0);
   });
 
-  it("shares the run's one fence: a sub-agent's lost write fences others, and an effect others left fences it", async () => {
+  it("fences every agent of the run with a sub-agent's lost write, recorded in that sub-agent's own fence", async () => {
     const order = { arguments: { item: "laptop" }, name: "place_order" };
     const lost = vi.fn(async () => { throw new Error("socket hang up"); });
-    const fence = createUnknownEffects();
+    const fences = createAgentUnknownEffects();
     const ctx = setup([{ calls: [{ ...order, id: "c1" }] }, { text: "Outcome: partial\nThe order may have gone through." }],
-      { fence, tools: [engineTool("place_order", "session", lost, { effects: "external" })] });
+      { fences, tools: [engineTool("place_order", "session", lost, { effects: "external" })] });
     await ctx.runner.wait(await ctx.runner.start(ctx.input()));
     expect(lost).toHaveBeenCalledTimes(1);
-    expect(fence.find(order)).toMatchObject({ userSpokeSince: false });
+    expect(fences.agent("main").find(order)).toMatchObject({ userSpokeSince: false });
     // Another sub-agent of the run (or the main agent) asking for the same call is refused until the user decides.
     const again = vi.fn();
     const other = setup([{ calls: [{ ...order, id: "c2" }] }, { text: "Outcome: blocked (needs_approval)\nNot sent." }],
-      { fence, tools: [engineTool("place_order", "session", again, { effects: "external" })] });
+      { fences, tools: [engineTool("place_order", "session", again, { effects: "external" })] });
     const result = await other.runner.wait(await other.runner.start(other.input({ threadId: "thread-2", turnId: "turn-2" })));
     expect(again).not.toHaveBeenCalled();
     expect(result.steps[0]).toMatchObject({ outcome: "error", tool: "Jira: place_order" });
