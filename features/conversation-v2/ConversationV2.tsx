@@ -65,6 +65,8 @@ export type ConversationMessagePresentationV2 = Readonly<{
   /** Rendered under the actions row (the expanded Sources list). */
   afterActions?: ReactNode;
   afterContent?: ReactNode;
+  /** Sent files: above a question's bubble and outside it. */
+  aboveContent?: ReactNode;
   beforeContent?: ReactNode;
   edit?: ConversationInlineEditV2Props;
   /** Always-visible controls at the start of the actions row (pager, Sources chip). */
@@ -83,6 +85,8 @@ export type ConversationInlineEditV2Props = Readonly<{
 }>;
 
 type ConversationTurnV2Props = Readonly<{
+  /** Sent files: above a question's bubble and outside it. With no text, there is no bubble. */
+  aboveContent?: ReactNode;
   actions?: ConversationMessageActionsV2;
   afterActions?: ReactNode;
   afterContent?: ReactNode;
@@ -223,6 +227,7 @@ export function shouldClampUserBubbleV2(content: string): boolean {
 }
 
 export function ConversationTurnV2({
+  aboveContent,
   actions,
   afterActions,
   afterContent,
@@ -267,6 +272,7 @@ export function ConversationTurnV2({
   const bubbleExpanded = bubbleExpansion === "expanded" ||
     (bubbleExpansion === "automatic" && expandForReadingAnchor);
   const bubbleClamped = bubbleClampCandidate && !bubbleExpanded;
+  const bubbleless = isUser && !editing && Boolean(aboveContent) && !content.trim();
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -390,9 +396,11 @@ export function ConversationTurnV2({
       onClick={toggleControlsOnSurface}
       onKeyDown={handleKeyDown}
     >
+      {editing ? null : aboveContent}
       <div
         className="v2-conversation-turn-content"
         data-bubble-clamped={bubbleClamped ? "true" : undefined}
+        data-bubbleless={bubbleless || undefined}
         data-thread-message-content
       >
         {beforeContent}
@@ -400,7 +408,7 @@ export function ConversationTurnV2({
           <ConversationInlineEditV2 {...edit} onCancel={cancelInlineEdit} />
         ) : (
           <>
-            <div className="v2-conversation-markdown" data-quote-eligible={quoteEligible && !streaming && !editing ? "true" : undefined}>
+            {bubbleless ? null : <div className="v2-conversation-markdown" data-quote-eligible={quoteEligible && !streaming && !editing ? "true" : undefined}>
               {content.trim() ? (
                 <MarkdownMessage
                   content={content}
@@ -410,7 +418,7 @@ export function ConversationTurnV2({
               ) : !hideEmptyContent ? (
                 <p className="v2-conversation-empty-turn">{emptyText}</p>
               ) : null}
-            </div>
+            </div>}
             {bubbleClampCandidate ? (
               <button
                 className="v2-bubble-expander v2-focusable"
@@ -842,6 +850,7 @@ export function ConversationV2({
                 <li key={message.id}>
                   {renderMessage?.(message) ?? (
                     <ConversationTurnV2
+                      aboveContent={getMessagePresentation?.(message)?.aboveContent}
                       actions={getMessageActions?.(message)}
                       afterActions={getMessagePresentation?.(message)?.afterActions}
                       afterContent={getMessagePresentation?.(message)?.afterContent}

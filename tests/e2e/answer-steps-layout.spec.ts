@@ -21,7 +21,8 @@ const listCommits = (index: number): ThreadToolActivityCall => {
 const section = (text: string) => ({ byteSize: Buffer.byteLength(text), text, truncated: false });
 
 // A web-search answer: four searches between page reads, one of which failed
-// on a long address. The per-engine count is said once, on the line.
+// on a long address. The line says only the work time; the per-engine count is
+// said once, in the fold.
 const searchChatId = "answer-steps-search-chat";
 const failedTarget = "github.com/example-org/sample-repository/blob/main/paper/conference_submission_2027_final.pdf";
 const searched = (durationMs: number): ThreadToolActivityCall =>
@@ -118,6 +119,42 @@ for (const viewport of [
       await page.screenshot({ path: testInfo.outputPath("steps-command-open.png") });
     });
 
+    test(`a search with no steps and a read PDF each keep a line and a fold at ${viewport.width}px`, async ({ context, page }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
+      const answer = (id: string, parentMessageId: string | null, facts: Record<string, unknown>) => ({
+        id, role: "assistant", status: "complete", parentMessageId, createdAt: timestamp, content: "The synthetic answer.",
+        errorMessage: null, citationMessageId: null, modelId: "gpt-5.5", modelRunId: `${id}-run`, provider: "openai", ...facts
+      });
+      await installMatrixCatalogFixture(page, { folders: [], chats: [{
+        id: "answer-steps-quiet-chat", title: "Quiet process lines", activeLeafMessageId: "pdf-answer",
+        createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai", defaultModelId: "gpt-5.5",
+        folderId: null, pinned: false, messageCount: 2,
+        messages: [
+          answer("search-answer", null, { toolActivity: { calls: [], searchEngines: [
+            { engine: 1, name: "OpenAI (CodexLB) Search", requested: 1, settled: 1, complete: 0, error: 1, skipped: 0 }
+          ] } }),
+          answer("pdf-answer", "search-answer", { pdfPreparation: [{ answerModelName: "GPT-5.5", completedPages: 0,
+            limitedReadingQuality: false, longDocument: true, pageCount: 40, phase: "ready", retryable: false, route: "direct_pdf" }] })
+        ]
+      }] });
+      await signInWithLocalToken(page, "/c/answer-steps-quiet-chat");
+
+      const folds = page.getByTestId("tool-activity-disclosure");
+      await expect(folds).toHaveCount(2);
+      await expect(folds.first().locator(":scope > summary")).toHaveText("Web search failed");
+      const pdf = folds.nth(1);
+      await expect(pdf.locator(":scope > summary")).toHaveText("Read 1 PDF");
+      // Route wording and preparation advice stay off a settled answer's face.
+      await expect(page.getByTestId("pdf-preparation-notices")).toHaveCount(0);
+      await expect(page.getByText("This may take a while")).toHaveCount(0);
+      await expect(page.getByText("Read the original PDF")).toBeHidden();
+      if (await pdf.getAttribute("open") === null) await pdf.locator(":scope > summary").click();
+      await expect(pdf.getByTestId("answer-documents")).toContainText("Read the original PDF · GPT-5.5");
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath("quiet-process.png") });
+    });
+
     test(`web search steps say the count once and keep a wrapped failure's mark on its first line at ${viewport.width}px`, async ({ context, page }, testInfo) => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
@@ -146,9 +183,10 @@ for (const viewport of [
       await signInWithLocalToken(page, `/c/${searchChatId}`);
 
       const disclosure = page.getByTestId("tool-activity-disclosure");
-      await expect(disclosure.locator(":scope > summary")).toContainText("Web search · OpenAI (CodexLB) Search ×4 · Worked for");
+      await expect(disclosure.locator(":scope > summary")).toHaveText(/^Worked for [^·]+$/u);
       if (await disclosure.getAttribute("open") === null) await disclosure.locator(":scope > summary").click();
       await expect(disclosure).toHaveAttribute("open");
+      await expect(disclosure.getByTestId("answer-search-engines")).toContainText("OpenAI (CodexLB) Search ×4");
       await expect(disclosure.getByText(/Search ×4/u)).toHaveCount(1);
       await expect(disclosure).not.toContainText("counts successful calls");
       await expect(disclosure.getByText("Searched the web")).toHaveCount(4);
