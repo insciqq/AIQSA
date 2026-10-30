@@ -65,7 +65,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Client as PostgresClient } from "pg";
+import type { Client as PostgresClient } from "pg";
 import type { CatalogModel } from "../lib/contracts/catalog";
 import { decodeSubagentDefinitionListResponse } from "../lib/contracts/subagentDefinitions";
 import {
@@ -78,7 +78,7 @@ import {
 } from "./browser-scenarios-support";
 import {
   TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, errorCode,
-  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode,
+  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
@@ -912,7 +912,7 @@ async function main() {
   const label = process.env.AIQSA_SUBAGENTS_LABEL?.trim() || "unlabelled";
   if (!/^[A-Za-z0-9._/-]{1,80}$/u.test(label)) fail("label_invalid");
   const secret = process.env.CODEX_LB_API_KEY ?? fail("codex_lb_key_required");
-  const db = new PostgresClient({ connectionString: target.databaseUrl });
+  const db = standDatabase(target.databaseUrl);
   await db.connect();
   const started = Date.now();
   const records: SubagentRunRecord[] = [];

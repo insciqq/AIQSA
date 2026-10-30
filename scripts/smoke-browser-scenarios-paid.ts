@@ -64,7 +64,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Client as PostgresClient } from "pg";
+import type { Client as PostgresClient } from "pg";
 import type { CatalogModel } from "../lib/contracts/catalog";
 import {
   BROWSER_SCENARIOS, BrowserScenarioError, checkBrowserResult, cleanUpRun, requireBrowserScenarioStand, runBounds, scenarioSummary,
@@ -75,7 +75,7 @@ import {
 } from "./browser-scenarios-support";
 import {
   TERMINAL_RUN_STATES as TERMINAL, authenticate, awaitExport, createScenarioChat, deleteChat, discard, errorCode, handoffCalls,
-  latestRun, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setUpStand,
+  latestRun, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setUpStand, standDatabase,
   syncSaucedemoSecret, typedValueLeaks, type Api, type RunRow
 } from "./browser-scenarios-stand";
 import { codexLbRoute } from "./workspace-user-paid-support";
@@ -262,7 +262,7 @@ async function main() {
   const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
   const secret = process.env.CODEX_LB_API_KEY ?? fail("codex_lb_key_required");
   const chat = chatRoute(process.env);
-  const db = new PostgresClient({ connectionString: target.databaseUrl });
+  const db = standDatabase(target.databaseUrl);
   await db.connect();
   const started = Date.now();
   const records: RunRecord[] = [];
