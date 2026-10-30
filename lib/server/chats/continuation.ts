@@ -15,7 +15,7 @@ export const CHAT_SUMMARY_HEARTBEAT_MS = 2_000;
 const SUMMARY_MAX_CHARACTERS = 8192;
 
 export class ChatContinuationError extends Error {
-  constructor(readonly code: "chat_not_found" | "chat_changed" | "chat_busy" | "chat_summary_too_large" |
+  constructor(readonly code: "chat_not_found" | "chat_changed" | "chat_busy" | "workspace_subagents_running" | "chat_summary_too_large" |
     "chat_summary_unavailable" | "chat_summary_failed" | "chat_summary_cancelled" | "chat_summary_no_progress" | "chat_summary_outcome_unknown", readonly status = 409) {
     super(code);
     this.name = "ChatContinuationError";

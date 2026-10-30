@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  PERSONAL_USAGE_PURPOSES, RUN_USAGE_ATTRIBUTION_PURPOSES, SYSTEM_USAGE_PURPOSES, USAGE_PURPOSES,
-  isPersonalUsagePurpose, isRunUsageAttributionPurpose, isUsagePurpose, memoryRoleUsagePurpose
+  CHAT_MODEL_USAGE_PURPOSES, PERSONAL_USAGE_PURPOSES, RUN_USAGE_ATTRIBUTION_PURPOSES, SYSTEM_USAGE_PURPOSES, USAGE_PURPOSES,
+  isChatModelUsagePurpose, isPersonalUsagePurpose, isRunUsageAttributionPurpose, isUsagePurpose, memoryRoleUsagePurpose
 } from "./usagePurpose";
 
 describe("usage purpose", () => {
@@ -13,6 +13,8 @@ describe("usage purpose", () => {
     // Dictation is the user's own request: it counts toward their budget, not a run's attributions.
     expect(isPersonalUsagePurpose("speech_to_text")).toBe(true);
     expect(isRunUsageAttributionPurpose("speech_to_text")).toBe(false);
+    // Sub-agents run on the user's models (operator decision 2026-10-29): they count toward the allowance.
+    expect(isPersonalUsagePurpose("subagent")).toBe(true);
     expect(isPersonalUsagePurpose("other")).toBe(false);
   });
 
@@ -22,12 +24,19 @@ describe("usage purpose", () => {
     expect(isUsagePurpose(null)).toBe(false);
   });
 
-  it("limits a run's own attributions to its answer, Search and Knowledge query purposes", () => {
+  it("limits a run's own attributions to its answer, Search, Knowledge query and sub-agent purposes", () => {
     expect(RUN_USAGE_ATTRIBUTION_PURPOSES.every(isUsagePurpose)).toBe(true);
-    expect(RUN_USAGE_ATTRIBUTION_PURPOSES.filter(isRunUsageAttributionPurpose)).toEqual(["chat_answer", "web_search", "knowledge_retrieval"]);
+    expect(RUN_USAGE_ATTRIBUTION_PURPOSES.filter(isRunUsageAttributionPurpose))
+      .toEqual(["chat_answer", "web_search", "knowledge_retrieval", "subagent"]);
     for (const purpose of ["image_generation", "chat_title", "chat_vision", "chat_pdf", "skill_selection", "memory_retrieval", undefined]) {
       expect(isRunUsageAttributionPurpose(purpose)).toBe(false);
     }
+  });
+
+  it("prices and settles the answer's and its sub-agents' model calls alike", () => {
+    expect(CHAT_MODEL_USAGE_PURPOSES.every(isRunUsageAttributionPurpose)).toBe(true);
+    expect(USAGE_PURPOSES.filter(isChatModelUsagePurpose)).toEqual(["chat_answer", "subagent"]);
+    expect(isChatModelUsagePurpose("web_search")).toBe(false);
   });
 
   it("maps Memory roles to indexing, retrieval or processing", () => {

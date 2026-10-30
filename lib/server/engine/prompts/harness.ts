@@ -1,5 +1,7 @@
 import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
+import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_NO_REPLAY_SAFETY } from "@/lib/server/workspace/promptContract";
+import { subagentsPromptSection, type SubagentPromptFacts } from "./subagents";
 
 /**
  * AIQSA's own part of every family prompt: what the agent can rely on in
@@ -35,6 +37,8 @@ export type HarnessPromptInput = Readonly<{
    * fills it in for the request's tools when it is not given.
    */
   selfService?: string;
+  /** What the "# Sub-agents" section lists, when `call_subagent` is offered (`./subagents.ts`). */
+  subagents?: SubagentPromptFacts;
 }>;
 
 /** One saved secret `read_secret` can read in this run. */
@@ -103,6 +107,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       "This chat has a private Linux sandbox with a persistent disk, shell, Python, package managers, a headless browser and Office, PDF and image libraries. It starts on the first call that runs code or touches its files, which takes about a second, and keeps this chat's files between turns. Tools that run no code (secrets, Skills, MCP, search, Memory, images) work without it.",
       "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are available there too: every command has an env secret's variables and a text secret named like a variable (capitals, digits and underscores) under that name, SSH keys and files are files, and /workspace/SECRETS.md lists what each secret provides but holds no values; read any other text secret with read_secret."
     ]] : []),
+    ...(has.has(CALL_SUBAGENT_TOOL_NAME) ? [[subagentsPromptSection(input.subagents)]] : []),
     [
       "# When to stop and ask",
       "- Ask only when you cannot proceed sensibly: the request has materially different readings that the context does not settle, a required input or access is missing, or the next step is irreversible or affects other people (sending messages, deleting or overwriting the user's data, publishing, payments) and the user has not clearly asked for it.",

@@ -97,7 +97,8 @@ describe("chat route contract", () => {
     expect(chatRouteHref({ chatId }, "chat=old&project=old&message=m&library=mcp&oauth=connected"))
       .toBe(`/c/${chatId}?message=m&library=mcp&oauth=connected`);
     expect(chatRouteHref(BLANK_CHAT_ROUTE)).toBe("/");
-    expect(withoutChatScopedParameters("message=m&artifactEdit=edit&artifactId=a&versionId=v&memorySource=x").toString())
+    // Another chat never inherits the open sub-agent thread view.
+    expect(withoutChatScopedParameters("message=m&artifactEdit=edit&artifactId=a&versionId=v&agent=t&memorySource=x").toString())
       .toBe("memorySource=x");
   });
 

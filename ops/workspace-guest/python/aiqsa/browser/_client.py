@@ -12,6 +12,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from . import _identity, _paths
+from ..agents import AGENT_ID_ENV, AGENT_ID_PATTERN, AGENT_NAME_ENV, MAIN_AGENT_ID
 
 PROTOCOL = 1
 #: Starting the host launches Chromium twice: once to read its own identity, once for the turn.
@@ -67,12 +69,30 @@ def _connect(path: Path, timeout: float) -> Optional[socket.socket]:
 
 
 def _host_environment(environ: Mapping[str, str]) -> Dict[str, str]:
-    env = {key: value for key, value in environ.items() if key not in _identity.DROPPED_ENV}
+    # Agent identity is carried by each request, never by the shared host process.
+    env = {key: value for key, value in environ.items()
+           if key not in _identity.DROPPED_ENV and not key.startswith(_identity.AGENT_ENV_PREFIX)}
     package_root = str(Path(__file__).resolve().parents[2])
     paths = [entry for entry in env.get("PYTHONPATH", "").split(os.pathsep) if entry]
     if package_root not in paths:
         env["PYTHONPATH"] = os.pathsep.join([package_root, *paths])
     return env
+
+
+#: The cgroup every agent shares. The agent command that starts the host runs inside its agent's
+#: group, which that agent's stop kills whole (`lib/server/workspace/agentProcessGuest.ts`).
+SHARED_CGROUP = "/sys/fs/cgroup/aiqsa-shared"
+
+
+def _leave_agent_group() -> None:
+    """In the host before it runs: it and Chromium leave the starting agent's cgroup for the shared one."""
+    try:
+        os.makedirs(SHARED_CGROUP, exist_ok=True)
+        with open(os.path.join(SHARED_CGROUP, "cgroup.procs"), "w") as handle:
+            handle.write(str(os.getpid()))
+    except OSError:
+        # No cgroup v2 here: no agent group holds the host either, and agent stops are never proven.
+        pass
 
 
 def _start(run_dir: Path, socket_path: Path) -> None:
@@ -94,7 +114,7 @@ def _start(run_dir: Path, socket_path: Path) -> None:
     try:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True, close_fds=True, cwd="/",
-                                   env=_host_environment(os.environ))
+                                   env=_host_environment(os.environ), preexec_fn=_leave_agent_group)
     except OSError as error:
         raise BrowserError("browser_start_failed", f"The browser host could not start ({error.strerror}).") from None
     finally:
@@ -154,10 +174,24 @@ def request_timeout(op: str, args: Mapping[str, Any]) -> float:
     return 100.0 if op in _SLOW else 70.0
 
 
+def _agent_request(environ: Mapping[str, str]) -> Dict[str, str]:
+    """The server-owned identity travels with every socket request.
+
+    The guest environment is the coordination input for the helper, not an
+    authorization boundary. Invalid or missing values use the main agent so an
+    old caller remains compatible while a malformed server value is harmless.
+    """
+    agent_id = environ.get(AGENT_ID_ENV, MAIN_AGENT_ID)
+    if not re.fullmatch(AGENT_ID_PATTERN, agent_id):
+        agent_id = MAIN_AGENT_ID
+    name = environ.get(AGENT_NAME_ENV, "")
+    return {"id": agent_id, **({"name": name} if name else {})}
+
+
 def call(op: str, args: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None) -> Dict[str, Any]:
     """One browser request; returns its result or raises `BrowserError`."""
     args = {key: value for key, value in (args or {}).items() if value is not None}
-    payload = (json.dumps({"v": PROTOCOL, "op": op, "args": args}, ensure_ascii=False) + "\n").encode("utf-8")
+    payload = (json.dumps({"v": PROTOCOL, "op": op, "args": args, "agent": _agent_request(os.environ)}, ensure_ascii=False) + "\n").encode("utf-8")
     wait = timeout if timeout is not None else request_timeout(op, args)
     client = _ensure_host(wait)
     chunks = []

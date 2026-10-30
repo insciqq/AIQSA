@@ -1,9 +1,10 @@
-"""The Workspace browser host: one full Chromium per turn, kept open between the agent's commands.
+"""The Workspace browser host: one full Chromium per turn, shared by up to five agent identities.
 
 The first `aiqsa.browser` call of a boot starts this process detached from the
-command (`_client.py`). It owns Playwright and the browser, answers one request
-at a time on a private Unix socket, keeps the site sessions current and lists
-the turn's steps. It is no registered execution: every run that executed a
+command (`_client.py`). It owns Playwright and the browser, answers requests
+on a private Unix socket, keeps site sessions current and isolates each
+agent's tabs, current page, lock and steps. The agent id is a coordination key
+supplied by the server, not a security boundary. It is no registered execution: every run that executed a
 command ends with a disk-preserving VM stop (`lib/server/workspace/quiescence.ts`),
 which ends this process and Chromium with it on success, Stop, deadline and
 failure alike. So nothing waits for a save at the end: sessions are written as
@@ -20,6 +21,7 @@ after the user gives it back does not run (`user_returned_control`).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -37,6 +39,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from . import _dom, _format, _identity, _livehub, _paths, _sessions
+from ..agents import AGENT_ID_ENV, AGENT_ID_PATTERN, AGENT_NAME_ENV, AGENT_NAME_MAX_CHARS, BROWSER_AGENT_SLOTS, BROWSER_BUSY_CODE, BROWSER_MEMORY_LOW_CODE, MAIN_AGENT_ID
 
 PROTOCOL = 1
 #: Requests the agent may make while the user holds the browser: they read no page.
@@ -50,6 +53,15 @@ USER_RETURNED = ("Nothing of this request ran: it was planned before the user's 
 REQUEST_MAX_BYTES = 1024 * 1024
 #: The turn's browser idles out after this; the next call starts a new one from the saved sessions.
 IDLE_SECONDS = 1800
+# A browser slot is deliberately shorter than the VM's idle stop. A crashed
+# command or a forgotten sub-agent must not pin a tab for an entire turn.
+AGENT_IDLE_SECONDS = 120
+SLOT_WAIT_SECONDS = 5.0
+MAX_AGENT_TABS = 3
+# Chromium's actual RSS varies by site. Reserve a bounded per-tab allowance
+# and keep a small line for the guest's Python/MCP processes.
+TAB_MEMORY_RESERVE_MIB = 256
+MEMORY_SAFE_MIB = 512
 MAX_ELEMENTS = 500
 MAX_FRAMES = 8
 MAX_STEPS = 500
@@ -67,6 +79,31 @@ class HostError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class AgentState:
+    """All browser state that must never be shared by two agents."""
+
+    def __init__(self, agent_id: str, name: str = "") -> None:
+        self.agent_id = agent_id
+        self.name = name
+        self.tabs: List[Any] = []
+        self.current: Any = None
+        self.setups: Dict[Any, asyncio.Future] = {}
+        self.cdp: Dict[Any, Any] = {}
+        self.snapshots: Dict[Any, Dict[str, Any]] = {}
+        self.activity: Dict[Any, List[int]] = {}
+        self.steps: List[Dict[str, Any]] = []
+        self.step_count = 0
+        self.masked: Dict[Any, List[Tuple[str, Any]]] = {}
+        self.hidden = _format.HiddenValues()
+        self.env_hidden = _format.HiddenValues()
+        self.notes: List[str] = []
+        self.acting = False
+        self.lock = asyncio.Lock()
+        self.last_used = time.monotonic()
+        self.slot = False
+        self.expiry_task: Optional[asyncio.Task] = None
 
 
 def _first_line(error: BaseException, limit: int = 300) -> str:
@@ -141,30 +178,230 @@ class Host:
         self.version = ""
         self.user_agent = ""
         self.metadata: Dict[str, Any] = {}
-        self.tabs: List[Any] = []
-        self.current = None
-        self.setups: Dict[Any, asyncio.Future] = {}
-        self.cdp: Dict[Any, Any] = {}
-        #: per page: frame -> (elements handle, numbers handle, url) of the latest list, and items by number
-        self.snapshots: Dict[Any, Dict[str, Any]] = {}
-        self.activity: Dict[Any, List[int]] = {}
+        self._states: Dict[str, AgentState] = {}
+        self._pages: Dict[Any, AgentState] = {}
+        self._setups: Dict[Any, asyncio.Future] = {}
+        self._page_creation_lock = asyncio.Lock()
+        self._pending_page_owner: Optional[AgentState] = None
+        self._agent_context: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("browser_agent", default=None)
+        self._start_agent_id = self._valid_agent_id(environ.get(AGENT_ID_ENV, MAIN_AGENT_ID))
+        self._start_agent_name = self._valid_agent_name(environ.get(AGENT_NAME_ENV, ""))
+        self._selected_agent_id = self._start_agent_id
+        self._state_for(self._start_agent_id, self._start_agent_name)
         self.local_storage: Dict[str, List[Dict[str, str]]] = {}
-        self.steps: List[Dict[str, Any]] = []
-        self.step_count = 0
-        #: per frame: (document address, element handle) of fields typed from the environment
-        self.masked: Dict[Any, List[Tuple[str, Any]]] = {}
-        #: values typed from the environment or by the user this turn; no answer of this host carries them
-        self.hidden = _format.HiddenValues()
-        #: values typed from the environment only: the live view's address line, which the user reads, masks these
-        self.env_hidden = _format.HiddenValues()
         self.live = _livehub.LiveHub(self)
-        self.notes: List[str] = []
-        self.acting = False
         self.crashed = False
-        self.lock = asyncio.Lock()
-        self.last_used = time.monotonic()
+        self.browser_lock = asyncio.Lock()
+        self.slot_condition = asyncio.Condition()
+        self.command_condition = asyncio.Condition()
+        self._active_commands = 0
+        self._closing = False
         self.stopped = asyncio.Event()
         self.shot_count = 0
+
+    @staticmethod
+    def _valid_agent_id(value: str) -> str:
+        return value if re.fullmatch(AGENT_ID_PATTERN, value or "") else MAIN_AGENT_ID
+
+    @staticmethod
+    def _valid_agent_name(value: str) -> str:
+        return value if value and len(value) <= AGENT_NAME_MAX_CHARS and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value) else ""
+
+    def _state_for(self, agent_id: str, name: str = "") -> AgentState:
+        state = self._states.get(agent_id)
+        if state is None:
+            state = AgentState(agent_id, name)
+            self._states[agent_id] = state
+        elif name and not state.name:
+            state.name = name
+        return state
+
+    def _active_state(self) -> AgentState:
+        agent_id = self._agent_context.get() or self._selected_agent_id
+        return self._state_for(agent_id)
+
+    # Existing browser operations use these names. Context-local properties
+    # make their state agent-scoped without duplicating every operation.
+    def _state_property(name: str):
+        def get(host: "Host") -> Any:
+            return getattr(host._active_state(), name)
+        def set_(host: "Host", value: Any) -> None:
+            setattr(host._active_state(), name, value)
+        return property(get, set_)
+
+    tabs = _state_property("tabs")
+    current = _state_property("current")
+    setups = _state_property("setups")
+    cdp = _state_property("cdp")
+    snapshots = _state_property("snapshots")
+    activity = _state_property("activity")
+    steps = _state_property("steps")
+    step_count = _state_property("step_count")
+    masked = _state_property("masked")
+    hidden = _state_property("hidden")
+    env_hidden = _state_property("env_hidden")
+    notes = _state_property("notes")
+    acting = _state_property("acting")
+    lock = _state_property("lock")
+    last_used = _state_property("last_used")
+
+    def _request_agent(self, request: Dict[str, Any]) -> AgentState:
+        raw = request.get("agent")
+        if not isinstance(raw, dict):
+            raw = request.get("args", {}).get("agent") if isinstance(request.get("args"), dict) else None
+        if not isinstance(raw, dict):
+            raw = {"id": self._start_agent_id, "name": self._start_agent_name}
+        agent_id = self._valid_agent_id(raw.get("id") if isinstance(raw.get("id"), str) else MAIN_AGENT_ID)
+        name = self._valid_agent_name(raw.get("name") if isinstance(raw.get("name"), str) else "")
+        if agent_id == MAIN_AGENT_ID:
+            name = ""
+        return self._state_for(agent_id, name)
+
+    def _memory_available_mib(self) -> Optional[int]:
+        """Return the VM's bounded available memory, when procfs exposes it."""
+        try:
+            for line in Path("/proc/meminfo").read_text("utf-8").splitlines():
+                if line.startswith("MemAvailable:"):
+                    value = line.split()[1]
+                    return int(value) // 1024
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+
+    def _check_memory(self) -> None:
+        available = self._memory_available_mib()
+        if available is not None and available < MEMORY_SAFE_MIB + TAB_MEMORY_RESERVE_MIB:
+            raise HostError(BROWSER_MEMORY_LOW_CODE,
+                            f"The Workspace has about {available} MiB available; opening another tab would cross the safe memory line. "
+                            "Close a tab or try again later.")
+
+    async def _acquire_slot(self, state: AgentState) -> None:
+        if state.slot:
+            state.last_used = time.monotonic()
+            return
+        deadline = time.monotonic() + SLOT_WAIT_SECONDS
+        async with self.slot_condition:
+            while True:
+                self._expire_agents_locked()
+                holders = sum(1 for candidate in self._states.values() if candidate.slot)
+                if holders < BROWSER_AGENT_SLOTS:
+                    state.slot = True
+                    state.last_used = time.monotonic()
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise HostError(BROWSER_BUSY_CODE,
+                                    f"The browser is busy with {holders} agents (maximum {BROWSER_AGENT_SLOTS}); try again later.")
+                try:
+                    await asyncio.wait_for(self.slot_condition.wait(), remaining)
+                except asyncio.TimeoutError:
+                    raise HostError(BROWSER_BUSY_CODE,
+                                    f"The browser is busy with {holders} agents (maximum {BROWSER_AGENT_SLOTS}); try again later.") from None
+
+    def _expire_agents_locked(self) -> None:
+        now = time.monotonic()
+        for state in list(self._states.values()):
+            if state.slot and state.agent_id != MAIN_AGENT_ID and now - state.last_used > AGENT_IDLE_SECONDS and state.expiry_task is None:
+                state.expiry_task = asyncio.create_task(self._expire_agent(state, state.last_used))
+
+    def _agent_held_by_user(self, agent_id: str) -> bool:
+        held = getattr(self.live, "agent_held_by_user", None)
+        if not callable(held):
+            return False
+        try:
+            return held(agent_id) is True
+        except Exception:  # noqa: BLE001 - a missing/old live hub cannot block cleanup
+            return False
+
+    async def _expire_agent(self, state: AgentState, observed_last_used: float) -> None:
+        try:
+            async with state.lock:
+                if (not state.slot or state.last_used != observed_last_used or
+                        time.monotonic() - state.last_used <= AGENT_IDLE_SECONDS or
+                        self._agent_held_by_user(state.agent_id)):
+                    return
+                async with self.browser_lock:
+                    # The lease may have been released and reacquired while the
+                    # expiry task waited. Never close that new lease's tabs.
+                    if (not state.slot or state.last_used != observed_last_used or
+                            self._agent_held_by_user(state.agent_id)):
+                        return
+                    await self._close_agent_tabs(state)
+                    state.slot = False
+                    state.notes.append("The browser slot expired after two minutes without an action; its tabs were closed.")
+                    async with self.slot_condition:
+                        self.slot_condition.notify_all()
+        finally:
+            state.expiry_task = None
+
+    async def _close_agent_tabs(self, state: AgentState) -> None:
+        for page in list(state.tabs):
+            try:
+                await asyncio.wait_for(page.close(), 5)
+            except Exception:  # noqa: BLE001 - expiry is best effort
+                pass
+        state.current = None
+
+    async def release_agent(self, agent_id: str, *, close_tabs: bool = True) -> None:
+        state = self._states.get(agent_id)
+        if state is None:
+            return
+        async with state.lock:
+            async with self.browser_lock:
+                # Control can arrive while this release waits for either lock.
+                if self._agent_held_by_user(agent_id):
+                    raise _livehub.UserInControl()
+                if not state.slot:
+                    return
+                if close_tabs and agent_id != MAIN_AGENT_ID:
+                    await self._close_agent_tabs(state)
+                state.slot = False
+                async with self.slot_condition:
+                    self.slot_condition.notify_all()
+
+    async def _enter_command(self) -> None:
+        async with self.command_condition:
+            while self._closing:
+                await self.command_condition.wait()
+            self._active_commands += 1
+
+    async def _leave_command(self) -> None:
+        async with self.command_condition:
+            self._active_commands = max(0, self._active_commands - 1)
+            self.command_condition.notify_all()
+
+    async def _begin_browser_close(self) -> None:
+        async with self.command_condition:
+            # No await between checking every agent and closing admission. The
+            # live hub checks this gate before starting Take control or a handoff.
+            if any(self._agent_held_by_user(agent) for agent in self._states):
+                raise _livehub.UserInControl()
+            self._closing = True
+            # The caller is itself counted as an active command.
+            while self._active_commands > 1:
+                await self.command_condition.wait()
+
+    async def _end_browser_close(self) -> None:
+        async with self.command_condition:
+            self._closing = False
+            self.command_condition.notify_all()
+
+    def live_targets(self) -> List[_livehub.Target]:
+        """Each browsing agent's current tab, action lock and state for the live view."""
+        result = []
+        for state in self._states.values():
+            page = state.current if state.current is not None and not state.current.is_closed() else None
+            if page is None and not state.slot:
+                continue
+            result.append(_livehub.Target(state.agent_id, state.name or None, page, state.lock, int(state.last_used * 1000),
+                                          cdp=state.cdp, hidden=state.hidden, env_hidden=state.env_hidden,
+                                          masked=state.masked, steps=state.steps,
+                                          touch=lambda used=state: setattr(used, "last_used", time.monotonic())))
+        return result
+
+    def select_live_agent(self, agent_id: str) -> None:
+        self._selected_agent_id = self._valid_agent_id(agent_id)
+        self._state_for(self._selected_agent_id)
 
     # Lifecycle -------------------------------------------------------------------------------------------------
 
@@ -197,7 +434,7 @@ class Host:
         self.context = await self.browser.new_context(no_viewport=True, accept_downloads=True, storage_state=state)
         self.context.on("page", self._on_page)
         self._reset_steps()
-        page = await self.context.new_page()
+        page = await self._new_page(self._state_for(self._start_agent_id, self._start_agent_name))
         await self._setup(page)
         self.current = page
         restored = ", ".join(name[: -len(".json")] for name in sorted(self.store.tracked)) or "none"
@@ -244,33 +481,69 @@ class Host:
     # Pages -----------------------------------------------------------------------------------------------------
 
     def _on_page(self, page: Any) -> None:
+        # Playwright invokes this callback from its transport task, outside the
+        # request's contextvar. Only the explicit page-creation owner or the
+        # opener's popup callback may assign a page; an unknown page is ignored
+        # until its owner is known.
+        state = self._pages.get(page) or self._pending_page_owner
+        if state is None:
+            return
+        self._pages[page] = state
         future = self._setup_future(page)
-        if self.acting:
+        if state.acting:
             # A page the agent's own action opened becomes the current tab.
             def adopt(_: Any) -> None:
                 if not page.is_closed():
-                    self.current = page
-                    self.notes.append("The action opened a new tab; it is now the current tab.")
+                    state.current = page
+                    state.notes.append("The action opened a new tab; it is now the current tab.")
             future.add_done_callback(adopt)
 
+    def _on_popup(self, opener: Any, page: Any) -> None:
+        state = self._pages.get(opener)
+        if state is None:
+            return
+        self._pages[page] = state
+        future = self._setup_future(page)
+        if state.acting:
+            def adopt(_: Any) -> None:
+                if not page.is_closed():
+                    state.current = page
+                    state.notes.append("The action opened a popup; it is now the current tab.")
+            future.add_done_callback(adopt)
+
+    async def _new_page(self, state: AgentState) -> Any:
+        """Create a page with its owner registered before Playwright emits `page`."""
+        async with self._page_creation_lock:
+            previous = self._pending_page_owner
+            self._pending_page_owner = state
+            try:
+                page = await self.context.new_page()
+                self._pages.setdefault(page, state)
+                return page
+            finally:
+                self._pending_page_owner = previous
+
     def _setup_future(self, page: Any) -> asyncio.Future:
-        if page not in self.setups:
+        if page not in self._setups:
             future = asyncio.ensure_future(self._prepare(page))
             # A page that closes while it is set up fails here; whoever awaits it sees that, nobody else must.
             future.add_done_callback(lambda done: done.cancelled() or done.exception())
-            self.setups[page] = future
-        return self.setups[page]
+            self._setups[page] = future
+        return self._setups[page]
 
     async def _setup(self, page: Any) -> None:
         await self._setup_future(page)
 
     async def _prepare(self, page: Any) -> None:
+        state = self._pages.get(page)
+        if state is None:
+            raise HostError("browser_page_unowned", "The browser page has no agent owner.")
         # The CDP session must stay attached: its user agent override ends with it.
         session = await self.context.new_cdp_session(page)
         await session.send("Emulation.setUserAgentOverride", {"userAgent": self.user_agent, "userAgentMetadata": self.metadata})
-        self.cdp[page] = session
+        state.cdp[page] = session
         counters = [0, 0]  # requests seen, requests in flight
-        self.activity[page] = counters
+        state.activity[page] = counters
 
         def started(_: Any) -> None:
             counters[0] += 1
@@ -286,30 +559,43 @@ class Host:
         page.on("dialog", self._on_dialog)
         page.on("download", self._on_download)
         page.on("close", self._on_close)
-        if page not in self.tabs:
-            self.tabs.append(page)
+        page.on("popup", lambda popup, opener=page: self._on_popup(opener, popup))
+        if page not in state.tabs:
+            state.tabs.append(page)
 
     def _on_close(self, page: Any) -> None:
-        self.tabs = [tab for tab in self.tabs if tab is not page]
-        self.snapshots.pop(page, None)
-        self.masked = {frame: fields for frame, fields in self.masked.items() if frame.page is not page}
-        self.cdp.pop(page, None)
-        self.activity.pop(page, None)
-        self.setups.pop(page, None)
-        if self.current is page:
-            self.current = self.tabs[-1] if self.tabs else None
+        state = self._pages.pop(page, None)
+        if state is None:
+            return
+        state.tabs = [tab for tab in state.tabs if tab is not page]
+        state.snapshots.pop(page, None)
+        state.masked = {frame: fields for frame, fields in state.masked.items() if frame.page is not page}
+        state.cdp.pop(page, None)
+        state.activity.pop(page, None)
+        self._setups.pop(page, None)
+        if state.current is page:
+            state.current = state.tabs[-1] if state.tabs else None
 
     async def _on_dialog(self, dialog: Any) -> None:
+        page = getattr(dialog, "page", None)
+        state = self._pages.get(page)
+        if state is None:
+            return
         kind = dialog.type
         accept = kind in ("alert", "beforeunload")
         try:
             await (dialog.accept() if accept else dialog.dismiss())
         except PlaywrightError:
             return
-        self.notes.append(f"A {kind} dialog was {'accepted' if accept else 'dismissed'}: {self._said(dialog.message, 200)}.")
+        state.notes.append(f"A {kind} dialog was {'accepted' if accept else 'dismissed'}: "
+                          f"{_format.quoted(state.hidden.text(dialog.message or ''), 200)}.")
 
     async def _on_download(self, download: Any) -> None:
-        name = _sessions.safe_basename(self.hidden.text(download.suggested_filename or "download"))[:120] or "download"
+        page = getattr(download, "page", None)
+        state = self._pages.get(page)
+        if state is None:
+            return
+        name = _sessions.safe_basename(state.hidden.text(download.suggested_filename or "download"))[:120] or "download"
         try:
             self.downloads_dir.mkdir(parents=True, exist_ok=True)
             target = self.downloads_dir / name
@@ -320,10 +606,10 @@ class Host:
                 target = self.downloads_dir / f"{stem}-{index}{suffix}"
             await download.save_as(str(target))
         except (OSError, PlaywrightError) as error:
-            self.notes.append(f"A download could not be saved ({self._error_text(error, 120)}).")
+            state.notes.append(f"A download could not be saved ({_format.page_string(_first_line(error), state.hidden, 120)}).")
             return
-        self.notes.append(f"Downloaded {target}.")
-        step = self._record("download", target.name, getattr(self.current, "url", None))
+        state.notes.append(f"Downloaded {target}.")
+        step = self._record("download", target.name, getattr(page, "url", None), state=state)
         await self._finish_step(step, None)
 
     async def _page(self) -> Any:
@@ -332,7 +618,8 @@ class Host:
             if open_tabs:
                 self.current = open_tabs[-1]
             else:
-                page = await self.context.new_page()
+                self._check_memory()
+                page = await self._new_page(self._active_state())
                 await self._setup(page)
                 self.current = page
         await self._setup(self.current)
@@ -539,13 +826,15 @@ class Host:
     def _reset_steps(self) -> None:
         self.steps, self.step_count = [], 0
 
-    def _record(self, action: str, target: Optional[str], url: Optional[str]) -> Dict[str, Any]:
+    def _record(self, action: str, target: Optional[str], url: Optional[str], *, state: Optional[AgentState] = None) -> Dict[str, Any]:
         """One step of the turn's list (kept in memory only), with the page's address and no query."""
-        self.step_count += 1
-        step = {"n": self.step_count, "action": action, "target": self.hidden.text(target) if target else target,
-                "url": _format.page_address(self.hidden.text(url) if url else url), "at": _now()}
-        self.steps.append(step)
-        del self.steps[:-MAX_STEPS]
+        owner = state or self._active_state()
+        owner.step_count += 1
+        step = {"n": owner.step_count, "action": action, "target": owner.hidden.text(target) if target else target,
+                "url": _format.page_address(owner.hidden.text(url) if url else url), "at": _now(),
+                "agent": owner.name or None}
+        owner.steps.append(step)
+        del owner.steps[:-MAX_STEPS]
         return step
 
     def _drop_step(self, step: Dict[str, Any]) -> None:
@@ -568,7 +857,7 @@ class Host:
         """
         cookies = await self.context.cookies()
         sites = self.store.sites()
-        for page in [tab for tab in self.tabs if not tab.is_closed()]:
+        for page in [tab for tab in self._pages if not tab.is_closed()]:
             for frame in page.frames:
                 try:
                     parts = urlsplit(frame.url)
@@ -606,28 +895,52 @@ class Host:
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         response: Dict[str, Any]
+        context_token: Optional[contextvars.Token] = None
+        close_gate = False
         try:
             raw = await asyncio.wait_for(reader.readline(), 30)
             request = json.loads(raw.decode("utf-8"))
             if not isinstance(request, dict) or request.get("v") != PROTOCOL or not isinstance(request.get("op"), str) \
                     or not isinstance(request.get("args", {}), dict):
                 raise HostError("protocol_error", "Unsupported request.")
+            state = self._request_agent(request)
+            context_token = self._agent_context.set(state.agent_id)
             if request["op"] == "live":
                 if self.crashed or self.stopped.is_set():
                     raise HostError("browser_crashed", "The browser stopped.")
                 # The connection stays open; the hub owns and closes it.
-                await self.live.serve(reader, writer, request.get("args", {}))
+                args = dict(request.get("args", {}))
+                args.setdefault("agent", state.agent_id)
+                await self.live.serve(reader, writer, args)
                 return
-            # One action at a time, and none while the user holds the browser (checked again under the lock).
-            async with self.live.agent_action(self.lock, control_free=request["op"] in CONTROL_FREE_OPS):
-                self.last_used = time.monotonic()
-                # The first page action after the user gave the browser back says so instead of running, so neither a
-                # script that drops results nor a plan made before the user's changes acts on the page they left.
-                note = None if request["op"] in CONTROL_FREE_OPS else self.live.take_note()
-                if note:
-                    raise HostError("user_returned_control", note + " " + USER_RETURNED)
-                response = {"ok": True, "result": await self.dispatch(request["op"], request.get("args", {}))}
-                self.last_used = time.monotonic()
+            op = request["op"]
+            if op == "release":
+                response = {"ok": True, "result": await self.dispatch(op, request.get("args", {}))}
+            else:
+                # Taking the per-agent lock before admission serializes slot
+                # acquisition, release and tab cleanup with that agent's work.
+                async with self.live.agent_action(state.lock, control_free=op in CONTROL_FREE_OPS, agent=state.agent_id):
+                    note = None if op in CONTROL_FREE_OPS else self.live.take_note(state.agent_id)
+                    if note:
+                        raise HostError("user_returned_control", note + " " + USER_RETURNED)
+                    if op not in CONTROL_FREE_OPS:
+                        await self._acquire_slot(state)
+                    await self._enter_command()
+                    try:
+                        self.last_used = time.monotonic()
+                        if op == "close":
+                            await self._begin_browser_close()
+                            close_gate = True
+                            async with self.browser_lock:
+                                response = {"ok": True, "result": await self.dispatch(op, request.get("args", {}))}
+                        elif op == "save_session":
+                            async with self.browser_lock:
+                                response = {"ok": True, "result": await self.dispatch(op, request.get("args", {}))}
+                        else:
+                            response = {"ok": True, "result": await self.dispatch(op, request.get("args", {}))}
+                        self.last_used = time.monotonic()
+                    finally:
+                        await self._leave_command()
         except _livehub.UserInControl:
             response = {"ok": False, "error": {"code": "user_in_control", "message": USER_IN_CONTROL}}
         except HostError as error:
@@ -645,8 +958,16 @@ class Host:
             pass
         finally:
             writer.close()
+            if context_token is not None:
+                self._agent_context.reset(context_token)
         if response.get("result", {}).get("closing"):
-            await self.stop()
+            try:
+                await self.stop()
+            finally:
+                if close_gate:
+                    await self._end_browser_close()
+        elif close_gate:
+            await self._end_browser_close()
 
     async def dispatch(self, op: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if self.crashed:
@@ -693,16 +1014,19 @@ class Host:
     # Operations ------------------------------------------------------------------------------------------------
 
     async def op_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        page = await self._page()
+        state = self._active_state()
+        page = state.current if state.current is not None and not state.current.is_closed() else None
         markers = None
-        if args.get("markers"):
+        if args.get("markers") and page is not None:
             markers = self.hidden.mask(await page.evaluate(_dom.MARKERS))
         data = {"version": self.version, "pinned": _pinned_chromium(), "locale": self.locale, "timezone": self.timezone,
                 "userAgentHeadless": "Headless" in self.user_agent, "tabs": len([t for t in self.tabs if not t.is_closed()]),
-                "sessions": sorted(self.store.tracked), "skippedSessions": sorted(self.store.skipped), "steps": self.step_count,
-                "markers": markers}
+                "otherAgentTabs": sum(len([tab for tab in state.tabs if not tab.is_closed()]) for state in self._states.values()
+                                       if state is not self._active_state()),
+                "agent": state.agent_id, "sessions": sorted(self.store.tracked),
+                "skippedSessions": sorted(self.store.skipped), "steps": self.step_count, "markers": markers}
         lines = [f"Chromium {self.version} (pinned {data['pinned'] or 'unknown'}), language {self.locale}, time zone {self.timezone}.",
-                 f"Open tabs: {data['tabs']}. Saved sessions kept current: {', '.join(data['sessions']) or 'none'}."]
+                 f"Open tabs: {data['tabs']} for this agent (other agents: {data['otherAgentTabs']}). Saved sessions kept current: {', '.join(data['sessions']) or 'none'}."]
         if data["skippedSessions"]:
             lines.append(f"Saved session files not loaded: {', '.join(data['skippedSessions'])}.")
         for scope in ("page", "worker") if markers else ():
@@ -970,7 +1294,12 @@ class Host:
                 title = ""
             tabs.append({"index": index, "title": title, "url": self.hidden.text(_format.without_userinfo(tab.url)),
                          "current": tab is self.current})
-        return {"data": tabs, "text": _format.render_tabs(tabs)}
+        others = sum(len([tab for tab in state.tabs if not tab.is_closed()]) for state in self._states.values()
+                     if state is not self._active_state())
+        text = _format.render_tabs(tabs)
+        if others:
+            text += f"\nOther agents have {others} tab{'s' if others != 1 else ''}; they are not available to you."
+        return {"data": {"tabs": tabs, "otherAgents": others}, "text": text}
 
     def _tab(self, args: Dict[str, Any]) -> Any:
         tabs = [tab for tab in self.tabs if not tab.is_closed()]
@@ -990,7 +1319,20 @@ class Host:
 
     async def op_new_tab(self, args: Dict[str, Any]) -> Dict[str, Any]:
         url = _web_url(_text(args, "url", 4096)) if args.get("url") else None
-        page = await self.context.new_page()
+        self._check_memory()
+        state = self._active_state()
+        while len([tab for tab in state.tabs if not tab.is_closed()]) >= MAX_AGENT_TABS:
+            oldest = next((tab for tab in state.tabs if not tab.is_closed() and tab is not state.current), None)
+            if oldest is None:
+                oldest = next((tab for tab in state.tabs if not tab.is_closed()), None)
+            if oldest is None:
+                break
+            old_url = oldest.url
+            await oldest.close()
+            step = self._record("close_tab", "oldest tab", old_url)
+            await self._finish_step(step, state.current)
+            state.notes.append(f"Closed the oldest tab to keep this agent's tab limit at {MAX_AGENT_TABS}: {_format.where(old_url) or 'blank page'}.")
+        page = await self._new_page(state)
         await self._setup(page)
         self.current = page
 
@@ -1032,11 +1374,19 @@ class Host:
         return {"step": step, "data": saved,
                 "text": f"{verb}: /workspace/secrets/browser/{name} ({saved['bytes']} bytes). It stays current while you browse in this turn."}
 
-    async def save_site_session(self) -> Optional[str]:
-        """After the user finished a handoff: the current site's sign-in, kept current from now on (`op_save_session`).
+    async def save_site_session(self, agent: str = MAIN_AGENT_ID) -> Optional[str]:
+        """After the user's handoff, save that agent's site and keep it current (`op_save_session`).
 
-        The site's name, or None when the tab shows no site or the save failed; the previous version then stays.
+        Returns the site's name, or None if the tab has no site or saving failed; the previous version then stays.
+        Two agents saving one site keep the last complete save.
         """
+        token = self._agent_context.set(self._valid_agent_id(agent))
+        try:
+            return await self._save_site_session()
+        finally:
+            self._agent_context.reset(token)
+
+    async def _save_site_session(self) -> Optional[str]:
         try:
             await asyncio.wait_for(self.lock.acquire(), 20)
         except asyncio.TimeoutError:
@@ -1064,8 +1414,17 @@ class Host:
         return {"data": steps, "text": _format.render_steps(steps)}
 
     async def op_close(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        if self._active_state().agent_id != MAIN_AGENT_ID:
+            raise HostError("browser_release_required", "Only the main agent can close the shared browser; run `release` to free this agent's slot.")
         saved = await self._autosave()
         return {"closing": True, "text": "The browser is closed" + (f"; saved {', '.join(saved)}." if saved else ".")}
+
+    async def op_release(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Release this agent's browser slot; other agents keep their tabs."""
+        state = self._active_state()
+        await self.release_agent(state.agent_id)
+        return {"text": "Released this agent's browser slot; its tabs are closed." if state.agent_id != MAIN_AGENT_ID
+                else "Released the main agent's browser slot; its tabs remain open."}
 
 
 def _pinned_chromium() -> Optional[str]:
@@ -1105,8 +1464,12 @@ async def _main() -> int:
     async def idle() -> None:
         while not host.stopped.is_set():
             await asyncio.sleep(15)
+            expired = [(state, state.last_used) for state in host._states.values()
+                       if state.slot and state.agent_id != MAIN_AGENT_ID and time.monotonic() - state.last_used > AGENT_IDLE_SECONDS]
+            await asyncio.gather(*(host._expire_agent(state, observed) for state, observed in expired))
             # A browser the user watches or holds is in use.
-            if not host.lock.locked() and not host.live.busy() and time.monotonic() - host.last_used > IDLE_SECONDS:
+            if not any(state.lock.locked() for state in host._states.values()) and not host.live.busy() and \
+                    time.monotonic() - max((state.last_used for state in host._states.values()), default=time.monotonic()) > IDLE_SECONDS:
                 await host.stop()
 
     watcher = asyncio.ensure_future(idle())

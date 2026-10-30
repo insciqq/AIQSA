@@ -88,6 +88,9 @@ import { AUTOMATION_WEBHOOKS_MIGRATION, automationWebhooksFixtureSql, automation
 import {
   TOOL_LIMITS_OFF_MIGRATION, toolLimitsOffFixtureSql, toolLimitsOffProofSql, toolLimitsOffRepeatProofSql
 } from "./tool-limits-off-adoption";
+import {
+  WORKSPACE_RUN_ATTACHMENTS_MIGRATION, workspaceRunAttachmentsFixtureSql, workspaceRunAttachmentsProofSql
+} from "./workspace-run-attachments-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -102,6 +105,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  SUBAGENT_FOLLOWUP_BOUNDS_MIGRATION,
+  subagentFollowupBoundsFixtureSql,
+  subagentFollowupBoundsProofSql
+} from "./subagent-followup-bounds-adoption";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-target";
@@ -7924,6 +7932,13 @@ function main(
   // Tool limits go off for everyone, limits an administrator typed included; their numbers stay for turning them on.
   runForwardAdoptionProof(shadowDatabase, migrations, TOOL_LIMITS_OFF_MIGRATION,
     toolLimitsOffFixtureSql, toolLimitsOffProofSql, toolLimitsOffRepeatProofSql);
+  // Expand only: a run that owns its session mid-turn becomes its one attached run; previous-release writers keep
+  // claiming sessions by owner alone, which the application still accepts while a session has no attachment.
+  runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_RUN_ATTACHMENTS_MIGRATION,
+    workspaceRunAttachmentsFixtureSql, workspaceRunAttachmentsProofSql, workspaceRunAttachmentsProofSql);
+  // Widen only: rows at the old follow-up bound stay, the widened bound holds, and the completion guard still refuses.
+  runForwardAdoptionProof(shadowDatabase, migrations, SUBAGENT_FOLLOWUP_BOUNDS_MIGRATION,
+    subagentFollowupBoundsFixtureSql, subagentFollowupBoundsProofSql, subagentFollowupBoundsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

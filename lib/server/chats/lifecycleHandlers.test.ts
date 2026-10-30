@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
-import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import { ActiveRunConflictError, SubagentsRunningConflictError } from "../runs/runRepositoryContract";
 import {
   createArchiveChatExplicitHandler,
   createGetArchivedChatHandler,
@@ -180,6 +180,21 @@ describe("chat lifecycle handlers", () => {
     expect(active.status).toBe(409);
     await expect(active.json()).resolves.toEqual({ error: "active_run_in_progress" });
     expectPrivate(active);
+
+    // Only background sub-agents run: a refusal the user resolves by stopping them.
+    const subagents = await createArchiveChatExplicitHandler({
+      repository: repository({
+        setArchived: async () => {
+          throw new SubagentsRunningConflictError();
+        }
+      }),
+      resolveAuth: auth.resolveAuth
+    })(request("/api/chats/chat-1/archive", {
+      body: JSON.stringify({ expectedChatRevision: 4 }),
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    expect(subagents.status).toBe(409);
+    await expect(subagents.json()).resolves.toEqual({ error: "subagents_running" });
   });
 
   it("serves Archived list, preview, pages, and source resolution as owner-private reads", async () => {

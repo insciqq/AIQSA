@@ -64,6 +64,8 @@ export type ShellSessionView = {
   telegramAvailable?: boolean;
   dismissNotice(): void;
   notice: Notice | null;
+  /** A sub-agent of the open chat ended while its main agent was idle: reads the chat again for a wake-up answer. */
+  onActiveChatSubagentsSettled?(chatId: string): void;
   shareActiveBranch(): Promise<void> | void;
 };
 

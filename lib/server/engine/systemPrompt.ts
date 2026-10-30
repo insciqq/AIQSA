@@ -10,7 +10,7 @@ import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import type { RunTool } from "../tools/types";
 import { workspaceSecretVariables } from "../workspace/secrets/manifest";
 import type { RunSecretScope, RunSecretSource } from "../workspace/secrets/runSecrets";
-import { systemPromptFor, turnContextText, type SavedSecretFact } from "./prompts";
+import { systemPromptFor, turnContextText, type SavedSecretFact, type SubagentPromptFacts } from "./prompts";
 
 /**
  * The system prompt of a native run's requests (`systemPromptFor`): the
@@ -101,6 +101,10 @@ export type NativeSystemPromptInput = Readonly<{
   scope: RunSecretScope;
   /** The saved secrets `read_secret` reads; they go into the environment when the tool is offered. */
   secrets?: RunSecretSource;
+  /** In place of the AIQSA self-description: a sub-agent's role (`SUBAGENT_ROLE_SECTION`). */
+  selfService?: string;
+  /** What the main agent's "# Sub-agents" section lists when `call_subagent` is offered. */
+  subagents?: SubagentPromptFacts;
   /** The admitted answer route, which picks the family prompt. */
   snapshot: Pick<ProviderExecutionSnapshot, "providerFamily"> & Readonly<{ model: Readonly<{ upstreamModelId: string }> }>;
   /** The run's tools as its registry offers them. */
@@ -138,6 +142,8 @@ export async function withNativeSystemPrompt(input: NativeSystemPromptInput): Pr
   const prompt = systemPromptFor({ modelId: request.modelId, provider: input.snapshot.providerFamily,
     upstreamModelId: input.snapshot.model.upstreamModelId }, {
     environment: { now: input.now, timeZone, ...(secrets ? { secrets } : {}) },
+    ...(input.selfService !== undefined ? { selfService: input.selfService } : {}),
+    ...(input.subagents ? { subagents: input.subagents } : {}),
     tools,
     webSearch: request.searchPlan.options.length > 0,
     workspace: request.workspace?.enabled === true

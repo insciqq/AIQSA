@@ -7,6 +7,7 @@ import {
   MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
   mcpApprovalContinuationText
 } from "../../contracts/mcpApprovals";
+import { SUBAGENT_CALLBACK_TURN_KIND } from "../../contracts/subagents";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
@@ -43,6 +44,8 @@ import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
+import { signalSubagentCallbackFlush } from "../push/runTerminalSignal";
+import { SubagentCallbackClaimConflictError } from "./subagentBackground/store";
 import {
   engineAdmissionRefusal, nativeRunResponse, nativeRunServices, recoverUserNativeRuns, type NativeEngineHandlerDeps
 } from "../engine/handlerSupport";
@@ -94,6 +97,7 @@ export type RunHandlerDeps = {
     findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
     kick(): void;
   }>;
+  mcpGuard?: import("../mcp/guard").McpGuardService;
   vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
   artifacts?: import("../artifacts/service").ArtifactService;
@@ -132,6 +136,15 @@ export type RunHandlerDeps = {
   skillCatalogRelevance?: RunPreparationDeps["skillCatalogRelevance"];
   skillTools?: import("../skills/toolService").SkillToolService;
   storage?: StorageAdapter;
+  subagentModels?: RunPreparationDeps["subagentModels"];
+  /**
+   * Server-only: the send is a wake-up turn for an idle main agent, written
+   * by the server from these background sub-agent callbacks
+   * (`lib/server/runs/subagentBackground/wakeUp.ts`): its text replaces the
+   * body's, its user message is a `subagent_callback` turn, it counts toward
+   * budgets but no message limit, and its admission claims the callbacks.
+   */
+  subagentWakeUp?: Readonly<{ text: string; turnIds: readonly string[] }>;
   /**
    * Server-only: the sends come from the Telegram bridge. Their native runs
    * take no self-service tools, whose confirmation cards and Undo the bridge
@@ -585,13 +598,18 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "personal_draft_conflict" }, { status: 409 });
       }
     }
+    const wakeUp = deps.subagentWakeUp;
+    // A wake-up turn is the server's alone: it never carries a browser's system turn.
+    if (wakeUp && body?.systemTurn !== undefined) return Response.json({ error: "system_turn_invalid" }, { status: 400 });
     const continuationBody = await approvalContinuationBody(deps, body, chat.id, auth.userId);
     if (continuationBody === "invalid") return Response.json({ error: "system_turn_invalid" }, { status: 400 });
     if (continuationBody === "unavailable") {
       return Response.json({ error: MCP_APPROVAL_CONTINUATION_UNAVAILABLE }, { status: 409 });
     }
-    const sendBody = continuationBody ?? body;
+    const sendBody = wakeUp ? { ...body, content: { blocks: [{ text: wakeUp.text, type: "text" }] } } : continuationBody ?? body;
 
+    // One active run per thread of the chat: background sub-agents run beside the main agent's answer and never hold
+    // off the user's next message (`findRecentActiveRunForChat` reads only the main agent's runs).
     const activeRun = await deps.repository.findRecentActiveRunForChat({
       chatId: chat.id, since: new Date(Date.now() - activeRunGateWindowMs), userId: auth.userId
     });
@@ -612,12 +630,16 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const expectedActiveLeafId = await storedExpectedLeaf(deps, chat, requestedActiveLeaf.value);
     // Budgets bind every run; message windows count only the user's own messages.
     const usageRefusal = await usageLimitRefusal(deps, {
-      interactive: !deps.scheduledOccurrence, stage: "send", userId: auth.userId
+      interactive: !deps.scheduledOccurrence && !wakeUp, stage: "send", userId: auth.userId
     });
     if (usageRefusal) return usageRefusal;
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
       body: sendBody,
+      serverAuthoredInput: Boolean(continuationBody) || Boolean(wakeUp),
+      ...(continuationBody && body?.systemTurn && typeof body.systemTurn === "object" &&
+        typeof (body.systemTurn as Record<string, unknown>).approvalId === "string"
+        ? { mcpApprovalId: (body.systemTurn as { approvalId: string }).approvalId } : {}),
       skillCatalogDecision: {
         operationKey: admissionKey,
         authorizeScope: async () => {
@@ -706,6 +728,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         } : {}),
         signal: request.signal,
         ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
+        ...(wakeUp ? { subagentCallbackClaim: { turnIds: wakeUp.turnIds }, systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND } : {}),
         userId: auth.userId
       });
     } catch (error) {
@@ -718,6 +741,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       if (error instanceof WorkspaceFollowupError) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
+      if (error instanceof SubagentCallbackClaimConflictError) return Response.json({ error: "subagent_callback_claimed" }, { status: 409 });
       if (isActiveRunConflictError(error)) {
         return activeRunInsertConflictResponse(chat.id, deps.repository, auth.userId);
       }
@@ -771,6 +795,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       throw error;
     }
+    // Callbacks of sub-agents that ended while no answer ran go into this one (coalesced, after it starts).
+    signalSubagentCallbackFlush(created.runId);
     if (created.deferredPdf || created.deferredWorkspace) return admittedPdfResponse(deps, created, auth.userId);
     preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(

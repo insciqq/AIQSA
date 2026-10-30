@@ -3,7 +3,7 @@ export const DECISION_UPGRADE_MIGRATION = "20260919140000_decision_upgrade_adopt
 export const decisionUpgradeFixtureSql = `
 UPDATE "SystemModelPolicy" SET "decisionFeaturesJson" = '{"memoryRelevance":false}' WHERE id = 'installation';
 CREATE TABLE "DecisionUpgradePolicyFixture" AS
-  SELECT to_jsonb(policy) AS snapshot FROM "SystemModelPolicy" policy WHERE id = 'installation';
+  SELECT to_jsonb(policy) - 'mcpGuardProviderModelId' - 'mcpGuardReasoningEffort' AS snapshot FROM "SystemModelPolicy" policy WHERE id = 'installation';
 CREATE TABLE "DecisionUpgradeModelsFixture" AS
   SELECT id, to_jsonb(model) AS snapshot FROM "ProviderModel" model;
 `;
@@ -12,7 +12,7 @@ export const decisionUpgradeProofSql = `
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "SystemModelPolicy" policy
     JOIN "DecisionUpgradePolicyFixture" original ON original.snapshot =
-      (to_jsonb(policy) - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
+      (to_jsonb(policy) - 'mcpGuardProviderModelId' - 'mcpGuardReasoningEffort' - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
         - 'visionProviderModelId' - 'visionReasoningEffort'
         - 'speechToTextConnectionId' - 'speechToTextModelId' - 'speechToTextCredentialVersionId'
         - 'speechToTextConfiguredAt')

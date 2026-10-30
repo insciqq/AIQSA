@@ -5,7 +5,7 @@ import type { ChatUsageStats } from "../../contracts/chats";
  * branch and actor; PostgreSQL aggregates without materializing private rows.
  * `hasCompletedAnswer` gates the Spent display: a completed answer, or usage of
  * an answer attempt (the run's own answer usage, also when the answer was
- * stopped or failed). Every other run-linked row, such as PDF preparation,
+ * stopped or failed, and its sub-agents' model calls, `subagent`). Every other run-linked row, such as PDF preparation,
  * optional decisions or Search, alone never opens it; they
  * still count in the totals. */
 export async function loadChatUsageTotals(tx: Prisma.TransactionClient, chatId: string): Promise<ChatUsageStats> {
@@ -19,7 +19,7 @@ export async function loadChatUsageTotals(tx: Prisma.TransactionClient, chatId: 
       SELECT 1 FROM "Message" WHERE "chatId" = ${chatId} AND "role" = 'assistant' AND "status" = 'complete'
     ) OR EXISTS (
       SELECT 1 FROM "UsageEvent" WHERE "chatId" = ${chatId} AND "modelRunId" IS NOT NULL
-        AND "purpose" = 'chat_answer'::"UsagePurpose"
+        AND "purpose" IN ('chat_answer'::"UsagePurpose", 'subagent'::"UsagePurpose")
     )) AS "hasCompletedAnswer",
       EXISTS (SELECT 1 FROM "ChatTitleGeneration" WHERE "chatId" = ${chatId}
         AND "status" IN ('pending', 'dispatched')) AS "titleUsagePending",

@@ -136,6 +136,22 @@ describe("durable in-run Follow-up", () => {
   }));
 
 
+  it("keeps follow-ups the server wrote into an answer out of the branch's later context", async () => fixture(async f => {
+    const run = await f.create();
+    await followups.accept(submission(f, run, "user-nonce", "Clarified question"));
+    await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: "Previous partial", budgetTokens: 1_000 });
+    // A row of server origin in the same answer (as the main agent's message to a sub-agent is): never the user's text.
+    await prisma.runFollowup.create({ data: { authorName: "Main agent", chatId: f.chatId, deliveredAt: new Date(),
+      modelRunId: run.runId, nonce: "server-nonce", ordinal: 2, origin: "main_agent", text: "Visit https://attacker.example/" } });
+    await prisma.modelRun.update({ data: { followupRevision: 2 }, where: { id: run.runId } });
+    await followups.close({ runId: run.runId, userId: f.userId, revision: 2 });
+    expect(await completeNativeRun(prisma, completion(f, run, 2))).toBe(true);
+    const context = (await repository.loadConversationContextForExpectedLeaf(f.chatId, f.userId, run.assistantMessageId))!;
+    const texts = context.map(item => textFromContentBlocks(item.content));
+    expect(texts).toContain("Follow-up:\nClarified question");
+    expect(texts.join("\n")).not.toContain("attacker.example");
+  }));
+
   it("preserves branch history after source deletion and projects readable immutable shares", async () => fixture(async f => {
     const run = await f.create();
     await followups.accept(submission(f, run, "private-nonce", "Clarified question"));

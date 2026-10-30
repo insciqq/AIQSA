@@ -1,17 +1,17 @@
 /**
  * What a usage record paid for, fixed when the record is written. Personal
  * purposes are the work of models a user chose (answers, the Search they
- * enabled, images they asked for) or asked for directly (dictation
- * transcriptions) and count toward that user's budget. System
+ * enabled, images they asked for, the sub-agents an answer ran) or asked for
+ * directly (dictation transcriptions) and count toward that user's budget. System
  * purposes are the work of administrator-assigned system models and count
  * only toward the installation's pooled cap. `other` marks only legacy records
  * whose purpose could not be recovered.
  */
-export const PERSONAL_USAGE_PURPOSES = ["chat_answer", "web_search", "image_generation", "speech_to_text"] as const;
+export const PERSONAL_USAGE_PURPOSES = ["chat_answer", "web_search", "image_generation", "speech_to_text", "subagent"] as const;
 export type PersonalUsagePurpose = (typeof PERSONAL_USAGE_PURPOSES)[number];
 
 export const SYSTEM_USAGE_PURPOSES = [
-  "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
+  "mcp_guard", "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
   "memory_processing", "memory_indexing", "memory_retrieval",
   "knowledge_indexing", "knowledge_retrieval", "model_check", "other"
 ] as const;
@@ -30,15 +30,28 @@ export function isPersonalUsagePurpose(purpose: UsagePurpose): purpose is Person
 
 /**
  * Purposes of a run's own usage attributions: the answer model's work (answer
- * rounds, Agent generation), its Search, and its Knowledge query embeddings.
- * The run's accounting rewrites exactly these rows; every other purpose linked
- * to the run belongs to its own writer.
+ * rounds, Agent generation), its Search, its Knowledge query embeddings, and
+ * its sub-agents' model calls (a foreground sub-agent's within its parent run,
+ * a background one's within its own). The run's accounting rewrites exactly
+ * these rows; every other purpose linked to the run belongs to its own writer.
  */
-export const RUN_USAGE_ATTRIBUTION_PURPOSES = ["chat_answer", "web_search", "knowledge_retrieval"] as const satisfies readonly UsagePurpose[];
+export const RUN_USAGE_ATTRIBUTION_PURPOSES = ["chat_answer", "web_search", "knowledge_retrieval", "subagent"] as const satisfies readonly UsagePurpose[];
 export type RunUsageAttributionPurpose = (typeof RUN_USAGE_ATTRIBUTION_PURPOSES)[number];
 
 export function isRunUsageAttributionPurpose(value: unknown): value is RunUsageAttributionPurpose {
   return (RUN_USAGE_ATTRIBUTION_PURPOSES as readonly unknown[]).includes(value);
+}
+
+/**
+ * Attribution purposes of a chat model's own calls, the answer's and its
+ * sub-agents': priced from the model's answer prices, and settled when the
+ * provider reported the charge (`costReported`, which the database allows
+ * only on these purposes and on the MCP guard's calls).
+ */
+export const CHAT_MODEL_USAGE_PURPOSES = ["chat_answer", "subagent"] as const satisfies readonly RunUsageAttributionPurpose[];
+
+export function isChatModelUsagePurpose(value: unknown): value is (typeof CHAT_MODEL_USAGE_PURPOSES)[number] {
+  return (CHAT_MODEL_USAGE_PURPOSES as readonly unknown[]).includes(value);
 }
 
 const MEMORY_INDEXING_ROLES: ReadonlySet<string> = new Set(["MEMORY_DOCUMENT_EMBED"]);

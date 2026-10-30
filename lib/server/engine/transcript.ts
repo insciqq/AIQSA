@@ -64,6 +64,8 @@ export type TranscriptRequestAnchor = Readonly<{
 }>;
 
 export type TranscriptUserItem = Readonly<{
+  /** With `followup`: a background sub-agent's callback the server delivered into the turn, never the user's speech. */
+  callback?: true;
   /** A follow-up delivered into a running turn; it does not start a turn. */
   followup?: true;
   id: string;
@@ -96,6 +98,8 @@ export type TranscriptReasoningItem = Readonly<{
 }>;
 
 export type TranscriptToolCallItem = Readonly<{
+  /** Hydrated from the durable row, never the model/body; used only as an unknown-effect approval fence. */
+  recordedAt?: Date;
   arguments: string;
   callId: string;
   id: string;
@@ -108,6 +112,8 @@ export type TranscriptToolCallItem = Readonly<{
 }>;
 
 export type TranscriptToolResultItem = Readonly<{
+  /** Hydrated from the durable row, never the model/body; includes a continuation's newer in-flight record. */
+  recordedAt?: Date;
   callId: string;
   /** The saved whole result (`read_tool_result`) when `output` is an excerpt of it. */
   handle?: string;

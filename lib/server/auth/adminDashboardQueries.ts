@@ -36,6 +36,7 @@ const adminDashboardUserSelect = {
       mcpUserServers: installationMcpRows,
       assistantDefinitions: true,
       skillDefinitions: true,
+      subagentDefinitions: true,
       sharedSnapshots: true,
       usageEvents: true
     }

@@ -42,9 +42,11 @@ export function predecessorReleasesSuccessor(predecessor: Readonly<{ errorPayloa
 export async function prepareWorkspaceFollowupAdmission(
   tx: Prisma.TransactionClient, input: PreparingRunAdmissionInput, personalMemory: boolean
 ): Promise<WorkspaceFollowupAdmission | null> {
+  // The main agent's runs only: background sub-agents run beside them and never hold off the user's next message
+  // (one active run per thread, `agent_docs/RUN_CONTRACTS.md`).
   const active = await tx.modelRun.findMany({
     select: { id: true, workspaceWaitPending: true },
-    where: { chatId: input.chatId, status: { in: activeModelRunStatuses } }
+    where: { chatId: input.chatId, status: { in: activeModelRunStatuses }, subagentTurnId: null }
   });
   if (active.some((run) => run.workspaceWaitPending)) throw new ActiveRunConflictError();
   const followup = input.workspaceFollowup;

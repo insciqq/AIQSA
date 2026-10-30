@@ -16,10 +16,12 @@ import {
   type WorkspaceRuntime
 } from "./runtime";
 import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
+import { workspaceAgentStopRequest, type WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseBrowserLiveAction, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
+import { workspaceAgentEnvironment, type WorkspaceAgent } from "../subagents/guestProtocol";
 import { WORKSPACE_TURN_TIMEOUT_MAX_SECONDS } from "./config";
 import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
@@ -117,6 +119,23 @@ function requiredString(value: unknown, maximum = 512): string {
   return value;
 }
 
+/**
+ * One agent's processes of a shared guest, under the session's current operation (`agentProcessGuest.ts`). A
+ * runtime without the capability answers `unknown`, so the caller falls back to the VM stop.
+ */
+async function terminateAgentProcessesRoute(
+  body: Record<string, unknown>,
+  runtime: WorkspaceRuntime,
+  sessionId: string,
+  execute: <T>(operation: unknown, action: (signal: AbortSignal) => Promise<T>) => Promise<T>
+): Promise<WorkspaceAgentProcessTermination> {
+  const agentId = requiredString(body.agentId, 64);
+  workspaceAgentStopRequest(agentId);
+  const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
+  if (!runtime.terminateAgentProcesses) return { outcome: "unknown" };
+  return execute(body.operation, (signal) => runtime.terminateAgentProcesses!({ agentId, runtimeSandboxId, sessionId, signal }));
+}
+
 function optionalString(value: unknown, maximum = 512): string | null {
   return value === null ? null : requiredString(value, maximum);
 }
@@ -131,6 +150,25 @@ function integer(value: unknown, minimum: number, maximum: number): number {
 function boolean(value: unknown): boolean {
   if (typeof value !== "boolean") throw new Error("field_invalid");
   return value;
+}
+
+function parseWorkspaceAgent(value: unknown): WorkspaceAgent | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("field_invalid");
+  try {
+    if (value.kind === "main" || value.kind === undefined) {
+      workspaceAgentEnvironment({ kind: "main" });
+      return { kind: "main" };
+    }
+    if (value.kind !== "subagent" || typeof value.name !== "string" || typeof value.threadId !== "string") {
+      throw new Error("field_invalid");
+    }
+    const agent: WorkspaceAgent = { kind: "subagent", name: value.name, threadId: value.threadId };
+    workspaceAgentEnvironment(agent);
+    return agent;
+  } catch {
+    throw new Error("field_invalid");
+  }
 }
 
 function incomingBody(request: IncomingMessage): ReadableStream<Uint8Array> {
@@ -334,6 +372,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const secrets = parseAcceptedWorkspaceSecrets(body.secrets);
         const modelRunId = requiredString(body.modelRunId, 128);
         const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
+        const agent = parseWorkspaceAgent(body.agent);
         let runEnvironment: Readonly<Record<string, string>>;
         try {
           runEnvironment = parseWorkspaceRunEnvironment(body.runEnvironment, RUNNER_GATEWAY_ORIGIN);
@@ -342,7 +381,8 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         }
         if (body.boundUvCache !== undefined && typeof body.boundUvCache !== "boolean") throw new Error("field_invalid");
         await execute(body.operation, (signal) => input.runtime.syncPersonalSecrets({
-          secrets, modelRunId, ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
+          secrets, modelRunId, ...(agent ? { agent } : {}),
+          ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
           ...(body.boundUvCache === true ? { boundUvCache: true } : {}),
           runtimeSandboxId, sessionId, signal
         }));
@@ -461,8 +501,10 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         sendJson(response, 200, workspaceToolResultWire(await execute(body.operation, (signal) => {
           const modelRunId = requiredString(body.modelRunId, 128);
           const modelRunToolCallId = requiredString(body.modelRunToolCallId, 128);
+          const agent = parseWorkspaceAgent(body.agent);
           return runWithContext({ run_id: modelRunId, tool_call_id: modelRunToolCallId }, () => input.runtime.callBoundTool({
             arguments: toolArguments,
+            ...(agent ? { agent } : {}),
             ...(invocationId ? { invocationId } : {}),
             modelRunId,
             modelRunToolCallId,
@@ -484,6 +526,12 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
         sendJson(response, 200, await execute(body.operation, (signal) =>
           input.runtime.browserLive!({ ...action, modelRunId, runtimeSandboxId, sessionId, signal })));
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/agents/terminate") {
+        stage = "quiesce";
+        sendJson(response, 200, await terminateAgentProcessesRoute(await readJson(request), input.runtime, sessionId, execute));
         return;
       }
 

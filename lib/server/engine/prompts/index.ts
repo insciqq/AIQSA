@@ -19,6 +19,14 @@ export {
   type TurnContextInput
 } from "./harness";
 export {
+  SUBAGENT_ROLE_SECTION,
+  subagentFollowupText,
+  subagentTurnText,
+  subagentsPromptSection,
+  type SubagentPromptFacts,
+  type SubagentPromptModel
+} from "./subagents";
+export {
   AIQSA_GUIDE_TOPICS,
   SELF_SERVICE_TOOL_NAMES,
   aiqsaGuideText,

@@ -47,7 +47,7 @@ import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { RUNNER_GATEWAY_PORT, RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
-import { isReservedWorkspaceEnvName, isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { isReservedWorkspaceEnvName, isWorkspaceEnvName, WORKSPACE_AGENT_ENV_PREFIX, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
   WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
@@ -58,6 +58,7 @@ import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
+import { workspaceAgentEnvironment, workspaceAgentId } from "../subagents/guestProtocol";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
 import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
@@ -65,6 +66,8 @@ import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { browserLiveMcpData, browserLivePollReply, WORKSPACE_BROWSER_LIVE_COMMAND, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
+import { parseWorkspaceAgentStopOutcome, WORKSPACE_AGENT_STOP_GUEST_SCRIPT, WORKSPACE_AGENT_STOP_TIMEOUT_MS, WORKSPACE_UNATTRIBUTED_AGENT_ID, workspaceAgentLaunchArguments,
+  workspaceAgentStopRequest, type WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import { parseSkillArchive, readSkillArchive, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION, workspaceRuntimeIdleTimeoutSeconds, workspaceToolOutputDataMaxBytes,
@@ -115,7 +118,10 @@ type LocalSession = {
   sandboxName: string;
   /** One release-guide installation per VM boot; its outcome is remembered. */
   guides?: GuideInstallation;
-  secretEnvironment?: Readonly<{ modelRunId: string; values: Record<string, string> }>;
+  /** The admitted guest image, which picks the browser guide's notice for sub-agents on an older image. */
+  imageRef?: string;
+  /** Each attached run's own exec environment (one shared Workspace serves several runs at once). */
+  secretEnvironments?: Map<string, Record<string, string>>;
 };
 
 type GuideInstallation = { state: "installing" | "ready" | "failed"; promise: Promise<void> };
@@ -436,9 +442,10 @@ async function openSelectedFiles(sandbox: Sandbox, selection: WorkspaceFileSelec
  * complete request; a truncated request is invalid and publishes nothing, so
  * closing its pipe during retirement or a late native settlement is harmless.
  */
-async function installWorkspaceGuides(sandbox: Sandbox): Promise<void> {
+async function installWorkspaceGuides(sandbox: Sandbox, imageRef: string | undefined): Promise<void> {
   const deadline = AbortSignal.timeout(GUIDE_INSTALL_TIMEOUT_MS);
-  const input = workspaceGuideInput();
+  // One guide per VM serves every agent: on an image without per-agent tabs it says only the main agent may browse.
+  const input = workspaceGuideInput(imageRef ? { agentKind: "subagent", imageRef } : {});
   let handle: ExecHandle | undefined;
   let sink: Awaited<ReturnType<ExecHandle["takeStdin"]>> = null;
   let abandoned = false;
@@ -794,7 +801,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   private startGuideInstallation(session: LocalSession): GuideInstallation {
     const startedAt = Date.now();
     const installation: GuideInstallation = { state: "installing", promise: Promise.resolve() };
-    installation.promise = installWorkspaceGuides(session.sandbox).then(() => { installation.state = "ready"; }, () => {
+    installation.promise = installWorkspaceGuides(session.sandbox, session.imageRef).then(() => { installation.state = "ready"; }, () => {
       installation.state = "failed";
       logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "prepare", outcome: "degraded", action: "degrade",
         code: "workspace_guides_unavailable", duration_ms: Date.now() - startedAt });
@@ -825,6 +832,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
         existing.sandbox = reconnected;
+        existing.imageRef ??= input.imageRef;
         await this.prepareGuides(existing, input.signal, booting ? { boot: observedGuides } : "refresh");
         return {
           runtimeSandboxId: existing.runtimeSandboxId,
@@ -884,7 +892,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       // A failed stop must not discard the only acquired runtime identity.
       acquired = {
         activeCalls: new Map(), execOwners: new Map(),
-        runtimeSandboxId: sandbox.id, sandbox, sandboxName: input.sandboxName
+        imageRef: input.imageRef, runtimeSandboxId: sandbox.id, sandbox, sandboxName: input.sandboxName
       };
       this.sessions.set(input.sessionId, acquired);
       if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
@@ -1143,7 +1151,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
 
   async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0]): Promise<void> {
     const session = await this.runningSession(input);
-    session.secretEnvironment = undefined;
+    session.secretEnvironments?.delete(input.modelRunId);
     try {
       const secrets = parseAcceptedWorkspaceSecrets(input.secrets);
       // Server-owned run values win over a saved variable of the same name.
@@ -1188,7 +1196,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         }
       });
       input.signal?.throwIfAborted();
-      session.secretEnvironment = { modelRunId: input.modelRunId, values: environment };
+      (session.secretEnvironments ??= new Map()).set(input.modelRunId, environment);
       if (input.boundUvCache) {
         await this.boundUvCache(session, input.signal);
         input.signal?.throwIfAborted();
@@ -1228,7 +1236,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   private async secretEnvironment(session: LocalSession, modelRunId: string): Promise<Record<string, string>> {
-    if (session.secretEnvironment?.modelRunId === modelRunId) return session.secretEnvironment.values;
+    const cached = session.secretEnvironments?.get(modelRunId);
+    if (cached) return cached;
     try {
       const result = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
         .args(["-I", "-c", READ_WORKSPACE_SECRET_ENV, modelRunId]).timeout(10_000));
@@ -1238,8 +1247,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (!values || typeof values !== "object" || Array.isArray(values) ||
         Object.entries(values).some(([name, value]) => !isWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0")) ||
         Buffer.byteLength(JSON.stringify(values), "utf8") > maximum) throw new Error("invalid");
-      session.secretEnvironment = { modelRunId, values: values as Record<string, string> };
-      return session.secretEnvironment.values;
+      const safeValues = Object.fromEntries(Object.entries(values).filter(([name]) => !name.startsWith(WORKSPACE_AGENT_ENV_PREFIX))) as Record<string, string>;
+      (session.secretEnvironments ??= new Map()).set(modelRunId, safeValues);
+      return safeValues;
     } catch { throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed"); }
   }
 
@@ -1316,7 +1326,11 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         // The invocation id reaches this command alone, never the saved environment file.
         const invocation = input.invocationId ? { [WORKSPACE_CODE_INVOCATION_ENV]: input.invocationId } : {};
         argumentsWithIdentity.env = { ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment,
-          ...(requested as Record<string, unknown> | undefined), ...invocation };
+          ...(requested as Record<string, unknown> | undefined), ...invocation,
+          ...(input.agent ? workspaceAgentEnvironment(input.agent) : {}) };
+        // Every command runs inside its agent's cgroup, so a run's end can stop exactly its processes.
+        Object.assign(argumentsWithIdentity, workspaceAgentLaunchArguments(input.originalName, argumentsWithIdentity,
+          input.agent ? workspaceAgentId(input.agent) : WORKSPACE_UNATTRIBUTED_AGENT_ID));
       }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
         ? {
@@ -1563,6 +1577,28 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       input.executions.map((execution) => execution.runtimeExecSessionId),
       input.signal
     );
+  }
+
+  /**
+   * One bounded run of the fixed agent stop helper (`agentProcessGuest.ts`) on a guest that already runs. A
+   * cancellation abandons the wait, never the VM: any failure proves nothing and the caller stops the VM itself.
+   */
+  async terminateAgentProcesses(
+    input: Parameters<NonNullable<WorkspaceRuntime["terminateAgentProcesses"]>>[0]
+  ): Promise<WorkspaceAgentProcessTermination> {
+    const request = workspaceAgentStopRequest(input.agentId);
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    input.signal?.throwIfAborted();
+    try {
+      const deadline = AbortSignal.timeout(WORKSPACE_AGENT_STOP_TIMEOUT_MS + 2_000);
+      const result = await readStreamWithAbort(() => session.sandbox.execWith("/usr/bin/python3", (builder) => builder
+        .args(["-I", "-c", WORKSPACE_AGENT_STOP_GUEST_SCRIPT]).timeout(WORKSPACE_AGENT_STOP_TIMEOUT_MS).stdinBytes(request)),
+      input.signal ? AbortSignal.any([input.signal, deadline]) : deadline);
+      if (!result.success || result.stdoutBytes().byteLength > 256) return { outcome: "unknown" };
+      return parseWorkspaceAgentStopOutcome(result.stdout());
+    } catch {
+      return { outcome: "unknown" };
+    }
   }
 
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<WorkspaceOutputCollection> {

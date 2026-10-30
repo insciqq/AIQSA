@@ -20,8 +20,17 @@ import {
   type ResourceChangeCard,
   type ResourceChangeDiff,
   type SecretChangeCard,
-  type SkillDeleteProposalCard
+  type SkillDeleteProposalCard,
+  type SubagentChangeCard,
+  type SubagentChangeField
 } from "@/lib/contracts/resourceChanges";
+import { SUBAGENTS_LIBRARY_PATH } from "@/lib/contracts/subagentDefinitions";
+import {
+  SubagentApiError,
+  deleteSubagentDefinition,
+  getSubagentDefinition,
+  restoreSubagentRevision
+} from "@/features/library-v2/subagents/subagentsApi";
 import { SKILL_LIBRARY_PATH } from "@/lib/contracts/skillSaves";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
 import type { WorkspaceSecretKind } from "@/lib/contracts/workspaceSecrets";
@@ -48,6 +57,10 @@ const SECRET_KINDS: Readonly<Record<WorkspaceSecretKind, string>> = {
 const ASSISTANT_FIELDS: Readonly<Record<AssistantChangeField, string>> = {
   description: "Description", instructions: "Instructions", mcp_tools: "MCP tools", model: "Model", name: "Name", skills: "Skills",
   starter_prompts: "Starter prompts", web_search: "Web search"
+};
+
+const SUBAGENT_FIELDS: Readonly<Record<SubagentChangeField, string>> = {
+  description: "Description", effort: "Reasoning effort", instructions: "Instructions", model: "Model", name: "Name", tools: "Tools"
 };
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
@@ -465,11 +478,100 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
   );
 }
 
+/** A custom sub-agent's state as the card reads it: still at the card's version, changed since, or gone. */
+async function readSubagentRemote(definitionId: string, version: number, signal: AbortSignal): Promise<Remote> {
+  try {
+    return (await getSubagentDefinition(definitionId, signal)).version === version ? "current" : "changed";
+  } catch (failure) {
+    if (failure instanceof SubagentApiError && failure.status === 404) return "missing";
+    throw failure;
+  }
+}
+
+function SubagentCardV2({ card, live }: Readonly<{ card: SubagentChangeCard; live: boolean }>) {
+  const state = useCardState(card);
+  const { outcome, remote } = state;
+  const read = useCallback((signal: AbortSignal) => readSubagentRemote(card.definitionId, card.definitionVersion, signal),
+    [card.definitionId, card.definitionVersion]);
+  useRemoteRead(!live && !outcome ? read : null, state.setRemote);
+
+  function act(request: () => Promise<unknown>, done: Outcome, failure: string) {
+    void state.run(async () => {
+      try {
+        await request();
+        state.finish(done);
+      } catch (error) {
+        // The routes refuse a version that is no longer current, or a sub-agent that is gone.
+        const code = error instanceof SubagentApiError ? error.code : null;
+        if (code === "subagent_not_found") state.setRemote("missing");
+        else if (code === "subagent_definition_conflict") state.setRemote("changed");
+        else state.setError(failure);
+      }
+    });
+  }
+
+  const open = <CardLinkV2 href={SUBAGENTS_LIBRARY_PATH} icon="bot" label="Open in Studio" />;
+  const settled = remote === "missing" || remote === "changed";
+  const remoteStatus = remote === "missing" ? "This sub-agent no longer exists."
+    : remote === "changed" ? card.action === "delete_proposed"
+      ? "The sub-agent changed after this proposal, so nothing was deleted. Review it in Studio › Sub-agents."
+      : "Undo is not available: the sub-agent changed after this, and that change is kept." : null;
+
+  if (card.action === "created" || card.action === "updated") {
+    const created = card.action === "created";
+    const undoRevisionId = card.undoRevisionId;
+    const undo = created
+      ? () => act(() => deleteSubagentDefinition(card.definitionId, card.definitionVersion),
+        { heading: "Sub-agent removed", message: "Undone: the sub-agent is deleted." }, "Undo failed. Try again.")
+      : undoRevisionId ? () => act(() => restoreSubagentRevision(card.definitionId, card.definitionVersion, undoRevisionId),
+        { heading: "Change undone", message: "The sub-agent is back to its previous version." }, "Undo failed. Try again.") : null;
+    const renamed = card.previousName ? `Renamed from “${card.previousName}”.` : null;
+    return (
+      <CardV2 error={state.error} heading={outcome?.heading ?? (created ? "Sub-agent created" : "Sub-agent updated")} headingRef={state.headingRef}
+        icon="bot" name={card.name} resource="subagent" state={outcome ? "done" : remote} status={outcome?.message ?? remoteStatus}
+        meta={created ? null : card.changes.map((change) => SUBAGENT_FIELDS[change.field]).join(", ") || null}
+        detail={created ? null : [renamed, ...card.changes.filter((change) => change.field !== "name")
+          .map((change) => `${SUBAGENT_FIELDS[change.field]}${change.summary ? `: ${change.summary}` : " changed"}`)].filter(Boolean).join("\n") || null}
+        actions={<>
+          {outcome || settled || !undo ? null
+            : <UndoButtonV2 busy={state.busy} label={created ? `Undo creating ${card.name}` : `Undo changes to ${card.name}`} onClick={undo} />}
+          {remote === "missing" || (created && outcome) ? null : open}
+        </>}>
+        {!created && card.instructionsDiff && card.changes.some((change) => change.field === "instructions")
+          ? <DiffV2 diff={card.instructionsDiff} label={`Changes in the instructions of ${card.name}`} /> : null}
+      </CardV2>
+    );
+  }
+  const asking = !outcome && !settled;
+  const threads = card.consequences?.threadCount ?? 0;
+  return (
+    <CardV2 actions={asking || remote === "missing" ? null : open} error={state.error}
+      heading={outcome?.heading ?? (remote === "missing" ? "Sub-agent already deleted" : settled ? "Sub-agent not deleted" : "Delete sub-agent?")}
+      headingRef={state.headingRef} icon="bot" name={card.name} resource="subagent" state={outcome ? "done" : asking ? "asking" : remote}
+      status={outcome?.message ?? (remote === "missing" ? null : remoteStatus)}
+      confirm={asking ? (
+        <ConfirmV2 busy={state.busy} confirmLabel="Delete sub-agent" keepLabel="Keep sub-agent" label={`Delete ${card.name}`}
+          text={`Delete “${card.name}” with all its versions? This cannot be undone.`}
+          onConfirm={() => act(() => deleteSubagentDefinition(card.definitionId, card.definitionVersion), { heading: "Sub-agent deleted", message: null },
+            "The sub-agent could not be deleted. Try again.")}
+          onKeep={() => state.finish({ heading: "Sub-agent kept", message: null })} />
+      ) : null}>
+      {asking ? (
+        <ul className="v2-resource-change-card-consequences" aria-label="What deleting changes">
+          <li>The agent can no longer start it.</li>
+          {threads > 0 ? <li>{`${plural(threads, "sub-agent", "sub-agents")} in your chats started as it keep their work but cannot be continued.`}</li> : null}
+        </ul>
+      ) : null}
+    </CardV2>
+  );
+}
+
 function ResourceChangeCardV2({ card, live }: Readonly<{ card: ResourceChangeCard; live: boolean }>) {
   switch (card.resource) {
     case "secret": return <SecretCardV2 card={card} live={live} />;
     case "skill": return <SkillDeleteCardV2 card={card} live={live} />;
     case "assistant": return <AssistantCardV2 card={card} live={live} />;
+    case "subagent": return <SubagentCardV2 card={card} live={live} />;
   }
 }
 

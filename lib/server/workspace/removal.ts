@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { acknowledgeWorkspaceCommandsStopped } from "./executionRegistry";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession } from "./sessionOperation";
+import { currentWorkspaceAttachments, isWorkspaceRunOperation } from "./attachments";
 
 /** Caller has authorized deletion of the owning chat and fenced new admission. */
 export async function removeWorkspaceForDeletion(input: Readonly<{
@@ -16,12 +17,17 @@ export async function removeWorkspaceForDeletion(input: Readonly<{
   const claim = await input.prisma.$transaction(async (tx) => {
     const session = await lockWorkspaceSession(tx, input.sessionId);
     if (!session || (!session.runtimeSandboxId && !session.operationOwner)) return null;
-    if (session.operationOwner && (!session.operationExpiresAt || session.operationExpiresAt > input.now)) {
+    // The deletion path stops every run of the chat first (sub-agent runs included). A run operation whose
+    // attached runs all ended without detaching (a crash) is taken over: removing the VM ends whatever they left.
+    const attached = await currentWorkspaceAttachments(tx, session);
+    const abandonedRunOperation = isWorkspaceRunOperation(session.operationOwner) && !attached.some((run) => run.active);
+    if (session.operationOwner && !abandonedRunOperation && (!session.operationExpiresAt || session.operationExpiresAt > input.now)) {
       throw new WorkspaceRuntimeError("workspace_operation_stale");
     }
     if (await tx.modelRun.count({ where: { chatId: session.chatId, status: { in: ["preparing", "queued", "streaming", "in_progress"] } } }) > 0) {
       throw new WorkspaceRuntimeError("workspace_operation_stale");
     }
+    await tx.workspaceRunAttachment.deleteMany({ where: { chatId: session.chatId } });
     if (!input.runtime?.claimSessionOperation || !input.runtime.retireSessionOperation) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     const token = randomUUID();
     const operation = { generation: session.version + 1, owner: `delete:${token}` };

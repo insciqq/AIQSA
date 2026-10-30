@@ -99,6 +99,12 @@ import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
 import { useVisualViewportInset } from "@/components/ui-v2/useVisualViewportInset";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
+import { SubagentCallbackTurnV2, SubagentCardsV2, SubagentChatStatusV2 } from "@/features/conversation-v2/SubagentChatV2";
+import { SubagentLivenessV2 } from "@/features/subagents-v2/SubagentLivenessV2";
+import { subagentWaitingKeyV2 } from "@/features/subagents-v2/subagentPresentation";
+import { SubagentThreadViewV2 } from "@/features/subagents-v2/SubagentThreadViewV2";
+import { useSubagentStore, type SubagentThreadTarget } from "@/features/subagents-v2/subagentStore";
+import { closeSubagentThread, openSubagentThread, useOpenSubagentThread } from "@/features/subagents-v2/subagentThreadAddress";
 import { useAnswerReadAloud } from "@/features/read-aloud/useAnswerReadAloud";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
@@ -700,6 +706,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     window.requestAnimationFrame(() => archivedManageRef.current?.focus());
   };
   const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+  // A sub-agent's read-only thread view takes the conversation's place in its chat.
+  const subagentThread = useOpenSubagentThread(session.activeChatId);
+  const openSubagent = (target: SubagentThreadTarget) => {
+    if (target.chatId === session.activeChatId) {
+      openSubagentThread(target, "push");
+      return;
+    }
+    // Another chat's sub-agent: the chat navigation adds the history entry and the view settles on it.
+    selectNavigationChatV2(target.chatId, workspace.pane.actions);
+    openSubagentThread(target, "replace");
+  };
   const memoryCommands = useMemoryCommands({
     accountId: session.accountId,
     chatId: session.activeChatId,
@@ -771,6 +788,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     skillId, isCurrentScope: () => skillScopeRef.current === skillScopeKey
   });
   const latestMessage = thread.visibleMessages.at(-1);
+  // Background sub-agents of the open chat that wait for the user: the latest answer shows the chat's live browser
+  // for their handoffs, after it settled too.
+  const subagentWaitingKey = useSubagentStore((state) => session.activeChatId
+    ? subagentWaitingKeyV2(state.chats[session.activeChatId]?.threads ?? []) : null);
   function openSkillLibrary() { setSkillLibraryScope(skillScopeKey); }
   // The composer's `/` palette pins through the Skill library's own selection
   // path and switches Assistants as the header selector does.
@@ -1269,6 +1290,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       // The server-written turn after an approval is not the user's speech.
       return <McpApprovalContinuationTurnV2 anchorId={source.id} content={messageText(source)} />;
     }
+    if (source.role === "user" && source.systemTurnKind === "subagent_callback") {
+      // Neither is the turn that wakes the main agent with sub-agent results.
+      return <SubagentCallbackTurnV2 anchorId={source.id} names={source.subagentCallback?.names ?? []} />;
+    }
     if (source.role === "user") {
       // Owner-only quiet line of the files sent with this exact message,
       // rendered from the labels the thread snapshot already exposes.
@@ -1371,6 +1396,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         actions={settled ? actions : undefined}
         actionsSlot={<>
               {settled ? <SentAttachmentsV2 blocks={copiedAttachments} canSave={!temporarySession} /> : null}
+              <SubagentCardsV2 chatId={session.activeChatId} toolActivity={toolActivity} onOpen={openSubagent} />
               <AnswerOutputsV2
                 artifact={artifact}
                 live={!settled}
@@ -1404,7 +1430,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             </>}
         anchorId={source.id}
         artifact={artifact}
-        browserLiveChatId={ownsLiveRun ? session.activeChatId : null}
+        browserLiveChatId={ownsLiveRun || (subagentWaitingKey && source.id === latestMessage?.id) ? session.activeChatId : null}
+        browserLiveWaitingKey={source.id === latestMessage?.id ? subagentWaitingKey : null}
         onPinSkill={pinLoadedSkill}
         pinnedSkillIds={pinnedSkillIds}
         content={messageText(source)}
@@ -1447,8 +1474,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     settings.open();
   };
   // Choosing a chat or a new chat in navigation adds one history entry.
-  const selectNavigationChat = (chat: ChatNavigationSummaryWire) =>
-    selectNavigationChatV2(chat.id, workspace.pane.actions);
+  const selectNavigationChat = (chat: ChatNavigationSummaryWire) => {
+    // The chat's own row leads from its sub-agent's thread back to the chat.
+    if (subagentThread?.chatId === chat.id) closeSubagentThread();
+    else selectNavigationChatV2(chat.id, workspace.pane.actions);
+  };
   const setNavigationMemoryMode = (chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL") => {
     const full = currentWorkspaceChat(chat.id);
     if (full && full.memoryMode !== mode) {
@@ -1517,6 +1547,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     <AnnouncementsProvider accountId={session.accountId}>
     <main className="v2-live-root" data-testid="app-shell">
       <UiV2IconSprite />
+      <SubagentLivenessV2 onActiveChatSettled={session.onActiveChatSubagentsSettled} />
       {/* The Library renders inside the same shell as a rail section: the
           rail stays, the chat list column yields to the Library's section
           column (PRD §4.1/§4.10, FRONTEND "Chat Composition"). */}
@@ -1608,6 +1639,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             return full ? workspace.pane.actions.saveFolder(full) : undefined;
           }}
           onSelectChat={selectNavigationChat}
+          onOpenSubagent={(chat, threadId) => openSubagent({ chatId: chat.id, threadId })}
           onOpenMessageMatch={(match) => {
             workspace.pane.actions.openSearchMatch(match.chatId, match.messageId);
           }}
@@ -1724,6 +1756,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 target={problemReportTarget}
               />
             ) : null}
+            {subagentThread ? (
+              <SubagentThreadViewV2
+                target={subagentThread}
+                onBack={closeSubagentThread}
+              />
+            ) : (
             <ConversationV2
               composerSlot={conversationMessages.length === 0 ? (
                 <div className="v2-live-empty-composer-stack" data-temporary={temporarySession || undefined} ref={setComposerDockRef}>
@@ -1799,6 +1837,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 /\(chat_detail_failed_(401|403|404)\)$/u.test(thread.activeChatDetailError ?? "")
               )}
             />
+            )}
             {session.activeChatId ? (
               <RunLifecycleAnnouncerV2
                 activeChatId={session.activeChatId}
@@ -1806,12 +1845,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 sourceChatId={session.activeChatId}
               />
             ) : null}
-            {conversationMessages.length > 0 ? (
+            {conversationMessages.length > 0 && !subagentThread ? (
               <div className="v2-live-composer-dock" data-temporary={temporarySession || undefined} data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}
                 {browserNotificationsBanner}
                 {scheduledTaskHint}
                 {composerOperationError}
+                <SubagentChatStatusV2 chatId={session.activeChatId} onOpen={openSubagent} />
                 {composerSurface}
               </div>
             ) : null}

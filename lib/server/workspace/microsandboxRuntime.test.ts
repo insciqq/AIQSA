@@ -550,6 +550,29 @@ describe("Microsandbox Workspace lifecycle", () => {
     }
   });
 
+  it("keeps the browser agent identity per command and out of the saved environment", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const agent = { kind: "subagent" as const, name: "shop-amazon", threadId: "thread-7" };
+    const runEnvironment = { AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "UTC" };
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, agent, runEnvironment, secrets: [] });
+    const bundle = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { environment: Record<string, string> };
+    expect(bundle.environment).toEqual(runEnvironment);
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: {} }) }] });
+    await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell", agent, arguments: { command: "env" } });
+    expect(sdk.callTool.mock.lastCall?.[0].arguments.env).toMatchObject({ AIQSA_AGENT_ID: "thread-7", AIQSA_AGENT_NAME: "shop-amazon" });
+    // Each command starts inside its agent's cgroup, whatever environment its descendants later choose.
+    expect(sdk.callTool.mock.lastCall?.[0].arguments.command).toMatch(/aiqsa-agent-thread-7\/cgroup\.procs[^]*\nenv$/u);
+    await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "exec_call", originalName: "sandbox_exec", agent,
+      arguments: { args: ["-l"], command: "ls" } });
+    expect(sdk.callTool.mock.lastCall?.[0].arguments).toMatchObject({ command: "/bin/sh",
+      args: expect.arrayContaining(["aiqsa-agent", "ls", "-l"]) });
+    await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "main_call", originalName: "sandbox_shell", arguments: { command: "env" } });
+    expect(sdk.callTool.mock.lastCall?.[0].arguments.env).not.toHaveProperty("AIQSA_AGENT_ID");
+    // A command without an agent runs in the unattributed group, which keeps every agent's stop unproven.
+    expect(sdk.callTool.mock.lastCall?.[0].arguments.command).toContain("aiqsa-agent-_unattributed/cgroup.procs");
+  });
+
   it("stages a secret saved before the browser's names were reserved, without letting its reserved entries reach commands", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);

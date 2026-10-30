@@ -66,6 +66,7 @@ export function createPrismaScheduledWorkspaceCarryover(deps: Readonly<{
         SELECT "userId", "permanentDeletionAt" FROM "Chat" WHERE "id" = ${sourceChatId} FOR UPDATE
       `);
       if (!chat || chat.userId !== userId || chat.permanentDeletionAt) return { kind: "none" };
+      // Every active run, background sub-agent runs included: the copy waits until they stopped, never copies under them.
       if (await tx.modelRun.count({ where: { chatId: sourceChatId, status: { in: [...ACTIVE_RUN_STATUSES] } } }) > 0) {
         return { kind: "busy" };
       }

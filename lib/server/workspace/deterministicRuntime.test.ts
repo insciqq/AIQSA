@@ -45,6 +45,23 @@ async function collect(body: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 }
 
 describe("deterministic Workspace runtime", () => {
+  it("keeps each exec's agent identity per call instead of persisting the last one", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "ws_" + "7".repeat(40);
+    const session = await runtime.ensureSession({ cpus: 1, diskMiB: config.diskMiB, imageRef: config.imageRef,
+      internetEnabled: false, memoryMiB: 1024, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId });
+    await runtime.syncPersonalSecrets({ runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "run_agent",
+      runEnvironment: { AIQSA_BROWSER_LOCALE: "es-ES" }, secrets: [] });
+    const result = (await runtime.callBoundTool({ runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "run_agent",
+      modelRunToolCallId: "agent", originalName: "sandbox_shell", agent: { kind: "subagent", name: "shop-amazon", threadId: "thread-7" },
+      arguments: { command: "printenv AIQSA_AGENT_ID" } }));
+    expect(JSON.parse(result.content[0]!.text!).data.stdout).toBe("thread-7\n");
+    const main = await runtime.callBoundTool({ runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "run_agent",
+      modelRunToolCallId: "main", originalName: "sandbox_shell", arguments: { command: "printenv AIQSA_AGENT_ID" } });
+    expect(JSON.parse(main.content[0]!.text!).data.stdout).toBe("\n");
+    await runtime.removeSession({ runtimeSandboxId: session.runtimeSandboxId, sessionId });
+  });
+
   it.each(["export-list-once", "export-stream-once", "deferred-export-stream-once"])("recovers a captured %s transport fault without recapturing guest bytes", async (fault) => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     const sessionId = "ws_" + "8".repeat(40);
@@ -522,6 +539,25 @@ describe("deterministic Workspace harness", () => {
 });
 
 describe("deterministic Workspace execution termination", () => {
+  it("stops one agent's executions, leaves another's, and proves nothing beside a command without an agent", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "0199aabc-12ef-7abc-8abc-0123456789c5";
+    const created = await runtime.ensureSession({ cpus: 2, diskMiB: 10_240, imageRef: config.imageRef, internetEnabled: false,
+      memoryMiB: 4_096, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId });
+    const start = (callId: string, agent?: { kind: "main" } | { kind: "subagent"; name: string; threadId: string }) => runtime.callBoundTool({
+      ...(agent ? { agent } : {}), arguments: { command: "sleep 30 && echo late > /workspace/project/late.txt" },
+      modelRunId: `run_${callId}`, modelRunToolCallId: callId, originalName: "sandbox_exec_start",
+      runtimeSandboxId: created.runtimeSandboxId, sessionId });
+    const scope = { runtimeSandboxId: created.runtimeSandboxId, sessionId };
+    await start("main_call", { kind: "main" });
+    const other = await start("thread_call", { kind: "subagent", name: "researcher", threadId: "thread-1" });
+    await expect(runtime.terminateAgentProcesses({ ...scope, agentId: "main" })).resolves.toEqual({ outcome: "closed" });
+    await expect(runtime.terminateExecutions({ ...scope, executions: [{ modelRunId: "run_thread_call", runtimeExecSessionId: other.execSessionId! }] }))
+      .resolves.toEqual([{ outcome: "closed", runtimeExecSessionId: other.execSessionId }]);
+    await start("unattributed_call");
+    await expect(runtime.terminateAgentProcesses({ ...scope, agentId: "thread-1" })).resolves.toEqual({ outcome: "unknown" });
+  });
+
   it("closes known executions, reports forgotten ones as unknown, and exposes exec ids", async () => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     const sessionId = "0199aabc-12ef-7abc-8abc-0123456789b4";

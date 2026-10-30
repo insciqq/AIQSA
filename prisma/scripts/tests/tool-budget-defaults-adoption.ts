@@ -46,7 +46,8 @@ export const toolBudgetDefaultsFixtures = [
               (f.policy - ARRAY['maxToolCalls', 'maxToolRounds', 'version', 'updatedAt', 'memoryAdmissionTimeoutSeconds', 'memorySearchTimeoutSeconds']))
           THEN RAISE EXCEPTION 'tool_budget_defaults_adoption_or_policy_preservation_failed'; END IF;
         IF NOT EXISTS (SELECT 1 FROM "ModelRun" r JOIN "_ToolBudgetDefaultsFixture" f
-          ON f.run = to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome', 'engine']
+          ON f.run = to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome', 'engine',
+    'subagentThreadId', 'subagentTurnId']
           WHERE r.id = 'tool-budget-run')
           THEN RAISE EXCEPTION 'tool_budget_defaults_changed_accepted_run'; END IF;
         IF NOT EXISTS (SELECT 1 FROM "AgentPolicy" a JOIN "_ToolBudgetDefaultsFixture" f ON f.agent = to_jsonb(a)

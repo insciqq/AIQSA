@@ -100,6 +100,14 @@ import {
   type McpApprovalCard,
   type MessageSystemTurnKind
 } from "./mcpApprovals";
+import {
+  SUBAGENT_CALLBACK_TURN_KIND,
+  SUBAGENT_FOLLOWUP_LIMITS,
+  decodeSubagentActivityRef,
+  isSubagentIdentifier,
+  normalizeSubagentName,
+  type SubagentActivityRef
+} from "./subagents";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -234,6 +242,8 @@ export type ThreadMessage = {
   status: "cancelled" | "complete" | "error" | "streaming";
   /** See `ChatMessageWire.systemTurnKind`. */
   systemTurnKind?: MessageSystemTurnKind;
+  /** See `ChatMessageWire.subagentCallback`. */
+  subagentCallback?: ChatMessageSubagentCallbackWire;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
@@ -344,6 +354,12 @@ export type ThreadToolActivityCall = {
   round: number;
   serverName?: string;
   status: "cancelled" | "complete" | "error" | "running";
+  /** A `call_subagent` or `stop_subagent` call: the sub-agent it addressed, for its card and thread link. */
+  subagent?: SubagentActivityRef;
+  /** A call a sub-agent made inside this answer (a foreground turn): shown nested under its `call_subagent` step. */
+  subagentThreadId?: string;
+  /** With `subagentThreadId`: the turn that made the call, matching that step's `subagent.turnId`. */
+  subagentTurnId?: string;
   toolName: string;
 };
 
@@ -474,9 +490,30 @@ export type ChatMessageWire = {
    * MCP approval): never shown as the user's speech.
    */
   systemTurnKind?: MessageSystemTurnKind;
+  /**
+   * Only on a `subagent_callback` wake-up turn: the sub-agents whose ended
+   * turns it reports, from the turns whose `callbackRunId` is the run that
+   * answers it. Absent on older rows.
+   */
+  subagentCallback?: ChatMessageSubagentCallbackWire;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
+
+/** The sub-agents a wake-up turn reports on: distinct valid names, at most `SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun`. */
+export type ChatMessageSubagentCallbackWire = Readonly<{ names: readonly string[] }>;
+
+/** A wake-up turn's sub-agent list, or null when it is not one exactly. */
+export function decodeChatMessageSubagentCallback(value: unknown): ChatMessageSubagentCallbackWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["names"]) || !Array.isArray(value.names) ||
+    value.names.length > SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun) return null;
+  const names: string[] = [];
+  for (const name of value.names) {
+    if (typeof name !== "string" || normalizeSubagentName(name) !== name || names.includes(name)) return null;
+    names.push(name);
+  }
+  return { names };
+}
 
 /**
  * A user turn posted by a scheduled task occurrence: the task and its current
@@ -658,6 +695,8 @@ export type ChatRouteServerErrorCode =
   | "chat_revision_stale"
   | "chat_title_too_long"
   | "search_plan_invalid"
+  /** Only background sub-agents run: archive and restore wait until the user stops them. */
+  | "subagents_running"
   | "workspace_state_invalid"
   | "workspace_not_found";
 
@@ -1163,7 +1202,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
 
 const decodeThreadAssistantIdentity = decodeAssistantIdentity;
 
-function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
+export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
   if (!isRecord(value) || !Array.isArray(value.calls)) return null;
   const calls: ThreadToolActivityCall[] = [];
   for (const candidate of value.calls) {
@@ -1198,6 +1237,11 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
     }
     if (candidate.approvalRequired !== undefined && (candidate.approvalRequired !== true || candidate.origin !== "mcp" ||
       status !== "error")) return null;
+    const subagent = candidate.subagent === undefined ? undefined : decodeSubagentActivityRef(candidate.subagent);
+    if (subagent === null || (candidate.subagentThreadId !== undefined && !isSubagentIdentifier(candidate.subagentThreadId)) ||
+      (candidate.subagentTurnId !== undefined && (candidate.subagentThreadId === undefined || !isSubagentIdentifier(candidate.subagentTurnId)))) {
+      return null;
+    }
     let mcpUnavailable: ThreadMcpUnavailableServer[] | undefined;
     if (candidate.mcpUnavailable !== undefined) {
       if (candidate.origin !== "discovery" || !Array.isArray(candidate.mcpUnavailable) ||
@@ -1236,6 +1280,9 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       round,
       ...(serverName ? { serverName } : {}),
       status,
+      ...(subagent ? { subagent } : {}),
+      ...(typeof candidate.subagentThreadId === "string" ? { subagentThreadId: candidate.subagentThreadId } : {}),
+      ...(typeof candidate.subagentTurnId === "string" ? { subagentTurnId: candidate.subagentTurnId } : {}),
       toolName
     });
   }
@@ -1336,6 +1383,9 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ? value.scheduledOutcome : undefined;
   if (value.scheduledOutcome !== undefined && scheduledOutcome === undefined) return null;
   if (value.systemTurnKind !== undefined && (!isMessageSystemTurnKind(value.systemTurnKind) || role !== "user")) return null;
+  const subagentCallback = value.subagentCallback === undefined ? undefined
+    : decodeChatMessageSubagentCallback(value.subagentCallback);
+  if (subagentCallback === null || (subagentCallback && value.systemTurnKind !== SUBAGENT_CALLBACK_TURN_KIND)) return null;
   if (
     !id ||
     citationMessageId === undefined ||
@@ -1372,6 +1422,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ...(scheduledOutcome !== undefined ? { scheduledOutcome } : {}),
     status,
     ...(isMessageSystemTurnKind(value.systemTurnKind) ? { systemTurnKind: value.systemTurnKind } : {}),
+    ...(subagentCallback ? { subagentCallback } : {}),
     ...(toolActivity !== undefined ? { toolActivity } : {}),
     ...(workspaceActivity !== undefined ? { workspaceActivity } : {})
   };

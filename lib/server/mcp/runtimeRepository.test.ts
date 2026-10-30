@@ -930,8 +930,13 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
         id: "generation-accepted",
         runBindings: {
           some: {
+            // The run holds it while it is active, or while a background sub-agent run it started is.
             modelRun: {
-              status: { in: ["preparing", "queued", "streaming", "in_progress"] }
+              OR: [
+                { status: { in: ["preparing", "queued", "streaming", "in_progress"] } },
+                { subagentTurnsStarted: { some: { executionRun: { is: { status: { in: ["preparing", "queued", "streaming",
+                  "in_progress"] } } }, mode: "background" } } }
+              ]
             }
           }
         }

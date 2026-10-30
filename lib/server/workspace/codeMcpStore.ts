@@ -1,3 +1,4 @@
+import { bindCodeMcpEffect, type CodeMcpUnknownEffectInput } from "./codeMcpUnknownEffects";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
@@ -16,6 +17,7 @@ import {
 import { summarizeWorkspaceCodeCalls, type WorkspaceCodeCallSummary, type WorkspaceCodeToolLabel } from "./codeMcpSummary";
 import { WorkspaceRuntimeError } from "./runtime";
 import { lockWorkspaceSession, workspaceRunOperationOwner } from "./sessionOperation";
+import { workspaceRunHoldsOperation } from "./attachments";
 
 const ACTIVE_RUN_STATUSES = ["queued", "in_progress", "streaming"] as const;
 
@@ -82,8 +84,8 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
       const token = randomBytes(32).toString("base64url");
       const issued = await prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, binding.sessionId);
-        if (!session || session.state === "DELETING" || binding.operationOwner !== workspaceRunOperationOwner(binding.runId) ||
-          session.operationOwner !== binding.operationOwner || session.version !== binding.operationGeneration) {
+        if (!session || session.state === "DELETING" || session.operationOwner !== binding.operationOwner ||
+          session.version !== binding.operationGeneration || !await workspaceRunHoldsOperation(tx, session, binding.runId)) {
           throw new WorkspaceRuntimeError("workspace_operation_stale");
         }
         await tx.$queryRaw`SELECT "modelRunId" FROM "WorkspaceCodeGrant" WHERE "modelRunId" = ${binding.runId} FOR UPDATE`;
@@ -224,6 +226,8 @@ export type WorkspaceCodeGatewayStore = Readonly<{
     serverId: string;
     toolName: string;
   }>): Promise<WorkspaceCodeClaim>;
+  /** Bind the exact definition and find earlier uncertain effects before an interactive write. */
+  unknownEffect?(input: CodeMcpUnknownEffectInput): Promise<Date | null>;
   settle(input: Readonly<{
     durationMs: number;
     errorCode: string | null;
@@ -292,7 +296,11 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         where: { modelRunId: grant.runId, tokenHash: grant.tokenHash, revokedAt: null,
           binding: {
             workspaceSessionId: grant.sessionId,
-            workspaceSession: { operationOwner: workspaceRunOperationOwner(grant.runId), state: { not: "DELETING" } },
+            // The run's own operation, or the shared one it is attached under (`attachments.ts`).
+            workspaceSession: { state: { not: "DELETING" }, OR: [
+              { operationOwner: workspaceRunOperationOwner(grant.runId) },
+              { operationOwner: { startsWith: "run:" }, attachments: { some: { modelRunId: grant.runId } } }
+            ] },
             modelRun: { userId: grant.userId, status: { in: [...ACTIVE_RUN_STATUSES] },
               chat: { userId: grant.userId, user: { status: "active" } } }
           } },
@@ -332,6 +340,8 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         return { kind: "claimed" as const, id, sequence: grant.callCount };
       });
     },
+
+    unknownEffect: input => bindCodeMcpEffect(prisma, input),
 
     async settle(input) {
       // The first terminal writer wins: a revocation may already have made it unknown.

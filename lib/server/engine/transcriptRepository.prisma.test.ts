@@ -65,7 +65,9 @@ describe("native transcript repository", () => {
     await expect(transcripts.nextSequence(scope)).resolves.toBe(2);
     await transcripts.append(scope, 2, [answer!]);
     const loaded = await transcripts.loadRuns({ chatId: run.chatId, runIds: [run.runId], userId });
-    expect(loaded.get(run.runId)).toEqual([call, result, answer]);
+    expect(loaded.get(run.runId)).toEqual([
+      { ...call, recordedAt: expect.any(Date) }, { ...result, recordedAt: expect.any(Date) }, answer
+    ]);
     // A taken sequence refuses the whole batch.
     await expect(transcripts.append(scope, 2, turn())).rejects.toThrow();
     await expect(transcripts.nextSequence(scope)).resolves.toBe(3);
@@ -139,19 +141,21 @@ describe("native transcript repository", () => {
     const siblingRun = await oldRun(question.id, sibling.id);
     await call(siblingRun.id, 0, "running", "sibling");
     await runs.failRun(siblingRun.id, sibling.id, RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
-    await expect(prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: sent.id } })).resolves.toMatchObject({ state: "error" });
+    // Retirement closed the running call: its unknown outcome is recorded at that moment, the fence a decision must follow.
+    const retired = await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: sent.id } });
+    expect(retired).toMatchObject({ completedAt: expect.any(Date), state: "error" });
     // Continue: the answer stopped without text, so the context leaves it out; the next turn still follows it.
     const next = await message("user", answer.id);
 
     const expected = [{ assistantMessageId: answer.id, userMessageId: question.id, items: [
       { arguments: "{\"summary\":\"earlier\"}", callId: `retired-${done.id}`, id: `retired-${done.id}-call`, kind: "tool_call",
-        name: "mcp_jira_create_issue" },
+        name: "mcp_jira_create_issue", recordedAt: done.startedAt ?? done.createdAt },
       { callId: `retired-${done.id}`, id: `retired-${done.id}-result`, kind: "tool_result", name: "mcp_jira_create_issue",
-        outcome: "complete", output: "" },
+        outcome: "complete", output: "", recordedAt: done.completedAt ?? done.startedAt ?? done.createdAt },
       { arguments: "{\"summary\":\"x\"}", callId: `retired-${sent.id}`, id: `retired-${sent.id}-call`, kind: "tool_call",
-        name: "mcp_jira_create_issue" },
+        name: "mcp_jira_create_issue", recordedAt: sent.startedAt ?? sent.createdAt },
       { callId: `retired-${sent.id}`, id: `retired-${sent.id}-result`, kind: "tool_result", name: "mcp_jira_create_issue",
-        outcome: "unknown", output: "" }
+        outcome: "unknown", output: "", recordedAt: retired.completedAt ?? retired.startedAt ?? retired.createdAt }
     ] }];
     await expect(transcripts.retiredRunEffects({ assistantMessageIds: [], chatId: chat.id, userId,
       userMessageIds: [question.id, next.id] })).resolves.toEqual(expected);

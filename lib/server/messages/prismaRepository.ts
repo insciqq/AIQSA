@@ -79,6 +79,12 @@ async function lockOwnedChatForMessage(
   return chats[0] ?? null;
 }
 
+/**
+ * The main agent's active run holds off edits, branches and deletions; a
+ * background sub-agent runs beside it (one active run per thread) and never
+ * does: an edit branches past it, and a deletion stops the ones under the
+ * deleted subtree first (`createDeleteMessageHandler`).
+ */
 async function assertChatHasNoActiveRun(tx: Prisma.TransactionClient, chatId: string) {
   const activeRun = await tx.modelRun.findFirst({
     select: {
@@ -89,7 +95,8 @@ async function assertChatHasNoActiveRun(tx: Prisma.TransactionClient, chatId: st
       chatId,
       status: {
         in: activeRunStatuses
-      }
+      },
+      subagentTurnId: null
     }
   });
 
@@ -289,7 +296,8 @@ export function createPrismaMessageBranchRepository(
                   select: {
                     providerRunBindings: {
                       select: { providerModelId: true },
-                      where: { role: "answer" }
+                      // The answer model's own binding, never a sub-agent model's.
+                      where: { bindingKey: "answer", role: "answer" }
                     }
                   },
                   where: {
@@ -702,6 +710,11 @@ export function createPrismaMessageBranchRepository(
 
         const deletedRunScope: Prisma.ModelRunWhereInput = { chatId: root.chatId,
           OR: [{ assistantMessageId: { in: deletedMessageIds } }, { userMessageId: { in: deletedMessageIds } }] };
+        // A background sub-agent of the subtree that started after its stop (the stop runs before this transaction):
+        // its run shares a deleted user message, so the deletion waits for it rather than cut it off mid-call.
+        const activeSubagentRun = await tx.modelRun.findFirst({ select: { id: true, status: true },
+          where: { ...deletedRunScope, status: { in: activeRunStatuses } } });
+        if (activeSubagentRun) throw new ActiveMessageMutationConflictError(activeSubagentRun);
         // Release deleted image outputs into ordinary orphan retention before
         // their producer calls/runs disappear. Saved copies retain their objects.
         await tx.attachment.updateMany({

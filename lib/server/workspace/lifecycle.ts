@@ -17,6 +17,7 @@ import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceRuntime, WorkspaceOutputStream } from "./runtime";
 import { WorkspaceRuntimeError } from "./runtime";
 import { activeModelRunStatuses } from "@/lib/server/runs/prismaRepositoryShared";
+import { WORKSPACE_SUBAGENTS_RUNNING_CODE } from "@/lib/contracts/subagents";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
 
 type LockedChat = Readonly<{
@@ -83,7 +84,9 @@ export type WorkspaceLifecycleErrorCode =
   | "workspace_not_started"
   | "workspace_reset_conflict"
   | "workspace_runtime_unavailable"
-  | "workspace_session_lost";
+  | "workspace_session_lost"
+  /** Reset while sub-agent runs use the chat's Workspace: "stop the sub-agents first" (operator decision 2026-10-29). */
+  | typeof WORKSPACE_SUBAGENTS_RUNNING_CODE;
 
 export class WorkspaceLifecycleError extends Error {
   readonly code: WorkspaceLifecycleErrorCode;
@@ -172,6 +175,10 @@ export function createWorkspaceLifecycleService(input: Readonly<{
           404
         );
       }
+      // A reset under running sub-agents would wipe their work: the user stops them first, and is told so.
+      if (operation === "reset" && await tx.modelRun.count({
+        where: { chatId: chat.id, status: { in: activeModelRunStatuses }, subagentTurnId: { not: null } }
+      }) > 0) throw new WorkspaceLifecycleError(WORKSPACE_SUBAGENTS_RUNNING_CODE);
       const activeRuns = await tx.modelRun.count({
         where: { chatId: chat.id, status: { in: activeModelRunStatuses } }
       });

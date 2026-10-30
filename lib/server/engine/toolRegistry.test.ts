@@ -46,6 +46,19 @@ describe("native tool registry", () => {
     expect(off.definitions().map((tool) => tool.name)).toEqual([READ_TOOL_RESULT_NAME]);
   });
 
+  it("shares the answer's page-reader session with a sub-agent's registry, so its cap and cache count every agent's reads", async () => {
+    const fetchRequest = request({ fetchUrl: { userUrlDigests: [], version: 1 } });
+    const main = await buildToolRegistry(input({ request: fetchRequest }));
+    expect(main.fetchUrlSession).toBeDefined();
+    const execute = vi.spyOn(main.fetchUrlSession!, "execute").mockResolvedValue({ callId: "c1", content: [], name: "fetch_url",
+      status: "complete" });
+    const sub = await buildToolRegistry(input({ fetchUrlSession: main.fetchUrlSession!, request: fetchRequest }));
+    expect(sub.fetchUrlSession).toBe(main.fetchUrlSession);
+    await sub.resolve("fetch_url")!.execute({ call: { arguments: { url: "https://news.example/" }, id: "c1", name: "fetch_url" },
+      ordinal: 0, persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps Memory search results within the run that searched", async () => {
     const memorySearch = { comparisonResultTokens: 12000, destinations: [], maxCalls: 3, memoryGeneration: 1, referenceChatHistory: true,
       resultTokens: 6000, timeoutSeconds: 30, version: "memory-search-v1" } as const;
@@ -139,6 +152,40 @@ describe("native tool registry", () => {
     expect(coordinator.execute).not.toHaveBeenCalled();
   });
 
+  it("runs each agent's Workspace calls as that agent, and refuses a sub-agent's browser on an older image", async () => {
+    const execute = vi.fn(async () => ({ callId: "c1", content: [], name: "workspace_shell", status: "complete" as const }));
+    const coordinator = { accepts: () => true, execute,
+      tools: vi.fn(async () => [{ capability: "workspace" as const, description: "Run a command", inputSchema: { type: "object" },
+        name: "workspace_shell" }]) } as unknown as WorkspaceCoordinator;
+    const build = (agent: ToolRegistryInput["agent"], imageRef: string) => buildToolRegistry(input({ ...(agent ? { agent } : {}),
+      request: request({ workspace: { enabled: true, imageRef } as ProviderRunRequest["workspace"] }),
+      services: { repository: {} as never, savedResults: { read: vi.fn(async () => null) }, workspace: coordinator } }));
+    const execution = (command: string) => ({ call: { arguments: { command }, id: "c1", name: "workspace_shell" }, ordinal: 0,
+      persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
+    const subagent = { kind: "subagent" as const, name: "shop", threadId: "thread-1" };
+    await (await build(subagent, "aiqsa-workspace:0.1.40")).resolve("workspace_shell")!.execute(execution("aiqsa-browser open https://shop.example"));
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ agent: subagent, runId: "run" }));
+    await (await build({ kind: "main" }, "aiqsa-workspace:0.1.39")).resolve("workspace_shell")!.execute(execution("aiqsa-browser open x"));
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { kind: "main" } }));
+    execute.mockClear();
+    const old = await build(subagent, "aiqsa-workspace:0.1.39");
+    const refused = await old.resolve("workspace_shell")!.execute(execution("aiqsa-browser open https://shop.example"));
+    expect(refused).toMatchObject({ status: "error", content: [{ value: { error: "browser_unavailable_for_subagents" } }] });
+    await old.resolve("workspace_shell")!.execute(execution("ls /workspace/project"));
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the custom sub-agent management tools with the self-service owners the chat takes", async () => {
+    const selfService = { assistants: {} as never, db: {} as never, storage: {} as never,
+      subagents: { db: {} as never, models: vi.fn(async () => []) } };
+    const secrets = { list: vi.fn(async () => []), read: vi.fn() } as never;
+    const names = async (tools?: readonly string[]) => (await buildToolRegistry(input({ request: request(), services: {
+      repository: {} as never, savedResults: { read: vi.fn(async () => null) }, secrets,
+      selfService: { ...selfService, ...(tools ? { tools } : {}) } } }))).definitions().map((tool) => tool.name);
+    expect(await names()).toEqual(expect.arrayContaining(["create_subagent", "edit_subagent", "delete_subagent"]));
+    expect(await names(["read_aiqsa_guide"])).not.toContain("create_subagent");
+  });
+
   it("offers direct view only where admission froze it, the same tool list every turn of a fixed model", async () => {
     const coordinator = { accepts: () => true, execute: vi.fn(), tools: vi.fn(async () => []) } as unknown as WorkspaceCoordinator;
     const workspace = { enabled: true, outputDirectory: "/workspace/output/run" } as ProviderRunRequest["workspace"];
@@ -221,4 +268,19 @@ describe("native tool registry", () => {
     expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ purpose: "web_search",
       usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 }) }));
   });
+});
+
+it("wires the frozen guard into MCP writes even with standing consent, with no effect on reads", async () => {
+  const guard = { plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: ["Create an issue"] } as const;
+  const base = input({ request: request({ mcp: snapshot, mcpApproval: mcpApprovalAdmission(["jira"], guard) }) });
+  const check = vi.fn(async () => ({ decision: "allow" as const, reason: "You requested this change." }));
+  const registry = await buildToolRegistry({ ...base, services: { ...base.services, mcpGuard: { check } } });
+  const signal = new AbortController().signal;
+  const write = { id: "write", name: "mcp_jira_create_issue", arguments: { summary: "Test" } };
+  expect(await registry.resolve(write.name)?.guardedApproval?.(write, signal)).toMatchObject({ guard: { decision: "allow" } });
+  expect(check).toHaveBeenCalledExactlyOnceWith({ admission: guard, runId: "run", userId: "user", signal,
+    tool: { serverName: "Jira", toolName: "create_issue", description: "Create an issue", annotations: undefined, arguments: { summary: "Test" } } });
+  const read = { id: "read", name: "mcp_jira_get_issue", arguments: {} };
+  expect(await registry.resolve(read.name)?.guardedApproval?.(read, signal)).toBeUndefined();
+  expect(check).toHaveBeenCalledTimes(1);
 });

@@ -44,6 +44,8 @@ def exit_code(code: str) -> int:
         return EXIT_CAPTCHA
     if code in ("user_in_control", "user_returned_control"):
         return EXIT_USER_IN_CONTROL
+    if code in ("browser_busy", "browser_memory_low"):
+        return EXIT_UNAVAILABLE
     if code.startswith("session_") or code.startswith("browser_session_"):
         return EXIT_SESSION
     if code in ("invalid_arguments", "invalid_path"):
@@ -124,6 +126,7 @@ def _parser() -> argparse.ArgumentParser:
     command = commands.add_parser("status", help="Chromium version, language, time zone, tabs and saved sessions.")
     command.add_argument("--markers", action="store_true", help="Also check automation markers in the page and a worker.")
     commands.add_parser("close", help="Close the browser now.")
+    commands.add_parser("release", help="Release this agent's browser slot and close its tabs.")
     return parser
 
 

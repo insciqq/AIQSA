@@ -19,6 +19,7 @@ import {
 import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { createWorkspaceLifecycleService } from "./lifecycle";
 import { createWorkspaceSkillBundles } from "../skills/workspaceBundles";
+import { interruptAttachedRuns } from "../runs/attachedRunInterruption";
 
 export const workspaceConfig = getWorkspaceConfig();
 // Each server bundle (route handlers, the instrumentation scheduler) builds
@@ -51,6 +52,8 @@ export const workspaceAdmissionService = createWorkspaceAdmissionService({
 export function workspaceCoordinatorForStorage(storage: StorageAdapter) {
   return createWorkspaceCoordinator({
     config: workspaceConfig,
+    // Runs a forced VM stop ended under them end interrupted, with Continue (`attachedRunInterruption.ts`).
+    onAttachedRunsInterrupted: interruptAttachedRuns,
     registry: createPrismaWorkspaceExecutionRegistry(prisma),
     repository: createPrismaWorkspaceCoordinatorRepository(prisma),
     skills: createWorkspaceSkillBundles(prisma, storage),

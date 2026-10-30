@@ -10,6 +10,24 @@ export const BROWSER_HANDOFF_TOOL = "browser_handoff";
 /** Image tools the guide names; `browserGuidance.test.ts` keeps them equal to the tools' own names. */
 export const BROWSER_GUIDE_IMAGE_TOOLS = { view: "view_workspace_image", analyze: "analyze_image" } as const;
 
+/** The first guest image that understands per-agent browser slots and tabs. */
+export const WORKSPACE_BROWSER_AGENT_IMAGE = "aiqsa-workspace:0.1.40";
+export const WORKSPACE_BROWSER_AGENT_IMAGE_VERSION = 40;
+
+/** Old guests are safe for the main agent, but not for shared sub-agent tabs. */
+export function workspaceBrowserAgentAvailable(imageRef: string, agentKind: "main" | "subagent"): boolean {
+  if (agentKind === "main") return true;
+  const match = /^aiqsa-workspace:0\.1\.(\d+)$/u.exec(imageRef);
+  return match !== null && Number(match[1]) >= WORKSPACE_BROWSER_AGENT_IMAGE_VERSION;
+}
+
+/**
+ * The VM's one browser guide is read by the main agent and its sub-agents alike, and a sub-agent's refused browser
+ * call carries the same text, so it reads correctly for either.
+ */
+export const WORKSPACE_BROWSER_OLD_IMAGE_NOTICE =
+  "On this Workspace image only the main agent can use the browser; sub-agents cannot, until the Workspace is recreated on a current image. A sub-agent that needs the browser reports that to the main agent instead.";
+
 export const WORKSPACE_WEBSITE_ACTION_SAFETY =
   "Do not make payments, place orders or perform other irreversible website actions unless the current user message explicitly requests that action.";
 
@@ -19,16 +37,17 @@ export const WORKSPACE_WEBSITE_ACTION_SAFETY =
  * one full Chromium per turn kept between commands. The image tools are named,
  * not promised: the model uses the one its request offers.
  */
-export const WORKSPACE_BROWSER_GUIDANCE = [
+const WORKSPACE_BROWSER_GUIDANCE_BASE = [
   "# Browser",
   "",
   "A full Chromium runs for this turn. Drive it with the preinstalled `aiqsa-browser` command, or in Python with `from aiqsa import browser as b`. Do not install browser packages, run playwright install or start your own Playwright browser.",
   "The browser stays open between your commands for the rest of this turn: tabs, cookies and the current page survive; your Python variables do not. It ends with the turn.",
+  "When sub-agents share this browser, each agent has its own current tab and up to three tabs. `tabs` lists only your tabs and says how many belong to other agents; never act on a tab you did not open. Up to five agents can browse at once. If the browser says `browser_busy` or `browser_memory_low`, wait, close one of your tabs, or try later. Run `release` when you are done; the server also releases your slot when your call or run ends.",
   "The user can watch this browser live in the web chat and take control of it at any time. While they hold it, your browser commands wait a few seconds and then fail with `user_in_control`: do not act on the page then; wait and try again, or answer with what you have. Your first page command after they give it back does not run: it fails with `user_returned_control`, saying so and where the page is now; look at the page before you act again. While they had control they may have changed things: added items to a cart, filled in or changed a form, signed in, opened another page. Those changes are theirs and intended: keep them, work from the page as they left it and say in your answer what they changed, as far as your own steps show; never undo them unless the user's message asks.",
   "",
   "## Acting on a page",
   "",
-  `Start with ${sandboxExecToolName}: program \`aiqsa-browser\`, arguments \`open\` and the address. Every action prints one step line, such as \`[browser #3] click: button "Add to cart" @ shop.example/cart\`, then the page: its URL, title and the numbered elements on screen, such as \`[12] button "Add to cart"\`. Act by number. An element keeps its number while it stays on the page; take numbers from the latest output.`,
+  `Start with ${sandboxExecToolName}: program \`aiqsa-browser\`, arguments \`open\` and the address. Every action prints one step line, such as \`[browser #3] click: button "Add to cart" @ shop.example/cart\` (a sub-agent line includes its name, for example \`[browser #3 · shop-amazon]\`), then the page: its URL, title and the numbered elements on screen, such as \`[12] button "Add to cart"\`. Act by number. An element keeps its number while it stays on the page; take numbers from the latest output.`,
   "",
   "- `open URL`, `back`, `forward`, `reload`",
   "- `info` (elements on screen), `info --all` (the whole page), `find TEXT` (matching elements anywhere; clicking scrolls to them)",
@@ -36,9 +55,9 @@ export const WORKSPACE_BROWSER_GUIDANCE = [
   "- `scroll [down|up|top|bottom|N]`, `wait --text TEXT` (or `--selector`, `--url`; `--timeout` seconds up to 120)",
   "- `text [N] [--start K]` (visible text in pages of 6000 characters), `js EXPRESSION` (reads page data as bounded JSON; never use it to click, " +
     "fill in, solve a challenge or change how the browser identifies itself; refused while a CAPTCHA shows)",
-  "- `shot [N] [--full] [--path PATH]`, `tabs`, `tab I`, `new-tab [URL]`, `close-tab [I]`, `save-session [SITE]`, `steps`, `status`, `close`",
+  "- `shot [N] [--full] [--path PATH]`, `tabs`, `tab I`, `new-tab [URL]`, `close-tab [I]`, `save-session [SITE]`, `steps`, `status`, `release`, `close`",
   "",
-  "In Python the same names are functions: `b.open(url)`, `print(b.page_info())`, `b.click(12)`, `b.type(3, text, submit=True)`, `b.type(4, env=\"NAME\")`, `print(b.find(\"Add to cart\"))`, `b.screenshot()`, `b.save_session()`. Each action prints its step line and returns the page; `page.items` lists the elements as dicts with `n`, `role` and `name`. Failures raise `b.BrowserError` with a stable `code`.",
+  "In Python the same names are functions: `b.open(url)`, `print(b.page_info())`, `b.click(12)`, `b.type(3, text, submit=True)`, `b.type(4, env=\"NAME\")`, `print(b.find(\"Add to cart\"))`, `b.screenshot()`, `b.save_session()`, `b.release()`. Each action prints its step line and returns the page; `page.items` lists the elements as dicts with `n`, `role` and `name`. Failures raise `b.BrowserError` with a stable `code`.",
   "Read pages with `text` and `find` first. When layout matters or something looks wrong, run `shot` and look at the PNG it prints with " +
     `${BROWSER_GUIDE_IMAGE_TOOLS.view} when that tool is offered, otherwise ${BROWSER_GUIDE_IMAGE_TOOLS.analyze}. Screenshots stay in /workspace/project/.browser.`,
   "When the task ends with its result on a page (a filled cart, an order or booking summary before payment, a sent form, the offers or places the user asked you to find), " +
@@ -78,3 +97,15 @@ export const WORKSPACE_BROWSER_GUIDANCE = [
     "Its browser announces automation, so some sites block it: use Playwright for Python directly (`from playwright.sync_api import sync_playwright`, " +
     "`p.chromium.launch(headless=True)`) and tell the user when a site refuses it."
 ].join("\n");
+
+/** The browser guide for the admitted guest image and agent kind. */
+export function workspaceBrowserGuidance(agentKind: "main" | "subagent" = "main", imageRef = WORKSPACE_BROWSER_AGENT_IMAGE): string {
+  if (agentKind === "main" || workspaceBrowserAgentAvailable(imageRef, agentKind)) return WORKSPACE_BROWSER_GUIDANCE_BASE;
+  return WORKSPACE_BROWSER_GUIDANCE_BASE.replace(
+    "If `aiqsa-browser` is missing,",
+    `${WORKSPACE_BROWSER_OLD_IMAGE_NOTICE}\n\nIf \`aiqsa-browser\` is missing,`
+  );
+}
+
+/** Default guide used by main-agent chats and current guest images. */
+export const WORKSPACE_BROWSER_GUIDANCE = workspaceBrowserGuidance();

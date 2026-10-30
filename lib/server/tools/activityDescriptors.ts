@@ -120,6 +120,10 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   descriptors.set("manage_secret", { origin: "session", serverName: "Secrets", toolName: "manage_secret" });
   descriptors.set("manage_skill", { origin: "session", serverName: "Skills", toolName: "manage_skill" });
   descriptors.set("manage_assistant", { origin: "session", serverName: "Assistants", toolName: "manage_assistant" });
+  // Custom sub-agent management (`lib/server/subagents/managementTools.ts`), offered beside them.
+  for (const name of ["create_subagent", "edit_subagent", "delete_subagent"]) {
+    descriptors.set(name, { origin: "session", serverName: "Sub-agents", toolName: name });
+  }
   if (normalizedRequest.fetchUrl) descriptors.set("fetch_url", { origin: "web_fetch", serverName: "Web", toolName: "fetch_url" });
   // The chat form of System Vision; Workspace analysis keeps its existing activity.
   if (normalizedRequest.visionAnalysis && normalizedRequest.workspace === undefined) {

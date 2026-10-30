@@ -1,12 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   BROWSER_LIVE_LIMITS,
+  BROWSER_LIVE_MAIN_AGENT,
   BROWSER_LIVE_PROTOCOL_VERSION,
   browserLiveFrameEventSchema,
   browserLiveStateEventSchema,
   browserLiveStepsEventSchema,
   type BrowserHandoffOutcome,
   type BrowserHandoffReason,
+  type BrowserLiveAgentRef,
   type BrowserLiveControlRequest,
   type BrowserLiveEndReason,
   type BrowserLiveErrorCode,
@@ -17,6 +19,8 @@ import {
   type BrowserLiveStep
 } from "@/lib/contracts/browserLive";
 import { logEvent } from "../observability";
+import { WORKSPACE_AGENT_PROTOCOL } from "../subagents/guestProtocol";
+import { BROWSER_LIVE_MAIN_REF, BrowserLiveAgents, browserLivePage, guestMessageAgent } from "./browserLiveAgents";
 import type { WorkspaceBrowserLiveAction, WorkspaceBrowserLiveReply } from "./runtime";
 
 /**
@@ -37,6 +41,10 @@ import type { WorkspaceBrowserLiveAction, WorkspaceBrowserLiveReply } from "./ru
  * Control is this server's record, set only by the owner's authenticated Take and Return and by the pending
  * handoff: agent code shares the guest, so a guest report may hand control back to the agent (its grace ended, its
  * host restarted) but never give it to the user. The guest enforces the same control for the agent's actions.
+ *
+ * Several agents (the main agent and its sub-agents) browse one shared browser, each in its own tabs: control,
+ * handoffs and selection are per agent (`browserLiveAgents.ts`), the streamer streams the selected agent's tab, and
+ * one owner check covers every agent's stream and input, since they are one run's live browser.
  *
  * The relay is one object per process (`globalThis`), shared by the engine's bundle and the routes', so its code
  * never relies on `instanceof` across bundles: failures are read by their `code`.
@@ -77,6 +85,11 @@ export type BrowserLiveRegistration = Readonly<{
   channel(request: BrowserLiveChannelRequest): Promise<WorkspaceBrowserLiveReply>;
   chatId: string;
   runId: string;
+  /**
+   * Whether the run still holds the chat's Workspace (`workspaceRunHoldsOperation`): a run gone without `end` is
+   * dropped from the channel. Absent: the run stays a member until its `end`.
+   */
+  attached?(): Promise<boolean>;
   /** Whether a sign-in made in this browser is saved to the owner's Secrets after the turn (asked once, lazily). */
   signInRemembered(): Promise<boolean>;
   userId: string;
@@ -95,27 +108,29 @@ export type BrowserLiveHandoffResult =
   | Readonly<{ kind: "ended"; outcome: BrowserHandoffOutcome; page: Readonly<{ title: string; url: string }> | null; saved: string | null }>
   /** No tab is open in the run's browser (the agent has not opened a page). */
   | Readonly<{ kind: "no_browser" }>
-  /** Another handoff of the run is waiting. */
+  /** Another handoff of the same agent is waiting. */
   | Readonly<{ kind: "busy" }>
   /** The live channel cannot reach this run's browser: a runtime or guest image without it, or a stopped guest. */
   | Readonly<{ kind: "unavailable" }>;
 
+/** One agent's handoff: `agent` is the asking agent (the main agent when absent), whose tab the user is given. */
+export type BrowserLiveHandoffInput = Readonly<{
+  agent?: BrowserLiveAgentRef;
+  message: string;
+  reason: BrowserHandoffReason;
+  signal: AbortSignal;
+  waitMs: number;
+}>;
+
 /** What the engine holds of its run. */
 export type BrowserLiveRunHandle = Readonly<{
   end(reason?: Extract<BrowserLiveEndReason, "browser_stopped" | "run_finished">): Promise<void>;
-  handoff(input: Readonly<{ message: string; reason: BrowserHandoffReason; signal: AbortSignal; waitMs: number }>): Promise<BrowserLiveHandoffResult>;
+  handoff(input: BrowserLiveHandoffInput): Promise<BrowserLiveHandoffResult>;
 }>;
 
 type GuestMessage = Readonly<Record<string, unknown>>;
 type Ack = Readonly<{ ok?: unknown; code?: unknown; page?: unknown; saved?: unknown }>;
-type PendingHandoff = {
-  readonly expiresAt: number;
-  readonly id: string;
-  readonly message: string;
-  readonly reason: BrowserHandoffReason;
-  readonly resolve: (outcome: BrowserHandoffOutcome | "aborted") => void;
-  readonly startedAt: number;
-};
+const AGENT_FIELD = WORKSPACE_AGENT_PROTOCOL.LIVE_AGENT_FIELD;
 
 class Streamer {
   buffer = "";
@@ -134,7 +149,8 @@ class Streamer {
   readonly waiters = new Map<string, (ack: Ack) => void>();
   private announce: () => void = () => undefined;
 
-  constructor(readonly execSessionId: string, public frames: boolean) {
+  /** `owner`: the run whose channel started it; the runtime serves a streamer only to that run. */
+  constructor(readonly execSessionId: string, public frames: boolean, readonly owner: BrowserLiveRegistration) {
     this.firstState = new Promise<void>((resolve) => { this.announce = resolve; });
   }
 
@@ -178,16 +194,7 @@ export function decodeBrowserLiveLine(line: string): GuestMessage | null {
   }
 }
 
-function pageOf(value: unknown): BrowserLiveStateEvent["page"] {
-  if (typeof value !== "object" || value === null) return null;
-  const page = { title: (value as { title?: unknown }).title, url: (value as { url?: unknown }).url };
-  const parsed = browserLiveStateEventSchema.shape.page.safeParse(page);
-  return parsed.success ? parsed.data : null;
-}
-
-function samePage(left: BrowserLiveStateEvent["page"], right: BrowserLiveStateEvent["page"]): boolean {
-  return left === right || (left !== null && right !== null && left.url === right.url && left.title === right.title);
-}
+const pageOf = browserLivePage;
 
 function streamerLine(message: Readonly<Record<string, unknown>>): string {
   return JSON.stringify(message) + "\n";
@@ -195,19 +202,19 @@ function streamerLine(message: Readonly<Record<string, unknown>>): string {
 
 class LiveRun implements BrowserLiveRunHandle {
   browser: BrowserLiveStateEvent["browser"] = "absent";
-  controller: BrowserLiveStateEvent["controller"] = "agent";
   ended = false;
+  /** The browsing agents, control and handoffs per agent, and the agent the stream shows. */
+  private readonly agents = new BrowserLiveAgents();
   private ending: Promise<void> | null = null;
+  /** The latest frame of the selected agent's tab. */
   private frame: BrowserLiveFrameEvent | null = null;
-  private pending: PendingHandoff | null = null;
-  private handoffStarting = false;
   private inputs = new Map<string, number[]>();
   private linger: ReturnType<typeof setTimeout> | null = null;
-  private page: BrowserLiveStateEvent["page"] = null;
   private remembered: boolean | null = null;
   private retries = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private starting: Promise<Streamer> | null = null;
+  /** The newest steps of the selected agent. */
   private steps: BrowserLiveStep[] | null = null;
   private streamer: Streamer | null = null;
   /** Without a live view in this guest image or runtime: nothing is started again. */
@@ -215,7 +222,59 @@ class LiveRun implements BrowserLiveRunHandle {
   private readonly views = new Map<string, Readonly<{ viewer: BrowserLiveViewer; writer: BrowserLiveWriter }>>();
   private writes: Promise<unknown> = Promise.resolve();
 
-  constructor(readonly registration: BrowserLiveRegistration, private readonly forget: () => void) {}
+  /**
+   * The runs of the chat that use this browser (main agent and sub-agent runs of one shared Workspace): the live
+   * channel belongs to the session and ends with its last run. The newest member starts streamers and reports.
+   */
+  private readonly members: BrowserLiveRegistration[];
+
+  constructor(registration: BrowserLiveRegistration, private readonly forget: () => void) {
+    this.members = [registration];
+  }
+
+  get registration(): BrowserLiveRegistration {
+    return this.members.at(-1)!;
+  }
+
+  /** Another run of the chat joins the channel (its own handle ends only its membership). */
+  join(registration: BrowserLiveRegistration): BrowserLiveRunHandle {
+    if (!this.members.some((member) => member.runId === registration.runId)) this.members.push(registration);
+    void this.pruneMembers(registration.runId);
+    return this.handle(registration.runId);
+  }
+
+  /** Drops members whose runs no longer hold the Workspace (one that crashed without `end`), so none keeps the channel. */
+  private async pruneMembers(keep: string): Promise<void> {
+    const alive = await Promise.all(this.members.map((member) => member.runId === keep || !member.attached
+      ? Promise.resolve(true) : member.attached().catch(() => true)));
+    const gone = new Set(this.members.filter((_member, index) => !alive[index]));
+    for (let index = this.members.length - 1; index >= 0; index -= 1) {
+      if (gone.has(this.members[index]!)) this.members.splice(index, 1);
+    }
+  }
+
+  handle(runId: string): BrowserLiveRunHandle {
+    return { end: (reason) => this.leave(runId, reason), handoff: (input) => this.handoff(input) };
+  }
+
+  /**
+   * One run's turn ended. The channel ends with the last run, or for everyone when the browser stopped; otherwise a
+   * streamer the leaving run started is replaced through a remaining run before the leaving run's authority goes.
+   */
+  async leave(runId: string, reason: Extract<BrowserLiveEndReason, "browser_stopped" | "run_finished"> = "run_finished"): Promise<void> {
+    if (!this.members.some((member) => member.runId === runId)) return;
+    if (reason !== "browser_stopped") await this.pruneMembers(runId);
+    const index = this.members.findIndex((member) => member.runId === runId);
+    if (index < 0) return;
+    if (this.members.length === 1 || reason === "browser_stopped") return this.end(reason);
+    this.members.splice(index, 1);
+    const streamer = this.streamer;
+    // A streamer whose run left (now, or a pruned one) is replaced through a remaining run.
+    if (streamer && !this.members.includes(streamer.owner)) {
+      await Promise.race([this.rotate(streamer), delay(BROWSER_LIVE_RELAY_LIMITS.endMs)]);
+    }
+    this.broadcastState();
+  }
 
   // Views ---------------------------------------------------------------------------------------------------------
 
@@ -232,9 +291,11 @@ class LiveRun implements BrowserLiveRunHandle {
       this.views.delete(oldestId);
       oldest.writer.close({ data: { reason: "replaced" }, event: "end" });
     }
+    // The panel opens on the agent that needs the user, or the one that acted last, unless the owner chose one.
+    if (this.views.size === 0 && this.agents.viewOpened()) this.selectionMoved();
     const id = randomUUID();
     this.views.set(id, { viewer, writer });
-    if (!writer.send("state", this.stateEvent()) || (this.steps && !writer.send("steps", { steps: this.steps }))) {
+    if (!writer.send("state", this.stateEvent()) || (this.steps && !writer.send("steps", { agent: this.agents.selected, steps: this.steps }))) {
       this.views.delete(id);
       writer.close();
       return null;
@@ -256,38 +317,53 @@ class LiveRun implements BrowserLiveRunHandle {
     this.scheduleLinger();
   }
 
-  /** One input from the owner, applied in arrival order, only while the user holds the browser. */
+  /** One input from the owner into the agent's tab it names, in arrival order, only while the user holds that tab. */
   async input(viewer: BrowserLiveViewer, input: BrowserLiveInput): Promise<BrowserLiveErrorCode | null> {
     if (this.ended) return "browser_live_not_found";
     if (!this.allow(viewer.userId)) return "browser_live_rate_limited";
-    if (!this.userControls()) return "browser_live_not_in_control";
+    const { agent = BROWSER_LIVE_MAIN_AGENT, ...event } = input;
+    if (!this.agents.userControls(agent)) return "browser_live_not_in_control";
     const streamer = this.streamer;
     if (!streamer || streamer.closed) return "browser_live_unavailable";
     try {
-      await this.write(streamer, { input, t: "input" });
+      await this.write(streamer, { [AGENT_FIELD]: agent, input: event, t: "input" });
     } catch {
       return "browser_live_unavailable";
     }
     return null;
   }
 
-  /** Take control or Return control (watch mode); a pending handoff is answered with Done or Cancel instead. */
-  async control(_viewer: BrowserLiveViewer, action: BrowserLiveControlRequest["action"]): Promise<BrowserLiveErrorCode | null> {
+  /**
+   * Take control or Return control of one agent's tab (watch mode; a pending handoff is answered with Done or Cancel
+   * instead), or the agent whose tab the stream shows.
+   */
+  async control(_viewer: BrowserLiveViewer, request: BrowserLiveControlRequest | BrowserLiveControlRequest["action"]):
+    Promise<BrowserLiveErrorCode | null> {
     if (this.ended) return "browser_live_not_found";
-    if (this.pending) return action === "take" ? null : "browser_live_unavailable";
-    if (this.browser !== "running") return "browser_live_unavailable";
-    const ack = await this.command({ action, t: "control" }).catch(() => null);
+    const asked: Readonly<{ action: BrowserLiveControlRequest["action"]; agent?: string }> =
+      typeof request === "string" ? { action: request } : request;
+    const agent = asked.agent ?? BROWSER_LIVE_MAIN_AGENT;
+    if (asked.action === "select") {
+      const selected = this.agents.select(agent);
+      if (!selected.ok) return "browser_live_unavailable";
+      if (selected.changed) this.selectionMoved();
+      return null;
+    }
+    const action = asked.action;
+    if (this.agents.pendingOf(agent)) return action === "take" ? null : "browser_live_unavailable";
+    if (this.browser !== "running" || !this.agents.browsing(agent)) return "browser_live_unavailable";
+    const ack = await this.command({ action, [AGENT_FIELD]: agent, t: "control" }).catch(() => null);
     if (ack?.ok !== true) return "browser_live_unavailable";
-    this.controller = action === "take" ? "user" : "agent";
+    this.agents.setTaken(agent, action === "take");
     this.broadcastState();
     return null;
   }
 
-  /** Done or Cancel on the pending handoff; another or an ended handoff is stale. */
+  /** Done or Cancel on the pending handoff it names, whichever agent asked; an ended one is stale. */
   answerHandoff(_viewer: BrowserLiveViewer, request: BrowserLiveHandoffRequest): BrowserLiveErrorCode | null {
     if (this.ended) return "browser_live_not_found";
-    const pending = this.pending;
-    if (!pending || pending.id !== request.handoffId) return "browser_live_handoff_stale";
+    const pending = this.agents.pending(request.handoffId);
+    if (!pending) return "browser_live_handoff_stale";
     pending.resolve(request.action === "done" ? "completed" : "cancelled");
     return null;
   }
@@ -295,27 +371,29 @@ class LiveRun implements BrowserLiveRunHandle {
   // The engine ----------------------------------------------------------------------------------------------------
 
   /**
-   * The agent's handoff: the user holds the browser until Done, Cancel or `waitMs`; the run's Stop or deadline
-   * (`signal`) ends it too, by throwing its reason. On Done the guest saves the current site's sign-in, only for a
-   * handoff about signing in (sign-in, code, check, consent; operator decision 2026-10-27): the end carries the reason.
+   * An agent's handoff: the user holds that agent's tab until Done, Cancel or `waitMs`, while the other agents go on;
+   * the run's Stop or deadline (`signal`) ends it too, by throwing its reason. Each agent has at most one pending, and
+   * the panel shows the oldest first. On Done the guest saves the site of that agent's tab, only for a handoff about
+   * signing in (sign-in, code, check, consent; operator decision 2026-10-27): the end carries the reason.
    */
-  async handoff(input: Readonly<{ message: string; reason: BrowserHandoffReason; signal: AbortSignal; waitMs: number }>):
-    Promise<BrowserLiveHandoffResult> {
+  async handoff(input: BrowserLiveHandoffInput): Promise<BrowserLiveHandoffResult> {
     input.signal.throwIfAborted();
+    const agent = input.agent ?? BROWSER_LIVE_MAIN_REF;
     if (this.ended || this.unavailable) return { kind: "unavailable" };
-    if (this.pending || this.handoffStarting) return { kind: "busy" };
-    this.handoffStarting = true;
+    if (this.agents.handoffBusy(agent.id)) return { kind: "busy" };
+    this.agents.beginStarting(agent.id);
     try {
-      const begin = await this.command({ action: "begin", t: "handoff" });
-      // `no_page`: the host runs without a tab. Anything else, `browser_not_running` (no host answered) included,
-      // is a browser the user cannot be shown now.
+      const begin = await this.command({ action: "begin", [AGENT_FIELD]: agent.id, t: "handoff" });
+      // `no_page`: the agent has no tab. Anything else, `browser_not_running` (no host answered) included, is a
+      // browser the user cannot be shown now.
       if (begin.ok !== true) return begin.code === "no_page" ? { kind: "no_browser" } : { kind: "unavailable" };
     } catch (error) {
       return GUEST_GONE.has(failureCode(error)) ? { kind: "no_browser" } : { kind: "unavailable" };
     } finally {
-      this.handoffStarting = false;
+      this.agents.endStarting(agent.id);
     }
     const startedAt = Date.now();
+    const id = `handoff_${randomBytes(12).toString("base64url")}`;
     const outcome = await new Promise<BrowserHandoffOutcome | "aborted">((resolve) => {
       let settled = false;
       const finish = (value: BrowserHandoffOutcome | "aborted") => {
@@ -328,20 +406,22 @@ class LiveRun implements BrowserLiveRunHandle {
       const timer = setTimeout(() => finish("timed_out"), input.waitMs);
       const onAbort = () => finish("aborted");
       input.signal.addEventListener("abort", onAbort, { once: true });
-      this.pending = { expiresAt: startedAt + input.waitMs, id: `handoff_${randomBytes(12).toString("base64url")}`,
-        message: input.message, reason: input.reason, resolve: finish, startedAt };
-      this.broadcastState();
+      if (this.agents.addHandoff({ agent, expiresAt: startedAt + input.waitMs, id, message: input.message, reason: input.reason,
+        resolve: finish, startedAt })) this.selectionMoved();
+      else this.broadcastState();
       if (input.signal.aborted) finish("aborted");
     });
-    this.pending = null;
-    this.controller = "agent";
-    this.broadcastState();
+    const before = this.agents.selected;
+    this.agents.removeHandoff(id);
+    if (this.agents.selected !== before) this.selectionMoved();
+    else this.broadcastState();
     if (outcome === "aborted") {
       // The run is ending: its guest stops with it, so the guest's control is ended without waiting.
-      void this.command({ action: "end", outcome: "cancelled", reason: input.reason, t: "handoff" }, 2_000).catch(() => undefined);
+      void this.command({ action: "end", [AGENT_FIELD]: agent.id, outcome: "cancelled", reason: input.reason, t: "handoff" }, 2_000)
+        .catch(() => undefined);
       throw input.signal.reason ?? new Error("browser_handoff_aborted");
     }
-    const ending = { action: "end", outcome, reason: input.reason, t: "handoff" };
+    const ending = { action: "end", [AGENT_FIELD]: agent.id, outcome, reason: input.reason, t: "handoff" };
     let end = await this.command(ending).catch(() => null);
     if (end?.ok !== true && !this.ended) {
       // Once more on a fresh streamer: the guest's control must not stay with the user for the rest of the turn.
@@ -357,12 +437,10 @@ class LiveRun implements BrowserLiveRunHandle {
   end(reason: Extract<BrowserLiveEndReason, "browser_stopped" | "run_finished"> = "run_finished"): Promise<void> {
     if (this.ending) return this.ending;
     this.ended = true;
-    // A handoff still waiting ends with the run: its call returns `timed_out` instead of waiting out its time.
-    const pending = this.pending;
-    this.pending = null;
-    pending?.resolve("timed_out");
+    // Handoffs still waiting end with the run: their calls return `timed_out` instead of waiting out their time.
+    for (const pending of this.agents.drainHandoffs()) pending.resolve("timed_out");
     this.browser = "stopped";
-    this.controller = "agent";
+    this.agents.clearBrowsing();
     this.clearLinger();
     if (this.retry) clearTimeout(this.retry);
     this.retry = null;
@@ -384,22 +462,32 @@ class LiveRun implements BrowserLiveRunHandle {
   // State ---------------------------------------------------------------------------------------------------------
 
   private stateEvent(): BrowserLiveStateEvent {
-    const pending = this.pending;
     const event: BrowserLiveStateEvent = {
+      ...this.agents.project(),
       browser: this.browser,
-      controller: pending ? "user" : this.controller,
-      handoff: pending ? { expiresAt: new Date(pending.expiresAt).toISOString(), id: pending.id, message: pending.message,
-        reason: pending.reason, startedAt: new Date(pending.startedAt).toISOString() } : null,
-      page: this.page,
       runId: this.registration.runId,
       signInRemembered: this.remembered === true,
       version: BROWSER_LIVE_PROTOCOL_VERSION
     };
-    return browserLiveStateEventSchema.safeParse(event).success ? event : { ...event, handoff: null, page: null };
+    if (browserLiveStateEventSchema.safeParse(event).success) return event;
+    // A bounded guest report that still does not fit shows no page; control and handoffs are the server's own.
+    return { ...event, agents: event.agents.map((agent) => ({ ...agent, page: null })), page: null };
   }
 
-  private userControls(): boolean {
-    return this.pending !== null || this.controller === "user";
+  /**
+   * The stream now shows another agent: the old agent's frame and steps go, views learn the selection, and the
+   * guest streams the new agent's tab (a streamer started later carries it from the start).
+   */
+  private selectionMoved(): void {
+    this.frame = null;
+    this.steps = null;
+    this.broadcastState();
+    if (!this.ended) this.broadcast("steps", { agent: this.agents.selected, steps: [] });
+    const streamer = this.streamer;
+    if (streamer && !streamer.closed && !streamer.retiring) {
+      void this.write(streamer, { [AGENT_FIELD]: this.agents.selected, t: WORKSPACE_AGENT_PROTOCOL.LIVE_SELECT_MESSAGE })
+        .catch(() => undefined);
+    }
   }
 
   private broadcast(event: "frame" | "state" | "steps", data: unknown): void {
@@ -445,9 +533,12 @@ class LiveRun implements BrowserLiveRunHandle {
     if (this.streamer && !this.streamer.closed && !this.streamer.retiring) return Promise.resolve(this.streamer);
     this.starting ??= (async () => {
       if (this.ended || this.unavailable) throw Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" });
-      const reply = await this.registration.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) });
+      const owner = this.registration;
+      // The selected agent rides with the first command, so a new streamer streams its tab from the start.
+      const reply = await owner.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) +
+        streamerLine({ [AGENT_FIELD]: this.agents.selected, t: WORKSPACE_AGENT_PROTOCOL.LIVE_SELECT_MESSAGE }) });
       if (reply.action !== "start") throw Object.assign(new Error("browser_live_invalid"), { code: "workspace_runtime_incompatible" });
-      const streamer = new Streamer(reply.execSessionId, frames);
+      const streamer = new Streamer(reply.execSessionId, frames, owner);
       this.streamer = streamer;
       if (this.ended) {
         await this.close(streamer);
@@ -465,7 +556,7 @@ class LiveRun implements BrowserLiveRunHandle {
     while (!streamer.closed) {
       let reply: WorkspaceBrowserLiveReply;
       try {
-        reply = await this.registration.channel({ action: "poll", cursor: streamer.cursor, execSessionId: streamer.execSessionId });
+        reply = await streamer.owner.channel({ action: "poll", cursor: streamer.cursor, execSessionId: streamer.execSessionId });
       } catch (error) {
         if (streamer.closed) return;
         failures += 1;
@@ -489,7 +580,7 @@ class LiveRun implements BrowserLiveRunHandle {
         return;
       }
       if ((streamer.chars >= BROWSER_LIVE_RELAY_LIMITS.rotateChars || Date.now() - streamer.startedAt >= BROWSER_LIVE_RELAY_LIMITS.rotateMs) &&
-        streamer.waiters.size === 0 && !this.handoffStarting && !this.starting) {
+        streamer.waiters.size === 0 && !this.agents.anyStarting() && !this.starting) {
         await this.rotate(streamer);
         return;
       }
@@ -520,25 +611,41 @@ class LiveRun implements BrowserLiveRunHandle {
     switch (message.t) {
       case "state": {
         const browser = message.browser === "running" ? "running" : "absent";
-        // The guest may only hand control back to the agent; the user gets it from their own Take or the handoff.
-        const controller = this.controller === "user" && browser === "running" && message.controller === "user" ? "user" : "agent";
-        const page = browser === "running" ? pageOf(message.page) : null;
-        if (browser === this.browser && controller === this.controller && samePage(page, this.page)) return;
+        const agent = guestMessageAgent(message);
+        const before = this.agents.selected;
+        let changed = browser !== this.browser;
         this.browser = browser;
-        this.controller = controller;
-        this.page = page;
-        this.broadcastState();
+        // The guest may only hand control back to the agent; the user gets it from their own Take or the handoff.
+        if (browser !== "running") {
+          if (changed) this.agents.clearBrowsing();
+        } else if (agent !== null) {
+          changed = this.agents.applyAgentState(agent, message.controller, message.page) || changed;
+        }
+        if (this.agents.selected !== before) this.selectionMoved();
+        else if (changed) this.broadcastState();
+        return;
+      }
+      case WORKSPACE_AGENT_PROTOCOL.LIVE_AGENTS_MESSAGE: {
+        const before = this.agents.selected;
+        if (!this.agents.applyAgents(message[WORKSPACE_AGENT_PROTOCOL.LIVE_AGENTS_FIELD])) return;
+        if (this.agents.selected !== before) this.selectionMoved();
+        else this.broadcastState();
         return;
       }
       case "steps": {
-        const parsed = browserLiveStepsEventSchema.safeParse({ steps: message.steps });
+        // Only the selected agent's: a report sent before the guest learned a new selection is dropped.
+        const agent = guestMessageAgent(message);
+        if (agent !== this.agents.selected) return;
+        const parsed = browserLiveStepsEventSchema.safeParse({ agent, steps: message.steps });
         if (!parsed.success) return;
         this.steps = parsed.data.steps;
         this.broadcast("steps", parsed.data);
         return;
       }
       case "frame": {
-        const parsed = browserLiveFrameEventSchema.safeParse({ data: message.data, height: message.height, mime: "image/jpeg",
+        const agent = guestMessageAgent(message);
+        if (agent !== this.agents.selected) return;
+        const parsed = browserLiveFrameEventSchema.safeParse({ agent, data: message.data, height: message.height, mime: "image/jpeg",
           seq: message.seq, width: message.width });
         // A JPEG's base64 starts with its SOI marker.
         if (!parsed.success || !parsed.data.data.startsWith("/9j/")) return;
@@ -558,7 +665,7 @@ class LiveRun implements BrowserLiveRunHandle {
     const data = streamerLine(message);
     const next = this.writes.then(() => streamer.closed
       ? Promise.reject(Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" }))
-      : this.registration.channel({ action: "write", data, execSessionId: streamer.execSessionId }));
+      : streamer.owner.channel({ action: "write", data, execSessionId: streamer.execSessionId }));
     this.writes = next.catch(() => undefined);
     return next.then(() => undefined);
   }
@@ -593,7 +700,7 @@ class LiveRun implements BrowserLiveRunHandle {
     if (this.streamer === streamer) this.streamer = null;
     for (const resolve of streamer.waiters.values()) resolve({ code: "streamer_closed", ok: false });
     streamer.waiters.clear();
-    streamer.closing = this.registration.channel({ action: "close", execSessionId: streamer.execSessionId })
+    streamer.closing = streamer.owner.channel({ action: "close", execSessionId: streamer.execSessionId })
       .then(() => undefined, () => undefined);
     return streamer.closing;
   }
@@ -651,9 +758,10 @@ class LiveRun implements BrowserLiveRunHandle {
     }
     if (this.browser !== "absent") {
       this.browser = "absent";
-      this.controller = "agent";
-      this.page = null;
-      this.broadcastState();
+      const before = this.agents.selected;
+      this.agents.clearBrowsing();
+      if (this.agents.selected !== before) this.selectionMoved();
+      else this.broadcastState();
     }
     if (this.views.size === 0 || this.retry) return;
     if (!guestGone && ++this.retries > BROWSER_LIVE_RELAY_LIMITS.retries) {
@@ -696,15 +804,20 @@ export type BrowserLiveView = Pick<LiveRun, "answerHandoff" | "control" | "input
 export class BrowserLiveRelay {
   private readonly chats = new Map<string, LiveRun>();
 
-  /** The engine: one interactive web run with a Workspace. A newer run of the chat ends an older one's views. */
+  /**
+   * The engine: one interactive web run with a Workspace. The chat's runs share one session and its browser, so a
+   * run of the same owner joins the chat's open channel and its views go on across runs; the channel ends with
+   * its last run. A channel of another owner (never the case for one chat) is ended instead.
+   */
   register(registration: BrowserLiveRegistration): BrowserLiveRunHandle {
     const previous = this.chats.get(registration.chatId);
+    if (previous && !previous.ended && previous.registration.userId === registration.userId) return previous.join(registration);
     if (previous && previous.registration.runId !== registration.runId) void previous.end("run_finished");
     const run: LiveRun = new LiveRun(registration, () => {
       if (this.chats.get(registration.chatId) === run) this.chats.delete(registration.chatId);
     });
     this.chats.set(registration.chatId, run);
-    return run;
+    return run.handle(registration.runId);
   }
 
   /** The chat's live browser, only for the run's owner; anyone else, administrators included, finds nothing. */

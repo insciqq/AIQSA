@@ -6,6 +6,8 @@ import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageGenerationUnavailable
 import { artifactFileInstructions, artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
+import type { CatalogWireModel } from "../../contracts/catalog";
+import { freezeSubagentModels, type FrozenSubagentModels } from "../engine/subagents/modelCatalog";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
@@ -224,6 +226,7 @@ export function scheduledRunContext(
 export type RunPreparationDeps = Readonly<{
   memorySearchAdmission?: Readonly<{ admit(userId: string, assistantId?: string | null): Promise<MemorySearchSnapshot | null> }>;
   artifacts?: import("../artifacts/service").ArtifactService;
+  mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "admit">;
   vision?: Pick<import("../vision/service").VisionAnalysisService, "resolve">;
   images?: Pick<import("../images/service").ImageGenerationService, "resolveFor">;
   allowFakeProvider?: boolean;
@@ -272,6 +275,8 @@ export type RunPreparationDeps = Readonly<{
   skills?: SkillRunResolver;
   skillCatalogRelevance?: SkillCatalogRelevanceService;
   storage?: Pick<StorageAdapter, "getObject">;
+  /** The user's current chat models as `/api/me/catalog` filters them, frozen for sub-agents (`freezeSubagentModels`). */
+  subagentModels?(userId: string): Promise<readonly CatalogWireModel[]>;
   workspace?: WorkspaceAdmissionService;
 }>;
 
@@ -326,6 +331,8 @@ export type RegenerateRunPreparationSource = Readonly<{
 }>;
 
 export type RunPreparationInput = Readonly<{
+  serverAuthoredInput?: boolean;
+  mcpApprovalId?: string;
   body: Readonly<Record<string, unknown>> | null;
   skillCatalogDecision?: Readonly<{ operationKey: string; authorizeScope(): Promise<void> }>;
   signal?: AbortSignal;
@@ -1314,6 +1321,13 @@ export async function prepareRun(
   if (!normalizedPrompt) {
     return failure("assistant_instructions_expansion_too_large", 400, "This Assistant's instructions exceed the text limit after date and time substitution. They must be shortened before it can answer.");
   }
+  // The models this run may give its sub-agents, from the same entitled catalog: an Assistant run's sub-agents take
+  // only the Assistant's model, and a catalog that cannot be read leaves them on the parent's model (answer first).
+  let subagentModels: FrozenSubagentModels | undefined;
+  if (!assistantRun && deps.subagentModels) {
+    try { subagentModels = freezeSubagentModels(await deps.subagentModels(input.userId)); }
+    catch { subagentModels = undefined; }
+  }
   let personalInstructions: import("../instructions/store").PersonalInstructionSnapshot | undefined;
   if (!assistantRun && deps.instructions) {
     try { personalInstructions = await deps.instructions.resolveForRun(input.userId); }
@@ -1854,7 +1868,10 @@ export async function prepareRun(
     if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
       instructionIds.add(input.source.source.userMessage.id);
     }
-    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds)]);
+    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds),
+      // A message the server wrote for this send (an approval continuation, a sub-agent wake-up quoting a report)
+      // authorizes no link; the user's own branch messages still do.
+      ...(input.serverAuthoredInput ? [currentSendMessageId] : [])]);
     const userUrlDigests = userAuthoredFetchUrlDigests(conversationMessages, excludedIds);
     const instructionUrlDigests = taskInstructionFetchUrlDigests(conversationMessages, instructionIds, userUrlDigests);
     fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };
@@ -1873,9 +1890,16 @@ export async function prepareRun(
     ...(mcpPlan?.ok ? mcpPlan.snapshot.servers.map((server) => server.serverId) : []),
     ...(mcpDiscoveryEnabled && mcpCatalog ? mcpCatalog.servers.map((server) => server.serverId) : [])
   ])];
+  const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
+  const guard = !scheduledOccurrence && approvalServerIds.length > 0 ? await deps.mcpGuard?.admit({
+    chatId: chat.id, userId: input.userId, messages: conversationMessages,
+    ...(input.source.kind === "send" && !input.serverAuthoredInput
+      ? { currentMessageId: workspaceAdmissionPlan?.userMessageId ?? randomUUID() } : {}),
+    ...(inheritedFollowups ? { inheritedFollowups } : {})
+  }) : undefined;
   const mcpApproval = !scheduledOccurrence && approvalServerIds.length > 0
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
-        serverIds: approvalServerIds, userId: input.userId }) ?? [])
+        serverIds: approvalServerIds, userId: input.userId }) ?? [], guard, input.mcpApprovalId)
     : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
@@ -1928,6 +1952,7 @@ export async function prepareRun(
     prompt,
     provider: executionProvider,
     reasoningEffort: acceptedReasoning.reasoningEffort,
+    ...(subagentModels ? { subagentModels } : {}),
     searchPlan: {
       mode: requestedSearchPlan.mode,
       options: admissionPlan.searches.map((candidate) => ({
@@ -1984,7 +2009,6 @@ export async function prepareRun(
       ])
   ];
 
-  const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
   const budgetAnsweringRequest = () => applyProviderRequestContextBudget({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     request: requestWithRunFollowups({

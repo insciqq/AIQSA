@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { providerTemplateIds } from "../lib/domain/providerTemplates";
+import { USAGE_PURPOSES } from "../lib/domain/usagePurpose";
 
 const prisma = new PrismaClient();
 
@@ -857,6 +858,276 @@ async function assertGrantShapes(): Promise<void> {
   });
 }
 
+/** A main-agent run with a `call_subagent` call, a thread it started and that thread's first turn. */
+async function createSubagentFixture(tx: Prisma.TransactionClient) {
+  const fixture = await createModelRunFixture(tx);
+  const call = await tx.modelRunToolCall.create({ data: {
+    arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 0, providerCallId: "call-1", roundIndex: 0,
+    toolName: "call_subagent"
+  } });
+  const thread = await tx.subagentThread.create({ data: {
+    anchorRunId: fixture.run.id, chatId: fixture.chat.id, id: randomUUID(), name: "researcher", userId: fixture.user.id
+  } });
+  const turn = await tx.subagentTurn.create({ data: {
+    chatId: fixture.chat.id, id: randomUUID(), mode: "background", modelId: "fake-qsa", parentRunId: fixture.run.id,
+    parentToolCallId: call.id, provider: "fake", threadId: thread.id, userId: fixture.user.id
+  } });
+  return { ...fixture, call, thread, turn };
+}
+
+/**
+ * A run of the fixture's chat and prompt, settled unless it is a background sub-agent run, optionally bound to a
+ * sub-agent turn. The fixture's own run is active, and the chat holds one active main-agent run.
+ */
+async function createChatRun(tx: Prisma.TransactionClient, fixture: Awaited<ReturnType<typeof createSubagentFixture>>,
+  binding: Readonly<{ subagentThreadId?: string; subagentTurnId?: string }> = {}, status: "complete" | "streaming" = "complete") {
+  return tx.modelRun.create({ data: {
+    chatId: fixture.chat.id, id: randomUUID(), modelId: "fake-qsa", normalizedRequest: json({}), provider: "fake",
+    status, userId: fixture.user.id, userMessageId: fixture.userMessage.id, ...binding
+  } });
+}
+
+/**
+ * Runs `statements` in a DO block that must fail on exactly the unique index `index`: the block reraises a unique
+ * violation with the index PostgreSQL reports, because Prisma's text of a raw failure does not name it.
+ */
+async function expectUniqueIndexRejection(label: string, index: string,
+  statements: (tx: Prisma.TransactionClient) => Promise<string>): Promise<void> {
+  await expectDatabaseRejection(label, `unique_index_violated:${index};`, async (tx) => {
+    const sql = await statements(tx);
+    await tx.$executeRawUnsafe(`DO $block$ DECLARE violated TEXT; BEGIN
+      ${sql}
+    EXCEPTION WHEN unique_violation THEN
+      GET STACKED DIAGNOSTICS violated = CONSTRAINT_NAME;
+      RAISE EXCEPTION 'unique_index_violated:%;', violated;
+    END $block$`);
+  });
+}
+
+/** A literal of a generated id, the only values these blocks interpolate. */
+function idLiteral(id: string): string {
+  if (!/^[A-Za-z0-9-]{1,64}$/u.test(id)) throw new Error("Unexpected fixture id.");
+  return `'${id}'`;
+}
+
+async function assertSubagentRelations(): Promise<void> {
+  await expectDatabaseRejection("cross-chat sub-agent thread", "SubagentThread_anchorRun_fkey", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    const other = await createModelRunFixture(tx);
+    await tx.subagentThread.create({ data: {
+      anchorRunId: fixture.run.id, chatId: other.chat.id, id: randomUUID(), name: "researcher", userId: other.user.id
+    } });
+  });
+
+  await expectDatabaseRejection("cross-chat background sub-agent run", "ModelRun_subagentTurn_fkey", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    const other = await createModelRunFixture(tx);
+    await tx.modelRun.create({ data: {
+      chatId: other.chat.id, id: randomUUID(), modelId: "fake-qsa", normalizedRequest: json({}), provider: "fake", status: "complete",
+      subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id, userId: other.user.id, userMessageId: other.userMessage.id
+    } });
+  });
+
+  await expectDatabaseRejection("sub-agent run without its turn", "ModelRun_subagent_turn_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id });
+  });
+
+  await expectDatabaseRejection("sub-agent turn key without its thread", "ModelRunToolCall_subagent_turn_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await tx.modelRunToolCall.create({ data: {
+      arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 0, providerCallId: "call-9", roundIndex: 9,
+      subagentTurnId: fixture.turn.id, toolName: "x"
+    } });
+  });
+
+  await expectDatabaseRejection("sub-agent transcript turn key without its thread", "RunTranscriptItem_subagent_turn_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await tx.runTranscriptItem.create({ data: {
+      body: json({}), chatId: fixture.chat.id, id: randomUUID(), kind: "user", modelRunId: fixture.run.id, sequence: 9,
+      subagentTurnId: fixture.turn.id, userId: fixture.user.id
+    } });
+  });
+
+  await expectDatabaseRejection("ended sub-agent turn without an end", "SubagentTurn_state_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await tx.subagentTurn.update({ data: { outcome: "done", state: "done" }, where: { id: fixture.turn.id } });
+  });
+
+  // An answer's ordinals hold the user's 32 follow-ups and up to 64 callbacks, never more.
+  await expectDatabaseRejection("follow-up past the widened bound", "RunFollowup_bounds", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    await tx.runFollowup.create({ data: {
+      authorName: "Owner", chatId: fixture.chat.id, modelRunId: fixture.run.id, nonce: randomUUID(), ordinal: 97, text: "late"
+    } });
+  });
+
+  await expectDatabaseRejection("callback follow-up without its turn", "RunFollowup_subagent_turn_check", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    await tx.runFollowup.create({ data: {
+      authorName: "Sub-agent", chatId: fixture.chat.id, modelRunId: fixture.run.id, nonce: randomUUID(), ordinal: 1,
+      origin: "subagent_callback", text: "callback"
+    } });
+  });
+
+  // NULLS NOT DISTINCT keeps the main agent's keys unique per run (and per chat for active runs).
+  await expectUniqueIndexRejection("duplicate main-agent transcript sequence", "RunTranscriptItem_thread_sequence_key", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    return [randomUUID(), randomUUID()].map((id) => `INSERT INTO "RunTranscriptItem"
+      ("id", "userId", "chatId", "modelRunId", "sequence", "kind", "body")
+      VALUES (${idLiteral(id)}, ${idLiteral(fixture.user.id)}, ${idLiteral(fixture.chat.id)}, ${idLiteral(fixture.run.id)}, 0, 'user', '{}'::jsonb);`)
+      .join("\n");
+  });
+
+  await expectUniqueIndexRejection("duplicate main-agent tool call ordinal", "ModelRunToolCall_thread_round_ordinal_key", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    return `INSERT INTO "ModelRunToolCall" ("id", "modelRunId", "roundIndex", "ordinal", "providerCallId", "toolName", "arguments", "updatedAt")
+      VALUES (${idLiteral(randomUUID())}, ${idLiteral(fixture.run.id)}, 0, 0, 'call-2', 'x', '{}'::jsonb, CURRENT_TIMESTAMP);`;
+  });
+
+  const activeRunInsert = (fixture: Awaited<ReturnType<typeof createSubagentFixture>>, thread: string, turn: string) =>
+    `INSERT INTO "ModelRun" ("id", "userId", "chatId", "userMessageId", "provider", "modelId", "status", "normalizedRequest",
+      "subagentThreadId", "subagentTurnId", "updatedAt")
+    VALUES (${idLiteral(randomUUID())}, ${idLiteral(fixture.user.id)}, ${idLiteral(fixture.chat.id)}, ${idLiteral(fixture.userMessage.id)},
+      'fake', 'fake-qsa', 'streaming', '{}'::jsonb, ${thread}, ${turn}, CURRENT_TIMESTAMP);`;
+
+  await expectUniqueIndexRejection("second active main-agent run", "ModelRun_one_active_per_chat_idx", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    return activeRunInsert(fixture, "NULL", "NULL");
+  });
+
+  await expectUniqueIndexRejection("second active run of one sub-agent thread", "ModelRun_one_active_per_chat_idx", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id }, "streaming");
+    const call = await tx.modelRunToolCall.create({ data: {
+      arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 1, providerCallId: "call-2", roundIndex: 0,
+      toolName: "call_subagent"
+    } });
+    const turn = await tx.subagentTurn.create({ data: {
+      chatId: fixture.chat.id, id: randomUUID(), mode: "background", modelId: "fake-qsa", parentRunId: fixture.run.id,
+      parentToolCallId: call.id, provider: "fake", threadId: fixture.thread.id, userId: fixture.user.id
+    } });
+    return activeRunInsert(fixture, idLiteral(fixture.thread.id), idLiteral(turn.id));
+  });
+
+  await expectRolledBackSuccess("sub-agent rows, keys and cascades", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    // A thread numbers its own items and rounds beside the main agent's, each row naming its turn.
+    for (const key of [{ subagentThreadId: null, subagentTurnId: null },
+      { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id }]) {
+      await tx.runTranscriptItem.create({ data: {
+        body: json({}), chatId: fixture.chat.id, id: randomUUID(), kind: "user", modelRunId: fixture.run.id, sequence: 0,
+        userId: fixture.user.id, ...key
+      } });
+    }
+    await tx.modelRunToolCall.create({ data: {
+      arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 0, providerCallId: "call-1", roundIndex: 0,
+      subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id, toolName: "x"
+    } });
+    // A background sub-agent run is active beside the chat's active main-agent run.
+    const background = await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id },
+      "streaming");
+    await tx.runFollowup.create({ data: {
+      authorName: "Main agent", chatId: fixture.chat.id, modelRunId: background.id, nonce: randomUUID(), ordinal: 1, origin: "main_agent",
+      text: "message"
+    } });
+    // A callback whose receiving run is deleted is owed again; nothing else of the turn changes.
+    const receiver = await createChatRun(tx, fixture);
+    await tx.subagentTurn.update({ data: { callbackRunId: receiver.id, endedAt: new Date(Date.now() + 1_000), outcome: "done",
+      state: "done" }, where: { id: fixture.turn.id } });
+    await tx.modelRun.delete({ where: { id: receiver.id } });
+    const owed = await tx.subagentTurn.findUniqueOrThrow({ select: { callbackRunId: true, chatId: true }, where: { id: fixture.turn.id } });
+    if (owed.callbackRunId !== null || owed.chatId !== fixture.chat.id) {
+      throw new Error("Deleting a callback's run did not clear only SubagentTurn.callbackRunId.");
+    }
+    // Deleting a custom sub-agent clears only its threads' definition; they keep the type name.
+    const definition = await tx.subagentDefinition.create({ data: { id: randomUUID(), name: "browser", ownerUserId: fixture.user.id } });
+    const revision = await tx.subagentDefinitionRevision.create({ data: {
+      definitionId: definition.id, description: "d", id: randomUUID(), instructions: "i", name: "browser", revisionNumber: 1
+    } });
+    await tx.subagentDefinition.update({ data: { currentRevisionId: revision.id }, where: { id: definition.id } });
+    await tx.subagentThread.update({ data: { definitionId: definition.id, typeName: "browser" }, where: { id: fixture.thread.id } });
+    await tx.subagentDefinition.delete({ where: { id: definition.id } });
+    const typed = await tx.subagentThread.findUniqueOrThrow({ select: { definitionId: true, typeName: true, userId: true },
+      where: { id: fixture.thread.id } });
+    if (typed.definitionId !== null || typed.typeName !== "browser" || typed.userId !== fixture.user.id ||
+      await tx.subagentDefinitionRevision.count({ where: { definitionId: definition.id } }) !== 0) {
+      throw new Error("Deleting a custom sub-agent did not clear only its threads' definition.");
+    }
+    // Deleting the anchor run (with its branch or chat) takes the thread, its turns, its background run and its mailbox.
+    await tx.modelRun.delete({ where: { id: fixture.run.id } });
+    if (await tx.subagentThread.count({ where: { chatId: fixture.chat.id } }) !== 0 ||
+      await tx.subagentTurn.count({ where: { chatId: fixture.chat.id } }) !== 0 ||
+      await tx.modelRun.count({ where: { id: background.id } }) !== 0 ||
+      await tx.runFollowup.count({ where: { chatId: fixture.chat.id } }) !== 0) {
+      throw new Error("Deleting a sub-agent's anchor run left sub-agent rows.");
+    }
+    const cascade = await createSubagentFixture(tx);
+    await createChatRun(tx, cascade, { subagentThreadId: cascade.thread.id, subagentTurnId: cascade.turn.id });
+    await tx.chat.delete({ where: { id: cascade.chat.id } });
+    if (await tx.subagentThread.count({ where: { chatId: cascade.chat.id } }) !== 0 ||
+      await tx.modelRun.count({ where: { chatId: cascade.chat.id } }) !== 0) {
+      throw new Error("Deleting a chat left sub-agent rows.");
+    }
+  });
+}
+
+async function createWorkspaceSessionFixture(tx: Prisma.TransactionClient, chatId: string) {
+  const id = `ws_${randomUUID().replaceAll("-", "")}`;
+  return tx.workspaceSession.create({ data: {
+    chatId, expiresAt: new Date(Date.now() + 3_600_000), id, imageRef: "fixture-image", internetEnabled: false, policyRevision: 1,
+    sandboxName: `aiqsa-ws-${id}`
+  } });
+}
+
+/** A shared Workspace's attached runs belong to its own chat, and go with their run or their session. */
+async function assertWorkspaceAttachmentRelations(): Promise<void> {
+  await expectDatabaseRejection("cross-chat Workspace attachment", "WorkspaceRunAttachment_modelRun_fkey", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    const other = await createModelRunFixture(tx);
+    await createWorkspaceSessionFixture(tx, other.chat.id);
+    await tx.workspaceRunAttachment.create({ data: { chatId: other.chat.id, modelRunId: fixture.run.id, operationGeneration: 1 } });
+  });
+  await expectDatabaseRejection("Workspace attachment without a session", "WorkspaceRunAttachment_session_fkey", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    await tx.workspaceRunAttachment.create({ data: { chatId: fixture.chat.id, modelRunId: fixture.run.id, operationGeneration: 1 } });
+  });
+  await expectDatabaseRejection("Workspace attachment before any generation", "WorkspaceRunAttachment_generation_check", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    await createWorkspaceSessionFixture(tx, fixture.chat.id);
+    await tx.workspaceRunAttachment.create({ data: { chatId: fixture.chat.id, modelRunId: fixture.run.id, operationGeneration: 0 } });
+  });
+  await expectRolledBackSuccess("Workspace attachment cascades", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    const background = await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id }, "streaming");
+    const session = await createWorkspaceSessionFixture(tx, fixture.chat.id);
+    await tx.workspaceRunAttachment.createMany({ data: [fixture.run.id, background.id].map((modelRunId) => ({
+      chatId: fixture.chat.id, modelRunId, operationGeneration: session.version
+    })) });
+    await tx.modelRun.delete({ where: { id: background.id } });
+    if (await tx.workspaceRunAttachment.count({ where: { chatId: fixture.chat.id } }) !== 1) {
+      throw new Error("Deleting an attached run left its Workspace attachment.");
+    }
+    await tx.workspaceSession.delete({ where: { id: session.id } });
+    if (await tx.workspaceRunAttachment.count({ where: { chatId: fixture.chat.id } }) !== 0) {
+      throw new Error("Deleting a Workspace session left its attachments.");
+    }
+  });
+}
+
+/**
+ * After a complete deploy the stored usage vocabulary is the domain's, in its order (personal purposes first,
+ * `lib/domain/usagePurpose.ts`); the forward adoption proof of the purpose backfill checks only its own era.
+ */
+async function assertUsagePurposeVocabulary(): Promise<void> {
+  const [row] = await prisma.$queryRaw<Array<{ labels: string }>>`
+    SELECT string_agg(enumlabel::text, ',' ORDER BY enumsortorder) AS labels FROM pg_enum WHERE enumtypid = '"UsagePurpose"'::regtype
+  `;
+  if (row?.labels !== USAGE_PURPOSES.join(",")) {
+    throw new Error(`UsagePurpose vocabulary differs from lib/domain/usagePurpose.ts: ${row?.labels ?? "missing"}`);
+  }
+}
+
 async function assertStatusEnums(): Promise<void> {
   await expectDatabaseRejection('invalid MessageStatus', 'invalid input value for enum "MessageStatus"', async (tx) => {
     const { chats } = await createUserAndChats(tx, 1);
@@ -923,8 +1194,11 @@ async function main() {
   await assertMemoryCandidateSourceAuthority();
   await assertGrantShapes();
   await assertStatusEnums();
+  await assertSubagentRelations();
+  await assertWorkspaceAttachmentRelations();
+  await assertUsagePurposeVocabulary();
   console.log(
-    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, historical Knowledge usage index, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, historical Knowledge usage index, six grant shapes, lifecycle enums, and sub-agent keys and cascades."
   );
 }
 

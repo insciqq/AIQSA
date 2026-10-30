@@ -149,14 +149,19 @@ export class BrowserLiveStream {
       }
       this.failures = 0;
       switch (decoded.type) {
-        case "state":
-          this.update({ connection: "live", state: decoded.value });
+        case "state": {
+          // Another agent's tab is shown now: the previous agent's picture and steps go with it.
+          const moved = this.snapshot.state !== null && this.snapshot.state.selected !== decoded.value.selected;
+          this.update({ connection: "live", state: decoded.value, ...(moved ? { frame: null, steps: [] } : {}) });
           break;
+        }
         case "frame":
-          // Only the latest frame is kept.
+          // Only the latest frame of the selected agent's tab is kept.
+          if (this.snapshot.state && decoded.value.agent !== this.snapshot.state.selected) break;
           this.update({ frame: decoded.value });
           break;
         case "steps":
+          if (this.snapshot.state && decoded.value.agent !== this.snapshot.state.selected) break;
           this.update({ steps: decoded.value.steps });
           break;
         case "end":
@@ -217,8 +222,14 @@ export function postBrowserLiveInput(chatId: string, input: BrowserLiveInput): P
   return post(browserLiveInputPath(chatId), input);
 }
 
-export function postBrowserLiveControl(chatId: string, action: BrowserLiveControlRequest["action"]): Promise<BrowserLiveRequestResult> {
-  return post(browserLiveControlPath(chatId), { action } satisfies BrowserLiveControlRequest);
+/** Take control or Return control of one agent's tab (the main agent's when `agent` is absent). */
+export function postBrowserLiveControl(chatId: string, action: "take" | "return", agent?: string): Promise<BrowserLiveRequestResult> {
+  return post(browserLiveControlPath(chatId), { action, ...(agent ? { agent } : {}) } satisfies BrowserLiveControlRequest);
+}
+
+/** The agent whose tab the stream shows. */
+export function postBrowserLiveSelect(chatId: string, agent: string): Promise<BrowserLiveRequestResult> {
+  return post(browserLiveControlPath(chatId), { action: "select", agent } satisfies BrowserLiveControlRequest);
 }
 
 export function postBrowserLiveHandoff(
