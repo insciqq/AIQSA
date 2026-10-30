@@ -10,6 +10,8 @@ import {
   PDF_VIEWER_OPEN_TIMEOUT_MS,
   PDF_VIEWER_SCALE_STEP,
   bindPdfExternalLink,
+  guardPdfDocumentPages,
+  pdfDefaultScaleValue,
   pdfDocumentOptions,
   pdfPageViewOptions,
   type PdfViewerEnvironment
@@ -36,7 +38,36 @@ export type PdfViewerSession = Readonly<{
 }>;
 
 class PdfViewerFailed extends Error {
+  override name = "PdfViewerFailed";
   constructor(readonly failure: PdfViewerFailure) { super(failure); }
+}
+
+/**
+ * The first paint needs `requestAnimationFrame`, which does not fire in a hidden
+ * tab: only time with the tab visible counts, so a background tab does not fail.
+ */
+function visibleTimeout(milliseconds: number, onExpire: () => void): () => void {
+  let remaining = milliseconds;
+  let startedAt = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const start = () => {
+    if (timer !== undefined) return;
+    startedAt = Date.now();
+    timer = setTimeout(onExpire, remaining);
+  };
+  const pause = () => {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+    remaining -= Date.now() - startedAt;
+  };
+  const onChange = () => { if (document.visibilityState === "visible") start(); else pause(); };
+  onChange();
+  document.addEventListener("visibilitychange", onChange);
+  return () => {
+    pause();
+    document.removeEventListener("visibilitychange", onChange);
+  };
 }
 
 /** pdf.js's own English strings stay out: its default localization fetches locale files from a relative path. */
@@ -89,10 +120,14 @@ function loadFailure(error: unknown): PdfViewerFailure {
  * One opened document: bytes through the authorized route with `fetch`, then
  * pdf.js on those bytes alone (it does no networking for the document). Every
  * way out, a failure or `close`, goes through `teardown`, which aborts the
- * fetch and ends the worker, the pages and their listeners. Parsing is in the
- * worker and bounded by the watchdog. Painting is on the main thread and yields
- * between operators; a single operator cannot be interrupted, which the canvas
- * cap bounds rather than removes.
+ * fetch and ends the worker, the pages and their listeners.
+ *
+ * The session owns its worker: with a port pdf.js cannot fall back to parsing on
+ * the main thread when the worker fails to load, and `terminate` does not depend
+ * on `task.destroy()`, which waits for an answer a stalled worker never sends.
+ * Parsing is in the worker and bounded by a timer. Painting is on the main thread
+ * and yields between operators; a single operator cannot be interrupted, which
+ * the canvas cap bounds rather than removes.
  */
 export function startPdfViewerSession(input: Readonly<{
   byteSize: number | null;
@@ -107,6 +142,9 @@ export function startPdfViewerSession(input: Readonly<{
   const views = new AbortController();
   let closed = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let stopPaintWatchdog: (() => void) | undefined;
+  let workerPort: Worker | null = null;
+  let pdfWorker: InstanceType<PdfEngine["lib"]["PDFWorker"]> | null = null;
   let task: ReturnType<PdfEngine["lib"]["getDocument"]> | null = null;
   let viewer: InstanceType<PdfEngine["viewer"]["PDFViewer"]> | null = null;
   let linkService: InstanceType<PdfEngine["viewer"]["PDFLinkService"]> | null = null;
@@ -116,6 +154,7 @@ export function startPdfViewerSession(input: Readonly<{
   function teardown() {
     closed = true;
     clearTimeout(watchdog);
+    stopPaintWatchdog?.();
     requests.abort();
     try {
       findController?.setDocument(null as never);
@@ -127,6 +166,10 @@ export function startPdfViewerSession(input: Readonly<{
     views.abort();
     void task?.destroy().catch(() => undefined);
     task = null;
+    pdfWorker?.destroy();
+    pdfWorker = null;
+    workerPort?.terminate();
+    workerPort = null;
     viewer = null;
     linkService = null;
     findController = null;
@@ -159,17 +202,29 @@ export function startPdfViewerSession(input: Readonly<{
     if (closed) return;
     const engine = await loadPdfEngine();
     if (closed) return;
-    const { assetBase, lib, viewer: components } = engine;
+    const { assetBase, lib, viewer: components, workerSrc } = engine;
+    const options = pdfDocumentOptions({ assetBase, environment: input.environment });
     watchdog = setTimeout(() => fail("timeout"), PDF_VIEWER_OPEN_TIMEOUT_MS);
-    const loading = lib.getDocument({ ...pdfDocumentOptions({ assetBase, environment: input.environment }), data: bytes });
+    const port = new Worker(workerSrc, { type: "module" });
+    workerPort = port;
+    // A worker that cannot load or dies is a failure, never a silent stall until the watchdog.
+    port.addEventListener("error", () => fail("failed"));
+    port.addEventListener("messageerror", () => fail("failed"));
+    pdfWorker = lib.PDFWorker.create({ port, verbosity: options.verbosity });
+    const loading = lib.getDocument({ ...options, data: bytes, worker: pdfWorker });
     task = loading;
-    const document = await loading.promise;
+    const pdf = await loading.promise;
     if (closed) return;
-    if (document.numPages > PDF_VIEWER_MAX_PAGES) throw new PdfViewerFailed("too_many_pages");
+    if (pdf.numPages > PDF_VIEWER_MAX_PAGES) throw new PdfViewerFailed("too_many_pages");
+    guardPdfDocumentPages(pdf);
+    // The viewer logs a first page it cannot read and shows nothing, so that failure is caught here.
+    await pdf.getPage(1).catch(() => { throw new PdfViewerFailed("damaged"); });
+    if (closed) return;
+    clearTimeout(watchdog);
 
     const bus = new components.EventBus();
     eventBus = bus;
-    const links = new components.PDFLinkService({ eventBus: bus });
+    const links = new components.PDFLinkService({ eventBus: bus, ignoreDestinationZoom: true });
     links.externalLinkEnabled = false;
     links.addLinkAttributes = (link, url) => bindPdfExternalLink(link, url, input.onExternalLink);
     linkService = links;
@@ -190,7 +245,12 @@ export function startPdfViewerSession(input: Readonly<{
     viewer = pageViewer;
     links.setViewer(pageViewer);
 
-    bus.on("pagesinit", () => { pageViewer.currentScaleValue = "auto"; });
+    const defaultScale = () => pdfDefaultScaleValue({ constrained: input.environment.constrained, containerWidth: input.container.clientWidth });
+    bus.on("pagesinit", () => { pageViewer.currentScaleValue = defaultScale(); });
+    // A turned phone or resized window refits a page the person has not zoomed.
+    window.addEventListener("resize", () => {
+      if (pageViewer.currentScaleValue === "auto" || pageViewer.currentScaleValue === "page-width") pageViewer.currentScaleValue = defaultScale();
+    }, { signal: views.signal });
     bus.on("scalechanging", ({ scale }: { scale: number }) => input.onUpdate({ scale }));
     bus.on("pagechanging", ({ pageNumber }: { pageNumber: number }) => input.onUpdate({ page: pageNumber }));
     bus.on("updatefindmatchescount", ({ matchesCount }: { matchesCount: { current: number; total: number } }) => {
@@ -202,18 +262,17 @@ export function startPdfViewerSession(input: Readonly<{
     const firstPage = ({ error }: { error?: { name?: string } | null }) => {
       if (error?.name === "RenderingCancelledException") return;
       bus.off("pagerendered", firstPage);
-      clearTimeout(watchdog);
+      stopPaintWatchdog?.();
       if (error) fail("damaged");
       else input.onUpdate({ status: "ready" });
     };
     bus.on("pagerendered", firstPage);
 
-    input.onUpdate({ page: 1, pageCount: document.numPages });
-    // The viewer logs a first page it cannot read and shows nothing, so that failure is caught here.
-    document.getPage(1).catch(() => fail("damaged"));
-    pageViewer.setDocument(document);
-    links.setDocument(document, null);
-    finder.setDocument(document);
+    input.onUpdate({ page: 1, pageCount: pdf.numPages });
+    stopPaintWatchdog = visibleTimeout(PDF_VIEWER_OPEN_TIMEOUT_MS, () => fail("timeout"));
+    pageViewer.setDocument(pdf);
+    links.setDocument(pdf, null);
+    finder.setDocument(pdf);
   }
 
   void open().catch((error: unknown) => fail(loadFailure(error)));
@@ -227,7 +286,9 @@ export function startPdfViewerSession(input: Readonly<{
       });
     },
     findClosed() { eventBus?.dispatch("findbarclose", { source: null }); },
-    resetZoom() { if (viewer) viewer.currentScaleValue = "auto"; },
+    resetZoom() {
+      if (viewer) viewer.currentScaleValue = pdfDefaultScaleValue({ constrained: input.environment.constrained, containerWidth: input.container.clientWidth });
+    },
     zoom(direction) {
       if (!viewer) return;
       const next = direction === "in" ? viewer.currentScale * PDF_VIEWER_SCALE_STEP : viewer.currentScale / PDF_VIEWER_SCALE_STEP;

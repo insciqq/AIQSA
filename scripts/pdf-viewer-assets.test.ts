@@ -26,6 +26,18 @@ describe("PDF viewer assets", () => {
     expect(readdirSync(join(out, version, "wasm")).filter(name => name.endsWith(".wasm"))).toEqual([]);
   });
 
+  it("passes the image's release check, which fails when an asset is missing", () => {
+    const out = mkdtempSync(join(tmpdir(), "aiqsa-pdf-release-"));
+    dirs.push(out);
+    const verifier = fileURLToPath(new URL("./verify-release-pdf-viewer.cjs", import.meta.url));
+    const publicPdfjs = join(out, "runtime/public/pdfjs");
+    execFileSync(process.execPath, [script, "--out", publicPdfjs]);
+    execFileSync(process.execPath, [verifier, "--public-pdfjs", publicPdfjs], { stdio: "pipe" });
+    const { version } = JSON.parse(readFileSync(join(root, "node_modules/pdfjs-dist/package.json"), "utf8")) as { version: string };
+    rmSync(join(publicPdfjs, version, "pdf.worker.min.mjs"));
+    expect(() => execFileSync(process.execPath, [verifier, "--public-pdfjs", publicPdfjs], { stdio: "pipe" })).toThrow();
+  });
+
   it("is run by dev and build, stays out of Git and the build context, and is checked in the image", () => {
     const scripts = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
     expect(scripts.dev).toContain("build:pdf-viewer-assets");
