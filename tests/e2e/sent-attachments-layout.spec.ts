@@ -71,7 +71,7 @@ for (const viewport of [
       expect(Math.abs(lastCard.x + lastCard.width - (bubbleBox.x + bubbleBox.width))).toBeLessThanOrEqual(2);
 
       // A long Cyrillic name stays inside its card.
-      const longCard = first.getByRole("link", { name: `Download ${longName}` });
+      const longCard = first.getByRole("button", { name: `Open ${longName}` });
       await expect(longCard).toBeVisible();
       const longBox = await box(longCard.locator("strong"));
       expect(longBox.x + longBox.width).toBeLessThanOrEqual(lastCard.x + lastCard.width);
