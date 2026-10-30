@@ -122,9 +122,12 @@ export type RunFollowupOrigin = (typeof RUN_FOLLOWUP_ORIGINS)[number];
  * Bounds of the follow-ups that are not the user's. They never count toward
  * the user's follow-ups (`RUN_FOLLOWUP_MAX_COUNT`) or a run's
  * `followupBudgetTokens`, so a sub-agent cannot use up the user's
- * clarifications. A callback whose rendering does not fit its run's room
- * goes in by reference to its turn's stored result (`SubagentTurn.result`,
- * read like a saved tool result), never refused.
+ * clarifications. A callback is never refused: one into a running answer is
+ * cut, with a cut mark, to what is left of that run's follow-up reserve
+ * (`followupContextReserveTokens`), at most 16,000 characters; a wake-up
+ * turn's callbacks share 32,000 characters the same way
+ * (`lib/server/runs/subagentBackground/render.ts`). The whole result stays on
+ * the turn (`SubagentTurn.result`) and in the thread view.
  */
 export const SUBAGENT_FOLLOWUP_LIMITS = Object.freeze({
   /** `main_agent` messages one background sub-agent run takes. */

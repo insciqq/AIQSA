@@ -1,15 +1,24 @@
 import { SUBAGENT_ERROR_CODES } from "../../../contracts/subagents";
+import { workspaceRunOutputDirectory } from "../../../domain/workspace";
 import type { ThreadWorkspaceActivityEntry } from "../../../contracts/workspace";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import { logEvent } from "../../observability";
 import { codexLbConnection } from "../../providers/providerConfiguration";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderConversationMessage, ProviderRunRequest } from "../../providers/types";
-import type { RunModelConfiguration } from "../../runs/runRepositoryContract";
+import type { RunModelConfiguration, RunUsageAttribution } from "../../runs/runRepositoryContract";
 import type { ToolRunBudgets } from "../../runs/toolBudgets";
 import type { WorkspaceAgent } from "../../subagents/guestProtocol";
-import type { BrowserAgentIdentity, SubagentBackgroundControl, SubagentBinding, SubagentTypeResolver } from "../../subagents/ports";
+import type {
+  BrowserAgentIdentity,
+  SubagentBackgroundControl,
+  SubagentBinding,
+  SubagentRunner,
+  SubagentTurnInput,
+  SubagentTypeResolver
+} from "../../subagents/ports";
 import type { RunTool } from "../../tools/types";
+import type { BrowserLiveRunHandle } from "../../workspace/browserLive";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
 import type { EngineTestFaults } from "../faults";
 import type { SubagentPromptFacts } from "../prompts";
@@ -25,7 +34,8 @@ import type { UsageLedger } from "../usage";
 import { subagentEngineTools, type SubagentCallDeps } from "./callTools";
 import { decodeSubagentModels, type FrozenSubagentModels, type SubagentParentModel } from "./modelCatalog";
 import { modelEffortOptions, parentSubagentRoute, type SubagentModelCatalog, type SubagentModelRoute, type SubagentRouteResult } from "./modelRoutes";
-import { createSubagentRunner, type HostedSubagentRunner } from "./runner";
+import { registerSubagentBackgroundHost } from "./backgroundRunner";
+import { createSubagentRunner, WORKSPACE_TURN_GUIDANCE_PREFIX, type HostedSubagentRunner, type SubagentHost } from "./runner";
 import type { SubagentThreadStore } from "./threadStore";
 
 /**
@@ -52,9 +62,35 @@ export type SubagentEngineDeps = Readonly<{
 }>;
 
 export type RunSubagents = Readonly<{
+  /** The user's custom sub-agents for the run's context (`renderSubagentTypeCatalog`), never the system prompt. */
+  catalog: SubagentPromptFacts["types"];
   prompt: SubagentPromptFacts;
+  /** Keeps the run's background host for the turns it admitted (`backgroundRunner.ts`); called once the run ended. */
+  releaseBackgroundHost(): void;
   runner: HostedSubagentRunner;
   tools: readonly EngineTool[];
+}>;
+
+/** What a background turn's own run uses instead of its parent's: its id, ledger, tool time and live-browser membership. */
+export type SubagentRegistryHost = Readonly<{
+  live: BrowserLiveRunHandle | null;
+  onUsage(attribution: RunUsageAttribution): void;
+  runId: string;
+  toolTimeLeftMs(): number;
+}>;
+
+/** The parts of a background turn's run its entry point provides (`execution.ts`). */
+export type SubagentBackgroundParts = Readonly<{
+  /** The run's membership in the chat's live browser, for its handoffs; null where no live browser is shown. */
+  live(runId: string): BrowserLiveRunHandle | null;
+  /** Records a compaction of the run's thread that finished after its turn. */
+  recordDetachedCompaction(runId: string, input: Parameters<SubagentHost["recordDetachedCompaction"]>[0]): Promise<boolean>;
+  /** Saves a long result of the run's own calls for a later read. */
+  saveResult(runId: string): ToolBatchDeps["saveResult"];
+  /** The runs holding a thread's items on the branch (`SubagentThreadStore.threadRunIds`). */
+  threadRunIds(threadId: string): Promise<readonly string[]>;
+  /** The run's own usage ledger. */
+  usage(runId: string): Pick<UsageLedger, "add" | "settle">;
 }>;
 
 /** A follow-up the user wrote (not a sub-agent's callback or the main agent's message). */
@@ -102,7 +138,11 @@ export type PrepareRunSubagentsInput = Readonly<{
   /** The native runs of the branch's earlier answers, in branch order. */
   branchRunIds: readonly string[];
   buildRegistry(input: Readonly<{ agent: WorkspaceAgent; followupTexts(): readonly string[];
+    /** A background turn's own run; absent, the parent run's. */
+    host?: SubagentRegistryHost;
     onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>; request: ProviderRunRequest }>): Promise<ToolRegistry>;
+  /** Background turns' own runs; absent, background turns cannot run here. */
+  backgroundParts?: SubagentBackgroundParts;
   budgets: ToolRunBudgets;
   callTimeLeft(tool: Pick<RunTool, "capability" | "name">): boolean;
   chatId: string;
@@ -155,7 +195,11 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     providerModelId: snapshot.providerModelId,
     upstreamModelId: snapshot.model.upstreamModelId
   };
-  const route = async (binding: SubagentBinding, signal?: AbortSignal): Promise<SubagentRouteResult> => {
+  /**
+   * The route of a binding from the run's frozen catalog. A background turn's own run (`hostRunId`) reads the binding
+   * its parent's call recorded, while that turn's run is active, so it outlives its parent's answer (`modelRoutes.ts`).
+   */
+  const routeFor = (hostRunId: string | null) => async (binding: SubagentBinding, signal?: AbortSignal): Promise<SubagentRouteResult> => {
     if (binding.provider === snapshot.connectionId && binding.providerModelId === snapshot.providerModelId) {
       return parentSubagentRoute({ adapter: input.adapter, effort: binding.reasoningEffort, modelConfiguration: input.modelConfiguration,
         request, snapshot, timeoutMs: input.answerTimeoutMs });
@@ -163,10 +207,11 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     const entry = catalog?.models.find((candidate) => candidate.connectionId === binding.provider &&
       candidate.providerModelId === binding.providerModelId);
     if (!entry || !input.engine.subagentModels) return { code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false };
-    return input.engine.subagentModels.route({ chatId: input.chatId, effort: binding.reasoningEffort, entry, runId: input.runId,
-      ...(signal ? { signal } : {}), userId: input.scope.userId });
+    return input.engine.subagentModels.route({ chatId: input.chatId, effort: binding.reasoningEffort, entry,
+      ...(hostRunId ? { hostRunId } : {}), runId: input.runId, ...(signal ? { signal } : {}), userId: input.scope.userId });
   };
-  const runner = createSubagentRunner({
+  const route = routeFor(null);
+  const foregroundHost: SubagentHost = {
     buildRegistry: input.buildRegistry,
     branchRunIds: input.branchRunIds,
     ...(input.ports?.browserIdentity ? { browserIdentity: input.ports.browserIdentity } : {}),
@@ -193,6 +238,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     settleTurn: ({ result, turnId }) => store.settle({ chatId: input.chatId, result, turnId, userId: input.scope.userId }),
     settleUsage: async () => { await input.usage.settle(); },
     signal: input.signal,
+    ...(input.backgroundParts ? { threadRunIds: input.backgroundParts.threadRunIds } : {}),
     toolCalls: input.engine.toolCalls,
     toolState: input.toolState,
     toolTimeLeft: input.toolTimeLeft,
@@ -200,11 +246,26 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     transcripts: input.engine.transcripts,
     usage: (attribution) => input.usage.add(attribution),
     userId: input.scope.userId
-  });
+  };
+  const runner = createSubagentRunner(foregroundHost);
+  // Background turns this run admits run on a host of their own over the same frozen bindings (`backgroundRunner.ts`).
+  const parts = input.backgroundParts;
+  const port = input.ports?.background;
+  const host = parts && port && input.backgroundAllowed
+    ? registerSubagentBackgroundHost(input.runId, (turn) => backgroundSubagentRunner(input, { ...foregroundHost,
+      route: routeFor(turn.hostRunId) }, parts, turn))
+    : null;
+  // Only a run that asked for a background start keeps its host past its end (`SubagentBackgroundHostRegistration`).
+  const background: SubagentBackgroundControl | undefined = port && host ? { availability: port.availability.bind(port),
+    deliver: port.deliver.bind(port), start: (start) => {
+      host.use();
+      return port.start(start);
+    }, stop: port.stop.bind(port) } : port;
+  const releaseBackgroundHost = () => host?.release();
   const deps: SubagentCallDeps = {
     assistantRun: input.assistantRun,
     backgroundAllowed: input.backgroundAllowed,
-    ...(input.ports?.background ? { background: input.ports.background } : {}),
+    ...(background ? { background } : {}),
     branchRunIds: [...input.branchRunIds, input.runId],
     catalog,
     chatId: input.chatId,
@@ -235,5 +296,77 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
       name: entry.displayName })),
     types
   };
-  return { prompt, runner, tools: subagentEngineTools(deps) };
+  // The custom sub-agents ride in run context, so the system prompt stays the same when the user edits them.
+  return { catalog: types, prompt: { ...prompt, types: [] }, releaseBackgroundHost, runner, tools: subagentEngineTools(deps) };
+}
+
+/**
+ * The request of a background turn's own run: its parent's, with the run's own output directory, which its Workspace
+ * binding names (`bindSubagentRunWorkspace`), in its Workspace and in the turn guidance a sub-agent keeps.
+ */
+export function backgroundSubagentRequest(request: ProviderRunRequest, runId: string): ProviderRunRequest {
+  const workspace = request.workspace;
+  if (!workspace) return request;
+  const outputDirectory = workspaceRunOutputDirectory(runId);
+  const guidance = request.prompt.turnGuidance?.map((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX)
+    ? part.split(workspace.outputDirectory).join(outputDirectory) : part);
+  return { ...request, prompt: { ...request.prompt, ...(guidance ? { turnGuidance: guidance } : {}) },
+    workspace: { ...workspace, outputDirectory } };
+}
+
+/**
+ * One background turn on its parent run's host: the parent's bindings, registry builder and routes, with the turn's
+ * own run, signal, deadline, tool budget, usage ledger and live-browser membership. The control settles the turn
+ * (`SubagentBackgroundControl`), so the runner's own settlement does nothing; the ledger is written and the
+ * membership ends once the turn ended.
+ */
+function backgroundSubagentRunner(input: PrepareRunSubagentsInput, parent: SubagentHost, parts: SubagentBackgroundParts,
+  turn: SubagentTurnInput): SubagentRunner {
+  const runId = turn.hostRunId;
+  const deadlineAt = turn.deadlineAt.getTime();
+  // Room for the report after the last tool call, as the parent's tool time leaves room for its answer.
+  const toolTimeEndsAt = deadlineAt - Math.min(input.answerTimeoutMs, Math.max(0, deadlineAt - input.now()) / 2);
+  const toolTimeLeft = () => input.now() < toolTimeEndsAt;
+  const ledger = parts.usage(runId);
+  const live = parts.live(runId);
+  const registryHost: SubagentRegistryHost = { live, onUsage: (attribution) => ledger.add(attribution), runId,
+    toolTimeLeftMs: () => toolTimeEndsAt - input.now() };
+  const hosted = createSubagentRunner({
+    ...parent,
+    // The thread's turns of the parent run itself are on its branch too.
+    branchRunIds: [...input.branchRunIds, input.runId],
+    buildRegistry: (agentInput) => input.buildRegistry({ ...agentInput, host: registryHost }),
+    callTimeLeft: () => toolTimeLeft(),
+    deadlineAt,
+    deadlineSignal: AbortSignal.timeout(Math.max(0, deadlineAt - input.now())),
+    // The main agent's answer may have ended: the turn's Workspace rows stay its own.
+    onWorkspaceLifecycle: async () => undefined,
+    recordDetachedCompaction: (record) => parts.recordDetachedCompaction(runId, record),
+    request: backgroundSubagentRequest(parent.request, runId),
+    saveResult: parts.saveResult(runId),
+    settleTurn: async () => true,
+    settleUsage: async () => { await ledger.settle(); },
+    signal: turn.signal,
+    threadRunIds: parts.threadRunIds,
+    toolState: { calls: 0 },
+    toolTimeLeft,
+    usage: (attribution) => ledger.add(attribution),
+    userFollowups: async () => []
+  });
+  const ended = async () => {
+    await ledger.settle();
+    await live?.end("run_finished").catch(() => undefined);
+  };
+  const begin = async (kind: "continue" | "start") => {
+    const handle = kind === "start" ? await hosted.start(turn) : await hosted.continue(turn);
+    void hosted.wait(handle).then(ended, ended);
+    return handle;
+  };
+  return {
+    start: () => begin("start"),
+    continue: () => begin("continue"),
+    wait: (handle, signal) => hosted.wait(handle, signal),
+    deliver: (handle, message) => hosted.deliver(handle, message),
+    stop: (handle, reason) => hosted.stop(handle, reason)
+  };
 }

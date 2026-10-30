@@ -4,7 +4,10 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
+import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
+import { interruptNativeRun } from "./runInterruption";
+import { backgroundSubagentRunner, hasSubagentBackgroundHost } from "./subagents/backgroundRunner";
 import { SUBAGENT_ROLE_SECTION } from "./prompts";
 import type { NativeRunStore } from "./runStore";
 import type { SubagentThreadStore } from "./subagents/threadStore";
@@ -33,6 +36,7 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
   const appended: Array<{ items: readonly TranscriptItem[]; scope: TranscriptRunScope }> = [];
   const rows = new Map<string, ToolCallRow>();
   const usage: RunUsageAttribution[] = [];
+  const usageByRun = new Map<string, readonly RunUsageAttribution[]>();
   let published: string | null = null;
   const row = (input: { arguments: Record<string, unknown>; ordinal: number; providerCallId: string; roundIndex: number; toolName: string },
     state: ToolCallRow["state"]): ToolCallRow => {
@@ -63,7 +67,11 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
     recordDetachedCompaction: vi.fn(async () => true),
     saveStoppedText: vi.fn(async () => true),
     workDurationMs: vi.fn(async () => null as number | null),
-    writeUsageRows: vi.fn(async (_scope, written: readonly { attribution: RunUsageAttribution }[]) => {
+    writeUsageRows: vi.fn(async (scope: { runId: string }, written: readonly { attribution: RunUsageAttribution }[]) => {
+      if (scope.runId !== created.runId) {
+        usageByRun.set(scope.runId, written.map((entry) => entry.attribution));
+        return;
+      }
       usage.splice(0, usage.length, ...written.map((entry) => entry.attribution));
     })
   } satisfies NativeRunStore;
@@ -75,12 +83,15 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
         modelId: input.binding.modelId, modelSource: input.binding.modelSource, parentRunId: input.parentRunId,
         provider: input.binding.provider, providerModelId: input.binding.providerModelId, reasoningEffort: input.binding.reasoningEffort,
         startedAt: new Date(), state: "running" as const, threadId: "thread-1" } })),
-    ensureThread: vi.fn(),
+    ensureThread: vi.fn(async (input: { name: string; parentRunId: string }) => ({ anchorRunId: input.parentRunId, definitionId: null,
+      id: "thread-bg", name: input.name, typeName: null })),
     find: vi.fn(async () => null),
     result: vi.fn(async () => null),
     endOrphanedTurns: vi.fn(async () => 0),
     setActiveState: vi.fn(async () => true),
     threadEffectItems: vi.fn(async () => options.threadEffects ?? []),
+    backgroundRunIds: vi.fn(async () => []),
+    threadRunIds: vi.fn(async (input: { parentRunIds: readonly string[] }) => [...input.parentRunIds]),
     settle: vi.fn(async (input) => { settled.push(input); return true; })
   } as unknown as SubagentThreadStore;
   const deps: NativeEngineDeps = {
@@ -88,7 +99,7 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
     observations: vi.fn(async () => ({ withReservation: vi.fn() }) as never), runs, savedResults: { read: vi.fn(async () => null) },
     subagentThreads: threads, toolCalls, transcripts
   };
-  return { appended, deps, published: () => published, settled, threads, usage };
+  return { appended, deps, published: () => published, settled, threads, usage, usageByRun };
 }
 
 function repository() {
@@ -185,5 +196,112 @@ describe("native run with sub-agents", () => {
     await createNativeRunExecutionResponse({ adapter: second.adapter, created, engine: spoken.deps, prepared: prepared({ earlier: true }),
       repository: repository() as unknown as RunRepository, services: {}, userId: "user" }).text();
     expect(spoken.threads.admitForeground).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits a background call through the port and runs its turn as its own run on the parent's host", async () => {
+    const { adapter, requests } = scriptedAdapter([
+      { calls: [{ arguments: { background: true, message: "Watch shop.example for a price drop.", name: "watcher" }, id: "call-bg",
+        name: CALL_SUBAGENT_TOOL_NAME }] },
+      { text: "The watcher runs in the background." },
+      { text: "Outcome: done\nNo price drop yet." }
+    ]);
+    const memory = engine();
+    const background = new FakeSubagentBackgroundControl();
+    await createNativeRunExecutionResponse({ adapter, created, engine: memory.deps, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, subagents: { background }, userId: "user" }).text();
+    expect(memory.published()).toBe("The watcher runs in the background.");
+    const [started] = background.turns;
+    expect(started?.input).toMatchObject({ kind: "start", name: "watcher", parentRunId: "run-1", threadId: "thread-bg",
+      userMessage: "Find the cheapest laptop." });
+    // The host outlives its parent run: the control starts the turn in the background run it admitted.
+    expect(hasSubagentBackgroundHost("run-1")).toBe(true);
+    const turn = { ...started!.input, deadlineAt: new Date(Date.now() + 60_000), hostRunId: "run-bg", mode: "background" as const,
+      parentToolCallId: started!.input.parentToolCallId, signal: new AbortController().signal, turnId: "turn-bg" };
+    const handle = await backgroundSubagentRunner.start(turn);
+    const result = await backgroundSubagentRunner.wait(handle);
+    expect(result).toMatchObject({ kind: "ended", name: "watcher", outcome: "done", state: "done" });
+    expect(requests[2]!.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+    // Its records are its own run's, under its thread; its usage is its own run's; the control settles the turn.
+    const writes = memory.appended.filter((write) => write.scope.runId === "run-bg");
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.every((write) => write.scope.thread?.threadId === "thread-bg" && write.scope.thread.turnId === "turn-bg")).toBe(true);
+    await vi.waitFor(() => expect(memory.usageByRun.get("run-bg")?.map((entry) => entry.purpose)).toEqual(["subagent"]));
+    expect(memory.settled).toEqual([]);
+  });
+
+  it("routes a background turn's model override as its own run, after the parent answered", async () => {
+    const { adapter } = scriptedAdapter([
+      { calls: [{ arguments: { background: true, message: "Watch the shop.", model: "fake-other", name: "cheap" }, id: "call-model",
+        name: CALL_SUBAGENT_TOOL_NAME }] },
+      { text: "The cheap watcher runs." },
+      { text: "Outcome: done\nWatched." }
+    ]);
+    const memory = engine();
+    const other = { connectionId: "connection-2", contextWindow: null, defaultEffort: null, displayName: "Fake other", imageInput: false,
+      providerFamily: "fake", providerModelId: "model-2", reasoningEfforts: [], upstreamModelId: "fake-other" };
+    const routes: Array<{ hostRunId?: string; runId: string }> = [];
+    const subagentModels = { route: vi.fn(async (input: { hostRunId?: string; runId: string }) => {
+      routes.push({ ...(input.hostRunId ? { hostRunId: input.hostRunId } : {}), runId: input.runId });
+      return { ok: true as const, route: { adapter, request: { modelCapabilities: prepared().providerRequest.modelCapabilities,
+        modelId: "fake-other", params: {}, provider: "fake", reasoningEffort: null }, snapshot: { connection: { responseTimeoutMs: 300_000 },
+        connectionId: "connection-2", model: { adapterKind: "fake", upstreamModelId: "fake-other" }, providerFamily: "fake",
+        providerModelId: "model-2" } as never, timeoutMs: 300_000 } };
+    }) };
+    const base = prepared();
+    const withModels = { ...base, providerRequest: { ...base.providerRequest, subagentModels: { models: [other], version: 1 } } } as
+      MaterializedPreparedRunData;
+    const background = new FakeSubagentBackgroundControl();
+    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-model" }, engine: { ...memory.deps, subagentModels },
+      prepared: withModels, repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
+      userId: "user" }).text();
+    const [started] = background.turns;
+    expect(started?.input.binding).toMatchObject({ modelSource: "call", provider: "connection-2", providerModelId: "model-2" });
+    // The call admitted the model on the parent run while it ran; the turn's own run reads it after the parent ended.
+    expect(routes).toEqual([{ runId: "run-model" }]);
+    const turn = { ...started!.input, deadlineAt: new Date(Date.now() + 60_000), hostRunId: "run-model-bg", mode: "background" as const,
+      signal: new AbortController().signal, turnId: "turn-model-bg" };
+    const result = await backgroundSubagentRunner.wait(await backgroundSubagentRunner.start(turn));
+    expect(result).toMatchObject({ model: { id: "fake-other" }, state: "done" });
+    expect(routes).toEqual([{ runId: "run-model" }, { hostRunId: "run-model-bg", runId: "run-model" }]);
+  });
+
+  it("keeps nothing of a run that started no background turn once it ended", async () => {
+    const { adapter } = scriptedAdapter([{ text: "No sub-agents needed." }]);
+    const background = new FakeSubagentBackgroundControl();
+    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-unused" }, engine: engine().deps,
+      prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
+      userId: "user" }).text();
+    expect(hasSubagentBackgroundHost("run-unused")).toBe(false);
+  });
+
+  it("offers no background port to a Telegram turn", async () => {
+    const { adapter } = scriptedAdapter([
+      { calls: [{ arguments: { background: true, message: "Watch it.", name: "watcher" }, id: "call-bg", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { text: "Background is not available here." }
+    ]);
+    const memory = engine();
+    const background = new FakeSubagentBackgroundControl();
+    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-telegram" }, engine: memory.deps,
+      prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
+      telegram: true, userId: "user" }).text();
+    expect(background.turns).toEqual([]);
+    expect(hasSubagentBackgroundHost("run-telegram")).toBe(false);
+  });
+
+  it("ends a run its shared Workspace stopped under as interrupted, with Continue, never cancelled", async () => {
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        interruptNativeRun("run-interrupted");
+        throw new DOMException("Aborted", "AbortError");
+      }
+    };
+    const memory = engine();
+    const runs = repository();
+    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-interrupted" }, engine: memory.deps,
+      prepared: prepared(), repository: runs as unknown as RunRepository, services: {}, userId: "user" }).text();
+    expect(runs.failRun).toHaveBeenCalledWith("run-interrupted", "answer-1", expect.objectContaining({ code: "run_interrupted" }),
+      { recoveryTerminal: true });
+    expect(memory.deps.runs.saveStoppedText).not.toHaveBeenCalled();
   });
 });

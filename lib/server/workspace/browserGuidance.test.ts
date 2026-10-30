@@ -86,6 +86,12 @@ describe("Workspace browser guide", () => {
     expect(workspaceBrowserAgentAvailable("custom:latest", "subagent")).toBe(false);
   });
 
+  it("words the old-image notice for both readers of the one guide, the main agent's guidance otherwise unchanged", () => {
+    expect(WORKSPACE_BROWSER_OLD_IMAGE_NOTICE).toMatch(/^On this Workspace image only the main agent can use the browser; sub-agents cannot/u);
+    const old = workspaceBrowserGuidance("subagent", "aiqsa-workspace:0.1.39");
+    expect(old.replace(`${WORKSPACE_BROWSER_OLD_IMAGE_NOTICE}\n\n`, "")).toBe(workspaceBrowserGuidance("main", "aiqsa-workspace:0.1.39"));
+  });
+
   it("only puts the old-image notice in an old sub-agent guide", () => {
     const current = JSON.parse(workspaceGuideInput().toString()) as { guides: Array<{ name: string; content: string }> };
     const old = JSON.parse(workspaceGuideInput({ agentKind: "subagent", imageRef: "aiqsa-workspace:0.1.39" }).toString()) as { guides: Array<{ name: string; content: string }> };

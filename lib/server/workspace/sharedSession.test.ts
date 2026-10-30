@@ -5,7 +5,9 @@ import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import type { WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import type { WorkspaceAttachedRun } from "./attachments";
 import { getWorkspaceConfig } from "./config";
-import { createWorkspaceCoordinator, type WorkspaceCoordinatorRepository, type WorkspaceExecutionBinding } from "./coordinator";
+import {
+  createWorkspaceCoordinator, WORKSPACE_BROWSER_RELEASE_WAIT_MS, type WorkspaceCoordinatorRepository, type WorkspaceExecutionBinding
+} from "./coordinator";
 import { workspaceSyncCleanupId, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
 import { WorkspaceRuntimeError, type WorkspaceBoundTool, type WorkspaceRuntime } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
@@ -38,6 +40,7 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
   let operationOwner: string | null = `run:${MAIN}`;
   let operationGeneration = 3;
   let exportPending = false;
+  let closing = false;
   const settled: string[] = [];
   const detached: Array<Readonly<{ runId: string; stopProven: boolean }>> = [];
   const binding = (runId: string): WorkspaceExecutionBinding => ({
@@ -76,6 +79,12 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
     // The main run's capture while the sub-agent stays attached: leased on its binding under the shared operation.
     claimExport: async (request) => ({ operation: request.operation, status: "claimed", token: "lease_token_1" }),
     claimExportForRecovery: async () => ({ status: "busy" }),
+    // The detach left no attachment of another run: the operation closes, and this run settles the session.
+    closeRunOperationIfLast: vi.fn(async (current: WorkspaceExecutionBinding) => {
+      if (closing || [...attached].some((runId) => runId !== current.runId)) return false;
+      closing = true;
+      return true;
+    }),
     detachRun: vi.fn(async ({ binding: current, stopProven }) => {
       if (!attached.delete(current.runId)) return false;
       detached.push({ runId: current.runId, stopProven });
@@ -165,6 +174,36 @@ describe("a Workspace session shared by attached runs", () => {
     expect(vi.mocked(f.runtime.callBoundTool).mock.calls.map(([input]) => input.modelRunId).sort()).toEqual([MAIN, SUBAGENT].sort());
   });
 
+  it("releases one agent's browser slot in the run's guest, and nothing once the run no longer holds the Workspace", async () => {
+    const f = sharedFixture();
+    const agent = { kind: "subagent" as const, name: "shop", threadId: THREAD };
+    await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
+    expect(f.runtime.callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ agent, arguments: { args: ["release"], command: "aiqsa-browser" },
+      modelRunId: SUBAGENT, operation: { generation: 3, owner: `run:${MAIN}` }, originalName: "sandbox_exec", runtimeSandboxId: "runtime_1",
+      sessionId: SESSION }));
+    // Two agents of one run that end together never share the release's active-call key.
+    await f.coordinator.releaseBrowserAgent!({ agent: { kind: "subagent", name: "notes", threadId: "thread_2" }, runId: SUBAGENT, userId: "user_1" });
+    const keys = vi.mocked(f.runtime.callBoundTool).mock.calls.map(([call]) => call.modelRunToolCallId);
+    expect(new Set(keys).size).toBe(2);
+    expect(keys[0]).toContain(THREAD);
+    // A guest that never answers holds the turn's end only for the bound, after which the idle release frees the slot.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(f.runtime.callBoundTool).mockImplementationOnce(() => new Promise<never>(() => undefined));
+      let done = false;
+      const pending = f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" }).then(() => { done = true; });
+      await vi.advanceTimersByTimeAsync(WORKSPACE_BROWSER_RELEASE_WAIT_MS + 1);
+      await pending;
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    vi.mocked(f.runtime.callBoundTool).mockClear();
+    f.attached.delete(SUBAGENT);
+    await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
+    expect(f.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
   it("ends one run by stopping only its own processes, and the VM and the other run go on", async () => {
     const f = sharedFixture();
     const result = await f.coordinator.settle({ outcome: "completed", runId: MAIN, userId: "user_1" });
@@ -186,6 +225,31 @@ describe("a Workspace session shared by attached runs", () => {
     expect(last).toEqual({ interruptedRunIds: [], kind: "detached", remainingRuns: 0 });
     expect(f.runtime.retireSessionOperation).toHaveBeenCalledOnce();
     expect(f.settled).toEqual(["stopped"]);
+  });
+
+  it("releases the operation when the attached runs end together, each having seen the other still attached", async () => {
+    const f = sharedFixture();
+    // Both runs read the other as attached before either has detached (a run's status is written after its detach).
+    let waiting = 0;
+    let release: () => void = () => undefined;
+    const bothStopping = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(f.runtime.terminateAgentProcesses!).mockImplementation(async () => {
+      waiting += 1;
+      if (waiting === 2) release();
+      await bothStopping;
+      return { outcome: "closed" };
+    });
+    const [main, subagent] = await Promise.all([
+      f.coordinator.settle({ outcome: "completed", runId: MAIN, userId: "user_1" }),
+      f.coordinator.settle({ outcome: "completed", runId: SUBAGENT, userId: "user_1" })
+    ]);
+    expect(f.detached.map((entry) => entry.runId).sort()).toEqual([MAIN, SUBAGENT].sort());
+    // The one that left last retired the operation and settled the session: no owner stays with no run under it.
+    expect(f.repository.closeRunOperationIfLast).toHaveBeenCalledTimes(2);
+    expect(f.runtime.retireSessionOperation).toHaveBeenCalledOnce();
+    expect(f.settled).toHaveLength(1);
+    expect([main, subagent].filter((result) => result.sessionSettled)).toHaveLength(2);
+    expect(f.interrupted).not.toHaveBeenCalled();
   });
 
   it.each(["unknown", "absent"] as const)("stops the VM and ends every attached run as interrupted when a stop is %s", async (agentStop) => {

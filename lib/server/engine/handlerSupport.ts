@@ -10,6 +10,10 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunServices } from "./execution";
 import { processBootedAt, reconcileNativeRuns, type NativeRecoveryDeps } from "./recovery";
 import type { ToolRegistryServices } from "./toolRegistry";
+import type { SubagentRunPorts } from "./subagents/runSubagents";
+import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
+import type { BrowserAgentIdentity, SubagentBackgroundControl, SubagentTypeResolver } from "../subagents/ports";
+import { subagentManagementToolNames } from "../subagents/managementTools";
 
 /**
  * The agent engine a send or regenerate handler runs its admitted runs on.
@@ -26,6 +30,12 @@ export type NativeEngineHandlerDeps = Readonly<{
   mcpRuntime?: ToolRegistryServices["mcpRuntime"];
   /** Background sub-agent runs' own recovery pass (`lib/server/runs/subagentBackground/recovery.ts`). */
   subagentRecovery?: NativeRecoveryDeps["subagents"];
+  /**
+   * The sub-agent ports of the other slices (`lib/server/subagents/ports.ts`): background turns (web and Assistant
+   * chats only, never a Telegram turn or a scheduled occurrence) and the user's custom types. The browser identity
+   * comes from the run's own Workspace coordinator.
+   */
+  subagents?: Readonly<{ background?: () => SubagentBackgroundControl; types?: SubagentTypeResolver }>;
   /** The owners of the harness and self-service tools (`defaultNativeToolServices`). */
   tools?: Pick<ToolRegistryServices, "secrets" | "selfService">;
 }>;
@@ -44,7 +54,28 @@ export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
   options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): readonly string[] {
   if (options.scheduled === true || options.telegram === true || prepared.normalizedRequest.monitoringVerdictTool) return [];
   if (prepared.assistant || prepared.chatAssistant) return [READ_AIQSA_GUIDE_TOOL_NAME, MANAGE_SKILL_TOOL_NAME];
-  return SELF_SERVICE_TOOLS.map((tool) => tool.name);
+  // Custom sub-agents change like the user's other resources, in the same chats (`managementTools.ts`).
+  return [...SELF_SERVICE_TOOLS.map((tool) => tool.name), ...subagentManagementToolNames({ assistant: false })];
+}
+
+/**
+ * The sub-agent ports one run gets: background turns only in a web or Assistant chat, the custom types (the engine
+ * never offers them in an Assistant chat), and the browser identity of its Workspace coordinator, whose release
+ * frees an agent's browser slot when its turn ends. Absent ports are unavailable (`callTools.ts`).
+ */
+export function subagentRunPorts(native: NativeEngineHandlerDeps, input: Readonly<{ scheduled: boolean; telegram: boolean;
+  workspace?: WorkspaceCoordinator }>): SubagentRunPorts {
+  const background = native.subagents?.background && !input.scheduled && !input.telegram ? native.subagents.background() : undefined;
+  const release = input.workspace?.releaseBrowserAgent;
+  const browserIdentity: BrowserAgentIdentity | undefined = release ? {
+    environment: workspaceAgentEnvironment,
+    release: ({ agent, modelRunId, signal, userId }) => release({ agent, runId: modelRunId, ...(signal ? { signal } : {}), userId })
+  } : undefined;
+  return {
+    ...(background ? { background } : {}),
+    ...(browserIdentity ? { browserIdentity } : {}),
+    ...(native.subagents?.types ? { types: native.subagents.types } : {})
+  };
 }
 
 /**
@@ -144,6 +175,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     repository: input.repository,
     ...(scheduled ? { scheduled: true as const } : {}),
     ...(telegram ? { telegram: true as const } : {}),
+    subagents: subagentRunPorts(native, { scheduled, telegram, ...(input.workspace ? { workspace: input.workspace } : {}) }),
     services: {
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),

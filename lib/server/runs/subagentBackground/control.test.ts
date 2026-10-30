@@ -70,6 +70,19 @@ describe("background sub-agent runs", () => {
     expect(localSubagentTurnIds()).not.toContain(turnId);
   });
 
+  it("ends a run its shared Workspace stopped under as interrupted, and names only the runs it owns", async () => {
+    const { control, runner, sink, store } = setup();
+    const started = await control.start(startInput("browser"));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    await vi.waitFor(() => expect(runner!.turns.get(turnId)).toBeDefined());
+    const runId = store.turns[0]!.runId!;
+    expect(control.interruptRuns({ chatId: "chat-1", runIds: [runId, "main-run"], userId: "user-1" })).toEqual([runId]);
+    expect(control.interruptRuns({ chatId: "other-chat", runIds: [runId], userId: "user-1" })).toEqual([]);
+    await vi.waitFor(() => expect(sink.callbacks).toHaveLength(1));
+    expect(sink.callbacks[0]!.result).toMatchObject({ reason: "restart", state: "interrupted" });
+    expect(store.turns[0]).toMatchObject({ runActive: false, state: "interrupted" });
+  });
+
   it("refuses visibly and leaves no turn: background unavailable, usage limits, a busy thread, the running cap", async () => {
     expect(await setup({ runner: null }).control.start(startInput("a"))).toEqual({ code: "subagent_background_unavailable", kind: "refused" });
     const telegram = setup();

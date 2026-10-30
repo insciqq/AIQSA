@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
+import { SUBAGENT_MANAGEMENT_TOOL_NAMES } from "../subagents/managementTools";
 import { SELF_SERVICE_TOOLS } from "../tools/selfServiceTools";
 import { engineAdmissionRefusal, recoverUserNativeRuns, selfServiceToolsFor, type NativeEngineHandlerDeps } from "./handlerSupport";
 
@@ -9,7 +10,7 @@ const prepared = (extra: Record<string, unknown> = {}, request: Record<string, u
   ({ normalizedRequest: { chatId: "chat-1", ...request }, ...extra }) as unknown as MaterializedPreparedRunData;
 
 describe("the self-service tools' chats", () => {
-  const all = SELF_SERVICE_TOOLS.map((tool) => tool.name);
+  const all = [...SELF_SERVICE_TOOLS.map((tool) => tool.name), ...SUBAGENT_MANAGEMENT_TOOL_NAMES];
 
   it("are all of them in interactive personal and temporary chats", () => {
     expect(selfServiceToolsFor(prepared())).toEqual(all);

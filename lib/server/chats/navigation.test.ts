@@ -309,6 +309,19 @@ describe("chat navigation handlers", () => {
     });
   });
 
+  it("marks a chat's answer in progress only for the main agent's run, never for background sub-agents alone", async () => {
+    const updatedAt = new Date("2026-09-28T00:00:00.000Z");
+    const findMany = vi.fn(async (args: { select?: { modelRuns?: { where?: Record<string, unknown> } }; where: { pinned?: boolean } }) =>
+      args.where.pinned ? [] : [{ assistantId: null, folderId: null, id: "chat-subagents", modelRuns: [], pinned: false,
+        scheduledTaskOccurrences: [], scheduledTasks: [], title: "Research", updatedAt }]);
+    const client = { $queryRaw: vi.fn(async () => []), chat: { findMany }, folder: { findMany: vi.fn(async () => []) } };
+    const result = await createPrismaChatNavigationRepository(client as never).listPage({ cursor: null, limit: 30, userId: "user-1" });
+    // The list's busy flag reads only runs without a sub-agent turn: Archive and Delete stay offered while sub-agents run.
+    expect(findMany).toHaveBeenCalled();
+    expect(findMany.mock.calls.every(([args]) => args.select?.modelRuns?.where?.subagentTurnId === null)).toBe(true);
+    expect(result).toMatchObject({ kind: "ok", page: { chats: [{ activeRun: false, id: "chat-subagents" }] } });
+  });
+
   it("shows an Assistant avatar only while the viewer can use that Assistant, with one lookup per page", async () => {
     const avatar = {
       accents: [0, 4],

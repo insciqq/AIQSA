@@ -213,12 +213,14 @@ export async function executeStopSubagent(deps: SubagentCallDeps, execution: Eng
   if (!parsed.ok) return refusal(call, parsed.code, parsed.message);
   const name = parsed.value.name;
   const notFound = () => refusal(call, SUBAGENT_ERROR_CODES.notFound, "No sub-agent of that name is in this conversation.");
-  if (deps.background) {
+  const lookup = await deps.store.find({ branchRunIds: deps.branchRunIds, chatId: deps.chatId, name, userId: deps.userId });
+  // A foreground turn of this answer runs here, not in the background control, which cannot stop it.
+  const ownForeground = lookup?.active && lookup.active.parentRunId === deps.runId && lookup.active.mode === "foreground";
+  if (deps.background && !ownForeground) {
     const stopped = await deps.background.stop({ chatId: deps.chatId, name, parentRunId: deps.runId,
       parentToolCallId: execution.persistedToolCallId, userId: deps.userId });
     return stopped.kind === "stopped" ? resultOf(call, stopped.result) : notFound();
   }
-  const lookup = await deps.store.find({ branchRunIds: deps.branchRunIds, chatId: deps.chatId, name, userId: deps.userId });
   if (!lookup) return notFound();
   if (lookup.active) {
     if (lookup.active.parentRunId === deps.runId && lookup.active.mode === "foreground") {

@@ -22,6 +22,8 @@ import { cancelPendingToolLoopCallsInTransaction, closeRunningToolLoopCallsInTra
 import { ActiveRunConflictError } from "../runRepositoryContract";
 import { followupTokenCost } from "../runFollowups";
 import { renderCallbackFollowup, SUBAGENT_CALLBACK_DEFAULT_RESERVE_TOKENS, SUBAGENT_CALLBACK_MIN_TOKENS } from "./render";
+import { bindSubagentRunWorkspace } from "../../workspace/attachments";
+import { acceptWorkspaceBrowserSequence } from "../../workspace/secrets/store";
 
 /**
  * The chat's sub-agent admission lock, shared with the engine's foreground
@@ -327,6 +329,14 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
             provider: input.binding.provider, status: "streaming", subagentThreadId: input.threadId, subagentTurnId: turn.id,
             userId: input.userId, userMessageId: parent.userMessageId
           }, select: { id: true } });
+          // Its Workspace binding is the parent's admitted one with its own output folder and browser sign-in sequence,
+          // so it attaches to the chat's shared session; a parent without a Workspace leaves it without one.
+          const parentWorkspace = await tx.workspaceRunBinding.findUnique({ select: { modelRunId: true },
+            where: { modelRunId: input.parentRunId } });
+          if (parentWorkspace) {
+            await bindSubagentRunWorkspace(tx, { browserSessionSequence: await acceptWorkspaceBrowserSequence(tx, input.userId, input.chatId),
+              parentRunId: input.parentRunId, runId: run.id });
+          }
           await tx.subagentThread.update({ data: { updatedAt: new Date() }, where: { id: input.threadId } });
           return { kind: "admitted", runId: run.id, turnId: turn.id };
         }));

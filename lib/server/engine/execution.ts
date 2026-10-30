@@ -41,7 +41,7 @@ import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
 import { engineItemRules, turnEndedAfter } from "./compaction";
 import { compactionModelCall } from "./compactionCalls";
-import { buildRunConversation, turnContextIndex, turnContextItem, withStoppedNativeAnswers } from "./conversation";
+import { buildRunConversation, subagentCatalogItem, turnContextIndex, turnContextItem, withStoppedNativeAnswers } from "./conversation";
 import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
@@ -49,7 +49,7 @@ import { ANSWER_NOW_INSTRUCTION, runAgentLoop, type LoopToolChoice } from "./loo
 import { callModel } from "./modelCall";
 import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
 import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
-import type { NativeRunStore } from "./runStore";
+import { SUBAGENT_RUN_NO_ANSWER, type NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
 import {
   APPROVED_CALL_IN_FLIGHT_OUTPUT, runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps, type ToolBatchState
@@ -64,15 +64,20 @@ import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
 import { createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
+import { takeNativeRunInterruption, WORKSPACE_STOPPED_INTERRUPTION } from "./runInterruption";
 import { withSubagentTools } from "./subagents/callTools";
 import {
   currentUserMessageText,
   prepareRunSubagents,
   userAuthoredFollowup,
   type RunSubagents,
+  type SubagentBackgroundParts,
   type SubagentEngineDeps,
+  type SubagentRegistryHost,
   type SubagentRunPorts
 } from "./subagents/runSubagents";
+import { renderSubagentTypeCatalog } from "../subagents/typeCatalog";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 
 /**
@@ -370,7 +375,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // The live browser of an interactive web run (`browserLive.ts`): its owner watches it and answers handoffs.
         const coordinator = input.workspace;
         if (workspace && coordinator?.browserLive && !input.scheduled && !input.telegram) {
-          live = browserLiveRelay().register({ channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId,
+          const holds = coordinator.holdsWorkspace;
+          // A run gone without `end` (a crash) leaves the shared channel once it no longer holds the Workspace.
+          live = browserLiveRelay().register({ ...(holds ? { attached: () => holds({ runId, userId: input.userId }) } : {}),
+            channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId,
             runId, signInRemembered: () => coordinator.browserSaveBack?.({ runId, userId: input.userId }) ?? Promise.resolve(false),
             userId: input.userId });
         }
@@ -472,8 +480,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const branchRunIds = conversationMessages.flatMap((message) => message.role === "assistant" && nativeRuns.has(message.id)
           ? [nativeRuns.get(message.id)!] : []);
         if (engine.subagentThreads) {
-          const threadEffects = await engine.subagentThreads.threadEffectItems({ chatId: scope.chatId, runIds: branchRunIds,
+          // Background turns ran in runs of their own, which the branch's answers started.
+          const backgroundRuns = await engine.subagentThreads.backgroundRunIds({ chatId: scope.chatId, parentRunIds: branchRunIds,
             userId: input.userId });
+          const threadEffects = await engine.subagentThreads.threadEffectItems({ chatId: scope.chatId,
+            runIds: [...branchRunIds, ...backgroundRuns], userId: input.userId });
           for (const thread of threadEffects) unknownEffectsOf(thread.items, () => false, agentFences.agent(thread.threadId));
           // Every earlier thread effect precedes the user's current message, which is them speaking since.
           if (threadEffects.length > 0 && conversation.currentInputId && !serverInput) unknownEffects.userSpoke();
@@ -511,7 +522,15 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspace: input.workspace },
           userId: input.userId
         };
-        const mainRegistry = await buildToolRegistry({ ...registryInput, followupTexts: () => delivered,
+        /** A sub-agent's handoff mode: the run's, naming the sub-agent, with a background turn's own live membership. */
+        const subagentHandoff = (agent: WorkspaceAgent, host: SubagentRegistryHost | undefined):
+          Readonly<{ browserHandoff: BrowserHandoffMode }> | null => {
+          if (!browserHandoff || agent.kind !== "subagent") return null;
+          if (browserHandoff.kind !== "interactive") return { browserHandoff };
+          return { browserHandoff: { ...browserHandoff, agent: { id: agent.threadId, name: agent.name },
+            ...(host ? { live: host.live, toolTimeLeftMs: host.toolTimeLeftMs } : {}) } };
+        };
+        const mainRegistry = await buildToolRegistry({ ...registryInput, agent: { kind: "main" }, followupTexts: () => delivered,
           onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base });
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
         const toolState: ToolBatchState = { calls: 0 };
@@ -519,13 +538,45 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
           signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
           text: save.text });
+        // A background turn's own run (`backgroundRunner.ts`): it answers no message, so its records name none.
+        const backgroundScope = (backgroundRunId: string) => ({ assistantMessageId: SUBAGENT_RUN_NO_ANSWER, chatId: scope.chatId,
+          runId: backgroundRunId, userId: input.userId });
+        const threadStore = engine.subagentThreads;
+        const backgroundParts: SubagentBackgroundParts | undefined = threadStore ? {
+          live: (backgroundRunId) => {
+            const liveCoordinator = input.workspace;
+            if (!workspace || !liveCoordinator?.browserLive || input.scheduled || input.telegram) return null;
+            const holds = liveCoordinator.holdsWorkspace;
+            return browserLiveRelay().register({ ...(holds ? { attached: () => holds({ runId: backgroundRunId, userId: input.userId }) } : {}),
+              channel: (request) => liveCoordinator.browserLive!({ request, runId: backgroundRunId }), chatId: scope.chatId,
+              runId: backgroundRunId, signInRemembered: () => liveCoordinator.browserSaveBack?.({ runId: backgroundRunId, userId: input.userId }) ??
+                Promise.resolve(false), userId: input.userId });
+          },
+          recordDetachedCompaction: (backgroundRunId, { item, sequence, thread }) =>
+            engine.runs.recordDetachedCompaction(backgroundScope(backgroundRunId), { item, sequence, status: null, thread }),
+          saveResult: (backgroundRunId) => async (save) => saveToolResultText({ outcome: save.outcome,
+            producer: { runId: backgroundRunId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
+            signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
+            text: save.text }),
+          threadRunIds: (threadId) => threadStore.threadRunIds({ chatId: scope.chatId, parentRunIds: [...branchRunIds, runId], threadId,
+            userId: input.userId }),
+          usage: (backgroundRunId) => createUsageLedger({ faults,
+            price: (attributions) => usageAttributionsWithEstimatedCost(input.repository, attributions), scope: backgroundScope(backgroundRunId),
+            store: engine.runs })
+        } : undefined;
         // Sub-agents (`call_subagent`): the main agent's registry only, on the run's own frozen bindings (`subagents/`).
         const subagents = await prepareRunSubagents({
+          ...(backgroundParts ? { backgroundParts } : {}),
           admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
           assistantRun: Boolean(input.prepared.assistant || input.prepared.chatAssistant),
           branchRunIds,
           // One page-reader session for the answer: its cap and cache count every agent's reads (integrator decision).
+          // A background turn's registry acts as its own run (its Workspace attachment, calls and usage), over the
+          // parent's MCP bindings by reference; each sub-agent's handoff names it, from its own run's live membership.
           buildRegistry: (agentInput) => buildToolRegistry({ ...registryInput,
+            agent: agentInput.agent,
+            ...(subagentHandoff(agentInput.agent, agentInput.host) ?? {}),
+            ...(agentInput.host ? { onUsage: agentInput.host.onUsage, runId: agentInput.host.runId } : {}),
             ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),
             followupTexts: agentInput.followupTexts,
             // A sub-agent's outputs stay its own; the answer shows its steps under its call.
@@ -556,7 +607,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
           secrets: input.services.secrets, snapshot, ...(subagents ? { subagents: subagents.prompt } : {}), tools: registry.definitions() });
         base = native.request;
-        items.splice(turnContextIndex(items, conversation.currentInputId), 0, turnContextItem(native.turnContext));
+        // The user's custom sub-agents ride in run context like the Skills index, never in the system prompt.
+        const subagentCatalog = subagents ? renderSubagentTypeCatalog(subagents.catalog) : null;
+        items.splice(turnContextIndex(items, conversation.currentInputId), 0,
+          ...(subagentCatalog ? [subagentCatalogItem(subagentCatalog)] : []), turnContextItem(native.turnContext));
         // The run reads its items whole; the transcript keeps what later turns may read, written behind the answer.
         const record = (added: readonly TranscriptItem[]) => writer.record(added.map((item) => transcriptRecord(registry, item)));
         const append = async (added: readonly TranscriptItem[]) => {
@@ -838,8 +892,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         await chatUpdate();
         sink.send({ data: { runId, status: "complete" }, type: "done" });
       } catch (error) {
-        const cancelled = stop.signal.aborted || error instanceof ToolBatchInactiveError && !deadline.signal.aborted;
-        const failure = deadline.signal.aborted && !cancelled ? deadline.signal.reason : error;
+        // A shared Workspace that stopped under the run ends it interrupted, with Continue, never cancelled.
+        const interrupted = takeNativeRunInterruption(runId);
+        const cancelled = !interrupted && (stop.signal.aborted || error instanceof ToolBatchInactiveError && !deadline.signal.aborted);
+        const failure = interrupted ? new EngineFailure(WORKSPACE_STOPPED_INTERRUPTION.code, WORKSPACE_STOPPED_INTERRUPTION.message)
+          : deadline.signal.aborted && !cancelled ? deadline.signal.reason : error;
         const payload = failurePayload(failure, Boolean(workspace));
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, code: cancelled ? "model_run_cancelled" : payload.code,
           connectionId: snapshot.connectionId, duration_ms: Math.max(0, now() - startedAt), error,
@@ -888,6 +945,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         else await chatUpdate();
       } finally {
         void live?.end("run_finished");
+        // Its background turns keep their host for a grace, so one still attaching starts (`backgroundRunner.ts`).
+        runSubagents?.releaseBackgroundHost();
+        takeNativeRunInterruption(runId);
         releaseGuardUsage();
         stopKeepalive();
         clearTimeout(deadlineTimer);
