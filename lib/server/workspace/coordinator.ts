@@ -1462,6 +1462,8 @@ const EXEC_SESSION_TOOLS = new Set<string>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
 const BROWSER_SESSION_SAVE_TIMEOUT_MS = 30_000;
 /** One agent stop of a run in a shared VM, its proof included (`agentProcessGuest.ts`). */
 const WORKSPACE_AGENT_STOP_WAIT_MS = 20_000;
+/** How long an agent's turn end waits for its browser slot's release in the guest. */
+export const WORKSPACE_BROWSER_RELEASE_WAIT_MS = 3_000;
 
 function isExecSessionTool(name: string): boolean {
   return EXEC_SESSION_TOOLS.has(name);
@@ -2416,9 +2418,16 @@ export function createWorkspaceCoordinator(input: Readonly<{
     async releaseBrowserAgent({ agent, runId, signal, userId }) {
       const binding = await input.repository.binding({ runId, userId }).catch(() => null);
       if (!binding?.runtimeSandboxId || !binding.operationOwner || !runHoldsOperation(binding, runId)) return;
-      await new WorkspaceBrowserAgentIdentity({ operation: ownedOperation(binding), runtime: input.runtime,
+      // Bounded: a turn's end never waits on a slow guest, whose idle release frees the slot anyway.
+      const bound = AbortSignal.timeout(WORKSPACE_BROWSER_RELEASE_WAIT_MS);
+      const release = new WorkspaceBrowserAgentIdentity({ operation: ownedOperation(binding), runtime: input.runtime,
         runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId })
-        .release({ agent, chatId: binding.chatId, modelRunId: runId, ...(signal ? { signal } : {}), userId });
+        .release({ agent, chatId: binding.chatId, modelRunId: runId, signal: signal ? AbortSignal.any([signal, bound]) : bound, userId });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([release, new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, WORKSPACE_BROWSER_RELEASE_WAIT_MS);
+        timer.unref?.();
+      })]).finally(() => clearTimeout(timer));
     },
     async detach({ chatId, execution, modelRunId, userId }) {
       const binding = await input.repository.binding({ runId: modelRunId, userId });
