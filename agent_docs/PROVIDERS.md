@@ -31,7 +31,6 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 - An OpenRouter model whose listing marks reasoning mandatory (`reasoning.mandatory`) refuses Off with HTTP 400, so Test & Save and later checks save its levels without Off, and give Off back when the listing marks it optional again; a listing without the flag changes nothing (decision 2026-10-25, `lib/server/admin/providers/openRouterReasoning.ts`).
 - Only a deterministic rejection or a static adapter restriction proves incompatibility. Authentication, rate-limit, network, timeout, output or context safety-limit and upstream failures keep the previous evidence. Native PDF proof must read image content through the native route; intermediary OCR text, refusals and generic HTTP errors are inconclusive.
 - Changing an endpoint requires fresh secrets for every retained key, disabled ones included, before contacting the new destination. A stored secret is never sent to a changed endpoint, so editing a URL cannot leak a saved key.
-- Gemini structured-output schemas omit upper bounds on nested arrays for compatibility; consumers enforce the canonical bounds after decoding.
 - Tool schemas write a nullable list or object, or a string-or-list value, as `anyOf`, never as a `type` list naming `array` or `object`: DeepSeek's strict schema validator, which OpenRouter's DeepSeek endpoint applies to strict tools, rejects the whole request with HTTP 400 (2026-10-26, `lib/server/tools/toolSchemaPortability.test.ts`).
 
 ## Transport
@@ -61,13 +60,3 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 
 - Forward migrations never overwrite an administrator's token price: they update only `catalog` rows or unknown prices, matched by `providerModelCatalogKey` (`lib/server/admin/providers/providerModelPricing.ts`), and prices never synchronize at startup.
 - A paid call takes the provider-reported cost (OpenRouter BYOK adds the upstream cost), else the model's class prices, else stays unknown. Every paid call that returned usage is recorded once with its purpose, failed calls, retries and administrator checks included; a run records it after its answer (`agent_docs/RUN_CONTRACTS.md`).
-
-## Upstream references
-
-Recheck primary documentation when changing provider behavior; adapter tests own the exact wire support.
-
-- OpenAI: [Responses](https://platform.openai.com/docs/api-reference/responses), [background mode](https://platform.openai.com/docs/guides/background), [SDK retries](https://github.com/openai/openai-node/blob/main/docs/configuration.md#retries-and-timeouts).
-- DeepSeek: [Responses](https://api-docs.deepseek.com/api/create-response/).
-- Gemini: [Interactions](https://ai.google.dev/api/interactions-api-v1), [Google Search](https://ai.google.dev/gemini-api/docs/google-search).
-- OpenRouter: [routing](https://openrouter.ai/docs/guides/routing/provider-selection), [structured output](https://openrouter.ai/docs/guides/features/structured-outputs), [embeddings](https://openrouter.ai/docs/api/reference/embeddings), [reranking](https://openrouter.ai/docs/api/api-reference/rerank/create-rerank), [speech to text](https://openrouter.ai/docs/guides/overview/multimodal/stt).
-- MCP: [authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).

@@ -30,7 +30,6 @@ How to choose checks, where to run them, which external calls are allowed, and h
 - Pick tests by the behavior and consumers you changed, not by which test files you edited. Do not write tests that only mirror the implementation.
 - When workers run in parallel, they run focused checks; the integrating agent runs the one combined check for the slice.
 - Do not rerun a passing full suite on another machine or after a narrow fix; rerun what the fix affects. Evidence stays valid while its sources, dependencies, configuration and generated inputs are unchanged. Widen coverage for a shared boundary or a diagnosed failure, not for reassurance.
-- Run `npx tsc --noEmit` once per slice when `check:hermetic` or an imminent build does not already cover types. Stale `.next` route types need regenerated types (`npx next typegen`) or a clean checkout, never source edits that satisfy deleted routes.
 - CI (`.github/workflows/ci.yml`) runs Hermetic for pull requests and on explicit dispatch, not on every push to main.
 - A request to "verify" ordinary work means its affected scope. Run the whole browser catalog or a broad theme and viewport matrix only when the change needs it or a full regression was asked for. Record unrelated failures separately; they do not widen the current work.
 
