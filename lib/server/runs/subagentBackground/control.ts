@@ -62,6 +62,8 @@ type Execution = {
   done: Promise<void>;
   finish: () => void;
   handle: SubagentTurnHandle | null;
+  /** The shared Workspace stopped under it (another run's unknown execution): it ends interrupted, with Continue. */
+  interrupted: boolean;
   name: string;
   parentRunId: string;
   /**
@@ -91,6 +93,11 @@ export type SubagentBackgroundOperations = SubagentBackgroundControl & Readonly<
   stopUnderMessage(input: SubagentChatScope & Readonly<{ messageId: string }>): Promise<number>;
   /** Chat deletion, under its fence: every active turn (`chat_deleted`). */
   stopChat(input: SubagentChatScope): Promise<number>;
+  /**
+   * Background runs of this process whose shared Workspace stopped under them (`onAttachedRunsInterrupted`): each
+   * is cut and ends interrupted. Returns the run ids it owns, so the caller interrupts the others as main-agent runs.
+   */
+  interruptRuns(input: SubagentChatScope & Readonly<{ runIds: readonly string[] }>): readonly string[];
 }>;
 
 export type SubagentBackgroundDeps = Readonly<{
@@ -174,7 +181,7 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const lease = registry.register(ids.runId);
     let finish: () => void = () => undefined;
     const done = new Promise<void>((resolve) => { finish = resolve; });
-    const execution: Execution = { done, finish, handle: null, name: input.name, parentRunId: input.parentRunId,
+    const execution: Execution = { done, finish, handle: null, interrupted: false, name: input.name, parentRunId: input.parentRunId,
       retired: false, runId: ids.runId, scope: { chatId: input.chatId, userId: input.userId }, stopReason: null,
       threadId: input.threadId, turnId: ids.turnId };
     executions.set(ids.turnId, execution);
@@ -231,6 +238,11 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         }
       } finally {
         clearTimeout(deadline);
+      }
+      // A Workspace that stopped under the turn ends it interrupted, as a restart would; nothing is replayed.
+      if (execution.interrupted && !execution.stopReason && result.state !== "done") {
+        const { outcome: _outcome, ...rest } = result;
+        result = { ...rest, reason: SUBAGENT_END_REASONS.restart, state: "interrupted" };
       }
       // A stop ends the turn with its own reason, not the abort's that may have reached the runner first.
       if (execution.stopReason && result.state !== "done") {
@@ -415,6 +427,19 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
 
     async stopChat(input: SubagentChatScope): Promise<number> {
       return stopMany(input, await deps.store.activeTurns(input), SUBAGENT_END_REASONS.chatDeleted, () => true);
+    },
+
+    interruptRuns(input: SubagentChatScope & Readonly<{ runIds: readonly string[] }>): readonly string[] {
+      const owned: string[] = [];
+      for (const execution of executions.values()) {
+        if (execution.scope.chatId !== input.chatId || execution.scope.userId !== input.userId || !input.runIds.includes(execution.runId)) {
+          continue;
+        }
+        owned.push(execution.runId);
+        execution.interrupted = true;
+        registry.abort(execution.runId);
+      }
+      return owned;
     }
   });
 }

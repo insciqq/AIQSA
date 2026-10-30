@@ -1273,6 +1273,8 @@
   "subagent_turn_recovery_failed",
   "subagent_workspace_detach_failed",
   "subagent_workspace_unattached",
+  "workspace_attached_run_not_local",
+  "workspace_attached_runs_interrupt_failed",
   "subagent_route_summary_failed",
   "subagent_route_threads_failed",
   "subagent_route_thread_failed",
