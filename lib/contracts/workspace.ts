@@ -32,6 +32,7 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
   "workspace_execution_cleanup_failed",
   "workspace_shell_syntax_requires_shell",
   "workspace_reset_conflict",
+  "workspace_subagents_running",
   "workspace_archive_limit_exceeded",
   "workspace_not_started"
 ] as const);

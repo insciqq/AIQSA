@@ -17,6 +17,7 @@ import {
 import { summarizeWorkspaceCodeCalls, type WorkspaceCodeCallSummary, type WorkspaceCodeToolLabel } from "./codeMcpSummary";
 import { WorkspaceRuntimeError } from "./runtime";
 import { lockWorkspaceSession, workspaceRunOperationOwner } from "./sessionOperation";
+import { workspaceRunHoldsOperation } from "./attachments";
 
 const ACTIVE_RUN_STATUSES = ["queued", "in_progress", "streaming"] as const;
 
@@ -83,8 +84,8 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
       const token = randomBytes(32).toString("base64url");
       const issued = await prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, binding.sessionId);
-        if (!session || session.state === "DELETING" || binding.operationOwner !== workspaceRunOperationOwner(binding.runId) ||
-          session.operationOwner !== binding.operationOwner || session.version !== binding.operationGeneration) {
+        if (!session || session.state === "DELETING" || session.operationOwner !== binding.operationOwner ||
+          session.version !== binding.operationGeneration || !await workspaceRunHoldsOperation(tx, session, binding.runId)) {
           throw new WorkspaceRuntimeError("workspace_operation_stale");
         }
         await tx.$queryRaw`SELECT "modelRunId" FROM "WorkspaceCodeGrant" WHERE "modelRunId" = ${binding.runId} FOR UPDATE`;
@@ -295,7 +296,11 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         where: { modelRunId: grant.runId, tokenHash: grant.tokenHash, revokedAt: null,
           binding: {
             workspaceSessionId: grant.sessionId,
-            workspaceSession: { operationOwner: workspaceRunOperationOwner(grant.runId), state: { not: "DELETING" } },
+            // The run's own operation, or the shared one it is attached under (`attachments.ts`).
+            workspaceSession: { state: { not: "DELETING" }, OR: [
+              { operationOwner: workspaceRunOperationOwner(grant.runId) },
+              { operationOwner: { startsWith: "run:" }, attachments: { some: { modelRunId: grant.runId } } }
+            ] },
             modelRun: { userId: grant.userId, status: { in: [...ACTIVE_RUN_STATUSES] },
               chat: { userId: grant.userId, user: { status: "active" } } }
           } },

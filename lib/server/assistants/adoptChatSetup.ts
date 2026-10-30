@@ -139,10 +139,11 @@ export function createPrismaAdoptChatSetup(
         if (!chat || chat.archived || chat.assistantId !== assistantId) return { kind: "not_found" };
         if (definition.version !== input.expectedVersion) return { kind: "version_conflict" };
         if (definition.archivedAt) return { kind: "archived" };
-        // Like a chat update, a change to the next run waits for the active one.
+        // Like a chat update, a change to the next run waits for the active one. A background sub-agent run keeps
+        // the bindings it was admitted with, so it never holds this change back.
         const activeRun = await tx.modelRun.findFirst({
           select: { id: true },
-          where: { chatId, status: { in: [...activeRunStatuses] } }
+          where: { chatId, status: { in: [...activeRunStatuses] }, subagentTurnId: null }
         });
         if (activeRun) return { kind: "active_run" };
 

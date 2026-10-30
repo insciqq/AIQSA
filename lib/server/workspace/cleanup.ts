@@ -9,8 +9,8 @@ import type { WorkspaceOperation } from "./operationFence";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { workspaceLifecycleFailure } from "./lifecycleObservability";
+import { workspaceActiveRunExistsSql, workspaceActiveRunsWhere } from "./attachments";
 
-const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
 const CLAIM_STALE_MS = 15 * 60 * 1_000;
 const OPERATION_STALE_MS = 5 * 60 * 1_000;
 // A run's own settlement follows its terminal status within seconds; a
@@ -193,6 +193,11 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
   // the idle TTL.
   const registry = createPrismaWorkspaceExecutionRegistry(input.prisma);
   const staleSessionBefore = new Date(now.getTime() - SESSION_BACKSTOP_STALE_MS);
+  // A run that ended without detaching (a crash, a recovery that only ended it) never counts as attached: its row
+  // goes once the run is stale, so idle stop, the backstop below, Reset and continuation are not held by it.
+  await input.prisma.workspaceRunAttachment.deleteMany({ where: { modelRun: {
+    status: { notIn: ["preparing", "queued", "in_progress", "streaming"] }, updatedAt: { lte: staleSessionBefore }
+  } } }).catch(retainDatabaseFailure);
   const staleSessions = await input.prisma.$queryRaw<SessionCandidate[]>(Prisma.sql`
     SELECT ws."id", ws."chatId", ws."sandboxName", ws."runtimeSandboxId"
     FROM "WorkspaceSession" ws
@@ -206,17 +211,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
             OR ws."lastErrorCode" NOT IN ('workspace_archive_in_progress', 'workspace_idle_stop_in_progress')
             OR ws."updatedAt" <= ${staleOperationBefore}))
       )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "ModelRun" mr
-        WHERE mr."chatId" = ws."chatId"
-          AND mr."status" IN (
-            'preparing'::"ModelRunStatus",
-            'queued'::"ModelRunStatus",
-            'in_progress'::"ModelRunStatus",
-            'streaming'::"ModelRunStatus"
-          )
-      )
+      AND NOT ${workspaceActiveRunExistsSql(Prisma.sql`ws`)}
     ORDER BY ws."updatedAt" ASC, ws."id" ASC
     LIMIT ${limit}
   `).catch(retainDatabaseFailure);
@@ -230,7 +225,8 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       const legacyMarker = current.lastErrorCode === "workspace_archive_in_progress" || current.lastErrorCode === "workspace_idle_stop_in_progress";
       if (!current.operationOwner && (!(["RUNNING", "CREATING", "FAILED"] as string[]).includes(current.state) ||
         (legacyMarker && current.updatedAt > staleOperationBefore))) return null;
-      if (await tx.modelRun.count({ where: { chatId: current.chatId, status: { in: [...ACTIVE_RUN_STATUSES] } } }) > 0) return null;
+      // Main-agent runs and attached sub-agent runs hold the session; a sub-agent run without it does not.
+      if (await tx.modelRun.count({ where: workspaceActiveRunsWhere(current.chatId) }) > 0) return null;
       const claimed = await tx.workspaceSession.update({
         data: {
           operationOwner: `maintenance:${randomUUID()}`,
@@ -281,6 +277,8 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       if (!current || current.version !== operation.generation || current.operationOwner !== operation.owner ||
         current.runtimeSandboxId !== session.runtimeSandboxId || current.state === "DELETING") return false;
       await acknowledgeWorkspaceCommandsStopped(tx, session.id);
+      // Runs that ended without detaching (a crash) lose the attachment with the operation they held.
+      await tx.workspaceRunAttachment.deleteMany({ where: { chatId: session.chatId } });
       const expiredSeeds = await tx.chatContinuationWorkspaceSeed.findMany({
         select: { id: true, status: true, storageKey: true },
         where: { OR: [{ sourceChatId: session.chatId }, { newChatId: session.chatId }], leaseExpiresAt: { lte: now }, status: { in: ["CAPTURING", "RESTORING"] } }
@@ -456,13 +454,10 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
   for (const candidate of idleCandidates) {
     const acquired = await input.prisma.$transaction(async (tx) => {
       const session = await lockWorkspaceSession(tx, candidate.id);
+      // Attached runs hold an operation owner, so the VM idles out only after the last of them detached; an active
+      // sub-agent run that never attached does not keep it up.
       if (!session || session.operationOwner) return null;
-      const activeRuns = await tx.modelRun.count({
-        where: {
-          chatId: candidate.chatId,
-          status: { in: [...ACTIVE_RUN_STATUSES] }
-        }
-      });
+      const activeRuns = await tx.modelRun.count({ where: workspaceActiveRunsWhere(candidate.chatId) });
       if (activeRuns > 0) return null;
       // Under the session lock: no interactive run has become the newest since selection.
       if (candidate.scheduled) {

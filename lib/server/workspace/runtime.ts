@@ -1,5 +1,6 @@
 import { retainFailureCause } from "../observability/failureFacts.cjs";
 import type { WorkspaceOperation } from "./operationFence";
+import type { WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import type { AcceptedWorkspaceSecret } from "./secrets/store";
 import type { WorkspaceFileSelection } from "./outputManifest";
 import type { WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
@@ -318,6 +319,18 @@ export interface WorkspaceRuntime {
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<readonly WorkspaceExecutionTermination[]>;
+  /**
+   * Stops every guest process of one agent of a shared Workspace (`AIQSA_AGENT_ID`) with proof, leaving the other
+   * agents' processes and the VM running (`agentProcessGuest.ts`). `unknown` proves nothing: the caller stops the
+   * VM. Absent from a runtime that cannot prove it.
+   */
+  terminateAgentProcesses?(input: Readonly<{
+    agentId: string;
+    runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<WorkspaceAgentProcessTermination>;
   collectOutputs(input: Readonly<{
     /** Create once, then read only this private capture even after guest mutation. */
     capture?: Readonly<{ create: boolean; id: string }>;

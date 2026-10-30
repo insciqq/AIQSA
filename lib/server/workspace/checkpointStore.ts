@@ -11,7 +11,8 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, WORKSPACE_CHECKPOINT_LIMITS } from "../tools/checkpointOutputs";
 import { WorkspaceCheckpointError, type WorkspaceCheckpointInput } from "./checkpointInput";
 import { workspaceCheckpointResult, type WorkspaceCheckpointFileView } from "./checkpointResult";
-import { lockWorkspaceSession, workspaceRunOperationOwner } from "./sessionOperation";
+import { lockWorkspaceSession } from "./sessionOperation";
+import { workspaceRunHoldsOperation } from "./attachments";
 
 export type CheckpointContext = Readonly<{ runId: string; userId: string; toolCallId: string; call: ModelToolCall }>;
 const unavailable = () => new WorkspaceCheckpointError("workspace_checkpoint_unavailable");
@@ -39,7 +40,7 @@ export function createWorkspaceCheckpointStore(prisma: PrismaClient, maximumByte
     if (active) {
       if (!["streaming", "in_progress"].includes(run.status)) throw unavailable();
       const session = await tx.workspaceSession.findUnique({ where: { id: run.workspaceRunBinding.workspaceSessionId } });
-      if (!session || session.operationOwner !== workspaceRunOperationOwner(run.id)) throw unavailable();
+      if (!session || !await workspaceRunHoldsOperation(tx, session, run.id)) throw unavailable();
     }
     const tool = await tx.modelRunToolCall.findFirst({ where: { id: context.toolCallId, modelRunId: run.id,
       providerCallId: context.call.id, toolName: CHECKPOINT_OUTPUTS_TOOL_NAME } });

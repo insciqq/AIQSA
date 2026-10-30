@@ -49,6 +49,7 @@ function fakeDatabase(input: Readonly<{
   activeRuns?: number;
   seeds?: Row[];
   session?: Row | null;
+  subagentRuns?: number;
 }>) {
   const chat = { archived: false, id: "chat-1", permanentDeletionAt: null, userId: "owner-1" as string | null };
   const session: Row | null = input.session ? {
@@ -67,7 +68,9 @@ function fakeDatabase(input: Readonly<{
       const text = Array.isArray(query) ? query.join("?") : (query as { sql: string }).sql;
       return text.includes("FROM \"Chat\"") ? [chat] : [];
     },
-    modelRun: { count: async () => input.activeRuns ?? 0 },
+    // Active main-agent runs only; `subagentRuns` are background sub-agent runs.
+    modelRun: { count: async ({ where }: { where?: Row } = {}) =>
+      where?.subagentTurnId ? input.subagentRuns ?? 0 : (input.activeRuns ?? 0) + (input.subagentRuns ?? 0) },
     workspaceSession: {
       findUnique: async () => session && { ...session },
       findFirst: async ({ where }: { where: Row }) => session && matches(session, where) ? { id: session.id } : null,
@@ -261,7 +264,11 @@ describe("Workspace reset with a carried project that was never restored", () =>
     await expect(lifecycle.reset(owner)).rejects.toMatchObject({ code: "workspace_reset_conflict" });
     expect(runtime.removeSession).not.toHaveBeenCalled();
 
-    for (const database of [stranger, running, busy]) {
+    // Running sub-agents refuse a Reset with their own reason, so the user knows to stop them first.
+    const subagents = fakeDatabase({ seeds: [carriedSeed], session: null, subagentRuns: 1 });
+    await expect(lifecycleFor(subagents).lifecycle.reset(owner)).rejects.toMatchObject({ code: "workspace_subagents_running", status: 409 });
+
+    for (const database of [stranger, running, busy, subagents]) {
       expect(database.seeds[0]).toMatchObject({ status: "TRANSFERRED" });
       expect(database.seedWrites).toEqual([]);
       expect(database.deletionJobs).toEqual([]);

@@ -13,6 +13,7 @@ import {
 } from "./toolObservability";
 import { transportFailureFacts } from "../providers/providerObservability";
 import { parseWorkspaceOperation } from "./operationFence";
+import type { WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
@@ -577,6 +578,27 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       }
       return { outcome, runtimeExecSessionId };
     });
+  }
+
+  /** One agent's processes of a shared guest (`agentProcessGuest.ts`); a runner without the route proves nothing. */
+  async terminateAgentProcesses(
+    input: Parameters<NonNullable<WorkspaceRuntime["terminateAgentProcesses"]>>[0]
+  ): Promise<WorkspaceAgentProcessTermination> {
+    const value = await this.boundedJson(
+      `/v1/sessions/${encodeURIComponent(input.sessionId)}/agents/terminate`,
+      {
+        body: JSON.stringify({
+          agentId: input.agentId,
+          operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
+        }),
+        method: "POST",
+        signal: input.signal
+      }
+    ).catch((error: unknown) => {
+      if (error instanceof WorkspaceRuntimeError && error.code === "workspace_operation_stale") throw error;
+      return null;
+    });
+    return isRecord(value) && value.outcome === "closed" ? { outcome: "closed" } : { outcome: "unknown" };
   }
 
   async cancelToolCall(input: Parameters<WorkspaceRuntime["cancelToolCall"]>[0]): Promise<void> {

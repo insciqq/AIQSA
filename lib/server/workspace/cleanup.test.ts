@@ -39,6 +39,7 @@ function fixture(outcome: "confirmed" | "not_applied" | "unconfirmed", beforeRet
     $queryRaw: vi.fn(async () => []),
     $transaction: transact,
     chatContinuationWorkspaceSeed: { findMany: vi.fn(async () => []) },
+    workspaceRunAttachment: { deleteMany: vi.fn(async () => ({ count: 0 })) },
     workspaceSession: { findMany: vi.fn(async () => []) }
   } as unknown as PrismaClient;
   const runtime = {
@@ -149,6 +150,7 @@ describe("Workspace VM residency after unattended runs", () => {
       }),
       $transaction: vi.fn(async (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction)),
       chatContinuationWorkspaceSeed: { findMany: vi.fn(async () => []) },
+      workspaceRunAttachment: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       // Nothing is idle by time or archival.
       workspaceSession: { findMany: vi.fn(async () => []) }
     } as unknown as PrismaClient;

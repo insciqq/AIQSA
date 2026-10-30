@@ -1064,6 +1064,49 @@ async function assertSubagentRelations(): Promise<void> {
   });
 }
 
+async function createWorkspaceSessionFixture(tx: Prisma.TransactionClient, chatId: string) {
+  const id = `ws_${randomUUID().replaceAll("-", "")}`;
+  return tx.workspaceSession.create({ data: {
+    chatId, expiresAt: new Date(Date.now() + 3_600_000), id, imageRef: "fixture-image", internetEnabled: false, policyRevision: 1,
+    sandboxName: `aiqsa-ws-${id}`
+  } });
+}
+
+/** A shared Workspace's attached runs belong to its own chat, and go with their run or their session. */
+async function assertWorkspaceAttachmentRelations(): Promise<void> {
+  await expectDatabaseRejection("cross-chat Workspace attachment", "WorkspaceRunAttachment_modelRun_fkey", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    const other = await createModelRunFixture(tx);
+    await createWorkspaceSessionFixture(tx, other.chat.id);
+    await tx.workspaceRunAttachment.create({ data: { chatId: other.chat.id, modelRunId: fixture.run.id, operationGeneration: 1 } });
+  });
+  await expectDatabaseRejection("Workspace attachment without a session", "WorkspaceRunAttachment_session_fkey", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    await tx.workspaceRunAttachment.create({ data: { chatId: fixture.chat.id, modelRunId: fixture.run.id, operationGeneration: 1 } });
+  });
+  await expectDatabaseRejection("Workspace attachment before any generation", "WorkspaceRunAttachment_generation_check", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    await createWorkspaceSessionFixture(tx, fixture.chat.id);
+    await tx.workspaceRunAttachment.create({ data: { chatId: fixture.chat.id, modelRunId: fixture.run.id, operationGeneration: 0 } });
+  });
+  await expectRolledBackSuccess("Workspace attachment cascades", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    const background = await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id }, "streaming");
+    const session = await createWorkspaceSessionFixture(tx, fixture.chat.id);
+    await tx.workspaceRunAttachment.createMany({ data: [fixture.run.id, background.id].map((modelRunId) => ({
+      chatId: fixture.chat.id, modelRunId, operationGeneration: session.version
+    })) });
+    await tx.modelRun.delete({ where: { id: background.id } });
+    if (await tx.workspaceRunAttachment.count({ where: { chatId: fixture.chat.id } }) !== 1) {
+      throw new Error("Deleting an attached run left its Workspace attachment.");
+    }
+    await tx.workspaceSession.delete({ where: { id: session.id } });
+    if (await tx.workspaceRunAttachment.count({ where: { chatId: fixture.chat.id } }) !== 0) {
+      throw new Error("Deleting a Workspace session left its attachments.");
+    }
+  });
+}
+
 /**
  * After a complete deploy the stored usage vocabulary is the domain's, in its order (personal purposes first,
  * `lib/domain/usagePurpose.ts`); the forward adoption proof of the purpose backfill checks only its own era.
@@ -1144,6 +1187,7 @@ async function main() {
   await assertGrantShapes();
   await assertStatusEnums();
   await assertSubagentRelations();
+  await assertWorkspaceAttachmentRelations();
   await assertUsagePurposeVocabulary();
   console.log(
     "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, historical Knowledge usage index, six grant shapes, lifecycle enums, and sub-agent keys and cascades."
