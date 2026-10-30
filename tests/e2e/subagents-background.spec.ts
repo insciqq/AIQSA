@@ -93,7 +93,7 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
     for (const name of ["alpha", "beta", "gamma"]) {
       await expect(list.getByRole("treeitem", { name: `${name}, Running` })).toBeVisible({ timeout: STEP_TIMEOUT });
     }
-    await expect(page.getByTestId("subagent-chat-status")).toContainText("3 sub-agents working", { timeout: STEP_TIMEOUT });
+    await expect(page.getByTestId("subagent-chat-chip")).toContainText("3 sub-agents working", { timeout: STEP_TIMEOUT });
     await page.screenshot({ path: testInfo.outputPath("subagents-background-running.png") });
   });
 
@@ -168,10 +168,11 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
       "Sub-agents started: delta started; epsilon started.", 90_000);
     const list = await navigation(page);
     await expect(list.getByRole("treeitem", { name: "delta, Running" })).toBeVisible({ timeout: STEP_TIMEOUT });
-    const status = page.getByTestId("subagent-chat-status");
-    await expect(status).toContainText("2 sub-agents working", { timeout: STEP_TIMEOUT });
-    await status.getByRole("button", { name: "Stop all" }).click();
-    await expect(status).toHaveCount(0, { timeout: STEP_TIMEOUT });
+    const chip = page.getByTestId("subagent-chat-chip");
+    await expect(chip).toContainText("2 sub-agents working", { timeout: STEP_TIMEOUT });
+    await chip.getByRole("button", { name: "2 sub-agents working" }).click();
+    await page.getByRole("menuitem", { name: "Stop all" }).click();
+    await expect(chip).toHaveCount(0, { timeout: STEP_TIMEOUT });
     const shown = await navigation(page);
     if (await shown.getByRole("treeitem", { name: "delta, Stopped" }).count() === 0) {
       await shown.getByRole("button", { name: /Show sub-agents of/u }).first().click();
@@ -188,6 +189,9 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
     await composer.fill("Read one more shop and wait for it. [AIQSA_SUBAGENT_E2E:fg:zeta:wait90000]");
     await composer.press("Enter");
     await expect(page.getByRole("button", { name: "Stop answer" })).toBeVisible({ timeout: STEP_TIMEOUT });
+    // Its answer holds its one place: a row, with the process line's neutral wait, and no chip.
+    await expect(lastAnswer(page).getByRole("link", { name: /^Open zeta/u })).toBeVisible({ timeout: STEP_TIMEOUT });
+    await expect(page.getByTestId("subagent-chat-chip")).toHaveCount(0);
     const list = await navigation(page);
     await expect(list.getByRole("treeitem", { name: "zeta, Running" })).toBeVisible({ timeout: STEP_TIMEOUT });
     await list.getByRole("treeitem", { name: "zeta, Running" }).click();
@@ -198,7 +202,8 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
     await view.getByRole("link", { name: "Back to chat" }).click();
     // The main answer goes on with the stopped result and completes.
     await expect(lastAnswer(page)).toContainText("Sub-agents reported: zeta stopped.", { timeout: 60_000 });
-    await expect(lastAnswer(page).locator(".v2-subagent-card[data-state='stopped']")).toContainText("Stopped");
+    await expect(lastAnswer(page).locator(".v2-subagent-answer-row[data-state='stopped']")).toContainText(/Stopped/u);
+    await expect(lastAnswer(page).locator(".v2-subagent-answer-row[data-state='stopped']")).toHaveAttribute("href", /\?agent=/u);
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: STEP_TIMEOUT });
     expect(await prisma.subagentTurn.findFirst({ select: { state: true }, where: { chatId, mode: "foreground" } }))
       .toEqual({ state: "stopped" });
