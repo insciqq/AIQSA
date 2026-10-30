@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   CHAT_PDF_READER_OUTPUT_LIMIT,
+  chatPdfProcessLine,
+  chatPdfRouteDescription,
   decodeChatPdfPreparation,
   decodeChatPdfRouteAvailability,
-  isChatPdfReaderOutputLimitFailure
+  isChatPdfReaderOutputLimitFailure,
+  settledChatPdfDocuments,
+  type ChatPdfPreparationWire
 } from "./chatPdfPreparation";
 
 describe("exhausted PDF reader output", () => {
@@ -31,6 +35,33 @@ describe("PDF preparation projection", () => {
   it("does not offer a preparation retry or original-only native PDF state", () => {
     expect(decodeChatPdfPreparation({ ...original, retryable: true })).toBeNull();
     expect(decodeChatPdfPreparation({ ...original, route: "direct_pdf", limitedReadingQuality: false })).toBeNull();
+  });
+});
+
+describe("PDF route wording for the answer's fold", () => {
+  const item = (route: ChatPdfPreparationWire["route"], phase: ChatPdfPreparationWire["phase"] = "ready"): ChatPdfPreparationWire => ({
+    answerModelName: "Answer model", completedPages: 2, limitedReadingQuality: route === "local_text", longDocument: false,
+    pageCount: 2, phase, readerModelName: "Reader model", retryable: false, route
+  });
+
+  it("uses plain words, naming the model that read the document", () => {
+    expect(chatPdfRouteDescription(item("direct_pdf"))).toBe("Read the original PDF · Answer model");
+    expect(chatPdfRouteDescription(item("system_pdf"))).toBe("Read the original PDF · Reader model");
+    expect(chatPdfRouteDescription(item("system_vision"))).toBe("Read the pages as images · Reader model");
+    expect(chatPdfRouteDescription(item("selected_model_vision"))).toBe("Read the pages as images · Reader model");
+    expect(chatPdfRouteDescription(item("local_text"))).toBe("Read with basic text extraction · Answer model");
+    expect(chatPdfRouteDescription(item("local_text", "original_only"))).toBe("Original PDF available in Workspace · Answer model");
+    const { answerModelName: _answer, ...unnamed } = item("direct_pdf");
+    expect(chatPdfRouteDescription(unnamed)).toBe("Read the original PDF");
+  });
+
+  it("counts only documents whose preparation finished", () => {
+    const items = [item("direct_pdf"), item("system_pdf", "failed"), item("system_vision", "preparing")];
+    expect(settledChatPdfDocuments(items)).toEqual([items[0]]);
+    expect(chatPdfProcessLine(settledChatPdfDocuments(items))).toBe("Read 1 PDF");
+    expect(chatPdfProcessLine([item("direct_pdf"), item("local_text")])).toBe("Read 2 PDFs");
+    expect(chatPdfProcessLine([item("local_text", "original_only")])).toBe("1 PDF in Workspace");
+    expect(chatPdfProcessLine([])).toBeNull();
   });
 });
 

@@ -16,6 +16,12 @@ const textExtensions: ReadonlySet<string> = new Set([
   ".ts", ".tsx", ".jsx", ".css", ".scss", ".sh", ".sql", ".svg"
 ]);
 
+/** A file name the text preview can serve, size and readiness aside. */
+export function isTextPreviewFileName(fileName: string): boolean {
+  const dot = fileName.lastIndexOf(".");
+  return dot > 0 && textExtensions.has(fileName.slice(dot).toLowerCase());
+}
+
 /** Eligibility is a projection, never read authority or a substitute for validating original bytes. */
 export function attachmentPreviewKind(input: Readonly<{
   byteSize: number;
@@ -25,7 +31,5 @@ export function attachmentPreviewKind(input: Readonly<{
 }>): AttachmentPreviewKind {
   if (input.status !== "ready" || !Number.isSafeInteger(input.byteSize) || input.byteSize < 1) return null;
   if (imageMimeTypes.has(input.mimeType)) return input.byteSize <= IMAGE_MAX_BYTES ? "image" : null;
-  const dot = input.fileName.lastIndexOf(".");
-  const extension = dot > 0 ? input.fileName.slice(dot).toLowerCase() : "";
-  return input.byteSize <= TEXT_PREVIEW_MAX_BYTES && textExtensions.has(extension) ? "text" : null;
+  return input.byteSize <= TEXT_PREVIEW_MAX_BYTES && isTextPreviewFileName(input.fileName) ? "text" : null;
 }

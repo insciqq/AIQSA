@@ -1,6 +1,5 @@
 import {
   CHAT_PDF_LONG_DOCUMENT_NOTICE,
-  CHAT_PDF_LOCAL_TEXT_NOTICE,
   CHAT_PDF_ROUTE_UNAVAILABLE_CODE,
   isLongChatPdf,
   type ChatPdfRouteAvailability
@@ -113,10 +112,8 @@ export function attachmentItemsForV2(
           : null;
     return {
       ...(attachment.byteSize === undefined ? {} : { byteSize: attachment.byteSize }),
-      ...(attachment.kind === "pdf" ? { notices: [
-        ...(isLongChatPdf(attachment.pageCount ?? attachment.processing?.pageCount) ? [CHAT_PDF_LONG_DOCUMENT_NOTICE] : []),
-        ...(pdfRoute?.available && pdfRoute.route === "local_text" ? [CHAT_PDF_LOCAL_TEXT_NOTICE] : [])
-      ] } : {}),
+      ...(attachment.kind === "pdf" && isLongChatPdf(attachment.pageCount ?? attachment.processing?.pageCount)
+        ? { notices: [CHAT_PDF_LONG_DOCUMENT_NOTICE] } : {}),
       blocksSend,
       ...(detail ? { detail } : {}),
       fileName: attachment.fileName,

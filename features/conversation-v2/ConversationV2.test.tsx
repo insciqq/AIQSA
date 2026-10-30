@@ -546,6 +546,22 @@ describe("Conversation v2", () => {
     expect(turn).toHaveTextContent("Preparing stateTerminal state");
     expect(turn).not.toHaveTextContent("This message has no text.");
   });
+
+  it("puts sent files above the bubble and leaves a file-only question without one", () => {
+    const { rerender } = render(<ConversationTurnV2 aboveContent={<ul aria-label="Files" />} content="With text" role="user" />);
+    const bubble = () => screen.getByRole("article", { name: "Question" }).querySelector(".v2-conversation-turn-content")!;
+    expect(screen.getByRole("list", { name: "Files" }).nextElementSibling).toBe(bubble());
+    expect(bubble()).not.toHaveAttribute("data-bubbleless");
+
+    rerender(<ConversationTurnV2 aboveContent={<ul aria-label="Files" />} content="" role="user" />);
+    expect(bubble()).toHaveAttribute("data-bubbleless", "true");
+    expect(bubble()).toBeEmptyDOMElement();
+    expect(screen.queryByText("This message has no text.")).toBeNull();
+
+    // Without files an empty question still says so.
+    rerender(<ConversationTurnV2 content="" role="user" />);
+    expect(screen.getByText("This message has no text.")).toBeVisible();
+  });
 });
 
 function bounds(top: number, bottom: number): DOMRect {
