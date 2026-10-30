@@ -72,7 +72,8 @@ export function defaultSubagentBackgroundWiring(): Readonly<{ runner: SubagentRu
 }
 
 const STATE = Symbol.for("aiqsa.subagent-background.v1");
-type State = { backoff: SubagentFlushBackoff; composition: Composition | null; deferred: SubagentDeferredCallbacks; wiring: Wiring };
+type State = { backoff: SubagentFlushBackoff; composition: Composition | null; deferred: SubagentDeferredCallbacks;
+  retireFailures?: Map<string, number>; wiring: Wiring };
 const globalState = globalThis as typeof globalThis & { [STATE]?: State };
 const state: State = globalState[STATE] ??= { backoff: new Map(), composition: null, deferred: new Map(),
   wiring: defaultSubagentBackgroundWiring() };
@@ -112,7 +113,7 @@ function compose(): Composition {
     callbacks,
     control,
     reconcile: (input: Readonly<{ chatId?: string; userId?: string }> = {}) => reconcileSubagentRuns({ backoff: state.backoff,
-      bootedAt: processBootedAt(), deferred: state.deferred, flush: callbacks.flush,
+      bootedAt: processBootedAt(), deferred: state.deferred, flush: callbacks.flush, retireFailures: state.retireFailures ??= new Map(),
       liveRunIds: () => activeRunControllerRegistry.ids(), staleMs: STALE_MS, store,
       ...(state.wiring.workspace ? { workspace: state.wiring.workspace } : {}) }, input),
     async stopUnderMessage({ messageId, userId }: Readonly<{ messageId: string; userId: string }>): Promise<number> {

@@ -49,8 +49,19 @@ export type SubagentRecoveryDeps = Readonly<{
   staleMs: number;
   store: Pick<SubagentBackgroundStore, "findOrphans" | "findOwedCallbackChats" | "findTurn" | "interruptStrandedForegroundTurns" |
     "settle">;
-  workspace?: Pick<WorkspaceAttachments, "detach">;
+  /**
+   * Orphans whose Workspace authority a pass could not retire, by run: retried on later passes, and settled after
+   * `SUBAGENT_RECOVERY_RETIRE_ATTEMPTS` failed ones. Kept across passes by the composition; absent, every pass retries.
+   */
+  retireFailures?: Map<string, number>;
+  workspace?: Pick<WorkspaceAttachments, "attached" | "detach">;
 }>;
+
+/**
+ * Passes that may fail to retire an orphan's Workspace authority before it is settled anyway, its attachment then
+ * left to the session's own maintenance (which retries the VM's backstop): a turn never stays running for good.
+ */
+export const SUBAGENT_RECOVERY_RETIRE_ATTEMPTS = 10;
 
 const chatKey = (scope: SubagentChatScope) => `${scope.userId}:${scope.chatId}`;
 
@@ -79,6 +90,17 @@ async function flushChat(deps: SubagentRecoveryDeps, scope: SubagentChatScope, a
   }
 }
 
+/** Whether an orphan's Workspace authority is gone: its detach answered and the run is no longer attached. */
+async function retired(deps: SubagentRecoveryDeps, scope: SubagentChatScope, runId: string): Promise<boolean> {
+  const workspace = deps.workspace!;
+  try {
+    await workspace.detach({ ...scope, execution: "unknown", modelRunId: runId });
+    return !(await workspace.attached(scope)).some((attachment) => attachment.modelRunId === runId);
+  } catch {
+    return false;
+  }
+}
+
 export async function reconcileSubagentRuns(deps: SubagentRecoveryDeps,
   input: Readonly<{ chatId?: string; userId?: string }> = {}): Promise<number> {
   const now = deps.now?.() ?? new Date();
@@ -93,7 +115,20 @@ export async function reconcileSubagentRuns(deps: SubagentRecoveryDeps,
     const scope = { chatId: orphan.chatId, userId: orphan.userId };
     try {
       // Its guest authority is retired first: its processes are unknown, so they are proven stopped or the VM stops.
-      await deps.workspace?.detach({ ...scope, execution: "unknown", modelRunId: orphan.runId }).catch(() => undefined);
+      // Until that is confirmed (the run no longer attached) the turn stays as it is and the next pass tries again, so
+      // no dead run keeps the chat's Workspace operation; past the bound it is settled all the same.
+      if (deps.workspace && !(await retired(deps, scope, orphan.runId))) {
+        const failures = (deps.retireFailures?.get(orphan.runId) ?? 0) + 1;
+        if (failures < SUBAGENT_RECOVERY_RETIRE_ATTEMPTS) {
+          deps.retireFailures?.set(orphan.runId, failures);
+          logEvent("run_recovery", { action: "retry", attempt: failures, code: "subagent_workspace_detach_failed", outcome: "failed",
+            run_id: orphan.runId, stage: "recovery", subsystem: "run_recovery" });
+          continue;
+        }
+        logEvent("run_recovery", { action: "degrade", attempt: failures, code: "subagent_workspace_detach_failed", outcome: "degraded",
+          run_id: orphan.runId, stage: "recovery", subsystem: "run_recovery" });
+      }
+      deps.retireFailures?.delete(orphan.runId);
       const turn = await deps.store.findTurn({ ...scope, turnId: orphan.turnId });
       const result = impliedResult({ modelId: turn?.model.id ?? "unknown", name: turn?.name ?? "subagent",
         reason: SUBAGENT_END_REASONS.restart, reasoningEffort: turn?.model.effort ?? null, state: "interrupted" });

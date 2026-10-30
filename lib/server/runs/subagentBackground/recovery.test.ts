@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeWorkspaceAttachments, endedSubagentResult } from "@/tests/support/subagentPorts";
 import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
 import { createSubagentCallbacks, type SubagentWakeUpOutcome } from "./callbacks";
-import { reconcileSubagentRuns } from "./recovery";
+import { reconcileSubagentRuns, SUBAGENT_RECOVERY_RETIRE_ATTEMPTS } from "./recovery";
 
 function orphan(store: MemorySubagentStore, chatId: string, name: string) {
   const id = `${chatId}-${name}`;
@@ -36,6 +36,54 @@ describe("background sub-agent recovery", () => {
     await vi.waitFor(() => expect(wakeUps).toHaveLength(1));
     expect(wakeUps[0]).toEqual({ chatId: "chat-a", turnIds: ["turn-chat-a-one", "turn-chat-a-two"] });
     expect(store.strandedInterrupts).toBe(1);
+  });
+
+  it("keeps a cut-off run whose Workspace authority could not be retired for the next pass, then settles it and owes its callback", async () => {
+    const store = new MemorySubagentStore();
+    orphan(store, "chat-w", "browser");
+    const workspace = new FakeWorkspaceAttachments();
+    await workspace.attach({ agent: { kind: "subagent", name: "browser", threadId: "thread-chat-w-browser" }, chatId: "chat-w",
+      modelRunId: "run-chat-w-browser", userId: "user-1" });
+    const wakeUps: string[][] = [];
+    const callbacks = createSubagentCallbacks({ coalesceMs: 1, recheckMs: [], store, admitWakeUp: async (input) => {
+      store.claim("wake", input.turnIds);
+      wakeUps.push([...input.turnIds]);
+      return "admitted";
+    } });
+    const retireFailures = new Map<string, number>();
+    const pass = () => reconcileSubagentRuns({ backoff: new Map(), bootedAt: new Date(), deferred: new Map(), flush: callbacks.flush,
+      liveRunIds: () => [], retireFailures, staleMs: 60_000, store, workspace }, { chatId: "chat-w" });
+    // The runner cannot be reached: nothing is settled, and the run keeps its attachment for the next pass.
+    const detach = vi.spyOn(workspace, "detach").mockRejectedValueOnce(new Error("runner_unreachable"));
+    expect(await pass()).toBe(0);
+    expect(store.turns[0]).toMatchObject({ callbackRunId: null, runActive: true, state: "running" });
+    expect(retireFailures.get("run-chat-w-browser")).toBe(1);
+    // A detach that answers but leaves the run attached (its stop not proven) proves nothing either.
+    detach.mockResolvedValueOnce({ interruptedRunIds: [], kind: "detached", remainingRuns: 1 });
+    expect(await pass()).toBe(0);
+    expect(retireFailures.get("run-chat-w-browser")).toBe(2);
+    // The next pass retires it: the turn ends interrupted, its attachment is gone and its callback wakes the main agent.
+    expect(await pass()).toBe(1);
+    expect(store.turns[0]).toMatchObject({ runActive: false, state: "interrupted" });
+    expect(await workspace.attached({ chatId: "chat-w", userId: "user-1" })).toEqual([]);
+    expect(retireFailures.size).toBe(0);
+    await vi.waitFor(() => expect(wakeUps).toEqual([["turn-chat-w-browser"]]));
+  });
+
+  it("settles a cut-off run after the bound of passes that could not retire its Workspace authority", async () => {
+    const store = new MemorySubagentStore();
+    orphan(store, "chat-x", "stuck");
+    const workspace = new FakeWorkspaceAttachments();
+    vi.spyOn(workspace, "detach").mockRejectedValue(new Error("runner_unreachable"));
+    const callbacks = createSubagentCallbacks({ coalesceMs: 1, recheckMs: [], store, admitWakeUp: async () => "usage_limited" });
+    const retireFailures = new Map<string, number>();
+    let settled = 0;
+    for (let pass = 0; pass < SUBAGENT_RECOVERY_RETIRE_ATTEMPTS; pass += 1) {
+      settled += await reconcileSubagentRuns({ backoff: new Map(), bootedAt: new Date(), deferred: new Map(), flush: callbacks.flush,
+        liveRunIds: () => [], retireFailures, staleMs: 60_000, store, workspace }, { chatId: "chat-x" });
+    }
+    expect(settled).toBe(1);
+    expect(store.turns[0]).toMatchObject({ state: "interrupted" });
   });
 
   it("flushes callbacks a restart or a failed flush left owed, and keeps a usage-limited wake-up deferred until a new callback", async () => {
