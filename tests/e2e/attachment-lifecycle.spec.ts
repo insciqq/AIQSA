@@ -2,6 +2,10 @@ import { expect, test } from "@playwright/test";
 import { signInWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 
+// Workspace is ambient, and a Workspace chat neither blocks on a file's text nor warns about it, so these checks run without one.
+const unavailableWorkspace = { workspace: { available: false, enabled: false, internetEnabled: null, sessionState: null,
+  unavailableReason: "installation_disabled" } };
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((settle) => {
@@ -37,6 +41,7 @@ test("keeps the draft editable and gates send across attachment processing, retr
   let statusReads = 0;
 
   await installMatrixCatalogFixture(page);
+  await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
   await page.route("**/api/uploads", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -114,6 +119,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.setViewportSize({ width: 844, height: 390 });
     await context.addCookies([{ name: "aiqsa.theme", value: theme, url: baseURL! }]);
     await installMatrixCatalogFixture(page);
+    await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
     const ready = { attachment: { ...attachment("ready").attachment, metadata: { document: {
       engine: "inline", status: "partial", truncated: true, characterCount: 1_000_000,
       extractedTextMaxChars: 1_000_000, warnings: ["partial_parse", "truncated_oversized_section"]

@@ -7,6 +7,10 @@ import { signInWithLocalToken } from "./support/localAuth";
 // server-owned route preview are fulfilled by the browser fixture, so this
 // spec owns no database state; the real admission route and the Ready send
 // with an installation PDF reader stay covered by workspace.spec.ts.
+// Workspace is ambient, and a Workspace chat neither blocks on a file's text nor warns about it, so these checks run without one.
+const unavailableWorkspace = { workspace: { available: false, enabled: false, internetEnabled: null, sessionState: null,
+  unavailableReason: "installation_disabled" } };
+
 const pdf = {
   attachment: {
     byteSize: 512,
@@ -114,6 +118,7 @@ for (const viewport of [
     await page.setViewportSize(viewport);
     await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: baseURL! }]);
     await installMatrixCatalogFixture(page);
+    await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
     const scan = { attachment: { ...pdf.attachment, fileName: "scanned-pages.pdf", id: "pdf-route-scan-e2e",
       processing: { extractedCharacterCount: 0, pageCount: 1, pagesProcessed: 1, status: "no_text" } } };
     await page.route("**/api/uploads", (route) => route.fulfill({ json: scan, status: 201 }));
