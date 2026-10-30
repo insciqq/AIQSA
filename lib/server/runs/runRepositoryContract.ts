@@ -182,10 +182,13 @@ export class AttachmentLinkConflictError extends Error {
 
 export class WorkspaceRunConflictError extends Error {
   readonly code: "workspace_busy" | "workspace_disabled" | "workspace_runtime_incompatible";
+  /** Why the session refused, as a stable content-free code (`workspaceJoinRefusal`), where admission knows it. */
+  readonly reason: string | undefined;
 
-  constructor(code: WorkspaceRunConflictError["code"]) {
+  constructor(code: WorkspaceRunConflictError["code"], reason?: string) {
     super(code);
     this.code = code;
+    this.reason = reason;
     this.name = "WorkspaceRunConflictError";
   }
 }
