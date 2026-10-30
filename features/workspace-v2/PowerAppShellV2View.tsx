@@ -99,7 +99,7 @@ import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
 import { useVisualViewportInset } from "@/components/ui-v2/useVisualViewportInset";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
-import { SubagentCallbackTurnV2, SubagentCardsV2, SubagentChatStatusV2 } from "@/features/conversation-v2/SubagentChatV2";
+import { SubagentAnswerRowsV2, SubagentBackgroundChipV2, SubagentCallbackTurnV2 } from "@/features/conversation-v2/SubagentChatV2";
 import { SubagentLivenessV2 } from "@/features/subagents-v2/SubagentLivenessV2";
 import { subagentWaitingKeyV2 } from "@/features/subagents-v2/subagentPresentation";
 import { SubagentThreadViewV2 } from "@/features/subagents-v2/SubagentThreadViewV2";
@@ -1393,7 +1393,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         actions={settled ? actions : undefined}
         actionsSlot={<>
               {settled ? <SentAttachmentsV2 blocks={copiedAttachments} canSave={!temporarySession} /> : null}
-              <SubagentCardsV2 chatId={session.activeChatId} toolActivity={toolActivity} onOpen={openSubagent} />
+              <SubagentAnswerRowsV2 chatId={session.activeChatId} live={!settled} toolActivity={toolActivity} onOpen={openSubagent} />
               <AnswerOutputsV2
                 artifact={artifact}
                 live={!settled}
@@ -1848,7 +1848,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 {browserNotificationsBanner}
                 {scheduledTaskHint}
                 {composerOperationError}
-                <SubagentChatStatusV2 chatId={session.activeChatId} onOpen={openSubagent} />
+                <SubagentBackgroundChipV2 chatId={session.activeChatId} key={session.activeChatId} onOpen={openSubagent} />
                 {composerSurface}
               </div>
             ) : null}
