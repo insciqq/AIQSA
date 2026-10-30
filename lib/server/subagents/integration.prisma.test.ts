@@ -57,11 +57,15 @@ function retirement() {
     if (!current?.operationOwner) return { interruptedRunIds: [], kind: "detached", remainingRuns: 0 };
     const others = (await currentWorkspaceAttachments(prisma, { chatId: current.chatId, operationOwner: current.operationOwner,
       version: current.operationGeneration })).filter((run) => run.active && run.modelRunId !== input.modelRunId);
+    const settleSession = () => coordinatorRepository.settleSession({ operation: { generation: current.operationGeneration,
+      owner: current.operationOwner! }, outcome: "pending", runtimeSandboxId: current.runtimeSandboxId, sessionId: current.sessionId });
     if (others.length > 0) {
+      // As the coordinator's `settle`: runs that end together each see the others attached, and the one whose detach
+      // leaves no attachment closes the operation and settles the session.
       await detachRun({ binding: current, stopProven: input.execution === "settled" });
+      if (await coordinatorRepository.closeRunOperationIfLast!(current)) await settleSession();
     } else {
-      await coordinatorRepository.settleSession({ operation: { generation: current.operationGeneration, owner: current.operationOwner },
-        outcome: "pending", runtimeSandboxId: current.runtimeSandboxId, sessionId: current.sessionId });
+      await settleSession();
     }
     return { interruptedRunIds: [], kind: "detached", remainingRuns: others.length };
   };
@@ -71,6 +75,8 @@ function retirement() {
 type Fixture = Readonly<{
   chatId: string;
   main: CreatedRun;
+  /** The user's next message on the chat's active leaf, through the send admission's own `createRun`. */
+  send(text: string): Promise<CreatedRun>;
   sessionId: string;
   thread(name: string): Promise<Readonly<{ callId: string; threadId: string }>>;
   userId: string;
@@ -114,7 +120,15 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
       const row = await prisma.subagentThread.create({ data: { anchorRunId: main.runId, chatId: chat.id, name, userId } });
       return { callId: call.id, threadId: row.id };
     };
-    return await execute({ chatId: chat.id, main, sessionId, thread, userId });
+    const send = async (text: string) => {
+      const leaf = await prisma.chat.findUniqueOrThrow({ select: { activeLeafMessageId: true }, where: { id: chat.id } });
+      const next = textMessageContent(text);
+      const created = await repository.createRun({ ...input, content: next, expectedActiveLeafId: leaf.activeLeafMessageId,
+        normalizedRequest: { ...input.normalizedRequest, content: next } });
+      await prisma.modelRun.update({ data: { status: "streaming" }, where: { id: created.runId } });
+      return created;
+    };
+    return await execute({ chatId: chat.id, main, send, sessionId, thread, userId });
   } finally {
     // Runs first: their Workspace bindings restrict the session, and the session restricts its chat.
     await prisma.modelRun.deleteMany({ where: { userId } });
@@ -125,17 +139,16 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
   }
 }
 
-/** A main-agent answer of the chat, admitted and active, on the chat's Workspace binding. */
+/**
+ * The user's next answer, admitted by the send's own `createRun` (its active-run guard included), then given the
+ * chat's Workspace binding its admission plan carries.
+ */
 async function mainRun(f: Fixture, text: string) {
-  const question = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent(text), role: "user" } });
-  const answer = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent(""), parentMessageId: question.id,
-    role: "assistant", status: "streaming" } });
-  const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: f.chatId, engine: "native", modelId: "fake-qsa",
-    normalizedRequest: {}, provider: "fake", status: "preparing", userId: f.userId, userMessageId: question.id } });
+  const created = await f.send(text);
   await prisma.workspaceRunBinding.create({ data: { guestUsedAt: null, imageRef: config.imageRef, internetEnabled: false,
-    mcpVersion: "0.6.16", modelRunId: run.id, outputDirectory: workspaceRunOutputDirectory(run.id), policyRevision: 1,
+    mcpVersion: "0.6.16", modelRunId: created.runId, outputDirectory: workspaceRunOutputDirectory(created.runId), policyRevision: 1,
     runtimeVersion: "0.6.16", toolCatalogHash: hashCanonicalMcpValue(TOOLS), toolDefinitions: TOOLS, workspaceSessionId: f.sessionId } });
-  return { answerId: answer.id, id: run.id, questionId: question.id };
+  return { answerId: created.assistantMessageId, id: created.runId, questionId: created.userMessageId };
 }
 
 /** The Workspace admission plan the send's admission reserves, as `workspaceAdmissionService` builds it for this chat. */
@@ -256,11 +269,8 @@ describe("sub-agents across slices on PostgreSQL", () => {
     expect(joined.operationOwner).toBe(`run:${f.main.runId}`);
     expect(await prisma.workspaceRunAttachment.count({ where: { chatId: f.chatId, modelRunId: user.id,
       operationGeneration: joined.version } })).toBe(1);
-    // A second main-agent answer at the same time is still refused.
-    const second = await mainRun(f, "And another one.");
-    await expect(prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan(f, second))))
-      .rejects.toMatchObject({ code: "workspace_busy" });
-    await prisma.modelRun.update({ data: { status: "cancelled" }, where: { id: second.id } });
+    // A second main-agent answer at the same time is still refused, by the same guard that let this one in.
+    await expect(f.send("And another one.")).rejects.toThrow("active_run_in_progress");
     // That answer ends, then the three sub-agents: the last one settles the session.
     expect(await coordinatorRepository.retireUnusedRun((await coordinatorRepository.binding({ runId: user.id, userId: f.userId }))!))
       .toBe(true);
