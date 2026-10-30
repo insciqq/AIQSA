@@ -17,6 +17,7 @@ import {
   SUBAGENT_DEFINITION_CODES,
   SUBAGENT_TOOL_GROUP_LABELS,
   SUBAGENTS_LIBRARY_PATH,
+  subagentModelLabel,
   type SubagentDefinitionDraft,
   type SubagentModelOption
 } from "../../contracts/subagentDefinitions";
@@ -118,14 +119,16 @@ const refused = (call: Call, code: string, message: string, extra: Record<string
 
 const LISTED_MODELS = 30;
 
+/** Models as the agent chooses among them: the exact id to pass, then the model's name with its connection. */
 function modelNames(options: readonly SubagentModelOption[]): string {
-  const shown = options.slice(0, LISTED_MODELS).map((option) => JSON.stringify(option.displayName));
+  const shown = options.slice(0, LISTED_MODELS).map((option) => `${JSON.stringify(option.modelId)} (${subagentModelLabel(option)})`);
   return shown.length ? `${shown.join(", ")}${options.length > shown.length ? ` and ${options.length - shown.length} more` : ""}` : "none";
 }
 
 function modelLabel(modelId: string | null, options: readonly SubagentModelOption[] | null): string {
   if (modelId === null) return "the model of the answer that calls it";
-  return options?.find((option) => option.modelId === modelId)?.displayName ?? `${modelId} (no longer among the user's models)`;
+  const option = options?.find((candidate) => candidate.modelId === modelId);
+  return option ? subagentModelLabel(option) : `${modelId} (no longer among the user's models)`;
 }
 
 const toolsLabel = (tools: readonly SubagentToolGroup[] | null) =>
@@ -136,7 +139,7 @@ function describe(record: SubagentDefinitionRecord, options: readonly SubagentMo
   return {
     name: record.name, version: record.version, description: record.description,
     ...(withInstructions ? { instructions: record.instructions } : {}),
-    model: modelLabel(record.providerModelId, options), effort: record.reasoningEffort ?? "the model's default",
+    model: modelLabel(record.providerModelId, options), modelId: record.providerModelId, effort: record.reasoningEffort ?? "the model's default",
     tools: record.toolGroups === null ? null : [...record.toolGroups], toolsDescription: toolsLabel(record.toolGroups)
   };
 }
@@ -170,7 +173,7 @@ export function subagentChanges(before: SubagentDefinitionRecord, after: Subagen
   if (before.instructions !== after.instructions) changes.push({ field: "instructions", summary: null });
   if (before.providerModelId !== after.providerModelId) {
     changes.push({ field: "model", summary: clip(after.providerModelId === null ? "The caller's model"
-      : options?.find((option) => option.modelId === after.providerModelId)?.displayName ?? after.providerModelId) });
+      : modelLabel(after.providerModelId, options)) });
   }
   if (before.reasoningEffort !== after.reasoningEffort) {
     changes.push({ field: "effort", summary: clip(after.reasoningEffort ?? "The model's default") });
@@ -225,8 +228,12 @@ async function resolveModel(service: AgentSubagentService, call: Call, reference
   Promise<Readonly<{ modelId: string; options: readonly SubagentModelOption[] }> | ToolExecutionResult> {
   const options = await service.models();
   if (!options) return refused(call, CODES.catalogUnavailable, REFUSALS[CODES.catalogUnavailable]!);
-  const model = findSubagentModel(options, reference);
-  return model ? { modelId: model.modelId, options }
+  const match = findSubagentModel(options, reference);
+  if (match.kind === "found") return { modelId: match.option.modelId, options };
+  // A name several models share is never guessed: the candidates come with their connections and exact ids.
+  return match.kind === "ambiguous"
+    ? refused(call, CODES.modelUnavailable, `Several of the user's models are named ${JSON.stringify(reference)}: ${modelNames(match.candidates)}. ` +
+      "Pass the exact id of the one the user means; if their words do not tell which, ask them.")
     : refused(call, CODES.modelUnavailable, `${JSON.stringify(reference)} is not one of the user's tool-calling models. Their models: ${modelNames(options)}.`);
 }
 

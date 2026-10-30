@@ -1,8 +1,10 @@
 import { DEFAULT_ANSWER_SOUND, type AnswerSoundPreferences } from "../../contracts/answerSound";
 import type {
   CurrentUserCatalogWire,
-  CatalogWireModel
+  CatalogWireModel,
+  CatalogWireProvider
 } from "../../contracts/catalog";
+import { catalogConnectionLabels } from "../../contracts/providerConnectionLabels";
 import type { ProviderModelCatalogEntry, SearchStrategyCatalogEntry } from "../../domain/catalog";
 import {
   buildCatalogModel,
@@ -214,6 +216,37 @@ export function resolveCurrentUserControlValues(
   return controlValues;
 }
 
+/** The provider connections of the user's entitled models, as `/api/me/catalog` lists them. */
+export function currentUserCatalogProviders(
+  sources: readonly ProviderModelCatalogEntry[],
+  models: readonly CatalogWireModel[]
+): CatalogWireProvider[] {
+  return Array.from(new Set(models.map((model) => model.provider))).map((provider) => {
+    const providerModels = models.filter((model) => model.provider === provider);
+    const source = sources.find((model) => model.provider === provider);
+
+    return {
+      family: source?.providerFamily ?? "unknown",
+      id: provider,
+      models: providerModels.map((model) => model.modelId),
+      name: source?.providerDisplayName ?? provider
+    };
+  });
+}
+
+/**
+ * Each entitled model's connection label by connection id, exactly as the
+ * chat's model picker shows it (`catalogConnectionLabels` over the providers
+ * `/api/me/catalog` sends), for server surfaces that name a model's
+ * connection to the user or the agent.
+ */
+export function currentUserConnectionLabels(
+  sources: readonly ProviderModelCatalogEntry[],
+  models: readonly CatalogWireModel[]
+): ReadonlyMap<string, string> {
+  return catalogConnectionLabels(currentUserCatalogProviders(sources, models));
+}
+
 export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogWire {
   const selection = resolveCurrentUserCatalogSelection(input);
   const {
@@ -225,17 +258,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
     organizationModelDefault,
     personalModelDefault
   } = selection;
-  const providers = Array.from(new Set(models.map((model) => model.provider))).map((provider) => {
-    const providerModels = models.filter((model) => model.provider === provider);
-    const source = input.models.find((model) => model.provider === provider);
-
-    return {
-      family: source?.providerFamily ?? "unknown",
-      id: provider,
-      models: providerModels.map((model) => model.modelId),
-      name: source?.providerDisplayName ?? provider
-    };
-  });
+  const providers = currentUserCatalogProviders(input.models, models);
   const searchPreference = resolveSearchPreference({
     organizationPlan: input.searchPolicy?.defaultPlan,
     settings: input.settings,

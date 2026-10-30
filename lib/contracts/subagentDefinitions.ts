@@ -6,6 +6,7 @@ import {
   normalizeSubagentName,
   type SubagentToolGroup
 } from "./subagents";
+import { modelWithConnectionLabel } from "./providerConnectionLabels";
 
 /**
  * Client-safe wire shapes of the user's custom sub-agents in Studio
@@ -55,11 +56,31 @@ export type SubagentDefinitionDraft = Readonly<{
 
 /** One of the user's tool-calling chat models a sub-agent may run on, with the efforts it takes. */
 export type SubagentModelOption = Readonly<{
+  /**
+   * The label of the provider connection that serves it, as the chat's model
+   * picker shows it (`catalogConnectionLabels`): two connections may serve
+   * models of the same name.
+   */
+  connectionName: string;
   defaultEffort: string | null;
   displayName: string;
   efforts: readonly string[];
   modelId: string;
 }>;
+
+/** A sub-agent model as lists name it to the user and the agent: "GPT-6 Luna · Codex LB" (`modelWithConnectionLabel`). */
+export function subagentModelLabel(option: Pick<SubagentModelOption, "connectionName" | "displayName">): string {
+  return modelWithConnectionLabel(option.displayName, option.connectionName);
+}
+
+/**
+ * How a model name or label a tool call passes is compared with the listed
+ * ones: case- and whitespace-insensitive, so "gpt-6 luna·codex lb" names
+ * "GPT-6 Luna · Codex LB".
+ */
+export function subagentModelReferenceKey(value: string): string {
+  return value.replace(/\s+/gu, "").toLocaleLowerCase("en-US");
+}
 
 export type SubagentDefinitionSummary = Readonly<{
   description: string;
@@ -195,11 +216,13 @@ export function decodeSubagentDefinitionView(value: unknown): SubagentDefinition
 }
 
 function decodeModelOption(value: unknown): SubagentModelOption | null {
-  if (!record(value) || !exact(value, ["defaultEffort", "displayName", "efforts", "modelId"]) ||
+  if (!record(value) || !exact(value, ["connectionName", "defaultEffort", "displayName", "efforts", "modelId"]) ||
     !boundedText(value.modelId, SUBAGENT_LIMITS.modelCharacters) || !value.modelId ||
-    !boundedText(value.displayName, 256) || !textList(value.efforts, SUBAGENT_LIMITS.effortCharacters, 32) ||
+    !boundedText(value.displayName, 256) || !boundedText(value.connectionName, 256) ||
+    !textList(value.efforts, SUBAGENT_LIMITS.effortCharacters, 32) ||
     !nullableText(value.defaultEffort, SUBAGENT_LIMITS.effortCharacters)) return null;
-  return { defaultEffort: value.defaultEffort, displayName: value.displayName, efforts: [...value.efforts], modelId: value.modelId };
+  return { connectionName: value.connectionName, defaultEffort: value.defaultEffort, displayName: value.displayName,
+    efforts: [...value.efforts], modelId: value.modelId };
 }
 
 export function decodeSubagentDefinitionListResponse(value: unknown): SubagentDefinitionListResponse | null {

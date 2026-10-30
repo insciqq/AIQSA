@@ -5,7 +5,9 @@ import {
   SUBAGENT_MODEL_CATALOG_LIMIT,
   chooseSubagentModel,
   decodeSubagentModels,
+  findSubagentModel,
   freezeSubagentModels,
+  subagentModelEntryLabel,
   type SubagentParentModel
 } from "./modelCatalog";
 
@@ -74,6 +76,36 @@ describe("sub-agent model catalog", () => {
       .toMatchObject({ code: SUBAGENT_ERROR_CODES.effortUnsupported, ok: false });
     expect(chooseSubagentModel({ call: { effort: "max" }, catalog, parent }))
       .toMatchObject({ code: SUBAGENT_ERROR_CODES.effortUnsupported, ok: false });
+  });
+
+  it("tells same-named models on two connections apart by connection and id, refusing a bare shared name", () => {
+    const labels = new Map([["connection-1", "OpenRouter"], ["connection-lb", "Codex LB"]]);
+    const twins = freezeSubagentModels([model("gpt-6-sol"), model("gpt-6-luna", { displayName: "GPT-6 Luna" }),
+      model("gpt-6-luna", { displayName: "GPT-6 Luna", modelId: "pm-luna-lb", provider: "connection-lb" })], labels);
+    expect(twins.models.map((entry) => [entry.providerModelId, subagentModelEntryLabel(entry)])).toEqual([
+      ["pm-gpt-6-sol", "Model gpt-6-sol · OpenRouter"], ["pm-gpt-6-luna", "GPT-6 Luna · OpenRouter"], ["pm-luna-lb", "GPT-6 Luna · Codex LB"]]);
+    expect(decodeSubagentModels(JSON.parse(JSON.stringify(twins)))).toEqual(twins);
+    // A list frozen before labels were kept still decodes, its models named without a connection.
+    const { connectionName: _dropped, ...unlabelled } = twins.models[0]!;
+    expect(decodeSubagentModels({ models: [unlabelled], version: 1 })?.models[0]).toEqual(unlabelled);
+    expect(subagentModelEntryLabel(unlabelled)).toBe("Model gpt-6-sol");
+    expect(decodeSubagentModels({ models: [{ ...unlabelled, connectionName: "" }], version: 1 })).toBeNull();
+
+    const exact = findSubagentModel(twins, "pm-luna-lb");
+    expect(exact.kind === "found" && exact.entry.connectionId).toBe("connection-lb");
+    const labelled = findSubagentModel(twins, "gpt-6 luna · codex lb");
+    expect(labelled.kind === "found" && labelled.entry.providerModelId).toBe("pm-luna-lb");
+    expect(findSubagentModel(twins, "GPT-6 Luna · Elsewhere")).toEqual({ kind: "none" });
+    for (const bare of ["GPT-6 Luna", "gpt-6-luna"]) {
+      const lookup = findSubagentModel(twins, bare);
+      expect(lookup.kind === "ambiguous" && lookup.candidates.map((entry) => entry.providerModelId)).toEqual(["pm-gpt-6-luna", "pm-luna-lb"]);
+      expect(chooseSubagentModel({ call: { model: bare }, catalog: twins, parent })).toEqual({ code: SUBAGENT_ERROR_CODES.modelUnavailable,
+        message: `Several of the user's models are named ${JSON.stringify(bare)}: "pm-gpt-6-luna" (GPT-6 Luna · OpenRouter), ` +
+          "\"pm-luna-lb\" (GPT-6 Luna · Codex LB). Pass the exact id of the one the user means; if their words do not tell which, ask them.",
+        ok: false });
+    }
+    expect(chooseSubagentModel({ call: { model: "GPT-6 Luna · Codex LB" }, catalog: twins, parent })).toMatchObject({ ok: true,
+      choice: { entry: { connectionId: "connection-lb", providerModelId: "pm-luna-lb" }, modelSource: "call" } });
   });
 
   it("puts the call over the type, and the type over the parent", () => {

@@ -10,15 +10,18 @@ import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { defaultSkillTools } from "../skills/defaultSkillTools";
 import type { StorageAdapter } from "../uploads/storage";
 import { visionAnalysisForStorage } from "../vision/defaultVision";
-import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
+import { currentUserConnectionLabels, resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
+import type { SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
 
 const loadCatalogData = createPrismaCatalogDataLoader({ checkDefaultAssistant: false, prisma });
 
-/** The user's chat models as `/api/me/catalog` filters them: what admission freezes for sub-agents. */
-async function subagentModelCatalog(userId: string) {
+/** The user's chat models as `/api/me/catalog` filters them, with their connections' labels: what admission freezes for sub-agents. */
+async function subagentModelCatalog(userId: string): Promise<SubagentModelCatalogSource> {
   const data = await loadCatalogData(userId);
-  return data ? resolveCurrentUserCatalogSelection(data).models : [];
+  if (!data) return { connectionLabels: new Map(), models: [] };
+  const models = resolveCurrentUserCatalogSelection(data).models;
+  return { connectionLabels: currentUserConnectionLabels(data.models, models), models };
 }
 
 /**

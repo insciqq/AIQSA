@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProviderConnectionLabels } from "./providerConnectionLabels";
+import { catalogConnectionLabels, modelWithConnectionLabel, resolveProviderConnectionLabels } from "./providerConnectionLabels";
 
 describe("provider connection labels", () => {
   it("preserves concise names when their normalized forms are unique", () => {
@@ -37,5 +37,16 @@ describe("provider connection labels", () => {
     expect([...resolveProviderConnectionLabels(sources).entries()].sort()).toEqual(
       [...resolveProviderConnectionLabels([...sources].reverse()).entries()].sort()
     );
+  });
+
+  it("labels catalog connections as ordinary UI shows them and names a model with its connection", () => {
+    const labels = catalogConnectionLabels([
+      { id: "connection-lb", name: "Codex LB (https://lb.example.test/v1)" },
+      { id: "connection-or", name: "OpenRouter" }
+    ]);
+
+    expect(labels.get("connection-lb")).toBe("Codex LB");
+    expect(modelWithConnectionLabel("GPT-6 Luna", labels.get("connection-lb"))).toBe("GPT-6 Luna · Codex LB");
+    expect(modelWithConnectionLabel("GPT-6 Luna", null)).toBe("GPT-6 Luna");
   });
 });
