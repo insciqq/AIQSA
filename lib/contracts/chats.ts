@@ -100,7 +100,14 @@ import {
   type McpApprovalCard,
   type MessageSystemTurnKind
 } from "./mcpApprovals";
-import { decodeSubagentActivityRef, isSubagentIdentifier, type SubagentActivityRef } from "./subagents";
+import {
+  SUBAGENT_CALLBACK_TURN_KIND,
+  SUBAGENT_FOLLOWUP_LIMITS,
+  decodeSubagentActivityRef,
+  isSubagentIdentifier,
+  normalizeSubagentName,
+  type SubagentActivityRef
+} from "./subagents";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -235,6 +242,8 @@ export type ThreadMessage = {
   status: "cancelled" | "complete" | "error" | "streaming";
   /** See `ChatMessageWire.systemTurnKind`. */
   systemTurnKind?: MessageSystemTurnKind;
+  /** See `ChatMessageWire.subagentCallback`. */
+  subagentCallback?: ChatMessageSubagentCallbackWire;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
@@ -481,9 +490,30 @@ export type ChatMessageWire = {
    * MCP approval): never shown as the user's speech.
    */
   systemTurnKind?: MessageSystemTurnKind;
+  /**
+   * Only on a `subagent_callback` wake-up turn: the sub-agents whose ended
+   * turns it reports, from the turns whose `callbackRunId` is the run that
+   * answers it. Absent on older rows.
+   */
+  subagentCallback?: ChatMessageSubagentCallbackWire;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
+
+/** The sub-agents a wake-up turn reports on: distinct valid names, at most `SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun`. */
+export type ChatMessageSubagentCallbackWire = Readonly<{ names: readonly string[] }>;
+
+/** A wake-up turn's sub-agent list, or null when it is not one exactly. */
+export function decodeChatMessageSubagentCallback(value: unknown): ChatMessageSubagentCallbackWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["names"]) || !Array.isArray(value.names) ||
+    value.names.length > SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun) return null;
+  const names: string[] = [];
+  for (const name of value.names) {
+    if (typeof name !== "string" || normalizeSubagentName(name) !== name || names.includes(name)) return null;
+    names.push(name);
+  }
+  return { names };
+}
 
 /**
  * A user turn posted by a scheduled task occurrence: the task and its current
@@ -1351,6 +1381,9 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ? value.scheduledOutcome : undefined;
   if (value.scheduledOutcome !== undefined && scheduledOutcome === undefined) return null;
   if (value.systemTurnKind !== undefined && (!isMessageSystemTurnKind(value.systemTurnKind) || role !== "user")) return null;
+  const subagentCallback = value.subagentCallback === undefined ? undefined
+    : decodeChatMessageSubagentCallback(value.subagentCallback);
+  if (subagentCallback === null || (subagentCallback && value.systemTurnKind !== SUBAGENT_CALLBACK_TURN_KIND)) return null;
   if (
     !id ||
     citationMessageId === undefined ||
@@ -1387,6 +1420,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ...(scheduledOutcome !== undefined ? { scheduledOutcome } : {}),
     status,
     ...(isMessageSystemTurnKind(value.systemTurnKind) ? { systemTurnKind: value.systemTurnKind } : {}),
+    ...(subagentCallback ? { subagentCallback } : {}),
     ...(toolActivity !== undefined ? { toolActivity } : {}),
     ...(workspaceActivity !== undefined ? { workspaceActivity } : {})
   };
