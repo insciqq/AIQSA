@@ -9,6 +9,8 @@ import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
+import { reserveAcceptedWorkspaceSession } from "../runs/prismaRepositoryPreparation";
+import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { createSubagentCallbacks } from "../runs/subagentBackground/callbacks";
 import { createSubagentBackgroundControl } from "../runs/subagentBackground/control";
 import { reconcileSubagentRuns } from "../runs/subagentBackground/recovery";
@@ -123,6 +125,28 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
   }
 }
 
+/** A main-agent answer of the chat, admitted and active, on the chat's Workspace binding. */
+async function mainRun(f: Fixture, text: string) {
+  const question = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent(text), role: "user" } });
+  const answer = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent(""), parentMessageId: question.id,
+    role: "assistant", status: "streaming" } });
+  const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: f.chatId, engine: "native", modelId: "fake-qsa",
+    normalizedRequest: {}, provider: "fake", status: "preparing", userId: f.userId, userMessageId: question.id } });
+  await prisma.workspaceRunBinding.create({ data: { guestUsedAt: null, imageRef: config.imageRef, internetEnabled: false,
+    mcpVersion: "0.6.16", modelRunId: run.id, outputDirectory: workspaceRunOutputDirectory(run.id), policyRevision: 1,
+    runtimeVersion: "0.6.16", toolCatalogHash: hashCanonicalMcpValue(TOOLS), toolDefinitions: TOOLS, workspaceSessionId: f.sessionId } });
+  return { answerId: answer.id, id: run.id, questionId: question.id };
+}
+
+/** The Workspace admission plan the send's admission reserves, as `workspaceAdmissionService` builds it for this chat. */
+function plan(f: Fixture, run: Readonly<{ answerId: string; id: string; questionId: string }>): WorkspaceRunAdmissionPlan {
+  const sandboxName = workspaceSandboxName(f.sessionId);
+  return { assistantMessageId: run.answerId, chatId: f.chatId, expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    normalized: { enabled: true, imageRef: config.imageRef, internetEnabled: false, outputDirectory: workspaceRunOutputDirectory(run.id),
+      sessionId: f.sessionId } as WorkspaceRunAdmissionPlan["normalized"], policyRevision: 1, runId: run.id, sandboxName,
+  sessionId: f.sessionId, toolDefinitions: TOOLS, userMessageId: run.questionId };
+}
+
 const startInput = (f: Fixture, name: string, thread: Readonly<{ callId: string; threadId: string }>) => ({
   binding, brief: `Brief for ${name}`, chatId: f.chatId, kind: "start" as const, name, parentRunId: f.main.runId,
   parentToolCallId: thread.callId, threadId: thread.threadId, type: null, userId: f.userId, userMessage: "Find the five best laptops"
@@ -211,6 +235,45 @@ describe("sub-agents across slices on PostgreSQL", () => {
       await background.stopAll({ chatId: f.chatId, userId: f.userId });
       expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: turn.turnId } })).state).toBe("interrupted");
     }));
+
+  it("admits the user's message beside running background sub-agents, then a wake-up once they ended", async () => fixture(async (f) => {
+    const { background, runner, workspace } = control();
+    // The answer that starts them holds the chat's Workspace operation, as its admission does.
+    expect(await workspace.attach({ agent: { kind: "main" }, chatId: f.chatId, modelRunId: f.main.runId, userId: f.userId }))
+      .toMatchObject({ kind: "attached" });
+    const turns = await Promise.all(["alpha", "beta", "gamma"].map(async (name) =>
+      started(await background.start(startInput(f, name, await f.thread(name))), runner)));
+    // That answer ends at once: its run, which never used the guest, leaves only its own attachment.
+    const mainBinding = (await coordinatorRepository.binding({ runId: f.main.runId, userId: f.userId }))!;
+    expect(await coordinatorRepository.retireUnusedRun(mainBinding)).toBe(true);
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: f.main.runId } });
+    expect((await workspace.attached({ chatId: f.chatId, userId: f.userId })).map((entry) => entry.modelRunId).sort())
+      .toEqual(turns.map((turn) => turn.hostRunId).sort());
+    // The user writes while the three run: the new answer joins their operation as one more attached run.
+    const user = await mainRun(f, "Meanwhile, the budget is 900 EUR.");
+    await prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan(f, user)));
+    const joined = await prisma.workspaceSession.findUniqueOrThrow({ where: { id: f.sessionId } });
+    expect(joined.operationOwner).toBe(`run:${f.main.runId}`);
+    expect(await prisma.workspaceRunAttachment.count({ where: { chatId: f.chatId, modelRunId: user.id,
+      operationGeneration: joined.version } })).toBe(1);
+    // A second main-agent answer at the same time is still refused.
+    const second = await mainRun(f, "And another one.");
+    await expect(prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan(f, second))))
+      .rejects.toMatchObject({ code: "workspace_busy" });
+    await prisma.modelRun.update({ data: { status: "cancelled" }, where: { id: second.id } });
+    // That answer ends, then the three sub-agents: the last one settles the session.
+    expect(await coordinatorRepository.retireUnusedRun((await coordinatorRepository.binding({ runId: user.id, userId: f.userId }))!))
+      .toBe(true);
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: user.id } });
+    for (const turn of turns) runner.finish(turn.turnId, endedSubagentResult("done"));
+    await expect.poll(async () => (await prisma.workspaceSession.findUniqueOrThrow({ where: { id: f.sessionId } })).operationOwner,
+      { timeout: 10_000 }).toBeNull();
+    expect(await workspace.attached({ chatId: f.chatId, userId: f.userId })).toEqual([]);
+    // The wake-up's answer then claims the idle session as its own operation.
+    const wakeUp = await mainRun(f, "[Sub-agent callbacks, written by the server, not by the user]");
+    await prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan(f, wakeUp)));
+    expect((await prisma.workspaceSession.findUniqueOrThrow({ where: { id: f.sessionId } })).operationOwner).toBe(`run:${wakeUp.id}`);
+  }));
 
   it("counts sub-agent usage toward the allowance, refuses a turn past it and keeps the callback owed when a wake-up is refused", async () =>
     fixture(async (f) => {
