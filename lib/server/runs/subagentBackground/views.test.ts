@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeSubagentSummaryResponse } from "../../../contracts/subagentViews";
+import { toolActivityDescriptors, TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { createSubagentViews } from "./views";
 
 vi.mock("../../toolObservations/repository", () => ({
@@ -27,10 +28,10 @@ const runningCall = (turnId: string, overrides: Record<string, unknown> = {}) =>
   roundIndex: 1, startedAt: at, state: "running", subagentTurnId: turnId, toolName: "web_search", ...overrides
 });
 
-function fakeClient(input: Readonly<{ calls?: readonly unknown[]; threads: readonly unknown[] }>) {
+function fakeClient(input: Readonly<{ calls?: readonly unknown[]; request?: unknown; threads: readonly unknown[] }>) {
   const tx = {
+    $queryRaw: vi.fn(async (_sql: TemplateStringsArray, ..._values: unknown[]) => [{ activityRequest: input.request ?? {}, id: "parent-1" }]),
     chat: { findFirst: vi.fn(async () => ({ activeLeafMessageId: "answer-1" })) },
-    modelRun: { findMany: vi.fn(async () => [{ id: "parent-1", normalizedRequest: {} }]) },
     modelRunToolCall: { findMany: vi.fn(async () => input.calls ?? []) },
     providerModel: { findMany: vi.fn(async () => [{ displayName: "GPT-6 Luna", id: "provider-model-1" }]) },
     subagentThread: { findMany: vi.fn(async () => input.threads) }
@@ -62,6 +63,36 @@ describe("the summary's model and current step", () => {
     expect(where[0].where).toMatchObject({ modelRunId: { in: ["run-turn-a"] }, subagentTurnId: { in: ["turn-a"] } });
   });
 
+  it("selects only the request's tool-naming keys, for the caller's own run, and still names an MCP step", async () => {
+    const { client, tx } = fakeClient({ calls: [runningCall("turn-a", { toolName: "mcp_jira_search" })],
+      request: { mcp: { tools: [{ namespacedName: "mcp_jira_search", originalName: "search", serverName: "Jira" }] } },
+      threads: [thread("alpha", [turn("turn-a", "running")])] });
+    const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
+    expect(chat!.threads[0]!.currentStep).toEqual({ origin: "mcp", serverName: "Jira", toolName: "search" });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    const [sql, ...values] = tx.$queryRaw.mock.calls[0]!;
+    expect(sql.join("?")).toContain("entry.key = ANY(");
+    expect(sql.join("?")).not.toMatch(/SELECT\s+(?:run\.)?"normalizedRequest"/u);
+    expect(values).toEqual([[...TOOL_ACTIVITY_REQUEST_KEYS], ["parent-1"], "user-1"]);
+  });
+
+  it("selects every request key a tool's identity depends on, and not the context", () => {
+    const full = { messages: [{ content: "the admitted context" }], context: "x", input: "y",
+      agent: undefined, fetchUrl: {}, imagePlan: {}, mcp: { tools: [{ namespacedName: "mcp_a", originalName: "a", serverName: "A" }] },
+      mcpDiscovery: { catalog: { servers: [{ tools: [{ namespacedName: "mcp_b", originalName: "b" }] }] } }, scheduledTaskManagementTool: true,
+      scheduledTaskTool: true, searchPlan: { mode: "all_selected", options: [{ adapterKind: "provider_model_client", displayName: "E" }] },
+      skillSaveTool: true, visionAnalysis: {}, workspace: { enabled: true }, workspaceImageView: true };
+    const selected = Object.fromEntries(Object.entries(full).filter(([key]) => TOOL_ACTIVITY_REQUEST_KEYS.includes(key)));
+    expect([...toolActivityDescriptors(selected)]).toEqual([...toolActivityDescriptors(full)]);
+    for (const key of ["messages", "context", "input"]) expect(TOOL_ACTIVITY_REQUEST_KEYS).not.toContain(key);
+  });
+
+  it("names the answer that started the latest turn", async () => {
+    const { client } = fakeClient({ threads: [thread("alpha", [turn("turn-a", "done")])] });
+    const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
+    expect(chat!.threads[0]!.latestAnswerMessageId).toBe("answer-1");
+  });
+
   it("reads a foreground turn's calls on its parent run", async () => {
     const { client, tx } = fakeClient({ calls: [runningCall("turn-f")],
       threads: [thread("zeta", [turn("turn-f", "running", { executionRun: null, mode: "foreground", parentRun: { assistantMessageId: "answer-1", status: "streaming" } })])] });
@@ -74,7 +105,7 @@ describe("the summary's model and current step", () => {
     const { client, tx } = fakeClient({ threads: [thread("alpha", [turn("turn-a", "running")])] });
     const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
     expect(chat!.threads[0]!.currentStep).toBeNull();
-    expect(tx.modelRun.findMany).not.toHaveBeenCalled();
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
   });
 
   it("leaves the step unknown for a call whose run already ended", async () => {

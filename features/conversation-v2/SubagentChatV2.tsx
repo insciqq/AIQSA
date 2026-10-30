@@ -95,27 +95,27 @@ function SubagentAnswerRow({ chatId, name, onOpen, thread, threadId }: Readonly<
 export function SubagentAnswerRowsV2({
   chatId,
   live,
+  messageId,
   onOpen,
   toolActivity
 }: Readonly<{
   chatId: string | null;
   /** This answer is still running. */
   live: boolean;
+  /** This answer's message, the server's id once the run has started. */
+  messageId: string;
   onOpen(target: SubagentThreadTarget): void;
   toolActivity: ThreadToolActivity | null | undefined;
 }>) {
   const chat = useSubagentStore((state) => chatId ? state.chats[chatId] : undefined);
   const failed = useSubagentStore((state) => chatId ? Boolean(state.chatErrors[chatId]) : false);
   const [unfolded, setUnfolded] = useState(false);
-  // A live step names no sub-agent, so a running answer learns its own from the chat's projection: a foreground turn
-  // belongs to the one answer running. The saved projection names them once the answer has ended.
-  const [waitedFor, setWaitedFor] = useState<readonly Readonly<{ name: string; threadId: string }>[]>([]);
-  const fresh = live ? chat?.threads.filter((thread) => thread.mode === "foreground" && isActiveSubagentState(thread.state) &&
-    !waitedFor.some((known) => known.threadId === thread.id)) ?? [] : [];
-  if (fresh.length > 0) setWaitedFor([...waitedFor, ...fresh.map((thread) => ({ name: thread.name, threadId: thread.id }))]);
   if (!chatId) return null;
+  // A live step names no sub-agent, so a running answer's own come from the server: the threads whose latest turn it started.
   const refs = subagentRefsOf(toolActivity);
-  const addressed = [...refs, ...waitedFor.filter((known) => !refs.some((ref) => ref.threadId === known.threadId))];
+  const addressed = [...refs, ...(chat?.threads ?? [])
+    .filter((thread) => thread.latestAnswerMessageId === messageId && !refs.some((ref) => ref.threadId === thread.id))
+    .map((thread) => ({ name: thread.name, threadId: thread.id }))];
   const rows = addressed.flatMap((ref) => {
     const thread = chat?.threads.find((candidate) => candidate.id === ref.threadId) ?? null;
     if (thread && isActiveSubagentState(thread.state) && (thread.mode === "background" || !live)) return [];

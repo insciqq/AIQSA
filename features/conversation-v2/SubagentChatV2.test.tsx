@@ -39,7 +39,7 @@ describe("sub-agents an answer started", () => {
   it("makes the whole row the link to its thread, with its step and model, then its outcome and model", () => {
     const onOpen = vi.fn();
     const tool = activity([callSubagent("thread-a", "alpha", "turn-1")]);
-    render(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={onOpen} toolActivity={tool} />);
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={onOpen} toolActivity={tool} />);
     // Before the chat's projection arrives the row claims no state, but it already opens the thread.
     const row = screen.getByRole("link", { name: "Open alpha" });
     expect(row).toHaveTextContent(/^alpha$/u);
@@ -53,28 +53,58 @@ describe("sub-agents an answer started", () => {
     expect(onOpen).toHaveBeenCalledWith({ chatId: "chat-a", threadId: "thread-a" });
   });
 
-  it("shows a running answer's foreground sub-agent from the projection, as live steps name none, and keeps it once it ended", () => {
-    project([foreground("thread-a", "running", { currentStep: webSearch }), subagentThread("thread-b"), foreground("thread-c", "done")]);
-    const { rerender } = render(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()} toolActivity={null} />);
+  it("shows a running answer's own foreground sub-agent from the server's answer id, as live steps name none", () => {
+    const own = { latestAnswerMessageId: "answer-1" };
+    project([foreground("thread-a", "running", { ...own, currentStep: webSearch }), subagentThread("thread-b", "running", own),
+      foreground("thread-c", "running", { latestAnswerMessageId: "answer-2" }), foreground("thread-d")]);
+    const { rerender } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={null} />);
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(screen.getByRole("link", { name: "Open a, Searching the web…" })).toHaveAttribute("href", "/c/chat-a?agent=thread-a");
-    project([foreground("thread-a", "done"), subagentThread("thread-b"), foreground("thread-c", "done")]);
+    project([foreground("thread-a", "done", own)]);
     expect(screen.getByRole("link", { name: "Open a, Done" })).toBeInTheDocument();
     // The saved projection names the same sub-agent: still one row.
-    rerender(<SubagentAnswerRowsV2 chatId="chat-a" live={false} onOpen={vi.fn()} toolActivity={activity([callSubagent("thread-a", "a", "turn-1")])} />);
+    rerender(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()} toolActivity={activity([callSubagent("thread-a", "a", "turn-1")])} />);
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
+  it("keeps a thread stopped under an earlier answer out of the answer sent after the stop", () => {
+    project([foreground("thread-a", "stopped", { latestAnswerMessageId: "answer-1" })]);
+    const { container } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-2" live onOpen={vi.fn()} toolActivity={null} />);
+    expect(container).toBeEmptyDOMElement();
+    cleanup();
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()} toolActivity={null} />);
+    expect(screen.getByRole("link", { name: /^Open a/u })).toBeInTheDocument();
+  });
+
+  it("gives a background sub-agent that ended during its running answer a row there, out of the chip", () => {
+    const own = { latestAnswerMessageId: "answer-1", model: luna };
+    project([subagentThread("thread-a", "running", own)]);
+    const { container } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={null} />);
+    expect(container).toBeEmptyDOMElement();
+    project([subagentThread("thread-a", "done", own)]);
+    expect(screen.getByRole("link", { name: "Open a, Done, GPT-6 Luna · high" })).toBeInTheDocument();
+  });
+
+  it("moves a thread a later answer continues: its row is in the running answer, not the earlier one naming it", () => {
+    const tool = activity([callSubagent("thread-a", "a", "turn-1")]);
+    project([foreground("thread-a", "running", { latestAnswerMessageId: "answer-2" })]);
+    const { container } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()} toolActivity={tool} />);
+    expect(container).toBeEmptyDOMElement();
+    cleanup();
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-2" live onOpen={vi.fn()} toolActivity={null} />);
     expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
   it("gives a settled answer no sub-agent it did not address", () => {
     project([foreground("thread-a")]);
-    const { container } = render(<SubagentAnswerRowsV2 chatId="chat-a" live={false} onOpen={vi.fn()} toolActivity={null} />);
+    const { container } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()} toolActivity={null} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it("uses neutral words when no step is known and for a step the answer hides, and renders an older row without a model", () => {
     project([foreground("thread-a")]);
     const tool = activity([callSubagent("thread-a", "alpha", "turn-1")]);
-    render(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()} toolActivity={tool} />);
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={tool} />);
     expect(screen.getByRole("link", { name: "Open alpha, Working…" })).toBeInTheDocument();
     project([foreground("thread-a", "running", { currentStep: { origin: "session", serverName: "Plan", toolName: "update_plan" } })]);
     expect(screen.getByRole("link", { name: "Open alpha, Working…" })).toBeInTheDocument();
@@ -82,7 +112,7 @@ describe("sub-agents an answer started", () => {
 
   it("names a failed or stopped end by its reason and an unknown reason by its state", () => {
     project([foreground("thread-a", "stopped", { reason: "stopped_by_user" }), foreground("thread-b", "failed", { reason: "provider_error" })]);
-    render(<SubagentAnswerRowsV2 chatId="chat-a" live={false} onOpen={vi.fn()}
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()}
       toolActivity={activity([callSubagent("thread-a", "alpha", "turn-1"), callSubagent("thread-b", "beta", "turn-2")])} />);
     expect(screen.getByRole("link", { name: /^Open beta, Failed/u })).toHaveAttribute("data-tone", "danger");
     expect(screen.getByRole("link", { name: /^Open alpha/u })).toHaveAttribute("data-state", "stopped");
@@ -90,14 +120,14 @@ describe("sub-agents an answer started", () => {
 
   it("reads a sub-agent waiting for the user as such, in the warn tone", () => {
     project([foreground("thread-a", "waiting", { currentStep: { origin: "workspace", toolName: "browser_handoff" } })]);
-    render(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()} toolActivity={activity([callSubagent("thread-a", "alpha", "turn-1")])} />);
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={activity([callSubagent("thread-a", "alpha", "turn-1")])} />);
     expect(screen.getByRole("link", { name: "Open alpha, Waiting for you" })).toHaveAttribute("data-tone", "warn");
   });
 
   it("gives each active sub-agent one place: a background one in the chip, a foreground one in the answer running it", () => {
     const tool = activity([callSubagent("thread-a", "alpha", "turn-1", "background")]);
     project([subagentThread("thread-a")]);
-    const { container, rerender } = render(<SubagentAnswerRowsV2 chatId="chat-a" live={false} onOpen={vi.fn()} toolActivity={tool} />);
+    const { container, rerender } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()} toolActivity={tool} />);
     expect(container).toBeEmptyDOMElement();
     // Once it has ended, the answer that started it keeps its outcome and model.
     project([subagentThread("thread-a", "done", { model: luna })]);
@@ -105,7 +135,7 @@ describe("sub-agents an answer started", () => {
     // An earlier answer of a thread a later answer is running holds no second row.
     project([foreground("thread-a")]);
     expect(container).toBeEmptyDOMElement();
-    rerender(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()} toolActivity={tool} />);
+    rerender(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={tool} />);
     expect(screen.getByRole("link", { name: /^Open alpha/u })).toBeInTheDocument();
   });
 
@@ -114,7 +144,7 @@ describe("sub-agents an answer started", () => {
     const threads = names.map((name, index) => foreground(`thread-${name}`, index < 3 ? "done" : "running"));
     project(threads);
     const tool = activity(names.map((name) => callSubagent(`thread-${name}`, name, `turn-${name}`)));
-    const { rerender } = render(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()} toolActivity={tool} />);
+    const { rerender } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={tool} />);
     const summary = screen.getByRole("button", { name: "5 sub-agents · 3 done, 2 running" });
     expect(summary).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryAllByRole("link")).toHaveLength(0);
@@ -125,14 +155,14 @@ describe("sub-agents an answer started", () => {
     expect(screen.queryAllByRole("link")).toHaveLength(0);
     // A summary claims no state for one the projection does not have.
     project([threads[0]!]);
-    rerender(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()} toolActivity={tool} />);
+    rerender(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={tool} />);
     expect(screen.getByRole("button", { name: "5 sub-agents · 1 done" })).toBeInTheDocument();
   });
 
   it("keeps three as plain rows", () => {
     const names = ["a", "b", "c"];
     project(names.map((name) => foreground(`thread-${name}`, "done")));
-    render(<SubagentAnswerRowsV2 chatId="chat-a" live={false} onOpen={vi.fn()}
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()}
       toolActivity={activity(names.map((name) => callSubagent(`thread-${name}`, name, `turn-${name}`)))} />);
     expect(screen.getAllByRole("link")).toHaveLength(3);
     expect(screen.queryByRole("button")).toBeNull();
@@ -141,20 +171,20 @@ describe("sub-agents an answer started", () => {
   it("warns through the summary row when a collapsed sub-agent waits for the user", () => {
     const names = ["a", "b", "c", "d"];
     project(names.map((name, index) => foreground(`thread-${name}`, index === 0 ? "waiting" : "running")));
-    render(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()}
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()}
       toolActivity={activity(names.map((name) => callSubagent(`thread-${name}`, name, `turn-${name}`)))} />);
     expect(screen.getByRole("button", { name: "4 sub-agents · 3 running, 1 waiting for you" })).toHaveAttribute("data-tone", "warn");
   });
 
   it("says so when the projection cannot be refreshed instead of implying the rows are current", () => {
     act(() => useSubagentStore.setState({ chatErrors: { "chat-a": true } }));
-    render(<SubagentAnswerRowsV2 chatId="chat-a" live onOpen={vi.fn()} toolActivity={activity([callSubagent("thread-a", "alpha", "turn-1")])} />);
+    render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live onOpen={vi.fn()} toolActivity={activity([callSubagent("thread-a", "alpha", "turn-1")])} />);
     expect(screen.getByRole("link", { name: "Open alpha" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Could not refresh sub-agents.");
   });
 
   it("renders nothing for an answer without sub-agents", () => {
-    const { container } = render(<SubagentAnswerRowsV2 chatId="chat-a" live={false} onOpen={vi.fn()}
+    const { container } = render(<SubagentAnswerRowsV2 chatId="chat-a" messageId="answer-1" live={false} onOpen={vi.fn()}
       toolActivity={activity([{ origin: "tool", round: 1, status: "complete", toolName: "web_search" }])} />);
     expect(container).toBeEmptyDOMElement();
   });

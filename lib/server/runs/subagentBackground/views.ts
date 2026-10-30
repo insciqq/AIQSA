@@ -21,6 +21,7 @@ import {
   type SubagentTurnView
 } from "../../../contracts/subagentViews";
 import { summarizeMessageRunToolActivity } from "../../chats/prismaRepository";
+import { TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { branchPathMessageIds } from "../../toolObservations/repository";
 import { impliedResult } from "./store";
 
@@ -83,6 +84,27 @@ function turnModel(turn: TurnRow, modelNames: ReadonlyMap<string, string | null>
   };
 }
 
+/**
+ * The part of runs' frozen requests that names their tools, by run. Polled for
+ * as long as a sub-agent runs, so it never transfers the admitted context the
+ * rest of the request holds. The caller's own runs only.
+ */
+async function loadActivityRequests(
+  tx: Prisma.TransactionClient,
+  runIds: readonly string[],
+  userId: string
+): Promise<ReadonlyMap<string, Prisma.JsonValue>> {
+  const rows = await tx.$queryRaw<Array<{ activityRequest: Prisma.JsonValue; id: string }>>`
+    SELECT run."id", COALESCE((
+      SELECT jsonb_object_agg(entry.key, entry.value)
+      FROM jsonb_each(CASE WHEN jsonb_typeof(run."normalizedRequest") = 'object' THEN run."normalizedRequest" ELSE '{}'::jsonb END) AS entry
+      WHERE entry.key = ANY(${[...TOOL_ACTIVITY_REQUEST_KEYS]}::text[])
+    ), '{}'::jsonb) AS "activityRequest"
+    FROM "ModelRun" AS run
+    WHERE run."id" = ANY(${[...runIds]}::text[]) AND run."userId" = ${userId}`;
+  return new Map(rows.map((row) => [row.id, row.activityRequest]));
+}
+
 /** Running calls one poll of a chat reads: enough for every active turn's parallel calls. */
 const CURRENT_STEP_CALLS = SUBAGENT_LIMITS.runningPerChat * 8;
 
@@ -90,7 +112,7 @@ const CURRENT_STEP_CALLS = SUBAGENT_LIMITS.runningPerChat * 8;
  * Each active turn's latest running call, projected by the same reader as an
  * answer's process disclosure and cut down to its identity. A chat with no
  * active turn costs nothing here; one with active turns takes one bounded
- * query, and a second for the accepted tool names only while a call runs. A
+ * query, and a second for the tool names' frozen part only while a call runs. A
  * call the projection does not name stays unknown, never guessed.
  */
 async function loadCurrentSteps(
@@ -113,11 +135,10 @@ async function loadCurrentSteps(
     const call = calls.find((candidate) => candidate.subagentTurnId === turn.id);
     return call ? [{ call, turn }] : [];
   });
-  const parents = await tx.modelRun.findMany({ select: { id: true, normalizedRequest: true },
-    where: { id: { in: [...new Set(running.map(({ turn }) => turn.parentRunId))] } } });
+  const requests = await loadActivityRequests(tx, [...new Set(running.map(({ turn }) => turn.parentRunId))], userId);
   return new Map(running.flatMap(({ call, turn }): [string, SubagentCurrentStep][] => {
-    const parent = parents.find((run) => run.id === turn.parentRunId);
-    const shown = parent ? summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest: parent.normalizedRequest,
+    const normalizedRequest = requests.get(turn.parentRunId);
+    const shown = normalizedRequest !== undefined ? summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest,
       status: turn.executionRun?.status ?? turn.parentRun.status, toolCalls: [call], userId }, userId)?.calls[0] : undefined;
     if (shown?.status !== "running") return [];
     const step = decodeSubagentCurrentStep({
@@ -146,9 +167,9 @@ async function loadSummaryFacts(
   return { modelNames, steps: await loadCurrentSteps(tx, turns, userId) };
 }
 
-function summarize(thread: ThreadRow, turns: readonly TurnRow[], facts: SummaryFacts): SubagentThreadSummary | null {
-  const latest = turns.at(-1);
-  if (!latest) return null;
+/** `turns` holds at least the thread's latest turn on the branch. */
+function summarize(thread: ThreadRow, turns: readonly TurnRow[], facts: SummaryFacts): SubagentThreadSummary {
+  const latest = turns.at(-1)!;
   const state = latest.state;
   const updatedAt = new Date(Math.max(thread.updatedAt.getTime(), latest.updatedAt.getTime()));
   return {
@@ -156,6 +177,7 @@ function summarize(thread: ThreadRow, turns: readonly TurnRow[], facts: SummaryF
     currentStep: facts.steps.get(latest.id) ?? null,
     endedAt: isActiveSubagentState(state) ? null : (latest.endedAt ?? latest.updatedAt).toISOString(),
     id: thread.id,
+    latestAnswerMessageId: latest.parentRun.assistantMessageId,
     mode: latest.mode,
     model: turnModel(latest, facts.modelNames),
     name: thread.name,
@@ -203,10 +225,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
       return turns.length > 0 ? [{ thread, turns }] : [];
     });
     const facts = await loadSummaryFacts(tx, onBranch.map(({ turns }) => turns.at(-1)!), userId, modelNames);
-    const visible = onBranch.flatMap(({ thread, turns }) => {
-      const summary = summarize(thread, turns, facts);
-      return summary ? [summary] : [];
-    }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const visible = onBranch.map(({ thread, turns }) => summarize(thread, turns, facts)).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     const shown = visible.slice(0, SUBAGENT_VIEW_LIMITS.threadsPerChat);
     return { chatId, running: Math.min(SUBAGENT_LIMITS.runningPerChat, shown.filter((thread) => isActiveSubagentState(thread.state)).length),
       threads: shown, truncated: visible.length > shown.length };
@@ -221,8 +240,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
     const turns = branchTurns(thread, path);
     const latest = turns.at(-1);
     if (!latest) return null;
-    const summary = summarize(thread, turns, await loadSummaryFacts(tx, [latest], input.userId, new Map()));
-    return summary ? { summary, thread, turns } : null;
+    return { summary: summarize(thread, turns, await loadSummaryFacts(tx, [latest], input.userId, new Map())), thread, turns };
   }
 
   return Object.freeze({
@@ -256,10 +274,9 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
         if (!visible) return null;
         const shown = visible.turns.slice(-SUBAGENT_VIEW_LIMITS.turnsPerView);
         const hostRunIds = [...new Set(shown.map((turn) => turn.executionRun?.id ?? turn.parentRunId))];
-        const [hostRuns, parentRuns, calls, mailbox, models] = await Promise.all([
+        const [hostRuns, activityRequests, calls, mailbox, models] = await Promise.all([
           tx.modelRun.findMany({ select: { errorPayload: true, id: true, status: true }, where: { id: { in: hostRunIds } } }),
-          tx.modelRun.findMany({ select: { id: true, normalizedRequest: true },
-            where: { id: { in: [...new Set(shown.map((turn) => turn.parentRunId))] } } }),
+          loadActivityRequests(tx, [...new Set(shown.map((turn) => turn.parentRunId))], input.userId),
           tx.modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }], select: {
             arguments: true, completedAt: true, id: true, mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
             modelRunId: true, ordinal: true, providerCallId: true, result: true, roundIndex: true, startedAt: true, state: true,
@@ -277,7 +294,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
         const turns = shown.map((turn): SubagentTurnView => {
           const hostRunId = turn.executionRun?.id ?? turn.parentRunId;
           const host = hostRuns.find((run) => run.id === hostRunId);
-          const parent = parentRuns.find((run) => run.id === turn.parentRunId);
+          const normalizedRequest = activityRequests.get(turn.parentRunId);
           const call = parentCalls.find((candidate) => candidate.id === turn.parentToolCallId && candidate.modelRunId === turn.parentRunId);
           const args = call?.arguments;
           const brief = typeof args === "object" && args !== null && !Array.isArray(args) && typeof (args as Record<string, unknown>).message === "string"
@@ -297,8 +314,8 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
               return text ? [{ createdAt: entry.createdAt.toISOString(),
                 delivery: entry.deliveredAt ? "delivered" : isActiveSubagentState(turn.state) ? "accepted" : "undelivered", text }] : [];
             });
-          const toolActivity = host && parent ? summarizeMessageRunToolActivity({
-            errorPayload: host.errorPayload, normalizedRequest: parent.normalizedRequest, status: host.status,
+          const toolActivity = host && normalizedRequest !== undefined ? summarizeMessageRunToolActivity({
+            errorPayload: host.errorPayload, normalizedRequest, status: host.status,
             toolCalls: calls.filter((entry) => entry.modelRunId === hostRunId && entry.subagentTurnId === turn.id),
             userId: input.userId
           }, input.userId) : null;

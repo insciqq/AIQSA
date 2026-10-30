@@ -17,7 +17,7 @@ import {
 } from "./handlers";
 import type { SubagentViews } from "./views";
 
-const thread: SubagentThreadSummary = { createdAt: "2026-10-30T10:00:00.000Z", currentStep: null, endedAt: null, id: "thread-1", mode: "background",
+const thread: SubagentThreadSummary = { createdAt: "2026-10-30T10:00:00.000Z", currentStep: null, endedAt: null, id: "thread-1", latestAnswerMessageId: null, mode: "background",
   model: null, name: "researcher", outcome: null, reason: null, state: "running", turnCount: 1, type: null, updatedAt: "2026-10-30T10:01:00.000Z" };
 
 function setup(owner = "owner") {
