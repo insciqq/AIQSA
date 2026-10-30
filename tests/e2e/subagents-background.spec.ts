@@ -82,9 +82,13 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
   page.on("pageerror", (error) => pageErrors.push(error.message));
   const userId = await signedInOwner(page);
 
-  await test.step("three background sub-agents start in one answer and the tree shows them live", async () => {
-    await sendAndExpect(page, "Compare three laptop shops. [AIQSA_SUBAGENT_E2E:bg:alpha,beta,gamma:write,wait15000]",
-      "Sub-agents started: alpha started; beta started; gamma started.", 90_000);
+  await test.step("three background sub-agents start in one answer, which ends at once, and the tree shows them live", async () => {
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("Compare three laptop shops. [AIQSA_SUBAGENT_E2E:bg:alpha,beta,gamma:write,wait25000]");
+    await composer.press("Enter");
+    await expect(lastAnswer(page)).toContainText("Sub-agents started: alpha started; beta started; gamma started.", { timeout: 90_000 });
+    // The main agent's run ends with its answer: its background sub-agents never hold it open (RUN_CONTRACTS).
+    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 10_000 });
     const list = await navigation(page);
     for (const name of ["alpha", "beta", "gamma"]) {
       await expect(list.getByRole("treeitem", { name: `${name}, Running` })).toBeVisible({ timeout: STEP_TIMEOUT });
@@ -94,6 +98,21 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
   });
 
   const chatId = await activeChatId(page);
+  await test.step("the main agent's run is over while they run, and the user keeps chatting", async () => {
+    await expect.poll(async () => prisma.modelRun.count({ where: { chatId, status: { in: ["preparing", "queued", "streaming",
+      "in_progress"] }, subagentTurnId: null } }), { timeout: 10_000 }).toBe(0);
+    expect(await prisma.modelRun.count({ where: { chatId, status: { in: ["preparing", "queued", "streaming", "in_progress"] },
+      subagentTurnId: { not: null } } })).toBe(3);
+    // A plain message the fake answers without sub-agents, admitted beside them on the chat's shared Workspace.
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("Meanwhile, note that the budget is 900 EUR.");
+    await composer.press("Enter");
+    await expect(lastAnswer(page)).toContainText("Fake answer: Meanwhile, note that the budget is 900 EUR.", { timeout: STEP_TIMEOUT });
+    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 10_000 });
+    const list = await navigation(page);
+    for (const name of ["alpha", "beta", "gamma"]) await expect(list.getByRole("treeitem", { name: `${name}, Running` })).toBeVisible();
+  });
+
   await test.step("each runs as its own run on the chat's one Workspace, its file in its own folder", async () => {
     await expect.poll(async () => prisma.modelRunToolCall.count({ where: { modelRun: { chatId, subagentTurnId: { not: null } },
       state: "complete", toolName: { contains: "sandbox_fs_write" } } }), { timeout: STEP_TIMEOUT }).toBe(3);
