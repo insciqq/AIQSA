@@ -81,6 +81,9 @@ export function humanizeErrorCode(code: string): string {
   if (raw === "active_run_in_progress") {
     return "Another response is still running. Stop it or wait for it to finish before sending. (active_run_in_progress)";
   }
+  if (raw === "subagents_running") {
+    return "Sub-agents are still running in this chat. Stop the sub-agents first, then try again. (subagents_running)";
+  }
 
   const httpFailure = /^(.*)_failed_(\d{3})$/.exec(raw);
   if (httpFailure) {
@@ -178,6 +181,7 @@ export function humanizeErrorCode(code: string): string {
     workspace_output_export_failed: "Generated files could not be saved. Check the Workspace output and try again",
     workspace_output_limit_exceeded: "Workspace generated files exceed the output limit. Remove files and try again",
     workspace_reset_conflict: "Stop the active response before resetting Workspace",
+    workspace_subagents_running: "Sub-agents are working in this Workspace. Stop the sub-agents first, then try again",
     workspace_runtime_incompatible: "Workspace runtime is incompatible with this installation. Ask an administrator to check it",
     workspace_session_create_failed: "Workspace could not be created. Try again",
     ...WORKSPACE_OPERATION_FAILURE_MESSAGES

@@ -7,7 +7,8 @@ import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
 import type { WorkspaceConfig } from "./config";
 import type { WorkspaceImageSource } from "./imageCapture";
 import { outputIdentities, parseWorkspaceFileSelection, type WorkspaceSelectedFile } from "./outputManifest";
-import { lockWorkspaceSession, workspaceRunOperationOwner } from "./sessionOperation";
+import { lockWorkspaceSession } from "./sessionOperation";
+import { workspaceRunHoldsOperation } from "./attachments";
 import { WorkspaceRuntimeError, type WorkspaceRuntime, type WorkspaceOutputStream } from "./runtime";
 
 const LEASE_MS = 120_000;
@@ -91,7 +92,8 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
       !await tx.user.findFirst({ where: { id: input.userId, status: "active" }, select: { id: true } }) ||
       !await resolveChatAccess(tx, { chatId: run.chatId, userId: input.userId })) throw stale();
     // Run ownership has no timed lease; export workers use operationExpiresAt.
-    if (active && (!["in_progress", "streaming"].includes(run.status) || session.operationOwner !== workspaceRunOperationOwner(run.id) ||
+    // The run holds the session's operation, alone or attached beside the chat's other runs (`attachments.ts`).
+    if (active && (!["in_progress", "streaming"].includes(run.status) || !await workspaceRunHoldsOperation(tx, session, run.id) ||
       session.state === "DELETING" || session.state === "FAILED")) throw stale();
     return { run, session, operation: { generation: session.version, owner: session.operationOwner ?? "" } };
   }

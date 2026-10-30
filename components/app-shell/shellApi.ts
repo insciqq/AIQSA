@@ -265,6 +265,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ...(message.scheduledTask ? { scheduledTask: message.scheduledTask } : {}),
     ...(message.scheduledOutcome ? { scheduledOutcome: message.scheduledOutcome } : {}),
     ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
+    ...(message.subagentCallback ? { subagentCallback: message.subagentCallback } : {}),
     status: normalizeThreadStatus(message.status),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     ...(message.workspacePreparation ? { workspacePreparation: true as const } : {}),

@@ -161,6 +161,7 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
             AND run."status" IN ('complete'::"ModelRunStatus", 'error'::"ModelRunStatus")
             AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
             AND chat."permanentDeletionAt" IS NULL
+            AND run."subagentTurnId" IS NULL
             AND ${notScheduledRunSql()}
             AND ${notTelegramRunSql()}
             AND ${ownerAcceptsSql(Prisma.sql`run."userId"`, now)}

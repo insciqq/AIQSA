@@ -285,7 +285,30 @@ type ToolActivityIdentity = Readonly<{
   fetchHttpStatus?: unknown;
   fetchRefusalScope?: unknown;
   fetchContentKind?: unknown;
+  /** A `call_subagent` or `stop_subagent` step: the sub-agent it addressed (`SubagentActivityRef`). */
+  subagent?: unknown;
 }>;
+
+/** The sub-agent a step addressed: its settled reference's name, or the live step's server name. */
+function subagentStepName(call: ToolActivityIdentity): string | null {
+  const ref = isRecord(call.subagent) ? call.subagent.name : undefined;
+  const name = typeof ref === "string" ? ref : call.serverName;
+  return typeof name === "string" && /^[a-z0-9][a-z0-9_-]{0,47}$/u.test(name) ? name : null;
+}
+
+/** "Sub-agent shop-amazon is working", and how it ended; a stop names what it stopped. */
+function describeSubagentCallV2(call: ToolActivityIdentity, phase: "cancelled" | "failed" | "held" | "running" | "settled"): string {
+  const name = subagentStepName(call);
+  const who = name ? `Sub-agent ${name}` : "Sub-agent";
+  if (call.toolName === "stop_subagent") {
+    if (phase === "running") return `Stopping ${who.toLowerCase()}`;
+    return phase === "failed" ? `Could not stop ${who.toLowerCase()}` : `Stopped ${who.toLowerCase()}`;
+  }
+  if (phase === "running") return `${who} is working`;
+  if (phase === "cancelled") return `${who} stopped`;
+  if (phase === "failed") return `${who} did not finish`;
+  return `${who} finished`;
+}
 
 /** Why a page link was refused, worded by how the owner allows it. */
 function notInConversationCopy(target: string, scope: unknown): string {
@@ -370,6 +393,10 @@ export function describeToolCallV2(
 ): string {
   const running = phase === "running";
   const origin = toolActivityOriginV2(call);
+  // The main agent's sub-agents (`call_subagent`); their own steps nest under this one.
+  if (origin === "tool" && (call.toolName === "call_subagent" || call.toolName === "stop_subagent")) {
+    return describeSubagentCallV2(call, phase);
+  }
   // The agent handed the live browser to the user (`features/browser-live/`).
   if ((origin === "tool" || origin === "workspace") && safeToolName(call.toolName) === "browser_handoff") {
     if (phase === "failed") return "Browser handoff failed";

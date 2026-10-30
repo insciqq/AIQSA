@@ -35,6 +35,8 @@ export function fenceDeterministicWorkspaceRuntime(runtime: WorkspaceRuntime, sh
     ...(runtime.browserLive ? { browserLive: (input: Parameters<NonNullable<WorkspaceRuntime["browserLive"]>>[0]) =>
       call(input, (signal) => runtime.browserLive!({ ...input, signal })) } : {}),
     terminateExecutions: (input) => call(input, (signal) => runtime.terminateExecutions({ ...input, signal })),
+    ...(runtime.terminateAgentProcesses ? { terminateAgentProcesses: (input: Parameters<NonNullable<WorkspaceRuntime["terminateAgentProcesses"]>>[0]) =>
+      call(input, (signal) => runtime.terminateAgentProcesses!({ ...input, signal })) } : {}),
     collectOutputs: (input) => call(input, (signal) => runtime.collectOutputs({ ...input, signal })),
     collectBrowserSessions: (input) => call(input, (signal) => runtime.collectBrowserSessions({ ...input, signal })),
     ...(runtime.releaseOutputCapture ? { releaseOutputCapture: (input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]) =>

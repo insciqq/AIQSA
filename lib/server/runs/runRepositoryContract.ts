@@ -155,6 +155,17 @@ export class ActiveRunConflictError extends Error {
   }
 }
 
+/**
+ * Only background sub-agents run in the chat, and the change waits for them
+ * (archive, restore): the user stops them first (`subagents_running`).
+ */
+export class SubagentsRunningConflictError extends Error {
+  constructor() {
+    super("subagents_running");
+    this.name = "SubagentsRunningConflictError";
+  }
+}
+
 export class ActiveLeafConflictError extends Error {
   constructor() {
     super("active_leaf_changed");
@@ -171,10 +182,13 @@ export class AttachmentLinkConflictError extends Error {
 
 export class WorkspaceRunConflictError extends Error {
   readonly code: "workspace_busy" | "workspace_disabled" | "workspace_runtime_incompatible";
+  /** Why the session refused, as a stable content-free code (`workspaceJoinRefusal`), where admission knows it. */
+  readonly reason: string | undefined;
 
-  constructor(code: WorkspaceRunConflictError["code"]) {
+  constructor(code: WorkspaceRunConflictError["code"], reason?: string) {
     super(code);
     this.code = code;
+    this.reason = reason;
     this.name = "WorkspaceRunConflictError";
   }
 }
@@ -457,7 +471,7 @@ export type RunUsageAttribution = {
   modelId: string;
   provider: string;
   /** What the attributed call paid for; set where the attribution is produced. */
-  purpose: RunUsageAttributionPurpose;
+  purpose: RunUsageAttributionPurpose | "mcp_guard";
   usage: ModelRunUsage;
 };
 
@@ -497,6 +511,12 @@ export type CreateRunInput = {
   /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
   scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
   signal?: AbortSignal;
+  /**
+   * A sub-agent wake-up turn: the background turns whose callbacks its text
+   * renders, claimed in the run's creating transaction or the run is not
+   * created (`claimSubagentCallbacksForRun`). It counts toward no message limit.
+   */
+  subagentCallbackClaim?: Readonly<{ turnIds: readonly string[] }>;
   /** The user message is a turn the server wrote for the user (`Message.systemTurnKind`). */
   systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
   userId: string;

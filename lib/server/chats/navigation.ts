@@ -155,7 +155,9 @@ const navigationChatSelect = {
   modelRuns: {
     select: { id: true },
     take: 1,
-    where: { status: { in: ACTIVE_RUN_STATUSES } }
+    // The main agent's answer only: background sub-agents show through the chat's nested rows and status line, and
+    // never hold off archiving or deleting it (deletion stops them first; archive names them, `subagents_running`).
+    where: { status: { in: ACTIVE_RUN_STATUSES }, subagentTurnId: null }
   },
   pinned: true,
   // The task that posts into this chat, now or by an earlier run, and

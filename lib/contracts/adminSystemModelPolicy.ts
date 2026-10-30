@@ -124,6 +124,8 @@ export type AdminSystemModelPolicyCatalog = {
     chatTitleReasoningEffort: string | null;
     chatPdfNativeModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatPdfNativeReasoningEffort?: string | null;
+    mcpGuardModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
+    mcpGuardReasoningEffort?: string | null;
     visionModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
     visionReasoningEffort?: string | null;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
@@ -279,6 +281,11 @@ export function decodeAdminSystemModelPolicyResponse(
     !catalog.rerankerCandidates.every(baseCandidate) ||
     !record(catalog.policy)) return null;
   const policy = catalog.policy;
+  if (Object.hasOwn(policy, "mcpGuardModel") !== Object.hasOwn(policy, "mcpGuardReasoningEffort") ||
+    (policy.mcpGuardModel !== undefined && policy.mcpGuardModel !== null &&
+      (!record(policy.mcpGuardModel) || typeof policy.mcpGuardModel.available !== "boolean" || !candidate(policy.mcpGuardModel))) ||
+    (policy.mcpGuardReasoningEffort !== undefined && policy.mcpGuardReasoningEffort !== null && !boundedText(policy.mcpGuardReasoningEffort, 32)) ||
+    (!policy.mcpGuardModel && policy.mcpGuardReasoningEffort != null)) return null;
   if (catalog.visionAnalysisAvailable !== undefined && typeof catalog.visionAnalysisAvailable !== "boolean" ||
     Object.hasOwn(policy, "visionModel") !== Object.hasOwn(policy, "visionReasoningEffort") ||
     (policy.visionModel !== undefined && policy.visionModel !== null &&
@@ -367,6 +374,10 @@ export function decodeAdminSystemModelPolicyResponse(
         imageModels: imageModels as AdminPublishedImageModel[],
         chatTitleModel: policy.chatTitleModel as AdminSystemModelPolicyCatalog["policy"]["chatTitleModel"],
         chatTitleReasoningEffort: policy.chatTitleReasoningEffort as string | null,
+        ...(Object.hasOwn(policy, "mcpGuardModel") ? {
+          mcpGuardModel: policy.mcpGuardModel as AdminSystemModelPolicyCatalog["policy"]["mcpGuardModel"],
+          mcpGuardReasoningEffort: policy.mcpGuardReasoningEffort as string | null
+        } : {}),
         ...(Object.hasOwn(policy, "visionModel") ? {
           visionModel: policy.visionModel as AdminSystemModelPolicyCatalog["policy"]["visionModel"],
           visionReasoningEffort: policy.visionReasoningEffort as string | null

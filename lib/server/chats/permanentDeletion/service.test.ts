@@ -172,6 +172,23 @@ describe("permanent chat deletion service", () => {
       });
   });
 
+  it("stops the chat's background sub-agents once its fence holds, before cleanup is kicked", async () => {
+    const deps = dependencies();
+    const order: string[] = [];
+    deps.kick.mockImplementation(() => { order.push("kick"); });
+    const stopSubagents = vi.fn(async () => { order.push("stop"); });
+    const service = createPermanentChatDeletionService({ authorizationRepository: deps.authorizationRepository,
+      capability: { enabled: true }, kick: deps.kick, now: () => NOW, repository: deps.repository, stopSubagents });
+    await service.admit("user-1", "chat-1", { alsoForgetOriginMemories: false, expectedActiveLeafMessageId: "message-1",
+      expectedChatRevision: 4, mutationAuthorizationId: "authorization-1" });
+    expect(stopSubagents).toHaveBeenCalledWith({ chatId: "chat-1", userId: "user-1" });
+    expect(order).toEqual(["stop", "kick"]);
+    deps.repository.admit.mockResolvedValueOnce({ kind: "active_run" } as never);
+    await expect(service.admit("user-1", "chat-1", { alsoForgetOriginMemories: false, expectedActiveLeafMessageId: "message-1",
+      expectedChatRevision: 4, mutationAuthorizationId: "authorization-1" })).rejects.toMatchObject({ code: "active_run_in_progress" });
+    expect(stopSubagents).toHaveBeenCalledOnce();
+  });
+
   it("is feature-dark without touching repositories", async () => {
     const deps = dependencies(false);
     await expect(deps.service.mintAuthorization(

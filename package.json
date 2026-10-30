@@ -80,6 +80,7 @@
     "task:complete": "node scripts/task-ledger.mjs complete",
     "smoke:workspace-user-paid": "tsx scripts/smoke-workspace-user-paid.ts",
     "smoke:browser-scenarios-paid": "tsx scripts/smoke-browser-scenarios-paid.ts",
+    "smoke:subagents-paid": "tsx scripts/smoke-subagents-paid.ts",
     "experiment:workspace-activation": "tsx scripts/experiment-workspace-activation.ts"
   },
   "dependencies": {

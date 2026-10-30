@@ -17,7 +17,7 @@ describe("run attribution usage rows", () => {
       chatPdfPreparation: false, chatTitleGeneration: false, imageGeneration: false, knowledgeRelevance: false,
       mcpHubDiscovery: false, optionalDecision: false, visionAnalysis: false,
       memoryExecutionBindingId: null, modelRunId: "run-1",
-      purpose: { in: ["chat_answer", "web_search", "knowledge_retrieval"] }
+      purpose: { in: ["chat_answer", "web_search", "knowledge_retrieval", "subagent"] }
     });
   });
 
@@ -33,6 +33,15 @@ describe("run attribution usage rows", () => {
         usageCompleteness: "PARTIAL" })
     ]);
     expect(rows[0]).not.toHaveProperty("projectId");
+  });
+
+  it("keeps a reported charge settled on answer and sub-agent rows only", () => {
+    const rows = runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" }, [
+      { costReported: true, estimatedCostMicros: 5, modelId: "answer", provider: "openrouter", purpose: "chat_answer", usage },
+      { costReported: true, estimatedCostMicros: 3, modelId: "answer", provider: "openrouter", purpose: "subagent", usage },
+      { costReported: true, estimatedCostMicros: 1, modelId: "sonar", provider: "openrouter", purpose: "web_search", usage }
+    ]);
+    expect(rows.map((row) => [row.purpose, row.costReported])).toEqual([["chat_answer", true], ["subagent", true], ["web_search", false]]);
   });
 
   it("stores the web searches a row paid for, and none when no search was reported", () => {
@@ -54,4 +63,12 @@ describe("run attribution usage rows", () => {
     expect(answer).toMatchObject({ providerModelId: null, purpose: "chat_answer" });
   });
 
+});
+
+it("preserves guard accounting as a system purpose with the provider's own cost and unknown tokens", () => {
+  const [row] = runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" }, [{
+    modelId: "guard", provider: "openrouter", purpose: "mcp_guard", usage: normalizeTokenUsage({ outputTokens: 4 }),
+    estimatedCostMicros: 20, costReported: true
+  }]);
+  expect(row).toMatchObject({ purpose: "mcp_guard", inputTokens: null, outputTokens: 4, costReported: true, estimatedCostMicros: 20 });
 });

@@ -41,6 +41,7 @@ export type AdminUserOwnedDataSource = Readonly<{
     modelRuns: number;
     assistantDefinitions: number;
     skillDefinitions: number;
+    subagentDefinitions: number;
     sharedSnapshots: number;
     usageEvents: number;
   }>;
@@ -60,6 +61,7 @@ export type AdminOwnedAppDataCounts = Readonly<{
   modelRuns: number;
   assistantDefinitions: number;
   skillDefinitions: number;
+  subagentDefinitions: number;
   settings: number;
   sharedSnapshots: number;
   usageEvents: number;
@@ -246,6 +248,7 @@ export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number 
     counts.modelRuns +
     counts.assistantDefinitions +
     counts.skillDefinitions +
+    counts.subagentDefinitions +
     counts.settings +
     counts.sharedSnapshots +
     counts.usageEvents

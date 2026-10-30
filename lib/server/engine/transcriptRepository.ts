@@ -4,8 +4,16 @@ import { json } from "../runs/prismaRepositoryShared";
 import { decodeTranscriptItem, encodeTranscriptItem } from "./transcriptCodec";
 import type { TranscriptItem } from "./transcript";
 
-/** One native run, named with the owner and chat every read and write carries. */
-export type TranscriptRunScope = Readonly<{ chatId: string; runId: string; userId: string }>;
+/**
+ * One native run, named with the owner and chat every read and write carries.
+ * `thread`: a sub-agent thread's own transcript inside the run (`SubagentThread`,
+ * with the turn that writes), which keeps its own sequence; absent for the
+ * main agent, whose items carry no thread key.
+ */
+export type TranscriptRunScope = Readonly<{ chatId: string; runId: string; thread?: TranscriptThreadKey; userId: string }>;
+
+/** The thread key of a sub-agent's items: its thread and the turn that wrote them. */
+export type TranscriptThreadKey = Readonly<{ threadId: string; turnId: string }>;
 
 type TranscriptClient = Pick<PrismaClient, "message" | "modelRun" | "modelRunToolCall" | "runTranscriptItem">;
 
@@ -47,6 +55,56 @@ const unknownOldCoreCall = {
   OR: [{ state: "running" as const }, { result: { equals: "unknown", path: ["outcome"] }, state: "error" as const }]
 };
 
+/**
+ * When each of these calls was last attempted, by run and provider call id:
+ * the latest of its `ModelRunToolCall` rows' start and end (the dispatch, or
+ * the run's ending that closed it). A round's call items are recorded before
+ * its batch runs, so a call queued behind slower ones was sent later than its
+ * item says; an unknown effect without a result is fenced from the durable
+ * attempt, never from the model's response (`unknownEffects.ts`).
+ */
+export async function durableAttemptTimes(client: Pick<PrismaClient, "modelRunToolCall">, input: Readonly<{
+  callIds: readonly string[]; runIds: readonly string[]; threadId: string | null;
+}>): Promise<ReadonlyMap<string, Date>> {
+  const callIds = [...new Set(input.callIds)];
+  if (callIds.length === 0 || input.runIds.length === 0) return new Map();
+  const rows = await client.modelRunToolCall.findMany({
+    select: { completedAt: true, modelRunId: true, providerCallId: true, startedAt: true },
+    where: { modelRunId: { in: [...new Set(input.runIds)] }, providerCallId: { in: callIds }, subagentThreadId: input.threadId }
+  });
+  const times = new Map<string, Date>();
+  for (const row of rows) {
+    const key = `${row.modelRunId}\n${row.providerCallId}`;
+    for (const at of [row.startedAt, row.completedAt]) {
+      if (at && at.getTime() > (times.get(key)?.getTime() ?? Number.NEGATIVE_INFINITY)) times.set(key, at);
+    }
+  }
+  return times;
+}
+
+/**
+ * Items whose fence is their durable attempt: a call, and an approval
+ * continuation's in-flight marker, which opens the call again in the
+ * continuation's own run (keyed by the marker's run and call id).
+ */
+export function attemptFenced(item: TranscriptItem): boolean {
+  return item.kind === "tool_call" || item.kind === "tool_result" && item.inFlight === true;
+}
+
+/** A tool item with its record time (`recordedAt`): its durable attempt where that fences it. */
+export function withRecordedAt(item: TranscriptItem, row: Readonly<{ callId: string | null; createdAt: Date; modelRunId: string }>,
+  attempts: ReadonlyMap<string, Date>): TranscriptItem {
+  if (item.kind !== "tool_call" && item.kind !== "tool_result") return item;
+  return { ...item, recordedAt: attemptFenced(item) ? attemptRecordedAt(row, attempts) : row.createdAt };
+}
+
+/** A call item's fence time: its durable attempt when later than the item's own record. */
+export function attemptRecordedAt(row: Readonly<{ callId: string | null; createdAt: Date; modelRunId: string }>,
+  attempts: ReadonlyMap<string, Date>): Date {
+  const attempt = row.callId ? attempts.get(`${row.modelRunId}\n${row.callId}`) : undefined;
+  return attempt && attempt.getTime() > row.createdAt.getTime() ? attempt : row.createdAt;
+}
+
 /** Runs one transcript load may read: a branch longer than this is beyond any context window. */
 export const TRANSCRIPT_LOAD_RUN_LIMIT = 2_000;
 
@@ -58,12 +116,13 @@ export const TRANSCRIPT_LOAD_RUN_LIMIT = 2_000;
  */
 export function createTranscriptRepository(client: TranscriptClient) {
   return {
-    /** The sequence the run's next item takes: 0 for a run without items. */
+    /** The sequence the run's next item of this agent (the main agent, or the scope's thread) takes: 0 for none yet. */
     async nextSequence(scope: TranscriptRunScope): Promise<number> {
       const last = await client.runTranscriptItem.findFirst({
         orderBy: { sequence: "desc" },
         select: { sequence: true },
-        where: { chatId: scope.chatId, modelRunId: scope.runId, userId: scope.userId }
+        where: { chatId: scope.chatId, modelRunId: scope.runId, subagentThreadId: scope.thread?.threadId ?? null,
+          userId: scope.userId }
       });
       return last ? last.sequence + 1 : 0;
     },
@@ -86,6 +145,8 @@ export function createTranscriptRepository(client: TranscriptClient) {
           kind: fields.kind,
           modelRunId: scope.runId,
           sequence: from + index,
+          subagentThreadId: scope.thread?.threadId ?? null,
+          subagentTurnId: scope.thread?.turnId ?? null,
           userId: scope.userId
         };
       });
@@ -94,23 +155,33 @@ export function createTranscriptRepository(client: TranscriptClient) {
       } catch (error) {
         if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
         const written = await client.runTranscriptItem.count({ where: { chatId: scope.chatId, modelRunId: scope.runId,
-          OR: rows.map((row) => ({ id: row.id, sequence: row.sequence })), userId: scope.userId } });
+          OR: rows.map((row) => ({ id: row.id, sequence: row.sequence })), subagentThreadId: scope.thread?.threadId ?? null,
+          userId: scope.userId } });
         if (written !== rows.length) throw error;
       }
     },
 
-    /** The items of these runs of one chat and owner, by run, each in sequence order. */
-    async loadRuns(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>): Promise<Map<string, TranscriptItem[]>> {
+    /**
+     * The items of these runs of one chat and owner, by run, each in sequence
+     * order: the main agent's (no thread key), or with `threadId` that
+     * sub-agent thread's own. A thread's items never enter the main agent's
+     * context, and another thread's never enter a thread's.
+     */
+    async loadRuns(input: Readonly<{ chatId: string; runIds: readonly string[]; threadId?: string; userId: string }>):
+      Promise<Map<string, TranscriptItem[]>> {
       const runIds = [...new Set(input.runIds)];
       const loaded = new Map<string, TranscriptItem[]>(runIds.map((runId) => [runId, []]));
       if (runIds.length === 0) return loaded;
       if (runIds.length > TRANSCRIPT_LOAD_RUN_LIMIT) throw new Error("transcript_load_too_large");
       const rows = await client.runTranscriptItem.findMany({
         orderBy: [{ modelRunId: "asc" }, { sequence: "asc" }],
-        select: { body: true, callId: true, id: true, kind: true, modelRunId: true },
-        where: { chatId: input.chatId, modelRunId: { in: runIds }, userId: input.userId }
+        select: { body: true, callId: true, createdAt: true, id: true, kind: true, modelRunId: true },
+        where: { chatId: input.chatId, modelRunId: { in: runIds }, subagentThreadId: input.threadId ?? null, userId: input.userId }
       });
-      for (const row of rows) loaded.get(row.modelRunId)?.push(decodeTranscriptItem(row));
+      const decoded = rows.map((row) => ({ item: decodeTranscriptItem(row), row }));
+      const attempts = await durableAttemptTimes(client, { callIds: decoded.flatMap(({ item, row }) =>
+        row.callId && attemptFenced(item) ? [row.callId] : []), runIds, threadId: input.threadId ?? null });
+      for (const { item, row } of decoded) loaded.get(row.modelRunId)?.push(withRecordedAt(item, row, attempts));
       return loaded;
     },
 
@@ -201,7 +272,8 @@ export function createTranscriptRepository(client: TranscriptClient) {
       if (runs.length === 0) return [];
       const runIds = runs.map((run) => run.id);
       const orderBy = [{ modelRunId: "asc" as const }, { roundIndex: "asc" as const }, { ordinal: "asc" as const }];
-      const select = { arguments: true, id: true, modelRunId: true, ordinal: true, roundIndex: true, toolName: true };
+      const select = { arguments: true, completedAt: true, createdAt: true, id: true, modelRunId: true, ordinal: true,
+        roundIndex: true, startedAt: true, toolName: true };
       const unknown = await client.modelRunToolCall.findMany({ orderBy, select, take: RETIRED_EFFECT_CALL_LIMIT,
         where: { modelRunId: { in: runIds }, ...unknownOldCoreCall } });
       if (unknown.length === 0) return [];
@@ -213,9 +285,11 @@ export function createTranscriptRepository(client: TranscriptClient) {
         const items = calls.filter((call) => call.modelRunId === run.id && isJsonObject(call.arguments)).flatMap((call) => {
           const callId = `retired-${call.id}`;
           return [
-            { arguments: JSON.stringify(call.arguments), callId, id: `${callId}-call`, kind: "tool_call", name: call.toolName },
+            { arguments: JSON.stringify(call.arguments), callId, id: `${callId}-call`, kind: "tool_call", name: call.toolName,
+              recordedAt: call.startedAt ?? call.createdAt },
             { callId, id: `${callId}-result`, kind: "tool_result", name: call.toolName,
-              outcome: unknownIds.has(call.id) ? "unknown" : "complete", output: "" }
+              outcome: unknownIds.has(call.id) ? "unknown" : "complete", output: "",
+              recordedAt: call.completedAt ?? call.startedAt ?? call.createdAt }
           ] satisfies TranscriptItem[];
         });
         return items.length > 0 && run.assistantMessageId

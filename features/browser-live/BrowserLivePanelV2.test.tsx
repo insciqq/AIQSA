@@ -11,7 +11,7 @@ import {
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { BrowserLivePanelV2 } from "./BrowserLivePanelV2";
-import { fakeEventSources, liveFrame, liveState, type FakeBrowserLiveEventSource } from "./browserLive.testFixtures";
+import { fakeEventSources, liveAgent, liveFrame, liveState, type FakeBrowserLiveEventSource } from "./browserLive.testFixtures";
 
 const CHAT = "chat-1";
 
@@ -25,7 +25,7 @@ const browsing: ThreadWorkspaceActivity = { entries: [{
 const handoffCall: ThreadToolActivity = { calls: [{ round: 2, status: "running", toolName: "browser_handoff" }] };
 
 function handoff(reason: BrowserHandoffReason, overrides: Partial<BrowserLiveHandoff> = {}): BrowserLiveHandoff {
-  return { id: "handoff-1", reason, message: "Please sign in with your own account.",
+  return { id: "handoff-1", agent: { id: "main", name: null }, reason, message: "Please sign in with your own account.",
     startedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 125_000).toISOString(), ...overrides };
 }
 
@@ -104,7 +104,7 @@ describe("BrowserLivePanelV2", () => {
     expect(screen.getByText("Connecting to the browser…")).toBeVisible();
     send("state", liveState());
     send("frame", liveFrame(1));
-    send("steps", { steps: [
+    send("steps", { agent: "main", steps: [
       { n: 1, action: "open", target: "", host: "shop.example", path: "/" },
       { n: 2, action: "type", target: "textbox \"Search\"", host: "shop.example", path: "/" }
     ] });
@@ -139,6 +139,27 @@ describe("BrowserLivePanelV2", () => {
     // During a handoff the user is in control by definition: no Take or Return.
     expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Return control" })).toBeNull();
+  });
+
+  it("shows a waiting background sub-agent's handoff without browsing of its own, naming the agent, and answers it", async () => {
+    // A settled answer: no activity of its own, only the chat's sub-agent that waits for the user.
+    renderPanel({ toolActivity: null, waitingKey: "thread-signer", workspaceActivity: null });
+    expect(screen.getByRole("button", { name: /Hide/u })).toHaveTextContent("Needs your help");
+    expect(sources).toHaveLength(1);
+    const signer = handoff("sign_in", { agent: { id: "thread-signer", name: "signer" } });
+    send("state", liveState({ agents: [liveAgent("thread-signer", "signer", { controller: "user", waitingForUser: true })],
+      controller: "user", handoff: signer, selected: "thread-signer" }));
+    const card = screen.getByTestId("browser-live-handoff");
+    // Alone in the browser, a sub-agent is still named.
+    expect(card).toHaveTextContent("Asked by signer");
+    fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-1" }]]));
+  });
+
+  it("shows nothing for a settled answer once no sub-agent waits", () => {
+    renderPanel({ toolActivity: null, waitingKey: null, workspaceActivity: null });
+    expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
+    expect(sources).toHaveLength(0);
   });
 
   it("answers the handoff with Done or Cancel, says when it will not be remembered, and shows a stale answer", async () => {
@@ -511,5 +532,109 @@ describe("BrowserLivePanelV2", () => {
     expect(posted()[1]![1]).toEqual({ kind: "text", text: "secret-marker" });
     expect(setItem).not.toHaveBeenCalled();
     for (const log of logs) expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe("BrowserLivePanelV2 with several browsing agents", () => {
+  const shopHandoff = handoff("sign_in", { id: "handoff-shop", agent: { id: "thread_shop", name: "shop" },
+    message: "Please sign in to Swag Labs." });
+  const amazonHandoff = handoff("verification_code", { id: "handoff-amazon", agent: { id: "thread_amazon", name: "amazon" },
+    message: "Enter the SMS code.", startedAt: new Date(Date.now() - 1_000).toISOString() });
+  const agents = (overrides: Readonly<Record<string, Partial<Parameters<typeof liveAgent>[2]>>> = {}) => [
+    liveAgent("main", null, overrides.main),
+    liveAgent("thread_amazon", "amazon", { page: { url: "https://www.amazon.es/s?k=kettle", title: "Kettles" }, ...overrides.thread_amazon }),
+    liveAgent("thread_shop", "shop", { page: { url: "https://www.saucedemo.com/", title: "Swag Labs" }, ...overrides.thread_shop })
+  ];
+
+  function openPanel() {
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+  }
+
+  it("looks as before with only the main agent browsing", () => {
+    openPanel();
+    send("state", liveState());
+    expect(screen.queryByTestId("browser-live-agents")).toBeNull();
+    expect(screen.getByText("The agent is using the browser")).toBeVisible();
+  });
+
+  it("lists the browsing agents with their state and site, and switches the stream to the one picked", async () => {
+    openPanel();
+    send("state", liveState({ agents: agents({ thread_shop: { controller: "user" } }), selected: "thread_amazon",
+      page: { url: "https://www.amazon.es/s?k=kettle", title: "Kettles" } }));
+    send("frame", liveFrame(1, 1280, 800, "thread_amazon"));
+    const select = screen.getByRole("combobox", { name: /3 agents browsing/u });
+    expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Main agent · browsing · main.example", "amazon · browsing · amazon.es", "shop · you have control · saucedemo.com"]);
+    expect(select).toHaveValue("thread_amazon");
+    expect(screen.getByText("amazon is using the browser")).toBeVisible();
+    fireEvent.change(select, { target: { value: "thread_shop" } });
+    await waitFor(() => expect(posted()).toEqual([[browserLiveControlPath(CHAT), { action: "select", agent: "thread_shop" }]]));
+    // The new selection arrives: the old agent's picture is not shown as the new one's.
+    send("state", liveState({ agents: agents({ thread_shop: { controller: "user" } }), controller: "user", selected: "thread_shop",
+      page: { url: "https://www.saucedemo.com/", title: "Swag Labs" } }));
+    expect(screen.getByText("Waiting for the page picture…")).toBeVisible();
+    send("frame", liveFrame(2, 1280, 800, "thread_amazon"));
+    expect(screen.getByText("Waiting for the page picture…")).toBeVisible();
+    send("frame", liveFrame(3, 1280, 800, "thread_shop"));
+    expect(screen.getByRole("application", { name: /Swag Labs/u })).toBeVisible();
+    expect(screen.getByText("You have control · shop waits")).toBeVisible();
+  });
+
+  it("takes and returns control of the selected agent's tab and types into that tab only", async () => {
+    openPanel();
+    send("state", liveState({ agents: agents(), selected: "thread_shop", page: { url: "https://www.saucedemo.com/", title: "Swag Labs" } }));
+    send("frame", liveFrame(1, 1280, 800, "thread_shop"));
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(posted()).toEqual([[browserLiveControlPath(CHAT), { action: "take", agent: "thread_shop" }]]));
+    send("state", liveState({ agents: agents({ thread_shop: { controller: "user" } }), controller: "user", selected: "thread_shop",
+      page: { url: "https://www.saucedemo.com/", title: "Swag Labs" } }));
+    stubFrameBox();
+    const stage = screen.getByTestId("browser-live-stage");
+    fireEvent.keyDown(stage, { key: "x", code: "KeyX" });
+    await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveInputPath(CHAT),
+      { agent: "thread_shop", kind: "text", text: "x" }]));
+    fireEvent.click(screen.getByRole("button", { name: "Return control" }));
+    await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveControlPath(CHAT), { action: "return", agent: "thread_shop" }]));
+  });
+
+  it("shows the oldest handoff first with its agent and the count of the others, and answers that one", async () => {
+    openPanel();
+    const waiting = agents({ thread_amazon: { controller: "user", waitingForUser: true }, thread_shop: { controller: "user", waitingForUser: true } });
+    send("state", liveState({ agents: waiting, controller: "user", handoff: amazonHandoff, handoffs: [amazonHandoff, shopHandoff],
+      selected: "thread_amazon", page: { url: "https://www.amazon.es/ap/cvf", title: "Verify" } }));
+    const card = screen.getByTestId("browser-live-handoff");
+    expect(card).toHaveAttribute("data-agent", "thread_amazon");
+    expect(within(card).getByText("Asked by amazon")).toBeVisible();
+    expect(within(card).getByText("1 more request is waiting after this one.")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: /3 agents browsing · 2 need you/u })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-amazon" }]));
+    // The next one moves the stream to its agent.
+    send("state", liveState({ agents: agents({ thread_shop: { controller: "user", waitingForUser: true } }), controller: "user",
+      handoff: shopHandoff, handoffs: [shopHandoff], selected: "thread_shop", page: { url: "https://www.saucedemo.com/", title: "Swag Labs" } }));
+    const next = screen.getByTestId("browser-live-handoff");
+    expect(within(next).getByRole("heading", { name: "Sign in to saucedemo.com" })).toBeVisible();
+    expect(within(next).queryByTestId("browser-live-handoff-queue")).toBeNull();
+    send("frame", liveFrame(1, 1280, 800, "thread_shop"));
+    fireEvent.keyDown(screen.getByTestId("browser-live-stage"), { key: "x", code: "KeyX" });
+    await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveInputPath(CHAT),
+      { agent: "thread_shop", kind: "text", text: "x" }]));
+    fireEvent.click(within(next).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveHandoffPath(CHAT), { action: "cancel", handoffId: "handoff-shop" }]));
+  });
+
+  it("offers the asking agent's tab when another one is shown, and still answers the request it names", async () => {
+    openPanel();
+    send("state", liveState({ agents: agents({ thread_shop: { controller: "user", waitingForUser: true } }), handoff: shopHandoff,
+      handoffs: [shopHandoff], selected: "main" }));
+    const card = screen.getByTestId("browser-live-handoff");
+    expect(within(card).getByRole("heading", { name: "Sign in to saucedemo.com" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Take control" })).toBeVisible();
+    fireEvent.click(within(card).getByRole("button", { name: "Show its tab" }));
+    await waitFor(() => expect(posted()).toEqual([[browserLiveControlPath(CHAT), { action: "select", agent: "thread_shop" }]]));
+    fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-shop" }]));
   });
 });

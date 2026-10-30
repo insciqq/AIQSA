@@ -44,6 +44,7 @@ import {
   type RunRepository
 } from "./runRepositoryContract";
 import type { UsageLimitStatus } from "../usageLimits/repository";
+import { SubagentCallbackClaimConflictError } from "./subagentBackground/store";
 import { decodeUsageLimitRefusal, type UsageLimitRefusalCode } from "../../contracts/usageLimits";
 
 const config = getAuthConfig({
@@ -1992,6 +1993,35 @@ describe("model run route handlers", () => {
       userId: config.bootstrapUserId });
     expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation",
       content: { blocks: [{ type: "text", text: "The user approved `delete_record` on `Records`. Continue the task." }] } });
+  });
+
+  it("writes a sub-agent wake-up turn from the server's callbacks, claims them, and counts it toward no message limit", async () => {
+    const { repository, state } = createMemoryRepository();
+    // No message left this hour: only the user's own messages count against it, never a wake-up turn.
+    const noMessagesLeft: UsageLimitStatus = { ...NO_USAGE_LIMITS, effective: { ...NO_USAGE_LIMITS.effective,
+      messagesPerHour: { ...NO_USAGE_LIMITS.effective.messagesPerHour, value: 0 } } };
+    const wakeUp = { text: "[Sub-agent callback, written by the server, not by the user] researcher ended", turnIds: ["turn-1"] };
+    const POST = createSendMessageHandler({ ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository,
+      subagentWakeUp: wakeUp, usageLimits: { loadUsageLimitStatus: async () => noMessagesLeft } });
+    const send = (extra: Record<string, unknown> = {}) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
+        text: "Text the body must not decide", ...extra }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    expect((await send({ systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } })).status).toBe(400);
+    expect(state.created).toBeNull();
+    const accepted = await send();
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(state.created).toMatchObject({ content: { blocks: [{ text: wakeUp.text, type: "text" }] },
+      subagentCallbackClaim: { turnIds: ["turn-1"] }, systemTurnKind: "subagent_callback" });
+
+    // Another delivery claimed a callback first: nothing is admitted, and the callbacks retry with what is still owed.
+    repository.createRun = async () => { throw new SubagentCallbackClaimConflictError(); };
+    const claimed = await send();
+    expect([claimed.status, await claimed.json()]).toEqual([409, { error: "subagent_callback_claimed" }]);
   });
 
   it("refuses a send or regeneration that still asks for the removed automatic review, never answering without it", async () => {

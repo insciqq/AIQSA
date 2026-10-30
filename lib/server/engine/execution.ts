@@ -1,3 +1,4 @@
+import { registerMcpGuardUsage } from "../mcp/guardUsage";
 import { randomUUID } from "node:crypto";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTasks";
@@ -40,7 +41,7 @@ import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
 import { engineItemRules, turnEndedAfter } from "./compaction";
 import { compactionModelCall } from "./compactionCalls";
-import { buildRunConversation, turnContextIndex, turnContextItem, withStoppedNativeAnswers } from "./conversation";
+import { buildRunConversation, subagentCatalogItem, turnContextIndex, turnContextItem, withStoppedNativeAnswers } from "./conversation";
 import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
@@ -48,7 +49,7 @@ import { ANSWER_NOW_INSTRUCTION, runAgentLoop, type LoopToolChoice } from "./loo
 import { callModel } from "./modelCall";
 import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
 import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
-import type { NativeRunStore } from "./runStore";
+import { SUBAGENT_RUN_NO_ANSWER, type NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
 import {
   APPROVED_CALL_IN_FLIGHT_OUTPUT, runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps, type ToolBatchState
@@ -61,8 +62,23 @@ import {
 } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
-import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
+import { createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
+import { takeNativeRunInterruption, WORKSPACE_STOPPED_INTERRUPTION } from "./runInterruption";
+import { withSubagentTools } from "./subagents/callTools";
+import {
+  currentUserMessageText,
+  prepareRunSubagents,
+  userAuthoredFollowup,
+  type RunSubagents,
+  type SubagentBackgroundParts,
+  type SubagentEngineDeps,
+  type SubagentRegistryHost,
+  type SubagentRunPorts
+} from "./subagents/runSubagents";
+import { renderSubagentTypeCatalog } from "../subagents/typeCatalog";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
+import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -87,7 +103,7 @@ export class EngineFailure extends Error {
 export const CONTEXT_TOO_LARGE_MESSAGE =
   "This conversation no longer fits the model's context window. Start a new chat, or continue in a new chat from this answer.";
 
-export type NativeEngineDeps = Readonly<{
+export type NativeEngineDeps = SubagentEngineDeps & Readonly<{
   /** The approved call an approval continuation sends, while its approval may still continue. */
   approvedCall(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
     providerCallId: string; toolName: string }> | null>;
@@ -122,11 +138,19 @@ export type NativeRunExecutionInput = Readonly<{
    */
   scheduled?: true;
   services: NativeRunServices;
+  /**
+   * The sub-agent ports of other slices this run gets (background turns, custom types, the browser identity);
+   * an absent one is unavailable, so a Telegram turn or scheduled occurrence gives no background port.
+   */
+  subagents?: SubagentRunPorts;
   /** A Telegram turn: its chat shows no live browser, so a handoff points to the web chat. */
   telegram?: true;
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>;
+
+/** The main agent's key among a run's agent fences; a sub-agent's is its thread id (a UUID, never this). */
+const MAIN_AGENT_FENCE = "main";
 
 /** The web chat's address a Telegram turn's handoff points to; the chat id is its only parameter. */
 function webChatUrl(chatId: string): string {
@@ -192,6 +216,22 @@ function parsedArguments(value: string): Record<string, unknown> {
  * read, every one counts as the server's, so no turn the engine cannot tell
  * apart releases an unknown effect.
  */
+/**
+ * The user-role turns the server wrote on the branch (approval continuations, sub-agent wake-ups), never the user's speech.
+ * Unreadable, every one of them counts as the server's, so none is taken for the user's words.
+ */
+async function systemWrittenTurns(repository: Pick<RunRepository, "loadSystemTurnMessageIds">,
+  input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>): Promise<ReadonlySet<string>> {
+  if (input.messageIds.length === 0) return new Set();
+  try {
+    return await repository.loadSystemTurnMessageIds?.(input) ?? new Set();
+  } catch (error) {
+    logEvent("service_operation", { action: "degrade", code: "server_turns_unavailable", error, outcome: "degraded", stage: "read",
+      subsystem: "database" });
+    return new Set(input.messageIds);
+  }
+}
+
 async function serverWrittenTurns(repository: Pick<RunRepository, "loadScheduledPromptMessageIds" | "loadSystemTurnMessageIds">,
   input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>): Promise<ReadonlySet<string>> {
   if (input.messageIds.length === 0) return new Set();
@@ -307,6 +347,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       const usage = createUsageLedger({
         faults, price: (attributions) => usageAttributionsWithEstimatedCost(input.repository, attributions), scope, store: engine.runs
       });
+      const releaseGuardUsage = registerMcpGuardUsage(runId, usage.add);
       let answerPublished = false;
       let firstOutput = true;
       const answer = createAnswerStream({
@@ -341,6 +382,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       let runRecords: TranscriptWriter | null = null;
       let runContext: RunContext | null = null;
       let live: BrowserLiveRunHandle | null = null;
+      let runSubagents: RunSubagents | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
@@ -349,7 +391,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // The live browser of an interactive web run (`browserLive.ts`): its owner watches it and answers handoffs.
         const coordinator = input.workspace;
         if (workspace && coordinator?.browserLive && !input.scheduled && !input.telegram) {
-          live = browserLiveRelay().register({ channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId,
+          const holds = coordinator.holdsWorkspace;
+          // A run gone without `end` (a crash) leaves the shared channel once it no longer holds the Workspace.
+          live = browserLiveRelay().register({ ...(holds ? { attached: () => holds({ runId, userId: input.userId }) } : {}),
+            channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId,
             runId, signInRemembered: () => coordinator.browserSaveBack?.({ runId, userId: input.userId }) ?? Promise.resolve(false),
             userId: input.userId });
         }
@@ -420,8 +465,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         /** The sequence each compaction recorded after the run took, kept for a repeated write. */
         const detachedSequences = new Map<string, number>();
         // Effects of the branch's earlier calls that are still unknown. Only the user's own words count as them speaking, never
-        // a turn the server wrote: an approval continuation or a scheduled task's prompt.
-        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true;
+        // a turn the server wrote: an approval continuation, a scheduled task's prompt or a sub-agent wake-up turn, which the
+        // current message's own record tells (it may start behind a document or Workspace hand-off).
+        const currentServerTurn = await serverWrittenTurns(input.repository, { chatId: scope.chatId,
+          messageIds: [input.created.userMessageId], userId: input.userId });
+        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true ||
+          currentServerTurn.has(input.created.userMessageId);
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });
@@ -435,8 +484,27 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const serverWritten = await serverWrittenTurns(input.repository, { chatId: scope.chatId, messageIds: laterTurns,
           userId: input.userId });
         const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
-        const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true ||
-          (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
+        // A sub-agent's callback delivered into a turn is the server's, never the user speaking. Each agent of the run
+        // keeps its own fence and sees every other's (`createAgentUnknownEffects`): one agent's outcome never settles
+        // another's unknown effect.
+        const agentFences = createAgentUnknownEffects();
+        const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true && item.callback !== true ||
+          (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)),
+        agentFences.agent(MAIN_AGENT_FENCE));
+        // An effect a sub-agent of this branch left unknown is respected by the main agent and every other sub-agent, read
+        // from the threads' records into each thread's own fence and never put in any context.
+        const branchRunIds = conversationMessages.flatMap((message) => message.role === "assistant" && nativeRuns.has(message.id)
+          ? [nativeRuns.get(message.id)!] : []);
+        if (engine.subagentThreads) {
+          // Background turns ran in runs of their own, which the branch's answers started.
+          const backgroundRuns = await engine.subagentThreads.backgroundRunIds({ chatId: scope.chatId, parentRunIds: branchRunIds,
+            userId: input.userId });
+          const threadEffects = await engine.subagentThreads.threadEffectItems({ chatId: scope.chatId,
+            runIds: [...branchRunIds, ...backgroundRuns], userId: input.userId });
+          for (const thread of threadEffects) unknownEffectsOf(thread.items, () => false, agentFences.agent(thread.threadId));
+          // Every earlier thread effect precedes the user's current message, which is them speaking since.
+          if (threadEffects.length > 0 && conversation.currentInputId && !serverInput) unknownEffects.userSpoke();
+        }
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
@@ -458,28 +526,111 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           : input.scheduled ? { kind: "unattended" }
             : input.telegram ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
               : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now() };
-        const registry = await buildToolRegistry({
+        const registryInput = {
           ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,
-          followupTexts: () => delivered,
           loadMcpBindingRows: () => engine.mcpBindingRows(runId),
           mcpBindings,
-          onEvent: (event) => sink.publish(event),
-          onUsage: (attribution) => usage.add(attribution),
-          onWorkspaceActivity,
-          request: base,
+          onUsage: (attribution: RunUsageAttribution) => usage.add(attribution),
           ...(input.telegram ? { telegram: true as const } : {}),
           runId,
           services: { ...input.services, mcpRuntime: input.mcpRuntime, repository: input.repository, savedResults: engine.savedResults,
             workspace: input.workspace },
           userId: input.userId
+        };
+        /** A sub-agent's handoff mode: the run's, naming the sub-agent, with a background turn's own live membership. */
+        const subagentHandoff = (agent: WorkspaceAgent, host: SubagentRegistryHost | undefined):
+          Readonly<{ browserHandoff: BrowserHandoffMode }> | null => {
+          if (!browserHandoff || agent.kind !== "subagent") return null;
+          if (browserHandoff.kind !== "interactive") return { browserHandoff };
+          return { browserHandoff: { ...browserHandoff, agent: { id: agent.threadId, name: agent.name },
+            ...(host ? { live: host.live, toolTimeLeftMs: host.toolTimeLeftMs } : {}) } };
+        };
+        const mainRegistry = await buildToolRegistry({ ...registryInput, agent: { kind: "main" }, followupTexts: () => delivered,
+          onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base });
+        const budgets = toolRunBudgetsForRequest(normalizedRequest);
+        const toolState: ToolBatchState = { calls: 0 };
+        const saveResult: ToolBatchDeps["saveResult"] = async (save) => saveToolResultText({ outcome: save.outcome,
+          producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
+          signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
+          text: save.text });
+        // A background turn's own run (`backgroundRunner.ts`): it answers no message, so its records name none.
+        const backgroundScope = (backgroundRunId: string) => ({ assistantMessageId: SUBAGENT_RUN_NO_ANSWER, chatId: scope.chatId,
+          runId: backgroundRunId, userId: input.userId });
+        const threadStore = engine.subagentThreads;
+        const backgroundParts: SubagentBackgroundParts | undefined = threadStore ? {
+          live: (backgroundRunId) => {
+            const liveCoordinator = input.workspace;
+            if (!workspace || !liveCoordinator?.browserLive || input.scheduled || input.telegram) return null;
+            const holds = liveCoordinator.holdsWorkspace;
+            return browserLiveRelay().register({ ...(holds ? { attached: () => holds({ runId: backgroundRunId, userId: input.userId }) } : {}),
+              channel: (request) => liveCoordinator.browserLive!({ request, runId: backgroundRunId }), chatId: scope.chatId,
+              runId: backgroundRunId, signInRemembered: () => liveCoordinator.browserSaveBack?.({ runId: backgroundRunId, userId: input.userId }) ??
+                Promise.resolve(false), userId: input.userId });
+          },
+          recordDetachedCompaction: (backgroundRunId, { item, sequence, thread }) =>
+            engine.runs.recordDetachedCompaction(backgroundScope(backgroundRunId), { item, sequence, status: null, thread }),
+          saveResult: (backgroundRunId) => async (save) => saveToolResultText({ outcome: save.outcome,
+            producer: { runId: backgroundRunId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
+            signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
+            text: save.text }),
+          threadRunIds: (threadId) => threadStore.threadRunIds({ chatId: scope.chatId, parentRunIds: [...branchRunIds, runId], threadId,
+            userId: input.userId }),
+          usage: (backgroundRunId) => createUsageLedger({ faults,
+            price: (attributions) => usageAttributionsWithEstimatedCost(input.repository, attributions), scope: backgroundScope(backgroundRunId),
+            store: engine.runs })
+        } : undefined;
+        // A sub-agent gets the user's latest own message as the only authority for irreversible actions: never a turn the
+        // server wrote, such as a wake-up quoting sub-agents' reports, which are untrusted data.
+        const subagentServerTurns = new Set([...continuationTurns, ...await systemWrittenTurns(input.repository, { chatId: scope.chatId,
+          messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id), userId: input.userId })]);
+        // Sub-agents (`call_subagent`): the main agent's registry only, on the run's own frozen bindings (`subagents/`).
+        const subagents = await prepareRunSubagents({
+          ...(backgroundParts ? { backgroundParts } : {}),
+          admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
+          assistantRun: Boolean(input.prepared.assistant || input.prepared.chatAssistant),
+          branchRunIds,
+          // One page-reader session for the answer: its cap and cache count every agent's reads (integrator decision).
+          // A background turn's registry acts as its own run (its Workspace attachment, calls and usage), over the
+          // parent's MCP bindings by reference; each sub-agent's handoff names it, from its own run's live membership.
+          buildRegistry: (agentInput) => buildToolRegistry({ ...registryInput,
+            agent: agentInput.agent,
+            ...(subagentHandoff(agentInput.agent, agentInput.host) ?? {}),
+            ...(agentInput.host ? { onUsage: agentInput.host.onUsage, runId: agentInput.host.runId } : {}),
+            ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),
+            followupTexts: agentInput.followupTexts,
+            // A sub-agent's outputs stay its own; the answer shows its steps under its call.
+            onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
+            services: { ...registryInput.services, ...(input.services.selfService
+              ? { selfService: { ...input.services.selfService, tools: [READ_AIQSA_GUIDE_TOOL_NAME] } } : {}) } }),
+          budgets, callTimeLeft, chatId: scope.chatId, deadline: deadline.signal, deadlineAt: startedAt + turnMs, engine, faults,
+          followupTexts: () => delivered,
+          modelConfiguration: input.prepared.providerAdmissionPlan.answer.modelConfiguration, now,
+          onWorkspaceLifecycle: onWorkspaceActivity,
+          // Every follow-up the user wrote into this answer, delivered to the main agent or not yet: a sub-agent gets each once.
+          userFollowups: async () => {
+            const batch = followupOps ? await followupOps.load({ runId, userId: input.userId }) : null;
+            return (batch?.entries ?? []).filter((entry) => entry.delivery !== "undelivered" && userAuthoredFollowup(entry))
+              .map((entry) => ({ id: entry.id, text: entry.text }));
+          },
+          // Background turns are web chats' only: a Telegram turn or a scheduled occurrence waits for its sub-agents.
+          backgroundAllowed: !input.telegram && !input.scheduled,
+          ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
+          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
+          unknownEffects: (threadId) => agentFences.agent(threadId), usage,
+          userMessage: currentUserMessageText(contextMessages, subagentServerTurns)
         });
+        runSubagents = subagents;
+        const registry = subagents ? withSubagentTools(mainRegistry, subagents.tools) : mainRegistry;
         // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
         // only for this run rides in with its input (`systemPrompt.ts`).
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
-          secrets: input.services.secrets, snapshot, tools: registry.definitions() });
+          secrets: input.services.secrets, snapshot, ...(subagents ? { subagents: subagents.prompt } : {}), tools: registry.definitions() });
         base = native.request;
-        items.splice(turnContextIndex(items, conversation.currentInputId), 0, turnContextItem(native.turnContext));
+        // The user's custom sub-agents ride in run context like the Skills index, never in the system prompt.
+        const subagentCatalog = subagents ? renderSubagentTypeCatalog(subagents.catalog) : null;
+        items.splice(turnContextIndex(items, conversation.currentInputId), 0,
+          ...(subagentCatalog ? [subagentCatalogItem(subagentCatalog)] : []), turnContextItem(native.turnContext));
         // The run reads its items whole; the transcript keeps what later turns may read, written behind the answer.
         const record = (added: readonly TranscriptItem[]) => writer.record(added.map((item) => transcriptRecord(registry, item)));
         const append = async (added: readonly TranscriptItem[]) => {
@@ -494,8 +645,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           items.push(...added);
           await record(added);
         };
-        const budgets = toolRunBudgetsForRequest(normalizedRequest);
-        const toolState: ToolBatchState = { calls: 0 };
         // The run's one report reserved outside the budgets, when its registry offers it.
         const reservedReport = reservedToolCallForRequest(normalizedRequest);
         const reserved = reservedReport && registry.resolve(reservedReport.name) ? reservedReport : null;
@@ -508,10 +657,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           registry,
           ...(reserved ? { reservedToolName: reserved.name } : {}),
           runId,
-          saveResult: async (save) => saveToolResultText({ outcome: save.outcome,
-            producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
-            signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
-            text: save.text }),
+          saveResult,
           signal,
           store: engine.toolCalls,
           toolTimeLeft: callTimeLeft,
@@ -540,7 +686,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             calls: [approvedCall], firstOrdinal: load ? 1 : 0, round: 0
           });
           await append(batch.results);
-          if (batch.approvals.length > 0) await emitApprovalCards();
+          if (batch.approvals.length > 0 || normalizedRequest.mcpApproval?.guard) await emitApprovalCards();
         }
 
         const reasoningScope = reasoningReplayScope(snapshot);
@@ -653,17 +799,20 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const batch = await followupOps.load({ runId, userId: input.userId });
             const accepted = batch?.entries.filter((entry) => entry.delivery === "accepted") ?? [];
             if (!batch || accepted.length === 0) return [];
+            // Only the user's own follow-ups are their speech and link authority; a sub-agent's callback is untrusted data.
+            const fromUser = accepted.filter((entry) => entry.origin === undefined || entry.origin === "user");
             await answer.flush();
             if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: answer.text, revision: batch.revision, runId,
               userId: input.userId })) return [];
             followupRevision = batch.revision;
-            delivered.push(...accepted.map((entry) => entry.text));
-            unknownEffects.userSpoke();
+            delivered.push(...fromUser.map((entry) => entry.text));
+            if (fromUser.length > 0) unknownEffects.userSpoke();
             // The answer starts over after the user's follow-up, as the delivered record shows.
             answer.restart();
             sink.send({ data: { round: batch.revision }, type: "message_reset" });
             await chatUpdate();
-            return accepted.map((entry) => ({ followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
+            return accepted.map((entry) => ({ ...(entry.origin === "subagent_callback" ? { callback: true as const } : {}),
+              followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
           },
           maxToolRounds: budgets.maxToolRounds,
           prepareRequest: async ({ answerNow, reserved: reservedRound, toolChoice }: Readonly<{ answerNow?: true;
@@ -709,7 +858,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const batch = await runToolBatch(batchDeps, toolState, { calls, round });
             // A value the user had saved as a secret is not repeated in the answer, whatever the model writes (issue #52).
             answer.mask(calls.flatMap((call) => call.name === MANAGE_SECRET_TOOL_NAME ? manageSecretValues(call.arguments) : []));
-            if (batch.approvals.length > 0) await emitApprovalCards();
+            if (batch.approvals.length > 0 || normalizedRequest.mcpApproval?.guard) await emitApprovalCards();
             return batch;
           },
           signal,
@@ -758,12 +907,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
           duration_ms: Math.max(0, now() - startedAt), outcome: "completed", providerFamily: snapshot.providerFamily,
           providerModelId: snapshot.providerModelId, run_id: runId, stage: "completion" });
+        releaseGuardUsage();
         await usage.settle();
         await chatUpdate();
         sink.send({ data: { runId, status: "complete" }, type: "done" });
       } catch (error) {
-        const cancelled = stop.signal.aborted || error instanceof ToolBatchInactiveError && !deadline.signal.aborted;
-        const failure = deadline.signal.aborted && !cancelled ? deadline.signal.reason : error;
+        // A shared Workspace that stopped under the run ends it interrupted, with Continue, never cancelled.
+        const interrupted = takeNativeRunInterruption(runId);
+        const cancelled = !interrupted && (stop.signal.aborted || error instanceof ToolBatchInactiveError && !deadline.signal.aborted);
+        const failure = interrupted ? new EngineFailure(WORKSPACE_STOPPED_INTERRUPTION.code, WORKSPACE_STOPPED_INTERRUPTION.message)
+          : deadline.signal.aborted && !cancelled ? deadline.signal.reason : error;
         const payload = failurePayload(failure, Boolean(workspace));
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, code: cancelled ? "model_run_cancelled" : payload.code,
           connectionId: snapshot.connectionId, duration_ms: Math.max(0, now() - startedAt), error,
@@ -772,6 +925,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...failureCauseFields({ cancelled, failure, stopped: stop.signal.aborted, timedOut: deadline.signal.aborted, turnMs,
             workspaceRun: Boolean(workspace) }) });
         answer.stop();
+        // Its sub-agents end with it and keep what they recorded; their turns settle before the run's records do.
+        await runSubagents?.runner.stopAll(deadline.signal.aborted && !cancelled ? "deadline" : "parent_stopped");
         await runContext?.close();
         await live?.end("run_finished");
         if (workspace && input.workspace) {
@@ -789,6 +944,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
                 run_id: runId, stage: "write", subsystem: "database" });
             });
           }
+          releaseGuardUsage();
           await usage.settle();
           await chatUpdate();
           sink.send({ data: { runId, status: "cancelled" }, type: "done" });
@@ -803,11 +959,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           logRunPersistence(runId, "fail", "unconfirmed", writeError);
           return false;
         });
+        releaseGuardUsage();
         await usage.settle();
         if (failed) sink.send({ data: payload, type: "error" });
         else await chatUpdate();
       } finally {
         void live?.end("run_finished");
+        // Its background turns keep their host for a grace, so one still attaching starts (`backgroundRunner.ts`).
+        runSubagents?.releaseBackgroundHost();
+        takeNativeRunInterruption(runId);
+        releaseGuardUsage();
         stopKeepalive();
         clearTimeout(deadlineTimer);
         if (activeRunControllers.get(runId) === stop) activeRunControllers.delete(runId);

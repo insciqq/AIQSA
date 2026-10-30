@@ -3,6 +3,7 @@ import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepositoryFollowups";
+import { claimSubagentCallbacksForRun } from "./subagentBackground/store";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import {
@@ -151,6 +152,7 @@ import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
 import { workspaceRunOperationOwner } from "../workspace/sessionOperation";
+import { joinWorkspaceRunOperation, recordWorkspaceAttachment, workspaceJoinRefusal } from "../workspace/attachments";
 import {
   WORKSPACE_POLICY_ID,
   workspaceRunOutputDirectory
@@ -212,18 +214,29 @@ function assertWorkspaceAdmissionShape(
   }
 }
 
-async function reserveAcceptedWorkspaceSession(
+/**
+ * The chat's Workspace is busy for this run: the public code stays `workspace_busy`, and the content-free log names
+ * which rule refused it, so a refusal beside attached background runs can be told apart (`run_preparation`).
+ */
+function workspaceBusy(plan: Pick<WorkspaceRunAdmissionPlan, "runId">, reason: string): WorkspaceRunConflictError {
+  logEvent("run_preparation", { code: reason, outcome: "failed", run_id: plan.runId, stage: "preparing" });
+  return new WorkspaceRunConflictError("workspace_busy", reason);
+}
+
+export async function reserveAcceptedWorkspaceSession(
   tx: Prisma.TransactionClient, plan: WorkspaceRunAdmissionPlan
 ): Promise<void> {
+  // Background sub-agent runs share the chat's Workspace: they are attached runs this run joins, never a conflict.
   const active = await tx.modelRun.count({
     where: {
       chatId: plan.chatId,
       id: { not: plan.runId },
       status: { in: activeModelRunStatuses },
+      subagentTurnId: null,
       workspaceRunBinding: { isNot: null }
     }
   });
-  if (active > 0) throw new WorkspaceRunConflictError("workspace_busy");
+  if (active > 0) throw workspaceBusy(plan, "workspace_busy_main_run_active");
 
   const expiresAt = new Date(plan.expiresAt);
   if (!Number.isFinite(expiresAt.getTime())) {
@@ -242,14 +255,25 @@ async function reserveAcceptedWorkspaceSession(
       existing.id !== plan.sessionId ||
       existing.sandboxName !== plan.sandboxName ||
       (existing.imageRef !== plan.normalized.imageRef && !adoptsImage) ||
-      existing.internetEnabled !== plan.normalized.internetEnabled ||
-      existing.operationOwner !== null ||
+      existing.internetEnabled !== plan.normalized.internetEnabled
+    ) {
+      throw workspaceBusy(plan, "workspace_busy_session_mismatch");
+    }
+    // Sub-agent runs of the chat hold a live run operation: this run attaches to that same VM and operation.
+    if (existing.operationOwner !== null) {
+      if (adoptsImage) throw workspaceBusy(plan, "workspace_busy_session_mismatch");
+      if (!(await joinWorkspaceRunOperation(tx, existing, plan.runId))) {
+        throw workspaceBusy(plan, await workspaceJoinRefusal(tx, existing));
+      }
+      return;
+    }
+    if (
       existing.state === "FAILED" ||
       existing.state === "RUNNING" ||
       existing.state === "CREATING" ||
       existing.state === "DELETING"
     ) {
-      throw new WorkspaceRunConflictError("workspace_busy");
+      throw workspaceBusy(plan, existing.state === "FAILED" ? "workspace_busy_session_failed" : "workspace_busy_session_state");
     }
     // Session-operation fence: background export recovery claims its lease
     // under this same row lock only while the chat has no active run, and a
@@ -261,7 +285,7 @@ async function reserveAcceptedWorkspaceSession(
       ...UNREGISTERED_WORKSPACE_COMMAND_FILTER,
       workspaceRunBinding: { workspaceSessionId: existing.id }
     } });
-    if (openExecutions > 0 || unregisteredCommands > 0) throw new WorkspaceRunConflictError("workspace_busy");
+    if (openExecutions > 0 || unregisteredCommands > 0) throw workspaceBusy(plan, "workspace_busy_open_work");
     const liveExports = await tx.workspaceRunBinding.count({
       where: {
         exportLeaseExpiresAt: { gt: new Date() },
@@ -269,7 +293,7 @@ async function reserveAcceptedWorkspaceSession(
         workspaceSessionId: existing.id
       }
     });
-    if (liveExports > 0) throw new WorkspaceRunConflictError("workspace_busy");
+    if (liveExports > 0) throw workspaceBusy(plan, "workspace_busy_live_export");
     await tx.workspaceSession.update({
       data: {
         ...(adoptsImage ? { imageRef: plan.normalized.imageRef } : {}),
@@ -278,6 +302,7 @@ async function reserveAcceptedWorkspaceSession(
       },
       where: { id: existing.id }
     });
+    await recordWorkspaceAttachment(tx, { chatId: plan.chatId, generation: existing.version + 1, runId: plan.runId });
   } else {
     await tx.workspaceSession.create({
       data: {
@@ -292,6 +317,7 @@ async function reserveAcceptedWorkspaceSession(
         state: "PENDING"
       }
     });
+    await recordWorkspaceAttachment(tx, { chatId: plan.chatId, generation: 1, runId: plan.runId });
   }
 }
 
@@ -1111,7 +1137,8 @@ export async function admitPreparingRunWithClient(
             content: json(input.content),
             ...(input.workspaceAdmissionPlan
               ? { id: input.workspaceAdmissionPlan.userMessageId }
-              : {}),
+              : input.normalizedRequest.mcpApproval?.guard?.version === 2 && input.normalizedRequest.mcpApproval.guard.currentMessageId
+                ? { id: input.normalizedRequest.mcpApproval.guard.currentMessageId } : {}),
             modelId: input.modelId,
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,
@@ -1368,6 +1395,10 @@ export async function admitPreparingRunWithClient(
           taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision,
           unavailableSources: input.admissionKind === "NORMAL_SEND" ? input.scheduledUnavailableSources ?? [] : [],
           userId: input.userId, userMessageId });
+      } else if (input.admissionKind === "NORMAL_SEND" && input.subagentCallbackClaim) {
+        // A wake-up turn is the server's, never a message of the user's: it takes its callbacks or is not created.
+        await claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: run.id, turnIds: input.subagentCallbackClaim.turnIds,
+          userMessageId });
       } else {
         // Message limits count interactive admissions in a log that outlives the chat.
         await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
@@ -1393,6 +1424,7 @@ export async function admitPreparingRunWithClient(
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
         visionAnalysis: input.normalizedRequest.visionAnalysis,
+        mcpGuard: input.normalizedRequest.mcpApproval?.guard?.plan,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,

@@ -104,13 +104,15 @@ function scriptedFetchUrlResult(request: ProviderRunRequest, question: string): 
 
 /**
  * Test-only MCP scenario: `[AIQSA_MCP_E2E:<tool>:<id>]` calls the run's MCP
- * tool `<tool>` once with `{ "id": "<id>" }`, then answers with the outcome
+ * tool `<tool>` once with `{ "id": "<id>" }` (`create_issue` uses `{ "title": "<id>" }`), then answers with the outcome
  * (`done` or the refusal/error code). `[AIQSA_MCP_CODE_E2E:<tool>:<id>]`
  * makes the same call from Workspace guest code (a real guest only). The
  * server's continuation turn after an approval repeats the newest such call
  * of the conversation, as a model re-issuing the approved call would.
+ * `[AIQSA_MCP_INJECTION_E2E:read_record:<id>]` reads first and deliberately follows a post_channel directive in that result,
+ * only in test mode, for the guard's untrusted-result evidence.
  */
-const MCP_TEST_DIRECTIVE = /\[AIQSA_MCP_(CODE_)?E2E:([a-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64})\]/u;
+const MCP_TEST_DIRECTIVE = /\[AIQSA_MCP_(CODE_|INJECTION_)?E2E:([a-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64})\]/u;
 const MCP_APPROVAL_CONTINUATION = /^The user approved `[^`\n]+` on `[^`\n]+`\. Continue the task\.$/u;
 
 /** Guest Python calling the run's MCP tool through the run gateway; prints `code-mcp:<outcome>`. */
@@ -128,9 +130,11 @@ function scriptedMcpResult(request: ProviderRunRequest, question: string): Provi
       .map((message) => MCP_TEST_DIRECTIVE.exec(message.content)).filter((found) => found !== null).at(-1) ?? null
     : null);
   if (!match) return null;
-  const [, code, toolName, id] = match;
+  const [, mode, toolName, id] = match;
+  const injection = mode === "INJECTION_";
+  if (injection && (process.env.AIQSA_TEST_MODE !== "1" || process.env.NODE_ENV === "production")) return null;
   const results = fakeToolResults(request);
-  if (code) {
+  if (mode === "CODE_") {
     if (!request.workspace) return null;
     if (results.length === 0) {
       const call = toolCall(request, "sandbox_shell", 0, { command: mcpCodeCommand(toolName!, id!) });
@@ -146,13 +150,136 @@ function scriptedMcpResult(request: ProviderRunRequest, question: string): Provi
   if (!tool) return null;
   if (results.length === 0) {
     return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
-      toolCalls: [{ arguments: { id: id! }, id: `fake-mcp-${toolName}-${id}-${callTurn(request)}`, name: tool.name }],
+      toolCalls: [{ arguments: toolName === "create_issue" ? { title: id! } : { id: id! },
+        id: `fake-mcp-${toolName}-${id}-${callTurn(request)}`, name: tool.name }],
       usage: fakeUsage(question, "") };
   }
-  const value = results[0]?.content.find((part) => part.type === "json")?.value;
+  // This deliberate prompt-injection victim exists only on the test fake. The user's marker names only the read;
+  // the target write and its arguments must come from that read's result, never from the user's text.
+  if (injection && results.length === 1 && results[0]?.status === "complete") {
+    const instruction = /\[AIQSA_MCP_E2E:(post_channel):([A-Za-z0-9_-]{1,64})\]/u.exec(JSON.stringify(results[0].content));
+    const target = instruction && request.tools?.find(candidate => candidate.capability === "mcp" && candidate.name.includes(`_${instruction[1]}_`));
+    if (target) return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
+      toolCalls: [{ arguments: { id: instruction![2]! }, id: `fake-mcp-injected-${callTurn(request)}`, name: target.name }],
+      usage: fakeUsage(question, "") };
+  }
+  const value = results.at(-1)?.content.find((part) => part.type === "json")?.value;
   const finalText = `MCP call finished: ${isRecord(value) && typeof value.error === "string" ? value.error
-    : results[0]?.status === "error" ? "error" : "done"}.`;
+    : results.at(-1)?.status === "error" ? "error" : "done"}.`;
   return { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) };
+}
+
+/**
+ * Test-only sub-agent scenario (`AIQSA_TEST_MODE=1` outside production, like the injection scenario):
+ * `[AIQSA_SUBAGENT_E2E:<fg|bg>:<name>,<name>(:<options>)]` makes the main agent call `call_subagent` once per name
+ * in one round (`bg` with `background: true`), each brief carrying `[AIQSA_SUBAGENT_TASK:<name>:<options>]`, then
+ * answer with each call's state. A sub-agent with such a brief takes the options in order: `write` writes
+ * `/workspace/project/<name>/report.txt` through the Workspace, `handoff` asks for a browser handoff, `wait<ms>`
+ * waits that long (cut by Stop) before its report, `blocked` reports a blocked outcome. A wake-up turn the server
+ * writes for ended background sub-agents is answered with their names. Nothing else uses these markers.
+ */
+const SUBAGENT_TEST_DIRECTIVE = /\[AIQSA_SUBAGENT_E2E:(fg|bg):([a-z0-9_,-]{1,240})(?::([a-z0-9,_-]{1,120}))?\]/u;
+const SUBAGENT_TASK_DIRECTIVE = /\[AIQSA_SUBAGENT_TASK:([a-z0-9_-]{1,48})(?::([a-z0-9,_-]{0,120}))?\]/u;
+const SUBAGENT_WAKE_UP = /^\[Sub-agent callbacks?, written by the server, not by the user\]/u;
+const SUBAGENT_WAKE_UP_NAME = /^--- "([a-z0-9_-]{1,48})" \(([a-z_, ]{1,80})\)$/gmu;
+const SUBAGENT_WAIT_MAX_MS = 120_000;
+
+type ScriptedSubagentResult = Readonly<{ result: ProviderRunResult; waitMs: number }>;
+
+function subagentScenarioAllowed(): boolean {
+  return process.env.AIQSA_TEST_MODE === "1" && process.env.NODE_ENV !== "production";
+}
+
+/** The history after the latest user item that is not run context: the current turn's own calls and results. */
+function currentTurnItems(request: ProviderRunRequest): readonly ProviderHistoryItem[] {
+  const history = request.history ?? [];
+  let start = 0;
+  history.forEach((item, index) => { if (item.type === "user" && !turnContext(item)) start = index + 1; });
+  return history.slice(start);
+}
+
+function scriptedSubagentResult(request: ProviderRunRequest, question: string): ScriptedSubagentResult | null {
+  if (!subagentScenarioAllowed() || !request.history) return null;
+  const done = (finalText: string, waitMs = 0): ScriptedSubagentResult => ({ result: { finalProviderResponsePreview:
+    { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) }, waitMs });
+  const calls = (toolCalls: ModelToolCall[]): ScriptedSubagentResult => ({ result: { finalProviderResponsePreview:
+    { finishReason: "tool_calls", provider: "fake" }, finalText: "", toolCalls, usage: fakeUsage(question, "") }, waitMs: 0 });
+  const offersCall = request.tools?.some((tool) => tool.name === "call_subagent") === true;
+  const task = SUBAGENT_TASK_DIRECTIVE.exec(question);
+  // A sub-agent: its tools never include call_subagent, and its input is the main agent's brief.
+  if (task && !offersCall) {
+    const name = task[1]!;
+    const steps = (task[2] ?? "").split(",").filter(Boolean);
+    const turnItems = currentTurnItems(request);
+    const results = turnItems.filter((item): item is Extract<ProviderHistoryItem, { type: "tool_result" }> => item.type === "tool_result");
+    const scripted = steps.filter((step) => step === "write" || step === "handoff");
+    const next = scripted[results.length];
+    const id = `fake-subagent-${name}-${callTurn(request)}-${results.length}`;
+    if (next === "write") {
+      const call = toolCall(request, "sandbox_fs_write", results.length, { content: `Report from ${name}.\n`, encoding: "utf8",
+        path: `/workspace/project/${name}/report.txt` });
+      if (call) return calls([{ ...call, id }]);
+    } else if (next === "handoff" && request.tools?.some((tool) => tool.name === "browser_handoff")) {
+      return calls([{ arguments: { message: `Please sign in for ${name}, then press Done.`, reason: "sign_in" }, id,
+        name: "browser_handoff" }]);
+    }
+    const wait = steps.map((step) => /^wait(\d{1,6})$/u.exec(step)?.[1]).find((value) => value !== undefined);
+    const outcome = steps.includes("blocked") ? "Outcome: blocked (sign_in_required)" : "Outcome: done";
+    const outcomes = results.map((result) => result.isError ? "error" : "complete").join(", ");
+    return done(`${outcome}\nReport from ${name}${outcomes ? `: steps ${outcomes}` : ""}.`,
+      Math.min(SUBAGENT_WAIT_MAX_MS, Number(wait ?? 0)));
+  }
+  if (!offersCall) return null;
+  if (SUBAGENT_WAKE_UP.test(question.trim())) {
+    const ended = [...question.matchAll(SUBAGENT_WAKE_UP_NAME)].map((match) => `${match[1]} ${match[2]}`);
+    return done(`Wake-up answer: ${ended.join("; ") || "no sub-agent"}.`);
+  }
+  const directive = SUBAGENT_TEST_DIRECTIVE.exec(question);
+  if (!directive) return null;
+  const background = directive[1] === "bg";
+  const names = [...new Set(directive[2]!.split(",").filter(Boolean))];
+  const options = directive[3] ?? "";
+  const prefix = `fake-subagent-call-${callTurn(request)}-`;
+  const history = request.history;
+  const answered = history.filter((item): item is Extract<ProviderHistoryItem, { type: "tool_result" }> =>
+    item.type === "tool_result" && item.callId.startsWith(prefix));
+  // Once per turn: a callback delivered into the answer is user input, but no reason to call again.
+  if (!history.some((item) => item.type === "tool_call" && item.callId.startsWith(prefix))) {
+    return calls(names.map((name, index) => ({ arguments: { message: `[AIQSA_SUBAGENT_TASK:${name}:${options}] Do the task and report.`,
+      name, ...(background ? { background: true } : {}) }, id: `${prefix}${index}`, name: "call_subagent" })));
+  }
+  const states = answered.map((item) => {
+    try {
+      const value = JSON.parse(item.output) as unknown;
+      if (!isRecord(value)) return "unknown";
+      if (typeof value.error === "string") return value.error;
+      if (value.kind === "ended") return typeof value.outcome === "string" ? `${String(value.state)} ${value.outcome}` : String(value.state);
+      return typeof value.kind === "string" ? value.kind : "unknown";
+    } catch {
+      return "unknown";
+    }
+  });
+  return done(`Sub-agents ${background ? "started" : "reported"}: ${names.map((name, index) => `${name} ${states[index] ?? "unknown"}`).join("; ")}.`);
+}
+
+/** Waits for a scripted sub-agent, cut by the run's signal. */
+async function scriptedWait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+  if (signal?.aborted) {
+    const error = new Error("provider_run_aborted");
+    error.name = "AbortError";
+    throw error;
+  }
 }
 
 function workspaceTool(request: ProviderRunRequest, originalName: string): RunTool | null {
@@ -637,6 +764,15 @@ export function createFakeProviderAdapter(): ProviderAdapter {
     },
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const question = requestQuestion(request) || "empty question";
+      const subagent = scriptedSubagentResult(request, question);
+      if (subagent) {
+        throwIfAborted(options.signal);
+        await scriptedWait(subagent.waitMs, options.signal);
+        if ((subagent.result.toolCalls?.length ?? 0) === 0) {
+          for (const word of subagent.result.finalText.split(" ")) yield { data: { delta: `${word} ` }, type: "token" };
+        }
+        return subagent.result;
+      }
       const scripted = scriptedWorkspaceResult(request, question) ?? scriptedFetchUrlResult(request, question) ??
         scriptedMcpResult(request, question);
       if (scripted) {

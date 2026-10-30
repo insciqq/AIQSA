@@ -17,7 +17,8 @@ import {
   loadChatBranchSnapshotStats,
   summarizeMessageRunArtifacts,
   summarizeMessageRunToolActivity,
-  summarizeMessageRunWorkspaceActivity
+  summarizeMessageRunWorkspaceActivity,
+  toolCallSubagentSelect
 } from "../chats/prismaRepository";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
@@ -317,7 +318,9 @@ export function createPrismaRunRepository(
         SELECT jsonb_agg(jsonb_build_object('id', f."id", 'ordinal', f."ordinal", 'text', f."text",
           'delivered', f."deliveredAt" IS NOT NULL, 'precedingText', f."precedingText") ORDER BY f."ordinal") AS entries
         FROM "RunFollowup" f
-        WHERE f."modelRunId" = (
+        -- The user's own follow-ups only: a sub-agent's callback the answer read is in its native items, an unread one is
+        -- owed again, and neither is ever user text (link authority, guard references) on a later turn.
+        WHERE f."origin" = 'user' AND f."modelRunId" = (
           SELECT r."id" FROM "ModelRun" r WHERE path."role" = 'assistant' AND
             r."assistantMessageId" = path."id"
           ORDER BY r."createdAt" DESC LIMIT 1
@@ -449,6 +452,9 @@ export function createPrismaRunRepository(
               where: {
                 id: input.runId,
                 status: { in: dispatchableModelRunStatuses },
+                // A background sub-agent run stops only through its own paths, which settle its turn
+                // (`subagentBackground/control.ts`); here it reads as not found.
+                subagentTurnId: null,
                 userId: input.userId
               }
             })).count;
@@ -464,6 +470,7 @@ export function createPrismaRunRepository(
           },
           where: {
             id: input.runId,
+            subagentTurnId: null,
             userId: input.userId
           }
         });
@@ -782,7 +789,8 @@ export function createPrismaRunRepository(
           workspaceRunBinding: { select: { modelRunId: true } }
         },
         orderBy: { updatedAt: "desc" },
-        where: { chatId, status: { in: activeModelRunStatuses }, updatedAt: { gt: since } }
+        // The main agent's runs only: background sub-agents run beside them (one active run per thread).
+        where: { chatId, status: { in: activeModelRunStatuses }, subagentTurnId: null, updatedAt: { gt: since } }
       }).catch(retainRunPrismaCode);
       return run ? { assistantMessageId: run.assistantMessageId, chatId: run.chatId, id: run.id, modelId: run.modelId,
         provider: run.provider, providerResponseId: run.providerResponseId, status: run.status,
@@ -857,7 +865,8 @@ export function createPrismaRunRepository(
 
       if (sourceMessage.role === "user") {
         const sourceRun = await prismaClient.modelRun.findFirst({
-          where: { userMessageId: sourceMessage.id, userId },
+          // A background sub-agent run shares its parent's user message; the message's own answer runs are the main agent's.
+          where: { subagentTurnId: null, userMessageId: sourceMessage.id, userId },
           orderBy: { createdAt: "desc" },
           select: { normalizedRequest: true }
         }).catch(retainRunPrismaCode);
@@ -904,7 +913,8 @@ export function createPrismaRunRepository(
               connectionId: true,
               providerModelId: true
             },
-            where: { role: "answer" }
+            // The answer model's own binding, never a sub-agent model's (`subagent:<connection>:<model>`).
+            where: { bindingKey: "answer", role: "answer" }
           }
         },
         where: {
@@ -1063,7 +1073,7 @@ export function createPrismaRunRepository(
                   normalizedRequest: true,
                   userId: true,
                   status: true,
-                  mcpToolApprovals: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
+                  mcpToolApprovals: { orderBy: [{ guardDecision: { sort: "desc", nulls: "first" } }, { createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
                   workspaceExecutions: { take: 512, orderBy: { startedAt: "desc" },
                     select: { modelRunToolCallId: true, state: true, lastErrorCode: true } },
                   workspaceRunBinding: {
@@ -1082,6 +1092,7 @@ export function createPrismaRunRepository(
                       roundIndex: true,
                       startedAt: true,
                       state: true,
+                      ...toolCallSubagentSelect,
                       toolName: true
                     }
                   },

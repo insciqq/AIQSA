@@ -116,6 +116,15 @@ export function turnContextItem(text: string): TranscriptItem {
   return { id: "ctx-turn", kind: "user", runContext: true, text };
 }
 
+/**
+ * The run context item listing the user's custom sub-agents (`renderSubagentTypeCatalog`), only where `call_subagent`
+ * offers types: like the Skills index, rebuilt for every run and never recorded, so an edit never changes the system
+ * prompt (decision 2026-10-30).
+ */
+export function subagentCatalogItem(text: string): TranscriptItem {
+  return { id: "ctx-subagents", kind: "user", runContext: true, text };
+}
+
 /** Where the turn context goes: after the run's other context, just before its input; last in an approval continuation. */
 export function turnContextIndex(items: readonly TranscriptItem[], currentInputId: string | null): number {
   const at = currentInputId ? items.findIndex((item) => item.id === currentInputId) : -1;

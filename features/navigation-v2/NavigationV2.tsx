@@ -36,6 +36,20 @@ import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
 import { NameFieldFormV2, type NameSaveOutcome } from "./NameFieldFormV2";
 import {
+  SubagentDisclosureV2,
+  SubagentRowsV2,
+  subagentDisclosureKeyDown,
+  subagentGroupId,
+  type NavigationSubagentsV2
+} from "./SubagentRowsV2";
+import {
+  refreshChatSubagents,
+  showAllEndedSubagents,
+  subagentRowsExpanded,
+  toggleSubagentRows,
+  useSubagentStore
+} from "@/features/subagents-v2/subagentStore";
+import {
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
   CHAT_TITLE_MAX_LENGTH,
   PERSONAL_FOLDER_NAME_MAX_LENGTH,
@@ -149,6 +163,8 @@ export type NavigationSidebarProps = Readonly<{
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onMoveFolder?(folder: ChatNavigationFolderWire, folderId: string | null): void;
   onNewChat(mode: NewChatMode): void;
+  /** Opens a sub-agent's read-only thread view in its chat. */
+  onOpenSubagent?(chat: ChatNavigationSummaryWire, threadId: string): void;
   onRenameChat?(chat: ChatNavigationSummaryWire): void;
   onRenameFolder?(folder: ChatNavigationFolderWire): void;
   onSaveChatRename?(chat: ChatNavigationSummaryWire): Promise<NameSaveOutcome> | NameSaveOutcome;
@@ -162,6 +178,8 @@ export type NavigationSidebarProps = Readonly<{
   searchError: string | null;
   searchLoading: boolean;
   searchQuery: string;
+  /** The chats' sub-agents, nested under their chat outside search (absent: none are shown). */
+  subagents?: NavigationSubagentsV2;
   editingChatId?: string | null;
   editingChatTitle?: string;
   editingFolderId?: string | null;
@@ -220,7 +238,10 @@ function ChatRow({
   onRename,
   onSaveRename,
   onShare,
-  onSelect
+  onSelect,
+  onOpenSubagent,
+  subagentScope,
+  subagents
 }: {
   active: boolean;
   disabled?: boolean;
@@ -244,8 +265,19 @@ function ChatRow({
   onSaveRename?(chat: ChatNavigationSummaryWire): Promise<NameSaveOutcome> | NameSaveOutcome;
   onShare?(chat: ChatNavigationSummaryWire): void;
   onSelect(chat: ChatNavigationSummaryWire): void;
+  onOpenSubagent?(chat: ChatNavigationSummaryWire, threadId: string): void;
+  /** Where the row is listed (a filed favorite is listed twice), for unique ids. */
+  subagentScope?: string;
+  subagents?: NavigationSubagentsV2;
 }) {
   const displayTitle = chatTitleForDisplay(chat.title);
+  const subagentChat = subagents && onOpenSubagent ? subagents.chats[chat.id] ?? null : null;
+  const subagentsExpanded = subagentChat ? subagents!.expanded(chat.id) : false;
+  const subagentGroup = subagentGroupId(chat.id, subagentScope ?? "list");
+  const openSubagentTarget = subagents?.openThread ?? null;
+  const openSubagentId = openSubagentTarget?.chatId === chat.id ? openSubagentTarget.threadId : null;
+  // While one of its listed sub-agents is open, that row is the current one.
+  const current = active && !(openSubagentId && subagentChat?.threads.some((thread) => thread.id === openSubagentId));
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
@@ -274,28 +306,33 @@ function ChatRow({
       />
     );
   }
+  const toggleSubagents = () => subagents?.onToggle(chat.id);
   return (
+    <>
     <div
       className="v2-chat-row-wrap"
       {...drag}
       data-navigation-chat-id={chat.id}
+      data-subagents={subagentChat ? "" : undefined}
       data-v2-tree-row="true"
     >
       <button
-        aria-current={active ? "page" : undefined}
+        aria-current={current ? "page" : undefined}
         aria-describedby={unread ? unreadId : undefined}
+        aria-expanded={subagentChat ? subagentsExpanded : undefined}
         disabled={disabled}
         aria-label={displayTitle}
         aria-level={level}
-        aria-selected={active}
+        aria-selected={current}
         className="v2-chat-row v2-focusable"
-        data-selected={active || undefined}
+        data-selected={current || undefined}
         data-v2-tree-item="true"
         role="treeitem"
         tabIndex={-1}
         title={displayTitle}
         type="button"
         onClick={() => onSelect(chat)}
+        onKeyDown={subagentChat ? (event) => subagentDisclosureKeyDown(event, subagentsExpanded, toggleSubagents) : undefined}
       >
         {chat.assistant ? (
           // The Assistant's avatar marks the chat; its name stays out so the title leads.
@@ -311,6 +348,15 @@ function ChatRow({
       </button>
       {/* A description, not a name suffix, keeps the row name the chat title. */}
       {unread ? <span hidden id={unreadId}>New automation result</span> : null}
+      {subagentChat ? (
+        <SubagentDisclosureV2
+          chat={subagentChat}
+          controls={subagentGroup}
+          expanded={subagentsExpanded}
+          title={displayTitle}
+          onToggle={toggleSubagents}
+        />
+      ) : null}
       <UiV2IconButton
         className="v2-chat-menu-trigger"
         icon="more"
@@ -360,6 +406,22 @@ function ChatRow({
         </UiV2ResponsiveMenu>
       ) : null}
     </div>
+    {subagentChat && subagentsExpanded ? (
+      <SubagentRowsV2
+        chat={subagentChat}
+        disabled={disabled}
+        error={Boolean(subagents!.errors[chat.id])}
+        id={subagentGroup}
+        level={level + 1}
+        openThreadId={openSubagentId}
+        showAllEnded={Boolean(subagents!.showAllEnded[chat.id])}
+        title={displayTitle}
+        onOpen={(thread) => onOpenSubagent?.(chat, thread.id)}
+        onRetry={() => subagents!.onRetry(chat.id)}
+        onShowAll={() => subagents!.onShowAll(chat.id)}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -596,6 +658,9 @@ function FolderGroup({
               onShare={props.onShare}
               disabled={props.navigationBusy}
               onSelect={props.onSelectChat}
+              onOpenSubagent={props.onOpenSubagent}
+              subagentScope={`folder-${folder.id}`}
+              subagents={props.subagents}
             />
           ))}
           {children.map((child) => (
@@ -798,7 +863,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       id
     }))
     .filter((group) => group.chats.length > 0);
-  const listRow = (chat: ChatNavigationSummaryWire) => (
+  // Favorites and the date groups list a chat once each; a filed favorite is
+  // also in its folder, so each place has its own sub-agent group id.
+  const listRow = (chat: ChatNavigationSummaryWire, scope: string) => (
     <ChatRow
       active={chat.id === props.activeChatId}
       chat={chat}
@@ -823,6 +890,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       onShare={props.onShare}
       disabled={props.navigationBusy}
       onSelect={selectChat}
+      onOpenSubagent={props.onOpenSubagent}
+      subagentScope={scope}
+      subagents={props.subagents}
     />
   );
   const focusMessageComposer = () => {
@@ -1058,7 +1128,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             {favorites.length > 0 ? (
               <div aria-labelledby="v2-navigation-favorites" className="v2-navigation-group" role="group">
                 <div className="v2-navigation-group-label" id="v2-navigation-favorites">Favorites</div>
-                {favorites.map(listRow)}
+                {favorites.map((chat) => listRow(chat, "favorites"))}
                 {props.favoritesComplete === false ? (
                   <div className="v2-navigation-section-status">More favorites appear as earlier chats load.</div>
                 ) : null}
@@ -1075,7 +1145,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 <div className="v2-navigation-group-label" id={`v2-navigation-${group.id}`}>
                   {dateLabels[group.id]}
                 </div>
-                {group.chats.map(listRow)}
+                {group.chats.map((chat) => listRow(chat, group.id))}
               </div>
             ))}
             {roots.length > 0 || props.onCreateFolder ? (
@@ -1244,9 +1314,25 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
   | "activeChatId" | "chats" | "error" | "favoritesComplete" | "folders" | "hasMore" | "loading"
   | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
   | "messageMatchesReady" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry"
-  | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery"
+  | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery" | "subagents"
 >) {
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
+  const subagentChats = useSubagentStore((state) => state.chats);
+  const subagentDisclosure = useSubagentStore((state) => state.disclosure);
+  const subagentErrors = useSubagentStore((state) => state.chatErrors);
+  const openSubagentThread = useSubagentStore((state) => state.openThread);
+  const subagentShowAllEnded = useSubagentStore((state) => state.showAllEnded);
+  const subagents = useMemo<NavigationSubagentsV2>(() => ({
+    chats: subagentChats,
+    errors: subagentErrors,
+    expanded: (chatId) => subagentRowsExpanded(
+      { chats: subagentChats, disclosure: subagentDisclosure, openThread: openSubagentThread }, chatId),
+    onRetry: (chatId) => void refreshChatSubagents(chatId),
+    onShowAll: showAllEndedSubagents,
+    onToggle: toggleSubagentRows,
+    openThread: openSubagentThread,
+    showAllEnded: subagentShowAllEnded
+  }), [openSubagentThread, subagentChats, subagentDisclosure, subagentErrors, subagentShowAllEnded]);
   const attempted = useWorkspaceStore((state) => state.navigationAttempted);
   const chats = useWorkspaceStore((state) => state.navigationChats);
   const error = useWorkspaceStore((state) => state.navigationError);
@@ -1336,6 +1422,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
       searchError={searchError}
       searchLoading={searchLoading}
       searchQuery={searchQuery}
+      subagents={subagents}
     />
   );
 }
@@ -1344,7 +1431,7 @@ type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
   | "activeChatId" | "chats" | "drawerDestinations" | "error" | "favoritesComplete" | "folders" | "hasMore" | "loading"
   | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
   | "messageMatchesReady" | "now" | "onClose" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry"
-  | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery"
+  | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery" | "subagents"
 > & {
   /** Marks an open chat so the mobile "+" island yields to the title pill. */
   chatActive?: boolean;
@@ -1704,6 +1791,12 @@ export function ReadingRoomShellV2({
       })}
       onOpenMessageMatch={navigationOwnerProps.onOpenMessageMatch ? (match) => requestNavigation(() => {
         navigationOwnerProps.onOpenMessageMatch?.(match);
+        setMobileOpen(false);
+        if (composition === "compact") setCompactExpanded(false);
+      }) : undefined}
+      onOpenSubagent={navigationOwnerProps.onOpenSubagent ? (chat, threadId) => requestNavigation(() => {
+        navigationOwnerProps.onOpenSubagent?.(chat, threadId);
+        // A drawer yields to the thread view, as to a chosen chat.
         setMobileOpen(false);
         if (composition === "compact") setCompactExpanded(false);
       }) : undefined}

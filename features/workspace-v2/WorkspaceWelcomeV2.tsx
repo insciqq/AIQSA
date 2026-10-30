@@ -61,6 +61,7 @@ import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { ChatDefaultsPanelV2 } from "@/features/library-v2/ChatDefaultsPanelV2";
 import { InstructionsSettingsPanel } from "@/features/settings-v2/InstructionsSettingsPanel";
 import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPanel";
+import { SubagentsPanelV2 } from "@/features/library-v2/subagents/SubagentsPanelV2";
 import { ScheduledTasksPanel } from "@/features/scheduled-tasks/ScheduledTasksPanel";
 import { scheduledTaskMemoryAvailability, scheduledTaskWorkspaceAvailability } from "@/features/scheduled-tasks/scheduledTaskDraft";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
@@ -226,6 +227,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
     { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
     { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },
+    { id: "subagents", label: "Sub-agents", content: <SubagentsPanelV2 key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
     { id: "scheduled", label: "Automations", content: <ScheduledTasksPanel key={session.accountId} accountId={session.accountId} catalog={composer.catalog} memory={scheduledTaskMemoryAvailability(memoryData)} onBusyChange={setFormBusy} onOpenChat={openArtifactChat} workspace={scheduledTaskWorkspaceAvailability(composer.workspace)} /> },
     { id: "mcp", label: "MCP servers", attention: mcpAttention, content: <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
     {
@@ -429,7 +431,12 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       />
       {formExit ? <DiscardChangesConfirmationDialog
         portal label="changes"
-        copy={{
+        copy={activeTab === "subagents" ? {
+          title: "Discard your unsaved sub-agent?",
+          body: "Your unsaved changes to this sub-agent will be lost.",
+          dialogLabel: "Unsaved sub-agent",
+          cancelLabel: "Keep editing", confirmLabel: "Discard changes"
+        } : {
           title: "Discard your unsaved instructions?",
           body: "Your unsaved instructions will be lost.",
           dialogLabel: "Unsaved instructions",

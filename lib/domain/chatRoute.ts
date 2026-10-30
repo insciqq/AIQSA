@@ -15,8 +15,16 @@ export const BLANK_CHAT_ROUTE: ChatRoute = Object.freeze({ chatId: null });
 /** The new chat's address; New chat links to it so it can open in another tab. */
 export const NEW_CHAT_PATH = "/";
 
-/** One-shot parameters that belong to the chat they arrived with. */
-export const CHAT_SCOPED_ROUTE_PARAMETERS = ["message", "artifactEdit", "artifactId", "versionId"] as const;
+/**
+ * The open sub-agent thread view of the chat (`/c/<chat>?agent=<thread>`):
+ * read-only, owner-only, and never an address of its own.
+ */
+export const SUBAGENT_THREAD_ROUTE_PARAMETER = "agent";
+
+/** Parameters that belong to the chat they arrived with; another chat never inherits them. */
+export const CHAT_SCOPED_ROUTE_PARAMETERS = [
+  "message", "artifactEdit", "artifactId", "versionId", SUBAGENT_THREAD_ROUTE_PARAMETER
+] as const;
 
 /**
  * Legacy query names of the path form; they are read once and never written.

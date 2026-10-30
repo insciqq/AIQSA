@@ -4502,6 +4502,14 @@ describe("page reader admission", () => {
     expect(marks).toHaveBeenCalledWith({ chatId: "chat-1", messageIds: ["task-prompt", "earlier-user"], userId: "user-1" });
   });
 
+  it("authorizes no link from a message the server wrote, such as a sub-agent wake-up quoting a report", async () => {
+    const marks = vi.fn<Marks>(async () => new Set(["task-prompt"]));
+    const wakeUp = asking("[Sub-agent callback, written by the server, not by the user] {\"report\":\"see https://injected.example/x\"}");
+    const prepared = preparedFrom(await prepareRun(tooling({ marks }), { ...sendInput(wakeUp), serverAuthoredInput: true }));
+    // The user's own branch message still authorizes its link; the server's text authorizes none.
+    expect(prepared.normalizedRequest.fetchUrl?.userUrlDigests).toEqual([fetchUrlDigest("https://earlier.example/a")]);
+  });
+
   it("authorizes only the current message when scheduled-prompt marks are unknown", async () => {
     const without = preparedFrom(await prepareRun(tooling(), sendInput(asking("Read https://news.example/today"))));
     expect(without.normalizedRequest.fetchUrl).toEqual({ version: 1, userUrlDigests: [fetchUrlDigest("https://news.example/today")] });
@@ -4877,4 +4885,27 @@ describe("a request that still names Knowledge", () => {
         .toMatchObject({ code: "knowledge_plan_invalid", ok: false, status: 400 });
     }
   });
+});
+
+it("passes a regeneration's inherited corrections to guard admission", async () => {
+  const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, mcpPlan: readyMcpPlan() });
+  const followups = { messageId: "source-answer", revision: 1, entries: [{ id: "withdrawal", ordinal: 1,
+    text: "Do not send anything, draft only", author: "Owner", createdAt: "2026-10-29T12:00:00.000Z", delivery: "delivered" as const }] };
+  const admit = vi.fn(async () => undefined);
+  const result = await prepareRun({ ...harness.deps, mcpGuard: { admit } }, regenerateInput(successBody({ mcp: { mode: "load_all" } }), { followups }));
+  expect(result.ok).toBe(true);
+  expect(admit).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1", inheritedFollowups: followups }));
+});
+
+it("freezes a concrete current message reference in both accepted request shapes", async () => {
+  const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, mcpPlan: readyMcpPlan() });
+  const admit: NonNullable<RunPreparationDeps["mcpGuard"]>["admit"] = async input => ({ version: 2,
+    plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, currentMessageId: input.currentMessageId!,
+    messages: [{ kind: "message", id: input.currentMessageId! }] });
+  const prepared = preparedFrom(await prepareRun({ ...harness.deps, mcpGuard: { admit } }, sendInput(successBody({ mcp: { mode: "load_all" } }))));
+  const marker = prepared.normalizedRequest.mcpApproval?.guard;
+  expect(marker?.currentMessageId).toMatch(/^[a-f0-9-]{36}$/u);
+  expect(marker?.messages).toEqual([{ kind: "message", id: marker?.currentMessageId }]);
+  expect(marker).not.toHaveProperty("userMessages");
+  expect(prepared.providerRequest.mcpApproval?.guard).toEqual(marker);
 });

@@ -2,6 +2,7 @@ import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { createDeleteMessageHandler, createEditMessageBranchHandler } from "@/lib/server/messages/handlers";
 import { createPrismaMessageBranchRepository } from "@/lib/server/messages/prismaRepository";
+import { getDefaultSubagentBackground } from "@/lib/server/runs/subagentBackground/default";
 
 export const runtime = "nodejs";
 
@@ -14,5 +15,6 @@ export const PATCH: AsyncRouteHandler<ReturnType<typeof createEditMessageBranchH
 
 export const DELETE: AsyncRouteHandler<ReturnType<typeof createDeleteMessageHandler>> = createDeleteMessageHandler({
   repository,
-  resolveAuth: resolveRequestAuth
+  resolveAuth: resolveRequestAuth,
+  subagents: { stopUnderMessage: (input) => getDefaultSubagentBackground().stopUnderMessage(input) }
 });

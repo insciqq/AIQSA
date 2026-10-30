@@ -47,11 +47,13 @@ describe("browser live relay", () => {
     const tab = recordingWriter();
     expect(await view.watch(owner, tab.writer)).not.toBeNull();
     const first = tab.last<BrowserLiveStateEvent>("state")!;
-    expect(first).toMatchObject({ browser: "absent", controller: "agent", handoff: null, runId: "run-1", signInRemembered: true, version: 1 });
+    expect(first).toMatchObject({ agents: [{ controller: "agent", id: "main", name: null, page: null, waitingForUser: false }],
+      browser: "absent", controller: "agent", handoff: null, handoffs: [], runId: "run-1", selected: "main", signInRemembered: true,
+      version: 2 });
     await until(() => tab.of("frame").length === 1);
     expect(tab.last<BrowserLiveStateEvent>("state")).toMatchObject({ browser: "running",
       page: { title: "Sign in", url: "https://shop.example/login" } });
-    expect(tab.last("frame")).toEqual({ data: FRAME_DATA, height: 800, mime: "image/jpeg", seq: 1, width: 1280 });
+    expect(tab.last("frame")).toEqual({ agent: "main", data: FRAME_DATA, height: 800, mime: "image/jpeg", seq: 1, width: 1280 });
     guest.navigate("https://shop.example/cart", "Cart");
     guest.frame();
     await until(() => tab.of("frame").length === 2);

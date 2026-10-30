@@ -32,6 +32,7 @@ describe("Workspace secret inputs", () => {
     // Reserved for the Workspace browser: only AIQSA sets these in guest commands.
     { kind: "env", entries: [{ name: "AIQSA_BROWSER_SESSIONS_DIR", value: "/workspace/project" }] },
     { kind: "env", entries: [{ name: "AIQSA_BROWSER_TIMEZONE", value: "UTC" }] },
+    { kind: "env", entries: [{ name: "AIQSA_AGENT_ID", value: "thread-1" }] },
     { kind: "env", entries: [{ name: "TOKEN", value: "a" }, { name: "TOKEN", value: "b" }] },
     { kind: "env", entries: [{ name: "TOKEN", value: "a\0b" }] },
     { kind: "file", originalName: "../escape", base64: "AA==" },

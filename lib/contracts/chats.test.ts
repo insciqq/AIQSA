@@ -145,6 +145,32 @@ describe("chat wire contracts", () => {
       origin: "mcp", round: 1, status: "complete", toolName: "delete_record" }] } }], usageStats }) })).toBeNull();
   });
 
+  it("carries the sub-agents a wake-up turn reports on only on that turn, with valid distinct names", () => {
+    const turn = { ...message, id: "wake", role: "user", modelRunId: null, systemTurnKind: "subagent_callback",
+      content: { blocks: [{ text: "Sub-agent results.", type: "text" }] } };
+    const answer = { ...message, parentMessageId: "wake" };
+    const decode = (value: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({ messages: [value, answer], usageStats }) });
+    expect(decode({ ...turn, subagentCallback: { names: ["researcher", "browser-1"] } })?.messages[0]?.subagentCallback)
+      .toEqual({ names: ["researcher", "browser-1"] });
+    expect(decode({ ...turn, subagentCallback: { names: [] } })?.messages[0]?.subagentCallback).toEqual({ names: [] });
+    // Older rows carry no list: the label then names nobody.
+    expect(decode(turn)?.messages[0]).not.toHaveProperty("subagentCallback");
+    const many = Array.from({ length: 64 }, (_, index) => `agent-${index}`);
+    expect(decode({ ...turn, subagentCallback: { names: many } })?.messages[0]?.subagentCallback?.names).toHaveLength(64);
+    for (const invalid of [
+      { ...turn, subagentCallback: { names: [...many, "agent-64"] } },
+      { ...turn, subagentCallback: { names: ["Researcher"] } },
+      { ...turn, subagentCallback: { names: ["main"] } },
+      { ...turn, subagentCallback: { names: ["a", "a"] } },
+      { ...turn, subagentCallback: { names: [7] } },
+      { ...turn, subagentCallback: { names: ["a"], extra: true } },
+      { ...turn, subagentCallback: "researcher" },
+      { ...turn, systemTurnKind: "mcp_approval_continuation", subagentCallback: { names: ["a"] } },
+      { ...turn, systemTurnKind: undefined, subagentCallback: { names: ["a"] } }
+    ]) expect(decode(invalid)).toBeNull();
+    expect(decode({ ...turn, systemTurnKind: undefined })).not.toBeNull();
+  });
+
   it("carries the servers a tool search could not load only on a discovery step, with known reasons", () => {
     const step = { origin: "discovery", round: 1, serverName: "Auto tools", status: "complete", toolName: "find_tools" };
     const decode = (call: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({

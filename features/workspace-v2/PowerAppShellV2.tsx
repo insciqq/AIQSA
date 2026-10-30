@@ -226,6 +226,14 @@ export {
 
 const NO_SCHEDULED_RUNS: readonly ScheduledTaskRenderedRun[] = [];
 
+/**
+ * When the open chat is read again after its sub-agents settled: at once, past the server's callback coalescing
+ * window (1.5 s, `SUBAGENT_CALLBACK_COALESCE_MS`), then every few seconds while the server's own rechecks of owed
+ * callbacks run (`SUBAGENT_CALLBACK_RECHECK_MS`, up to 30 s after the flush). A refresh that finds the wake-up answer
+ * streams it like any active run, and the rechecks stop once the chat has streamed.
+ */
+const SUBAGENT_WAKE_UP_RECHECK_MS = [0, 2_500, 6_000, 10_000, 15_000, 22_000, 30_000, 40_000] as const;
+
 const CHAT_ROUTE_UNAVAILABLE_COPY = {
   // One text for missing, foreign, archived and unusable Assistants alike.
   assistant: "This Assistant isn't available to you.",
@@ -1109,7 +1117,7 @@ export function PowerAppShellV2({
     }
   });
   const studio = useStudioNavigation({
-    available: ["assistants", "instructions", "skills", "memory", "files", "artifacts", "scheduled", "mcp",
+    available: ["assistants", "instructions", "skills", "subagents", "memory", "files", "artifacts", "scheduled", "mcp",
       "secrets", "defaults"],
     onExit() {
       assistantLibraryActions.closeLibrary();
@@ -1297,6 +1305,26 @@ export function PowerAppShellV2({
       }));
     }
   });
+  // A sub-agent of the open chat ended while its main agent was idle: the server may start a wake-up answer once its
+  // callbacks' coalescing window closed, so the chat is read again a few times until that answer streams in.
+  const refreshAfterSubagentsSettled = useEventCallback((chatId: string) => {
+    let index = 0;
+    const next = () => {
+      const delayMs = SUBAGENT_WAKE_UP_RECHECK_MS[index];
+      if (delayMs === undefined) return;
+      index += 1;
+      window.setTimeout(() => {
+        if (useWorkspaceStore.getState().activeChatId !== chatId) return;
+        // The chat streams (the wake-up answer, or the user's own): nothing is left to discover.
+        if (activeStreamAbortRef.current.has(chatId) || useRunLifecycleStore.getState().activeStreams[chatId]) return;
+        if (!pendingBranchCheckouts.has(chatId) && !pendingThreadMutations.has(chatId)) {
+          void refreshActiveChat(chatId, { forceDetail: true, preserveControls: true });
+        }
+        next();
+      }, Math.max(0, delayMs - (SUBAGENT_WAKE_UP_RECHECK_MS[index - 2] ?? 0)));
+    };
+    next();
+  });
   // Stable, so a caller that outlives its render (a Studio starter chip) sends from the current chat.
   const sendStarterEvent = useEventCallback((prompt: string) => void sendStarterPrompt(prompt));
 
@@ -1363,6 +1391,7 @@ export function PowerAppShellV2({
     telegramAvailable,
     dismissNotice: () => setNotice(null),
     notice,
+    onActiveChatSubagentsSettled: refreshAfterSubagentsSettled,
     shareActiveBranch
   } satisfies ShellSessionView;
 

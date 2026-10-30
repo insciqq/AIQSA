@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import type { TelegramAdminCommand, TelegramAdminState, TelegramLinkCodeResponse } from "../../lib/contracts/telegram";
 import {
   TELEGRAM_APPROVAL_COPY, TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramAlwaysAllowLabel, telegramConnectedText
@@ -11,6 +12,8 @@ import { createWriteApprovalFixture, startMutableMcpEndpoint, type MutableMcpEnd
 import { createPeopleFixture, type E2ESession } from "./support/people";
 import { telegramE2eApiPort } from "./support/telegramApiOrigin";
 import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
+import { assignMcpGuard, installFakeMcpGuard, preserveMcpGuardPolicy, type InstalledFakeMcpGuard } from "./support/mcpGuard";
+import { FAKE_MCP_GUARD_REASON } from "../support/fakeMcpGuardProvider";
 
 /**
  * MCP approvals as Telegram buttons, and the Workspace status with its files,
@@ -51,6 +54,8 @@ let serverId: string | null = null;
 let serverName = "";
 let restoreFakeContext: (() => Promise<void>) | null = null;
 let workspacePolicy: { enabled: boolean } | null = null;
+let restoreGuardPolicy: (() => Promise<void>) | undefined;
+let guard: InstalledFakeMcpGuard | undefined;
 
 function callsSince(since: number, method: string): FakeTelegramCall[] {
   return bot.calls().slice(since).filter((call) => call.method === method && call.status === 200 && call.params.chat_id === tgAlice.id);
@@ -199,6 +204,8 @@ test.beforeAll(async ({ browser }) => {
   aliceSession = await people.signIn(browser, alice!);
   // Load-all MCP tools beside the Workspace tool surface need the larger fake context the Workspace specs use.
   restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
+  restoreGuardPolicy = await preserveMcpGuardPolicy(prisma);
+  guard = await installFakeMcpGuard(prisma);
   workspacePolicy = await prisma.workspacePolicy.findUniqueOrThrow({ select: { enabled: true }, where: { id: "installation" } });
   await prisma.workspacePolicy.update({ data: { enabled: true }, where: { id: "installation" } });
   await enableApprovalBot(adminSession.page.request);
@@ -208,7 +215,9 @@ test.beforeAll(async ({ browser }) => {
   const request = aliceSession.page.request;
   expect((await request.patch(`/api/me/mcp/${serverId}`, { data: { enabled: true } })).ok()).toBe(true);
   // The scripted call needs the tools listed up front: Load all is this synthetic account's default, as Telegram sends it.
-  expect((await request.patch("/api/me/settings", { data: { defaultMcpMode: "load_all" } })).ok()).toBe(true);
+  expect((await request.patch("/api/me/settings", { data: { defaultMcpMode: "load_all",
+    defaultProviderModelId: providerTemplateIds.fakeModel, defaultSkillsMode: "off", defaultSearchPlan: { mode: "all_selected", optionIds: [] }
+  } })).ok()).toBe(true);
 
   const code = await request.post("/api/me/telegram/link-code");
   expect(code.ok(), await code.text()).toBe(true);
@@ -239,6 +248,7 @@ test.afterAll(async () => {
     try {
       if (workspacePolicy) await prisma.workspacePolicy.update({ data: workspacePolicy, where: { id: "installation" } }).catch(() => undefined);
       await restoreFakeContext?.();
+      await restoreGuardPolicy?.();
       // Workspace sessions restrict their chat's deletion, so the runs and sessions go first (as the Workspace specs do).
       if (aliceSession) {
         const userId = aliceSession.user.id;
@@ -255,9 +265,12 @@ test.afterAll(async () => {
       }
       await people.cleanup();
     } finally {
-      await endpoint?.close();
-      await bot.close();
-      await prisma.$disconnect();
+      try { await guard?.dispose(); }
+      finally {
+        await endpoint?.close();
+        await bot.close();
+        await prisma.$disconnect();
+      }
     }
   }
 });
@@ -445,4 +458,40 @@ test("Stop on the status message stops the Workspace run and the status says Sto
   await expect.poll(async () => (await latestRun()).status, { timeout: REPLY_TIMEOUT_MS }).toBe("cancelled");
   await expect.poll(() => textsSince(since), { timeout: REPLY_TIMEOUT_MS }).toContain(TELEGRAM_COPY.stopped);
   await prisma.telegramLink.update({ data: { workspaceEnabled: false }, where: { userId: aliceSession.user.id } });
+});
+
+test("a guard refusal retains Telegram's approval buttons and shows the reason", async () => {
+  await assignMcpGuard(adminSession.page.request, guard!.modelId);
+  guard!.setVerdict("ask");
+  await newChat();
+  const before = guard!.calls();
+  const message = await askToDelete("guard-ask");
+  expect(shown(message)).toContain(FAKE_MCP_GUARD_REASON);
+  expect(buttonRows(message).map(row => row.map(button => button.text))).toEqual([
+    [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], [telegramAlwaysAllowLabel(serverName)]
+  ]);
+  expect(guard!.calls()).toBe(before + 1);
+  expect(endpoint!.dispatches("delete_record", { id: "guard-ask" })).toBe(0);
+  press(message, TELEGRAM_COPY.deny);
+  await expect.poll(() => shown(botMessage(message.message_id)), { timeout: REPLY_TIMEOUT_MS }).toContain(TELEGRAM_COPY.denied);
+});
+
+test("a guard allow dispatches once without any Telegram approval buttons", async () => {
+  guard!.setVerdict("allow");
+  await newChat();
+  const before = guard!.calls();
+  const since = bot.calls().length;
+  bot.inject.text(tgAlice, "Delete record guard-allow [AIQSA_MCP_E2E:delete_record:guard-allow]");
+  await expectAnswer(since, "MCP call finished: done.");
+  const run = await latestRun();
+  await expect.poll(async () => (await prisma.telegramRunLink.findUnique({ where: { runId: run.id }, select: { deliveryState: true } }))
+    ?.deliveryState, { timeout: REPLY_TIMEOUT_MS }).toBe("delivered");
+  expect(guard!.calls()).toBe(before + 1);
+  expect(endpoint!.dispatches("delete_record", { id: "guard-allow" })).toBe(1);
+  const approval = await latestApproval(await currentChatId());
+  expect(approval).toMatchObject({ decision: null, guardDecision: "allow" });
+  for (const call of bot.calls().slice(since).filter(call => call.params.chat_id === tgAlice.id)) {
+    const labels = buttonRows({ reply_markup: call.params.reply_markup } as FakeTelegramMessage).flat().map(button => button.text);
+    for (const label of [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny, telegramAlwaysAllowLabel(serverName)]) expect(labels).not.toContain(label);
+  }
 });

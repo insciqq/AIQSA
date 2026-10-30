@@ -16,7 +16,8 @@ import { createPortal } from "react-dom";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { useVisualViewportInset } from "@/components/ui-v2/useVisualViewportInset";
-import type { BrowserLiveHandoff, BrowserLiveInput, BrowserLiveStep } from "@/lib/contracts/browserLive";
+import { BROWSER_LIVE_MAIN_AGENT, type BrowserLiveAgent, type BrowserLiveHandoff, type BrowserLiveInput,
+  type BrowserLiveStep } from "@/lib/contracts/browserLive";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import type { BrowserLiveEventSourceFactory, BrowserLiveSnapshot } from "./browserLiveClient";
@@ -34,7 +35,10 @@ import {
 import {
   BROWSER_SIGN_IN_NOT_REMEMBERED_V2,
   browserHandoffCountdownV2,
+  browserHandoffQueueCopyV2,
   browserHandoffTitleV2,
+  browserLiveAgentLabelV2,
+  browserLiveAgentOptionV2,
   browserLiveActivityV2,
   browserLiveEndCopyV2,
   browserLiveErrorCopyV2,
@@ -66,13 +70,19 @@ function prefersReducedMotion(): boolean {
     (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 }
 
-function HandoffCardV2({ claimScroll, handoff, host, live, onAnswer, remembered }: Readonly<{
+function HandoffCardV2({ asker, claimScroll, handoff, host, live, onAnswer, onShow, pending, remembered }: Readonly<{
+  /** Who asked, when several agents browse; null when only the main agent does. */
+  asker: string | null;
   /** True the first time this handoff's card shows: it scrolls into view once, without taking focus. */
   claimScroll(handoffId: string): boolean;
   handoff: BrowserLiveHandoff;
   host: string | null;
   live: BrowserLiveController;
   onAnswer(action: "done" | "cancel"): void;
+  /** Shows the asking agent's tab while the panel shows another agent's; null when it shows that tab. */
+  onShow: (() => void) | null;
+  /** Handoffs pending, this one included; the others wait behind it, oldest first. */
+  pending: number;
   remembered: boolean;
 }>) {
   const titleId = useId();
@@ -82,26 +92,36 @@ function HandoffCardV2({ claimScroll, handoff, host, live, onAnswer, remembered 
   const countdown = browserHandoffCountdownV2(handoff.expiresAt, now);
   const title = browserHandoffTitleV2(handoff.reason, host);
   const busy = live.busy === "done" || live.busy === "cancel";
+  const queued = browserHandoffQueueCopyV2(pending);
   useEffect(() => {
     if (!claimScroll(handoff.id)) return;
     // On a phone the card can open above the visible part of the thread.
     cardRef.current?.scrollIntoView?.({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "nearest" });
   }, [claimScroll, handoff.id]);
   return (
-    <section aria-labelledby={titleId} className="v2-browser-live-handoff" data-reason={handoff.reason}
+    <section aria-labelledby={titleId} className="v2-browser-live-handoff" data-agent={handoff.agent.id} data-reason={handoff.reason}
       data-testid="browser-live-handoff" ref={cardRef}>
       <div className="v2-browser-live-handoff-heading">
         <UiV2Icon name="user" />
         <h3 id={titleId}>{title}</h3>
         <span className="v2-browser-live-countdown" data-expired={countdown.expired || undefined}>{countdown.label}</span>
       </div>
+      {asker ? <p className="v2-browser-live-handoff-agent">Asked by {asker}</p> : null}
       {handoff.message ? <p className="v2-browser-live-handoff-message">{handoff.message}</p> : null}
-      <p className="v2-browser-live-handoff-hint">
-        You have control. Use the browser below, then press Done. Your keystrokes are not sent to the agent. When you
-        press Done, the agent continues from the page as you leave it.
-      </p>
+      {onShow ? (
+        <p className="v2-browser-live-handoff-hint">
+          The browser below shows another agent&apos;s tab. Show this agent&apos;s tab to act on its page, then press Done.
+        </p>
+      ) : (
+        <p className="v2-browser-live-handoff-hint">
+          You have control. Use the browser below, then press Done. Your keystrokes are not sent to the agent. When you
+          press Done, the agent continues from the page as you leave it.
+        </p>
+      )}
       {remembered ? null : <p className="v2-browser-live-handoff-note" role="note">{BROWSER_SIGN_IN_NOT_REMEMBERED_V2}</p>}
+      {queued ? <p className="v2-browser-live-handoff-note" data-testid="browser-live-handoff-queue">{queued}</p> : null}
       <div aria-labelledby={titleId} className="v2-browser-live-handoff-actions" role="group">
+        {onShow ? <UiV2Button onClick={onShow} type="button">Show its tab</UiV2Button> : null}
         <UiV2Button busy={live.busy === "cancel"} disabled={busy} onClick={() => onAnswer("cancel")} type="button">Cancel</UiV2Button>
         <UiV2Button busy={live.busy === "done"} disabled={busy} data-browser-live-exit="" onClick={() => onAnswer("done")}
           tone="primary" type="button">Done</UiV2Button>
@@ -208,6 +228,28 @@ function BrowserLiveTypingV2({ onInputs }: Readonly<{ onInputs(...inputs: Browse
   );
 }
 
+/** Whose tab the panel shows, when several agents browse: a compact select that fits any width. */
+function AgentSwitcherV2({ agents, onSelect, selected }: Readonly<{
+  agents: readonly BrowserLiveAgent[];
+  onSelect(agent: string): void;
+  selected: string;
+}>) {
+  const id = useId();
+  if (agents.length < 2) return null;
+  const waiting = agents.filter((agent) => agent.waitingForUser).length;
+  return (
+    <div className="v2-browser-live-agents" data-testid="browser-live-agents">
+      <label className="v2-browser-live-agents-label" htmlFor={id}>
+        {agents.length} agents browsing{waiting > 0 ? ` · ${waiting} ${waiting === 1 ? "needs" : "need"} you` : ""}
+      </label>
+      <select className="v2-browser-live-agents-select v2-focusable" id={id} onChange={(event) => onSelect(event.currentTarget.value)}
+        value={selected}>
+        {agents.map((agent) => <option key={agent.id} value={agent.id}>{browserLiveAgentOptionV2(agent)}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function StepsV2({ steps }: Readonly<{ steps: readonly BrowserLiveStep[] }>) {
   if (steps.length === 0) return null;
   const last = steps.at(-1)!;
@@ -242,7 +284,10 @@ function announcement(snapshot: BrowserLiveSnapshot, host: string | null): strin
   if (snapshot.connection === "failed") return "The live view could not connect.";
   const state = snapshot.state;
   if (!state || state.browser !== "running") return "";
-  if (state.handoff) return `The agent needs your help: ${browserHandoffTitleV2(state.handoff.reason, host)}.`;
+  if (state.handoff) {
+    const asker = state.agents.length > 1 ? browserLiveAgentLabelV2(state.handoff.agent) : "The agent";
+    return `${asker} needs your help: ${browserHandoffTitleV2(state.handoff.reason, host)}.`;
+  }
   return state.controller === "user" ? "You have control of the browser." : "The agent has control of the browser.";
 }
 
@@ -258,11 +303,23 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
 }>) {
   const { snapshot } = live;
   const state = snapshot.state;
-  const frame = snapshot.connection === "ended" || snapshot.connection === "failed" ? null : snapshot.frame;
+  // Only the selected agent's picture: one of the agent shown before never stands in for it.
+  const frame = snapshot.connection === "ended" || snapshot.connection === "failed" ||
+    (state && snapshot.frame && snapshot.frame.agent !== state.selected) ? null : snapshot.frame;
   const running = state?.browser === "running" && (snapshot.connection === "live" || snapshot.connection === "reconnecting");
   const userControls = running && snapshot.connection === "live" && state?.controller === "user";
+  const selected = state?.selected ?? null;
+  const agents = state?.agents ?? [];
+  const several = agents.length > 1;
+  /** The oldest pending handoff, the one the card shows; others wait behind it. */
   const handoff = running ? state?.handoff ?? null : null;
+  /** The handoff of the agent whose tab is shown: Take and Return give way to its Done and Cancel. */
+  const shownHandoff = running ? state?.handoffs.find((pending) => pending.agent.id === selected) ?? null : null;
+  const shownAgent = agents.find((agent) => agent.id === selected) ?? null;
   const host = browserLiveHostV2(state?.page?.url);
+  const handoffHost = handoff ? browserLiveHostV2(handoff.agent.id === selected ? state?.page?.url
+    : agents.find((agent) => agent.id === handoff.agent.id)?.page?.url) : null;
+  const driver = several && shownAgent ? browserLiveAgentLabelV2(shownAgent) : "The agent";
   const [zoom, setZoom] = useState(1);
   const stageRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -289,11 +346,12 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
     return [...keys, ...gestureRef.current.release()];
   }, []);
 
-  // Control moved: whatever was held went with it (the page can no longer be reached from here).
+  // Control moved, or another agent's tab is shown: whatever was held went with it (the page can no longer be
+  // reached from here).
   useEffect(() => {
     pressedKeysRef.current.clear();
     gestureRef.current.reset();
-  }, [userControls]);
+  }, [selected, userControls]);
 
   // Collapsing or leaving the panel while in control frees held keys and buttons, best effort.
   const releaseOnCloseRef = useRef<() => void>(() => undefined);
@@ -477,11 +535,25 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
   const label = state?.page?.title ? `Live view of the agent's browser: ${state.page.title}` : "Live view of the agent's browser";
   const zoomIndex = ZOOM_STEPS.findIndex((step) => step >= zoom - 0.001);
 
+  /** Shows another agent's tab after freeing what is held on the one shown now. */
+  const selectAgent = (agent: string) => {
+    const held = takeHeld();
+    if (userControls && held.length > 0) sendInput(...held);
+    zoomAnchorRef.current = null;
+    setZoom(1);
+    void live.select(agent);
+  };
   const handoffCard = handoff ? (
     // In full screen the card never scrolls the page behind the layer.
-    <HandoffCardV2 claimScroll={expanded ? () => false : claimScroll} handoff={handoff} host={host} live={live}
-      onAnswer={(action) => endControl(() => live.answerHandoff(handoff.id, action))} remembered={state?.signInRemembered !== false} />
+    // A sub-agent's request always names it; the main agent's only beside others.
+    <HandoffCardV2 asker={several || handoff.agent.id !== BROWSER_LIVE_MAIN_AGENT ? browserLiveAgentLabelV2(handoff.agent) : null} claimScroll={expanded ? () => false : claimScroll}
+      handoff={handoff} host={handoffHost} live={live}
+      onAnswer={(action) => handoff.agent.id === selected ? endControl(() => live.answerHandoff(handoff.id, action))
+        : void live.answerHandoff(handoff.id, action)}
+      onShow={handoff.agent.id === selected ? null : () => selectAgent(handoff.agent.id)}
+      pending={state?.handoffs.length ?? 1} remembered={state?.signInRemembered !== false} />
   ) : null;
+  const switcher = running && selected ? <AgentSwitcherV2 agents={agents} onSelect={selectAgent} selected={selected} /> : null;
   const address = state?.page && running ? (
     <p className="v2-browser-live-address" title={expanded ? state.page.url : undefined}>
       {state.page.title ? <span className="v2-browser-live-title">{state.page.title}</span> : null}
@@ -491,10 +563,10 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
   const toolbar = running ? (
     <div className="v2-browser-live-toolbar">
       <span className="v2-browser-live-controller" data-controller={state?.controller}>
-        {handoff ? "You have control" : userControls ? "You have control · the agent waits"
-          : snapshot.connection === "reconnecting" ? "Reconnecting…" : "The agent is using the browser"}
+        {shownHandoff ? "You have control" : userControls ? `You have control · ${several ? driver : "the agent"} waits`
+          : snapshot.connection === "reconnecting" ? "Reconnecting…" : `${driver} is using the browser`}
       </span>
-      {handoff ? null : userControls ? (
+      {shownHandoff ? null : userControls ? (
         <UiV2Button busy={live.busy === "return"} disabled={live.busy !== null} onClick={() => endControl(() => live.control("return"))}
           data-browser-live-exit="" type="button">Return control</UiV2Button>
       ) : (
@@ -576,6 +648,7 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
           data-testid="browser-live-full-screen" onClick={(event) => event.stopPropagation()} onKeyDown={onDialogKeyDown}
           ref={dialogRef} role="dialog">
           <div className="v2-browser-live-top">
+            {switcher}
             {address}
             {toolbar}
             <UiV2IconButton className="v2-browser-live-close" data-browser-live-close="" icon="collapse" label="Exit full screen"
@@ -596,6 +669,7 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
   return (
     <div className="v2-browser-live-view">
       {handoffCard}
+      {switcher}
       {address}
       {toolbar}
       {failure}
@@ -614,6 +688,11 @@ export type BrowserLivePanelV2Props = Readonly<{
   live: boolean;
   toolActivity: ThreadToolActivity | null;
   workspaceActivity: ThreadWorkspaceActivity | null;
+  /**
+   * The chat's background sub-agents that wait for the user now (`subagentWaitingKeyV2`): their handoffs come
+   * through the same chat stream, so the bar shows and opens once for them too, whether or not this answer browsed.
+   */
+  waitingKey?: string | null;
   /** Tests inject a fake `EventSource`. */
   openEventSource?: BrowserLiveEventSourceFactory;
 }>;
@@ -623,8 +702,11 @@ export type BrowserLivePanelV2Props = Readonly<{
  * while the agent browses, expanded on demand (frames stream only then) or
  * automatically when the agent hands the browser to the user.
  */
-export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, toolActivity, workspaceActivity }: BrowserLivePanelV2Props) {
-  const activity = browserLiveActivityV2(toolActivity, workspaceActivity);
+export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, toolActivity, waitingKey = null,
+  workspaceActivity }: BrowserLivePanelV2Props) {
+  const answerActivity = browserLiveActivityV2(toolActivity, workspaceActivity);
+  const activity = waitingKey ? { ...answerActivity, visible: true,
+    pendingHandoffKey: answerActivity.pendingHandoffKey ?? `subagents:${waitingKey}` } : answerActivity;
   const visible = runLive && activity.visible;
   const [expanded, setExpanded] = useState(false);
   const autoOpenedRef = useRef<string | null>(null);

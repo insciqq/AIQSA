@@ -1,5 +1,6 @@
 import { retainFailureCause } from "../observability/failureFacts.cjs";
 import type { WorkspaceOperation } from "./operationFence";
+import type { WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import type { AcceptedWorkspaceSecret } from "./secrets/store";
 import type { WorkspaceFileSelection } from "./outputManifest";
 import type { WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
@@ -8,6 +9,7 @@ import type {
   WorkspaceMcpToolName,
   WorkspaceStagedAttachmentEntry
 } from "@/lib/domain/workspace";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
 
 export type WorkspaceRuntimeHealth = Readonly<{
   /** The runner gateway guest code reaches MCP through is configured and the image is loaded. */
@@ -262,6 +264,8 @@ export interface WorkspaceRuntime {
   syncPersonalSecrets(input: Readonly<{
     secrets: readonly AcceptedWorkspaceSecret[];
     modelRunId: string;
+    /** Server-set browser identity for this run; it overrides any guest-provided value. */
+    agent?: WorkspaceAgent;
     /** Server-owned values of this run (guest-code MCP bearer and relay, or why there is none), over the saved environment. */
     runEnvironment?: Readonly<Record<string, string>>;
     /**
@@ -283,6 +287,8 @@ export interface WorkspaceRuntime {
   }>): Promise<WorkspaceToolCatalog>;
   callBoundTool(input: Readonly<{
     arguments: Record<string, unknown>;
+    /** Server-set identity for this exec; guest command env cannot override it. */
+    agent?: WorkspaceAgent;
     /** Code invocation of this dispatched command; only its own environment carries it. */
     invocationId?: string;
     modelRunId: string;
@@ -313,6 +319,18 @@ export interface WorkspaceRuntime {
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<readonly WorkspaceExecutionTermination[]>;
+  /**
+   * Stops every guest process of one agent of a shared Workspace (`AIQSA_AGENT_ID`) with proof, leaving the other
+   * agents' processes and the VM running (`agentProcessGuest.ts`). `unknown` proves nothing: the caller stops the
+   * VM. Absent from a runtime that cannot prove it.
+   */
+  terminateAgentProcesses?(input: Readonly<{
+    agentId: string;
+    runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<WorkspaceAgentProcessTermination>;
   collectOutputs(input: Readonly<{
     /** Create once, then read only this private capture even after guest mutation. */
     capture?: Readonly<{ create: boolean; id: string }>;

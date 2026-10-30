@@ -13,6 +13,7 @@ import { defaultRunServices } from "./defaultRunServices";
 import { getDefaultWorkspaceFollowup } from "./defaultWorkspaceFollowup";
 import type { RunHandlerDeps } from "./handlers";
 import { createPrismaRunRepository } from "./prismaRepository";
+import { getDefaultSubagentBackground } from "./subagentBackground/default";
 import { installationToolBudgetPolicy } from "./toolBudgets";
 
 /**
@@ -31,7 +32,8 @@ export function createDefaultSendMessageDeps(): Omit<RunHandlerDeps, "resolveAut
     getConfig: () => getAuthConfig(),
     ...defaultRunServices(storage),
     chatPdf: getDefaultChatPdf(),
-    nativeEngine: defaultNativeEngineHandlerDeps(storage),
+    nativeEngine: { ...defaultNativeEngineHandlerDeps(storage),
+      subagentRecovery: (input) => getDefaultSubagentBackground().reconcile(input) },
     workspaceFollowup: getDefaultWorkspaceFollowup(),
     providers: {},
     repository: createPrismaRunRepository(),

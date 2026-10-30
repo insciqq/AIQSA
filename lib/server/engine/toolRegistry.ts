@@ -14,7 +14,7 @@ import { memorySearchTool } from "../memory/search/contract";
 import type { MemorySearchService } from "../memory/search/runtime";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
-import { mcpApprovalRequestForCall } from "../runs/mcpApprovalGate";
+import { guardedMcpApprovalRequestForCall, mcpApprovalRequestForCall } from "../runs/mcpApprovalGate";
 import { attachmentIdsFromContentBlocks } from "../runs/runAttachmentMaterialization";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
@@ -34,7 +34,7 @@ import {
 import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
-import { createFetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
+import { createFetchUrlSession, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
 import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
 import type { HarnessToolEffects } from "../tools/harnessTool";
@@ -62,6 +62,10 @@ import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/upd
 import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
 import type { VisionAnalysisService } from "../vision/service";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
+import { SUBAGENT_MANAGEMENT_TOOLS, executeSubagentManagementTool, type SubagentManagementRunDeps } from "../subagents/managementTools";
+import { workspaceBrowserAgentAvailableFor } from "../workspace/browserAgentIdentity";
+import { WORKSPACE_BROWSER_OLD_IMAGE_NOTICE } from "../workspace/browserGuidance";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { createWorkspaceImageViewer, defaultWorkspaceImageCaptures, type WorkspaceImageCaptures } from "../workspace/directImageView";
@@ -109,6 +113,9 @@ export type EngineTool = Readonly<{
   activity(call: ModelToolCall): EngineToolActivity;
   /** The initiator's approval this call needs before it is sent. */
   approval?(call: ModelToolCall): McpApprovalRequest | undefined;
+  /** A server-admitted human decision; the store still matches its exact call and owner. */
+  approvedBy?: string;
+  guardedApproval?(call: ModelToolCall, signal: AbortSignal): Promise<McpApprovalRequest | undefined>;
   definition: RunTool;
   effects: EngineToolEffects;
   execute(execution: EngineToolExecution): Promise<ToolExecutionResult>;
@@ -149,6 +156,11 @@ export type ToolRegistry = Readonly<{
    */
   images?: TranscriptImages;
   /**
+   * The run's page-reader session: its cap and read cache count every page read of the answer, so a sub-agent's
+   * registry reuses its parent's (`ToolRegistryInput.fetchUrlSession`).
+   */
+  fetchUrlSession?: FetchUrlSession;
+  /**
    * For a call of an older tool this run does not offer because a newer one
    * replaces it (a name the model may know from a Workspace guide or an
    * earlier turn), what to call instead: the refusal the model reads.
@@ -181,6 +193,7 @@ export type EngineMcpBinding = Readonly<{ fingerprint: string; mcpRunBindingId: 
 export type EngineMcpBindingRow = Readonly<{ id: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>;
 
 export type ToolRegistryServices = Readonly<{
+  mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "check">;
   artifacts?: Pick<ArtifactService, "execute">;
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
   extractPage?: FetchUrlSessionDeps["extractPage"];
@@ -206,7 +219,11 @@ export type ToolRegistryServices = Readonly<{
    * of them (`selfServiceToolsFor`); the registry adds the run's own facts.
    * They need `secrets` too, for the Skill save guard.
    */
-  selfService?: Pick<SelfServiceRunDeps, "assistants" | "db" | "storage"> & Readonly<{ tools?: readonly string[] }>;
+  selfService?: Pick<SelfServiceRunDeps, "assistants" | "db" | "storage"> & Readonly<{
+    /** The owners of the user's custom sub-agents (`create_subagent`, `edit_subagent`, `delete_subagent`). */
+    subagents?: Pick<SubagentManagementRunDeps, "db" | "models">;
+    tools?: readonly string[];
+  }>;
   skillTools?: Pick<SkillToolService, "execute">;
   vision?: Pick<VisionAnalysisService, "execute">;
   workspace?: WorkspaceCoordinator;
@@ -215,11 +232,18 @@ export type ToolRegistryServices = Readonly<{
 }>;
 
 export type ToolRegistryInput = Readonly<{
+  /**
+   * Who the registry's Workspace calls run for (`main`, or a sub-agent's thread): the agent id the cgroup launcher and
+   * the browser lease take. Absent: the run's own agent, as the coordinator reads it from the run's binding.
+   */
+  agent?: WorkspaceAgent;
   /** Where the run's `browser_handoff` goes; absent where the run has no Workspace browser. */
   browserHandoff?: BrowserHandoffMode;
   chatId: string;
   /** Text the user sent into this running answer (`fetch_url` link authority). */
   followupTexts(): readonly string[];
+  /** The answer's page-reader session to share (a sub-agent's registry); absent, the registry starts the run's own. */
+  fetchUrlSession?: FetchUrlSession;
   /** The run's accepted MCP runtimes, by server; discovery adds to it. */
   mcpBindings: Map<string, EngineMcpBinding>;
   /**
@@ -238,6 +262,23 @@ export type ToolRegistryInput = Readonly<{
   telegram?: true;
   userId: string;
 }>;
+
+/** A command that drives the Workspace browser (`aiqsa-browser`, or the helper's Python module). */
+const BROWSER_COMMAND = /aiqsa-browser|from\s+aiqsa\s+import\s+browser|aiqsa\.browser/u;
+
+function drivesBrowser(call: ModelToolCall): boolean {
+  try {
+    return BROWSER_COMMAND.test(JSON.stringify(call.arguments));
+  } catch {
+    return false;
+  }
+}
+
+/** A sub-agent's browser call on an older guest image: refused before anything starts, with the stable notice. */
+function oldImageBrowserRefusal(call: ModelToolCall): ToolExecutionResult {
+  return { callId: call.id, content: [{ type: "json", value: { error: "browser_unavailable_for_subagents",
+    message: WORKSPACE_BROWSER_OLD_IMAGE_NOTICE } }], name: call.name, status: "error" };
+}
 
 function unavailable(call: ModelToolCall, code: string): ToolExecutionResult {
   return { callId: call.id, content: [{ type: "json", value: { error: code } }], name: call.name, status: "error" };
@@ -429,6 +470,18 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
             userId: input.userId })
         }) ?? unavailable(execution.call, "tool_unavailable") });
     }
+    // The user's custom sub-agents, through the same service as Studio, each change with its card and Undo.
+    const definitions = selfService.subagents;
+    for (const descriptor of definitions ? SUBAGENT_MANAGEMENT_TOOLS : []) {
+      if (!definitions || selfService.tools && !selfService.tools.includes(descriptor.name)) continue;
+      const runDeps: SubagentManagementRunDeps = { ...definitions, run: { chatId: input.chatId, runId: input.runId, userId: input.userId } };
+      add({ activity: listed(descriptor.name), definition: descriptor.tool, effects: descriptor.effects, observationSource: "workspace",
+        execute: async (execution) => await executeSubagentManagementTool(runDeps, execution.call, {
+          callId: execution.persistedToolCallId, signal: execution.signal,
+          store: createToolCallSelfServiceStore({ callId: execution.persistedToolCallId, runId: input.runId, toolName: execution.call.name,
+            userId: input.userId })
+        }) ?? unavailable(execution.call, "tool_unavailable") });
+    }
   }
 
   // The run's one reserved report, frozen from its server-only admission and never from a request
@@ -464,9 +517,10 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
 
   const fetchPlan = isFetchUrlPlan(request.fetchUrl) ? request.fetchUrl : null;
+  let fetchUrlSession: FetchUrlSession | undefined;
   if (fetchPlan) {
     const repository = input.services.repository;
-    const session = createFetchUrlSession({
+    const session = input.fetchUrlSession ?? createFetchUrlSession({
       followupTexts: input.followupTexts,
       plan: fetchPlan,
       scheduled: fetchPlan.taskUrlDigests !== undefined,
@@ -476,6 +530,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       ...(repository.loadRunSearchSourceUrls ? { loadSearchUrls: () => repository.loadRunSearchSourceUrls!(owner) } : {}),
       ...(repository.loadRunFetchUrlCalls ? { loadCalls: () => repository.loadRunFetchUrlCalls!(owner) } : {})
     });
+    fetchUrlSession = session;
     for (const definition of fetchUrlToolsForRequest(request)) {
       if (definition.name !== FETCH_URL_TOOL_NAME) continue;
       add({ activity: named(definition, "Web", (call) => fetchUrlActivityFacts(call.name, call.arguments)), definition,
@@ -521,14 +576,19 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   if (clientTools && request.workspace && input.services.workspace) {
     const workspace = request.workspace;
     const coordinator = input.services.workspace;
+    const agent = input.agent;
+    // An older guest image has no per-agent tabs: only the main agent may drive its browser (`browserGuidance.ts`).
+    const browserRefused = agent !== undefined && !workspaceBrowserAgentAvailableFor(agent, workspace.imageRef);
     const workspaceTools = await coordinator.tools({ runId: input.runId, userId: input.userId, workspace });
     for (const definition of workspaceTools) {
       if (!coordinator.accepts({ name: definition.name, workspace })) continue;
       add({ activity: () => ({ origin: definition.capability, serverName: "Workspace",
         toolName: workspaceToolNameFromNamespaced(definition.name) ?? definition.name }),
         definition, effects: "external", links: () => ({ workspaceRunBindingId: input.runId }), observationSource: "workspace",
-        execute: (execution) => coordinator.execute({ call: execution.call, modelRunToolCallId: execution.persistedToolCallId,
-          onActivity: input.onWorkspaceActivity, runId: input.runId, signal: execution.signal, userId: input.userId, workspace }) });
+        execute: (execution) => browserRefused && drivesBrowser(execution.call)
+          ? Promise.resolve(oldImageBrowserRefusal(execution.call))
+          : coordinator.execute({ ...(agent ? { agent } : {}), call: execution.call, modelRunToolCallId: execution.persistedToolCallId,
+            onActivity: input.onWorkspaceActivity, runId: input.runId, signal: execution.signal, userId: input.userId, workspace }) });
     }
     const offered = new Set(workspaceTools.map((definition) => definition.name));
     if (APPLY_PATCH_WORKSPACE_TOOLS.every((name) => offered.has(namespacedWorkspaceToolName(name)) &&
@@ -541,12 +601,14 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     if (handoffMode && offered.has(namespacedWorkspaceToolName("sandbox_exec"))) {
       add({ activity: () => ({ origin: "workspace", serverName: "Workspace", toolName: BROWSER_HANDOFF_TOOL_NAME }),
         definition: browserHandoffTool, effects: "external", observationSource: "workspace",
-        execute: (execution) => executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
+        execute: (execution) => browserRefused ? Promise.resolve(oldImageBrowserRefusal(execution.call))
+          : executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
     }
   }
 
   return {
     definitions: () => [...tools.values()].map((tool) => tool.definition),
+    ...(fetchUrlSession ? { fetchUrlSession } : {}),
     ...(images ? { images } : {}),
     ...(mcpLoadCall ? { mcpLoadCall } : {}),
     replacement: (name) => {
@@ -578,6 +640,7 @@ function applyPatchEngineTool(input: ToolRegistryInput, coordinator: WorkspaceCo
     observationSource: "workspace",
     execute: async (execution) => {
       const call: WorkspaceToolCaller = (name, args, signal) => coordinator.execute({
+        ...(input.agent ? { agent: input.agent } : {}),
         call: { arguments: args, id: execution.call.id, name: namespacedWorkspaceToolName(name) },
         modelRunToolCallId: execution.persistedToolCallId, onActivity: lifecycle, runId: input.runId,
         signal: signal ?? execution.signal, userId: input.userId, workspace
@@ -626,6 +689,11 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
         return { origin: "mcp", ...(current ? { serverName: current.tool.serverName, toolName: current.originalName } : {}) };
       },
       approval: (call) => mcpApprovalRequestForCall({ admission: request.mcpApproval, call, snapshot }),
+      ...((request.mcpApproval?.approvedBy ?? request.mcpApproval?.guard?.approvedBy)
+        ? { approvedBy: request.mcpApproval?.approvedBy ?? request.mcpApproval?.guard?.approvedBy } : {}),
+      ...(request.mcpApproval?.guard ? { guardedApproval: (call: ModelToolCall, signal: AbortSignal) =>
+        guardedMcpApprovalRequestForCall({ admission: request.mcpApproval, call, snapshot, signal,
+          runId: input.runId, userId: input.userId, check: input.services.mcpGuard?.check }) } : {}),
       definition,
       retryApproval: (call) => {
         const current = request.mcpApproval ? route() : null;

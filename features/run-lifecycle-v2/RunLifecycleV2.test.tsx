@@ -39,6 +39,20 @@ describe("Run lifecycle v2", () => {
     expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
   });
 
+  it("keeps the Browser bar on a settled answer while a background sub-agent waits for the user", () => {
+    vi.stubGlobal("EventSource", class { addEventListener() { return undefined; } close() { return undefined; } });
+    try {
+      const { rerender } = render(<RunAnswerV2 browserLiveChatId="chat-1" browserLiveWaitingKey="thread-signer" content="Started them."
+        presentation={presentation({ kind: "complete", runId: "run-main" })} />);
+      expect(screen.getByRole("region", { name: "Browser" })).toHaveTextContent("Needs your help");
+      rerender(<RunAnswerV2 browserLiveChatId="chat-1" browserLiveWaitingKey={null} content="Started them."
+        presentation={presentation({ kind: "complete", runId: "run-main" })} />);
+      expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows sanitized compaction state in the existing process disclosure", () => {
     const { rerender } = render(<RunAnswerV2 content="" presentation={presentation({
       activity: { kind: "compaction", label: "Compacting context…" },
