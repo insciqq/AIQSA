@@ -725,7 +725,8 @@ it("never lets an automatic allow authorize a repeat whose earlier effect is unk
   batch.unknownEffects.record({ arguments: { title: "x" }, name: "create" }, "unknown");
   const result = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: { title: "x" }, id: "c1", name: "create" }], round: 1 });
   expect(guardedApproval).not.toHaveBeenCalled();
-  expect(store.begin.mock.calls[0]?.[0].approvedBy).toBeUndefined();
+  // The named decision goes with the uncertain attempt's fence, so the store accepts it only if it was made after that attempt.
+  expect(store.begin.mock.calls[0]?.[0]).toMatchObject({ approvalAfter: expect.any(Date), approvedBy: "earlier-human-decision" });
   expect(execute).not.toHaveBeenCalled();
   expect(result.approvals).toEqual(["approval-1"]);
 });
@@ -763,8 +764,15 @@ describe("native unknown-outcome approval freshness", () => {
     { continuation: true, decision: "allow_once", offset: -1_000 },
     { continuation: true, decision: "allow_once", offset: 1_000 },
     { continuation: true, decision: "allow_server", offset: -1_000 },
-    { continuation: true, decision: "allow_server", offset: 1_000 }
-  ] as const)("requires a newer exact decision: $decision, continuation=$continuation, offset=$offset", async scenario => {
+    { continuation: true, decision: "allow_server", offset: 1_000 },
+    // No result was saved: the fence is the durable attempt, which followed the round's call record (codex review).
+    { continuation: false, decision: "allow_once", offset: -250, resultless: true },
+    { continuation: false, decision: "allow_once", offset: 1_000, resultless: true },
+    // A fresh Always allow on the retry card, named by admission for a continuation after the user wrote again (codex review).
+    { continuation: false, decision: "allow_server", named: true, offset: 1_000 },
+    { continuation: false, decision: "allow_server", named: true, offset: -1_000 }
+  ] as const)("requires a newer exact decision: $decision, continuation=$continuation, offset=$offset", async (scenario: Readonly<{
+    continuation: boolean; decision: "allow_once" | "allow_server"; named?: true; offset: number; resultless?: true }>) => {
     const after = new Date(Date.now() - 5_000);
     const decidedAt = new Date(after.getTime() + scenario.offset);
     let consumed = false;
@@ -785,7 +793,10 @@ describe("native unknown-outcome approval freshness", () => {
       updateMany: vi.fn(async () => { consumed = true; return { count: 1 }; })
     };
     const calls = { create: vi.fn(async ({ data }: { data: Prisma.ModelRunToolCallUncheckedCreateInput }) =>
-      ({ startedAt: null, result: null, ...data, id: "retry-row" })), updateMany: vi.fn(async () => ({ count: 0 })) };
+      ({ startedAt: null, result: null, ...data, id: "retry-row" })), updateMany: vi.fn(async () => ({ count: 0 })),
+      // The uncertain attempt's own row: it was sent at the fence, after the round's call items were recorded.
+      findMany: vi.fn(async () => scenario.resultless
+        ? [{ completedAt: null, modelRunId: "prior-run", providerCallId: "uncertain", startedAt: after }] : []) };
     const tx = { $queryRaw: vi.fn(async () => [{ status: "streaming" }]), mcpToolApproval: approvals, modelRunToolCall: calls };
     const client = { ...tx, $transaction: async (fn: (value: typeof tx) => unknown) => fn(tx), runTranscriptItem: {
       findMany: vi.fn(async () => [
@@ -794,19 +805,22 @@ describe("native unknown-outcome approval freshness", () => {
         { body: { name: "create", outcome: "unknown", output: "Response lost.", recordedAt: "2020-01-01T00:00:00Z" },
           callId: "uncertain", createdAt: after,
           id: "prior-result", kind: "tool_result", modelRunId: "prior-run" }
-      ])
+      ].filter((row) => !scenario.resultless || row.kind === "tool_call"))
     } } as unknown as PrismaClient;
     // Exercise hydration and unknown detection as a later run does, including the user's next message.
     const history = await createTranscriptRepository(client).loadRuns({ chatId: "chat", runIds: ["prior-run"], userId: "user" });
     expect(client.runTranscriptItem.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      select: expect.objectContaining({ createdAt: true }), where: { chatId: "chat", modelRunId: { in: ["prior-run"] }, userId: "user" }
+      select: expect.objectContaining({ createdAt: true }),
+      // The main agent's own items only: a sub-agent thread's never enter its context.
+      where: { chatId: "chat", modelRunId: { in: ["prior-run"] }, subagentThreadId: null, userId: "user" }
     }));
     const unknownEffects = unknownEffectsOf([...history.get("prior-run")!, { id: "new-message", kind: "user", text: "Continue" }], () => true);
     const store = createToolCallStore(client);
     const hasApproval = vi.spyOn(store, "hasApproval");
     const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
     const guardedApproval = vi.fn(async () => ({ ...approval, guard: { decision: "allow" as const, reason: "Requested." } }));
-    const batch = deps({ create: tool("create", "external", execute, { guardedApproval, retryApproval: () => approval }) }, store,
+    const batch = deps({ create: tool("create", "external", execute, { guardedApproval, retryApproval: () => approval,
+      ...(scenario.named ? { approvedBy: "human-card" } : {}) }) }, store,
       { unknownEffects });
     const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1,
       ...(scenario.continuation ? { approved: { approvalId: "human-card", callId: "retry" } } : {}),

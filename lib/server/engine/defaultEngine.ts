@@ -13,7 +13,10 @@ import type { NativeEngineDeps } from "./execution";
 import { engineTestFaults } from "./faults";
 import type { NativeEngineHandlerDeps } from "./handlerSupport";
 import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } from "./recovery";
+import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createNativeRunStore } from "./runStore";
+import { createPrismaSubagentModelCatalog } from "./subagents/modelRoutes";
+import { createSubagentThreadStore } from "./subagents/threadStore";
 import { createToolCallStore } from "./toolCallStore";
 import type { ToolRegistryServices } from "./toolRegistry";
 import { createSavedToolResultReader } from "./toolResults";
@@ -49,6 +52,9 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
     observations: () => observations ??= defaultToolObservations(),
     runs: createNativeRunStore(client),
     savedResults: createSavedToolResultReader({ prisma: client, storage }),
+    // A frozen model other than the parent's is admitted at its first use through the answer model's resolver.
+    subagentModels: createPrismaSubagentModelCatalog({ prisma: client, runtime: providerRuntimeResolver }),
+    subagentThreads: createSubagentThreadStore(client),
     toolCalls: createToolCallStore(client),
     transcripts: createTranscriptRepository(client)
   };

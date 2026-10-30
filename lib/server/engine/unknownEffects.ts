@@ -102,6 +102,9 @@ export function withHiddenRunEffects(items: readonly TranscriptItem[],
 export function createUnknownEffects(): UnknownEffects {
   // Per effect: the user had spoken since it became unknown.
   const unknown = new Map<string, { after: Date; userSpokeSince: boolean }>();
+  // Per effect: when an equivalent call last completed. Records may arrive out of their order (one agent's records,
+  // then another's), so an outcome changes the fence only when it is not older than the one it would replace.
+  const completed = new Map<string, number>();
   return {
     find(call) {
       const entry = unknown.get(effectKey(call));
@@ -110,12 +113,19 @@ export function createUnknownEffects(): UnknownEffects {
     // Missing historical metadata fails closed: an already-issued decision cannot authorize the retry.
     record(call, outcome, after = new Date()) {
       const key = effectKey(call);
+      const timestamp = Number.isFinite(after.getTime()) ? after.getTime() : Date.now();
       if (outcome === "unknown") {
+        // A later completion of the same call settles this earlier uncertainty.
+        if ((completed.get(key) ?? Number.NEGATIVE_INFINITY) > timestamp) return;
         // Never move the fence backwards when concurrent uncertain calls settle out of order.
-        const timestamp = Number.isFinite(after.getTime()) ? after.getTime() : Date.now();
         const latest = Math.max(unknown.get(key)?.after.getTime() ?? 0, timestamp);
         unknown.set(key, { after: new Date(latest), userSpokeSince: false });
-      } else if (outcome === "complete") unknown.delete(key);
+      } else if (outcome === "complete") {
+        completed.set(key, Math.max(completed.get(key) ?? Number.NEGATIVE_INFINITY, timestamp));
+        // An earlier completion never settles a later uncertain attempt.
+        const open = unknown.get(key);
+        if (!open || open.after.getTime() <= timestamp) unknown.delete(key);
+      }
     },
     userSpoke() {
       for (const entry of unknown.values()) entry.userSpokeSince = true;
@@ -135,8 +145,10 @@ export function createUnknownEffects(): UnknownEffects {
  * count as the user speaking.
  */
 export function unknownEffectsOf(items: readonly TranscriptItem[],
-  userAuthored: (item: TranscriptUserItem) => boolean): UnknownEffects {
-  const effects = createUnknownEffects();
+  userAuthored: (item: TranscriptUserItem) => boolean,
+  /** Records into this fence instead of a new one: a run's one fence for its main agent and sub-agents. */
+  into: UnknownEffects = createUnknownEffects()): UnknownEffects {
+  const effects = into;
   const calls = new Map<string, { after?: Date; arguments: Record<string, unknown>; name: string }>();
   // Calls without any result yet; a result recorded later (an approved call that then ran) still counts.
   const open = new Set<string>();

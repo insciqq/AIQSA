@@ -64,6 +64,16 @@ import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
 import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
+import { withSubagentTools } from "./subagents/callTools";
+import {
+  currentUserMessageText,
+  prepareRunSubagents,
+  userAuthoredFollowup,
+  type RunSubagents,
+  type SubagentEngineDeps,
+  type SubagentRunPorts
+} from "./subagents/runSubagents";
+import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -88,7 +98,7 @@ export class EngineFailure extends Error {
 export const CONTEXT_TOO_LARGE_MESSAGE =
   "This conversation no longer fits the model's context window. Start a new chat, or continue in a new chat from this answer.";
 
-export type NativeEngineDeps = Readonly<{
+export type NativeEngineDeps = SubagentEngineDeps & Readonly<{
   /** The approved call an approval continuation sends, while its approval may still continue. */
   approvedCall(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
     providerCallId: string; toolName: string }> | null>;
@@ -123,6 +133,11 @@ export type NativeRunExecutionInput = Readonly<{
    */
   scheduled?: true;
   services: NativeRunServices;
+  /**
+   * The sub-agent ports of other slices this run gets (background turns, custom types, the browser identity);
+   * an absent one is unavailable, so a Telegram turn or scheduled occurrence gives no background port.
+   */
+  subagents?: SubagentRunPorts;
   /** A Telegram turn: its chat shows no live browser, so a handoff points to the web chat. */
   telegram?: true;
   userId: string;
@@ -343,6 +358,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       let runRecords: TranscriptWriter | null = null;
       let runContext: RunContext | null = null;
       let live: BrowserLiveRunHandle | null = null;
+      let runSubagents: RunSubagents | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
@@ -439,6 +455,17 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
         const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true ||
           (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
+        // The run's agents share this one fence (`subagents/runner.ts`): an effect a sub-agent of this branch left unknown is
+        // respected by the main agent and every other sub-agent, read from the threads' records and never put in any context.
+        const branchRunIds = conversationMessages.flatMap((message) => message.role === "assistant" && nativeRuns.has(message.id)
+          ? [nativeRuns.get(message.id)!] : []);
+        if (engine.subagentThreads) {
+          const threadEffects = await engine.subagentThreads.threadEffectItems({ chatId: scope.chatId, runIds: branchRunIds,
+            userId: input.userId });
+          for (const threadItems of threadEffects) unknownEffectsOf(threadItems, () => false, unknownEffects);
+          // Every earlier thread effect precedes the user's current message, which is them speaking since.
+          if (threadEffects.length > 0 && conversation.currentInputId && !serverInput) unknownEffects.userSpoke();
+        }
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
@@ -460,26 +487,61 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           : input.scheduled ? { kind: "unattended" }
             : input.telegram ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
               : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now() };
-        const registry = await buildToolRegistry({
+        const registryInput = {
           ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,
-          followupTexts: () => delivered,
           loadMcpBindingRows: () => engine.mcpBindingRows(runId),
           mcpBindings,
-          onEvent: (event) => sink.publish(event),
-          onUsage: (attribution) => usage.add(attribution),
-          onWorkspaceActivity,
-          request: base,
+          onUsage: (attribution: RunUsageAttribution) => usage.add(attribution),
           ...(input.telegram ? { telegram: true as const } : {}),
           runId,
           services: { ...input.services, mcpRuntime: input.mcpRuntime, repository: input.repository, savedResults: engine.savedResults,
             workspace: input.workspace },
           userId: input.userId
+        };
+        const mainRegistry = await buildToolRegistry({ ...registryInput, followupTexts: () => delivered,
+          onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base });
+        const budgets = toolRunBudgetsForRequest(normalizedRequest);
+        const toolState: ToolBatchState = { calls: 0 };
+        const saveResult: ToolBatchDeps["saveResult"] = async (save) => saveToolResultText({ outcome: save.outcome,
+          producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
+          signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
+          text: save.text });
+        // Sub-agents (`call_subagent`): the main agent's registry only, on the run's own frozen bindings (`subagents/`).
+        const subagents = await prepareRunSubagents({
+          admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
+          assistantRun: Boolean(input.prepared.assistant || input.prepared.chatAssistant),
+          branchRunIds,
+          // One page-reader session for the answer: its cap and cache count every agent's reads (integrator decision).
+          buildRegistry: (agentInput) => buildToolRegistry({ ...registryInput,
+            ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),
+            followupTexts: agentInput.followupTexts,
+            // A sub-agent's outputs stay its own; the answer shows its steps under its call.
+            onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
+            services: { ...registryInput.services, ...(input.services.selfService
+              ? { selfService: { ...input.services.selfService, tools: [READ_AIQSA_GUIDE_TOOL_NAME] } } : {}) } }),
+          budgets, callTimeLeft, chatId: scope.chatId, deadline: deadline.signal, deadlineAt: startedAt + turnMs, engine, faults,
+          followupTexts: () => delivered,
+          modelConfiguration: input.prepared.providerAdmissionPlan.answer.modelConfiguration, now,
+          onWorkspaceLifecycle: onWorkspaceActivity,
+          // Every follow-up the user wrote into this answer, delivered to the main agent or not yet: a sub-agent gets each once.
+          userFollowups: async () => {
+            const batch = followupOps ? await followupOps.load({ runId, userId: input.userId }) : null;
+            return (batch?.entries ?? []).filter((entry) => entry.delivery !== "undelivered" && userAuthoredFollowup(entry))
+              .map((entry) => ({ id: entry.id, text: entry.text }));
+          },
+          // Background turns are web chats' only: a Telegram turn or a scheduled occurrence waits for its sub-agents.
+          backgroundAllowed: !input.telegram && !input.scheduled,
+          ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
+          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft, unknownEffects, usage,
+          userMessage: currentUserMessageText(contextMessages, continuationTurns)
         });
+        runSubagents = subagents;
+        const registry = subagents ? withSubagentTools(mainRegistry, subagents.tools) : mainRegistry;
         // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
         // only for this run rides in with its input (`systemPrompt.ts`).
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
-          secrets: input.services.secrets, snapshot, tools: registry.definitions() });
+          secrets: input.services.secrets, snapshot, ...(subagents ? { subagents: subagents.prompt } : {}), tools: registry.definitions() });
         base = native.request;
         items.splice(turnContextIndex(items, conversation.currentInputId), 0, turnContextItem(native.turnContext));
         // The run reads its items whole; the transcript keeps what later turns may read, written behind the answer.
@@ -496,8 +558,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           items.push(...added);
           await record(added);
         };
-        const budgets = toolRunBudgetsForRequest(normalizedRequest);
-        const toolState: ToolBatchState = { calls: 0 };
         // The run's one report reserved outside the budgets, when its registry offers it.
         const reservedReport = reservedToolCallForRequest(normalizedRequest);
         const reserved = reservedReport && registry.resolve(reservedReport.name) ? reservedReport : null;
@@ -510,10 +570,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           registry,
           ...(reserved ? { reservedToolName: reserved.name } : {}),
           runId,
-          saveResult: async (save) => saveToolResultText({ outcome: save.outcome,
-            producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
-            signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
-            text: save.text }),
+          saveResult,
           signal,
           store: engine.toolCalls,
           toolTimeLeft: callTimeLeft,
@@ -775,6 +832,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...failureCauseFields({ cancelled, failure, stopped: stop.signal.aborted, timedOut: deadline.signal.aborted, turnMs,
             workspaceRun: Boolean(workspace) }) });
         answer.stop();
+        // Its sub-agents end with it and keep what they recorded; their turns settle before the run's records do.
+        await runSubagents?.runner.stopAll(deadline.signal.aborted && !cancelled ? "deadline" : "parent_stopped");
         await runContext?.close();
         await live?.end("run_finished");
         if (workspace && input.workspace) {

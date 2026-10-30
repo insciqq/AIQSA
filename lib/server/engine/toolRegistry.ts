@@ -34,7 +34,7 @@ import {
 import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
-import { createFetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
+import { createFetchUrlSession, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
 import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
 import type { HarnessToolEffects } from "../tools/harnessTool";
@@ -152,6 +152,11 @@ export type ToolRegistry = Readonly<{
    */
   images?: TranscriptImages;
   /**
+   * The run's page-reader session: its cap and read cache count every page read of the answer, so a sub-agent's
+   * registry reuses its parent's (`ToolRegistryInput.fetchUrlSession`).
+   */
+  fetchUrlSession?: FetchUrlSession;
+  /**
    * For a call of an older tool this run does not offer because a newer one
    * replaces it (a name the model may know from a Workspace guide or an
    * earlier turn), what to call instead: the refusal the model reads.
@@ -224,6 +229,8 @@ export type ToolRegistryInput = Readonly<{
   chatId: string;
   /** Text the user sent into this running answer (`fetch_url` link authority). */
   followupTexts(): readonly string[];
+  /** The answer's page-reader session to share (a sub-agent's registry); absent, the registry starts the run's own. */
+  fetchUrlSession?: FetchUrlSession;
   /** The run's accepted MCP runtimes, by server; discovery adds to it. */
   mcpBindings: Map<string, EngineMcpBinding>;
   /**
@@ -468,9 +475,10 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
 
   const fetchPlan = isFetchUrlPlan(request.fetchUrl) ? request.fetchUrl : null;
+  let fetchUrlSession: FetchUrlSession | undefined;
   if (fetchPlan) {
     const repository = input.services.repository;
-    const session = createFetchUrlSession({
+    const session = input.fetchUrlSession ?? createFetchUrlSession({
       followupTexts: input.followupTexts,
       plan: fetchPlan,
       scheduled: fetchPlan.taskUrlDigests !== undefined,
@@ -480,6 +488,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       ...(repository.loadRunSearchSourceUrls ? { loadSearchUrls: () => repository.loadRunSearchSourceUrls!(owner) } : {}),
       ...(repository.loadRunFetchUrlCalls ? { loadCalls: () => repository.loadRunFetchUrlCalls!(owner) } : {})
     });
+    fetchUrlSession = session;
     for (const definition of fetchUrlToolsForRequest(request)) {
       if (definition.name !== FETCH_URL_TOOL_NAME) continue;
       add({ activity: named(definition, "Web", (call) => fetchUrlActivityFacts(call.name, call.arguments)), definition,
@@ -551,6 +560,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   return {
     definitions: () => [...tools.values()].map((tool) => tool.definition),
+    ...(fetchUrlSession ? { fetchUrlSession } : {}),
     ...(images ? { images } : {}),
     ...(mcpLoadCall ? { mcpLoadCall } : {}),
     replacement: (name) => {

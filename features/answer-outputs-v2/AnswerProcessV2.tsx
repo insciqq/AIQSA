@@ -75,7 +75,7 @@ type ToolCallGroupV2 = { calls: { call: ToolCallV2; index: number }[]; label: st
 
 /** A call that carries its own control or notice keeps its own row. */
 function standsAloneV2(call: ToolCallV2): boolean {
-  return call.status === "running" || Boolean(call.approvalRequired) || fetchCallSkippedV2(call) ||
+  return call.status === "running" || Boolean(call.approvalRequired) || fetchCallSkippedV2(call) || call.subagent !== undefined ||
     (call.origin === "skill" && call.toolName === "load_skill") || (call.origin === "discovery" && Boolean(call.mcpUnavailable?.length));
 }
 
@@ -220,6 +220,62 @@ function ToolCallRowV2({ call, label, onPinSkill, pinnedSkillIds, runId }: Reado
   );
 }
 
+/**
+ * The answer's own steps, and the steps each foreground sub-agent took, by
+ * the turn of its `call_subagent` step. A sub-agent's calls whose step is
+ * not in this answer's list stay among the answer's own.
+ */
+export function splitSubagentStepsV2(calls: readonly ToolCallV2[]): Readonly<{
+  nested: ReadonlyMap<string, readonly ToolCallV2[]>;
+  own: readonly ToolCallV2[];
+}> {
+  const turns = new Set(calls.flatMap((call) => call.subagent?.turnId ? [call.subagent.turnId] : []));
+  const nested = new Map<string, ToolCallV2[]>();
+  const own: ToolCallV2[] = [];
+  for (const call of calls) {
+    if (call.subagentThreadId && call.subagentTurnId && turns.has(call.subagentTurnId)) {
+      nested.set(call.subagentTurnId, [...nested.get(call.subagentTurnId) ?? [], call]);
+    } else {
+      own.push(call);
+    }
+  }
+  return { nested, own };
+}
+
+/** A sub-agent's steps keep the Workspace ones (no timeline shows them) and hide what the answer's own list hides. */
+function visibleSubagentStepsV2(calls: readonly ToolCallV2[]): ToolCallV2[] {
+  return calls.filter((call) => !memorySearchCallHiddenV2(call) && !planCallHiddenV2(call));
+}
+
+/** A `call_subagent` step that unfolds to the steps its sub-agent took in this answer. */
+function SubagentStepV2({ call, label, nested, runId }: Readonly<{
+  call: ToolCallV2; label: string; nested: readonly ToolCallV2[]; runId: string | null;
+}>) {
+  return (
+    <li className="v2-answer-process-call-group-row" data-status={call.status}>
+      <details className="v2-answer-process-call-group" data-testid="subagent-steps">
+        <summary className="v2-focusable">
+          <ToolCallMarkV2 status={call.status} />
+          <span className="v2-answer-process-call-group-chevron" aria-hidden="true" />
+          <span className="v2-answer-process-step-name">{label}</span>
+          <span className="v2-answer-process-step-meta">{[toolMeta(call), `${nested.length} ${nested.length === 1 ? "step" : "steps"}`]
+            .filter(Boolean).join(" · ")}</span>
+        </summary>
+        <ol className="v2-answer-process-steps" aria-label={`${label}: steps`}>
+          {groupToolCallsV2(nested).map((group) => {
+            const [first] = group.calls;
+            const total = group.calls.reduce((sum, { call: grouped }) => sum + (grouped.durationMs ?? 0), 0);
+            const step = group.calls.length === 1 ? first.call
+              : { ...first.call, durationMs: total > 0 ? total : undefined };
+            return <ToolCallRowV2 call={step} key={toolCallKey(first.call, first.index, runId)}
+              label={group.calls.length === 1 ? group.label : `${group.label} ×${group.calls.length}`} pinnedSkillIds={[]} runId={runId} />;
+          })}
+        </ol>
+      </details>
+    </li>
+  );
+}
+
 export type AnswerProcessV2Props = Readonly<{
   /** The live feed was lost: an unsettled compaction cycle reads as lost, not active. */
   connectionLost?: boolean;
@@ -283,7 +339,9 @@ export function AnswerProcessV2({
   // other tools so no raw sandbox identifier can reach the thread.
   // A failed Memory search leaves no step: the answer continues without it.
   // The plan tool's calls show as the plan itself.
-  const calls = (toolActivity?.calls ?? []).filter((call) =>
+  // A foreground sub-agent's steps nest under its `call_subagent` step.
+  const subagentSteps = splitSubagentStepsV2(toolActivity?.calls ?? []);
+  const calls = subagentSteps.own.filter((call) =>
     toolActivityOriginV2(call) !== "workspace" && !memorySearchCallHiddenV2(call) && !planCallHiddenV2(call));
   // Per-engine search counts live on the line itself; each search is also a step.
   const searchSummary = searchActivitySummary(toolActivity?.searchEngines ?? []);
@@ -416,6 +474,12 @@ export function AnswerProcessV2({
               <ol className="v2-answer-process-steps">
                 {groupToolCallsV2(calls).map((group) => {
                   const [first] = group.calls;
+                  const turnId = first.call.subagent?.turnId;
+                  const nested = turnId ? visibleSubagentStepsV2(subagentSteps.nested.get(turnId) ?? []) : [];
+                  if (group.calls.length === 1 && nested.length > 0) {
+                    return <SubagentStepV2 call={first.call} key={toolCallKey(first.call, first.index, runId)} label={group.label}
+                      nested={nested} runId={runId} />;
+                  }
                   if (group.calls.length === 1) {
                     return <ToolCallRowV2 call={first.call} key={toolCallKey(first.call, first.index, runId)} label={group.label}
                       onPinSkill={onPinSkill} pinnedSkillIds={pinnedSkillIds} runId={runId} />;

@@ -47,10 +47,21 @@ export type ToolCallBegin = Readonly<{
   providerCallId: string;
   roundIndex: number;
   runId: string;
+  /**
+   * A sub-agent's call: its thread, whose rounds are its own, and the turn
+   * that made it, so the answer's step list nests it under that turn's
+   * `call_subagent` step. Absent for the main agent.
+   */
+  thread?: Readonly<{ threadId: string; turnId: string }>;
   toolName: string;
   userId: string;
   workspaceRunBindingId?: string;
 }>;
+
+/** The thread columns of a call's row: null for the main agent. */
+function threadColumns(thread: ToolCallBegin["thread"]) {
+  return { subagentThreadId: thread?.threadId ?? null, subagentTurnId: thread?.turnId ?? null };
+}
 
 export type ToolCallBeginResult =
   /** Recorded running: send it. */
@@ -136,6 +147,7 @@ export function createToolCallStore(client: ToolCallClient) {
           ordinal: input.ordinal,
           providerCallId: input.providerCallId,
           roundIndex: input.roundIndex,
+          ...threadColumns(input.thread),
           toolName: input.toolName,
           ...(input.mcpRunBindingId ? { mcpRunBindingId: input.mcpRunBindingId } : {}),
           ...(input.workspaceRunBindingId ? { workspaceRunBindingId: input.workspaceRunBindingId } : {})
@@ -163,7 +175,7 @@ export function createToolCallStore(client: ToolCallClient) {
         const row = await tx.modelRunToolCall.create({ data: {
           arguments: json(boundedArguments(input.arguments)), completedAt: new Date(), modelRunId: input.runId,
           ordinal: input.ordinal, providerCallId: input.providerCallId, result: json(input.result), roundIndex: input.roundIndex,
-          state: "error", toolName: input.toolName
+          state: "error", ...threadColumns(input.thread), toolName: input.toolName
         } });
         return rowOf(row);
       });

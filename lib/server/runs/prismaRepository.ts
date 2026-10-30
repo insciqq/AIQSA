@@ -17,7 +17,8 @@ import {
   loadChatBranchSnapshotStats,
   summarizeMessageRunArtifacts,
   summarizeMessageRunToolActivity,
-  summarizeMessageRunWorkspaceActivity
+  summarizeMessageRunWorkspaceActivity,
+  toolCallSubagentSelect
 } from "../chats/prismaRepository";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
@@ -904,7 +905,8 @@ export function createPrismaRunRepository(
               connectionId: true,
               providerModelId: true
             },
-            where: { role: "answer" }
+            // The answer model's own binding, never a sub-agent model's (`subagent:<connection>:<model>`).
+            where: { bindingKey: "answer", role: "answer" }
           }
         },
         where: {
@@ -1082,6 +1084,7 @@ export function createPrismaRunRepository(
                       roundIndex: true,
                       startedAt: true,
                       state: true,
+                      ...toolCallSubagentSelect,
                       toolName: true
                     }
                   },

@@ -291,6 +291,15 @@ describe("image edit preflight", () => {
     expect(h.fetchFn).not.toHaveBeenCalled();
   });
 
+  it("counts the answer's image budget over every agent of the run, its sub-agents included", async () => {
+    // Integrator decision 2026-10-30: the cap is per answer, shared by the main agent and its sub-agents, so the count names
+    // the run and the tool only, never a sub-agent thread.
+    const h = await editHarness();
+    await h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch }).catch(() => undefined);
+    expect(h.prisma.modelRunToolCall.count).toHaveBeenCalledWith({ where: { modelRunId: "run", startedAt: { not: null },
+      toolName: "generate_image" } });
+  });
+
   it("marks every failure before the dispatch claim as not sent, and none at or after it", async () => {
     const missing = await editHarness();
     missing.binding.mockResolvedValue(null as never);

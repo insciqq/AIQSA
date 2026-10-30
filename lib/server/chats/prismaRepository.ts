@@ -108,6 +108,8 @@ import type {
   ThreadCitation,
   ThreadToolActivity
 } from "./handlers";
+import { CALL_SUBAGENT_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
+import type { ThreadToolActivityCall } from "../../contracts/chats";
 import type {
   ArchivedChatDetailRecord,
   ArchivedChatSummaryRecord,
@@ -150,6 +152,13 @@ import {
   loadMemorySuppressionKeyring,
   preflightMemorySuppressionKeys
 } from "../memory/suppressionKeyring";
+
+/** What every tool activity read selects of a call's sub-agent: a foreground sub-agent's calls nest under their turn's step. */
+export const toolCallSubagentSelect = {
+  subagentThreadId: true,
+  subagentTurnId: true,
+  subagentTurns: { select: { id: true, mode: true, thread: { select: { id: true, name: true } } }, take: 1 }
+} as const;
 
 const assistantRunDetailSelect = {
   ...runFollowupSelect,
@@ -210,6 +219,7 @@ const assistantRunDetailSelect = {
       roundIndex: true,
       startedAt: true,
       state: true,
+      ...toolCallSubagentSelect,
       toolName: true
     }
   },
@@ -435,6 +445,11 @@ type ToolActivityRun = {
     roundIndex: number;
     startedAt: Date | null;
     state: string;
+    /** A foreground sub-agent's call: its thread and turn (null for the main agent). */
+    subagentThreadId?: string | null;
+    subagentTurnId?: string | null;
+    /** A `call_subagent` call's turn and thread (`SubagentTurn.parentToolCall`). */
+    subagentTurns?: readonly Readonly<{ id: string; mode: string; thread: Readonly<{ id: string; name: string }> }>[];
     toolName: string;
   }[];
 };
@@ -1137,10 +1152,30 @@ function toolBudgetWarning(
   if (providerToolCalls.length >= budgets.maxToolCalls) {
     return { kind: "calls", limit: budgets.maxToolCalls };
   }
-  const rounds = new Set(providerToolCalls.map((call) => call.roundIndex)).size;
+  // A sub-agent's rounds are its own: only the main agent's count toward the answer's round limit.
+  const rounds = new Set(providerToolCalls.filter((call) => !call.subagentThreadId).map((call) => call.roundIndex)).size;
   return rounds >= budgets.maxToolRounds
     ? { kind: "rounds", limit: budgets.maxToolRounds }
     : undefined;
+}
+
+/**
+ * A call's place among the answer's sub-agents: a `call_subagent` or
+ * `stop_subagent` step names the thread and turn it addressed, and a call a
+ * foreground sub-agent made carries its thread and turn, so it nests under
+ * exactly that step (`ThreadToolActivityCall`). Identifiers only, never a brief or report.
+ */
+function subagentActivityFacts(call: ToolActivityRun["toolCalls"][number]): Pick<ThreadToolActivityCall,
+  "subagent" | "subagentThreadId" | "subagentTurnId"> {
+  if (call.subagentThreadId) {
+    return { subagentThreadId: call.subagentThreadId, ...(call.subagentTurnId ? { subagentTurnId: call.subagentTurnId } : {}) };
+  }
+  if (call.toolName !== CALL_SUBAGENT_TOOL_NAME && call.toolName !== STOP_SUBAGENT_TOOL_NAME) return {};
+  const turn = call.subagentTurns?.[0];
+  if (turn && (turn.mode === "foreground" || turn.mode === "background")) {
+    return { subagent: { mode: turn.mode, name: turn.thread.name, threadId: turn.thread.id, turnId: turn.id } };
+  }
+  return {};
 }
 
 /** Safe activity plus initiator-only MCP references; no arguments, results, or raw events. */
@@ -1161,8 +1196,8 @@ export function summarizeMessageRunToolActivity(
       result: (call.result ?? null) as Parameters<typeof unknownToolCall>[0]["result"],
       startedAt: call.startedAt?.toISOString() ?? null, state: call.state as Parameters<typeof unknownToolCall>[0]["state"],
       toolName: call.toolName })) {
-      return { origin: "tool" as const, round: call.roundIndex === 0 ? 1 : call.roundIndex, status: "error" as const,
-        toolName: activityName(call.toolName, "Tool") } satisfies ThreadToolActivity["calls"][number];
+      return { ...subagentActivityFacts(call), origin: "tool" as const, round: call.roundIndex === 0 ? 1 : call.roundIndex,
+        status: "error" as const, toolName: activityName(call.toolName, "Tool") } satisfies ThreadToolActivity["calls"][number];
     }
     const descriptor = descriptors.get(call.toolName) ?? {
       origin: call.toolName.startsWith("mcp_") ? "mcp" as const : "tool" as const,
@@ -1180,7 +1215,8 @@ export function summarizeMessageRunToolActivity(
       ? state
       : "running";
     const fingerprint = call.mcpRunBinding?.runtimeGenerationFingerprint;
-    const details = viewerUserId && viewerUserId === run.userId && descriptor.origin === "mcp" &&
+    // A sub-agent's call has its own rounds: its round and ordinal would name a main-agent call, so it offers no details.
+    const details = viewerUserId && viewerUserId === run.userId && descriptor.origin === "mcp" && !call.subagentThreadId &&
       fingerprint && Number.isSafeInteger(call.roundIndex) && call.roundIndex > 0 &&
       Number.isSafeInteger(call.ordinal) && call.ordinal >= 0 &&
       acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, fingerprint)
@@ -1195,9 +1231,11 @@ export function summarizeMessageRunToolActivity(
     const discoveryFacts = viewerUserId && viewerUserId === run.userId && descriptor.origin === "discovery"
       ? mcpDiscoveryActivityFacts(run.normalizedRequest, call.toolName, call.id)
       : {};
+    const subagent = subagentActivityFacts(call);
     return {
       ...(approvalRequired ? { approvalRequired: true as const } : {}),
       ...(details ? { details } : {}),
+      ...subagent,
       ...discoveryFacts,
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
