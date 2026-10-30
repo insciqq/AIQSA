@@ -12,6 +12,7 @@ import {
   maliciousFontPdf,
   oversizedPagePdf,
   passwordPdf,
+  pdfBeaconPdf,
   predefinedCmapPdf
 } from "../support/pdfFixtures";
 
@@ -28,6 +29,7 @@ const longDocument = cidFontPdf(Array.from({ length: 40 }, (_, index) => [
 
 const documents = {
   active: activeContentPdf(),
+  beacon: pdfBeaconPdf(),
   cmap: predefinedCmapPdf(),
   damaged: damagedPdf(),
   font: maliciousFontPdf(),
@@ -153,9 +155,15 @@ test.describe("the PDF viewer", () => {
 
     const text = page.locator('.pdfViewer .page[data-page-number="1"] .textLayer');
     await expect(text).toContainText("Страница 1 синтетического отчёта");
-    await text.locator("span").first().selectText();
+    // A person drags across the line: pdf.js gives each word of this font its own span, so selecting one span takes one word.
+    const from = (await text.locator("span", { hasText: "Страница" }).first().boundingBox())!;
+    const to = (await text.locator("span", { hasText: "отчёта" }).first().boundingBox())!;
+    await page.mouse.move(from.x + 1, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.width - 1, to.y + to.height / 2, { steps: 8 });
+    await page.mouse.up();
     await page.keyboard.press("Control+C");
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("Страница 1");
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toMatch(/Страница\s*1\s*синтетического\s*отчёта/u);
 
     // A page stays white in the dark theme; the frame around it follows the theme.
     await page.evaluate(() => {
@@ -227,15 +235,20 @@ test.describe("the PDF viewer", () => {
     const { dialog } = await openPdf(page, "active");
     await expect(firstPage(page)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("pdf-page-indicator")).toHaveText("1 / 2");
+    // pdf.js makes elements of the web link and the internal link. The javascript: address is refused in its worker and
+    // a JavaScript action has no scripting manager to bind to, so neither becomes an element at all.
     const annotation = page.locator('.pdfViewer .page[data-page-number="1"] .annotationLayer a');
-    await expect(annotation).toHaveCount(4);
+    await expect(annotation).toHaveCount(2);
 
     expect(await page.evaluate(() => (globalThis as { __aiqsaPdfPwned?: unknown }).__aiqsaPdfPwned)).toBeUndefined();
     for (const href of await annotation.evaluateAll(links => links.map(link => link.getAttribute("href")))) {
       expect(href ?? "").not.toMatch(/javascript:|https?:/iu);
     }
+    const webLink = page.locator('.annotationLayer a[title="https://example.test/from-pdf?x=1"]');
+    await expect(webLink).not.toHaveAttribute("href");
 
-    await annotation.nth(1).click();
+    // Ctrl+click still asks: it neither opens the address nor a second copy of the application.
+    await webLink.click({ modifiers: ["Control"] });
     const confirmation = page.getByRole("dialog", { name: "Open external link?" });
     await expect(confirmation).toContainText("https://example.test/from-pdf?x=1");
     expect(popups).toEqual([]);
@@ -243,7 +256,7 @@ test.describe("the PDF viewer", () => {
     await expect(confirmation).toHaveCount(0);
     await expect(dialog).toBeVisible();
 
-    await annotation.nth(2).click();
+    await page.locator(".annotationLayer a[href]").click();
     await expect(page.getByTestId("pdf-page-indicator")).toHaveText("2 / 2");
     expect(popups).toEqual([]);
     expect(seen.csp).toEqual([]);
@@ -305,6 +318,43 @@ test.describe("the PDF viewer", () => {
 
     expect(seen.csp).toEqual([]);
     expect(seen.errors.filter(message => /wasm|webassembly/iu.test(message))).toEqual([]);
+  });
+
+  test("nothing in a hostile PDF chooses a request: every request stays on the viewer's assets and the attachment route", async ({ page }) => {
+    const seen: string[] = [];
+    page.on("request", request => seen.push(request.url()));
+    await openChat(page);
+    // What the chat itself polls is not the PDF's doing; a beacon path is never among it.
+    const prior = new Set(seen.map(url => new URL(url).pathname));
+    seen.length = 0;
+
+    await openPdf(page, "beacon");
+    await expect(firstPage(page)).toBeVisible({ timeout: 30_000 });
+    const icon = page.locator(".annotationLayer .textAnnotation img");
+    await expect(icon).toBeVisible();
+    await expect(icon).toHaveAttribute("src", /\/pdfjs\/\d+\.\d+\.\d+\/images\/annotation-note\.svg$/u);
+    await page.waitForLoadState("networkidle").catch(() => undefined);
+
+    const stray = seen.filter((url) => {
+      const { pathname, protocol } = new URL(url);
+      return protocol !== "data:" && protocol !== "blob:" && !prior.has(pathname) && !pathname.startsWith("/_next/") &&
+        !/^\/pdfjs\/\d+\.\d+\.\d+\//u.test(pathname) && pathname !== "/api/attachments/pdf-beacon/content";
+    });
+    expect(stray).toEqual([]);
+    expect(seen.filter(url => url.includes("/api/pdf-beacon") || url.includes("private-marker"))).toEqual([]);
+    await closePdf(page);
+  });
+
+  test("pending CMap cleanup: closing ends a worker stalled on a request", async ({ page }) => {
+    await openChat(page);
+    const workers = page.workers().length;
+    await page.route(/\/pdfjs\/.*\/cmaps\//u, () => undefined);
+    const stalled = page.waitForRequest(/\/cmaps\//u);
+    await openPdf(page, "cmap");
+    await stalled;
+    expect(page.workers().length).toBeGreaterThan(workers);
+    await closePdf(page);
+    await expect.poll(() => page.workers().length, { timeout: 15_000 }).toBe(workers);
   });
 
   test("closing while bytes are still arriving cancels the load", async ({ page }) => {

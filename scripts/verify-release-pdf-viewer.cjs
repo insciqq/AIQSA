@@ -8,14 +8,16 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const { version } = require(path.join(root, "node_modules/pdfjs-dist/package.json"));
-const assets = path.join(root, "runtime/public/pdfjs", version);
+// The image's own location by default; a test passes its temporary release layout.
+const publicFlag = process.argv.indexOf("--public-pdfjs");
+const assets = path.join(publicFlag >= 0 ? path.resolve(process.argv[publicFlag + 1]) : path.join(root, "runtime/public/pdfjs"), version);
 
 for (const file of [
   "pdf.worker.min.mjs",
   "wasm/jbig2_nowasm_fallback.js",
   "wasm/openjpeg_nowasm_fallback.js",
   "standard_fonts/LiberationSans-Regular.ttf",
-  "cmaps/Identity-H.bcmap",
+  "cmaps/UniJIS-UTF16-H.bcmap",
   "images/annotation-note.svg"
 ]) {
   assert.ok(existsSync(path.join(assets, file)), `pdf_viewer_asset_missing:${file}`);

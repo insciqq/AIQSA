@@ -103,6 +103,10 @@
   font-size: 0.875rem;
 }
 
+.v2-pdf-viewer a[role="link"] {
+  cursor: pointer;
+}
+
 .v2-pdf-viewer a[aria-disabled="true"] {
   cursor: default;
 }
