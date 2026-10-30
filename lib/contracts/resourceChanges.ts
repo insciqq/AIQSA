@@ -109,14 +109,30 @@ export type AssistantChangeCard = Readonly<{
   proposalId: string | null;
 }>;
 
-export const SUBAGENT_CHANGE_FIELDS = ["name", "description", "instructions", "model", "effort", "tools"] as const;
+export const SUBAGENT_CHANGE_FIELDS = ["name", "description", "instructions", "model", "effort", "tools", "default"] as const;
 export type SubagentChangeField = (typeof SUBAGENT_CHANGE_FIELDS)[number];
+
+/**
+ * The user's default sub-agent moved with a change (`UserSettings.defaultSubagentDefinitionId`). The pointer has no
+ * version of its own: Undo puts `previous` back only while the default is still what this change left.
+ */
+export type SubagentDefaultChange = Readonly<{
+  /** This move's own identity: a move leaves the definition's version as it was, and one answer may repeat a move. */
+  changeId: string;
+  /** True: this sub-agent became the default. False: it stopped being it. */
+  isDefault: boolean;
+  /** The default before the move; null is the built-in sub-agent. */
+  previous: Readonly<{ definitionId: string; name: string }> | null;
+}>;
 
 /**
  * A custom sub-agent the agent created or edited, or proposes deleting. Each
  * edit is a new revision, so a creation's Undo deletes it and an edit's
  * Undo restores `undoRevisionId` as a new revision, both guarded by
- * `definitionVersion`; a confirmed deletion is guarded the same way.
+ * `definitionVersion`; a confirmed deletion is guarded the same way. A change
+ * that moved the default carries `defaultChange`, and its Undo reverses both
+ * in one transaction; an edit that only moved the default has no revision to
+ * restore (`undoRevisionId` null).
  */
 export type SubagentChangeCard = Readonly<{
   version: 1;
@@ -132,12 +148,17 @@ export type SubagentChangeCard = Readonly<{
   changes: readonly Readonly<{ field: SubagentChangeField; summary: string | null }>[];
   /** `updated` only: the instructions' bounded line diff when they changed. */
   instructionsDiff: ResourceChangeDiff | null;
-  /** `updated` only: the revision that was current before, which Undo restores. */
+  /** `updated` only: the revision that was current before, which Undo restores; null when only the default moved. */
   undoRevisionId: string | null;
-  /** `delete_proposed` only: sub-agents in the user's chats started as this one, which cannot be continued after deletion. */
-  consequences: Readonly<{ threadCount: number }> | null;
+  /**
+   * `delete_proposed` only: sub-agents in the user's chats started as this one, which cannot be continued after
+   * deletion, and whether it is the user's default as the proposal read it.
+   */
+  consequences: Readonly<{ isDefault?: true; threadCount: number }> | null;
   /** `delete_proposed` only: this proposal's own identity. */
   proposalId: string | null;
+  /** `created` and `updated` only, when the change moved the default. Absent on cards saved before defaults. */
+  defaultChange?: SubagentDefaultChange;
 }>;
 
 export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard | SubagentChangeCard;
@@ -239,9 +260,32 @@ function decodeAssistantCard(value: Record<string, unknown>): AssistantChangeCar
     name: value.name, changes, instructionsDiff, audience, consequences, proposalId: value.proposalId };
 }
 
+const SUBAGENT_CARD_KEYS = ["version", "resource", "action", "definitionId", "definitionVersion", "name", "previousName", "changes",
+  "instructionsDiff", "undoRevisionId", "consequences", "proposalId"];
+
+function decodeSubagentDefaultChange(value: unknown, definitionId: string): SubagentDefaultChange | null {
+  if (!record(value) || !exact(value, ["changeId", "isDefault", "previous"]) || !id(value.changeId) || typeof value.isDefault !== "boolean") return null;
+  let previous: SubagentDefaultChange["previous"] = null;
+  if (value.previous !== null) {
+    const ref = value.previous;
+    if (!record(ref) || !exact(ref, ["definitionId", "name"]) || !id(ref.definitionId) || !text(ref.name, limits.subagentName)) return null;
+    previous = { definitionId: ref.definitionId, name: ref.name };
+  }
+  // Becoming the default moves it from anything else; stopping moves it from this one.
+  if (value.isDefault === (previous?.definitionId === definitionId)) return null;
+  return { changeId: value.changeId, isDefault: value.isDefault, previous };
+}
+
+function decodeSubagentConsequences(value: unknown): SubagentChangeCard["consequences"] {
+  if (!record(value) || !(exact(value, ["threadCount"]) || exact(value, ["isDefault", "threadCount"])) || !count(value.threadCount)) return null;
+  if (value.isDefault === undefined) return { threadCount: value.threadCount };
+  return value.isDefault === true ? { isDefault: true, threadCount: value.threadCount } : null;
+}
+
 function decodeSubagentCard(value: Record<string, unknown>): SubagentChangeCard | null {
-  if (!exact(value, ["version", "resource", "action", "definitionId", "definitionVersion", "name", "previousName", "changes", "instructionsDiff",
-    "undoRevisionId", "consequences", "proposalId"]) || !["created", "updated", "delete_proposed"].includes(value.action as string) ||
+  // Cards saved before defaults have no `defaultChange` key and stay readable.
+  if (!exact(value, value.defaultChange === undefined ? SUBAGENT_CARD_KEYS : [...SUBAGENT_CARD_KEYS, "defaultChange"]) ||
+    !["created", "updated", "delete_proposed"].includes(value.action as string) ||
     !id(value.definitionId) || !positive(value.definitionVersion) || !text(value.name, limits.subagentName)) return null;
   const action = value.action as SubagentChangeCard["action"];
   const updated = action === "updated";
@@ -250,16 +294,19 @@ function decodeSubagentCard(value: Record<string, unknown>): SubagentChangeCard 
     record(change) && exact(change, ["field", "summary"]) && SUBAGENT_CHANGE_FIELDS.includes(change.field as SubagentChangeField) &&
     (change.summary === null || text(change.summary, limits.summary)) ? { field: change.field as SubagentChangeField, summary: change.summary } : null);
   const instructionsDiff = value.instructionsDiff === null ? null : decodeResourceChangeDiff(value.instructionsDiff);
-  const consequences = record(value.consequences) && exact(value.consequences, ["threadCount"]) && count(value.consequences.threadCount)
-    ? { threadCount: value.consequences.threadCount } : null;
+  const consequences = decodeSubagentConsequences(value.consequences);
+  const defaultChange = value.defaultChange === undefined ? null : decodeSubagentDefaultChange(value.defaultChange, value.definitionId);
   if (!changes || (value.instructionsDiff !== null && !instructionsDiff) || (value.consequences !== null && !consequences) ||
+    (value.defaultChange !== undefined && (!defaultChange || proposal)) ||
     !proposalIdentity(value.proposalId, proposal) || proposal !== (consequences !== null) ||
     !(value.previousName === null || (updated && text(value.previousName, limits.subagentName))) ||
-    !(value.undoRevisionId === null ? !updated : updated && id(value.undoRevisionId)) ||
+    // An edit restores its revision, unless all it did was move the default.
+    !(value.undoRevisionId === null ? !updated || defaultChange !== null : updated && id(value.undoRevisionId)) ||
+    (updated && defaultChange !== null && !changes.some((change) => change.field === "default")) ||
     (!updated && (changes.length > 0 || instructionsDiff !== null))) return null;
   return { version: 1, resource: "subagent", action, definitionId: value.definitionId, definitionVersion: value.definitionVersion,
     name: value.name, previousName: value.previousName, changes, instructionsDiff, undoRevisionId: value.undoRevisionId as string | null,
-    consequences, proposalId: value.proposalId };
+    consequences, proposalId: value.proposalId, ...(defaultChange ? { defaultChange } : {}) };
 }
 
 export function decodeResourceChangeCard(value: unknown): ResourceChangeCard | null {
@@ -283,7 +330,7 @@ export function resourceChangeCardKey(card: ResourceChangeCard): string {
     case "assistant": return card.proposalId ? `assistant:${card.assistantId}:proposal:${card.proposalId}`
       : `assistant:${card.assistantId}:${card.action}:${card.definitionVersion}`;
     case "subagent": return card.proposalId ? `subagent:${card.definitionId}:proposal:${card.proposalId}`
-      : `subagent:${card.definitionId}:${card.action}:${card.definitionVersion}`;
+      : `subagent:${card.definitionId}:${card.action}:${card.definitionVersion}${card.defaultChange ? `:default:${card.defaultChange.changeId}` : ""}`;
   }
 }
 

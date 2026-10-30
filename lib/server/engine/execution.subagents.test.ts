@@ -4,7 +4,10 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
-import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
+import type { SubagentTypeSnapshot } from "../subagents/ports";
+import type { FrozenSubagentDefault } from "../subagents/typeCatalog";
+import { FakeSubagentBackgroundControl, FakeSubagentTypeResolver } from "../../../tests/support/subagentPorts";
+import { subagentCatalogItem } from "./conversation";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
 import { interruptNativeRun } from "./runInterruption";
 import { backgroundSubagentRunner, hasSubagentBackgroundHost } from "./subagents/backgroundRunner";
@@ -329,5 +332,137 @@ describe("native run with sub-agents", () => {
     expect(runs.failRun).toHaveBeenCalledWith("run-interrupted", "answer-1", expect.objectContaining({ code: "run_interrupted" }),
       { recoveryTerminal: true });
     expect(memory.deps.runs.saveStoppedText).not.toHaveBeenCalled();
+  });
+});
+
+describe("native run with the user's custom sub-agents and default", () => {
+  const GEMINI: SubagentTypeSnapshot = { definitionId: "definition-gemini", description: "Long research.", instructions: "Cite every source.",
+    name: "gemini-helper", providerModelId: "model-2", reasoningEffort: null, revisionId: "revision-gemini", toolGroups: null };
+  const NARROW: SubagentTypeSnapshot = { ...GEMINI, definitionId: "definition-narrow", name: "narrow", revisionId: "revision-narrow",
+    toolGroups: ["web_fetch", "workspace"] };
+  const OTHER_MODEL = { connectionId: "connection-2", connectionName: "Gemini", contextWindow: null, defaultEffort: null, displayName: "Gemini Pro", imageInput: false,
+    providerFamily: "fake", providerModelId: "model-2", reasoningEfforts: [], upstreamModelId: "gemini-pro" };
+  const frozen = (type: SubagentTypeSnapshot): FrozenSubagentDefault => ({ definitionId: type.definitionId, name: type.name, version: 1 });
+  let runs = 0;
+
+  /** One run admitted with these frozen bindings, on a parent model of its own and the sub-agents' model beside it. */
+  async function run(input: Readonly<{ calls?: ProviderRunResult["toolCalls"]; defaultType?: FrozenSubagentDefault; extra?: Partial<MaterializedPreparedRunData>;
+    scheduled?: true; system?: string; telegram?: true; types?: FakeSubagentTypeResolver }>) {
+    const steps: Step[] = input.calls ? [{ calls: input.calls }, { text: "Outcome: done\nDone." }, { text: "All done." }] : [{ text: "All done." }];
+    const { adapter, requests } = scriptedAdapter(steps);
+    const memory = engine();
+    const route = vi.fn(async () => ({ ok: true as const, route: { adapter, request: { modelCapabilities: prepared().providerRequest.modelCapabilities,
+      modelId: "gemini-pro", params: {}, provider: "fake", reasoningEffort: null }, snapshot: { connection: { responseTimeoutMs: 300_000 },
+      connectionId: "connection-2", model: { adapterKind: "fake", upstreamModelId: "gemini-pro" }, providerFamily: "fake", providerModelId: "model-2" } as never,
+    timeoutMs: 300_000 } }));
+    const base = prepared();
+    const admitted = { ...base, ...input.extra, providerRequest: { ...base.providerRequest,
+      ...(input.system ? { prompt: { developer: null, system: input.system } } : {}),
+      ...(input.defaultType ? { subagentDefault: input.defaultType } : {}), subagentModels: { models: [OTHER_MODEL], version: 1 } } } as MaterializedPreparedRunData;
+    runs += 1;
+    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: `run-default-${runs}` }, engine: { ...memory.deps, subagentModels: { route } },
+      prepared: admitted, repository: repository() as unknown as RunRepository, ...(input.scheduled ? { scheduled: true as const } : {}), services: {},
+      subagents: { types: input.types ?? new FakeSubagentTypeResolver({ user: [GEMINI, NARROW] }) }, ...(input.telegram ? { telegram: true as const } : {}),
+      userId: "user" }).text();
+    return { memory, requests, route };
+  }
+
+  const historyText = (request: ProviderRunRequest) => JSON.stringify(request.history);
+
+  it("keeps the system prompt and tool list byte-identical when the default or the list changes, naming them only in run context", async () => {
+    const none = (await run({})).requests[0]!;
+    const set = (await run({ defaultType: frozen(GEMINI) })).requests[0]!;
+    const moved = (await run({ defaultType: frozen(NARROW) })).requests[0]!;
+    const fewer = (await run({ defaultType: frozen(NARROW), types: new FakeSubagentTypeResolver({ user: [NARROW] }) })).requests[0]!;
+    for (const request of [set, moved, fewer]) {
+      expect(request.prompt.system).toBe(none.prompt.system);
+      expect(request.tools).toEqual(none.tools);
+    }
+    expect(none.prompt.system).not.toContain("gemini-helper");
+    expect(JSON.stringify(none.tools)).not.toContain("gemini-helper");
+    expect(historyText(none)).toContain("A call with no type starts the built-in sub-agent");
+    expect(historyText(set)).toContain("default sub-agent is \\\"gemini-helper\\\"");
+    expect(historyText(moved)).toContain("default sub-agent is \\\"narrow\\\"");
+    expect(historyText(fewer)).not.toContain("gemini-helper");
+  });
+
+  it("rebuilds the item per run and never records it", async () => {
+    const { memory } = await run({ defaultType: frozen(GEMINI) });
+    expect(JSON.stringify(memory.appended)).not.toContain("custom_subagents");
+    // A compaction keeps every run-context item out of what it replaces (`replayWindow`).
+    expect(subagentCatalogItem("catalog")).toEqual({ id: "ctx-subagents", kind: "user", runContext: true, text: "catalog" });
+  });
+
+  it("runs a new thread with no type as the default frozen at admission, on the default's model", async () => {
+    const { memory, requests, route } = await run({ calls: [{ arguments: { message: "Research it.", name: "research" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }],
+      defaultType: frozen(GEMINI) });
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ binding: { effortSource: "parent", modelId: "gemini-pro", modelSource: "type",
+      provider: "connection-2", providerModelId: "model-2", reasoningEffort: null }, definitionId: GEMINI.definitionId, typeName: "gemini-helper" }));
+    expect(route).toHaveBeenCalledTimes(1);
+    expect(requests[1]!.modelId).toBe("gemini-pro");
+    expect(requests[1]!.prompt.system).toContain("# Your instructions\nCite every source.");
+  });
+
+  it("keeps the default frozen for the run: one the catalog no longer has is refused, and nothing else runs", async () => {
+    const gone = { definitionId: "definition-deleted", name: "deleted-one", version: 1 } as const;
+    const { memory, requests } = await run({ calls: [{ arguments: { message: "Go.", name: "work" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], defaultType: gone });
+    expect(memory.threads.admitForeground).not.toHaveBeenCalled();
+    expect(historyText(requests[1]!)).toContain("subagent_type_unavailable");
+    expect(historyText(requests[1]!)).toContain("The user's default sub-agent");
+    expect(historyText(requests[0]!)).toContain("default sub-agent is \\\"deleted-one\\\"");
+  });
+
+  it("follows the same rule in a scheduled occurrence and a Telegram turn", async () => {
+    for (const entry of [{ scheduled: true as const }, { telegram: true as const }]) {
+      const { memory } = await run({ ...entry, calls: [{ arguments: { message: "Go.", name: "work" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], defaultType: frozen(GEMINI) });
+      expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ definitionId: GEMINI.definitionId, typeName: "gemini-helper" }));
+    }
+  });
+
+  describe("in an Assistant chat", () => {
+    const ASSISTANT = { assistant: { id: "assistant-1" } } as unknown as Partial<MaterializedPreparedRunData>;
+
+    it("lists the runner's custom sub-agents and models under the runner's id, and runs a named one on its own model", async () => {
+      const types = new FakeSubagentTypeResolver({ owner: [NARROW], user: [GEMINI] });
+      const catalog = vi.spyOn(types, "catalog");
+      const { memory, requests } = await run({ calls: [{ arguments: { message: "Review.", name: "review", type: "gemini-helper" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }],
+        extra: ASSISTANT, system: "You review code carefully.", types });
+      expect(catalog).toHaveBeenCalledWith({ userId: "user" });
+      expect(historyText(requests[0]!)).toContain("<subagent name=\\\"gemini-helper\\\">");
+      expect(historyText(requests[0]!)).not.toContain("narrow");
+      expect(requests[0]!.prompt.system).toContain("\"model-2\" (Gemini Pro · Gemini)");
+      expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ definitionId: GEMINI.definitionId, binding: expect.objectContaining({ providerModelId: "model-2" }) }));
+      // The accepted risk, on record: the Assistant's instructions go with the sub-agent to its model's provider.
+      expect(requests[1]!.modelId).toBe("gemini-pro");
+      expect(requests[1]!.prompt.system).toContain("You review code carefully.");
+    });
+
+    it("applies the runner's default and a call's model, also when the Assistant fixes its model", async () => {
+      const defaulted = await run({ calls: [{ arguments: { message: "Go.", name: "work" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], defaultType: frozen(GEMINI), extra: ASSISTANT });
+      expect(defaulted.requests[1]!.modelId).toBe("gemini-pro");
+      const chosen = await run({ calls: [{ arguments: { message: "Go.", model: "model-2", name: "work" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], extra: ASSISTANT });
+      expect(chosen.memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ modelSource: "call", providerModelId: "model-2" }) }));
+    });
+
+    it("never reaches a definition of the Assistant's owner or anyone but the runner", async () => {
+      const types = new FakeSubagentTypeResolver({ owner: [GEMINI] });
+      const { memory, requests } = await run({ calls: [{ arguments: { message: "Go.", name: "work", type: "gemini-helper" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], extra: ASSISTANT, types });
+      expect(memory.threads.admitForeground).not.toHaveBeenCalled();
+      expect(historyText(requests[1]!)).toContain("subagent_type_unavailable");
+    });
+
+    it("gives a sub-agent the run's tools and no more, its tool groups only narrowing them", async () => {
+      const wide = await run({ calls: [{ arguments: { message: "Go.", name: "wide", type: "gemini-helper" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], extra: ASSISTANT });
+      const main = wide.requests[0]!.tools!.map((tool) => tool.name);
+      const sub = wide.requests[1]!.tools!.map((tool) => tool.name);
+      expect(main).toContain(CALL_SUBAGENT_TOOL_NAME);
+      expect(sub).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+      expect(sub.filter((name) => !main.includes(name))).toEqual([]);
+      const narrow = await run({ calls: [{ arguments: { message: "Go.", name: "narrow-one", type: "narrow" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], extra: ASSISTANT });
+      const narrowed = narrow.requests[1]!.tools!.map((tool) => tool.name);
+      expect(narrowed.filter((name) => !sub.includes(name))).toEqual([]);
+      // The type names the Workspace and page reading, which this run has neither of: it gets neither.
+      expect(narrowed.filter((name) => /workspace|fetch_url/u.test(name))).toEqual([]);
+    });
   });
 });

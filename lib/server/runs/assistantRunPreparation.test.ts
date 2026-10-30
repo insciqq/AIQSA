@@ -233,6 +233,44 @@ describe("standard-chat baseline admission", () => {
   });
 });
 
+describe("the sub-agent bindings admission freezes", () => {
+  async function freezesForRunner(body: Readonly<Record<string, unknown>>, extra: Partial<RunPreparationDeps>) {
+    const subagentModels = vi.fn(async (_userId: string) => ({ connectionLabels: new Map<string, string>(), models: [] }));
+    const subagentDefault = vi.fn(async (_userId: string) => ({ definitionId: "def-1", name: "gemini-helper" }));
+    const result = await prepareRun(deps({ ...extra, subagentDefault, subagentModels }), { body, source: sendSource(), userId: "runner" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(subagentModels).toHaveBeenCalledWith("runner");
+    expect(subagentDefault).toHaveBeenCalledWith("runner");
+    expect(result.prepared.normalizedRequest.subagentModels).toEqual({ models: [], version: 1 });
+    expect(result.prepared.normalizedRequest.subagentDefault).toEqual({ definitionId: "def-1", name: "gemini-helper", version: 1 });
+    // What the run reads at execution, in the request every later step of the run keeps.
+    expect(result.prepared.providerRequest.subagentDefault).toEqual({ definitionId: "def-1", name: "gemini-helper", version: 1 });
+  }
+
+  it("freezes the running user's models and default in an ordinary chat", () => freezesForRunner(ordinaryBody({ text: "Hello" }), {}));
+
+  it("freezes them in an Assistant chat too, under the runner and never the Assistant's owner", () => freezesForRunner({ assistantId: "assistant-1", text: "Review this" },
+    { assistants: { resolveForRun: async () => assistantResolution() } }));
+
+  it("freezes no default when the user set none, and a read that failed as unreadable so nothing runs by guess", async () => {
+    const none = await prepareRun(deps({ subagentDefault: async () => null }), { body: ordinaryBody({ text: "Hello" }), source: sendSource(), userId: "runner" });
+    expect(none.ok).toBe(true);
+    expect(none.ok && "subagentDefault" in none.prepared.normalizedRequest).toBe(false);
+    const failed = await prepareRun(deps({ subagentDefault: async () => { throw new Error("database down"); } }),
+      { body: ordinaryBody({ text: "Hello" }), source: sendSource(), userId: "runner" });
+    expect(failed.ok && failed.prepared.normalizedRequest.subagentDefault).toEqual({ unreadable: true, version: 1 });
+  });
+
+  it("takes neither from a request field", async () => {
+    const result = await prepareRun(deps(), { body: ordinaryBody({ subagentDefault: { definitionId: "def-foreign", name: "x", version: 1 },
+      subagentModels: { models: [], version: 1 }, text: "Hello" }), source: sendSource(), userId: "runner" });
+    expect(result.ok).toBe(true);
+    expect(result.ok && "subagentDefault" in result.prepared.normalizedRequest).toBe(false);
+    expect(result.ok && "subagentModels" in result.prepared.normalizedRequest).toBe(false);
+  });
+});
+
 describe("assistant run admission", () => {
   it.each(["", "Assistant reminder"])("uses only the Assistant reminder and never personal presets (%s)", async responseReminder => {
     const instructions = { resolveForRun: vi.fn() };

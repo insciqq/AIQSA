@@ -59,6 +59,12 @@ export const SUBAGENT_LIMITS = Object.freeze({
 export const SUBAGENT_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,46}[a-z0-9])?$/u;
 /** The browser agent id of the main agent (`MAIN_AGENT_ID`) can never name a sub-agent. */
 export const SUBAGENT_RESERVED_NAMES: readonly string[] = Object.freeze(["main"]);
+/**
+ * The `call_subagent` `type` that runs the built-in sub-agent whatever the user's default is (operator decision
+ * 2026-10-30). No custom sub-agent can take this name from now on (`definitionStore.ts`). It stays out of
+ * `SUBAGENT_RESERVED_NAMES`, which also decodes stored rows: a definition saved under it earlier keeps reading.
+ */
+export const SUBAGENT_BUILT_IN_TYPE = "built-in";
 
 /** A name as given, trimmed and lowercased, or null when it is not a valid sub-agent name. */
 export function normalizeSubagentName(value: unknown): string | null {
@@ -102,8 +108,8 @@ export function isSubagentTurnMode(value: unknown): value is SubagentTurnMode {
 
 /**
  * Where a turn's model or effort came from (`SubagentBindingSource`).
- * Precedence: the call's `model` and `effort`, then the custom sub-agent's,
- * then the parent run's binding. A continued thread keeps a model or effort
+ * Precedence: the call's `model` and `effort`, then the custom sub-agent's
+ * (a named one or the user's default), then the parent run's binding. A continued thread keeps a model or effort
  * the call or type chose unless the call overrides it again; one that came
  * from the parent follows the parent run's current binding.
  */
@@ -173,7 +179,7 @@ export const SUBAGENT_ERROR_CODES = Object.freeze({
   modelUnavailable: "subagent_model_unavailable",
   /** The requested (or the type's) effort is not one the resolved model supports. */
   effortUnsupported: "subagent_effort_unsupported",
-  /** The custom sub-agent is unknown, deleted, unusable here (Assistant chats) or its model is unavailable. */
+  /** The custom sub-agent, the user's default included, is unknown, deleted or its model is unavailable; never replaced. */
   typeUnavailable: "subagent_type_unavailable",
   /** No thread of that name on this branch (tools), or a thread the caller may not see (routes). */
   notFound: "subagent_not_found",
@@ -253,7 +259,7 @@ export function isSubagentCode(value: unknown): value is string {
 /**
  * Tool groups a custom sub-agent may be limited to (`SubagentDefinitionRevision.toolGroups`).
  * Always present: `update_plan`, `read_tool_result` and the guide. A group
- * never adds a tool the default sub-agent lacks: resource changes, Skill saves,
+ * never adds a tool the built-in sub-agent lacks: resource changes, Skill saves,
  * exports and the sub-agent tools themselves stay out whatever the list says.
  */
 export const SUBAGENT_TOOL_GROUPS = Object.freeze({

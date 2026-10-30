@@ -13,6 +13,7 @@ import { visionAnalysisForStorage } from "../vision/defaultVision";
 import { currentUserConnectionLabels, resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import type { SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
+import { readSubagentDefault } from "../subagents/definitionStore";
 
 const loadCatalogData = createPrismaCatalogDataLoader({ checkDefaultAssistant: false, prisma });
 
@@ -48,6 +49,7 @@ export function defaultRunServices(storage: StorageAdapter) {
     providerRuntime: providerRuntimeResolver,
     skillTools: defaultSkillTools,
     storage,
+    subagentDefault: (userId: string) => readSubagentDefault(prisma, userId),
     subagentModels: subagentModelCatalog,
     vision: visionAnalysisForStorage(storage)
   };

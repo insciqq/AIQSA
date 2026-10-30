@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SUBAGENT_BLOCKED_REASONS, SUBAGENT_USAGE_PURPOSE, decodeSubagentCallResult } from "../../../contracts/subagents";
+import { SUBAGENT_BLOCKED_REASONS, SUBAGENT_USAGE_PURPOSE, decodeSubagentCallResult, type SubagentToolGroup } from "../../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../../domain/modelRunEvents";
 import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
@@ -307,6 +307,25 @@ describe("sub-agent runner", () => {
       searchEnabled: false, workspace: { normalized: { inboxIndexPath: "/i", internetEnabled: true, messageManifestPath: "/m",
         outputDirectory: "/o", projectDirectory: "/p" }, toolDefinitions: [] } as never }).turn.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX))
       .toBe(true);
+  });
+
+  it("builds a custom sub-agent's tools from the run's registry, whatever its model, and its groups only narrow them", async () => {
+    const offered = async (toolGroups: readonly SubagentToolGroup[] | null) => {
+      const ctx = setup([{ text: "Outcome: done\nDone." }]);
+      const type = { definitionId: "d", description: "d", instructions: "Be careful.", name: "custom", providerModelId: "other-model", reasoningEffort: null,
+        revisionId: "r", toolGroups };
+      await ctx.runner.wait(await ctx.runner.start(ctx.input({ binding: { ...binding, modelId: "other-model", modelSource: "type", providerModelId: "other-model" }, type })));
+      // The registry comes from the host's one builder, over the run's admitted request: the Assistant's frozen tools.
+      expect(ctx.host.buildRegistry).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request).toMatchObject({ provider: "fake", toolMode: "auto" });
+      return ctx.requests[0]!.tools!.map((tool) => tool.name);
+    };
+    const every = await offered(null);
+    // The host's registry has no Workspace, Search or image tool, and none appears for a type that names one.
+    expect(every).toEqual(["browser_handoff", "load_skill", "mcp_jira_get_issue", "mcp_jira_create_issue"]);
+    expect(await offered(["mcp"])).toEqual(["mcp_jira_get_issue", "mcp_jira_create_issue"]);
+    expect(await offered(["workspace", "web_search", "images"])).toEqual(["browser_handoff"]);
+    expect(await offered([])).toEqual([]);
   });
 
   it("reads the outcome line of a report", () => {

@@ -199,7 +199,7 @@ function sameModelAsPrevious(chosen: SubagentModelEntry | null, previous: Subage
 /**
  * The model and effort of one turn. Precedence (Claude Code's Agent tool is
  * the reference): the call's `model` and `effort`, then the custom
- * sub-agent's, then what a continued thread chose before (a model or effort
+ * sub-agent's (a named one or the user's default), then what a continued thread chose before (a model or effort
  * from a call or a type stays), then the parent run's binding. A model must
  * be in the frozen list (or be the parent's), and an effort one that model
  * offers; anything else is refused with its stable code, never substituted.
@@ -225,7 +225,8 @@ export function chooseSubagentModel(input: Readonly<{
     }
     const found = lookup.kind === "found" ? lookup.entry : null;
     if (!found && !parentNamed) {
-      return unavailable(`${JSON.stringify(requested)} is not one of the user's models for sub-agents; pick one from the list or omit model.`);
+      return unavailable(`${JSON.stringify(requested)} is not one of the user's models for sub-agents. Use the exact id of the one the user means ` +
+        "from the list, or tell the user it is not available; do not drop model to run on another one.");
     }
     entry = found && !sameModel(found, input.parent) ? found : null;
     modelSource = source;

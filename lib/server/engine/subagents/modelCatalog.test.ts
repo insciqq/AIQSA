@@ -52,7 +52,7 @@ describe("sub-agent model catalog", () => {
   });
 
   it("never checks the parent's own admitted effort again, whatever options its capabilities list", () => {
-    // An Assistant chat, a failed catalog read or an older run: no frozen list and no declared efforts.
+    // A failed catalog read or an older run: no frozen list and no declared efforts.
     const bare = { ...parent, efforts: [] };
     expect(chooseSubagentModel({ call: {}, catalog: null, parent: bare })).toEqual({ ok: true,
       choice: { effort: "high", effortSource: "parent", entry: null, modelSource: "parent" } });
@@ -67,9 +67,21 @@ describe("sub-agent model catalog", () => {
       entry: { providerModelId: "pm-gpt-6-luna" } } });
   });
 
+  it("gives an Assistant run's sub-agents the runner's models, even when the model the Assistant fixed is not among them", () => {
+    const fixed: SubagentParentModel = { connectionId: "connection-assistant", effort: null, efforts: [], providerModelId: "pm-assistant",
+      upstreamModelId: "assistant-model" };
+    expect(chooseSubagentModel({ call: {}, catalog, parent: fixed })).toEqual({ ok: true,
+      choice: { effort: null, effortSource: "parent", entry: null, modelSource: "parent" } });
+    expect(chooseSubagentModel({ call: { model: "gpt-6-luna" }, catalog, parent: fixed })).toMatchObject({ ok: true,
+      choice: { entry: { providerModelId: "pm-gpt-6-luna" }, modelSource: "call" } });
+    expect(chooseSubagentModel({ call: {}, catalog, parent: fixed, type: { providerModelId: "pm-gpt-6-sol", reasoningEffort: null } })).toMatchObject({ ok: true,
+      choice: { entry: { providerModelId: "pm-gpt-6-sol" }, modelSource: "type" } });
+  });
+
   it("refuses a model outside the frozen list and an effort the model lacks, never substituting", () => {
     expect(chooseSubagentModel({ call: { model: "no-tools" }, catalog, parent }))
-      .toMatchObject({ code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false });
+      .toEqual({ code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false, message: "\"no-tools\" is not one of the user's models for sub-agents. " +
+        "Use the exact id of the one the user means from the list, or tell the user it is not available; do not drop model to run on another one." });
     expect(chooseSubagentModel({ call: { model: "gpt-6-luna" }, catalog: null, parent }))
       .toMatchObject({ code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false });
     expect(chooseSubagentModel({ call: { effort: "high", model: "gpt-6-luna" }, catalog, parent }))
