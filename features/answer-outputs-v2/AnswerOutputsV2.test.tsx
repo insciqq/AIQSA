@@ -333,21 +333,87 @@ describe("answer outputs v2", () => {
     expect(failed!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "error");
   });
 
-  it("shows successful search calls per engine with other outcomes separately on the line, once", () => {
+  it("keeps search counts off the line and shows them, failures included, as one row in the fold", () => {
     render(<AnswerProcessV2 toolActivity={{ calls: [
       { origin: "web_search", round: 2, status: "complete", toolName: "search" }
     ], searchEngines: [
       { engine: 1, name: "Perplexity", requested: 3, settled: 2, complete: 2, error: 0, skipped: 0 },
       { engine: 2, name: "OpenAI (CodexLB)", requested: 3, settled: 3, complete: 1, error: 1, skipped: 1 }
-    ] }} />);
+    ] }} workDurationMs={106_000} />);
     const line = screen.getByTestId("tool-activity-disclosure").querySelector("summary");
-    expect(line).toHaveTextContent("Web search · Perplexity ×2 · 1 in progress · OpenAI (CodexLB) ×1 · 1 unsuccessful · 1 skipped");
+    expect(line).toHaveTextContent(/^Worked for 1m 46s$/u);
     openProcess();
-    // The fold lists the searches as steps and does not repeat the counts.
+    // The fold says the counts once, and lists the searches as steps.
+    expect(screen.getByTestId("answer-search-engines"))
+      .toHaveTextContent("Perplexity ×2 · 1 in progress · OpenAI (CodexLB) ×1 · 1 unsuccessful · 1 skipped");
     expect(screen.getAllByText(/Perplexity ×2/u)).toHaveLength(1);
     expect(screen.getByText("Searched the web")).toBeVisible();
     // Rounds are the engine's bookkeeping, not something the user acts on.
     expect(screen.queryByText(/round/iu)).toBeNull();
+  });
+
+  it("gives a search with no steps its own line and a fold", () => {
+    render(<AnswerProcessV2 toolActivity={{ calls: [], searchEngines: [
+      { engine: 1, name: "Perplexity", requested: 2, settled: 2, complete: 1, error: 1, skipped: 0 }
+    ] }} />);
+    const line = screen.getByTestId("tool-activity-disclosure").querySelector("summary");
+    expect(line).toHaveTextContent(/^Searched the web$/u);
+    openProcess();
+    expect(screen.getByTestId("answer-search-engines")).toHaveTextContent("Perplexity ×1 · 1 unsuccessful");
+  });
+
+  it("keeps a search that entirely failed visible on the line", () => {
+    const engines = [
+      { engine: 1, name: "Perplexity", requested: 2, settled: 2, complete: 0, error: 2, skipped: 0 },
+      { engine: 2, name: "Exa", requested: 1, settled: 1, complete: 0, error: 1, skipped: 0 }
+    ];
+    const { rerender } = render(<AnswerProcessV2 toolActivity={{ calls: [], searchEngines: engines }} />);
+    const line = () => screen.getByTestId("tool-activity-disclosure").querySelector("summary");
+    expect(line()).toHaveTextContent(/^Web search failed$/u);
+    rerender(<AnswerProcessV2 toolActivity={{ calls: [
+      { durationMs: 900, origin: "web_search", round: 1, status: "error", toolName: "search" }
+    ], searchEngines: engines }} workDurationMs={8_000} />);
+    expect(line()).toHaveTextContent(/^Worked for 8s · Web search failed$/u);
+  });
+
+  it("never claims a search succeeded or failed when no outcome says so", () => {
+    render(<AnswerProcessV2 toolActivity={{ calls: [], searchEngines: [
+      { engine: 1, name: "Perplexity", requested: 2, settled: 1, complete: 0, error: 1, skipped: 0 }
+    ] }} />);
+    expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary")).toHaveTextContent(/^Web search$/u);
+  });
+
+  it("drops search counts from the live line and keeps them in the fold", () => {
+    render(<AnswerProcessV2 liveLabel="Searching the web…" toolActivity={{ calls: [
+      { origin: "web_search", round: 1, status: "running", toolName: "search" }
+    ], searchEngines: [
+      { engine: 1, name: "Perplexity", requested: 2, settled: 1, complete: 1, error: 0, skipped: 0 }
+    ] }} />);
+    expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary")).toHaveTextContent(/^Searching the web…$/u);
+  });
+
+  it("gives an answer whose only fact is a read PDF a line and a Documents section", () => {
+    const document = { answerModelName: "Sonnet", completedPages: 0, limitedReadingQuality: false, longDocument: false,
+      pageCount: 2, phase: "ready", retryable: false, route: "direct_pdf" } as const;
+    const { rerender } = render(<AnswerProcessV2 documents={[document]} />);
+    const line = () => screen.getByTestId("tool-activity-disclosure").querySelector("summary");
+    expect(line()).toHaveTextContent(/^Read 1 PDF$/u);
+    openProcess();
+    expect(screen.getByTestId("answer-documents")).toHaveTextContent("Read the original PDF · Sonnet");
+    rerender(<AnswerProcessV2 documents={[document, { ...document, limitedReadingQuality: true, route: "local_text" }]} />);
+    expect(line()).toHaveTextContent(/^Read 2 PDFs$/u);
+    expect(screen.getByTestId("answer-documents")).toHaveTextContent("Read with basic text extraction · Sonnet");
+    expect(screen.getByTestId("tool-activity-disclosure")).not.toHaveTextContent(/reading quality/iu);
+    // The work time leads when there is one; the route stays in the fold.
+    rerender(<AnswerProcessV2 documents={[document]} reasoningTexts={["Looked at the pages."]} workDurationMs={12_000} />);
+    expect(line()).toHaveTextContent(/^Thought for 12s$/u);
+  });
+
+  it("describes no document whose preparation did not finish", () => {
+    render(<AnswerProcessV2 documents={[{ completedPages: 0, limitedReadingQuality: false, longDocument: false,
+      pageCount: 2, phase: "cancelled", retryable: false, route: "system_pdf" }]} />);
+    expect(screen.queryByTestId("tool-activity-disclosure")).toBeNull();
+    expect(screen.queryByText(/PDF/u)).toBeNull();
   });
 
   it("folds consecutive finished calls of one tool into one row and keeps a running call apart", () => {

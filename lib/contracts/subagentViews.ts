@@ -1,4 +1,5 @@
-import { decodeThreadToolActivity, type ThreadToolActivity } from "./chats";
+import { decodeThreadToolActivity, isThreadToolActivityOrigin, type ThreadToolActivity, type ThreadToolActivityOrigin } from "./chats";
+import { decodeFetchUrlTarget } from "./fetchUrlActivity";
 import {
   SUBAGENT_LIMITS,
   isActiveSubagentState,
@@ -16,10 +17,11 @@ import { decodeThreadWorkspaceActivity, type ThreadWorkspaceActivity } from "./w
 
 /**
  * Owner-only projections of a chat's sub-agents for the chat list tree, the
- * chat's cards and "Stop all", and the read-only thread view (operator
- * decision 2026-10-29: sub-agents nest under their chat; a thread opens
- * read-only with Stop). A branch shows only its own sub-agents: every
- * projection reads the chat's active branch (`isSubagentTurnOnBranch`).
+ * answer's rows, the chip above the composer with its list and "Stop all", and
+ * the read-only thread view (operator decision 2026-10-29: sub-agents nest
+ * under their chat; a thread opens read-only with Stop). A branch shows only
+ * its own sub-agents: every projection reads the chat's active branch
+ * (`isSubagentTurnOnBranch`).
  * Sub-agents are never chats of their own: they are absent from chat search,
  * Favorites, exports and shares.
  *
@@ -78,14 +80,44 @@ export const SUBAGENT_API_PATHS = Object.freeze({
   }
 });
 
-/** One thread as a list row: content-free apart from its name and type. */
+/**
+ * The tool call an active thread is in now: only the identity an answer's
+ * process disclosure already shows (`ThreadToolActivityCall`), never its
+ * arguments, its result or ready-made words. The client words it
+ * (`describeToolCallV2`) and says something neutral without one.
+ */
+export type SubagentCurrentStep = Readonly<{
+  /** `web_fetch` only: the page's "host/path". */
+  fetchTarget?: string;
+  origin: ThreadToolActivityOrigin;
+  serverName?: string;
+  /** `skill` only. */
+  skillName?: string;
+  /** `skill` only. */
+  skillPath?: string;
+  toolName: string;
+}>;
+
+/** The model a turn runs on: its display name and the effort, or null for the model's default. */
+export type SubagentTurnModel = Readonly<{ displayName: string; effort: string | null }>;
+
+/** One thread as a list row: content-free apart from its name, type, model and current step. */
 export type SubagentThreadSummary = Readonly<{
   createdAt: string;
+  /** What an active thread is doing now; null once it ended or when no step is known. */
+  currentStep: SubagentCurrentStep | null;
   /** When its latest turn on the branch ended; null while it is active. */
   endedAt: string | null;
   id: string;
+  /**
+   * The answer whose call started the latest turn: that answer's rows take the
+   * thread even before its saved steps name it. Null on an older row: unknown.
+   */
+  latestAnswerMessageId: string | null;
   /** The latest turn's mode. */
   mode: SubagentTurnMode;
+  /** The latest turn's model; null on a row from before the summary carried it. */
+  model: SubagentTurnModel | null;
   name: string;
   outcome: SubagentOutcome | null;
   /** A stable code: a blocked outcome's reason, or why it failed, stopped or was interrupted. */
@@ -125,8 +157,7 @@ export type SubagentTurnView = Readonly<{
   id: string;
   messages: readonly SubagentTurnMessage[];
   mode: SubagentTurnMode;
-  /** The model's display name and the effort, or null for the model's default. */
-  model: Readonly<{ displayName: string; effort: string | null }>;
+  model: SubagentTurnModel;
   outcome: SubagentOutcome | null;
   /** The main-agent answer whose call started the turn, for the link back into the chat. */
   parentMessageId: string;
@@ -161,8 +192,39 @@ const text = (value: unknown, max: number, allowEmpty = false): value is string 
   typeof value === "string" && value.length <= max && (allowEmpty || value.trim().length > 0) && !value.includes("\0");
 const nullableCode = (value: unknown): value is string | null => value === null || isSubagentCode(value);
 
-const SUMMARY_KEYS = ["createdAt", "endedAt", "id", "mode", "name", "outcome", "reason", "state", "turnCount", "type", "updatedAt"];
+const STEP_KEYS = ["fetchTarget", "origin", "serverName", "skillName", "skillPath", "toolName"];
 
+const optionalText = (value: unknown, max: number) => value === undefined || text(value, max);
+
+export function decodeSubagentCurrentStep(value: unknown): SubagentCurrentStep | null {
+  if (!record(value) || !only(value, STEP_KEYS) || !isThreadToolActivityOrigin(value.origin) || !text(value.toolName, 160) ||
+    !optionalText(value.serverName, 160) || !optionalText(value.skillName, 160) || !optionalText(value.skillPath, 256)) return null;
+  if (value.origin !== "skill" && (value.skillName !== undefined || value.skillPath !== undefined)) return null;
+  if (value.fetchTarget !== undefined && (value.origin !== "web_fetch" || !decodeFetchUrlTarget(value.fetchTarget))) return null;
+  return {
+    ...(value.fetchTarget !== undefined ? { fetchTarget: value.fetchTarget as string } : {}),
+    origin: value.origin,
+    ...(value.serverName !== undefined ? { serverName: value.serverName as string } : {}),
+    ...(value.skillName !== undefined ? { skillName: value.skillName as string } : {}),
+    ...(value.skillPath !== undefined ? { skillPath: value.skillPath as string } : {}),
+    toolName: value.toolName
+  };
+}
+
+function decodeTurnModel(value: unknown): SubagentTurnModel | null {
+  if (!record(value) || !only(value, ["displayName", "effort"]) || !text(value.displayName, SUBAGENT_VIEW_LIMITS.displayCharacters) ||
+    (value.effort !== null && !text(value.effort, SUBAGENT_LIMITS.effortCharacters))) return null;
+  return { displayName: value.displayName, effort: value.effort as string | null };
+}
+
+const SUMMARY_KEYS = ["createdAt", "currentStep", "endedAt", "id", "latestAnswerMessageId", "mode", "model", "name", "outcome", "reason", "state", "turnCount",
+  "type", "updatedAt"];
+
+/**
+ * `currentStep`, `latestAnswerMessageId` and `model` came later: a row without them still renders, as
+ * "not known" (null). One that has them malformed, or a step on a thread that
+ * ended, is refused like any other broken field.
+ */
 export function decodeSubagentThreadSummary(value: unknown): SubagentThreadSummary | null {
   if (!record(value) || !only(value, SUMMARY_KEYS)) return null;
   if (!isSubagentIdentifier(value.id) || normalizeSubagentName(value.name) !== value.name || !isSubagentThreadState(value.state) ||
@@ -171,8 +233,18 @@ export function decodeSubagentThreadSummary(value: unknown): SubagentThreadSumma
   if (isActiveSubagentState(value.state) ? value.endedAt !== null : !timestamp(value.endedAt)) return null;
   if (value.state === "done" ? !isSubagentOutcome(value.outcome) : value.outcome !== null) return null;
   if (value.type !== null && normalizeSubagentName(value.type) !== value.type) return null;
+  const hasStep = value.currentStep !== undefined && value.currentStep !== null;
+  const currentStep = hasStep ? decodeSubagentCurrentStep(value.currentStep) : null;
+  if (hasStep && (!currentStep || !isActiveSubagentState(value.state))) return null;
+  const hasModel = value.model !== undefined && value.model !== null;
+  const model = hasModel ? decodeTurnModel(value.model) : null;
+  if (hasModel && !model) return null;
+  const hasAnswer = value.latestAnswerMessageId !== undefined && value.latestAnswerMessageId !== null;
+  const latestAnswerMessageId = isSubagentIdentifier(value.latestAnswerMessageId) ? value.latestAnswerMessageId : null;
+  if (hasAnswer && !latestAnswerMessageId) return null;
   return {
-    createdAt: value.createdAt as string, endedAt: value.endedAt as string | null, id: value.id, mode: value.mode,
+    createdAt: value.createdAt as string, currentStep, endedAt: value.endedAt as string | null, id: value.id, latestAnswerMessageId,
+    mode: value.mode, model,
     name: value.name as string, outcome: value.outcome as SubagentOutcome | null, reason: value.reason, state: value.state,
     turnCount: value.turnCount as number, type: value.type as string | null, updatedAt: value.updatedAt as string
   };
@@ -236,16 +308,15 @@ export function decodeSubagentTurnView(value: unknown): SubagentTurnView | null 
   if (!Array.isArray(value.messages) || value.messages.length > SUBAGENT_VIEW_LIMITS.messagesPerTurn) return null;
   const messages = value.messages.map(decodeTurnMessage);
   if (messages.some((message) => message === null)) return null;
-  if (!record(value.model) || !only(value.model, ["displayName", "effort"]) ||
-    !text(value.model.displayName, SUBAGENT_VIEW_LIMITS.displayCharacters) ||
-    (value.model.effort !== null && !text(value.model.effort, SUBAGENT_LIMITS.effortCharacters))) return null;
+  const model = decodeTurnModel(value.model);
+  if (!model) return null;
   const toolActivity = value.toolActivity === null ? null : decodeThreadToolActivity(value.toolActivity);
   const workspaceActivity = value.workspaceActivity === null ? null : decodeThreadWorkspaceActivity(value.workspaceActivity);
   if ((value.toolActivity !== null && !toolActivity) || (value.workspaceActivity !== null && !workspaceActivity)) return null;
   return {
     brief: value.brief, endedAt: value.endedAt as string | null, files: [...value.files as string[]], id: value.id,
     messages: messages as SubagentTurnMessage[], mode: value.mode,
-    model: { displayName: value.model.displayName, effort: value.model.effort as string | null },
+    model,
     outcome: value.outcome as SubagentOutcome | null, parentMessageId: value.parentMessageId, reason: value.reason,
     report: value.report as string | null, startedAt: value.startedAt, state: value.state, toolActivity, workspaceActivity
   };

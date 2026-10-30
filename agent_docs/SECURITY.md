@@ -13,6 +13,7 @@ paths:
   - "lib/server/telegram/render/**"
   - "components/chat/MarkdownMessage.tsx"
   - "components/chat/mermaidRendering.ts"
+  - "features/pdf-viewer-v2/**"
   - "features/chat-import/**"
   - "connect/**"
   - "proxy.ts"
@@ -39,6 +40,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 - Chat import unpacks archives in a browser worker with in-house zip and tar readers, deliberately without an unpack library. The server accepts only normalized `aiqsa.chat` documents and validates each chat on its own.
 - Every server-side fetch of a URL that a user, administrator, model or upstream controls uses the SSRF-safe transport (`lib/server/mcp/safeFetch.ts`, `lib/server/webFetch/transport.ts`). Discovery and catalogs never grant capabilities.
 - Model and user Markdown renders as React text. The only HTML sinks are the reviewed Shiki, KaTeX and Mermaid renderers in `components/chat/` and Telegram's rich blocks in `lib/server/telegram/render/` (never Telegram's Markdown or HTML parse modes). Each has real-library hostile-input tests; a new sink or untrusted-input parser needs the same.
+- The PDF viewer (operator decision 2026-10-30) parses foreign PDFs with pdf.js on the application origin. Accepted risk: a pdf.js bug then runs with the user's session; `features/pdf-viewer-v2/pdfViewerOptions.ts`, hostile-input tests and a current dependency bound it. A PDF never chooses a request path or parses outside its worker. No `wasm-unsafe-eval`.
 
 ## Artifacts
 
@@ -51,7 +53,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 - `fetch_url` sends only URLs found in the run's frozen link authority (user-authored branch text and delivered follow-ups) or in that run's own Search evidence, so injected text cannot exfiltrate context through it. Fetched pages are data, never instructions or link authority.
 - A scheduled prompt authorizes no link by itself. Its task keeps a link snapshot with explicit authorship (`lib/server/scheduledTasks/promptUrls.ts`): links the owner writes, and for prompts a chat tool writes, only links that run's user text authorized. Search results never enter it, and neither does a webhook event's body.
-- Requests are GET only, to public addresses on ports 80 and 443, with no administrator exception and no credentials or cookies. Parsing happens only in the disposable parser process, never in the application.
+- Parsing happens only in the disposable parser process, never in the application.
 
 ## Automation webhooks
 
@@ -94,7 +96,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 ## Deployment
 
 - A persistent deployment binds the app to loopback; private services publish no host ports. Liveness has no dependencies; a security contradiction or a failed required data service blocks readiness.
-- Images run as non-root with role-specific configuration, build inputs are digest-pinned, and releases record digests. Fake providers never make implicit real calls.
+- Fake providers never make implicit real calls.
 
 ## Dependencies
 
@@ -106,11 +108,10 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 | MCP SDK packages | Official SDKs own protocol and OAuth behavior; the Hono override enforces the reviewed advisory floor. |
 | `deepmerge-ts` | Override against recursive-object stack exhaustion in Prisma config; remove once supported Prisma carries the fix. |
 | `sharp` | Decodes untrusted rasters, image-provider output and PDF renders under bounds. |
-| `pdfjs-dist` | Standard-font assets only; adopting its engine or canvas needs a security review. |
+| `pdfjs-dist` | Renders foreign PDFs in the browser (accepted risk above); standard-font assets on the server. |
 | `nanoid` | Override for a zero-size generator denial of service in transitive build tooling. |
 | `postcss`, `acorn` | Parse untrusted CSS and JavaScript; the PostCSS override enforces the advisory floor. |
 | `@mozilla/readability`, `linkedom` | Extract page text for `fetch_url`, only inside the parser process, because parse5 is quadratic on hostile markup. |
 | `markdown-it` | Parses untrusted Markdown under input, node and depth bounds; raw HTML and images never reach the DOM. |
 | `@xterm/xterm`, `@xterm/addon-fit` | Exact pins for the Connect session page; output is rendered by xterm, never as HTML, with no clipboard addon. |
-| `github.com/creack/pty` | The Go client's only dependency. |
 | `mermaid` | Strict security level, no HTML labels or links, bounded input, then DOMPurify and an SVG allowlist; CSP needs no `unsafe-eval`. |

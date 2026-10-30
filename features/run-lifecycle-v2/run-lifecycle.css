@@ -14,7 +14,7 @@
 /* Process line (answer anatomy): the one disclosure above the text. Live it
    is the status ("Thinking…", "Searching the web…") with a 12px spinner in a
    14px slot; settled, the same 28px row is a native disclosure whose label
-   reads the way a person says it ("Worked for 8s · Used 2 memories"). The
+   reads the way a person says it ("Worked for 8s"). The
    slot keeps the first glyph in place, so nothing moves when the run settles.
    A live row that already expands carries a trailing chevron, since its
    spinner holds the leading slot. */
@@ -124,6 +124,14 @@ div.v2-answer-process[data-pending],
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.v2-answer-process-row {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .v2-answer-process-reasoning {

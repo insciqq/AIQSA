@@ -8,6 +8,8 @@ import type { ThreadMcpUnavailableServer, ThreadToolActivity } from "@/lib/contr
 import { mcpUnavailableServerCopy } from "@/lib/contracts/mcp";
 import { runningSearchEngineCalls, unknownSearchEngineCalls,
   type ThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
+import { chatPdfProcessLine, chatPdfRouteDescription, settledChatPdfDocuments,
+  type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import type { ThreadWorkspaceActivity, ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import type { ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
@@ -107,8 +109,18 @@ function searchEngineOutcome(engine: ThreadSearchEngineActivity): string {
   return `${engine.name} ${parts.join(" · ")}`;
 }
 
-function searchActivitySummary(engines: readonly ThreadSearchEngineActivity[]): string | null {
-  return engines.length > 0 ? `Web search · ${engines.map(searchEngineOutcome).join(" · ")}` : null;
+/** The fold's one row of per-engine counts, failures included. */
+function searchEnginesRow(engines: readonly ThreadSearchEngineActivity[]): string | null {
+  return engines.length > 0 ? engines.map(searchEngineOutcome).join(" · ") : null;
+}
+
+/** What the line says about search: the words stay true whatever the counts. */
+function searchLineOutcome(engines: readonly ThreadSearchEngineActivity[]): Readonly<{ failed: boolean; label: string }> | null {
+  if (engines.length === 0) return null;
+  if (engines.some((engine) => engine.complete > 0)) return { failed: false, label: "Searched the web" };
+  const failed = engines.some((engine) => engine.error > 0) &&
+    !engines.some((engine) => runningSearchEngineCalls(engine) > 0 || unknownSearchEngineCalls(engine) > 0);
+  return failed ? { failed, label: "Web search failed" } : { failed, label: "Web search" };
 }
 
 function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
@@ -283,6 +295,8 @@ export type AnswerProcessV2Props = Readonly<{
   /** Failed cycles a later cycle superseded, oldest first; listed before the latest one. */
   contextCompactionFailures?: readonly ContextCompactionStatus[];
   disclosureId?: string;
+  /** The answer's PDFs once it is answering from them; their preparation stays outside the fold. */
+  documents?: readonly ChatPdfPreparationWire[];
   /** Settled, downloadable Workspace outputs from this answer. */
   generatedFileCount?: number;
   /** Live status while the run works; it occupies the settled line's place. */
@@ -307,13 +321,16 @@ export type AnswerProcessV2Props = Readonly<{
  * The one disclosure above an answer. While the run works it is the live
  * status ("Thinking…", "Searching the web…") in the same 28px slot; settled
  * it folds Thinking → Steps and independent Past chats/Memory disclosures
- * under a factual label ("Worked for 8s · Past chats · 2"). A reached tool limit stays visible outside the fold.
+ * under a line that says only the work time ("Worked for 8s"); search counts,
+ * PDF routes and context counts stay in the fold and speak on the line only
+ * when there is no work to name. A reached tool limit stays visible outside it.
  */
 export function AnswerProcessV2({
   connectionLost = false,
   contextCompaction,
   contextCompactionFailures = [],
   disclosureId,
+  documents = [],
   generatedFileCount = 0,
   liveLabel = null,
   onPinSkill,
@@ -343,8 +360,11 @@ export function AnswerProcessV2({
   const subagentSteps = splitSubagentStepsV2(toolActivity?.calls ?? []);
   const calls = subagentSteps.own.filter((call) =>
     toolActivityOriginV2(call) !== "workspace" && !memorySearchCallHiddenV2(call) && !planCallHiddenV2(call));
-  // Per-engine search counts live on the line itself; each search is also a step.
-  const searchSummary = searchActivitySummary(toolActivity?.searchEngines ?? []);
+  // Per-engine search counts are one row in the fold; each search is also a step.
+  const searchEngines = searchEnginesRow(toolActivity?.searchEngines ?? []);
+  const searchOutcome = searchLineOutcome(toolActivity?.searchEngines ?? []);
+  const settledDocuments = settledChatPdfDocuments(documents);
+  const documentRows = [...new Set(settledDocuments.map(chatPdfRouteDescription))];
   const plan = workspacePlanV2(workspaceActivity);
   const planSummary = plan ? workspacePlanSummaryV2(plan) : null;
   const timeline = visibleWorkspaceActivityV2(workspaceActivity, generatedFileCount);
@@ -366,7 +386,7 @@ export function AnswerProcessV2({
   }));
   const compactionLabel = compaction?.label ?? earlierCompactionFailures.at(-1)?.label ?? null;
 
-  if (liveLabel && !timeline && !plan && !searchSummary && !calls.some(call =>
+  if (liveLabel && !timeline && !plan && !searchEngines && documentRows.length === 0 && !calls.some(call =>
     (call.origin === "memory" && call.toolName === "memory_search") || (call.origin === "mcp" && call.details && runId)
   ) && !contextCompaction && earlierCompactionFailures.length === 0) {
     return (
@@ -389,11 +409,17 @@ export function AnswerProcessV2({
         stepCount: calls.length,
         workDurationMs
       });
-  const displayLabel = [searchSummary, label, planSummary, compactionLabel].filter((value): value is string => Boolean(value)).join(" · ");
+  // The work time leads. Search or a read PDF speak only when nothing else
+  // would, except a search that entirely failed, which always stays on the line.
+  const searchFailed = searchOutcome?.failed === true;
+  const lead = label ?? (searchFailed ? null : searchOutcome?.label ?? chatPdfProcessLine(settledDocuments));
+  const displayLabel = [lead, searchFailed ? searchOutcome?.label : null, planSummary, compactionLabel]
+    .filter((value): value is string => Boolean(value)).join(" · ");
   if (!displayLabel) return warning;
   // Nothing to unfold yet (the thinking arrives with the settled answer): the
   // same row as plain text, so the line neither disappears nor moves.
-  if (!live && !compactionLabel && !timeline && !plan && !reasoning && calls.length === 0 && listedMemorySources.length === 0) {
+  if (!live && !compactionLabel && !timeline && !plan && !reasoning && calls.length === 0 && listedMemorySources.length === 0 &&
+    !searchEngines && documentRows.length === 0) {
     return (
       <>
         <div className="v2-answer-process" data-pending="true" data-testid="answer-process-pending">
@@ -420,7 +446,7 @@ export function AnswerProcessV2({
             {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
           <span className="v2-answer-process-label">
-            {live && liveLabel ? [liveLabel, searchSummary, planSummary].filter(Boolean).join(" · ")
+            {live && liveLabel ? [liveLabel, planSummary].filter(Boolean).join(" · ")
               : workspaceOutcome ? `${displayLabel} · ${workspaceOutcome}` : displayLabel}
           </span>
           {live ? (
@@ -443,6 +469,12 @@ export function AnswerProcessV2({
             </section>
           ) : null}
           {plan ? <PlanV2 live={live} plan={plan} /> : null}
+          {documentRows.length > 0 ? (
+            <section className="v2-answer-process-section" data-testid="answer-documents">
+              <h3>Documents</h3>
+              {documentRows.map((row) => <p className="v2-answer-process-row" key={row}>{row}</p>)}
+            </section>
+          ) : null}
           {timeline ? (
             <section className="v2-answer-process-section" data-testid="workspace-activity-section">
               <h3>Workspace</h3>
@@ -466,6 +498,12 @@ export function AnswerProcessV2({
                   Thinking is too long to show in full.
                 </p>
               ) : null}
+            </section>
+          ) : null}
+          {searchEngines ? (
+            <section className="v2-answer-process-section" data-testid="answer-search-engines">
+              <h3>Web search</h3>
+              <p className="v2-answer-process-row">{searchEngines}</p>
             </section>
           ) : null}
           {calls.length > 0 ? (

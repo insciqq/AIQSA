@@ -911,6 +911,13 @@ function idLiteral(id: string): string {
 }
 
 async function assertSubagentRelations(): Promise<void> {
+  await expectDatabaseRejection("another user's sub-agent as the default", "UserSettings_defaultSubagentDefinition_fkey", async (tx) => {
+    const { user: owner } = await createUserAndChats(tx, 0);
+    const { user: other } = await createUserAndChats(tx, 0);
+    const definition = await tx.subagentDefinition.create({ data: { id: randomUUID(), name: "browser", ownerUserId: owner.id } });
+    await tx.userSettings.create({ data: { defaultSubagentDefinitionId: definition.id, userId: other.id } });
+  });
+
   await expectDatabaseRejection("cross-chat sub-agent thread", "SubagentThread_anchorRun_fkey", async (tx) => {
     const fixture = await createModelRunFixture(tx);
     const other = await createModelRunFixture(tx);

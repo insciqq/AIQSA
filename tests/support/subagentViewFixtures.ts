@@ -15,9 +15,12 @@ export function subagentThread(
   const active = isActiveSubagentState(state);
   return {
     createdAt: "2026-10-30T09:00:00.000Z",
+    currentStep: null,
     endedAt: active ? null : "2026-10-30T09:05:00.000Z",
     id,
+    latestAnswerMessageId: null,
     mode: "background",
+    model: null,
     name: id.replace(/^thread-/u, ""),
     outcome: state === "done" ? "done" : null,
     reason: state === "stopped" ? "user_stop" : state === "failed" ? "provider_error" : null,

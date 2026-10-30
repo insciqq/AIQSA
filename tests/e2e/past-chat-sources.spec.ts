@@ -56,8 +56,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     });
     await signInWithLocalToken(page, "/c/recall-ui-chat");
     const process = page.getByTestId("tool-activity-disclosure");
-    await expect(process.locator(":scope > summary")).toContainText("Past chats · 4 · Memory · 1");
+    // The line says only the work time; the counts stay in the fold's own disclosures.
+    await expect(process.locator(":scope > summary")).toHaveText(/^Worked for [^·]+$/u);
     await process.locator(":scope > summary").click();
+    await expect(page.getByTestId("past-chats-disclosure").locator(":scope > summary")).toContainText("Past chats · 4");
+    await expect(page.getByTestId("memories-disclosure").locator(":scope > summary")).toContainText("Memory · 1");
     await expect(process.getByRole("heading", { name: "Steps" })).toBeVisible();
     const chats = page.getByTestId("past-chats-disclosure");
     const memories = page.getByTestId("memories-disclosure");

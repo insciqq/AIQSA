@@ -19,10 +19,11 @@ const MODELS: SubagentModelOption[] = [
   { connectionName: "Codex LB", defaultEffort: null, displayName: "Big Model", efforts: [], modelId: "model-big" }
 ];
 
-function harness(models: SubagentModelOption[] | null = MODELS) {
+function harness(initialModels: SubagentModelOption[] | null = MODELS) {
   const memory = new MemorySubagentDefinitionStore();
   const settled: ToolExecutionResult[] = [];
   let claim: Awaited<ReturnType<SelfServiceCallStore["claim"]>> = { kind: "open" };
+  let models = initialModels;
   const store: SelfServiceCallStore = {
     claim: vi.fn(async () => claim),
     settle: vi.fn(async (_tx, result: ToolExecutionResult) => { settled.push(result); })
@@ -37,7 +38,7 @@ function harness(models: SubagentModelOption[] | null = MODELS) {
     if (!execution) throw new Error("not a management tool");
     return execution;
   }
-  return { call, memory, setClaim: (next: typeof claim) => { claim = next; }, settled, store };
+  return { call, memory, setClaim: (next: typeof claim) => { claim = next; }, setModels: (next: typeof models) => { models = next; }, settled, store };
 }
 
 const json = (result: ToolExecutionResult) => (result.content[0] as { value: Record<string, unknown> }).value;
@@ -175,5 +176,139 @@ describe("sub-agent management tools", () => {
     expect(json(await call("create_subagent", { ...BROWSER, name: "Not A Slug" }))).toMatchObject({ code: "subagent_name_invalid" });
     expect(json(await call("create_subagent", { ...BROWSER, tools: ["manage_skill"] }))).toMatchObject({ code: "subagent_arguments_invalid" });
     expect(json(await call("edit_subagent", { name: "browser" }))).toMatchObject({ code: "subagent_arguments_invalid" });
+    expect(json(await call("create_subagent", { ...BROWSER, default: "yes" }))).toMatchObject({ code: "subagent_arguments_invalid" });
+  });
+
+  it("refuses the reserved type as a new name, and says why", async () => {
+    const { call, memory } = harness();
+    const created = json(await call("create_subagent", { ...BROWSER, name: "built-in" }));
+    expect(created).toMatchObject({ code: "subagent_name_invalid", saved: false });
+    expect(String(created.message)).toContain("not \"main\" or \"built-in\"");
+    expect(memory.rows.size).toBe(0);
+    await call("create_subagent", BROWSER);
+    expect(json(await call("edit_subagent", { name: "browser", newName: "built-in" }))).toMatchObject({ code: "subagent_name_invalid", saved: false });
+    expect(await memory.store.find({} as never, "user-a", { name: "browser" })).toMatchObject({ version: 1 });
+  });
+});
+
+describe("the default sub-agent from a chat", () => {
+  const change = (result: ToolExecutionResult) => cardOf(result).defaultChange;
+
+  it("creates one on a model and makes it the default in one call, one settled card and one Undo", async () => {
+    const { call, memory, settled } = harness();
+    const result = await call("create_subagent", { ...BROWSER, default: true });
+    expect(json(result)).toMatchObject({ action: "created", saved: true, subagent: { isDefault: true, modelId: "model-cheap", name: "browser" } });
+    // This answer keeps the default it started with, and the model is told how to start the new one now.
+    expect(String(json(result).note)).toContain("The new default applies from the user's next message on");
+    expect(String(json(result).note)).toContain("type \"browser\"");
+    expect(settled).toEqual([result]);
+    const [row] = [...memory.rows.values()];
+    expect(memory.defaults.get("user-a")).toBe(row!.id);
+    expect(cardOf(result)).toMatchObject({ action: "created", changes: [], definitionVersion: 1, undoRevisionId: null,
+      defaultChange: { isDefault: true, previous: null } });
+    expect(change(result)?.changeId).toMatch(/^[A-Za-z0-9_-]+$/u);
+  });
+
+  it("creates without touching the default unless asked, and names the earlier default when it moves", async () => {
+    const { call, memory } = harness();
+    const first = await call("create_subagent", { ...BROWSER, default: true });
+    const other = await call("create_subagent", { ...BROWSER, name: "other" });
+    expect(change(other)).toBeUndefined();
+    expect(json(other)).toMatchObject({ subagent: { isDefault: false } });
+    expect(String(json(other).note)).not.toContain("default");
+    expect(memory.defaults.get("user-a")).toBe(cardOf(first).definitionId);
+    const third = await call("create_subagent", { ...BROWSER, default: true, name: "third" });
+    expect(change(third)).toMatchObject({ isDefault: true, previous: { definitionId: cardOf(first).definitionId, name: "browser" } });
+    expect(memory.defaults.get("user-a")).toBe(cardOf(third).definitionId);
+  });
+
+  it("moves the default with an edit that changes nothing else: no new version, no revision to restore", async () => {
+    const { call, memory, settled } = harness();
+    const created = cardOf(await call("create_subagent", BROWSER));
+    settled.length = 0;
+    const result = await call("edit_subagent", { default: true, name: "browser" });
+    expect(json(result)).toMatchObject({ action: "updated", changed: ["default"], saved: true, subagent: { isDefault: true, version: 1 } });
+    expect(cardOf(result)).toMatchObject({ action: "updated", definitionId: created.definitionId, definitionVersion: 1, instructionsDiff: null,
+      changes: [{ field: "default", summary: "Now the default; before: the built-in sub-agent" }], undoRevisionId: null,
+      defaultChange: { isDefault: true, previous: null } });
+    expect(settled).toEqual([result]);
+    expect(memory.rows.get(created.definitionId)).toMatchObject({ version: 1 });
+    const off = await call("edit_subagent", { default: false, name: "browser" });
+    expect(json(off)).toMatchObject({ changed: ["default"], subagent: { isDefault: false } });
+    expect(cardOf(off)).toMatchObject({ changes: [{ field: "default", summary: "No longer the default; new sub-agents use the built-in one" }],
+      defaultChange: { isDefault: false, previous: { definitionId: created.definitionId, name: "browser" } }, undoRevisionId: null });
+    expect(memory.defaults.has("user-a")).toBe(false);
+    // Each move is its own card, though neither changes the version.
+    expect(change(off)?.changeId).not.toBe(change(result)?.changeId);
+  });
+
+  it("moves the default with other changes in one card whose Undo has both", async () => {
+    const { call, memory } = harness();
+    await call("create_subagent", { ...BROWSER, default: true });
+    const before = await memory.store.find({} as never, "user-a", { name: "browser" });
+    await call("create_subagent", { ...BROWSER, name: "other" });
+    const result = await call("edit_subagent", { default: true, instructions: "New.", name: "other" });
+    expect(json(result)).toMatchObject({ changed: ["instructions", "default"], subagent: { isDefault: true, name: "other", version: 2 } });
+    const card = cardOf(result);
+    expect(card.undoRevisionId).toMatch(/^rev_/u);
+    expect(card.defaultChange).toMatchObject({ isDefault: true, previous: { definitionId: before!.id, name: "browser" } });
+    expect(card.changes.find((entry) => entry.field === "default")?.summary).toBe("Now the default; before: “browser”");
+  });
+
+  it("reports nothing changed for the default it already is, and leaves another's default alone", async () => {
+    const { call, memory, settled } = harness();
+    const created = cardOf(await call("create_subagent", { ...BROWSER, default: true }));
+    await call("create_subagent", { ...BROWSER, name: "other" });
+    settled.length = 0;
+    const again = await call("edit_subagent", { default: true, name: "browser" });
+    expect(json(again)).toMatchObject({ saved: false, subagent: { isDefault: true }, unchanged: true });
+    expect(again.artifacts).toBeUndefined();
+    const notIt = await call("edit_subagent", { default: false, name: "other" });
+    expect(json(notIt)).toMatchObject({ saved: false, subagent: { isDefault: false }, unchanged: true });
+    expect(memory.defaults.get("user-a")).toBe(created.definitionId);
+    expect(settled).toEqual([]);
+  });
+
+  it("moves nothing when the write is refused", async () => {
+    const { call, memory } = harness();
+    const created = cardOf(await call("create_subagent", { ...BROWSER, default: true }));
+    expect(json(await call("create_subagent", { ...BROWSER, default: true }))).toMatchObject({ code: "subagent_definition_exists" });
+    expect(json(await call("create_subagent", { ...BROWSER, default: true, model: "Someone Else's Model", name: "other" }))).toMatchObject({ code: "subagent_model_unavailable" });
+    expect(json(await call("edit_subagent", { default: false, expectedVersion: 9, name: "browser" }))).toMatchObject({ code: "subagent_definition_conflict" });
+    expect(memory.defaults.get("user-a")).toBe(created.definitionId);
+  });
+
+  it("refuses making a sub-agent the default on a model the user lost, and lets one stop being it", async () => {
+    const { call, memory, setModels } = harness();
+    await call("create_subagent", { ...BROWSER, default: true });
+    await call("create_subagent", { ...BROWSER, name: "other" });
+    setModels([]);
+    expect(json(await call("edit_subagent", { default: true, name: "other" }))).toMatchObject({ code: "subagent_model_unavailable", saved: false });
+    expect(json(await call("edit_subagent", { default: false, name: "browser" }))).toMatchObject({ saved: true, subagent: { isDefault: false } });
+    expect(memory.defaults.has("user-a")).toBe(false);
+    // Nor does the catalog being unreadable stop it, or a rename.
+    setModels(null);
+    expect(json(await call("edit_subagent", { name: "other", newName: "renamed" }))).toMatchObject({ saved: true });
+  });
+
+  it("names the default among a deletion's consequences, and clears it only on the confirmed deletion", async () => {
+    const { call, memory } = harness();
+    const created = cardOf(await call("create_subagent", { ...BROWSER, default: true }));
+    expect(cardOf(await call("delete_subagent", { name: "browser" })).consequences).toEqual({ isDefault: true, threadCount: 0 });
+    expect(memory.defaults.get("user-a")).toBe(created.definitionId);
+    await call("create_subagent", { ...BROWSER, name: "other" });
+    expect(cardOf(await call("delete_subagent", { name: "other" })).consequences).toEqual({ threadCount: 0 });
+  });
+
+  it("never reaches another user's definition or default", async () => {
+    const { call, memory } = harness();
+    const write = await memory.store.create({} as never, "user-b", { description: "B's.", effort: null, instructions: "B.", modelId: null, name: "theirs", tools: null });
+    if (write.kind !== "written") throw new Error("create failed");
+    await memory.store.setDefault({} as never, "user-b", { target: write.record.id });
+    expect(json(await call("edit_subagent", { default: true, name: "theirs" }))).toMatchObject({ code: "subagent_not_found" });
+    expect(memory.defaults.has("user-a")).toBe(false);
+    expect(memory.defaults.get("user-b")).toBe(write.record.id);
+    // Moving this user's default names nothing of theirs as what came before.
+    expect(change(await call("create_subagent", { ...BROWSER, default: true }))).toMatchObject({ previous: null });
   });
 });

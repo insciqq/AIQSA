@@ -43,7 +43,7 @@ describe("a sub-agent's steps in the answer", () => {
     expect(splitSubagentStepsV2(calls).nested.get("turn-1")).toHaveLength(3);
   });
 
-  it("names the sub-agent in the live status and in how its step ended", () => {
+  it("names the sub-agent in its running step and in how that step ended", () => {
     expect(describeToolCallV2({ origin: "tool", serverName: "shop", toolName: "call_subagent" }, "running")).toBe("Sub-agent shop is working");
     expect(describeToolCallV2({ origin: "tool", subagent: { name: "shop" }, toolName: "call_subagent" }, "failed"))
       .toBe("Sub-agent shop did not finish");

@@ -137,6 +137,7 @@ export type RunHandlerDeps = {
   skillTools?: import("../skills/toolService").SkillToolService;
   storage?: StorageAdapter;
   subagentModels?: RunPreparationDeps["subagentModels"];
+  subagentDefault?: RunPreparationDeps["subagentDefault"];
   /**
    * Server-only: the send is a wake-up turn for an idle main agent, written
    * by the server from these background sub-agent callbacks

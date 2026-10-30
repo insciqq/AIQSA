@@ -7,6 +7,7 @@ import { artifactFileInstructions, artifactTool, describeArtifactTool, readArtif
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { freezeSubagentModels, type FrozenSubagentModels, type SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
+import { freezeSubagentDefault } from "../subagents/typeCatalog";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
@@ -279,6 +280,8 @@ export type RunPreparationDeps = Readonly<{
    * sub-agents (`freezeSubagentModels`).
    */
   subagentModels?(userId: string): Promise<SubagentModelCatalogSource>;
+  /** The user's current default custom sub-agent, frozen with those models (`freezeSubagentDefault`). */
+  subagentDefault?(userId: string): Promise<Readonly<{ definitionId: string; name: string }> | null>;
   workspace?: WorkspaceAdmissionService;
 }>;
 
@@ -1323,10 +1326,11 @@ export async function prepareRun(
   if (!normalizedPrompt) {
     return failure("assistant_instructions_expansion_too_large", 400, "This Assistant's instructions exceed the text limit after date and time substitution. They must be shortened before it can answer.");
   }
-  // The models this run may give its sub-agents, from the same entitled catalog: an Assistant run's sub-agents take
-  // only the Assistant's model, and a catalog that cannot be read leaves them on the parent's model (answer first).
+  // The models this run may give its sub-agents, from the same entitled catalog, and the default sub-agent, both the
+  // running user's in an Assistant chat too (operator decision 2026-10-30). A catalog that cannot be read leaves them on
+  // the parent's model (answer first); a default that cannot be read refuses the call that would have run it.
   let subagentModels: FrozenSubagentModels | undefined;
-  if (!assistantRun && deps.subagentModels) {
+  if (deps.subagentModels) {
     try {
       const source = await deps.subagentModels(input.userId);
       subagentModels = freezeSubagentModels(source.models, source.connectionLabels);
@@ -1334,6 +1338,8 @@ export async function prepareRun(
       subagentModels = undefined;
     }
   }
+  const readSubagentDefault = deps.subagentDefault;
+  const subagentDefault = readSubagentDefault ? await freezeSubagentDefault(() => readSubagentDefault(input.userId)) : undefined;
   let personalInstructions: import("../instructions/store").PersonalInstructionSnapshot | undefined;
   if (!assistantRun && deps.instructions) {
     try { personalInstructions = await deps.instructions.resolveForRun(input.userId); }
@@ -1959,6 +1965,7 @@ export async function prepareRun(
     provider: executionProvider,
     reasoningEffort: acceptedReasoning.reasoningEffort,
     ...(subagentModels ? { subagentModels } : {}),
+    ...(subagentDefault ? { subagentDefault } : {}),
     searchPlan: {
       mode: requestedSearchPlan.mode,
       options: admissionPlan.searches.map((candidate) => ({

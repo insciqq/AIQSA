@@ -1560,6 +1560,9 @@ model UserSettings {
   /// dropped in a later release.
   defaultAnswerReview     Json?
   defaultAssistantId      String?
+  /// The custom sub-agent a new thread with no type runs; null is the built-in one. Admission freezes it per run
+  /// (`lib/server/subagents/typeCatalog.ts`). The migration uses column-scoped SET NULL to clear only this column.
+  defaultSubagentDefinitionId String?
   /// Null follows the administrator default; only withdrawal resets a choice.
   imageProviderModelId    String?
   answerSoundEnabled      Boolean        @default(true)
@@ -1573,12 +1576,14 @@ model UserSettings {
   user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   defaultProviderModel    ProviderModel? @relation("UserDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
   defaultAssistant        AssistantDefinition? @relation("UserDefaultAssistant", fields: [defaultAssistantId], references: [id], onDelete: SetNull)
+  defaultSubagentDefinition SubagentDefinition? @relation("UserDefaultSubagent", fields: [userId, defaultSubagentDefinitionId], references: [ownerUserId, id], onDelete: SetNull, onUpdate: Restrict, map: "UserSettings_defaultSubagentDefinition_fkey")
   imagePublication        PublishedImageModel? @relation("UserImageModel", fields: [imageProviderModelId], references: [providerModelId], onDelete: Restrict)
 
   @@index([defaultAssistantId])
   @@index([defaultProviderModelId])
   @@index([imageProviderModelId])
   @@index([userId, activeInstructionPresetId])
+  @@index([userId, defaultSubagentDefinitionId])
 }
 
 model InstructionPreset {
@@ -3051,7 +3056,7 @@ model SubagentThread {
   chatId          String
   anchorRunId     String
   name            String              @db.VarChar(48)
-  /// The custom sub-agent it was started as: null for the default sub-agent, and once the definition is deleted,
+  /// The custom sub-agent it was started as: null for the built-in sub-agent, and once the definition is deleted,
   /// which `typeName` (kept) tells apart. The migration uses column-scoped SET NULL to clear only this column.
   definitionId    String?
   typeName        String?             @db.VarChar(48)
@@ -3131,6 +3136,7 @@ model SubagentDefinition {
   createdAt         DateTime                     @default(now())
   updatedAt         DateTime                     @updatedAt
   owner             User                         @relation("SubagentDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  defaultFor        UserSettings[]               @relation("UserDefaultSubagent")
   /// The composite relation proves the current pointer targets a revision of this definition.
   currentRevision   SubagentDefinitionRevision?  @relation("SubagentDefinitionCurrentRevision", fields: [id, currentRevisionId], references: [definitionId, id], onDelete: NoAction, onUpdate: Restrict, map: "SubagentDefinition_currentRevision_fkey")
   revisions         SubagentDefinitionRevision[] @relation("SubagentDefinitionRevisions")
@@ -3154,7 +3160,7 @@ model SubagentDefinitionRevision {
   providerModelId String?
   /// Null is the model's default effort.
   reasoningEffort String?             @db.VarChar(32)
-  /// The tool groups it may use (`SUBAGENT_TOOL_GROUPS`); null is every default sub-agent tool.
+  /// The tool groups it may use (`SUBAGENT_TOOL_GROUPS`); null is every tool the built-in sub-agent has.
   toolGroups      Json?
   createdAt       DateTime            @default(now())
   definition      SubagentDefinition  @relation("SubagentDefinitionRevisions", fields: [definitionId], references: [id], onDelete: Cascade, onUpdate: Restrict)

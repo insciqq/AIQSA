@@ -59,6 +59,7 @@ export type UiV2IconName =
   | "menu"
   | "memory"
   | "mic"
+  | "minus"
   | "monitor"
   | "moon"
   | "more"
@@ -290,6 +291,9 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-plug" viewBox="0 0 24 24">
           <path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" />
+        </symbol>
+        <symbol id="v2-icon-minus" viewBox="0 0 24 24">
+          <path d="M5 12h14" />
         </symbol>
         <symbol id="v2-icon-plus" viewBox="0 0 24 24">
           <path d="M12 5v14M5 12h14" />

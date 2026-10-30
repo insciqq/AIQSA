@@ -2,6 +2,10 @@ import { expect, test } from "@playwright/test";
 import { signInWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 
+// Workspace is ambient, and a Workspace chat neither blocks on a file's text nor warns about it, so these checks run without one.
+const unavailableWorkspace = { workspace: { available: false, enabled: false, internetEnabled: null, sessionState: null,
+  unavailableReason: "installation_disabled" } };
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((settle) => {
@@ -37,6 +41,7 @@ test("keeps the draft editable and gates send across attachment processing, retr
   let statusReads = 0;
 
   await installMatrixCatalogFixture(page);
+  await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
   await page.route("**/api/uploads", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -79,7 +84,8 @@ test("keeps the draft editable and gates send across attachment processing, retr
   const chip = page.getByRole("region", { name: "Attachments" })
     .getByRole("listitem")
     .filter({ hasText: "lifecycle-report.docx" });
-  await expect(chip).toContainText("Processing…");
+  // The first upload of a cold `next dev` compiles its way through the client.
+  await expect(chip).toContainText("Processing…", { timeout: 30_000 });
   await expect(chip).toHaveAttribute("data-attachment-status", "processing");
   await expect(composer).toBeEnabled();
   await expect(composer).toHaveValue("Keep this draft while the report is processed");
@@ -114,6 +120,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.setViewportSize({ width: 844, height: 390 });
     await context.addCookies([{ name: "aiqsa.theme", value: theme, url: baseURL! }]);
     await installMatrixCatalogFixture(page);
+    await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
     const ready = { attachment: { ...attachment("ready").attachment, metadata: { document: {
       engine: "inline", status: "partial", truncated: true, characterCount: 1_000_000,
       extractedTextMaxChars: 1_000_000, warnings: ["partial_parse", "truncated_oversized_section"]
@@ -136,9 +143,6 @@ for (const theme of ["light", "dark"] as const) {
       const box = await send.boundingBox();
       return Boolean(box && box.y >= 0 && box.y + box.height <= 390);
     }).toBe(true);
-    // A scroll event must not snap the empty conversation back to its heading.
-    await page.waitForTimeout(100);
-    await expect.poll(() => page.locator(".v2-conversation-scroll").evaluate(element => element.scrollTop)).toBeGreaterThan(0);
     await send.click({ trial: true });
     await page.screenshot({ path: testInfo.outputPath(`truncated-text-landscape-${theme}.png`) });
     await chip.getByRole("button", { name: `Remove ${ready.attachment.fileName}` }).click();

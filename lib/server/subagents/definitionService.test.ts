@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { SUBAGENT_DEFINITION_LIMITS } from "@/lib/contracts/subagents";
 import type { SubagentDefinitionDraft, SubagentModelOption } from "@/lib/contracts/subagentDefinitions";
 import { MemorySubagentDefinitionStore, immediateTransactionDb } from "@/tests/support/subagentDefinitionStore";
-import { createSubagentDefinitionService, type SubagentDefinitionDb } from "./definitionService";
+import { createSubagentDefinitionService, type SubagentDefinitionDb, type SubagentDefinitionService } from "./definitionService";
 
 const MODELS: SubagentModelOption[] = [
   { connectionName: "Codex LB", defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium", "high"], modelId: "model-cheap" },
@@ -118,5 +118,177 @@ describe("custom sub-agent definitions service", () => {
     await service.create("user-a", draft());
     models = [MODELS[1]!];
     expect((await service.list("user-a")).definitions[0]).toMatchObject({ modelAvailable: false, modelDisplayName: null, modelId: "model-cheap" });
+  });
+
+  it("keeps the reserved type out of new names, and lets a definition that holds it from before stay and rename away", async () => {
+    const { memory, service } = setup();
+    expect(await service.create("user-a", draft({ name: "built-in" }))).toEqual({ ok: false, refusal: { code: "subagent_name_invalid", field: "name" } });
+    const created = await service.create("user-a", draft());
+    if (!created.ok) throw new Error("create failed");
+    expect(await service.update("user-a", created.value.id, 1, draft({ name: "built-in" }))).toEqual({ ok: false,
+      refusal: { code: "subagent_name_invalid", field: "name" } });
+    // The row as an earlier release could have saved it.
+    const row = memory.rows.get(created.value.id)!;
+    const legacy = { draft: draft({ name: "built-in" }), id: "rev_legacy", number: 2 };
+    row.revisions.push(legacy);
+    row.current = legacy.id;
+    row.version = 2;
+    expect((await service.list("user-a")).definitions.map((entry) => entry.name)).toEqual(["built-in"]);
+    expect(await service.update("user-a", row.id, 2, draft({ description: "Edited.", name: "built-in" }))).toMatchObject({ ok: true, value: { name: "built-in", version: 3 } });
+    expect(await service.update("user-a", row.id, 3, draft({ name: "renamed" }))).toMatchObject({ ok: true, value: { name: "renamed", version: 4 } });
+    // Undo of that rename would take the reserved name again: refused, nothing changes.
+    expect(await service.restore("user-a", row.id, 4, "rev_legacy")).toEqual({ ok: false, refusal: { code: "subagent_name_invalid", field: "name" } });
+    expect(await service.get("user-a", row.id)).toMatchObject({ name: "renamed", version: 4 });
+  });
+});
+
+describe("the user's default sub-agent", () => {
+  async function two(service: SubagentDefinitionService, userId = "user-a") {
+    const first = await service.create(userId, draft({ name: "first" }));
+    const second = await service.create(userId, draft({ name: "second" }));
+    if (!first.ok || !second.ok) throw new Error("create failed");
+    return { first: first.value, second: second.value };
+  }
+
+  it("has none until set, moves between definitions so at most one is the default, and clears", async () => {
+    const { service } = setup();
+    const { first, second } = await two(service);
+    expect((await service.list("user-a")).defaultDefinitionId).toBeNull();
+    expect(await service.readDefault("user-a")).toBeNull();
+    expect(await service.setDefault("user-a", first.id, null)).toEqual({ ok: true, value: first.id });
+    expect((await service.list("user-a")).defaultDefinitionId).toBe(first.id);
+    expect(await service.setDefault("user-a", second.id, first.id)).toEqual({ ok: true, value: second.id });
+    expect(await service.readDefault("user-a")).toBe(second.id);
+    expect(await service.setDefault("user-a", null, second.id)).toEqual({ ok: true, value: null });
+    expect((await service.list("user-a")).defaultDefinitionId).toBeNull();
+    // Setting what it already is succeeds and writes nothing.
+    expect(await service.setDefault("user-a", null, null)).toEqual({ ok: true, value: null });
+  });
+
+  it("refuses a move from a default that moved meanwhile", async () => {
+    const { service } = setup();
+    const { first, second } = await two(service);
+    await service.setDefault("user-a", first.id, null);
+    expect(await service.setDefault("user-a", second.id, null)).toEqual({ ok: false, refusal: { code: "subagent_default_conflict" } });
+    expect(await service.readDefault("user-a")).toBe(first.id);
+  });
+
+  it("treats another user's definition exactly like a missing one, and keeps each user's default apart", async () => {
+    const { service } = setup();
+    const { first } = await two(service);
+    const { second: theirs } = await two(service, "user-b");
+    await service.setDefault("user-b", theirs.id, null);
+    expect(await service.setDefault("user-a", theirs.id, null)).toEqual(await service.setDefault("user-a", "def_missing", null));
+    expect(await service.setDefault("user-a", theirs.id, null)).toEqual({ ok: false, refusal: { code: "subagent_not_found" } });
+    expect(await service.readDefault("user-a")).toBeNull();
+    await service.setDefault("user-a", first.id, null);
+    expect(await service.readDefault("user-b")).toBe(theirs.id);
+    // An Undo naming their definition reads it as gone, and their deletion route as missing.
+    expect(await service.undoDefaultChange("user-a", { restore: { expected: first.id, target: theirs.id } })).toEqual({ ok: true, value: "target_gone" });
+    expect(await service.readDefault("user-a")).toBeNull();
+    expect(await service.undoDefaultChange("user-a", { definition: { expectedVersion: 1, id: theirs.id, revisionId: null }, restore: { expected: null, target: null } }))
+      .toEqual({ ok: false, refusal: { code: "subagent_not_found" } });
+    expect(await service.get("user-b", theirs.id)).not.toBeNull();
+  });
+
+  it("refuses a definition on a model the user lost, or when their models cannot be read, and always lets the default go", async () => {
+    const memory = new MemorySubagentDefinitionStore();
+    let models: SubagentModelOption[] | null = MODELS;
+    const service = createSubagentDefinitionService({ db: immediateTransactionDb<SubagentDefinitionDb>(), models: async () => models, store: memory.store });
+    const { first, second } = await two(service);
+    await service.setDefault("user-a", first.id, null);
+    models = [MODELS[1]!];
+    expect(await service.setDefault("user-a", second.id, first.id)).toMatchObject({ ok: false, refusal: { code: "subagent_model_unavailable" } });
+    models = null;
+    expect(await service.setDefault("user-a", second.id, first.id)).toMatchObject({ ok: false, refusal: { code: "subagent_catalog_unavailable" } });
+    expect(await service.readDefault("user-a")).toBe(first.id);
+    expect(await service.setDefault("user-a", null, first.id)).toEqual({ ok: true, value: null });
+  });
+
+  it("goes back to the built-in when the default is deleted", async () => {
+    const { service } = setup();
+    const { first, second } = await two(service);
+    await service.setDefault("user-a", first.id, null);
+    await service.remove("user-a", second.id, 1);
+    expect(await service.readDefault("user-a")).toBe(first.id);
+    await service.remove("user-a", first.id, 1);
+    expect(await service.readDefault("user-a")).toBeNull();
+    expect((await service.list("user-a")).defaultDefinitionId).toBeNull();
+  });
+
+  describe("Undo of a change that moved it", () => {
+    it("deletes a created default and puts the earlier default back, or the built-in", async () => {
+      const { service } = setup();
+      const { first, second } = await two(service);
+      await service.setDefault("user-a", second.id, null);
+      await service.setDefault("user-a", first.id, second.id);
+      expect(await service.undoDefaultChange("user-a", { definition: { expectedVersion: 1, id: first.id, revisionId: null },
+        restore: { expected: first.id, target: second.id } })).toEqual({ ok: true, value: "restored" });
+      expect(await service.get("user-a", first.id)).toBeNull();
+      expect(await service.readDefault("user-a")).toBe(second.id);
+      expect(await service.undoDefaultChange("user-a", { definition: { expectedVersion: 1, id: second.id, revisionId: null },
+        restore: { expected: second.id, target: null } })).toEqual({ ok: true, value: "restored" });
+      expect(await service.readDefault("user-a")).toBeNull();
+    });
+
+    it("restores an edit's revision and the earlier default together", async () => {
+      const { service } = setup();
+      const { first, second } = await two(service);
+      await service.setDefault("user-a", first.id, null);
+      const edited = await service.update("user-a", second.id, 1, draft({ instructions: "Edited.", name: "second" }));
+      if (!edited.ok) throw new Error("edit failed");
+      await service.setDefault("user-a", second.id, first.id);
+      expect(await service.undoDefaultChange("user-a", { definition: { expectedVersion: 2, id: second.id, revisionId: second.revisionId },
+        restore: { expected: second.id, target: first.id } })).toEqual({ ok: true, value: "restored" });
+      expect(await service.get("user-a", second.id)).toMatchObject({ instructions: second.instructions, version: 3 });
+      expect(await service.readDefault("user-a")).toBe(first.id);
+    });
+
+    it("puts a move alone back, a cleared default included, even onto a model the user lost", async () => {
+      const memory = new MemorySubagentDefinitionStore();
+      let models: SubagentModelOption[] = MODELS;
+      const service = createSubagentDefinitionService({ db: immediateTransactionDb<SubagentDefinitionDb>(), models: async () => models, store: memory.store });
+      const { first } = await two(service);
+      await service.setDefault("user-a", first.id, null);
+      await service.setDefault("user-a", null, first.id);
+      models = [];
+      expect(await service.undoDefaultChange("user-a", { restore: { expected: null, target: first.id } })).toEqual({ ok: true, value: "restored" });
+      expect(await service.readDefault("user-a")).toBe(first.id);
+    });
+
+    it("keeps a later move of the default, and still reverses the definition's own change", async () => {
+      const { service } = setup();
+      const { first, second } = await two(service);
+      await service.setDefault("user-a", first.id, null);
+      await service.setDefault("user-a", second.id, first.id);
+      expect(await service.undoDefaultChange("user-a", { restore: { expected: first.id, target: null } })).toEqual({ ok: true, value: "changed" });
+      expect(await service.readDefault("user-a")).toBe(second.id);
+      expect(await service.undoDefaultChange("user-a", { definition: { expectedVersion: 1, id: first.id, revisionId: null },
+        restore: { expected: first.id, target: null } })).toEqual({ ok: true, value: "changed" });
+      expect(await service.get("user-a", first.id)).toBeNull();
+      expect(await service.readDefault("user-a")).toBe(second.id);
+    });
+
+    it("leaves the built-in when the earlier default no longer exists, and says so", async () => {
+      const { service } = setup();
+      const { first, second } = await two(service);
+      await service.setDefault("user-a", first.id, null);
+      await service.setDefault("user-a", second.id, first.id);
+      await service.remove("user-a", first.id, 1);
+      expect(await service.undoDefaultChange("user-a", { restore: { expected: second.id, target: first.id } })).toEqual({ ok: true, value: "target_gone" });
+      expect(await service.readDefault("user-a")).toBeNull();
+    });
+
+    it("changes nothing when the definition moved on", async () => {
+      const { service } = setup();
+      const { first, second } = await two(service);
+      await service.setDefault("user-a", first.id, null);
+      await service.setDefault("user-a", second.id, first.id);
+      await service.update("user-a", second.id, 1, draft({ instructions: "Edited.", name: "second" }));
+      expect(await service.undoDefaultChange("user-a", { definition: { expectedVersion: 1, id: second.id, revisionId: null },
+        restore: { expected: second.id, target: first.id } })).toMatchObject({ ok: false, refusal: { code: "subagent_definition_conflict" } });
+      expect(await service.get("user-a", second.id)).not.toBeNull();
+      expect(await service.readDefault("user-a")).toBe(second.id);
+    });
   });
 });

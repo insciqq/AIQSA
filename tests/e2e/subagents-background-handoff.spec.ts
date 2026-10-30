@@ -76,7 +76,7 @@ function chatDetail(): ChatDetailWire {
 }
 
 function thread(id: string, name: string, state: "running" | "waiting"): SubagentThreadSummary {
-  return { createdAt: timestamp, endedAt: null, id, mode: "background", name, outcome: null, reason: null, state, turnCount: 1,
+  return { createdAt: timestamp, currentStep: null, endedAt: null, id, latestAnswerMessageId: "answer-1", mode: "background", model: null, name, outcome: null, reason: null, state, turnCount: 1,
     type: null, updatedAt: timestamp };
 }
 

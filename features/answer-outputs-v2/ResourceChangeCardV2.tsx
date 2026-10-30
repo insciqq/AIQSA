@@ -22,14 +22,17 @@ import {
   type SecretChangeCard,
   type SkillDeleteProposalCard,
   type SubagentChangeCard,
-  type SubagentChangeField
+  type SubagentChangeField,
+  type SubagentDefaultChange
 } from "@/lib/contracts/resourceChanges";
-import { SUBAGENTS_LIBRARY_PATH } from "@/lib/contracts/subagentDefinitions";
+import { SUBAGENTS_LIBRARY_PATH, type SubagentDefaultUndoOutcome, type SubagentDefaultUndoRequest } from "@/lib/contracts/subagentDefinitions";
 import {
   SubagentApiError,
   deleteSubagentDefinition,
   getSubagentDefinition,
-  restoreSubagentRevision
+  readSubagentDefault,
+  restoreSubagentRevision,
+  undoSubagentDefaultChange
 } from "@/features/library-v2/subagents/subagentsApi";
 import { SKILL_LIBRARY_PATH } from "@/lib/contracts/skillSaves";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
@@ -60,7 +63,7 @@ const ASSISTANT_FIELDS: Readonly<Record<AssistantChangeField, string>> = {
 };
 
 const SUBAGENT_FIELDS: Readonly<Record<SubagentChangeField, string>> = {
-  description: "Description", effort: "Reasoning effort", instructions: "Instructions", model: "Model", name: "Name", tools: "Tools"
+  default: "Default", description: "Description", effort: "Reasoning effort", instructions: "Instructions", model: "Model", name: "Name", tools: "Tools"
 };
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
@@ -488,18 +491,37 @@ async function readSubagentRemote(definitionId: string, version: number, signal:
   }
 }
 
+/** What the default was before a change, in plain words. */
+const defaultBefore = (change: SubagentDefaultChange) => change.previous ? `“${change.previous.name}”` : "the built-in sub-agent";
+
+/** What an Undo did to the default, as the server left it. */
+function defaultUndoNote(change: SubagentDefaultChange, outcome: SubagentDefaultUndoOutcome): string {
+  if (outcome === "changed") return "The default sub-agent changed after this, and that change is kept.";
+  if (outcome === "target_gone") return "The earlier default no longer exists, so new sub-agents use the built-in.";
+  return change.previous ? `“${change.previous.name}” is the default again.` : "New sub-agents use the built-in again.";
+}
+
 function SubagentCardV2({ card, live }: Readonly<{ card: SubagentChangeCard; live: boolean }>) {
   const state = useCardState(card);
   const { outcome, remote } = state;
-  const read = useCallback((signal: AbortSignal) => readSubagentRemote(card.definitionId, card.definitionVersion, signal),
-    [card.definitionId, card.definitionVersion]);
+  const change = card.defaultChange ?? null;
+  // An edit that only moved the default leaves the version alone: the default, not the version, decides its Undo.
+  const movedOnly = card.action === "updated" && card.undoRevisionId === null;
+  const defaultLeft = change?.isDefault ? card.definitionId : null;
+  const read = useCallback((signal: AbortSignal) => movedOnly
+    ? readSubagentDefault(signal).then((current): Remote => current === defaultLeft ? "current" : "changed")
+    : readSubagentRemote(card.definitionId, card.definitionVersion, signal),
+  [card.definitionId, card.definitionVersion, defaultLeft, movedOnly]);
   useRemoteRead(!live && !outcome ? read : null, state.setRemote);
 
-  function act(request: () => Promise<unknown>, done: Outcome, failure: string) {
+  /** `done` null: the request changed nothing because the resource moved on. */
+  function act<T>(request: () => Promise<T>, done: Outcome | ((value: T) => Outcome | null), failure: string) {
     void state.run(async () => {
       try {
-        await request();
-        state.finish(done);
+        const value = await request();
+        const next = typeof done === "function" ? done(value) : done;
+        if (next) state.finish(next);
+        else state.setRemote("changed");
       } catch (error) {
         // The routes refuse a version that is no longer current, or a sub-agent that is gone.
         const code = error instanceof SubagentApiError ? error.code : null;
@@ -515,29 +537,46 @@ function SubagentCardV2({ card, live }: Readonly<{ card: SubagentChangeCard; liv
   const remoteStatus = remote === "missing" ? "This sub-agent no longer exists."
     : remote === "changed" ? card.action === "delete_proposed"
       ? "The sub-agent changed after this proposal, so nothing was deleted. Review it in Studio › Sub-agents."
-      : "Undo is not available: the sub-agent changed after this, and that change is kept." : null;
+      : movedOnly ? "Undo is not available: the default sub-agent changed after this, and that change is kept."
+        : "Undo is not available: the sub-agent changed after this, and that change is kept." : null;
 
   if (card.action === "created" || card.action === "updated") {
     const created = card.action === "created";
     const undoRevisionId = card.undoRevisionId;
+    /** Undo of a change that moved the default, its definition's own change with it, in one request. */
+    const undoWithDefault = (moved: SubagentDefaultChange, definition: SubagentDefaultUndoRequest["definition"], heading: string, message: string | null) =>
+      act(() => undoSubagentDefaultChange({ ...(definition ? { definition } : {}),
+        restore: { expected: defaultLeft, target: moved.previous?.definitionId ?? null } }),
+      (result) => movedOnly && result === "changed" ? null
+        : { heading, message: [message, defaultUndoNote(moved, result)].filter(Boolean).join(" ") }, "Undo failed. Try again.");
     const undo = created
-      ? () => act(() => deleteSubagentDefinition(card.definitionId, card.definitionVersion),
-        { heading: "Sub-agent removed", message: "Undone: the sub-agent is deleted." }, "Undo failed. Try again.")
-      : undoRevisionId ? () => act(() => restoreSubagentRevision(card.definitionId, card.definitionVersion, undoRevisionId),
-        { heading: "Change undone", message: "The sub-agent is back to its previous version." }, "Undo failed. Try again.") : null;
+      ? change ? () => undoWithDefault(change, { expectedVersion: card.definitionVersion, id: card.definitionId, revisionId: null },
+        "Sub-agent removed", "Undone: the sub-agent is deleted.")
+        : () => act(() => deleteSubagentDefinition(card.definitionId, card.definitionVersion),
+          { heading: "Sub-agent removed", message: "Undone: the sub-agent is deleted." }, "Undo failed. Try again.")
+      : change ? () => undoWithDefault(change,
+        undoRevisionId ? { expectedVersion: card.definitionVersion, id: card.definitionId, revisionId: undoRevisionId } : undefined,
+        "Change undone", undoRevisionId ? "The sub-agent is back to its previous version." : null)
+        : undoRevisionId ? () => act(() => restoreSubagentRevision(card.definitionId, card.definitionVersion, undoRevisionId),
+          { heading: "Change undone", message: "The sub-agent is back to its previous version." }, "Undo failed. Try again.") : null;
     const renamed = card.previousName ? `Renamed from “${card.previousName}”.` : null;
+    const moveHeading = change?.isDefault ? "Default sub-agent set" : "Default sub-agent cleared";
+    const moveDetail = change && (change.isDefault
+      ? `New sub-agents start it from your next message on. Before: ${defaultBefore(change)}.` : "New sub-agents use the built-in from your next message on.");
     return (
-      <CardV2 error={state.error} heading={outcome?.heading ?? (created ? "Sub-agent created" : "Sub-agent updated")} headingRef={state.headingRef}
+      <CardV2 error={state.error} heading={outcome?.heading ?? (created ? "Sub-agent created" : movedOnly ? moveHeading : "Sub-agent updated")} headingRef={state.headingRef}
         icon="bot" name={card.name} resource="subagent" state={outcome ? "done" : remote} status={outcome?.message ?? remoteStatus}
-        meta={created ? null : card.changes.map((change) => SUBAGENT_FIELDS[change.field]).join(", ") || null}
-        detail={created ? null : [renamed, ...card.changes.filter((change) => change.field !== "name")
-          .map((change) => `${SUBAGENT_FIELDS[change.field]}${change.summary ? `: ${change.summary}` : " changed"}`)].filter(Boolean).join("\n") || null}
+        meta={created ? change ? "now your default" : null
+          : movedOnly ? change?.isDefault ? `before: ${defaultBefore(change)}` : "new sub-agents use the built-in"
+            : card.changes.map((entry) => SUBAGENT_FIELDS[entry.field]).join(", ") || null}
+        detail={created || movedOnly ? moveDetail : [renamed, ...card.changes.filter((entry) => entry.field !== "name")
+          .map((entry) => `${SUBAGENT_FIELDS[entry.field]}${entry.summary ? `: ${entry.summary}` : " changed"}`)].filter(Boolean).join("\n") || null}
         actions={<>
           {outcome || settled || !undo ? null
             : <UndoButtonV2 busy={state.busy} label={created ? `Undo creating ${card.name}` : `Undo changes to ${card.name}`} onClick={undo} />}
           {remote === "missing" || (created && outcome) ? null : open}
         </>}>
-        {!created && card.instructionsDiff && card.changes.some((change) => change.field === "instructions")
+        {!created && card.instructionsDiff && card.changes.some((entry) => entry.field === "instructions")
           ? <DiffV2 diff={card.instructionsDiff} label={`Changes in the instructions of ${card.name}`} /> : null}
       </CardV2>
     );
@@ -560,6 +599,7 @@ function SubagentCardV2({ card, live }: Readonly<{ card: SubagentChangeCard; liv
         <ul className="v2-resource-change-card-consequences" aria-label="What deleting changes">
           <li>The agent can no longer start it.</li>
           {threads > 0 ? <li>{`${plural(threads, "sub-agent", "sub-agents")} in your chats started as it keep their work but cannot be continued.`}</li> : null}
+          {card.consequences?.isDefault ? <li>It is your default sub-agent, so new sub-agents go back to the built-in.</li> : null}
         </ul>
       ) : null}
     </CardV2>

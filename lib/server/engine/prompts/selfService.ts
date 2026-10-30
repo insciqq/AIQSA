@@ -76,7 +76,7 @@ export function selfServicePromptSection(input: SelfServicePromptInput): string 
     // Where some are absent (a Telegram turn, an automation, an Assistant chat) the agent says where the change is made instead.
     ...unavailableChanges(has),
     ...tool(names.assistants, `- Create and edit the user's own Assistants with \`${names.assistants}\`: instructions, model, tools and linked Skills.`),
-    ...tool(names.subagents, `- Create, edit and delete the user's custom sub-agents (their own model, effort, instructions and tools) with \`${names.subagents}\`, \`edit_subagent\` and \`delete_subagent\`.`),
+    ...tool(names.subagents, `- Create, edit and delete the user's custom sub-agents (their own model, effort, instructions and tools) with \`${names.subagents}\`, \`edit_subagent\` and \`delete_subagent\`; \`default\` on the first two makes one the user's default sub-agent.`),
     ...(scheduled.length ? [`- Automations: ${scheduled.map((name) => `\`${name}\``).join(" and ")}. ${WEBHOOK_LINE}`] : []),
     ...tool(names.createArtifact, `- Interactive pages, charts and slides: \`${names.createArtifact}\`.`)
   ].join("\n");
@@ -124,7 +124,7 @@ Studio sections as links. Give the user these Markdown links exactly as written,
 - [Assistants](/?library=assistants) (one Assistant: [its name](/?library=assistants&assistant=<id>))
 - [Instructions](/?library=instructions): personal instruction presets for ordinary chats, never applied to Assistants
 - [Skills](/?library=skills)
-- [Sub-agents](/?library=subagents): custom sub-agents with their own model, effort, instructions and tools
+- [Sub-agents](/?library=subagents): custom sub-agents with their own model, effort, instructions and tools; one can be the default
 - [Memory](/?library=memory)
 - [Files](/?library=files)
 - [Artifacts](/?library=artifacts)

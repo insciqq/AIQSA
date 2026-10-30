@@ -1,9 +1,15 @@
 import {
+  SUBAGENT_DEFAULT_PATH,
+  SUBAGENT_DEFAULT_UNDO_PATH,
   SUBAGENT_DEFINITIONS_PATH,
+  decodeSubagentDefaultResponse,
+  decodeSubagentDefaultUndoResponse,
   decodeSubagentDefinitionListResponse,
   decodeSubagentDefinitionResponse,
   subagentDefinitionPath,
   subagentDefinitionRestorePath,
+  type SubagentDefaultUndoOutcome,
+  type SubagentDefaultUndoRequest,
   type SubagentDefinitionDraft,
   type SubagentDefinitionField,
   type SubagentDefinitionListResponse,
@@ -72,15 +78,39 @@ export async function restoreSubagentRevision(id: string, expectedVersion: numbe
   return definition(await send(subagentDefinitionRestorePath(id), { body: JSON.stringify({ expectedVersion, revisionId }), method: "POST" }));
 }
 
+function defaultOf(body: unknown): string | null {
+  const decoded = decodeSubagentDefaultResponse(body);
+  if (!decoded) throw new SubagentApiError(null, 200);
+  return decoded.defaultDefinitionId;
+}
+
+/** The user's default sub-agent's id; null is the built-in one. */
+export async function readSubagentDefault(signal?: AbortSignal): Promise<string | null> {
+  return defaultOf(await send(SUBAGENT_DEFAULT_PATH, { signal }));
+}
+
+/** Moves the default, a null `definitionId` to the built-in sub-agent, while it is still `expected`; otherwise `subagent_default_conflict`. */
+export async function setSubagentDefault(definitionId: string | null, expected: string | null): Promise<string | null> {
+  return defaultOf(await send(SUBAGENT_DEFAULT_PATH, { body: JSON.stringify({ definitionId, expected }), method: "PUT" }));
+}
+
+/** Undo of a card's change that moved the default, its definition change included, as one. */
+export async function undoSubagentDefaultChange(undo: SubagentDefaultUndoRequest): Promise<SubagentDefaultUndoOutcome> {
+  const decoded = decodeSubagentDefaultUndoResponse(await send(SUBAGENT_DEFAULT_UNDO_PATH, { body: JSON.stringify(undo), method: "POST" }));
+  if (!decoded) throw new SubagentApiError(null, 200);
+  return decoded.outcome;
+}
+
 /** The user's words for a route's refusal. */
 export function subagentErrorMessage(failure: unknown): string {
   const code = failure instanceof SubagentApiError ? failure.code : null;
   switch (code) {
     case "subagent_definition_exists": return "You already have a sub-agent with this name. Choose another name.";
     case "subagent_definition_conflict": return "This sub-agent changed in another tab or chat. Reload it, then make your change again.";
+    case "subagent_default_conflict": return "Your default sub-agent changed in another tab or chat. Check the list below, then try again.";
     case "subagent_definition_limit": return "You have reached the limit of custom sub-agents. Delete one first.";
     case "subagent_not_found": return "This sub-agent no longer exists.";
-    case "subagent_name_invalid": return "Use lowercase letters a–z, digits, hyphens and underscores for the name, starting and ending with a letter or digit.";
+    case "subagent_name_invalid": return "Use lowercase letters a–z, digits, hyphens and underscores for the name, starting and ending with a letter or digit. “main” and “built-in” are reserved.";
     case "subagent_model_unavailable": return "That model is not available to you. Choose another model.";
     case "subagent_effort_unsupported": return "That model does not support this reasoning effort.";
     case "subagent_definition_invalid": return "Fill in the description and instructions.";
