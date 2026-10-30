@@ -46,6 +46,7 @@ import type { WorkspaceConfig } from "./config";
 import { outputIdentities, parseOutputCapture, sameOutputIdentities, type WorkspaceOutputCapture, type WorkspaceOutputIdentity } from "./outputManifest";
 import {
   UNREGISTERED_WORKSPACE_COMMAND_FILTER,
+  isWorkspaceSyncCleanupId,
   acknowledgeWorkspaceCommandsStopped,
   workspaceSyncCleanupId,
   type WorkspaceExecutionRecord,
@@ -73,6 +74,13 @@ import { WorkspaceRuntimeError } from "./runtime";
 import type { BrowserLiveChannelRequest } from "./browserLive";
 import type { WorkspaceOperation } from "./operationFence";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
+import {
+  acknowledgeWorkspaceRunCommandsStopped, closeWorkspaceRunOperation, currentWorkspaceAttachments, evictOtherWorkspaceAttachments,
+  isWorkspaceRunOperation, withWorkspaceSessionExclusive,
+  workspaceActiveRunsWhere, workspaceRunAgentIds, workspaceRunHoldsOperation, type WorkspaceAttachedRun
+} from "./attachments";
+import type { WorkspaceDetachInput, WorkspaceDetachResult } from "../subagents/ports";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { workspaceRunTools } from "./admission";
 import { retryWorkspaceExportStep } from "./exportRetry";
 import { decryptWorkspaceSecret, type AcceptedWorkspaceSecret } from "./secrets/store";
@@ -107,6 +115,17 @@ export type WorkspaceExecutionBinding = Readonly<{
   outputDirectory: string;
   operationOwner: string | null;
   operationGeneration: number;
+  /**
+   * The run is attached under the session's current run operation (`attachments.ts`), which several runs of the
+   * chat share. Absent (test fixtures): the run owns the operation when the owner names it.
+   */
+  operationAttached?: boolean;
+  /** A background sub-agent run's thread: it shares the session, has no output obligations and no answer. */
+  subagentThreadId?: string | null;
+  /** That thread's name, for the agent identity its commands carry. */
+  subagentName?: string | null;
+  /** The user message the run answers; a sub-agent run's inputs come from its ancestry. */
+  userMessageId?: string;
   policyRevision: number;
   runId: string;
   runtimeSandboxId: string | null;
@@ -121,6 +140,18 @@ export type WorkspaceExecutionBinding = Readonly<{
   toolDefinitions: readonly WorkspaceBoundTool[];
   userId: string;
 }>;
+
+/** The agent a run's own commands run for: its background sub-agent thread, or the main agent. */
+function runAgent(binding: WorkspaceExecutionBinding): WorkspaceAgent {
+  return binding.subagentThreadId && binding.subagentName
+    ? { kind: "subagent", name: binding.subagentName, threadId: binding.subagentThreadId }
+    : { kind: "main" };
+}
+
+/** Whether the run holds guest authority under the binding's operation (shared by the chat's attached runs). */
+function runHoldsOperation(binding: WorkspaceExecutionBinding, runId: string): boolean {
+  return binding.operationAttached ?? binding.operationOwner === workspaceRunOperationOwner(runId);
+}
 
 function ownedOperation(binding: WorkspaceExecutionBinding): WorkspaceOperation {
   if (!binding.operationOwner) {
@@ -289,6 +320,8 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   markSessionFailed(input: Readonly<{ code: string; operation: WorkspaceOperation; sessionId: string }>): Promise<void>;
   markSessionLost(input: Readonly<{
     operation: WorkspaceOperation;
+    /** The run that found the loss: the only attached run that goes on in the recreated Workspace. */
+    runId?: string;
     runtimeSandboxId: string;
     sessionId: string;
   }>): Promise<WorkspaceOperation | null>;
@@ -317,6 +350,26 @@ export type WorkspaceCoordinatorRepository = Readonly<{
     storageKey: string;
     token: string;
   }>): Promise<ThreadGeneratedFile>;
+  /** The runs attached under the binding's operation, oldest first (`attachments.ts`); absent: one run per session. */
+  attachedRuns?(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachedRun[]>;
+  /**
+   * One run leaves a session other runs still use: its attachment goes and, with `stopProven` (the runner proved
+   * its processes gone), its executions and unregistered commands are settled with that proof. Guarded by the
+   * binding's operation; false when the run no longer holds it.
+   */
+  detachRun?(input: Readonly<{ binding: WorkspaceExecutionBinding; stopProven: boolean }>): Promise<boolean>;
+  /**
+   * The settling run is about to stop the VM of its run operation: no run joins it any more
+   * (`closeWorkspaceRunOperation`). Without `force`, false when another run attached meanwhile.
+   */
+  closeRunOperation?(input: Readonly<{ binding: WorkspaceExecutionBinding; force: boolean }>): Promise<boolean>;
+  /**
+   * The run's VM is about to stop under the other attached runs: the operation closes to joins and the others lose
+   * their attachments in one step, so none dispatches under the stop. Returns the runs that ended with it.
+   */
+  evictAttachedRuns?(input: Readonly<{ binding: WorkspaceExecutionBinding }>): Promise<readonly string[]>;
+  /** The agent ids whose guest processes belong to the run (`workspaceRunAgentIds`). */
+  runAgentIds?(input: Readonly<{ runId: string }>): Promise<readonly string[]>;
   /**
    * Guarded terminal transition of a session that no run uses any more.
    * Never touches DELETING, FAILED, or an in-progress archive/idle-stop marker,
@@ -392,7 +445,11 @@ export function createPrismaWorkspaceCoordinatorRepository(
         chatId: true,
         id: true,
         scheduledTaskId: true,
+        subagentThreadId: true,
+        subagentTurn: { select: { thread: { select: { name: true } } } },
+        subagentTurnId: true,
         userId: true,
+        userMessageId: true,
         workspaceRunBinding: {
           select: {
             guestUsedAt: true,
@@ -421,7 +478,9 @@ export function createPrismaWorkspaceCoordinatorRepository(
       },
       where: { id: runId }
     });
-    if (!run || run.userId !== userId || !run.assistantMessageId || !run.workspaceRunBinding ||
+    // A background sub-agent run answers no message of its own; every other run does.
+    const subagent = Boolean(run?.subagentTurnId && run.subagentThreadId);
+    if (!run || run.userId !== userId || (!run.assistantMessageId && !subagent) || !run.workspaceRunBinding ||
       run.chat.userId !== userId) {
       return null;
     }
@@ -431,8 +490,15 @@ export function createPrismaWorkspaceCoordinatorRepository(
       hashCanonicalMcpValue(definitions) !== run.workspaceRunBinding.toolCatalogHash
     ) return null;
     const session = run.workspaceRunBinding.workspaceSession;
+    const operationAttached = await workspaceRunHoldsOperation(prisma,
+      { chatId: run.chatId, operationOwner: session.operationOwner, version: session.version }, run.id);
     return {
-      assistantMessageId: run.assistantMessageId,
+      // A sub-agent run never publishes outputs (`finalize`), so nothing is ever recorded on its user message.
+      assistantMessageId: run.assistantMessageId ?? run.userMessageId,
+      operationAttached,
+      subagentName: subagent ? run.subagentTurn?.thread.name ?? null : null,
+      subagentThreadId: subagent ? run.subagentThreadId : null,
+      userMessageId: run.userMessageId,
       chatId: run.chatId,
       guestUsed: run.workspaceRunBinding.guestUsedAt !== null ||
         run.workspaceRunBinding._count.toolCalls > 0 || run.workspaceRunBinding._count.selectedCaptures > 0,
@@ -531,6 +597,14 @@ export function createPrismaWorkspaceCoordinatorRepository(
             toolCalls: { none: {} }, selectedCaptures: { none: {} } }, select: { modelRunId: true }
         });
         if (!unused) return false;
+        const attached = await currentWorkspaceAttachments(tx, session);
+        if (attached.some((run) => run.active && run.modelRunId !== binding.runId)) {
+          // Other runs of the chat go on under the shared operation: only this run's attachment goes.
+          if (!attached.some((run) => run.modelRunId === binding.runId)) return false;
+          await tx.workspaceRunAttachment.deleteMany({ where: { modelRunId: binding.runId } });
+          return true;
+        }
+        await tx.workspaceRunAttachment.deleteMany({ where: { chatId: session.chatId } });
         await tx.workspaceSession.update({ where: { id: binding.sessionId },
           data: { operationOwner: null, operationExpiresAt: null } });
         return true;
@@ -604,8 +678,11 @@ export function createPrismaWorkspaceCoordinatorRepository(
       const imageIds = snapshot?.imageReferences?.map(reference => reference.attachmentId) ?? [];
       // Earlier exported bytes are admitted from this run's immutable message
       // ancestry, not from the mutable current branch or guest output folders.
-      const ancestors = (await workspaceAncestorMessageIds(prisma, binding.chatId, binding.assistantMessageId))
-        .filter(id => id !== binding.assistantMessageId);
+      // A sub-agent run sees what its parent's answer saw: the user message it shares and that message's ancestry.
+      const ancestors = binding.subagentThreadId && binding.userMessageId
+        ? await workspaceAncestorMessageIds(prisma, binding.chatId, binding.userMessageId)
+        : (await workspaceAncestorMessageIds(prisma, binding.chatId, binding.assistantMessageId))
+          .filter(id => id !== binding.assistantMessageId);
       const rows = await prisma.attachment.findMany({
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         select: {
@@ -663,7 +740,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
         if (!session || !request.operation || session.operationOwner !== request.operation.owner ||
           session.version !== request.operation.generation || session.runtimeSandboxId !== request.runtimeSandboxId ||
           session.state === "DELETING") return { status: "busy" as const };
-        const runOwner = session.operationOwner === workspaceRunOperationOwner(request.runId);
+        const attached = await currentWorkspaceAttachments(tx, session);
+        const runOwner = attached.some((run) => run.modelRunId === request.runId);
         // A crashed foreground capture can be resumed only by that same run,
         // after both durable leases expire. It never adopts another turn.
         const expiredHandoff = request.handoff &&
@@ -671,6 +749,11 @@ export function createPrismaWorkspaceCoordinatorRepository(
           session.operationExpiresAt !== null && session.operationExpiresAt <= new Date();
         if (!runOwner && !expiredHandoff) return { status: "busy" as const };
         const claim = await claimExportWith(tx, request);
+        // Other runs still use the session: the capture runs under their shared operation, leased on the binding
+        // alone, so no new generation drains the VM under them.
+        if (runOwner && attached.some((run) => run.active && run.modelRunId !== request.runId)) {
+          return claim.status === "claimed" ? { ...claim, operation: request.operation } : claim;
+        }
         return ownExportClaim(tx, session, claim, request);
       });
     },
@@ -680,11 +763,19 @@ export function createPrismaWorkspaceCoordinatorRepository(
         if (await exportAlreadyComplete(tx, request)) return { status: "complete" as const };
         if (!session) throw new WorkspaceRuntimeError("workspace_output_export_failed");
         if (session.version !== request.generation || session.runtimeSandboxId !== request.runtimeSandboxId || session.state === "DELETING") return { status: "busy" as const };
+        // A run that detached from a session its chat's other runs still use publishes its sealed capture under their
+        // shared operation; nothing of it runs any more, and its capture is a private copy no later write changes.
+        const attached = await currentWorkspaceAttachments(tx, session);
+        if (attached.some((run) => run.active) && !attached.some((run) => run.modelRunId === request.runId) &&
+          await sealedCapture(tx, request.runId)) {
+          const claim = await claimExportWith(tx, { ...request, recovery: true });
+          return claim.status === "claimed"
+            ? { ...claim, operation: { generation: session.version, owner: session.operationOwner! } } : claim;
+        }
         if (session.operationOwner && (!session.operationOwner.startsWith("export:") || !session.operationExpiresAt ||
           session.operationExpiresAt > new Date())) return { status: "busy" as const };
-        const active = await tx.modelRun.count({
-          where: { chatId: session.chatId, status: { in: [...ACTIVE_RUN_STATUSES] } }
-        });
+        // Main-agent runs and attached sub-agent runs (`attachments.ts`); a sub-agent run without the Workspace does not wait.
+        const active = await tx.modelRun.count({ where: workspaceActiveRunsWhere(session.chatId) });
         if (active > 0) return { status: "busy" as const };
         const claim = await claimExportWith(tx, { ...request, recovery: true });
         return ownExportClaim(tx, session, claim, request);
@@ -749,13 +840,15 @@ export function createPrismaWorkspaceCoordinatorRepository(
     },
     async outputHandoffReady({ runId, sessionId }) {
       const binding = await prisma.workspaceRunBinding.findFirst({
-        select: { outputCapture: true },
-        where: {
-          modelRunId: runId, workspaceSessionId: sessionId, exportState: { in: ["PENDING", "COMPLETE"] },
-          workspaceSession: { operationOwner: null, state: { in: ["PENDING", "READY", "STOPPED"] } }
-        }
+        select: { outputCapture: true, workspaceSession: { select: { chatId: true, operationOwner: true, state: true, version: true } } },
+        where: { modelRunId: runId, workspaceSessionId: sessionId, exportState: { in: ["PENDING", "COMPLETE"] } }
       });
-      return binding?.outputCapture != null && parseOutputCapture(binding.outputCapture).outputs !== null;
+      if (binding?.outputCapture == null || parseOutputCapture(binding.outputCapture).outputs === null) return false;
+      const session = binding.workspaceSession;
+      if (session.operationOwner === null) return ["PENDING", "READY", "STOPPED"].includes(session.state);
+      // Other runs of the chat keep the shared session: the run has handed off once it is no longer attached.
+      const attached = await currentWorkspaceAttachments(prisma, session);
+      return attached.some((run) => run.active) && !attached.some((run) => run.modelRunId === runId);
     },
     async markExportPending(lease) {
       return exportTransaction("export_pending", async (tx) => {
@@ -809,7 +902,9 @@ export function createPrismaWorkspaceCoordinatorRepository(
           where: { exportLeaseToken: lease.token, exportState: "EXPORTING", modelRunId: lease.runId, workspaceSessionId: lease.sessionId }
         });
         if (updated.count !== 1) return false;
-        await tx.workspaceSession.update({ data: { operationExpiresAt: expiresAt }, where: { id: lease.sessionId } });
+        if (!isWorkspaceRunOperation(lease.operation.owner)) {
+          await tx.workspaceSession.update({ data: { operationExpiresAt: expiresAt }, where: { id: lease.sessionId } });
+        }
         await tx.attachmentDeletionJob.updateMany({ data: { claimedAt: new Date() }, where: { claimToken: lease.token } });
         return true;
       });
@@ -827,13 +922,41 @@ export function createPrismaWorkspaceCoordinatorRepository(
         return jobs[0]?.claimToken === lease.token;
       });
     },
+    async attachedRuns(binding) {
+      return currentWorkspaceAttachments(prisma,
+        { chatId: binding.chatId, operationOwner: binding.operationOwner, version: binding.operationGeneration });
+    },
+    async detachRun({ binding, stopProven }) {
+      return prisma.$transaction(async (tx) => {
+        const session = await lockWorkspaceSession(tx, binding.sessionId);
+        if (!session || session.operationOwner !== binding.operationOwner || session.version !== binding.operationGeneration ||
+          !(await workspaceRunHoldsOperation(tx, session, binding.runId))) return false;
+        if (stopProven) await acknowledgeWorkspaceRunCommandsStopped(tx, { runId: binding.runId, sessionId: binding.sessionId });
+        await tx.workspaceRunAttachment.deleteMany({ where: { modelRunId: binding.runId } });
+        await tx.workspaceSession.update({ data: { lastActiveAt: new Date() }, where: { id: session.id } });
+        return true;
+      });
+    },
+    runAgentIds: ({ runId }) => workspaceRunAgentIds(prisma, runId),
+    async evictAttachedRuns({ binding }) {
+      if (!binding.operationOwner) return [];
+      const owner = binding.operationOwner;
+      return prisma.$transaction((tx) => evictOtherWorkspaceAttachments(tx, { generation: binding.operationGeneration,
+        owner, runId: binding.runId, sessionId: binding.sessionId }));
+    },
+    async closeRunOperation({ binding, force }) {
+      if (!binding.operationOwner) return false;
+      const owner = binding.operationOwner;
+      return prisma.$transaction((tx) => closeWorkspaceRunOperation(tx, { force, generation: binding.operationGeneration,
+        owner, runId: binding.runId, sessionId: binding.sessionId }));
+    },
     async markSessionFailed({ code, operation, sessionId }) {
       await prisma.workspaceSession.updateMany({
         data: { lastErrorCode: code.slice(0, 64), state: "FAILED" },
         where: { ...workspaceOperationWhere(operation), id: sessionId, state: { not: "DELETING" } }
       });
     },
-    async markSessionLost({ operation, runtimeSandboxId, sessionId }) {
+    async markSessionLost({ operation, runId, runtimeSandboxId, sessionId }) {
       return prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, sessionId);
         if (!session || session.version !== operation.generation || session.operationOwner !== operation.owner ||
@@ -854,6 +977,16 @@ export function createPrismaWorkspaceCoordinatorRepository(
         });
         if (updated.count === 1) await failWorkspaceExportsForLostDisk(tx, sessionId,
           operation.owner.startsWith("run:") ? operation.owner.slice(4) : undefined);
+        // Only the run that found the loss goes on, in the recreated Workspace; the others' processes and files went
+        // with the disk, so they lose their authority and end interrupted, never silently start over empty.
+        if (updated.count === 1) {
+          const discoverer = runId ? await tx.workspaceRunAttachment.updateMany({
+            data: { operationGeneration: operation.generation + 1 },
+            where: { chatId: session.chatId, modelRunId: runId, operationGeneration: operation.generation }
+          }) : { count: 0 };
+          await tx.workspaceRunAttachment.deleteMany({ where: { chatId: session.chatId,
+            ...(discoverer.count === 1 && runId ? { modelRunId: { not: runId } } : {}) } });
+        }
         return updated.count === 1 ? { generation: operation.generation + 1, owner: operation.owner } : null;
       });
     },
@@ -905,6 +1038,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
           select: { id: true }, where: { ...workspaceOperationWhere(operation), id: sessionId, runtimeSandboxId }
         }))) return false;
         await acknowledgeWorkspaceCommandsStopped(tx, sessionId);
+        // The operation ends for every run attached under it: each one's authority goes with it.
+        await tx.workspaceRunAttachment.deleteMany({ where: { workspaceSession: { id: sessionId } } });
         const updated = await tx.workspaceSession.updateMany({
           data: {
             operationOwner: null, operationExpiresAt: null,
@@ -1006,7 +1141,9 @@ async function hasActiveExportLease(tx: Prisma.TransactionClient, lease: Workspa
   if (!session || !lease.operation || session.operationOwner !== lease.operation.owner || session.version !== lease.operation.generation ||
     session.runtimeSandboxId !== lease.runtimeSandboxId || session.state === "DELETING") return false;
   const now = new Date();
-  if (!session.operationExpiresAt || session.operationExpiresAt <= now) return false;
+  // An export under the chat's shared run operation is leased on its binding alone: the session's operation is
+  // the attached runs', which never expires while they run.
+  if (!isWorkspaceRunOperation(session.operationOwner) && (!session.operationExpiresAt || session.operationExpiresAt <= now)) return false;
   return await tx.workspaceRunBinding.count({ where: {
     exportLeaseExpiresAt: { gt: now }, exportLeaseToken: lease.token, exportState: "EXPORTING",
     modelRunId: lease.runId, workspaceSessionId: lease.sessionId
@@ -1027,6 +1164,12 @@ async function exportAlreadyComplete(tx: Prisma.TransactionClient, request: { ru
   return binding.exportState === "COMPLETE";
 }
 
+/** The run's capture is sealed: its outputs are fixed in the runner's private copy. */
+async function sealedCapture(tx: Prisma.TransactionClient, runId: string): Promise<boolean> {
+  const binding = await tx.workspaceRunBinding.findUnique({ select: { outputCapture: true }, where: { modelRunId: runId } });
+  return binding?.outputCapture != null && parseOutputCapture(binding.outputCapture).outputs !== null;
+}
+
 async function ownExportClaim(
   tx: Prisma.TransactionClient, session: { id: string; version: number }, claim: WorkspaceBindingExportClaim,
   request: { leaseMs: number; runId: string }
@@ -1038,8 +1181,6 @@ async function ownExportClaim(
   }, where: { id: session.id } });
   return { ...claim, operation };
 }
-
-const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
 
 async function claimExportWith(
   client: Prisma.TransactionClient | PrismaClient,
@@ -1117,6 +1258,10 @@ export type WorkspaceSettlementResult = Readonly<{
   quiesced: boolean;
   sessionSettled: boolean;
   stoppedVm: boolean;
+  /** Other attached runs that ended with this run's VM stop (an unknown execution it could not stop alone). */
+  interruptedRunIds?: readonly string[];
+  /** Runs still attached to the shared session after this one; absent when the session settled. */
+  remainingRuns?: number;
 }>;
 
 export type WorkspaceCoordinator = Readonly<{
@@ -1170,6 +1315,11 @@ export type WorkspaceCoordinator = Readonly<{
     workspace: NormalizedRunWorkspace;
   }>): Promise<void>;
   execute(input: Readonly<{
+    /**
+     * Who the command runs for: a foreground sub-agent turn's thread inside its parent's run. Absent: the run's own
+     * agent (`main`, or a background sub-agent run's thread). Its processes live in that agent's cgroup.
+     */
+    agent?: WorkspaceAgent;
     call: ModelToolCall;
     modelRunToolCallId: string;
     /** Receives client-safe activity entries in timeline order (lifecycle, then the running step). */
@@ -1222,6 +1372,13 @@ export type WorkspaceCoordinator = Readonly<{
     userId: string;
     workspace?: NormalizedRunWorkspace;
   }>): Promise<WorkspaceSettlementResult>;
+  /**
+   * The `WorkspaceAttachments.detach` of a run (`attachments.ts`): its settlement, checked against the chat. Only
+   * this run's processes stop while other runs stay attached; an unproven stop ends them all with the VM.
+   */
+  detach?(input: WorkspaceDetachInput): Promise<WorkspaceDetachResult>;
+  /** Whether the run still holds its chat's Workspace (the live channel's `attached`, `browserLive.ts`). */
+  holdsWorkspace?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
   tools(input: Readonly<{
     runId: string;
     userId: string;
@@ -1297,6 +1454,8 @@ const EXEC_SESSION_TOOLS = new Set<string>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
  * unfinished save is recorded in the run's visible autosave outcome.
  */
 const BROWSER_SESSION_SAVE_TIMEOUT_MS = 30_000;
+/** One agent stop of a run in a shared VM, its proof included (`agentProcessGuest.ts`). */
+const WORKSPACE_AGENT_STOP_WAIT_MS = 20_000;
 
 function isExecSessionTool(name: string): boolean {
   return EXEC_SESSION_TOOLS.has(name);
@@ -1374,6 +1533,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
   config: WorkspaceConfig;
   /** One export attempt's lease (default `WORKSPACE_EXPORT_LEASE_MS`); it also bounds that attempt's database retries. */
   exportLeaseMs?: number;
+  /**
+   * Other runs attached to a shared session ended when a run's unknown execution forced the VM to stop: they end
+   * as interrupted, with Continue (wired to the run pipeline's stop; their next guest call is refused regardless).
+   */
+  onAttachedRunsInterrupted?(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>): Promise<void>;
   registry: WorkspaceExecutionRegistry;
   repository: WorkspaceCoordinatorRepository;
   runtime: WorkspaceRuntime;
@@ -1469,7 +1633,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     if (!binding || !exactBinding(binding, workspace)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
-    if (binding.operationOwner !== workspaceRunOperationOwner(runId)) throw new WorkspaceRuntimeError("workspace_operation_stale");
+    if (!runHoldsOperation(binding, runId)) throw new WorkspaceRuntimeError("workspace_operation_stale");
     ownedOperation(binding);
     return binding;
   }
@@ -1672,67 +1836,72 @@ export function createWorkspaceCoordinator(input: Readonly<{
         throw new WorkspaceRuntimeError("workspace_session_lost");
       }
       try {
-        const session = await input.runtime.ensureSession({
-          cpus: input.config.cpus,
-          diskMiB: input.config.diskMiB,
-          imageRef: binding.imageRef,
-          internetEnabled: binding.internetEnabled,
-          memoryMiB: input.config.memoryMiB,
-          runtimeSandboxId: binding.runtimeSandboxId,
-          sandboxName: binding.sandboxName,
-          operation: ownedOperation(binding), ...(predecessor ? { predecessor } : {}), sessionId: binding.sessionId,
-          signal
-        }).catch((error: unknown) => {
-          throw error instanceof WorkspaceRuntimeError && error.code === "workspace_session_lost" ? new WorkspaceSandboxMissing() : error;
-        });
-        const continuationSeed = await input.repository.claimContinuationSeed?.({
-          chatId: binding.chatId, operation: ownedOperation(binding), sessionId: binding.sessionId
-        });
-        if (continuationSeed) {
-          // A scheduled task's carried files never give way to an empty project:
-          // the claim is released with its archive kept for a later run.
-          const releaseRequired = async () => {
-            if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
-              status: "TRANSFERRED" })) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
-            throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
-          };
-          if (!input.runtime.restoreProjectArchive) {
-            if (continuationSeed.required) await releaseRequired();
-            await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
-              status: "FAILED", failureCode: "workspace_archive_restore_failed" });
-            throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
-          }
-          let restored = false;
-          try {
-            const archive = await getStoredObjectStream(input.storage, continuationSeed.storageKey, {
-              maxBytes: input.config.outputTotalMaxBytes, signal
-            });
-            if (archive.byteSize !== continuationSeed.byteSize) {
-              await archive.body.cancel().catch(() => undefined);
-              throw new WorkspaceRuntimeError("workspace_archive_invalid");
+        // VM create or start and the continuation restore run one at a time for the session, beside the exec calls of
+        // the other runs attached to it.
+        const session = await withWorkspaceSessionExclusive(binding.sessionId, signal, async () => {
+          const started = await input.runtime.ensureSession({
+            cpus: input.config.cpus,
+            diskMiB: input.config.diskMiB,
+            imageRef: binding.imageRef,
+            internetEnabled: binding.internetEnabled,
+            memoryMiB: input.config.memoryMiB,
+            runtimeSandboxId: binding.runtimeSandboxId,
+            sandboxName: binding.sandboxName,
+            operation: ownedOperation(binding), ...(predecessor ? { predecessor } : {}), sessionId: binding.sessionId,
+            signal
+          }).catch((error: unknown) => {
+            throw error instanceof WorkspaceRuntimeError && error.code === "workspace_session_lost" ? new WorkspaceSandboxMissing() : error;
+          });
+          const continuationSeed = await input.repository.claimContinuationSeed?.({
+            chatId: binding.chatId, operation: ownedOperation(binding), sessionId: binding.sessionId
+          });
+          if (continuationSeed) {
+            // A scheduled task's carried files never give way to an empty project:
+            // the claim is released with its archive kept for a later run.
+            const releaseRequired = async () => {
+              if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
+                status: "TRANSFERRED" })) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+              throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
+            };
+            if (!input.runtime.restoreProjectArchive) {
+              if (continuationSeed.required) await releaseRequired();
+              await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
+                status: "FAILED", failureCode: "workspace_archive_restore_failed" });
+              throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
             }
-            await input.runtime.restoreProjectArchive({ archive: archive.body, byteSize: continuationSeed.byteSize,
-              checksum: continuationSeed.checksum, runtimeSandboxId: session.runtimeSandboxId,
-              operation: ownedOperation(binding), sessionId: binding.sessionId, signal });
-            restored = true;
-          } catch (error) {
-            // Restore is transactional at the runtime boundary: it validates
-            // before touching the project and removes its own staging. Only an
-            // unproven cleanup keeps the claim, so lease expiry retries it;
-            // otherwise the original bytes are never retried automatically.
-            if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
-            if (continuationSeed.required) await releaseRequired();
-            if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
-              status: "FAILED", failureCode: error instanceof WorkspaceRuntimeError ? error.code : "workspace_archive_restore_failed" })) {
-              throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+            let restored = false;
+            try {
+              const archive = await getStoredObjectStream(input.storage, continuationSeed.storageKey, {
+                maxBytes: input.config.outputTotalMaxBytes, signal
+              });
+              if (archive.byteSize !== continuationSeed.byteSize) {
+                await archive.body.cancel().catch(() => undefined);
+                throw new WorkspaceRuntimeError("workspace_archive_invalid");
+              }
+              await input.runtime.restoreProjectArchive({ archive: archive.body, byteSize: continuationSeed.byteSize,
+                checksum: continuationSeed.checksum, runtimeSandboxId: started.runtimeSandboxId,
+                operation: ownedOperation(binding), sessionId: binding.sessionId, signal });
+              restored = true;
+            } catch (error) {
+              // Restore is transactional at the runtime boundary: it validates
+              // before touching the project and removes its own staging. Only an
+              // unproven cleanup keeps the claim, so lease expiry retries it;
+              // otherwise the original bytes are never retried automatically.
+              if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
+              if (continuationSeed.required) await releaseRequired();
+              if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
+                status: "FAILED", failureCode: error instanceof WorkspaceRuntimeError ? error.code : "workspace_archive_restore_failed" })) {
+                throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+              }
             }
+            // A lost settlement response can already have committed RESTORED.
+            // Never erase proven files because a database acknowledgement failed.
+            if (restored && !await input.repository.settleContinuationSeed?.({
+              id: continuationSeed.id, token: continuationSeed.token, status: "RESTORED"
+            })) throw new WorkspaceRuntimeError("workspace_operation_stale");
           }
-          // A lost settlement response can already have committed RESTORED.
-          // Never erase proven files because a database acknowledgement failed.
-          if (restored && !await input.repository.settleContinuationSeed?.({
-            id: continuationSeed.id, token: continuationSeed.token, status: "RESTORED"
-          })) throw new WorkspaceRuntimeError("workspace_operation_stale");
-        }
+          return started;
+        });
         if (!(await input.repository.markSessionRunning({
           ...activityWindow(),
           runtimeSandboxId: session.runtimeSandboxId,
@@ -1762,7 +1931,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           // The run's admitted browser language and time zone ride in the same environment.
           const runEnvironment = purpose === "execution" ? { ...code?.environment, ...browserEnvironment } : {};
           await input.runtime.syncPersonalSecrets({
-            secrets, modelRunId: binding.runId,
+            secrets, modelRunId: binding.runId, agent: runAgent(binding),
             ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
             // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
             ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
@@ -1851,10 +2020,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
           error.code === "workspace_session_lost" &&
           binding.runtimeSandboxId
         ) {
+          const others = await otherAttachedRuns(binding);
           lostOperation = await input.repository.markSessionLost({
-            runtimeSandboxId: binding.runtimeSandboxId,
+            runId: binding.runId, runtimeSandboxId: binding.runtimeSandboxId,
             operation: ownedOperation(binding), sessionId: binding.sessionId
           }).catch(() => null);
+          if (lostOperation) await interruptAttachedRuns(binding, others);
         }
         await input.repository.markSessionFailed({
           code: runtimeCode(error),
@@ -1945,6 +2116,48 @@ export function createWorkspaceCoordinator(input: Readonly<{
       operation: ownedOperation(binding), sessionId: binding.sessionId,
       signal
     });
+  }
+
+  /** The other active runs attached under the binding's shared run operation. */
+  async function otherAttachedRuns(binding: WorkspaceExecutionBinding): Promise<readonly string[]> {
+    if (!isWorkspaceRunOperation(binding.operationOwner)) return [];
+    return (await input.repository.attachedRuns?.(binding).catch(() => null) ?? [])
+      .filter((run) => run.active && run.modelRunId !== binding.runId).map((run) => run.modelRunId);
+  }
+
+  /** Runs whose processes a VM stop or a lost disk ended under them end as interrupted, never silently. */
+  async function interruptAttachedRuns(binding: WorkspaceExecutionBinding, runIds: readonly string[]): Promise<void> {
+    if (runIds.length === 0) return;
+    await input.onAttachedRunsInterrupted?.({ chatId: binding.chatId, runIds, userId: binding.userId }).catch((error: unknown) =>
+      logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "settle", outcome: "failed",
+        code: "workspace_attached_runs_interrupt_failed", action: "skip" }));
+  }
+
+  /**
+   * Stops this run's guest processes in a VM other attached runs keep using, with the runner's proof
+   * (`terminateAgentProcesses`, per agent id of the run): its long-lived executions are ended through their handles
+   * first, then every process of its agents goes. False proves nothing, and the caller stops the VM.
+   */
+  async function stopRunProcesses(binding: WorkspaceExecutionBinding): Promise<boolean> {
+    if (!binding.runtimeSandboxId) return true;
+    if (!input.runtime.terminateAgentProcesses || !input.repository.runAgentIds) return false;
+    const scope = { operation: ownedOperation(binding), runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId };
+    const agentIds = await input.repository.runAgentIds({ runId: binding.runId }).catch(() => null);
+    if (!agentIds || agentIds.length === 0) return false;
+    const open = await input.registry.listOpen({ modelRunId: binding.runId, operation: scope.operation, sessionId: binding.sessionId })
+      .catch(() => null);
+    const handles = open?.filter((execution) => !isWorkspaceSyncCleanupId(execution.runtimeExecSessionId)) ?? [];
+    if (handles.length > 0) {
+      // Their outcome is not the proof; it only releases the runtime's handles before the agent stop.
+      await input.runtime.terminateExecutions({ ...scope, executions: handles.map((execution) => ({
+        modelRunId: execution.modelRunId, runtimeExecSessionId: execution.runtimeExecSessionId })) }).catch(() => null);
+    }
+    for (const agentId of agentIds) {
+      const stopped = await input.runtime.terminateAgentProcesses({ ...scope, agentId, signal: AbortSignal.timeout(WORKSPACE_AGENT_STOP_WAIT_MS) })
+        .catch(() => ({ outcome: "unknown" as const }));
+      if (stopped.outcome !== "closed") return false;
+    }
+    return true;
   }
 
   async function persistBrowserSessions(binding: WorkspaceExecutionBinding, signal: AbortSignal, handoffToken?: string): Promise<void> {
@@ -2098,9 +2311,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const binding = await input.repository.binding({ runId, userId });
       const cached = initialized.get(runId);
       const expected = expectedOperation ?? (cached ? ownedOperation(cached) : null);
+      // A run operation is the attached runs' shared one: only a run still attached under it may settle there.
       if (!binding || (expected
-        ? binding.operationOwner !== expected.owner || binding.operationGeneration !== expected.generation
-        : binding.operationOwner !== workspaceRunOperationOwner(runId)) || (workspace && !exactBinding(binding, workspace))) {
+        ? binding.operationOwner !== expected.owner || binding.operationGeneration !== expected.generation ||
+          (isWorkspaceRunOperation(binding.operationOwner) && !runHoldsOperation(binding, runId))
+        : !runHoldsOperation(binding, runId)) || (workspace && !exactBinding(binding, workspace))) {
         forgetRun(runId);
         await receipt(false);
         return { quiesced: false, sessionSettled: false, stoppedVm: false };
@@ -2112,8 +2327,31 @@ export function createWorkspaceCoordinator(input: Readonly<{
         forgetRun(runId);
         return { quiesced: true, sessionSettled: true, stoppedVm: false };
       }
+      // Other active runs of the chat still use the session: this run retires only its own guest authority, its
+      // processes stopped with the runner's proof, and the VM and the other runs go on.
+      let others = await otherAttachedRuns(current);
+      // The last run closes the operation before its VM stops, so no run joins it in between; a run that attached
+      // meanwhile keeps the operation, and this run detaches from it instead.
+      if (others.length === 0 && isWorkspaceRunOperation(current.operationOwner) && input.repository.closeRunOperation &&
+        !(await input.repository.closeRunOperation({ binding: current, force: false }).catch(() => true))) {
+        others = await otherAttachedRuns(current);
+      }
+      if (others.length > 0) {
+        if (await stopRunProcesses(current)) {
+          if (!skipBrowserSave) await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
+          const detached = await input.repository.detachRun?.({ binding: current, stopProven: true }).catch(() => false) ?? false;
+          forgetRun(runId);
+          await receipt(detached, detached ? undefined : "workspace_execution_settlement_failed");
+          return { quiesced: true, remainingRuns: others.length, sessionSettled: detached, stoppedVm: false };
+        }
+        // Not proven: the VM stops below as it does for a single run, and every other attached run ends with it.
+        logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce", outcome: "degraded",
+          code: "workspace_agent_stop_unproven", action: "stop" });
+        // Fence first: no run joins the closing operation and none dispatches under it while the VM stops.
+        others = await input.repository.evictAttachedRuns?.({ binding: current }).catch(() => null) ?? others;
+      }
       let quiescence = await quiesceRun(current);
-      if (quiescence.proven && !skipBrowserSave && current.operationOwner === workspaceRunOperationOwner(runId)) {
+      if (quiescence.proven && !skipBrowserSave && isWorkspaceRunOperation(current.operationOwner)) {
         await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
       }
       try {
@@ -2161,9 +2399,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
         throw failure;
       });
       await receipt(sessionSettled, sessionSettled ? undefined : "workspace_execution_settlement_failed");
-      return { quiesced: true, sessionSettled, stoppedVm: quiescence.stoppedVm };
+      const interruptedRunIds = others;
+      await interruptAttachedRuns(binding, interruptedRunIds);
+      return { quiesced: true, sessionSettled, stoppedVm: quiescence.stoppedVm, ...(interruptedRunIds.length > 0 ? { interruptedRunIds } : {}) };
     },
-    async execute({ call, modelRunToolCallId, onActivity, runId, signal, userId, workspace }) {
+    async holdsWorkspace({ runId, userId }) {
+      const binding = await input.repository.binding({ runId, userId });
+      return binding !== null && runHoldsOperation(binding, runId);
+    },
+    async detach({ chatId, execution, modelRunId, userId }) {
+      const binding = await input.repository.binding({ runId: modelRunId, userId });
+      if (!binding || binding.chatId !== chatId) return { interruptedRunIds: [], kind: "detached", remainingRuns: 0 };
+      // Unknown or settled, the rule is the same: the run's processes stop with proof, or the VM stops.
+      const result = await this.settle({ outcome: execution === "unknown" ? "failed" : "completed", runId: modelRunId, userId });
+      return { interruptedRunIds: result.interruptedRunIds ?? [], kind: "detached", remainingRuns: result.remainingRuns ?? 0 };
+    },
+    async execute({ agent, call, modelRunToolCallId, onActivity, runId, signal, userId, workspace }) {
       return observeWorkspaceToolExecution(async () => {
         const initial = await requireBinding(runId, userId, workspace);
         const definitionByName = initial.toolDefinitions.find((tool) => tool.namespacedName === call.name);
@@ -2288,6 +2539,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           invocationId = await openInvocation(binding);
           const dispatch = (active: WorkspaceExecutionBinding) =>
             input.runtime.callBoundTool({
+              agent: agent ?? runAgent(active),
               arguments: call.arguments,
               ...(invocationId ? { invocationId } : {}),
               modelRunId: active.runId,
@@ -2311,12 +2563,14 @@ export function createWorkspaceCoordinator(input: Readonly<{
               throw error;
             }
             initialized.delete(binding.runId);
+            const others = await otherAttachedRuns(binding);
             if (!(await input.repository.markSessionLost({
-              runtimeSandboxId: binding.runtimeSandboxId,
+              runId: binding.runId, runtimeSandboxId: binding.runtimeSandboxId,
               operation: ownedOperation(binding), sessionId: binding.sessionId
             }))) {
               throw error;
             }
+            await interruptAttachedRuns(binding, others);
             const fresh = await requireBinding(runId, userId, workspace);
             initializedBinding = await initializeWithLostSessionRecovery(
               fresh,
@@ -2412,6 +2666,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
           phase: "closed" })).catch(() => undefined);
         return { status: "ready" as const };
       };
+      // A sub-agent run owes no outputs: its hand-off is its own retirement.
+      if (binding.subagentThreadId) {
+        if (!(await this.settle({ ...request, outcome: "completed" })).quiesced) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+        return acknowledge();
+      }
       if (await input.repository.outputHandoffReady(obligation)) return acknowledge();
       const result = await this.finalize({ ...request, handoff: true });
       request.signal?.throwIfAborted();
@@ -2430,6 +2689,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
       if (!initial || (workspace && !exactBinding(initial, workspace))) {
         return { code: "workspace_runtime_incompatible", retryable: false, status: "failed" };
       }
+      // Downloads come only from the main agent: a sub-agent run's files stay on the shared disk for its main agent.
+      if (initial.subagentThreadId) return { files: [], status: "complete" };
       const leaseInput = { generation: initial.operationGeneration, leaseMs: exportLeaseMs, runId, runtimeSandboxId: initial.runtimeSandboxId, sessionId: initial.sessionId };
       if (signal?.aborted) return { reason: "cancelled", status: "deferred" };
       // A conservative local view of the durable lease: a claim or renewal
@@ -2449,7 +2710,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         });
       const liveClaim = recovery ? null : { ...leaseInput, ...(handoff ? { handoff: true } : {}), operation: {
         generation: initial.operationGeneration,
-        owner: handoff && initial.operationOwner ? initial.operationOwner : workspaceRunOperationOwner(runId)
+        owner: (handoff || runHoldsOperation(initial, runId)) && initial.operationOwner ? initial.operationOwner : workspaceRunOperationOwner(runId)
       } };
       let claim: WorkspaceExportClaim;
       let claimedFrom = Date.now();
@@ -2468,7 +2729,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         // Empty capture publication and authority retirement are separate
         // durable steps. Finish the latter after a crash, without touching a
         // successor's operation or contacting the runner.
-        if (!initial.guestUsed && (initial.operationOwner === workspaceRunOperationOwner(runId) ||
+        if (!initial.guestUsed && (runHoldsOperation(initial, runId) ||
           initial.operationOwner?.startsWith(`export:${runId}:`))) {
           await input.repository.retireUnusedRun(initial);
         }
@@ -2488,9 +2749,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
       // The same run's operation this export continues. Its receiver may hand
       // over without a VM stop, because quiescence below stops whatever the run
       // may have left running before any guest byte is read.
-      const predecessor = initial.operationOwner === workspaceRunOperationOwner(runId) ||
+      const predecessor = runHoldsOperation(initial, runId) ||
         initial.operationOwner?.startsWith(`export:${runId}:`)
         ? { generation: initial.operationGeneration, owner: initial.operationOwner! } : undefined;
+      // Other attached runs keep the session: the capture runs under their shared run operation, and only this
+      // run's own processes stop before its outputs are read.
+      const sharedExport = isWorkspaceRunOperation(claim.operation.owner);
       initial = { ...initial, operationGeneration: claim.operation.generation, operationOwner: claim.operation.owner };
       leaseValidUntil = claimedFrom + exportLeaseMs;
       const lease = { operation: ownedOperation(initial), runId, runtimeSandboxId: initial.runtimeSandboxId, sessionId: initial.sessionId, token: claim.token };
@@ -2582,43 +2846,62 @@ export function createWorkspaceCoordinator(input: Readonly<{
           // whose steps are idempotent for this same operation.
           const binding = await exportStep(() => initialize(initial, "export", exportSignal, undefined, predecessor));
           if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_session_lost");
-          if (!quiesced) {
-            // Freeze the output set: no process of this run may still be writing
-            // between the listing/hash and the upload. The proof outlives a
-            // later attempt, which starts no process of the run either.
+          const sandbox = binding.runtimeSandboxId;
+          // Other runs still use the shared VM: only this run's processes stop, with proof. Without it the VM stops,
+          // so first no run may join or dispatch under it, every affected run ends, and stop, restart and capture run
+          // as one exclusive step before any execution resumes.
+          let fenced = false;
+          const others = !quiesced && sharedExport ? await otherAttachedRuns(binding) : [];
+          if (others.length > 0) {
             step = "quiesce";
-            const quiescence = await quiesceRun(binding, exportSignal);
-            if (!quiescence.proven) throw new WorkspaceRuntimeError(quiescence.failureCode ?? "workspace_execution_cleanup_failed");
-            quiesced = true;
-            if (quiescence.stoppedVm) {
-              // Stopping proves descendants are gone; resume only this exact disk
-              // for file I/O. No accepted command is dispatched again.
-              step = "resume";
-              const resumed = await input.runtime.ensureSession({
-                cpus: input.config.cpus, diskMiB: input.config.diskMiB, imageRef: binding.imageRef,
-                internetEnabled: binding.internetEnabled, memoryMiB: input.config.memoryMiB,
-                runtimeSandboxId: binding.runtimeSandboxId, sandboxName: binding.sandboxName,
-                operation: ownedOperation(binding), sessionId: binding.sessionId, signal: exportSignal
-              });
-              if (resumed.runtimeSandboxId !== binding.runtimeSandboxId || resumed.sandboxName !== binding.sandboxName) {
-                throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-              }
+            if (await stopRunProcesses(binding)) {
+              quiesced = true;
+            } else {
+              const evicted = await input.repository.evictAttachedRuns?.({ binding }).catch(() => null) ?? others;
+              await interruptAttachedRuns(binding, evicted);
+              fenced = true;
             }
           }
-          step = "collect";
-          await renew();
-          if (!browserSessionsSaved) {
-            browserSessionsSaved = true;
-            await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS)]), claim.token);
-          }
-          return { binding: { ...binding, runtimeSandboxId: binding.runtimeSandboxId }, outputs: await input.runtime.collectOutputs({
-            capture: { create: capture.create, id: capture.id },
-            modelRunId: runId,
-            outputDirectory: binding.outputDirectory,
-            runtimeSandboxId: binding.runtimeSandboxId,
-            operation: ownedOperation(binding), sessionId: binding.sessionId,
-            signal: exportSignal
-          }) };
+          const finish = async () => {
+            if (!quiesced) {
+              // Freeze the output set: no process of this run may still be writing
+              // between the listing/hash and the upload. The proof outlives a
+              // later attempt, which starts no process of the run either.
+              step = "quiesce";
+              const quiescence = await quiesceRun(binding, exportSignal);
+              if (!quiescence.proven) throw new WorkspaceRuntimeError(quiescence.failureCode ?? "workspace_execution_cleanup_failed");
+              quiesced = true;
+              if (quiescence.stoppedVm) {
+                // Stopping proves descendants are gone; resume only this exact disk
+                // for file I/O. No accepted command is dispatched again.
+                step = "resume";
+                const resumed = await input.runtime.ensureSession({
+                  cpus: input.config.cpus, diskMiB: input.config.diskMiB, imageRef: binding.imageRef,
+                  internetEnabled: binding.internetEnabled, memoryMiB: input.config.memoryMiB,
+                  runtimeSandboxId: binding.runtimeSandboxId, sandboxName: binding.sandboxName,
+                  operation: ownedOperation(binding), sessionId: binding.sessionId, signal: exportSignal
+                });
+                if (resumed.runtimeSandboxId !== binding.runtimeSandboxId || resumed.sandboxName !== binding.sandboxName) {
+                  throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+                }
+              }
+            }
+            step = "collect";
+            await renew();
+            if (!browserSessionsSaved) {
+              browserSessionsSaved = true;
+              await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS)]), claim.token);
+            }
+            return { binding: { ...binding, runtimeSandboxId: sandbox }, outputs: await input.runtime.collectOutputs({
+              capture: { create: capture.create, id: capture.id },
+              modelRunId: runId,
+              outputDirectory: binding.outputDirectory,
+              runtimeSandboxId: sandbox,
+              operation: ownedOperation(binding), sessionId: binding.sessionId,
+              signal: exportSignal
+            }) };
+          };
+          return fenced ? withWorkspaceSessionExclusive(binding.sessionId, exportSignal, finish) : finish();
         };
         let collected: Awaited<ReturnType<typeof collect>>;
         try {
@@ -2639,7 +2922,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
             if (!(retryError instanceof WorkspaceSandboxMissing) || exportSignal.aborted) throw retryError;
             // The second lookup by name in this lease proves the disk gone.
             await renew();
-            const lost = await input.repository.markSessionLost({ operation: lease.operation, runtimeSandboxId, sessionId: initial.sessionId });
+            const others = await otherAttachedRuns(initial);
+            const lost = await input.repository.markSessionLost({ operation: lease.operation, runId, runtimeSandboxId, sessionId: initial.sessionId });
+            if (lost) await interruptAttachedRuns(initial, others);
             throw lost ? new WorkspaceConfirmedSessionLoss(lost) : retryError;
           }
         }
@@ -2734,10 +3019,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
         await input.runtime.releaseOutputCapture?.({ captureId: capture.id, modelRunId: runId,
           operation: lease.operation, runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId,
           signal: exportSignal }).catch(() => undefined);
-        await input.repository.markSessionReady({
-          ...activityWindow(),
-          operation: ownedOperation(binding), sessionId: binding.sessionId
-        });
+        // Under the attached runs' shared operation the session stays theirs, and running.
+        if (!sharedExport) {
+          await input.repository.markSessionReady({
+            ...activityWindow(),
+            operation: ownedOperation(binding), sessionId: binding.sessionId
+          });
+        }
         if (files.length > 0 || exportSkipped) await exportActivity("succeeded");
         return { files, status: "complete" };
       } catch (error) {

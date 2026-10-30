@@ -27,6 +27,7 @@ const errors: Record<string, string> = {
   chat_not_found: "This chat is no longer available.",
   chat_changed: "The conversation changed. Wait for the latest answer and try again.",
   chat_busy: "Wait for the current answer to finish.",
+  workspace_subagents_running: "Sub-agents are still working in this chat. Stop the sub-agents first, then try again.",
   chat_summary_too_large: "This conversation is too large to summarize automatically.",
   chat_summary_unavailable: "Summaries are unavailable. Ask an administrator to check the System Model.",
   chat_summary_failed: "The summary could not be completed. Your conversation is still here.",

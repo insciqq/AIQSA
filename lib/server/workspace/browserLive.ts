@@ -85,6 +85,11 @@ export type BrowserLiveRegistration = Readonly<{
   channel(request: BrowserLiveChannelRequest): Promise<WorkspaceBrowserLiveReply>;
   chatId: string;
   runId: string;
+  /**
+   * Whether the run still holds the chat's Workspace (`workspaceRunHoldsOperation`): a run gone without `end` is
+   * dropped from the channel. Absent: the run stays a member until its `end`.
+   */
+  attached?(): Promise<boolean>;
   /** Whether a sign-in made in this browser is saved to the owner's Secrets after the turn (asked once, lazily). */
   signInRemembered(): Promise<boolean>;
   userId: string;
@@ -144,7 +149,8 @@ class Streamer {
   readonly waiters = new Map<string, (ack: Ack) => void>();
   private announce: () => void = () => undefined;
 
-  constructor(readonly execSessionId: string, public frames: boolean) {
+  /** `owner`: the run whose channel started it; the runtime serves a streamer only to that run. */
+  constructor(readonly execSessionId: string, public frames: boolean, readonly owner: BrowserLiveRegistration) {
     this.firstState = new Promise<void>((resolve) => { this.announce = resolve; });
   }
 
@@ -216,7 +222,59 @@ class LiveRun implements BrowserLiveRunHandle {
   private readonly views = new Map<string, Readonly<{ viewer: BrowserLiveViewer; writer: BrowserLiveWriter }>>();
   private writes: Promise<unknown> = Promise.resolve();
 
-  constructor(readonly registration: BrowserLiveRegistration, private readonly forget: () => void) {}
+  /**
+   * The runs of the chat that use this browser (main agent and sub-agent runs of one shared Workspace): the live
+   * channel belongs to the session and ends with its last run. The newest member starts streamers and reports.
+   */
+  private readonly members: BrowserLiveRegistration[];
+
+  constructor(registration: BrowserLiveRegistration, private readonly forget: () => void) {
+    this.members = [registration];
+  }
+
+  get registration(): BrowserLiveRegistration {
+    return this.members.at(-1)!;
+  }
+
+  /** Another run of the chat joins the channel (its own handle ends only its membership). */
+  join(registration: BrowserLiveRegistration): BrowserLiveRunHandle {
+    if (!this.members.some((member) => member.runId === registration.runId)) this.members.push(registration);
+    void this.pruneMembers(registration.runId);
+    return this.handle(registration.runId);
+  }
+
+  /** Drops members whose runs no longer hold the Workspace (one that crashed without `end`), so none keeps the channel. */
+  private async pruneMembers(keep: string): Promise<void> {
+    const alive = await Promise.all(this.members.map((member) => member.runId === keep || !member.attached
+      ? Promise.resolve(true) : member.attached().catch(() => true)));
+    const gone = new Set(this.members.filter((_member, index) => !alive[index]));
+    for (let index = this.members.length - 1; index >= 0; index -= 1) {
+      if (gone.has(this.members[index]!)) this.members.splice(index, 1);
+    }
+  }
+
+  handle(runId: string): BrowserLiveRunHandle {
+    return { end: (reason) => this.leave(runId, reason), handoff: (input) => this.handoff(input) };
+  }
+
+  /**
+   * One run's turn ended. The channel ends with the last run, or for everyone when the browser stopped; otherwise a
+   * streamer the leaving run started is replaced through a remaining run before the leaving run's authority goes.
+   */
+  async leave(runId: string, reason: Extract<BrowserLiveEndReason, "browser_stopped" | "run_finished"> = "run_finished"): Promise<void> {
+    if (!this.members.some((member) => member.runId === runId)) return;
+    if (reason !== "browser_stopped") await this.pruneMembers(runId);
+    const index = this.members.findIndex((member) => member.runId === runId);
+    if (index < 0) return;
+    if (this.members.length === 1 || reason === "browser_stopped") return this.end(reason);
+    this.members.splice(index, 1);
+    const streamer = this.streamer;
+    // A streamer whose run left (now, or a pruned one) is replaced through a remaining run.
+    if (streamer && !this.members.includes(streamer.owner)) {
+      await Promise.race([this.rotate(streamer), delay(BROWSER_LIVE_RELAY_LIMITS.endMs)]);
+    }
+    this.broadcastState();
+  }
 
   // Views ---------------------------------------------------------------------------------------------------------
 
@@ -475,11 +533,12 @@ class LiveRun implements BrowserLiveRunHandle {
     if (this.streamer && !this.streamer.closed && !this.streamer.retiring) return Promise.resolve(this.streamer);
     this.starting ??= (async () => {
       if (this.ended || this.unavailable) throw Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" });
+      const owner = this.registration;
       // The selected agent rides with the first command, so a new streamer streams its tab from the start.
-      const reply = await this.registration.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) +
+      const reply = await owner.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) +
         streamerLine({ [AGENT_FIELD]: this.agents.selected, t: WORKSPACE_AGENT_PROTOCOL.LIVE_SELECT_MESSAGE }) });
       if (reply.action !== "start") throw Object.assign(new Error("browser_live_invalid"), { code: "workspace_runtime_incompatible" });
-      const streamer = new Streamer(reply.execSessionId, frames);
+      const streamer = new Streamer(reply.execSessionId, frames, owner);
       this.streamer = streamer;
       if (this.ended) {
         await this.close(streamer);
@@ -497,7 +556,7 @@ class LiveRun implements BrowserLiveRunHandle {
     while (!streamer.closed) {
       let reply: WorkspaceBrowserLiveReply;
       try {
-        reply = await this.registration.channel({ action: "poll", cursor: streamer.cursor, execSessionId: streamer.execSessionId });
+        reply = await streamer.owner.channel({ action: "poll", cursor: streamer.cursor, execSessionId: streamer.execSessionId });
       } catch (error) {
         if (streamer.closed) return;
         failures += 1;
@@ -606,7 +665,7 @@ class LiveRun implements BrowserLiveRunHandle {
     const data = streamerLine(message);
     const next = this.writes.then(() => streamer.closed
       ? Promise.reject(Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" }))
-      : this.registration.channel({ action: "write", data, execSessionId: streamer.execSessionId }));
+      : streamer.owner.channel({ action: "write", data, execSessionId: streamer.execSessionId }));
     this.writes = next.catch(() => undefined);
     return next.then(() => undefined);
   }
@@ -641,7 +700,7 @@ class LiveRun implements BrowserLiveRunHandle {
     if (this.streamer === streamer) this.streamer = null;
     for (const resolve of streamer.waiters.values()) resolve({ code: "streamer_closed", ok: false });
     streamer.waiters.clear();
-    streamer.closing = this.registration.channel({ action: "close", execSessionId: streamer.execSessionId })
+    streamer.closing = streamer.owner.channel({ action: "close", execSessionId: streamer.execSessionId })
       .then(() => undefined, () => undefined);
     return streamer.closing;
   }
@@ -745,15 +804,20 @@ export type BrowserLiveView = Pick<LiveRun, "answerHandoff" | "control" | "input
 export class BrowserLiveRelay {
   private readonly chats = new Map<string, LiveRun>();
 
-  /** The engine: one interactive web run with a Workspace. A newer run of the chat ends an older one's views. */
+  /**
+   * The engine: one interactive web run with a Workspace. The chat's runs share one session and its browser, so a
+   * run of the same owner joins the chat's open channel and its views go on across runs; the channel ends with
+   * its last run. A channel of another owner (never the case for one chat) is ended instead.
+   */
   register(registration: BrowserLiveRegistration): BrowserLiveRunHandle {
     const previous = this.chats.get(registration.chatId);
+    if (previous && !previous.ended && previous.registration.userId === registration.userId) return previous.join(registration);
     if (previous && previous.registration.runId !== registration.runId) void previous.end("run_finished");
     const run: LiveRun = new LiveRun(registration, () => {
       if (this.chats.get(registration.chatId) === run) this.chats.delete(registration.chatId);
     });
     this.chats.set(registration.chatId, run);
-    return run;
+    return run.handle(registration.runId);
   }
 
   /** The chat's live browser, only for the run's owner; anyone else, administrators included, finds nothing. */

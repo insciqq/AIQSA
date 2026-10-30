@@ -88,6 +88,9 @@ import { AUTOMATION_WEBHOOKS_MIGRATION, automationWebhooksFixtureSql, automation
 import {
   TOOL_LIMITS_OFF_MIGRATION, toolLimitsOffFixtureSql, toolLimitsOffProofSql, toolLimitsOffRepeatProofSql
 } from "./tool-limits-off-adoption";
+import {
+  WORKSPACE_RUN_ATTACHMENTS_MIGRATION, workspaceRunAttachmentsFixtureSql, workspaceRunAttachmentsProofSql
+} from "./workspace-run-attachments-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7924,6 +7927,10 @@ function main(
   // Tool limits go off for everyone, limits an administrator typed included; their numbers stay for turning them on.
   runForwardAdoptionProof(shadowDatabase, migrations, TOOL_LIMITS_OFF_MIGRATION,
     toolLimitsOffFixtureSql, toolLimitsOffProofSql, toolLimitsOffRepeatProofSql);
+  // Expand only: a run that owns its session mid-turn becomes its one attached run; previous-release writers keep
+  // claiming sessions by owner alone, which the application still accepts while a session has no attachment.
+  runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_RUN_ATTACHMENTS_MIGRATION,
+    workspaceRunAttachmentsFixtureSql, workspaceRunAttachmentsProofSql, workspaceRunAttachmentsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

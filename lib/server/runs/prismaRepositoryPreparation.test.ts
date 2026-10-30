@@ -792,6 +792,8 @@ describe("Workspace switch write-back at admission", () => {
       workspaceExecution: { count: vi.fn(async () => 0) },
       workspacePolicy: { findUnique: vi.fn(async () => ({ enabled: true, version: 3 })) },
       workspaceRunBinding: { count: vi.fn(async () => 0), create: vi.fn(async (_args: unknown) => ({})) },
+      // The admitted run is attached to the session it claimed (`attachments.ts`).
+      workspaceRunAttachment: { upsert: vi.fn(async (_args: unknown) => ({})) },
       workspaceSecret: { findMany: vi.fn(async () => []) },
       workspaceSession: {
         create: vi.fn(async () => ({})),
