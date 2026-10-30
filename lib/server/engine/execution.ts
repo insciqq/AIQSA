@@ -216,6 +216,22 @@ function parsedArguments(value: string): Record<string, unknown> {
  * read, every one counts as the server's, so no turn the engine cannot tell
  * apart releases an unknown effect.
  */
+/**
+ * The user-role turns the server wrote on the branch (approval continuations, sub-agent wake-ups), never the user's speech.
+ * Unreadable, every one of them counts as the server's, so none is taken for the user's words.
+ */
+async function systemWrittenTurns(repository: Pick<RunRepository, "loadSystemTurnMessageIds">,
+  input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>): Promise<ReadonlySet<string>> {
+  if (input.messageIds.length === 0) return new Set();
+  try {
+    return await repository.loadSystemTurnMessageIds?.(input) ?? new Set();
+  } catch (error) {
+    logEvent("service_operation", { action: "degrade", code: "server_turns_unavailable", error, outcome: "degraded", stage: "read",
+      subsystem: "database" });
+    return new Set(input.messageIds);
+  }
+}
+
 async function serverWrittenTurns(repository: Pick<RunRepository, "loadScheduledPromptMessageIds" | "loadSystemTurnMessageIds">,
   input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>): Promise<ReadonlySet<string>> {
   if (input.messageIds.length === 0) return new Set();
@@ -564,6 +580,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             price: (attributions) => usageAttributionsWithEstimatedCost(input.repository, attributions), scope: backgroundScope(backgroundRunId),
             store: engine.runs })
         } : undefined;
+        // A sub-agent gets the user's latest own message as the only authority for irreversible actions: never a turn the
+        // server wrote, such as a wake-up quoting sub-agents' reports, which are untrusted data.
+        const subagentServerTurns = new Set([...continuationTurns, ...await systemWrittenTurns(input.repository, { chatId: scope.chatId,
+          messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id), userId: input.userId })]);
         // Sub-agents (`call_subagent`): the main agent's registry only, on the run's own frozen bindings (`subagents/`).
         const subagents = await prepareRunSubagents({
           ...(backgroundParts ? { backgroundParts } : {}),
@@ -598,7 +618,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
           runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
           unknownEffects: (threadId) => agentFences.agent(threadId), usage,
-          userMessage: currentUserMessageText(contextMessages, continuationTurns)
+          userMessage: currentUserMessageText(contextMessages, subagentServerTurns)
         });
         runSubagents = subagents;
         const registry = subagents ? withSubagentTools(mainRegistry, subagents.tools) : mainRegistry;
