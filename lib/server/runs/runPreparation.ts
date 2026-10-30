@@ -6,8 +6,7 @@ import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageGenerationUnavailable
 import { artifactFileInstructions, artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
-import type { CatalogWireModel } from "../../contracts/catalog";
-import { freezeSubagentModels, type FrozenSubagentModels } from "../engine/subagents/modelCatalog";
+import { freezeSubagentModels, type FrozenSubagentModels, type SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
@@ -275,8 +274,11 @@ export type RunPreparationDeps = Readonly<{
   skills?: SkillRunResolver;
   skillCatalogRelevance?: SkillCatalogRelevanceService;
   storage?: Pick<StorageAdapter, "getObject">;
-  /** The user's current chat models as `/api/me/catalog` filters them, frozen for sub-agents (`freezeSubagentModels`). */
-  subagentModels?(userId: string): Promise<readonly CatalogWireModel[]>;
+  /**
+   * The user's current chat models as `/api/me/catalog` filters them, with their connections' labels, frozen for
+   * sub-agents (`freezeSubagentModels`).
+   */
+  subagentModels?(userId: string): Promise<SubagentModelCatalogSource>;
   workspace?: WorkspaceAdmissionService;
 }>;
 
@@ -1325,8 +1327,12 @@ export async function prepareRun(
   // only the Assistant's model, and a catalog that cannot be read leaves them on the parent's model (answer first).
   let subagentModels: FrozenSubagentModels | undefined;
   if (!assistantRun && deps.subagentModels) {
-    try { subagentModels = freezeSubagentModels(await deps.subagentModels(input.userId)); }
-    catch { subagentModels = undefined; }
+    try {
+      const source = await deps.subagentModels(input.userId);
+      subagentModels = freezeSubagentModels(source.models, source.connectionLabels);
+    } catch {
+      subagentModels = undefined;
+    }
   }
   let personalInstructions: import("../instructions/store").PersonalInstructionSnapshot | undefined;
   if (!assistantRun && deps.instructions) {

@@ -8,6 +8,7 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { SUBAGENT_DEFINITION_LIMITS, SUBAGENT_TOOL_GROUPS, normalizeSubagentName, type SubagentToolGroup } from "@/lib/contracts/subagents";
 import {
   SUBAGENT_TOOL_GROUP_LABELS,
+  subagentModelLabel,
   type SubagentDefinitionDraft,
   type SubagentDefinitionListResponse,
   type SubagentDefinitionSummary,
@@ -236,7 +237,7 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
               }}>
                 <option value={INHERIT}>Same as the chat</option>
                 {unknownModel ? <option value={value.modelId}>Unavailable model</option> : null}
-                {models.map((model) => <option key={model.modelId} value={model.modelId}>{model.displayName}</option>)}
+                {models.map((model) => <option key={model.modelId} value={model.modelId}>{subagentModelLabel(model)}</option>)}
               </select>
             </label>
             <label className="grid gap-1.5 text-sm font-medium text-ink">Reasoning effort

@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentDefinitionListResponse, SubagentDefinitionView } from "@/lib/contracts/subagentDefinitions";
 import { SubagentsPanelV2 } from "./SubagentsPanelV2";
 
-const MODELS = [{ defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium"], modelId: "model-cheap" },
-  { defaultEffort: null, displayName: "Big Model", efforts: [], modelId: "model-big" }];
+const MODELS = [{ connectionName: "Codex LB", defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium"], modelId: "model-cheap" },
+  { connectionName: "Codex LB", defaultEffort: null, displayName: "Big Model", efforts: [], modelId: "model-big" }];
 const VIEW: SubagentDefinitionView = { description: "Long browsing on a cheap model.", effort: "low", id: "def_1", instructions: "Browse.",
   modelAvailable: true, modelDisplayName: "Cheap Model", modelId: "model-cheap", name: "browser", previousRevisionId: null, revisionId: "rev_1",
   revisionNumber: 1, tools: ["workspace"], updatedAt: "2026-10-30T10:00:00.000Z", version: 1 };
@@ -67,6 +67,21 @@ describe("Studio > Sub-agents", () => {
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(await screen.findByText(/Undone: “browser” is deleted/u)).toBeVisible();
     expect(mutations().at(-1)).toEqual(["DELETE", "/api/me/subagents/def_1", { expectedVersion: 1 }]);
+  });
+
+  it("tells two same-named models apart in the picker by their connection", async () => {
+    list = { ...list, models: [
+      { connectionName: "OpenRouter", defaultEffort: null, displayName: "GPT-6 Luna", efforts: ["low"], modelId: "pm-luna-or" },
+      { connectionName: "Codex LB", defaultEffort: null, displayName: "GPT-6 Luna", efforts: ["low", "high"], modelId: "pm-luna-lb" }
+    ] };
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await screen.findByRole("button", { name: "New sub-agent" }));
+    const model = screen.getByLabelText("Model");
+    expect(within(model).getAllByRole("option").map((option) => [option.textContent, (option as HTMLOptionElement).value])).toEqual([
+      ["Same as the chat", ""], ["GPT-6 Luna · OpenRouter", "pm-luna-or"], ["GPT-6 Luna · Codex LB", "pm-luna-lb"]]);
+    fireEvent.change(model, { target: { value: "pm-luna-lb" } });
+    expect(within(screen.getByLabelText("Reasoning effort")).getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["Model default", "low", "high"]);
   });
 
   it("edits under the version it read and undoes the edit by restoring the previous revision", async () => {

@@ -289,12 +289,11 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
         stage: "read", subsystem: "database" });
     }
   }
-  // A model is listed by its upstream id, or by its catalog id where two connections serve the same one.
-  const models = catalog?.models ?? [];
-  const shared = (entry: (typeof models)[number]) => models.filter((other) => other.upstreamModelId === entry.upstreamModelId).length > 1;
+  // A model is listed by its catalog id, the exact id `call_subagent` and the management tools both take, and named
+  // with its connection: two connections may serve models of the same name. Frozen data only, in catalog order.
   const prompt: SubagentPromptFacts = {
-    models: models.map((entry) => ({ efforts: entry.reasoningEfforts, id: shared(entry) ? entry.providerModelId : entry.upstreamModelId,
-      name: entry.displayName })),
+    models: (catalog?.models ?? []).map((entry) => ({ connection: entry.connectionName ?? null, efforts: entry.reasoningEfforts,
+      id: entry.providerModelId, name: entry.displayName })),
     types
   };
   // The custom sub-agents ride in run context, so the system prompt stays the same when the user edits them.

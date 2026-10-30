@@ -9,11 +9,20 @@ const model = { modelId: "codex-lb:gpt-6-sol", provider: "openai_compatible" };
 
 describe("sub-agent prompts", () => {
   it("guide the main agent only when call_subagent is offered, listing the frozen models and custom types", () => {
-    const facts = { models: [{ efforts: ["low", "medium"], id: "gpt-6-luna", name: "GPT-6 Luna" }],
-      types: [{ description: "Browses shops\nthoroughly.", name: "browser" }] };
+    const facts = { models: [
+      { connection: "OpenRouter", efforts: ["low", "medium"], id: "pm-luna-or", name: "GPT-6 Luna" },
+      { connection: "Codex LB", efforts: ["low", "medium"], id: "pm-luna-lb", name: "GPT-6 Luna" },
+      { connection: null, efforts: [], id: "pm-old", name: "Frozen before labels" }
+    ], types: [{ description: "Browses shops\nthoroughly.", name: "browser" }] };
     const offered = systemPromptFor(model, { environment, subagents: facts, tools: [CALL_SUBAGENT_TOOL_NAME], workspace: true }).stable;
     expect(offered).toContain("# Sub-agents");
-    expect(offered).toContain("\"gpt-6-luna\" (GPT-6 Luna; effort: low, medium)");
+    // Same-named models on two connections: each named with its connection after the exact id to pass.
+    expect(offered).toContain("each as its id, then its name and connection: \"pm-luna-or\" (GPT-6 Luna · OpenRouter; effort: low, medium), " +
+      "\"pm-luna-lb\" (GPT-6 Luna · Codex LB; effort: low, medium), \"pm-old\" (Frozen before labels). Pass the id.");
+    expect(offered).toContain("when the user names a connection, take the model on it");
+    // Byte-stable: the same frozen facts give the same section.
+    expect(systemPromptFor(model, { environment, subagents: structuredClone(facts), tools: [CALL_SUBAGENT_TOOL_NAME], workspace: true }).stable)
+      .toBe(offered);
     expect(offered).toContain("\"browser\": Browses shops thoroughly.");
     expect(systemPromptFor(model, { environment, subagents: facts, tools: [], workspace: true }).stable).not.toContain("# Sub-agents");
   });

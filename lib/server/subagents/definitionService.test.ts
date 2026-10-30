@@ -6,8 +6,8 @@ import { MemorySubagentDefinitionStore, immediateTransactionDb } from "@/tests/s
 import { createSubagentDefinitionService, type SubagentDefinitionDb } from "./definitionService";
 
 const MODELS: SubagentModelOption[] = [
-  { defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium", "high"], modelId: "model-cheap" },
-  { defaultEffort: null, displayName: "Plain Model", efforts: [], modelId: "model-plain" }
+  { connectionName: "Codex LB", defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium", "high"], modelId: "model-cheap" },
+  { connectionName: "Codex LB", defaultEffort: null, displayName: "Plain Model", efforts: [], modelId: "model-plain" }
 ];
 
 const draft = (patch: Partial<SubagentDefinitionDraft> = {}): SubagentDefinitionDraft => ({
@@ -26,7 +26,7 @@ describe("custom sub-agent definitions service", () => {
   it("creates, lists and reads a definition with its model's current name", async () => {
     const { service } = setup();
     const created = await service.create("user-a", draft({ name: "  Browser " }));
-    expect(created).toMatchObject({ ok: true, value: { modelAvailable: true, modelDisplayName: "Cheap Model", name: "browser", previousRevisionId: null,
+    expect(created).toMatchObject({ ok: true, value: { modelAvailable: true, modelDisplayName: "Cheap Model · Codex LB", name: "browser", previousRevisionId: null,
       revisionNumber: 1, version: 1 } });
     const list = await service.list("user-a");
     expect(list.definitions.map((entry) => entry.name)).toEqual(["browser"]);

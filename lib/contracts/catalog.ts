@@ -13,10 +13,7 @@ import {
   type SearchPlanMode,
   type SearchProtocol
 } from "./search";
-import {
-  resolveProviderConnectionLabels,
-  stripEndpointHostFragments
-} from "./providerConnectionLabels";
+import { catalogConnectionLabels } from "./providerConnectionLabels";
 
 export type ReasoningEffort = string;
 export type ReasoningMode = string;
@@ -526,12 +523,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   // stripping happens before collision resolution so "· ref" still
   // disambiguates connections whose stripped names collide. Admin surfaces
   // resolve their own labels from the unstripped source.
-  const providerLabels = resolveProviderConnectionLabels(
-    decodedProviders.map((provider) => ({
-      id: provider.id,
-      name: stripEndpointHostFragments(provider.name)
-    }))
-  );
+  const providerLabels = catalogConnectionLabels(decodedProviders);
 
   return {
     ...(attachmentLimits ? { attachmentLimits } : {}),

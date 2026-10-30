@@ -15,8 +15,8 @@ import {
 import { SUBAGENT_EXCLUDED_TOOL_NAMES } from "./tools";
 
 const MODELS: SubagentModelOption[] = [
-  { defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium"], modelId: "model-cheap" },
-  { defaultEffort: null, displayName: "Big Model", efforts: [], modelId: "model-big" }
+  { connectionName: "Codex LB", defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium"], modelId: "model-cheap" },
+  { connectionName: "Codex LB", defaultEffort: null, displayName: "Big Model", efforts: [], modelId: "model-big" }
 ];
 
 function harness(models: SubagentModelOption[] | null = MODELS) {
@@ -68,7 +68,8 @@ describe("sub-agent management tools", () => {
     const { call, memory, settled } = harness();
     const result = await call("create_subagent", BROWSER);
     expect(result.status).toBe("complete");
-    expect(json(result)).toMatchObject({ action: "created", saved: true, subagent: { effort: "low", model: "Cheap Model", name: "browser", version: 1 } });
+    expect(json(result)).toMatchObject({ action: "created", saved: true, subagent: { effort: "low", model: "Cheap Model · Codex LB", modelId: "model-cheap", name: "browser",
+      version: 1 } });
     expect(cardOf(result)).toMatchObject({ action: "created", definitionVersion: 1, name: "browser", proposalId: null, undoRevisionId: null });
     expect(settled).toEqual([result]);
     const [row] = [...memory.rows.values()];
@@ -81,13 +82,32 @@ describe("sub-agent management tools", () => {
     const unknown = await call("create_subagent", { ...BROWSER, model: "Someone Else's Model" });
     expect(unknown.status).toBe("error");
     expect(json(unknown)).toMatchObject({ code: "subagent_model_unavailable", saved: false });
-    expect(String(json(unknown).message)).toContain("\"Cheap Model\"");
+    expect(String(json(unknown).message)).toContain("Their models: \"model-cheap\" (Cheap Model · Codex LB), \"model-big\" (Big Model · Codex LB).");
     expect(json(await call("create_subagent", { ...BROWSER, effort: "high" }))).toMatchObject({ code: "subagent_effort_unsupported" });
     expect(memory.rows.size).toBe(0);
     await call("create_subagent", BROWSER);
     expect(json(await call("create_subagent", BROWSER))).toMatchObject({ code: "subagent_definition_exists" });
     expect(memory.rows.size).toBe(1);
     expect(settled).toHaveLength(1);
+  });
+
+  it("tells same-named models apart by their connection and never guesses between them", async () => {
+    const twins: SubagentModelOption[] = [
+      { connectionName: "OpenRouter", defaultEffort: null, displayName: "GPT-6 Luna", efforts: ["low", "high"], modelId: "pm-luna-or" },
+      { connectionName: "Codex LB", defaultEffort: null, displayName: "GPT-6 Luna", efforts: ["low", "high"], modelId: "pm-luna-lb" }
+    ];
+    const { call, memory } = harness(twins);
+    const ambiguous = await call("create_subagent", { ...BROWSER, model: "gpt-6 luna" });
+    expect(json(ambiguous)).toMatchObject({ code: "subagent_model_unavailable", saved: false });
+    expect(String(json(ambiguous).message)).toBe("Several of the user's models are named \"gpt-6 luna\": " +
+      "\"pm-luna-or\" (GPT-6 Luna · OpenRouter), \"pm-luna-lb\" (GPT-6 Luna · Codex LB). " +
+      "Pass the exact id of the one the user means; if their words do not tell which, ask them.");
+    expect(memory.rows.size).toBe(0);
+    const labelled = await call("create_subagent", { ...BROWSER, model: "GPT-6 Luna · Codex LB" });
+    expect(json(labelled)).toMatchObject({ saved: true, subagent: { model: "GPT-6 Luna · Codex LB", modelId: "pm-luna-lb" } });
+    const exact = await call("edit_subagent", { name: "browser", model: "pm-luna-or" });
+    expect(json(exact)).toMatchObject({ saved: true, subagent: { model: "GPT-6 Luna · OpenRouter", modelId: "pm-luna-or" } });
+    expect(cardOf(exact).changes.find((change) => change.field === "model")?.summary).toBe("GPT-6 Luna · OpenRouter");
   });
 
   it("edits only the fields passed, shows what changed and offers Undo of that revision", async () => {
