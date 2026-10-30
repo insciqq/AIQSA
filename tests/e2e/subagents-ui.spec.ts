@@ -418,7 +418,12 @@ for (const viewport of [
       await expect(answerRows(page)).toHaveCount(1, { timeout: 10_000 });
       await expectTouchSafe(answerRows(page).first());
       await expectNoHorizontalOverflow(page);
-      await captureState(page, testInfo, `subagents-foreground-${viewport.label}`, { atEachSize: async () => expectNoHorizontalOverflow(page), sizes });
+      await captureState(page, testInfo, `subagents-foreground-${viewport.label}`, { atEachSize: async () => {
+        await expectNoHorizontalOverflow(page);
+        // A long name ellipsizes: the row, chevron included, stays on the screen.
+        const box = await answerRows(page).first().locator(".v2-subagent-chevron").boundingBox();
+        expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+      }, sizes });
       await answerRows(page).first().tap();
       await expect(page.getByTestId("subagent-thread-view").getByRole("heading", { name: longName })).toBeVisible();
     });
