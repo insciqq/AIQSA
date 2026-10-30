@@ -1,4 +1,4 @@
-import { SUBAGENT_LIMITS, isSubagentIdentifier } from "../../../contracts/subagents";
+import { SUBAGENT_LIMITS, isActiveSubagentState, isSubagentIdentifier } from "../../../contracts/subagents";
 import {
   SUBAGENT_NOT_FOUND,
   decodeSubagentSummaryQuery,
@@ -35,6 +35,12 @@ function json(data: unknown, status = 200): Response {
 }
 
 const notFound = () => json({ error: SUBAGENT_NOT_FOUND.error }, SUBAGENT_NOT_FOUND.status);
+/**
+ * Nothing it asked could be stopped and a sub-agent still runs: its turn runs where this process cannot reach it (a
+ * foreground turn of a run held elsewhere). Said, never answered as a quiet success.
+ */
+export const SUBAGENT_STOP_UNAVAILABLE = "subagent_stop_unavailable";
+const stopUnavailable = () => json({ error: SUBAGENT_STOP_UNAVAILABLE }, 409);
 
 async function userOf(deps: SubagentRouteDeps, request: Request): Promise<string | null> {
   if (!(deps.getConfig?.() ?? getAuthConfig()).configured) return null;
@@ -96,9 +102,11 @@ export function createSubagentStopHandler(deps: SubagentRouteDeps) {
     const { chatId, threadId } = await context.params;
     if (!isSubagentIdentifier(chatId) || !isSubagentIdentifier(threadId)) return notFound();
     if (!(await deps.views.thread({ chatId, threadId, userId }))) return notFound();
-    await deps.control.stopThread({ chatId, threadId, userId });
+    const stopped = await deps.control.stopThread({ chatId, threadId, userId });
     const thread = await deps.views.thread({ chatId, threadId, userId });
-    return thread ? json({ thread } satisfies SubagentStopResponse) : notFound();
+    if (!thread) return notFound();
+    if (stopped === 0 && isActiveSubagentState(thread.state)) return stopUnavailable();
+    return json({ thread } satisfies SubagentStopResponse);
   });
 }
 
@@ -110,6 +118,7 @@ export function createSubagentStopAllHandler(deps: SubagentRouteDeps) {
     const { chatId } = await context.params;
     if (!isSubagentIdentifier(chatId) || !(await deps.views.ownsChat({ chatId, userId }))) return notFound();
     const stopped = await deps.control.stopAll({ chatId, userId });
+    if (stopped === 0 && ((await deps.views.chatThreads({ chatId, userId }))?.running ?? 0) > 0) return stopUnavailable();
     return json({ stopped: Math.min(stopped, SUBAGENT_LIMITS.runningPerChat) } satisfies SubagentStopAllResponse);
   });
 }
