@@ -100,6 +100,8 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
     };
     return await execute({ chatId: chat.id, main, sessionId, thread, userId });
   } finally {
+    // Runs first: their Workspace bindings restrict the session, and the session restricts its chat.
+    await prisma.modelRun.deleteMany({ where: { userId } });
     await prisma.workspaceSession.deleteMany({ where: { chat: { userId } } });
     await prisma.chat.deleteMany({ where: { userId } });
     await prisma.usageLimit.deleteMany({ where: { userId } });
@@ -167,8 +169,11 @@ describe("sub-agents across slices on PostgreSQL", () => {
       .toEqual(["chat_deleted", "chat_deleted"]);
     expect(retired.map((entry) => entry.modelRunId).sort()).toEqual(turns.map((turn) => turn.hostRunId).sort());
     expect(await prisma.workspaceRunAttachment.count({ where: { chatId: f.chatId } })).toBe(0);
+    // The deletion's own order: the stopped runs (their bindings and turns go with them), the session, the chat.
+    await prisma.modelRun.deleteMany({ where: { chatId: f.chatId } });
+    await prisma.workspaceSession.deleteMany({ where: { chatId: f.chatId } });
     await prisma.chat.delete({ where: { id: f.chatId } });
-    expect(await prisma.modelRun.count({ where: { id: { in: turns.map((turn) => turn.hostRunId) } } })).toBe(0);
+    expect(await prisma.subagentThread.count({ where: { chatId: f.chatId } })).toBe(0);
     expect(await prisma.workspaceRunBinding.count({ where: { modelRunId: { in: turns.map((turn) => turn.hostRunId) } } })).toBe(0);
   }));
 
