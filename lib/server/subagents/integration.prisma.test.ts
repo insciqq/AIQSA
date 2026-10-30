@@ -46,7 +46,9 @@ function retirement() {
   const retire = async (input: WorkspaceDetachInput): Promise<WorkspaceDetachResult> => {
     retired.push(input);
     const current = await coordinatorRepository.binding({ runId: input.modelRunId, userId: input.userId });
-    if (current) await coordinatorRepository.detachRun({ binding: current, stopProven: input.execution === "settled" });
+    const detachRun = coordinatorRepository.detachRun;
+    if (!detachRun) throw new Error("coordinator_repository_without_detach");
+    if (current) await detachRun({ binding: current, stopProven: input.execution === "settled" });
     return { interruptedRunIds: [], kind: "detached", remainingRuns: 0 };
   };
   return { retired, workspace: createPrismaWorkspaceAttachments({ prisma, retire, waitMs: 4_000 }) };

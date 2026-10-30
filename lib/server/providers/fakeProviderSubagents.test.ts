@@ -4,9 +4,10 @@ import { createFakeProviderAdapter } from "./fakeProvider";
 import type { ProviderHistoryItem } from "./history";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
 
-const callSubagent = { capability: "tool", description: "Start a sub-agent", inputSchema: { type: "object" }, name: "call_subagent" } as RunTool;
-const fsWrite = { capability: "workspace", description: "Write a file", inputSchema: { type: "object" },
-  name: "mcp_workspace_sandbox_fs_write_0123456789" } as RunTool;
+const callSubagent: RunTool = { capability: "session", description: "Start a sub-agent", inputSchema: { type: "object" },
+  name: "call_subagent" };
+const fsWrite: RunTool = { capability: "workspace", description: "Write a file", inputSchema: { type: "object" },
+  name: "mcp_workspace_sandbox_fs_write_0123456789" };
 afterEach(() => vi.unstubAllEnvs());
 
 function request(history: ProviderHistoryItem[], tools: RunTool[]): ProviderRunRequest {
@@ -36,9 +37,9 @@ describe("fake provider sub-agent scenario", () => {
     ]);
     const results: ProviderHistoryItem[] = first.toolCalls!.map((call, index) => ({ callId: call.id, name: call.name,
       output: JSON.stringify(index === 0 ? { kind: "started", name: "alpha", state: "running" } : { error: "subagent_limit_reached" }),
-      type: "tool_result" }));
+      type: "tool_result" as const }));
     const calls: ProviderHistoryItem[] = first.toolCalls!.map((call) => ({ arguments: JSON.stringify(call.arguments), callId: call.id,
-      name: call.name, type: "tool_call" }));
+      name: call.name, type: "tool_call" as const }));
     const answer = await run(request([user, ...calls, ...results], [callSubagent]));
     expect(answer.finalText).toBe("Sub-agents started: alpha started; beta subagent_limit_reached.");
     // A callback delivered into the answer is user input after the calls; the main agent does not call again.
