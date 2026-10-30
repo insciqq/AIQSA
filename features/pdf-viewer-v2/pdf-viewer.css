@@ -1,0 +1,108 @@
+.v2-pdf-viewer {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.v2-pdf-toolbar,
+.v2-pdf-search {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-pdf-page-count {
+  margin-right: auto;
+  padding-inline: 0.25rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.v2-pdf-zoom-value {
+  min-width: 3rem;
+  min-height: 2rem;
+  padding: 0 0.25rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  background: transparent;
+  color: var(--v2-color-text2);
+  font: inherit;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.v2-pdf-zoom-value:hover:not(:disabled) {
+  background: var(--v2-color-hover);
+  color: var(--v2-color-text);
+}
+
+.v2-pdf-zoom-value:disabled {
+  cursor: default;
+}
+
+.v2-pdf-search input {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  font: inherit;
+  /* iOS zooms the page when a focused field is smaller than this. */
+  font-size: 1rem;
+}
+
+.v2-pdf-search-count {
+  flex: 0 0 auto;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.v2-pdf-stage {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  background: var(--v2-color-canvas);
+}
+
+.v2-pdf-scroller {
+  overscroll-behavior: contain;
+}
+
+.v2-pdf-scroller .pdfViewer {
+  padding-block: 0.75rem;
+}
+
+.v2-pdf-scroller .pdfViewer .page {
+  box-shadow: 0 0 0 1px var(--v2-color-border);
+}
+
+.v2-pdf-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  background: var(--v2-color-canvas);
+  color: var(--v2-color-text2);
+  font-size: 0.875rem;
+}
+
+.v2-pdf-viewer a[aria-disabled="true"] {
+  cursor: default;
+}

@@ -6,7 +6,9 @@ import { UiV2Button } from "@/components/ui-v2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { artifactLinkCarriesData } from "@/lib/contracts/artifactRuntime";
 
-export function ArtifactExternalLinkDialog({ href, onClose }: { href: string; onClose(): void }) {
+export function ArtifactExternalLinkDialog({ description = "This link was created by the artifact. AIQSA doesn’t control the destination.", href, onClose }: {
+  description?: string; href: string; onClose(): void;
+}) {
   const { dialogRef, initialFocusRef, onDialogKeyDown, portalReady } = useModalLayerV2({ onClose });
   const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
   const url = new URL(href);
@@ -21,7 +23,7 @@ export function ArtifactExternalLinkDialog({ href, onClose }: { href: string; on
     <section aria-label="Open external link?" aria-modal="true" className="v2-artifact-share" onKeyDown={onDialogKeyDown} ref={dialogRef} role="dialog">
       <div className="v2-artifact-share-section">
         <h2 className="v2-artifact-link-title">Open external link?</h2>
-        <p>This link was created by the artifact. AIQSA doesn’t control the destination.</p>
+        <p>{description}</p>
         <div aria-label="Full link address" className="v2-artifact-link-address v2-focusable" tabIndex={0}>
           <code>{hostStart >= 0 ? <>{href.slice(0, hostStart)}<strong>{url.host}</strong>{href.slice(hostStart + url.host.length)}</> : href}</code>
         </div>
