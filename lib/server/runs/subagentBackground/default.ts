@@ -64,7 +64,9 @@ export function defaultSubagentBackgroundWiring(): Readonly<{ runner: SubagentRu
     runner: backgroundSubagentRunner,
     workspace: createPrismaWorkspaceAttachments({ prisma, retire: async (input: WorkspaceDetachInput): Promise<WorkspaceDetachResult> => {
       const current = await workspaceCoordinator();
-      return current.detach ? current.detach(input) : { interruptedRunIds: [], kind: "detached", remainingRuns: 0 };
+      // Never a silent success: an attachment nobody retired fails visibly (`subagent_workspace_detach_failed`).
+      if (!current.detach) throw new Error("workspace_detach_unavailable");
+      return current.detach(input);
     } })
   };
 }
