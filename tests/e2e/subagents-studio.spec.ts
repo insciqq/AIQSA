@@ -32,8 +32,8 @@ async function openPanel(page: Page) {
     await route.fulfill({ json: { defaultDefinitionId: state.defaultDefinitionId } });
   });
   await signInWithLocalToken(page);
-  const library = await runAccountMenuAction(page, "Instructions");
-  await library.getByRole("tab", { name: "Sub-agents", exact: true }).click();
+  await runAccountMenuAction(page, "Instructions");
+  await page.getByTestId("library-v2").getByRole("tab", { name: "Sub-agents", exact: true }).click();
   await expect(page.getByTestId("studio-subagents").getByRole("heading", { name: "Sub-agents" })).toBeVisible();
   return { panel: page.getByTestId("studio-subagents"), state };
 }
