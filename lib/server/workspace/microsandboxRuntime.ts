@@ -444,7 +444,7 @@ async function openSelectedFiles(sandbox: Sandbox, selection: WorkspaceFileSelec
  */
 async function installWorkspaceGuides(sandbox: Sandbox, imageRef: string | undefined): Promise<void> {
   const deadline = AbortSignal.timeout(GUIDE_INSTALL_TIMEOUT_MS);
-  // One guide per VM serves every agent: on an image without per-agent tabs it tells sub-agents the browser is not theirs.
+  // One guide per VM serves every agent: on an image without per-agent tabs it says only the main agent may browse.
   const input = workspaceGuideInput(imageRef ? { agentKind: "subagent", imageRef } : {});
   let handle: ExecHandle | undefined;
   let sink: Awaited<ReturnType<ExecHandle["takeStdin"]>> = null;
