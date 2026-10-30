@@ -18,6 +18,7 @@ export function subagentThread(
     currentStep: null,
     endedAt: active ? null : "2026-10-30T09:05:00.000Z",
     id,
+    latestAnswerMessageId: null,
     mode: "background",
     model: null,
     name: id.replace(/^thread-/u, ""),

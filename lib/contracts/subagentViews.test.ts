@@ -19,6 +19,7 @@ const done = {
 };
 const running = { ...done, endedAt: null, id: "thread-2", mode: "background", name: "shop-ebay", outcome: null, state: "running",
   turnCount: 1, type: "browser" };
+const unknownFacts = { currentStep: null, latestAnswerMessageId: null, model: null };
 const turn = {
   brief: "Find the five best robot vacuums on amazon.es.", endedAt: null, files: [], id: "turn-1",
   messages: [{ createdAt: "2026-10-29T10:01:00.000Z", delivery: "delivered", text: "Also check the warranty." }],
@@ -51,12 +52,21 @@ describe("sub-agent list projections", () => {
   it("decodes a row's current step and model, and treats a row without them as not knowing them", () => {
     const model = { displayName: "GPT-6 Luna", effort: "high" };
     const step = { fetchTarget: "example.com/a", origin: "web_fetch", toolName: "fetch_url" };
-    expect(decodeSubagentThreadSummary({ ...running, currentStep: step, model })).toEqual({ ...running, currentStep: step, model });
-    expect(decodeSubagentThreadSummary({ ...done, currentStep: null, model })).toEqual({ ...done, currentStep: null, model });
-    expect(decodeSubagentThreadSummary(running)).toEqual({ ...running, currentStep: null, model: null });
-    expect(decodeSubagentThreadSummary({ ...running, currentStep: null, model: null })).toEqual({ ...running, currentStep: null, model: null });
+    expect(decodeSubagentThreadSummary({ ...running, currentStep: step, model })).toEqual({ ...running, ...unknownFacts, currentStep: step, model });
+    expect(decodeSubagentThreadSummary({ ...done, currentStep: null, model })).toEqual({ ...done, ...unknownFacts, model });
+    expect(decodeSubagentThreadSummary(running)).toEqual({ ...running, ...unknownFacts });
+    expect(decodeSubagentThreadSummary({ ...running, ...unknownFacts })).toEqual({ ...running, ...unknownFacts });
     const mcp = { origin: "mcp", serverName: "Jira", toolName: "search" };
     expect(decodeSubagentThreadSummary({ ...running, currentStep: mcp })?.currentStep).toEqual(mcp);
+  });
+
+  it("treats a missing or null latest answer as unknown and refuses a malformed one", () => {
+    expect(decodeSubagentThreadSummary(done)?.latestAnswerMessageId).toBeNull();
+    expect(decodeSubagentThreadSummary({ ...done, latestAnswerMessageId: null })?.latestAnswerMessageId).toBeNull();
+    expect(decodeSubagentThreadSummary({ ...done, latestAnswerMessageId: "answer-1" })?.latestAnswerMessageId).toBe("answer-1");
+    for (const latestAnswerMessageId of [1, "", "a b", { id: "answer-1" }]) {
+      expect(decodeSubagentThreadSummary({ ...done, latestAnswerMessageId })).toBeNull();
+    }
   });
 
   it("refuses a malformed step or model instead of guessing, and a step on a thread that ended", () => {
@@ -72,8 +82,8 @@ describe("sub-agent list projections", () => {
   });
 
   it("decodes thread rows with their state and refuses an inconsistent one", () => {
-    expect(decodeSubagentThreadSummary(done)).toEqual({ ...done, currentStep: null, model: null });
-    expect(decodeSubagentThreadSummary(running)).toEqual({ ...running, currentStep: null, model: null });
+    expect(decodeSubagentThreadSummary(done)).toEqual({ ...done, ...unknownFacts });
+    expect(decodeSubagentThreadSummary(running)).toEqual({ ...running, ...unknownFacts });
     for (const value of [
       { ...done, endedAt: null }, { ...running, endedAt: done.endedAt }, { ...done, outcome: null }, { ...running, outcome: "done" },
       { ...done, turnCount: 0 }, { ...done, state: "paused" }, { ...done, name: "Shop" }, { ...done, brief: "x" }, { ...done, reason: "Bad" }
@@ -81,8 +91,7 @@ describe("sub-agent list projections", () => {
   });
 
   it("decodes a chat's threads whose running count matches its active rows", () => {
-    const known = { currentStep: null, model: null };
-    const chat = { chatId: "chat-1", running: 1, threads: [{ ...running, ...known }, { ...done, ...known }], truncated: false };
+    const chat = { chatId: "chat-1", running: 1, threads: [{ ...running, ...unknownFacts }, { ...done, ...unknownFacts }], truncated: false };
     expect(decodeSubagentChatThreads(chat)).toEqual(chat);
     expect(decodeSubagentChatThreads({ ...chat, running: 2 })).toBeNull();
     expect(decodeSubagentChatThreads({ ...chat, threads: [done, done] })).toBeNull();
@@ -96,7 +105,7 @@ describe("sub-agent thread view", () => {
   it("decodes a read-only thread view whose state is its latest turn's", () => {
     const ended = { ...turn, endedAt: "2026-10-29T09:59:00.000Z", id: "turn-0", messages: [], mode: "foreground", outcome: "done",
       report: "Earlier work.", startedAt: "2026-10-29T09:50:00.000Z", state: "done", toolActivity: null };
-    const view = { chatId: "chat-1", thread: { ...running, currentStep: null, model: null }, truncated: false, turns: [ended, turn] };
+    const view = { chatId: "chat-1", thread: { ...running, ...unknownFacts }, truncated: false, turns: [ended, turn] };
     expect(decodeSubagentThreadView(view)).toEqual(view);
     expect(decodeSubagentThreadView({ ...view, turns: [turn, ended] })).toBeNull();
     expect(decodeSubagentThreadView({ ...view, turns: [] })).toBeNull();
@@ -105,7 +114,7 @@ describe("sub-agent thread view", () => {
   });
 
   it("decodes stop responses", () => {
-    expect(decodeSubagentStopResponse({ thread: done })).toEqual({ thread: { ...done, currentStep: null, model: null } });
+    expect(decodeSubagentStopResponse({ thread: done })).toEqual({ thread: { ...done, ...unknownFacts } });
     expect(decodeSubagentStopAllResponse({ stopped: 3 })).toEqual({ stopped: 3 });
     expect(decodeSubagentStopAllResponse({ stopped: -1 })).toBeNull();
   });
