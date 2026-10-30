@@ -572,7 +572,13 @@ export function runWaitingPhraseV2(runId: string | null): string {
   return RUN_WAITING_PHRASES_V2[(hash >>> 0) % RUN_WAITING_PHRASES_V2.length]!;
 }
 
+/** A `call_subagent` step of the main agent: its answer is waiting on the sub-agent, which has a place of its own in the answer. */
+function subagentWaitSignal(signal: Pick<ActivitySignal, "kind" | "origin" | "serverName" | "toolName">): boolean {
+  return signal.kind === "tool" && signal.toolName === "call_subagent" && toolActivityOriginV2(signal) === "tool";
+}
+
 function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | null): string {
+  if (subagentWaitSignal(signal)) return "Waiting for sub-agents…";
   switch (signal.kind) {
     case "synthesis":
       return signal.budget
@@ -1033,6 +1039,11 @@ export function presentRunLifecycleV2(
   const settledMemorySearchCalls = new Set<string>();
   const activeMemorySearchCalls = new Set<string>();
   const activeToolCalls = new Map<string, Omit<ActivitySignal, "index">>();
+  // The line names the latest running call; the neutral sub-agent wait shows only when nothing else runs.
+  const namedRunningCall = () => {
+    const running = [...activeToolCalls.values()];
+    return running.filter((call) => !subagentWaitSignal(call)).at(-1) ?? running.at(-1);
+  };
 
   for (const [index, event] of state.events.entries()) {
     if (event.type === "token") {
@@ -1066,8 +1077,8 @@ export function presentRunLifecycleV2(
       activeToolCalls.has(toolKey) &&
       (activeToolCalls.get(toolKey)!.toolName ?? null) === (toolActivityMetadata(toolCall).toolName ?? null) &&
       activeToolCalls.delete(toolKey);
-    const stillRunning = toolSettled ? [...activeToolCalls.values()].at(-1) : undefined;
-    const activity: ActivitySignal | null = lateNativeStart ? null
+    const stillRunning = toolSettled ? namedRunningCall() : undefined;
+    let activity: ActivitySignal | null = lateNativeStart ? null
       : toolSettled ? stillRunning ? { ...stillRunning, index } : { index, kind: "provider" }
       : nativeSearch && activeMemorySearchCalls.size > 0
       ? { index, kind: "tool" as const, origin: "memory" as const, serverName: "Memory", toolName: "memory_search" }
@@ -1075,6 +1086,7 @@ export function presentRunLifecycleV2(
     if (activity?.kind === "tool" && toolCall?.status === "requested" && toolKey !== null) {
       const { index: _index, ...signal } = activity;
       activeToolCalls.set(toolKey, signal);
+      if (subagentWaitSignal(signal)) activity = { ...namedRunningCall()!, index };
     }
     if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
     resultsPending ||= activity?.kind === "tool";
