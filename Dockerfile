@@ -163,6 +163,7 @@ USER node
 RUN node scripts/verify-release-vision.cjs
 RUN node scripts/verify-release-isolated-parser.cjs
 RUN node scripts/verify-release-connect.cjs --release
+RUN node scripts/verify-release-pdf-viewer.cjs
 
 EXPOSE 3000
 

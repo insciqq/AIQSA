@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { CatalogModel } from "@/components/app-shell/types";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
@@ -63,6 +63,14 @@ describe("AttachmentTrayV2", () => {
     render(<AttachmentTrayV2 items={projected} />);
     expect(attachmentSendBlockReasonV2(projected, null, false)).toBeNull();
     expect(Boolean(screen.queryByText("This may take a while"))).toBe(pageCount > 20);
+  });
+
+  it("never warns about reading quality, whatever the route", () => {
+    const projected = attachmentItemsForV2([{ id: "pdf", fileName: "report.pdf", kind: "pdf", status: "ready", pageCount: 2 }],
+      [], undefined, false, { available: true, route: "local_text" });
+    render(<AttachmentTrayV2 items={projected} />);
+    expect(projected[0]?.notices).toBeUndefined();
+    expect(screen.queryByText(/reading quality|text extraction/iu)).toBeNull();
   });
 
   it("renders every attachment lifecycle without collapsing rejected reasons", () => {
@@ -343,30 +351,69 @@ describe("AttachmentTrayV2", () => {
 });
 
 describe("SentAttachmentsV2", () => {
-  it("renders quiet authorized download links without storage locations", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders cards and a thumbnail through authorized routes without storage locations", () => {
     const { container } = render(
       <SentAttachmentsV2
         blocks={[
-          { attachmentId: "private-attachment-id", label: "sample.txt", type: "file" },
+          { attachmentId: "private-attachment-id", label: "отчёт за квартал.xlsx", type: "file" },
           { attachmentId: "private-image-id", label: "Диаграмма продаж", type: "image" }
         ]}
       />
     );
 
     const list = screen.getByRole("list", { name: "Message attachments" });
-    expect(list).toHaveTextContent("sample.txt");
+    expect(list).toHaveTextContent("отчёт за квартал.xlsx");
     expect(screen.getByRole("img", { name: "Диаграмма продаж" })).toHaveAttribute(
       "src", "/api/attachments/private-image-id/content?preview=image"
     );
-    expect(screen.getByRole("link", { name: "sample.txt" })).toHaveAttribute(
-      "href",
-      "/api/attachments/private-attachment-id/content"
-    );
-    expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute(
-      "href",
-      "/api/attachments/private-image-id/content"
-    );
+    // Any file the viewer cannot show downloads on click.
+    const card = screen.getByRole("link", { name: "Download отчёт за квартал.xlsx" });
+    expect(card).toHaveAttribute("href", "/api/attachments/private-attachment-id/content");
+    expect(card).toHaveAttribute("download");
+    // The icon's caption and the type are plain text, with no colour of their own.
+    expect(card.querySelector(".v2-sent-file-icon")).toHaveTextContent("XLSX");
+    expect(card.querySelector("small")).not.toBeEmptyDOMElement();
+    // An image keeps its actions in the viewer, not under the thumbnail.
+    expect(screen.queryByRole("link", { name: "Download" })).toBeNull();
     expect(container.innerHTML).not.toMatch(/minio|storageKey|s3:\/\//iu);
+  });
+
+  it("opens a text file in the viewer", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => new Response("# Заметка"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SentAttachmentsV2 blocks={[{ attachmentId: "note", label: "заметка.md", type: "file" }]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open заметка.md" }));
+
+    const preview = await screen.findByTestId("file-preview");
+    expect(await within(preview).findByRole("heading", { name: "Заметка" })).toBeVisible();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/attachments/note/content?preview=text");
+    expect(within(preview).getByRole("link", { name: "Download заметка.md" })).toHaveAttribute("download");
+    // One file has no neighbours to page through, and its size is not known here.
+    expect(within(preview).queryByRole("button", { name: "Next file" })).toBeNull();
+    expect(within(preview).getByText("Markdown")).toBeVisible();
+    fireEvent.click(within(preview).getByRole("button", { name: "Close preview" }));
+    expect(screen.queryByTestId("file-preview")).toBeNull();
+  });
+
+  it("turns the route's refusal into Download instead of a dead control", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "text_preview_unavailable" }, { status: 415 })));
+    render(<SentAttachmentsV2 blocks={[{ attachmentId: "huge", label: "large.txt", type: "file" }]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open large.txt" }));
+
+    expect(await screen.findByText("Preview is unavailable. Download the file instead.")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/attachments/huge/content");
+  });
+
+  it("offers saving only when the chat can save", () => {
+    const blocks = [{ attachmentId: "file", label: "data.csv", type: "file" as const }];
+    const { rerender } = render(<SentAttachmentsV2 blocks={blocks} />);
+    expect(screen.queryByRole("button", { name: "More actions for data.csv" })).toBeNull();
+    rerender(<SentAttachmentsV2 blocks={blocks} canSave />);
+    expect(screen.getByRole("button", { name: "More actions for data.csv" })).toBeVisible();
   });
 
   it("renders nothing for a message without attachments", () => {

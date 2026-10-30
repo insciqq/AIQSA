@@ -3,6 +3,8 @@ import type { AttachmentPreviewKind } from "@/lib/contracts/uploads";
 import { UPLOAD_FORMAT_REGISTRY } from "./uploadFormats";
 
 export const TEXT_PREVIEW_MAX_BYTES = 512 * 1024;
+/** The viewer's refusal before parsing; the same as the hard upload ceiling, so it only ever stops an unusual file. */
+export const PDF_PREVIEW_MAX_BYTES = 67_108_864;
 export const PREVIEW_MAX_FRAMES = 600;
 export const PREVIEW_THUMB_SIZE = 160;
 /** Inline and viewer previews of larger static images are downscaled to fit this box; Download serves the original. */
@@ -16,6 +18,16 @@ const textExtensions: ReadonlySet<string> = new Set([
   ".ts", ".tsx", ".jsx", ".css", ".scss", ".sh", ".sql", ".svg"
 ]);
 
+/** A file name the text preview can serve, size and readiness aside. */
+export function isTextPreviewFileName(fileName: string): boolean {
+  const dot = fileName.lastIndexOf(".");
+  return dot > 0 && textExtensions.has(fileName.slice(dot).toLowerCase());
+}
+
+export function isPdfFileName(fileName: string): boolean {
+  return fileName.length > 4 && fileName.toLowerCase().endsWith(".pdf");
+}
+
 /** Eligibility is a projection, never read authority or a substitute for validating original bytes. */
 export function attachmentPreviewKind(input: Readonly<{
   byteSize: number;
@@ -25,7 +37,6 @@ export function attachmentPreviewKind(input: Readonly<{
 }>): AttachmentPreviewKind {
   if (input.status !== "ready" || !Number.isSafeInteger(input.byteSize) || input.byteSize < 1) return null;
   if (imageMimeTypes.has(input.mimeType)) return input.byteSize <= IMAGE_MAX_BYTES ? "image" : null;
-  const dot = input.fileName.lastIndexOf(".");
-  const extension = dot > 0 ? input.fileName.slice(dot).toLowerCase() : "";
-  return input.byteSize <= TEXT_PREVIEW_MAX_BYTES && textExtensions.has(extension) ? "text" : null;
+  if (input.mimeType === "application/pdf" || isPdfFileName(input.fileName)) return input.byteSize <= PDF_PREVIEW_MAX_BYTES ? "pdf" : null;
+  return input.byteSize <= TEXT_PREVIEW_MAX_BYTES && isTextPreviewFileName(input.fileName) ? "text" : null;
 }

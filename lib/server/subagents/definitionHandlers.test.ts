@@ -1,6 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { decodeSubagentDefinitionListResponse, decodeSubagentDefinitionResponse, type SubagentModelOption } from "@/lib/contracts/subagentDefinitions";
+import {
+  decodeSubagentDefaultResponse,
+  decodeSubagentDefaultUndoResponse,
+  decodeSubagentDefinitionListResponse,
+  decodeSubagentDefinitionResponse,
+  type SubagentModelOption
+} from "@/lib/contracts/subagentDefinitions";
 import { MemorySubagentDefinitionStore, immediateTransactionDb } from "@/tests/support/subagentDefinitionStore";
 import type { AuthenticatedSession } from "../auth/requestAuth";
 import { createSubagentDefinitionHandlers } from "./definitionHandlers";
@@ -97,5 +103,75 @@ describe("custom sub-agent routes", () => {
     expect([duplicate.status, await duplicate.json()]).toEqual([409, { error: "subagent_definition_exists" }]);
     expect((await handlers.detailGET(request("a"), params("../etc"))).status).toBe(404);
     expect((await handlers.detailPATCH(request("a", "PATCH", { draft: DRAFT }), params("def_1"))).status).toBe(400);
+  });
+
+  it("refuse the reserved type as a name, field named", async () => {
+    const context = setup();
+    const refused = await context.handlers.POST(context.request("a", "POST", { ...DRAFT, name: "built-in" }));
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: "subagent_name_invalid", field: "name" });
+  });
+});
+
+describe("the default sub-agent routes", () => {
+  it("serve the owner a decodable pointer they move under what they read, and a list that says the same", async () => {
+    const context = setup();
+    const { handlers, request } = context;
+    const id = await create(context);
+    const read = async () => decodeSubagentDefaultResponse(await (await handlers.defaultGET(request("a"))).json());
+    expect(await read()).toEqual({ defaultDefinitionId: null });
+    const moved = await handlers.defaultPUT(request("a", "PUT", { definitionId: id, expected: null }));
+    expect(moved.headers.get("cache-control")).toBe("private, no-store");
+    expect(decodeSubagentDefaultResponse(await moved.json())).toEqual({ defaultDefinitionId: id });
+    expect(decodeSubagentDefinitionListResponse(await (await handlers.GET(request("a"))).json())?.defaultDefinitionId).toBe(id);
+    const stale = await handlers.defaultPUT(request("a", "PUT", { definitionId: null, expected: null }));
+    expect([stale.status, await stale.json()]).toEqual([409, { error: "subagent_default_conflict" }]);
+    const cleared = await handlers.defaultPUT(request("a", "PUT", { definitionId: null, expected: id }));
+    expect(decodeSubagentDefaultResponse(await cleared.json())).toEqual({ defaultDefinitionId: null });
+    expect(await read()).toEqual({ defaultDefinitionId: null });
+  });
+
+  it("answer another user, administrators included, exactly like a missing definition, and show them only their own pointer", async () => {
+    const context = setup();
+    const { handlers, request } = context;
+    const id = await create(context);
+    await handlers.defaultPUT(request("a", "PUT", { definitionId: id, expected: null }));
+    const foreign = await handlers.defaultPUT(request("admin", "PUT", { definitionId: id, expected: null }));
+    const absent = await handlers.defaultPUT(request("admin", "PUT", { definitionId: "def_missing", expected: null }));
+    expect(foreign.status).toBe(404);
+    expect(await foreign.json()).toEqual(await absent.json());
+    expect(await (await handlers.defaultGET(request("admin"))).json()).toEqual({ defaultDefinitionId: null });
+    const undo = await handlers.defaultUndoPOST(request("admin", "POST", { definition: { expectedVersion: 1, id, revisionId: null }, restore: { expected: null, target: null } }));
+    const undoAbsent = await handlers.defaultUndoPOST(request("admin", "POST", { definition: { expectedVersion: 1, id: "def_missing", revisionId: null }, restore: { expected: null, target: null } }));
+    expect(undo.status).toBe(404);
+    expect(await undo.json()).toEqual(await undoAbsent.json());
+    expect(context.memory.rows.has(id)).toBe(true);
+    expect(context.memory.defaults.get("user-a")).toBe(id);
+  });
+
+  it("undo a change whole and report where the default ended", async () => {
+    const context = setup();
+    const { handlers, request } = context;
+    const id = await create(context);
+    await handlers.defaultPUT(request("a", "PUT", { definitionId: id, expected: null }));
+    const undone = await handlers.defaultUndoPOST(request("a", "POST", { definition: { expectedVersion: 1, id, revisionId: null }, restore: { expected: id, target: null } }));
+    expect(undone.status).toBe(200);
+    expect(decodeSubagentDefaultUndoResponse(await undone.json())).toEqual({ outcome: "restored" });
+    expect(context.memory.rows.size).toBe(0);
+    expect(context.memory.defaults.size).toBe(0);
+  });
+
+  it("refuse unauthenticated and inactive callers, and bound what they send", async () => {
+    const { handlers, request } = setup();
+    expect((await handlers.defaultGET(request(null))).status).toBe(401);
+    expect((await handlers.defaultPUT(request(null, "PUT", { definitionId: null, expected: null }))).status).toBe(401);
+    expect((await handlers.defaultUndoPOST(request("off", "POST", { restore: { expected: null, target: null } }))).status).toBe(403);
+    for (const malformed of [{}, { definitionId: "../x", expected: null }, { definitionId: null }, { definitionId: null, expected: null, extra: 1 }]) {
+      const refused = await handlers.defaultPUT(request("a", "PUT", malformed));
+      expect([refused.status, await refused.json()]).toEqual([400, { error: "subagent_definition_invalid" }]);
+    }
+    for (const malformed of [{}, { restore: { expected: null } }, { definition: { id: "x" }, restore: { expected: null, target: null } }]) {
+      expect((await handlers.defaultUndoPOST(request("a", "POST", malformed))).status).toBe(400);
+    }
   });
 });

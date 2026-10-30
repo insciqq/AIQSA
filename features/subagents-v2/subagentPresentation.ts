@@ -7,6 +7,7 @@ import {
   type SubagentThreadState
 } from "@/lib/contracts/subagents";
 import type { SubagentChatThreads, SubagentThreadSummary } from "@/lib/contracts/subagentViews";
+import { describeToolCallV2, planCallHiddenV2 } from "@/features/run-lifecycle-v2/runPresentation";
 
 /**
  * How a sub-agent's state reads: an icon, a tone (colour means state only:
@@ -71,9 +72,45 @@ export function subagentReasonText(reason: string | null): string | null {
 }
 
 /**
- * The chat's live sub-agent phase, from the server's states only: how many
- * work and how many wait for the user. Null when none is active.
+ * What a sub-agent is doing or how it ended, in the client's words: the
+ * server's current step while it runs, or something neutral without one
+ * (never an invented step); then the outcome, with its reason when that says more.
  */
+export function subagentDetailText(thread: Pick<SubagentThreadSummary, "currentStep" | "outcome" | "reason" | "state">): string {
+  if (thread.state === "running") {
+    const step = thread.currentStep;
+    return step && !planCallHiddenV2(step) ? `${describeToolCallV2(step, "running")}…` : "Working…";
+  }
+  const { label } = subagentStatePresentation(thread.state, thread.outcome);
+  return thread.state === "waiting" ? label : subagentReasonText(thread.reason) ?? label;
+}
+
+/** The model a sub-agent's latest turn ran on, with its effort; null when the row does not know it. */
+export function subagentModelText(model: SubagentThreadSummary["model"]): string | null {
+  return model ? `${model.displayName}${model.effort ? ` · ${model.effort}` : ""}` : null;
+}
+
+const COUNT_ORDER = ["Done", "Partly done", "Blocked", "Running", "Waiting for you", "Stopped", "Failed", "Interrupted"];
+
+/**
+ * The collapsed row of an answer's sub-agents: "5 sub-agents · 3 done, 2
+ * running". `known` are those whose state the chat's projection has; the rest
+ * count in the total only, so no state is claimed for them.
+ */
+export function subagentCountsPhrase(total: number, known: readonly Pick<SubagentThreadSummary, "outcome" | "state">[]): string {
+  const counts = new Map<string, number>();
+  for (const thread of known) {
+    const { label } = subagentStatePresentation(thread.state, thread.outcome);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const parts = COUNT_ORDER.flatMap((label) => {
+    const count = counts.get(label);
+    return count ? [`${count} ${label.toLowerCase()}`] : [];
+  });
+  const whole = `${total} sub-agent${total === 1 ? "" : "s"}`;
+  return parts.length > 0 ? `${whole} · ${parts.join(", ")}` : whole;
+}
+
 /**
  * The background sub-agents of a chat that wait for the user now (only a `browser_handoff` makes one wait), as a stable
  * key for the live browser panel: it changes when another starts waiting, so the panel opens once for each. Null when
@@ -84,6 +121,10 @@ export function subagentWaitingKeyV2(threads: readonly Pick<SubagentThreadSummar
   return waiting.length > 0 ? waiting.join(",") : null;
 }
 
+/**
+ * The live phase of a set of sub-agents, from the server's states only: how
+ * many work and how many wait for the user. Null when none is active.
+ */
 export function subagentWorkingPhrase(threads: readonly Pick<SubagentThreadSummary, "state">[]): string | null {
   const running = threads.filter((thread) => thread.state === "running").length;
   const waiting = threads.filter((thread) => thread.state === "waiting").length;

@@ -22,7 +22,11 @@ import { getWorkspaceConfig } from "../workspace/config";
 import { createPrismaWorkspaceCoordinatorRepository } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { FakeSubagentCallbackSink, FakeSubagentRunner, endedSubagentResult } from "../../../tests/support/subagentPorts";
+import { createSubagentDefinitionService } from "./definitionService";
+import { readSubagentDefault } from "./definitionStore";
 import type { SubagentBinding, SubagentCallbackSink, WorkspaceDetachInput, WorkspaceDetachResult } from "./ports";
+import { freezeSubagentDefault } from "./typeCatalog";
+import { createSubagentTypeResolver } from "./typeResolver";
 
 /**
  * Cross-slice suites of the sub-agent integration on a disposable database:
@@ -181,6 +185,29 @@ async function started(result: Awaited<ReturnType<ReturnType<typeof control>["ba
 
 describe("sub-agents across slices on PostgreSQL", () => {
   afterAll(() => prisma.$disconnect());
+
+  it("freezes the default for an accepted run while the next one follows the pointer, which deleting the definition clears", async () => fixture(async (f) => {
+    const service = createSubagentDefinitionService({ db: prisma, models: async () => [] });
+    const created = await service.create(f.userId, { description: "Synthetic.", effort: null, instructions: "Synthetic.", modelId: null, name: "helper", tools: null });
+    if (!created.ok) throw new Error(`create refused: ${created.refusal.code}`);
+    const id = created.value.id;
+    expect(await service.setDefault(f.userId, id, null)).toEqual({ ok: true, value: id });
+    const frozen = await freezeSubagentDefault(() => readSubagentDefault(prisma, f.userId));
+    expect(frozen).toEqual({ definitionId: id, name: "helper", version: 1 });
+    const types = createSubagentTypeResolver(prisma);
+    expect(await types.resolve({ definitionId: id, userId: f.userId })).toMatchObject({ kind: "found", type: { name: "helper" } });
+    // A thread started as it keeps its type's name when the definition goes.
+    const thread = await prisma.subagentThread.create({ data: { anchorRunId: f.main.runId, chatId: f.chatId, definitionId: id, name: "started-as-default",
+      typeName: "helper", userId: f.userId } });
+    expect(await service.remove(f.userId, id, 1)).toEqual({ ok: true, value: null });
+    // The accepted run's frozen pointer finds nothing: the call refuses, never the built-in (`callTools.ts`).
+    expect(await types.resolve({ definitionId: id, userId: f.userId })).toEqual({ kind: "unavailable" });
+    // The next run's admission finds no default, and the rest of the user's settings stay.
+    expect(await freezeSubagentDefault(() => readSubagentDefault(prisma, f.userId))).toBeUndefined();
+    expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId: f.userId } })).toMatchObject({ defaultProviderModelId: providerTemplateIds.fakeModel,
+      defaultSubagentDefinitionId: null });
+    expect(await prisma.subagentThread.findUniqueOrThrow({ where: { id: thread.id } })).toMatchObject({ definitionId: null, typeName: "helper" });
+  }));
 
   it("runs one active run per thread, each attached to the chat's one Workspace under its own binding", async () => fixture(async (f) => {
     const { background, retired, runner, workspace } = control();

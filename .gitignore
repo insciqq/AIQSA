@@ -10,6 +10,7 @@
 
 node_modules/
 /public/agents/skills-client.mjs
+/public/pdfjs/
 /connect/dist/
 .next/
 /next-env.d.ts

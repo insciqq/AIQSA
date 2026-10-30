@@ -1,20 +1,28 @@
 import { Prisma } from "@prisma/client";
-import { SUBAGENT_DEFINITION_LIMITS, decodeSubagentToolGroups, type SubagentToolGroup } from "../../contracts/subagents";
-import { SUBAGENT_DEFINITION_CODES, type SubagentDefinitionDraft } from "../../contracts/subagentDefinitions";
+import { SUBAGENT_BUILT_IN_TYPE, SUBAGENT_DEFINITION_LIMITS, decodeSubagentToolGroups, type SubagentToolGroup } from "../../contracts/subagents";
+import {
+  SUBAGENT_DEFINITION_CODES,
+  type SubagentDefaultUndoOutcome,
+  type SubagentDefaultUndoRequest,
+  type SubagentDefinitionDraft
+} from "../../contracts/subagentDefinitions";
 
 /**
  * The custom sub-agent rows (`SubagentDefinition`, append-only
- * `SubagentDefinitionRevision`). Every read and write names the owner, so a
- * definition of another user reads as missing. Writes run inside the
- * caller's transaction (a Studio route's, or a tool call's together with its
- * settlement, `lib/server/tools/selfServiceCall.ts`) and first take the
- * owner's definition lock, so the per-user limit, name uniqueness and the
- * version guard hold without relying on a constraint error, which would
- * abort the transaction the tool call settles in. A refusal writes nothing.
+ * `SubagentDefinitionRevision`) and the owner's default among them
+ * (`UserSettings.defaultSubagentDefinitionId`). Every read and write names the
+ * owner, so a definition of another user reads as missing. Writes run inside
+ * the caller's transaction (a Studio route's, or a tool call's together with
+ * its settlement, `lib/server/tools/selfServiceCall.ts`) and first take the
+ * owner's definition lock, so the per-user limit, name uniqueness, the version
+ * guard and the default's compare-and-set hold without relying on a constraint
+ * error, which would abort the transaction the tool call settles in. A refusal
+ * writes nothing.
  */
 
 type Reader = Pick<Prisma.TransactionClient, "subagentDefinition" | "subagentDefinitionRevision">;
-type Writer = Reader & Pick<Prisma.TransactionClient, "$queryRaw">;
+type DefaultReader = Pick<Prisma.TransactionClient, "userSettings">;
+type Writer = Reader & DefaultReader & Pick<Prisma.TransactionClient, "$queryRaw">;
 
 /** One definition at its current revision. */
 export type SubagentDefinitionRecord = Readonly<{
@@ -40,7 +48,9 @@ export type SubagentStoreRefusalCode =
   | typeof SUBAGENT_DEFINITION_CODES.definitionExists
   | typeof SUBAGENT_DEFINITION_CODES.definitionConflict
   | typeof SUBAGENT_DEFINITION_CODES.definitionLimit
-  | typeof SUBAGENT_DEFINITION_CODES.revisionUnknown;
+  | typeof SUBAGENT_DEFINITION_CODES.nameInvalid
+  | typeof SUBAGENT_DEFINITION_CODES.revisionUnknown
+  | typeof SUBAGENT_DEFINITION_CODES.defaultConflict;
 
 export type SubagentStoreRefusal = Readonly<{ code: SubagentStoreRefusalCode; current?: SubagentDefinitionRecord; kind: "refused" }>;
 
@@ -52,6 +62,18 @@ export type SubagentStoreWrite =
   | SubagentStoreRefusal;
 
 export type SubagentStoreDelete = Readonly<{ kind: "deleted"; record: SubagentDefinitionRecord }> | SubagentStoreRefusal;
+
+/** The owner's default custom sub-agent, by id and current name. */
+export type SubagentDefaultRef = Readonly<{ definitionId: string; name: string }>;
+
+export type SubagentDefaultWrite =
+  /** `previous`: the default before the move; null is the built-in sub-agent. */
+  | Readonly<{ kind: "moved"; previous: SubagentDefaultRef | null }>
+  /** It already was the target: nothing was written. */
+  | Readonly<{ kind: "unchanged" }>
+  | SubagentStoreRefusal;
+
+export type SubagentDefaultUndoWrite = Readonly<{ kind: "undone"; outcome: SubagentDefaultUndoOutcome }> | SubagentStoreRefusal;
 
 const refused = (code: SubagentStoreRefusalCode, current?: SubagentDefinitionRecord): SubagentStoreRefusal =>
   ({ code, kind: "refused", ...(current ? { current } : {}) });
@@ -138,6 +160,7 @@ async function nameTaken(tx: Writer, userId: string, name: string, exceptId?: st
 
 /** Creates a definition at version 1 with its first revision. */
 export async function createSubagentDefinitionInTransaction(tx: Writer, userId: string, draft: SubagentDefinitionDraft): Promise<SubagentStoreWrite> {
+  if (draft.name === SUBAGENT_BUILT_IN_TYPE) return refused(SUBAGENT_DEFINITION_CODES.nameInvalid);
   await lockOwner(tx, userId);
   if (await tx.subagentDefinition.count({ where: { ownerUserId: userId } }) >= SUBAGENT_DEFINITION_LIMITS.perUser) {
     return refused(SUBAGENT_DEFINITION_CODES.definitionLimit);
@@ -161,6 +184,8 @@ async function appendRevision(tx: Writer, userId: string, id: string, expectedVe
   if (!current) return refused(SUBAGENT_DEFINITION_CODES.notFound);
   if (current.version !== expectedVersion) return refused(SUBAGENT_DEFINITION_CODES.definitionConflict, current);
   if (sameContent(current, draft)) return { kind: "unchanged", record: current };
+  // A definition that already holds the reserved name (saved before it was reserved) keeps it through edits.
+  if (draft.name !== current.name && draft.name === SUBAGENT_BUILT_IN_TYPE) return refused(SUBAGENT_DEFINITION_CODES.nameInvalid);
   if (draft.name !== current.name && await nameTaken(tx, userId, draft.name, id)) return refused(SUBAGENT_DEFINITION_CODES.definitionExists, current);
   const revision = await tx.subagentDefinitionRevision.create({ data: {
     definitionId: id, description: draft.description, instructions: draft.instructions, name: draft.name, providerModelId: draft.modelId,
@@ -228,6 +253,60 @@ export async function countSubagentDefinitionThreads(db: Pick<Prisma.Transaction
   return db.subagentThread.count({ where: { definitionId: id, userId } });
 }
 
+/** The owner's default custom sub-agent; null is the built-in one. */
+export async function readSubagentDefault(db: DefaultReader, userId: string): Promise<SubagentDefaultRef | null> {
+  const row = await db.userSettings.findUnique({
+    select: { defaultSubagentDefinition: { select: { id: true, name: true } } }, where: { userId }
+  });
+  const definition = row?.defaultSubagentDefinition;
+  return definition ? { definitionId: definition.id, name: definition.name } : null;
+}
+
+async function writeSubagentDefault(tx: Writer, userId: string, target: string | null): Promise<void> {
+  // Account deletion locks the user before its rows, so the user's key comes first (`settingsTransaction.ts`).
+  await tx.$queryRaw`SELECT owner."id" FROM "User" AS owner WHERE owner."id" = ${userId} FOR KEY SHARE OF owner`;
+  await tx.userSettings.upsert({ create: { defaultSubagentDefinitionId: target, userId }, select: { id: true },
+    update: { defaultSubagentDefinitionId: target }, where: { userId } });
+}
+
+/**
+ * Moves the owner's default to one of their definitions, or to the built-in sub-agent (a null `target`), while it is
+ * still `expected` when the caller names it. A definition of another user reads as missing.
+ */
+export async function setSubagentDefaultInTransaction(tx: Writer, userId: string, input: Readonly<{ expected?: string | null; target: string | null }>):
+  Promise<SubagentDefaultWrite> {
+  await lockOwner(tx, userId);
+  const current = await readSubagentDefault(tx, userId);
+  const currentId = current?.definitionId ?? null;
+  if (input.expected !== undefined && input.expected !== currentId) return refused(SUBAGENT_DEFINITION_CODES.defaultConflict);
+  if (input.target !== null && !await findSubagentDefinition(tx, userId, { id: input.target })) return refused(SUBAGENT_DEFINITION_CODES.notFound);
+  if (input.target === currentId) return { kind: "unchanged" };
+  await writeSubagentDefault(tx, userId, input.target);
+  return { kind: "moved", previous: current };
+}
+
+/**
+ * Undo of a change that moved the default, whole: the definition's own change first, under its version guard (a
+ * refusal changes nothing), then the default goes back only if it is still what the change left, read before a
+ * deletion clears it. A later move is kept, and an earlier default that no longer exists leaves the built-in one.
+ */
+export async function undoSubagentDefaultChangeInTransaction(tx: Writer, userId: string, input: SubagentDefaultUndoRequest):
+  Promise<SubagentDefaultUndoWrite> {
+  await lockOwner(tx, userId);
+  const left = (await readSubagentDefault(tx, userId))?.definitionId ?? null;
+  if (input.definition) {
+    const { expectedVersion, id, revisionId } = input.definition;
+    const write = revisionId === null ? await deleteSubagentDefinitionInTransaction(tx, userId, id, expectedVersion)
+      : await restoreSubagentRevisionInTransaction(tx, userId, id, expectedVersion, revisionId);
+    if (write.kind === "refused") return write;
+  }
+  if (left !== input.restore.expected) return { kind: "undone", outcome: "changed" };
+  const { target } = input.restore;
+  const gone = target !== null && !await findSubagentDefinition(tx, userId, { id: target });
+  await writeSubagentDefault(tx, userId, gone ? null : target);
+  return { kind: "undone", outcome: gone ? "target_gone" : "restored" };
+}
+
 /** The store's operations as one seam, so the service can be tested over an in-memory double. */
 export type SubagentDefinitionStore = Readonly<{
   list: typeof listSubagentDefinitions;
@@ -237,14 +316,20 @@ export type SubagentDefinitionStore = Readonly<{
   restore: typeof restoreSubagentRevisionInTransaction;
   remove: typeof deleteSubagentDefinitionInTransaction;
   threadCount: typeof countSubagentDefinitionThreads;
+  readDefault: typeof readSubagentDefault;
+  setDefault: typeof setSubagentDefaultInTransaction;
+  undoDefaultChange: typeof undoSubagentDefaultChangeInTransaction;
 }>;
 
 export const prismaSubagentDefinitionStore: SubagentDefinitionStore = Object.freeze({
   create: createSubagentDefinitionInTransaction,
   find: findSubagentDefinition,
   list: listSubagentDefinitions,
+  readDefault: readSubagentDefault,
   remove: deleteSubagentDefinitionInTransaction,
   restore: restoreSubagentRevisionInTransaction,
   revise: reviseSubagentDefinitionInTransaction,
-  threadCount: countSubagentDefinitionThreads
+  setDefault: setSubagentDefaultInTransaction,
+  threadCount: countSubagentDefinitionThreads,
+  undoDefaultChange: undoSubagentDefaultChangeInTransaction
 });

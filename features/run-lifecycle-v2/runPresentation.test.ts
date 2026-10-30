@@ -41,6 +41,31 @@ function summary(payload: Record<string, unknown>): RunEventView {
   };
 }
 
+describe("the live line while sub-agents work", () => {
+  const call = (round: number, ordinal: number, name: string, status: string, serverName?: string): RunEventView => ({ type: "artifact",
+    data: { artifactType: "tool_call", payload: { name, ordinal, origin: "tool", round, status, ...(serverName ? { serverName } : {}) } } });
+  const label = (events: RunEventView[]) => presentRunLifecycleV2(state({ events, runId: "run" })).activity?.label;
+  const subagent = call(1, 0, "call_subagent", "requested", "shop-amazon");
+
+  it("waits neutrally without repeating the name while sub-agents are the only running work", () => {
+    expect(label([subagent])).toBe("Waiting for sub-agents…");
+    expect(label([subagent])).not.toContain("shop-amazon");
+    expect(label([subagent, call(1, 1, "call_subagent", "requested", "shop-ebay")])).toBe("Waiting for sub-agents…");
+  });
+
+  it("names other work that runs beside them, whichever started first", () => {
+    const other = call(1, 1, "convert_units", "requested");
+    expect(label([subagent, other])).toBe("Running convert units…");
+    expect(label([other, subagent])).toBe("Running convert units…");
+    expect(label([subagent, other, call(1, 1, "convert_units", "complete")])).toBe("Waiting for sub-agents…");
+    expect(label([subagent, call(1, 0, "call_subagent", "complete", "shop-amazon")])).toBe(runWaitingPhraseV2("run"));
+  });
+
+  it("still names what a stop addresses", () => {
+    expect(label([call(1, 0, "stop_subagent", "requested", "shop-amazon")])).toBe("Stopping sub-agent shop-amazon…");
+  });
+});
+
 describe("native Memory search activity", () => {
   const event = (payload: Record<string, unknown>): RunEventView => ({ type: "artifact",
     data: { artifactType: "memory_search_activity", payload: { call: 1, round: 1, ...payload } } });
@@ -794,7 +819,13 @@ describe("answer process label", () => {
     })).toBe("Thought for 12s");
     expect(answerProcessLabelV2({
       hasReasoning: true, memoryCount: 2, stepCount: 3, workDurationMs: 8_000
-    })).toBe("Worked for 8s · Memory · 2");
+    })).toBe("Worked for 8s");
+    expect(answerProcessLabelV2({
+      hasReasoning: true, memoryCount: 2, pastChatCount: 1, stepCount: 0, workDurationMs: null
+    })).toBe("Thought process");
+    expect(answerProcessLabelV2({
+      hasReasoning: false, memoryCount: 2, pastChatCount: 1, stepCount: 0, workDurationMs: 8_000
+    })).toBe("Past chats · 1 · Memory · 2");
     expect(answerProcessLabelV2({
       hasReasoning: false, memoryCount: 1, stepCount: 0, workDurationMs: null
     })).toBe("Memory · 1");

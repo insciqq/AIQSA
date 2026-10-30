@@ -1,3 +1,5 @@
+import { PDF_PREVIEW_MAX_BYTES } from "@/lib/domain/attachmentPreview";
+import { MAX_UPLOAD_MAX_BYTES } from "./validation";
 // @vitest-environment node
 
 import { createTestAuth } from "@/tests/support/auth";
@@ -69,12 +71,16 @@ describe("attachment library handler", () => {
         fileName: "report.pdf",
         id: "attachment-1",
         messageId: "message-1",
-        previewKind: null,
+        previewKind: "pdf",
         savedAt: null,
         status: "ready"
       }]
     });
     for (const key of ["mimeType", "kind", "origin", "storageKey"]) expect(body.files[0]).not.toHaveProperty(key);
     expect(listSent).toHaveBeenCalledWith({ cursor: null, limit: 201, userId: config.bootstrapUserId });
+  });
+
+  it("projects a PDF as viewable exactly up to the hard upload ceiling", () => {
+    expect(PDF_PREVIEW_MAX_BYTES).toBe(MAX_UPLOAD_MAX_BYTES);
   });
 });

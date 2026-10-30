@@ -214,9 +214,8 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
               onRegenerate: () => undefined
             }}
             getMessagePresentation={(message) => message.id === "question-current" ? {
-              // Sent files stay visible as a quiet owner-only line under the
-              // user-bubble text.
-              afterContent: (
+              // Sent files stay visible as owner-only cards above the bubble.
+              aboveContent: (
                 <SentAttachmentsV2
                   blocks={[{
                     attachmentId: "gallery-attachment",

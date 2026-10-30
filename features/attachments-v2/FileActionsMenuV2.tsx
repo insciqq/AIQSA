@@ -46,3 +46,25 @@ export function FileActionsMenuV2({ attachmentId, fileName }: Readonly<{
     </span>
   );
 }
+
+/** Save to Files as a plain button, for the image viewer where a nested menu has no place. */
+export function SaveToFilesButtonV2({ attachmentId, iconOnly = false }: Readonly<{ attachmentId: string; iconOnly?: boolean }>) {
+  const state = useFileLibraryStore((current) => current.mutations[attachmentId]);
+  const saved = state === "saved";
+  const saving = state === "saving";
+  return (
+    <span className="v2-file-actions-menu">
+      {saving ? <small role="status">Saving…</small> : null}
+      {saved ? <small className="v2-sr-only" role="status">Saved</small> : null}
+      {state === "error" ? <small role="alert">Could not save</small> : null}
+      {/* Not `disabled`: that would drop the viewer's focus to the page the moment the save lands. */}
+      {iconOnly ? <UiV2IconButton aria-busy={saving || undefined} aria-disabled={saving || saved || undefined}
+        icon={saved ? "check" : "folder-plus"} label={saved ? "Saved to Files" : "Save to Files"}
+        onClick={() => { if (!saving && !saved) void saveFileToLibrary(attachmentId); }} /> : <button aria-busy={saving || undefined} aria-disabled={saving || saved || undefined} className="v2-focusable v2-save-to-files"
+        onClick={() => { if (!saving && !saved) void saveFileToLibrary(attachmentId); }} type="button">
+        <UiV2Icon name={saved ? "check" : "folder-plus"} />
+        {saved ? "Saved to Files" : "Save to Files"}
+      </button>}
+    </span>
+  );
+}

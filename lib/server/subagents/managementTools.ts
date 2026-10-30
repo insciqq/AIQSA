@@ -4,12 +4,14 @@ import {
   RESOURCE_CHANGE_TEXT_LIMITS,
   clipResourceChangeText,
   type SubagentChangeCard,
-  type SubagentChangeField
+  type SubagentChangeField,
+  type SubagentDefaultChange
 } from "../../contracts/resourceChanges";
 import {
   CREATE_SUBAGENT_TOOL_NAME,
   DELETE_SUBAGENT_TOOL_NAME,
   EDIT_SUBAGENT_TOOL_NAME,
+  SUBAGENT_BUILT_IN_TYPE,
   SUBAGENT_DEFINITION_LIMITS,
   type SubagentToolGroup
 } from "../../contracts/subagents";
@@ -33,6 +35,8 @@ import {
   type AgentSubagentRefusal,
   type AgentSubagentService,
   type AgentSubagentWritten,
+  type SubagentDefaultIntent,
+  type SubagentDefaultMove,
   type SubagentDefinitionDb
 } from "./definitionService";
 import type { SubagentDefinitionRecord, SubagentDefinitionStore } from "./definitionStore";
@@ -52,7 +56,10 @@ import {
  * (`definitionService.ts`), and each change commits with its tool call and
  * shows a card (`lib/contracts/resourceChanges.ts`, `subagent`). A creation's
  * Undo deletes it and an edit's Undo restores the previous revision; deleting
- * only proposes, and the user confirms in the card.
+ * only proposes, and the user confirms in the card. `default` moves the user's
+ * default sub-agent in the same commit, one change on one card, whose Undo puts
+ * the earlier default back too. The running answer keeps the default admission
+ * froze (`typeCatalog.ts`); the result tells the model so.
  *
  * Who is offered them: the main agent of an interactive web chat, like the
  * other self-service tools (`subagentManagementToolNames`). Never a
@@ -134,27 +141,35 @@ function modelLabel(modelId: string | null, options: readonly SubagentModelOptio
 const toolsLabel = (tools: readonly SubagentToolGroup[] | null) =>
   tools === null ? "every tool a sub-agent has" : tools.length === 0 ? "only planning and saved results" : tools.join(", ");
 
-/** A definition as the model reads it. */
-function describe(record: SubagentDefinitionRecord, options: readonly SubagentModelOption[] | null, withInstructions: boolean): Record<string, unknown> {
+/** A definition as the model reads it; `isDefault` when the call read the default. */
+function describe(record: SubagentDefinitionRecord, options: readonly SubagentModelOption[] | null, withInstructions: boolean, isDefault?: boolean): Record<string, unknown> {
   return {
     name: record.name, version: record.version, description: record.description,
     ...(withInstructions ? { instructions: record.instructions } : {}),
     model: modelLabel(record.providerModelId, options), modelId: record.providerModelId, effort: record.reasoningEffort ?? "the model's default",
-    tools: record.toolGroups === null ? null : [...record.toolGroups], toolsDescription: toolsLabel(record.toolGroups)
+    tools: record.toolGroups === null ? null : [...record.toolGroups], toolsDescription: toolsLabel(record.toolGroups),
+    ...(isDefault === undefined ? {} : { isDefault })
   };
 }
 
+/** The card's account of a moved default, for its Undo. */
+function defaultChangeOf(move: SubagentDefaultMove | null): SubagentDefaultChange | null {
+  return move ? { changeId: newProposalId(), isDefault: move.isDefault,
+    previous: move.previous && { definitionId: move.previous.definitionId, name: clipResourceChangeText(move.previous.name, RESOURCE_CHANGE_TEXT_LIMITS.subagentName) } } : null;
+}
+
 function card(input: Readonly<{ action: SubagentChangeCard["action"]; record: SubagentDefinitionRecord; changes?: SubagentChangeCard["changes"];
-  instructionsDiff?: SubagentChangeCard["instructionsDiff"]; previousName?: string | null; undoRevisionId?: string | null;
-  threadCount?: number }>): SubagentChangeCard {
+  defaultChange?: SubagentDefaultChange | null; instructionsDiff?: SubagentChangeCard["instructionsDiff"]; isDefault?: boolean;
+  previousName?: string | null; undoRevisionId?: string | null; threadCount?: number }>): SubagentChangeCard {
   const limits = RESOURCE_CHANGE_TEXT_LIMITS;
   return {
-    action: input.action, changes: input.changes ?? [], consequences: input.action === "delete_proposed" ? { threadCount: input.threadCount ?? 0 } : null,
+    action: input.action, changes: input.changes ?? [],
+    consequences: input.action === "delete_proposed" ? { threadCount: input.threadCount ?? 0, ...(input.isDefault ? { isDefault: true as const } : {}) } : null,
     definitionId: input.record.id, definitionVersion: input.record.version, instructionsDiff: input.instructionsDiff ?? null,
     name: clipResourceChangeText(input.record.name, limits.subagentName),
     previousName: input.previousName ? clipResourceChangeText(input.previousName, limits.subagentName) : null,
     proposalId: input.action === "delete_proposed" ? newProposalId() : null, resource: "subagent", undoRevisionId: input.undoRevisionId ?? null,
-    version: 1
+    version: 1, ...(input.defaultChange ? { defaultChange: input.defaultChange } : {})
   };
 }
 
@@ -192,7 +207,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   [CODES.notFound]: "The user has no custom sub-agent with this name.",
   [CODES.catalogUnavailable]: "The user's models could not be read right now, so nothing was saved. Try once more; if it fails again, tell the user.",
   [CODES.effortUnsupported]: "That reasoning effort is not one the model supports.",
-  [CODES.nameInvalid]: "The name is not a valid sub-agent name: a lowercase slug of letters a-z, digits, \"-\" and \"_\", not \"main\".",
+  [CODES.nameInvalid]: `The name is not a valid sub-agent name: a lowercase slug of letters a-z, digits, "-" and "_", not "main" or "${SUBAGENT_BUILT_IN_TYPE}".`,
   [CODES.definitionInvalid]: "A text field is empty or too long."
 };
 
@@ -216,8 +231,8 @@ async function settle(service: AgentSubagentService, call: Call, outcome: AgentS
     case "unavailable": return refused(call, UNAVAILABLE, "Custom sub-agents cannot be changed from this answer.");
     case "refused":
       if (outcome.value.unchanged) {
-        return { callId: call.id, content: [{ type: "json", value: { saved: false, unchanged: true, message: "That is already its current definition; nothing was saved.",
-          subagent: describe(outcome.value.unchanged, options, false) } }], name: call.name, status: "complete" };
+        return { callId: call.id, content: [{ type: "json", value: { saved: false, unchanged: true, message: "That is already its current definition and default setting; nothing was saved.",
+          subagent: describe(outcome.value.unchanged, options, false, outcome.value.isDefault) } }], name: call.name, status: "complete" };
       }
       return refusalResult(service, call, outcome.value);
   }
@@ -277,11 +292,20 @@ async function create(service: AgentSubagentService, call: ModelToolCall): Promi
   const draft: SubagentDefinitionDraft = { description: args.description, effort: args.effort, instructions: args.instructions, modelId,
     name: args.name, tools: args.tools === null ? null : [...args.tools] };
   options ??= await service.models().catch(() => null);
-  const outcome = await service.create(draft, (written: AgentSubagentWritten) => cardResult(call, card({ action: "created", record: written.record }), {
-    saved: true, action: "created", subagent: describe(written.record, options, false), library: SUBAGENTS_LIBRARY_PATH,
-    note: `The answer shows a card with Undo. Start it with call_subagent and type "${written.record.name}".`
-  }));
+  const outcome = await service.create(draft, args.default ? "set" : "keep", (written: AgentSubagentWritten) => cardResult(call,
+    card({ action: "created", defaultChange: defaultChangeOf(written.defaultMove), record: written.record }), {
+      saved: true, action: "created", subagent: describe(written.record, options, false, written.isDefault), library: SUBAGENTS_LIBRARY_PATH,
+      note: `The answer shows a card with Undo. Start it with call_subagent and type "${written.record.name}".${written.defaultMove ? ` ${DEFAULT_MOVED_NOTE}` : ""}`
+    }));
   return settle(service, call, outcome, options);
+}
+
+/** The running answer keeps the default it was admitted with, so the model must not expect a call with no type to change now. */
+const DEFAULT_MOVED_NOTE = "The new default applies from the user's next message on: this answer keeps the default it started with, so here a sub-agent is started by its type.";
+
+function defaultSummary(move: SubagentDefaultMove): string {
+  return clip(move.isDefault ? `Now the default; before: ${move.previous ? `“${move.previous.name}”` : "the built-in sub-agent"}`
+    : "No longer the default; new sub-agents use the built-in one");
 }
 
 function apply<T>(field: ArgumentField<T>, current: T | null): T | null {
@@ -316,17 +340,21 @@ async function edit(service: AgentSubagentService, call: ModelToolCall): Promise
     tools: args.tools.kind === "unchanged" ? current.toolGroups : args.tools.kind === "reset" ? null : [...args.tools.value]
   };
   options ??= await service.models().catch(() => null);
-  const outcome = await service.revise(current.id, current.version, draft, (written: AgentSubagentWritten) => {
+  const intent: SubagentDefaultIntent = args.default === undefined ? "keep" : args.default ? "set" : "clear";
+  const outcome = await service.revise(current, draft, intent, (written: AgentSubagentWritten) => {
     const before = written.previous ?? current;
-    const changes = subagentChanges(before, written.record, options);
+    const changes = [...subagentChanges(before, written.record, options),
+      ...(written.defaultMove ? [{ field: "default" as const, summary: defaultSummary(written.defaultMove) }] : [])];
     const diff = before.instructions !== written.record.instructions ? boundedTextLineDiff(before.instructions, written.record.instructions,
       { maxLineLength: RESOURCE_CHANGE_DIFF_LINE_MAX_LENGTH, maxLines: RESOURCE_CHANGE_DIFF_LINES_LIMIT }) : null;
-    return cardResult(call, card({ action: "updated", changes, record: written.record,
+    return cardResult(call, card({ action: "updated", changes, defaultChange: defaultChangeOf(written.defaultMove), record: written.record,
       instructionsDiff: diff ? { lines: diff.lines.map((line) => ({ ...line })), truncated: diff.truncated } : null,
-      previousName: before.name !== written.record.name ? before.name : null, undoRevisionId: before.revisionId }), {
-      saved: true, action: "updated", subagent: describe(written.record, options, false), changed: changes.map((change) => change.field),
+      previousName: before.name !== written.record.name ? before.name : null,
+      // A change that only moved the default wrote no revision.
+      undoRevisionId: written.previous ? before.revisionId : null }), {
+      saved: true, action: "updated", subagent: describe(written.record, options, false, written.isDefault), changed: changes.map((change) => change.field),
       library: SUBAGENTS_LIBRARY_PATH,
-      note: "The answer shows a card with what changed and Undo. Sub-agents already running keep what they started with."
+      note: `The answer shows a card with what changed and Undo. Sub-agents already running keep what they started with.${written.defaultMove ? ` ${DEFAULT_MOVED_NOTE}` : ""}`
     });
   });
   return settle(service, call, outcome, options);
@@ -337,8 +365,8 @@ async function proposeDelete(service: AgentSubagentService, call: ModelToolCall)
   if (!parsed.ok) return refused(call, parsed.code, parsed.message);
   const current = await service.find({ name: parsed.value.name });
   if (!current) return refused(call, CODES.notFound, REFUSALS[CODES.notFound]!);
-  const threadCount = await service.threadCount(current.id);
-  return cardResult(call, card({ action: "delete_proposed", record: current, threadCount }), {
+  const [threadCount, currentDefault] = await Promise.all([service.threadCount(current.id), service.currentDefault()]);
+  return cardResult(call, card({ action: "delete_proposed", isDefault: currentDefault?.definitionId === current.id, record: current, threadCount }), {
     deleted: false, deletionProposed: true, subagent: current.name,
     note: `Nothing was deleted: the answer shows a card in which the user confirms the deletion. ${PROPOSAL_CARD_NOTE}`
   });

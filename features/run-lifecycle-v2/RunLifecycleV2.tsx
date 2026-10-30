@@ -1,7 +1,6 @@
 "use client";
 
-import { chatPdfRouteDescription, CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_PDF_LONG_DOCUMENT_NOTICE,
-  type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
+import { CHAT_PDF_LONG_DOCUMENT_NOTICE, type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { runReferenceLabel } from "@/lib/contracts/runReference";
@@ -29,6 +28,8 @@ import {
   planCallHiddenV2,
   runWaitingPhraseV2,
   settledRunPresentationV2,
+  subagentCallV2,
+  SUBAGENT_WAIT_LABEL_V2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
   type AnnouncedRunPresentationV2,
@@ -44,16 +45,12 @@ type ToolCallV2 = ThreadToolActivity["calls"][number];
 const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "results"]);
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
-  let call: ToolCallV2 | undefined;
-  for (let index = activity.calls.length - 1; index >= 0; index -= 1) {
-    // A plan update is the plan's own progress, not a step the answer waits on.
-    if (activity.calls[index]?.status === "running" && !planCallHiddenV2(activity.calls[index]!)) {
-      call = activity.calls[index];
-      break;
-    }
-  }
-  if (!call) return null;
-  return `${describeToolCallV2(call, "running")}…`;
+  // A plan update is the plan's own progress, not a step the answer waits on.
+  const running = activity.calls.filter((call) => call.status === "running" && !planCallHiddenV2(call));
+  if (running.length === 0) return null;
+  // A sub-agent has its own row in the answer, so the line names only the answer's other work.
+  const own = running.filter((call) => !subagentCallV2(call) && !call.subagentThreadId).at(-1);
+  return own ? `${describeToolCallV2(own, "running")}…` : SUBAGENT_WAIT_LABEL_V2;
 }
 
 function RunConnectionLossV2({
@@ -360,9 +357,16 @@ export function RunAnswerV2({
   // Thinking shown with the answer is also shown while its text streams, so
   // the line that held the live status keeps its slot until the answer settles.
   const reasoningShown = showReasoning && (settled || presentation.kind === "streaming");
+  // Stop and the long-document advice exist only while documents are prepared;
+  // the progress itself is the live line.
+  const preparingDocuments = Boolean(pdfPreparation?.length) &&
+    presentation.kind === "activity" && presentation.activity?.kind === "preparing";
+  const longDocument = pdfPreparation?.some((item) => item.longDocument) === true;
   const process = (
     <AnswerProcessV2
       connectionLost={presentation.kind === "connection_lost"}
+      // Documents count as read only once the model is answering from them.
+      documents={presentation.kind === "complete" || presentation.kind === "streaming" ? pdfPreparation : undefined}
       contextCompaction={presentation.compaction}
       contextCompactionFailures={presentation.compactionFailures}
       disclosureId={processDisclosureId ?? anchorId}
@@ -415,17 +419,14 @@ export function RunAnswerV2({
             <BrowserLivePanelV2 chatId={browserLiveChatId} live toolActivity={settled ? null : toolActivity} waitingKey={browserLiveWaitingKey}
               workspaceActivity={settled ? null : workspaceActivity} />
           ) : null}
-          {pdfPreparation?.length ? (
+          {preparingDocuments && (onStop || longDocument) ? (
             <div className="v2-pdf-preparation" data-testid="pdf-preparation-notices">
-              {[...new Set(pdfPreparation.map(chatPdfRouteDescription))].map((description) => <p key={description}>{description}</p>)}
-              {presentation.kind === "activity" && presentation.activity?.kind === "preparing" && onStop ? (
+              {onStop ? (
                 <UiV2Button icon="stop" onClick={onStop} disabled={stopping} aria-busy={stopping || undefined}>
                   {stopping ? "Stopping…" : "Stop"}
                 </UiV2Button>
               ) : null}
-              {pdfPreparation.some((item) => item.longDocument) ? <p>{CHAT_PDF_LONG_DOCUMENT_NOTICE}</p> : null}
-              {pdfPreparation.some((item) => item.limitedReadingQuality) ? <p>{pdfPreparation.length === 1
-                ? CHAT_PDF_LOCAL_TEXT_NOTICE : CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE}</p> : null}
+              {longDocument ? <p>{CHAT_PDF_LONG_DOCUMENT_NOTICE}</p> : null}
             </div>
           ) : null}
           {(artifact?.skillCatalogOmittedCount ?? 0) > 0 ? <p className="v2-tool-budget-warning" role="status">
