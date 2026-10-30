@@ -17,8 +17,8 @@ import {
 
 /**
  * The one browser owner of a chat's sub-agents (FRONTEND "State"): the chat
- * list tree, the chat's cards and status line, "Stop all" and the thread
- * view all read the server's projections from here, keyed by chat. Every
+ * list tree, the answer's rows, the chip above the composer with its list and
+ * "Stop all", and the thread view all read the server's projections from here, keyed by chat. Every
  * write carries the sequence of the request that produced it, so a result
  * that a later request, a stop or a branch switch superseded is dropped.
  */
