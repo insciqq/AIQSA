@@ -186,7 +186,8 @@ describe("sub-agent threads on PostgreSQL", () => {
     await transcripts.append(scope("turn-2"), 1, items("Second turn."));
     await transcripts.append({ chatId, runId: run.runId, userId }, 0, items("Main answer."));
     const effects = await store.threadEffectItems({ chatId, runIds: [run.runId], userId });
-    expect(effects).toEqual([[expect.objectContaining({ callId: "c1", kind: "tool_call", recordedAt: expect.any(Date) })]]);
+    expect(effects).toEqual([{ items: [expect.objectContaining({ callId: "c1", kind: "tool_call", recordedAt: expect.any(Date) })],
+      threadId: "thread-a" }]);
     await expect(store.threadEffectItems({ chatId, runIds: [run.runId], userId: "someone-else" })).resolves.toEqual([]);
   });
 

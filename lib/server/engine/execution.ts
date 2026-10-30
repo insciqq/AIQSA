@@ -62,7 +62,7 @@ import {
 } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
-import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
+import { createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
 import { withSubagentTools } from "./subagents/callTools";
 import {
@@ -143,6 +143,9 @@ export type NativeRunExecutionInput = Readonly<{
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>;
+
+/** The main agent's key among a run's agent fences; a sub-agent's is its thread id (a UUID, never this). */
+const MAIN_AGENT_FENCE = "main";
 
 /** The web chat's address a Telegram turn's handoff points to; the chat id is its only parameter. */
 function webChatUrl(chatId: string): string {
@@ -453,16 +456,20 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const serverWritten = await serverWrittenTurns(input.repository, { chatId: scope.chatId, messageIds: laterTurns,
           userId: input.userId });
         const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
+        // Each agent of the run keeps its own fence and sees every other's (`createAgentUnknownEffects`): one agent's outcome
+        // never settles another's unknown effect.
+        const agentFences = createAgentUnknownEffects();
         const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true ||
-          (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
-        // The run's agents share this one fence (`subagents/runner.ts`): an effect a sub-agent of this branch left unknown is
-        // respected by the main agent and every other sub-agent, read from the threads' records and never put in any context.
+          (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)),
+        agentFences.agent(MAIN_AGENT_FENCE));
+        // An effect a sub-agent of this branch left unknown is respected by the main agent and every other sub-agent, read
+        // from the threads' records into each thread's own fence and never put in any context.
         const branchRunIds = conversationMessages.flatMap((message) => message.role === "assistant" && nativeRuns.has(message.id)
           ? [nativeRuns.get(message.id)!] : []);
         if (engine.subagentThreads) {
           const threadEffects = await engine.subagentThreads.threadEffectItems({ chatId: scope.chatId, runIds: branchRunIds,
             userId: input.userId });
-          for (const threadItems of threadEffects) unknownEffectsOf(threadItems, () => false, unknownEffects);
+          for (const thread of threadEffects) unknownEffectsOf(thread.items, () => false, agentFences.agent(thread.threadId));
           // Every earlier thread effect precedes the user's current message, which is them speaking since.
           if (threadEffects.length > 0 && conversation.currentInputId && !serverInput) unknownEffects.userSpoke();
         }
@@ -533,7 +540,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           // Background turns are web chats' only: a Telegram turn or a scheduled occurrence waits for its sub-agents.
           backgroundAllowed: !input.telegram && !input.scheduled,
           ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
-          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft, unknownEffects, usage,
+          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
+          unknownEffects: (threadId) => agentFences.agent(threadId), usage,
           userMessage: currentUserMessageText(contextMessages, continuationTurns)
         });
         runSubagents = subagents;

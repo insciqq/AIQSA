@@ -127,8 +127,8 @@ export type PrepareRunSubagentsInput = Readonly<{
   snapshot: ProviderExecutionSnapshot;
   toolState: ToolBatchState;
   toolTimeLeft(): boolean;
-  /** The run's one unknown-effect fence, shared by the main agent and its sub-agents. */
-  unknownEffects: UnknownEffects;
+  /** A thread's view of the run's agent fences (`createAgentUnknownEffects`): its own, and every other agent's to find. */
+  unknownEffects(threadId: string): UnknownEffects;
   usage: Pick<UsageLedger, "add" | "settle">;
   /** Every follow-up the user wrote into this answer (delivered to the main agent or not yet), oldest first. */
   userFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;

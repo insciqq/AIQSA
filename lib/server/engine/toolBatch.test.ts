@@ -237,7 +237,8 @@ describe("native tool batch", () => {
     const create = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
     const { store } = fakeStore();
     const batch = deps({ create: tool("create", "external", create, { retryApproval: () => approval }) }, store);
-    batch.unknownEffects.record({ arguments: { title: "x" }, name: "create" }, "unknown");
+    // The uncertain attempt was earlier; a completion at the same moment would keep the fence.
+    batch.unknownEffects.record({ arguments: { title: "x" }, name: "create" }, "unknown", new Date(Date.now() - 1_000));
     await runToolBatch(batch, { calls: 0 }, { approved: { approvalId: "approval-9", callId: "c1" },
       calls: [{ arguments: { title: "x" }, id: "c1", name: "create" }], round: 0 });
     expect(store.begin).toHaveBeenCalledWith(expect.objectContaining({ approval, approvedBy: "approval-9", providerCallId: "c1" }));
