@@ -169,6 +169,29 @@ export function maliciousFontPdf(): Uint8Array {
   ]);
 }
 
+/**
+ * Everything in a PDF that could name a request: a Text annotation icon, a file
+ * attachment icon, rich text with an image, link and CSS URL, a font's name and a
+ * CMap's name. All point at `/api/pdf-beacon`, which nothing should ever request.
+ */
+export function pdfBeaconPdf(): Uint8Array {
+  const up = "..#2F..#2F..#2F..#2F";
+  const rich = "<?xml version=\"1.0\"?><body xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"><p style=\"background:url(/api/pdf-beacon?css)\"><a href=\"/api/pdf-beacon?a\">a</a><img src=\"/api/pdf-beacon?img\"/></p></body>";
+  return buildPdf([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Contents 4 0 R /Annots [5 0 R 6 0 R 7 0 R 8 0 R] /Resources << /Font << /F1 9 0 R /F2 10 0 R >> >> >>",
+    { dictionary: "", stream: "BT /F1 18 Tf 20 300 Td (font) Tj ET BT /F2 18 Tf 20 260 Td <0041> Tj ET" },
+    `<< /Type /Annot /Subtype /Text /Rect [20 340 42 362] /Name /x#2F${up}api#2Fpdf-beacon#3Fpdf-content=private-marker#26x= /Contents (note) /RC (${rich}) >>`,
+    `<< /Type /Annot /Subtype /FileAttachment /Rect [60 340 82 362] /Name /x#2F${up}api#2Fpdf-beacon#3Fattachment /FS << /Type /Filespec /F (a.txt) >> >>`,
+    `<< /Type /Annot /Subtype /FreeText /Rect [100 340 200 362] /DA (0 g /Helv 10 Tf) /Contents (rich) /RC (${rich}) >>`,
+    "<< /Type /Annot /Subtype /Link /Rect [220 340 300 362] /Border [0 0 0] /A << /S /URI /URI (/api/pdf-beacon?link) >> >>",
+    "<< /Type /Font /Subtype /TrueType /BaseFont /x#29#2Curl#28#2Fapi#2Fpdf-beacon#3Ffont#29 /FirstChar 32 /LastChar 33 /Widths [500 500] >>",
+    "<< /Type /Font /Subtype /Type0 /BaseFont /Beacon /Encoding /x#2F..#2F..#2Fapi#2Fpdf-beacon#3Fcmap /DescendantFonts [11 0 R] >>",
+    "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Beacon /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> >>"
+  ]);
+}
+
 /** The largest page the format describes, enlarged further by /UserUnit. */
 export function oversizedPagePdf(): Uint8Array {
   return buildPdf([

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PDF_PREVIEW_MAX_BYTES } from "@/lib/domain/attachmentPreview";
 import { PdfViewerV2 } from "./PdfViewerV2";
-import { PDF_VIEWER_MAX_PAGES, PDF_VIEWER_OPEN_TIMEOUT_MS } from "./pdfViewerOptions";
+import { PDF_VIEWER_MAX_PAGES, PDF_VIEWER_OPEN_TIMEOUT_MS, pdfDefaultScaleValue } from "./pdfViewerOptions";
 
 // pdf.js needs a real canvas and worker, so its real behavior is in pdfHostileInput.test.ts and the browser
 // spec. Here a fake engine stands in, to observe which states the viewer reaches and what it releases.
@@ -30,7 +30,9 @@ class FakeBus {
 }
 
 function fakeEngine(overrides: Readonly<{
+  destroyNeverSettles?: boolean;
   documentError?: unknown;
+  documentNeverSettles?: boolean;
   firstPageError?: unknown;
   neverRenders?: boolean;
   numPages?: number;
@@ -38,15 +40,24 @@ function fakeEngine(overrides: Readonly<{
   const buses: FakeBus[] = [];
   const viewers: FakeViewer[] = [];
   const links: { addLinkAttributes(link: HTMLAnchorElement, url: string): void; setDocument: ReturnType<typeof vi.fn> }[] = [];
-  const destroy = vi.fn(() => Promise.resolve());
+  const destroy = vi.fn(overrides.destroyNeverSettles ? () => new Promise<void>(() => undefined) : () => Promise.resolve());
+  const workers: FakeWorker[] = [];
+  const workerDestroy = vi.fn();
+  class FakeWorker extends EventTarget {
+    terminate = vi.fn();
+    constructor(readonly url: string, readonly options: WorkerOptions) { super(); workers.push(this); }
+  }
+  vi.stubGlobal("Worker", FakeWorker);
   const getDocument = vi.fn((options: Record<string, unknown>) => {
     void options;
     return {
       destroy,
-      promise: overrides.documentError
+      promise: overrides.documentNeverSettles ? new Promise(() => undefined) : overrides.documentError
         ? Promise.reject(overrides.documentError)
         : Promise.resolve({
-          getPage: () => overrides.firstPageError ? Promise.reject(overrides.firstPageError) : Promise.resolve({}),
+          getPage: () => overrides.firstPageError ? Promise.reject(overrides.firstPageError) : Promise.resolve({
+            getAnnotations: async () => [{ annotationType: 1, name: "x/../../api/beacon?y=" }]
+          }),
           numPages: overrides.numPages ?? 3
         })
     };
@@ -72,8 +83,9 @@ function fakeEngine(overrides: Readonly<{
   }
   const result = {
     assetBase: "http://localhost/pdfjs/1.2.3/",
-    buses, destroy, getDocument, links, viewers,
-    lib: { getDocument },
+    buses, destroy, getDocument, links, viewers, workerDestroy, workers,
+    workerSrc: "http://localhost/pdfjs/1.2.3/pdf.worker.min.mjs",
+    lib: { getDocument, PDFWorker: { create: (params: { port: Worker }) => ({ destroy: workerDestroy, ...params }) } },
     viewer: {
       EventBus: class extends FakeBus { constructor() { super(); buses.push(this); } },
       FindState: { FOUND: 0, NOT_FOUND: 1, PENDING: 3, WRAPPED: 2 },
@@ -115,6 +127,9 @@ describe("PDF viewer", () => {
     const options = fake.getDocument.mock.calls[0][0];
     expect(options.data).toBeInstanceOf(Uint8Array);
     expect(options).not.toHaveProperty("url");
+    // Its own worker, so pdf.js has no route to parsing on the main thread.
+    expect(fake.workers[0]).toMatchObject({ options: { type: "module" }, url: fake.workerSrc });
+    expect(options.worker).toMatchObject({ port: fake.workers[0] });
     expect(options).toMatchObject({ enableXfa: false, isEvalSupported: false, useWasm: false, wasmUrl: `${fake.assetBase}wasm/` });
     expect(screen.getByTestId("pdf-page-indicator")).toHaveTextContent("1 / 3");
     expect(fake.viewers[0].options.annotationMode).toBe(1);
@@ -231,6 +246,59 @@ describe("PDF viewer", () => {
     expect(fake.destroy).toHaveBeenCalled();
   });
 
+  it("a worker that cannot load is a visible failure at once, and it is terminated", async () => {
+    const fake = fakeEngine({ documentNeverSettles: true });
+    stubFetch();
+    render(<PdfViewerV2 {...props} />);
+    await waitFor(() => expect(fake.workers).toHaveLength(1));
+    await act(async () => { fake.workers[0].dispatchEvent(new Event("error")); });
+    expect(screen.getByRole("alert")).toHaveTextContent("couldn’t be loaded");
+    expect(screen.getByRole("link", { name: "Download" })).toBeVisible();
+    expect(fake.workers[0].terminate).toHaveBeenCalled();
+  });
+
+  it("the timer ends a stalled worker even when destroying the task never settles", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fake = fakeEngine({ destroyNeverSettles: true, documentNeverSettles: true });
+    stubFetch();
+    render(<PdfViewerV2 {...props} />);
+    await vi.waitFor(() => expect(fake.workers).toHaveLength(1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(PDF_VIEWER_OPEN_TIMEOUT_MS + 1); });
+    expect(screen.getByRole("alert")).toHaveTextContent("too long");
+    expect(fake.workers[0].terminate).toHaveBeenCalled();
+    expect(fake.workerDestroy).toHaveBeenCalled();
+  });
+
+  it("a hidden tab does not count towards the first paint, which needs animation frames", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    try {
+      const fake = fakeEngine({ neverRenders: true });
+      stubFetch();
+      render(<PdfViewerV2 {...props} />);
+      await vi.waitFor(() => expect(fake.viewers).toHaveLength(1));
+      await act(async () => { await vi.advanceTimersByTimeAsync(PDF_VIEWER_OPEN_TIMEOUT_MS * 3); });
+      expect(screen.queryByRole("alert")).toBeNull();
+      visibility.mockReturnValue("visible");
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await vi.advanceTimersByTimeAsync(PDF_VIEWER_OPEN_TIMEOUT_MS + 1);
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent("too long");
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it("gives the viewer pages whose annotation names cannot pick a request path", async () => {
+    const fake = fakeEngine();
+    stubFetch();
+    render(<PdfViewerV2 {...props} />);
+    await waitFor(() => expect(fake.viewers).toHaveLength(1));
+    const document = fake.viewers[0].setDocument.mock.calls[0][0] as { getPage(n: number): Promise<{ getAnnotations(): Promise<{ name: string }[]> }> };
+    expect((await (await document.getPage(1)).getAnnotations())[0].name).toBe("Note");
+  });
+
   it("closing during the fetch aborts it and never starts pdf.js", async () => {
     fakeEngine();
     let resolve!: (response: Response) => void;
@@ -256,6 +324,8 @@ describe("PDF viewer", () => {
     expect(viewer.options.abortSignal.aborted).toBe(true);
     expect(fake.links[0].setDocument).toHaveBeenLastCalledWith(null);
     expect(fake.destroy).toHaveBeenCalledTimes(1);
+    expect(fake.workerDestroy).toHaveBeenCalledTimes(1);
+    expect(fake.workers[0].terminate).toHaveBeenCalledTimes(1);
   });
 
   it("a PDF's web link opens only after the full-address confirmation, and other schemes stay inert", async () => {
@@ -268,8 +338,10 @@ describe("PDF viewer", () => {
 
     const web = document.createElement("a");
     fake.links[0].addLinkAttributes(web, "https://example.test/from-pdf");
-    expect(web.getAttribute("href")).toBe("#");
+    // No address on the anchor: Ctrl+click and middle click have nothing to open.
+    expect(web.hasAttribute("href")).toBe(false);
     expect(web.target).toBe("");
+    expect(web.tabIndex).toBe(0);
     await act(async () => { web.onclick?.(new MouseEvent("click")); });
     const dialog = await screen.findByRole("dialog", { name: "Open external link?" });
     expect(dialog).toHaveTextContent("This link is in the PDF.");
@@ -281,7 +353,7 @@ describe("PDF viewer", () => {
     for (const hostile of ["javascript:alert(1)", "data:text/html,x", "file:///etc/passwd", "mailto:a@example.test", "https://bank.test@evil.test/"]) {
       const link = document.createElement("a");
       fake.links[0].addLinkAttributes(link, hostile);
-      expect(link.getAttribute("href")).toBe("#");
+      expect(link.hasAttribute("href")).toBe(false);
       expect(link.title).not.toContain(hostile);
       expect(link.getAttribute("aria-disabled")).toBe("true");
       await act(async () => { expect(link.onclick?.(new MouseEvent("click"))).toBe(false); });
@@ -323,6 +395,13 @@ describe("PDF viewer", () => {
     expect(screen.queryByRole("searchbox")).toBeNull();
     expect(fake.buses[0].dispatched.some(event => event.name === "findbarclose")).toBe(true);
     await waitFor(() => expect(screen.getByRole("button", { name: "Search in document" })).toHaveFocus());
+
+    // From the panel's buttons too, not only its field; and Ctrl+F by key position, as on a Russian layout.
+    fireEvent.keyDown(window, { code: "KeyF", ctrlKey: true, key: "а" });
+    await screen.findByRole("searchbox", { name: "Search text" });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Close search" }), { key: "Escape" });
+    expect(onViewerEscape).not.toHaveBeenCalled();
+    expect(screen.queryByRole("searchbox")).toBeNull();
   });
 
   it("zooms within its bounds and fits again", async () => {
@@ -336,7 +415,14 @@ describe("PDF viewer", () => {
     expect(fake.viewers[0].scale).toBe(4);
     expect(screen.getByRole("button", { name: "Zoom in" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /^Fit page/u }));
-    expect(fake.viewers[0].currentScaleValue).toBe("auto");
+    // jsdom has no layout, so the container counts as narrow.
+    expect(fake.viewers[0].currentScaleValue).toBe("page-width");
+  });
+
+  it("opens a page at its full width on a phone or narrow container, and at auto scale on a wide one", () => {
+    expect(pdfDefaultScaleValue({ constrained: true, containerWidth: 1000 })).toBe("page-width");
+    expect(pdfDefaultScaleValue({ constrained: false, containerWidth: 390 })).toBe("page-width");
+    expect(pdfDefaultScaleValue({ constrained: false, containerWidth: 1000 })).toBe("auto");
   });
 
   it("offers Save to Files only when the file can be saved", async () => {

@@ -94,7 +94,7 @@ export function PdfViewerV2({ byteSize, canSave, fileId, fileName }: PdfViewerPr
   useEffect(() => {
     if (!ready || externalHref) return;
     const onKey = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "f") return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.code !== "KeyF") return;
       event.preventDefault();
       setSearchOpen(true);
       requestAnimationFrame(() => {
@@ -146,18 +146,19 @@ export function PdfViewerV2({ byteSize, canSave, fileId, fileName }: PdfViewerPr
         onClick={toggleSearch} ref={searchToggleRef} />
       {canSave ? <SaveToFilesButtonV2 attachmentId={fileId} iconOnly /> : null}
     </div>
-    {searchOpen ? <div className="v2-pdf-search">
+    {searchOpen ? <div className="v2-pdf-search" onKeyDown={event => {
+      if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+      // From anywhere in the panel the search closes first; the next Escape closes the viewer.
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearch();
+    }}>
       <input aria-label="Search text" autoComplete="off" className="v2-focusable" enterKeyHint="search" onChange={event => {
         setQuery(event.target.value);
         sessionRef.current?.find(event.target.value);
       }} onKeyDown={event => {
         if (event.nativeEvent.isComposing) return;
-        if (event.key === "Escape") {
-          // The search closes first; the next Escape closes the viewer.
-          event.preventDefault();
-          event.stopPropagation();
-          closeSearch();
-        } else if (event.key === "Enter" && query) {
+        if (event.key === "Enter" && query) {
           event.preventDefault();
           sessionRef.current?.find(query, { again: true, previous: event.shiftKey });
         }
