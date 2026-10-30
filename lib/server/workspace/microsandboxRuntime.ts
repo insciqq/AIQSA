@@ -118,6 +118,8 @@ type LocalSession = {
   sandboxName: string;
   /** One release-guide installation per VM boot; its outcome is remembered. */
   guides?: GuideInstallation;
+  /** The admitted guest image, which picks the browser guide's notice for sub-agents on an older image. */
+  imageRef?: string;
   /** Each attached run's own exec environment (one shared Workspace serves several runs at once). */
   secretEnvironments?: Map<string, Record<string, string>>;
 };
@@ -440,9 +442,10 @@ async function openSelectedFiles(sandbox: Sandbox, selection: WorkspaceFileSelec
  * complete request; a truncated request is invalid and publishes nothing, so
  * closing its pipe during retirement or a late native settlement is harmless.
  */
-async function installWorkspaceGuides(sandbox: Sandbox): Promise<void> {
+async function installWorkspaceGuides(sandbox: Sandbox, imageRef: string | undefined): Promise<void> {
   const deadline = AbortSignal.timeout(GUIDE_INSTALL_TIMEOUT_MS);
-  const input = workspaceGuideInput();
+  // One guide per VM serves every agent: on an image without per-agent tabs it tells sub-agents the browser is not theirs.
+  const input = workspaceGuideInput(imageRef ? { agentKind: "subagent", imageRef } : {});
   let handle: ExecHandle | undefined;
   let sink: Awaited<ReturnType<ExecHandle["takeStdin"]>> = null;
   let abandoned = false;
@@ -798,7 +801,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   private startGuideInstallation(session: LocalSession): GuideInstallation {
     const startedAt = Date.now();
     const installation: GuideInstallation = { state: "installing", promise: Promise.resolve() };
-    installation.promise = installWorkspaceGuides(session.sandbox).then(() => { installation.state = "ready"; }, () => {
+    installation.promise = installWorkspaceGuides(session.sandbox, session.imageRef).then(() => { installation.state = "ready"; }, () => {
       installation.state = "failed";
       logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "prepare", outcome: "degraded", action: "degrade",
         code: "workspace_guides_unavailable", duration_ms: Date.now() - startedAt });
@@ -829,6 +832,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
         existing.sandbox = reconnected;
+        existing.imageRef ??= input.imageRef;
         await this.prepareGuides(existing, input.signal, booting ? { boot: observedGuides } : "refresh");
         return {
           runtimeSandboxId: existing.runtimeSandboxId,
@@ -888,7 +892,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       // A failed stop must not discard the only acquired runtime identity.
       acquired = {
         activeCalls: new Map(), execOwners: new Map(),
-        runtimeSandboxId: sandbox.id, sandbox, sandboxName: input.sandboxName
+        imageRef: input.imageRef, runtimeSandboxId: sandbox.id, sandbox, sandboxName: input.sandboxName
       };
       this.sessions.set(input.sessionId, acquired);
       if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");

@@ -81,6 +81,7 @@ import {
 } from "./attachments";
 import type { WorkspaceDetachInput, WorkspaceDetachResult } from "../subagents/ports";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
+import { WorkspaceBrowserAgentIdentity } from "./browserAgentIdentity";
 import { workspaceRunTools } from "./admission";
 import { retryWorkspaceExportStep } from "./exportRetry";
 import { decryptWorkspaceSecret, type AcceptedWorkspaceSecret } from "./secrets/store";
@@ -1379,6 +1380,11 @@ export type WorkspaceCoordinator = Readonly<{
   detach?(input: WorkspaceDetachInput): Promise<WorkspaceDetachResult>;
   /** Whether the run still holds its chat's Workspace (the live channel's `attached`, `browserLive.ts`). */
   holdsWorkspace?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
+  /**
+   * Releases one agent's browser slot in the run's guest when its turn or run ends (`WorkspaceBrowserAgentIdentity`):
+   * a no-op without a running guest or once the run no longer holds the Workspace. Never starts a guest.
+   */
+  releaseBrowserAgent?(input: Readonly<{ agent: WorkspaceAgent; runId: string; signal?: AbortSignal; userId: string }>): Promise<void>;
   tools(input: Readonly<{
     runId: string;
     userId: string;
@@ -2406,6 +2412,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
     async holdsWorkspace({ runId, userId }) {
       const binding = await input.repository.binding({ runId, userId });
       return binding !== null && runHoldsOperation(binding, runId);
+    },
+    async releaseBrowserAgent({ agent, runId, signal, userId }) {
+      const binding = await input.repository.binding({ runId, userId }).catch(() => null);
+      if (!binding?.runtimeSandboxId || !binding.operationOwner || !runHoldsOperation(binding, runId)) return;
+      await new WorkspaceBrowserAgentIdentity({ operation: ownedOperation(binding), runtime: input.runtime,
+        runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId })
+        .release({ agent, chatId: binding.chatId, modelRunId: runId, ...(signal ? { signal } : {}), userId });
     },
     async detach({ chatId, execution, modelRunId, userId }) {
       const binding = await input.repository.binding({ runId: modelRunId, userId });
