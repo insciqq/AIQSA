@@ -5,6 +5,12 @@
  * card, signs in to saucedemo.com by clicking and typing into the live frame
  * (`features/browser-live/BrowserLivePanelV2.tsx`) and presses Done.
  *
+ * The sub-agent scenarios (`scripts/smoke-subagents-paid.ts`) use the same
+ * user: for a sub-agent's handoff it first presses "Show its tab" when the
+ * panel shows another agent's tab, and after Done it looks at another
+ * browsing agent through the panel's switcher; `cancelEveryHandoff` declines
+ * every handoff instead, as a user who will not solve a check for the agent.
+ *
  * Before the real username it types the run's marker into the username field
  * and erases it, so the run's leak check can prove typed values stay out of
  * stored rows. Typed values are never printed, logged or returned: the
@@ -130,7 +136,37 @@ type Evidence = {
   signInHandoffs: number;
   signInStrategy: string | null;
   signedIn: boolean;
+  /** Handoffs a sub-agent asked for (the card names an agent other than the main one). */
+  subagentHandoffs: number;
+  /** Cards that said which agent asked ("Asked by …", shown while several agents browse). */
+  handoffsNamingAgent: number;
+  /** "Show its tab" presses: the panel showed another agent's tab when the card came. */
+  agentTabShown: number;
+  /** Most agents the panel's switcher listed at once (0 while it was hidden: fewer than two browsing). */
+  agentsListedMax: number;
+  /** Switches to another agent through the switcher after a handoff ended. */
+  agentSwitches: number;
 };
+
+/** The panel's switcher, when it lists at least two agents: its options' values and the selected one. */
+async function agentSwitcher(page: Page): Promise<Readonly<{ selected: string; values: string[] }> | null> {
+  const select = page.getByTestId("browser-live-agents").locator("select");
+  if (await select.count() === 0) return null;
+  const values = await select.locator("option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value));
+  return { selected: await select.inputValue(), values };
+}
+
+/** The user looks at another browsing agent through the switcher; counted once the panel selected it. */
+async function switchToAnotherAgent(page: Page, evidence: Evidence): Promise<void> {
+  const switcher = await agentSwitcher(page).catch(() => null);
+  if (!switcher) return;
+  evidence.agentsListedMax = Math.max(evidence.agentsListedMax, switcher.values.length);
+  const other = switcher.values.find((value) => value !== switcher.selected);
+  if (!other) return;
+  const select = page.getByTestId("browser-live-agents").locator("select");
+  await select.selectOption(other, { timeout: 5_000 }).catch(() => undefined);
+  if (await select.inputValue().catch(() => "") === other) evidence.agentSwitches += 1;
+}
 
 /** Signs in through the live frame; true once the page the agent shares is saucedemo's inventory. */
 async function signIn(page: Page, marker: string, evidence: Evidence, signal: AbortSignal): Promise<boolean> {
@@ -179,9 +215,24 @@ async function openPanelThatNeedsUser(page: Page): Promise<void> {
   if (await bar.count() > 0) await bar.first().click({ timeout: 5_000 }).catch(() => undefined);
 }
 
-export const signInThroughHandoff: ScenarioInteraction = async ({ baseUrl, chatId, cookie, marker, signal }) => {
-  const evidence: Evidence = { cancelledHandoffs: 0, controlAtSignIn: null, doneHandoffs: 0, handoffs: 0, pageShown: null,
-    signInAttempts: 0, signInHandoffs: 0, signInStrategy: null, signedIn: false };
+/**
+ * How the harness's user answers handoffs: `sign_in` signs in to saucedemo
+ * through a sign-in handoff (S5, and a sub-agent's in the sub-agent
+ * scenarios) and cancels any other; `cancel` declines every handoff, as a
+ * user who will not solve a CAPTCHA or a check (the agent never solves one).
+ */
+export type HandoffAnswerMode = "cancel" | "sign_in";
+
+export const signInThroughHandoff: ScenarioInteraction = (context) => answerHandoffs(context, "sign_in");
+
+/** Declines every handoff through the live card, so no agent waits out the handoff's own time. */
+export const cancelEveryHandoff: ScenarioInteraction = (context) => answerHandoffs(context, "cancel");
+
+async function answerHandoffs({ baseUrl, chatId, cookie, marker, signal }: Parameters<ScenarioInteraction>[0],
+  mode: HandoffAnswerMode): Promise<InteractionEvidence> {
+  const evidence: Evidence = { agentSwitches: 0, agentTabShown: 0, agentsListedMax: 0, cancelledHandoffs: 0, controlAtSignIn: null,
+    doneHandoffs: 0, handoffs: 0, handoffsNamingAgent: 0, pageShown: null, signInAttempts: 0, signInHandoffs: 0, signInStrategy: null,
+    signedIn: false, subagentHandoffs: 0 };
   const result = (): InteractionEvidence => ({ ...evidence });
   if (signal.aborted) return result();
   if (!/^[A-Za-z0-9]{16,64}$/u.test(marker)) fail("interaction_marker_invalid");
@@ -204,9 +255,22 @@ export const signInThroughHandoff: ScenarioInteraction = async ({ baseUrl, chatI
         continue;
       }
       evidence.handoffs += 1;
+      const agent = await card.getAttribute("data-agent");
+      if (agent && agent !== "main") evidence.subagentHandoffs += 1;
+      if (await card.locator(".v2-browser-live-handoff-agent").isVisible().catch(() => false)) evidence.handoffsNamingAgent += 1;
+      const switcher = await agentSwitcher(page).catch(() => null);
+      if (switcher) evidence.agentsListedMax = Math.max(evidence.agentsListedMax, switcher.values.length);
       let answer: "Cancel" | "Done" = "Cancel";
-      if (await card.getAttribute("data-reason") === "sign_in" && !evidence.signedIn && evidence.signInHandoffs < SIGN_IN_HANDOFFS_MAX) {
+      if (mode === "sign_in" && await card.getAttribute("data-reason") === "sign_in" && !evidence.signedIn &&
+        evidence.signInHandoffs < SIGN_IN_HANDOFFS_MAX) {
         evidence.signInHandoffs += 1;
+        // The panel may show another agent's tab: the user shows the asking agent's tab before acting on its page.
+        const show = card.getByRole("button", { exact: true, name: "Show its tab" });
+        if (await show.isVisible().catch(() => false)) {
+          await show.click();
+          evidence.agentTabShown += 1;
+          await sleep(1_500, undefined, { signal });
+        }
         if (await signIn(page, marker, evidence, signal)) answer = "Done";
       }
       await card.getByRole("button", { exact: true, name: answer }).click();
@@ -214,6 +278,8 @@ export const signInThroughHandoff: ScenarioInteraction = async ({ baseUrl, chatI
       else evidence.cancelledHandoffs += 1;
       // The card leaves once the server ended the handoff (or the run ended with it).
       await card.waitFor({ state: "hidden", timeout: 60_000 }).catch(() => fail("handoff_answer_not_accepted"));
+      // With several agents browsing, the user then looks at another one's tab through the switcher.
+      if (answer === "Done") await switchToAnotherAgent(page, evidence);
     }
   } catch (error) {
     // The run ended: closing the browser interrupted whatever was waiting.
@@ -224,4 +290,4 @@ export const signInThroughHandoff: ScenarioInteraction = async ({ baseUrl, chatI
     await browser.close().catch(() => undefined);
   }
   return result();
-};
+}
