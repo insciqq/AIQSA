@@ -12,7 +12,15 @@ import type { SubagentBackgroundStore } from "./store";
  *   through the ordinary send handler; callbacks that arrive close together
  *   share one, and the admission claims them in its own transaction;
  * - refused by usage limits, they stay owed for the next main-agent turn;
- * - for a branch that is not the active one, they stay owed there and wake nothing.
+ * - for a branch that is not the active one, they stay owed there and wake nothing;
+ * - an answer that is running but already closed to follow-ups (published, and
+ *   still finishing its Workspace hand-off) is behind them as the user's own
+ *   next message would be: the wake-up is offered to the send handler at once,
+ *   which admits it behind that answer or answers busy, and then the answer's
+ *   terminal flush delivers them;
+ * - left owed for a reason that clears (that closed answer, a busy or failed
+ *   admission), the chat is flushed again a few times shortly after
+ *   (`SUBAGENT_CALLBACK_RECHECK_MS`), so no wake-up waits for recovery's sweep.
  * Every claim is `callbackRunId IS NULL` compare-and-set (`store.ts`), so a
  * turn's end, a main run's terminal flush and recovery may all try and only
  * one delivers.
@@ -22,6 +30,8 @@ import type { SubagentBackgroundStore } from "./store";
 export const SUBAGENT_CALLBACK_COALESCE_MS = 1_500;
 /** Attempts of one flush: a wake-up refused because the user's own message started first goes into that message's answer. */
 const FLUSH_ATTEMPTS = 4;
+/** Further flushes of a chat whose callbacks a flush left owed for a reason that clears, after these delays. */
+export const SUBAGENT_CALLBACK_RECHECK_MS: readonly number[] = Object.freeze([3_000, 10_000, 30_000]);
 
 export type SubagentWakeUpOutcome =
   | "admitted"
@@ -61,11 +71,15 @@ export type SubagentCallbacks = Readonly<{
 export function createSubagentCallbacks(deps: Readonly<{
   admitWakeUp: SubagentWakeUpAdmitter;
   coalesceMs?: number;
+  recheckMs?: readonly number[];
   store: Pick<SubagentBackgroundStore, "deliverIntoRun" | "owedCallbacks">;
 }>): SubagentCallbacks {
   const coalesceMs = deps.coalesceMs ?? SUBAGENT_CALLBACK_COALESCE_MS;
+  const recheckMs = deps.recheckMs ?? SUBAGENT_CALLBACK_RECHECK_MS;
   const pending = new Map<string, Readonly<{ fired: { value: boolean }; promise: Promise<SubagentFlushReport> }>>();
   const running = new Map<string, Promise<unknown>>();
+  /** Per chat: the next recheck's index and its timer, while a flush leaves callbacks owed for a reason that clears. */
+  const rechecks = new Map<string, { index: number; timer: ReturnType<typeof setTimeout> | null }>();
 
   async function attempt(scope: SubagentChatScope): Promise<SubagentFlushReport> {
     const dispositions = new Map<string, SubagentCallbackDisposition>();
@@ -77,6 +91,7 @@ export function createSubagentCallbacks(deps: Readonly<{
       const callbacks = owed.activeBranch.filter((callback) => !dispositions.has(callback.turnId) ||
         dispositions.get(callback.turnId) === "pending");
       if (callbacks.length === 0) return { chatGone: false, dispositions, retryable };
+      let waiting = callbacks;
       if (owed.mainRun) {
         let closed = false;
         for (const callback of callbacks) {
@@ -86,20 +101,25 @@ export function createSubagentCallbacks(deps: Readonly<{
           if (outcome === "closed") closed = true;
           dispositions.set(callback.turnId, outcome === "closed" ? "after_run" : "delivered");
         }
-        return { chatGone: false, dispositions, retryable };
+        // The answer closed to follow-ups and its run is still ending: the wake-up goes behind it, as the user's own
+        // next message would; a busy refusal leaves them for the answer's terminal flush.
+        waiting = callbacks.filter((callback) => dispositions.get(callback.turnId) === "after_run");
+        if (waiting.length === 0) return { chatGone: false, dispositions, retryable };
       }
-      const wakeUp = renderWakeUp(callbacks);
+      const wakeUp = renderWakeUp(waiting);
       const outcome = await deps.admitWakeUp({ ...scope, text: wakeUp.text, turnIds: wakeUp.turnIds });
       logEvent("job_persistence", { code: `subagent_wake_up_${outcome}`, outcome: outcome === "admitted" ? "confirmed" : "not_applied",
         stage: "dispatch", subsystem: "run_recovery" });
       if (outcome === "admitted") {
         for (const turnId of wakeUp.turnIds) dispositions.set(turnId, "wake_up");
         // What did not fit goes into the woken run next round.
-        if (wakeUp.turnIds.length === callbacks.length) return { chatGone: false, dispositions, retryable };
+        if (wakeUp.turnIds.length === waiting.length) return { chatGone: false, dispositions, retryable };
         continue;
       }
+      // Behind a closed answer, a busy wake-up waits for its terminal flush; nothing else changes until it ends.
+      if (owed.mainRun && outcome === "busy") return { chatGone: false, dispositions, retryable };
       if (outcome === "usage_limited" || outcome === "failed") {
-        for (const callback of callbacks) {
+        for (const callback of waiting) {
           dispositions.set(callback.turnId, "pending");
           if (outcome === "failed") retryable.add(callback.turnId);
         }
@@ -131,7 +151,37 @@ export function createSubagentCallbacks(deps: Readonly<{
     void promise.finally(() => {
       if (running.get(key) === promise) running.delete(key);
     }).catch(() => undefined);
+    void promise.then((report) => recheck(scope, report), () => recheck(scope, null)).catch(() => undefined);
     return promise;
+  }
+
+  /**
+   * After a flush: callbacks left owed behind a closing answer or a busy, stale or failed admission are flushed again
+   * after the next delay, at most `recheckMs.length` times in a row; a flush that leaves none owed for such a
+   * reason ends the rechecks. Usage limits and inactive branches wait for the next main-agent turn instead.
+   */
+  function recheck(scope: SubagentChatScope, report: SubagentFlushReport | null): void {
+    const key = `${scope.userId}:${scope.chatId}`;
+    const current = rechecks.get(key);
+    if (current?.timer) return;
+    const clears = report === null || [...report.dispositions].some(([turnId, disposition]) =>
+      disposition === "after_run" || disposition === "pending" && report.retryable.has(turnId));
+    if (!clears || report?.chatGone) {
+      rechecks.delete(key);
+      return;
+    }
+    const index = current?.index ?? 0;
+    const delay = recheckMs[index];
+    if (delay === undefined) {
+      rechecks.delete(key);
+      return;
+    }
+    const timer = setTimeout(() => {
+      rechecks.set(key, { index: index + 1, timer: null });
+      void flush(scope).catch(() => undefined);
+    }, delay);
+    (timer as { unref?: () => void }).unref?.();
+    rechecks.set(key, { index, timer });
   }
 
   const sink: SubagentCallbackSink = {

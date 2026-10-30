@@ -6,7 +6,7 @@ import { createSubagentCallbacks, type SubagentWakeUpAdmitter, type SubagentWake
 
 const scope = { chatId: "chat-1", userId: "user-1" };
 
-function setup(outcomes: SubagentWakeUpOutcome[] = []) {
+function setup(outcomes: SubagentWakeUpOutcome[] = [], recheckMs: readonly number[] = []) {
   const store = new MemorySubagentStore();
   const wakeUps: Array<Readonly<{ text: string; turnIds: readonly string[] }>> = [];
   const admitWakeUp: SubagentWakeUpAdmitter = vi.fn(async (input) => {
@@ -19,7 +19,7 @@ function setup(outcomes: SubagentWakeUpOutcome[] = []) {
     }
     return outcome;
   });
-  const callbacks = createSubagentCallbacks({ admitWakeUp, coalesceMs: 5, store });
+  const callbacks = createSubagentCallbacks({ admitWakeUp, coalesceMs: 5, recheckMs, store });
   return { admitWakeUp, callbacks, store, wakeUps };
 }
 
@@ -42,8 +42,8 @@ describe("background sub-agent callbacks", () => {
     expect(admitWakeUp).not.toHaveBeenCalled();
   });
 
-  it("waits for a running answer that already closed: the callback stays owed for its terminal flush", async () => {
-    const { callbacks, store, wakeUps } = setup();
+  it("waits for a running answer that already closed when the send refuses a wake-up behind it, until its terminal flush", async () => {
+    const { callbacks, store, wakeUps } = setup(["busy"]);
     store.mainRuns.push({ callbacks: [], chatId: scope.chatId, open: false, runId: "main-1", status: "streaming" });
     const turn = store.addEnded({ ...scope, name: "a", result: endedSubagentResult("a") });
     expect(await callbacks.sink.deliver(callbackOf(turn))).toBe("after_run");
@@ -53,6 +53,38 @@ describe("background sub-agent callbacks", () => {
     callbacks.mainRunEnded(scope);
     await vi.waitFor(() => expect(wakeUps).toHaveLength(1));
     expect(wakeUps[0]!.turnIds).toEqual([turn.turnId]);
+  });
+
+  it("wakes the main agent behind an answer that closed and still ends, as the user's next message would", async () => {
+    const { admitWakeUp, callbacks, store, wakeUps } = setup();
+    // Published, its run still finishing its Workspace hand-off: no follow-up goes in, and nothing waits for its end.
+    store.mainRuns.push({ callbacks: [], chatId: scope.chatId, open: false, runId: "main-1", status: "streaming" });
+    const turn = store.addEnded({ ...scope, name: "a", result: endedSubagentResult("a") });
+    expect(await callbacks.sink.deliver(callbackOf(turn))).toBe("wake_up");
+    expect(admitWakeUp).toHaveBeenCalledTimes(1);
+    expect(wakeUps[0]!.turnIds).toEqual([turn.turnId]);
+    expect(store.mainRuns[0]!.callbacks).toEqual([]);
+  });
+
+  it("flushes again shortly while callbacks stay owed for a reason that clears, never waiting for recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      // The send fails once (a busy Workspace, say); a recheck a few seconds later wakes the idle main agent.
+      const { admitWakeUp, callbacks, store, wakeUps } = setup(["failed"], [1_000, 5_000]);
+      const turn = store.addEnded({ ...scope, name: "a", result: endedSubagentResult("a") });
+      const first = callbacks.sink.deliver(callbackOf(turn));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await first).toBe("pending");
+      expect(wakeUps).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(admitWakeUp).toHaveBeenCalledTimes(2);
+      expect(wakeUps[0]!.turnIds).toEqual([turn.turnId]);
+      // Nothing left owed: no further flush.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(admitWakeUp).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("wakes nothing when the user stops the main answer, yet a callback after the stop wakes the idle main agent", async () => {
