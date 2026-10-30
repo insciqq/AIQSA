@@ -85,8 +85,8 @@ import {
   SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, appendProgression, bindingEvidence, browserEvidence, callSubagentOutcomes,
   callbackEvidence, cleanUpScenario, failedToolCalls, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI,
   peakConcurrentTurns, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, selectedSubagentScenarios,
-  stateCounts, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type PurposeUsageRow, type RestartHook, type StateCounts, type SubagentHarnessOptions, type SubagentRunRecord,
+  stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
+  type PurposeUsageRow, type RestartHook, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
   type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
@@ -201,7 +201,10 @@ async function turnRows(db: PostgresClient, chatId: string): Promise<TurnRow[]> 
   const { rows } = await db.query<TurnRow>(`SELECT t."id" AS "turnId", t."threadId", t."mode"::text AS "mode",
       t."state"::text AS "state", t."outcome"::text AS "outcome", t."reasonCode", t."provider", t."modelId", t."providerModelId", t."reasoningEffort",
       t."modelSource"::text AS "modelSource", t."effortSource"::text AS "effortSource", t."parentRunId",
-      p."provider" AS "parentProvider", p."modelId" AS "parentModelId", p."normalizedRequest"->>'reasoningEffort' AS "parentEffort",
+      -- The parent's answer connection: the same kind of id as the turn's provider (ModelRun.provider is the adapter kind).
+      (SELECT b."connectionId" FROM "ProviderRunBinding" b WHERE b."modelRunId" = p."id" AND b."role"::text = 'answer'
+        ORDER BY b."bindingKey" LIMIT 1) AS "parentProvider",
+      p."modelId" AS "parentModelId", p."normalizedRequest"->>'reasoningEffort' AS "parentEffort",
       t."startedAt", t."endedAt", t."callbackRunId", e."id" AS "executionRunId"
     FROM "SubagentTurn" t JOIN "ModelRun" p ON p."id" = t."parentRunId"
       LEFT JOIN "ModelRun" e ON e."subagentTurnId" = t."id"
@@ -223,6 +226,14 @@ async function latestTurnOf(db: PostgresClient, chatId: string, name: string): P
   const threadId = (await threadIdsByName(db, chatId)).get(name)?.at(-1);
   if (!threadId) return null;
   return (await turnRows(db, chatId)).filter((turn) => turn.threadId === threadId).at(-1) ?? null;
+}
+
+/** The state the thread view shows for the newest thread of that name (as the user sees it), or null. */
+async function threadViewState(ctx: Context, chatId: string, name: string): Promise<string | null> {
+  const threadId = (await threadIdsByName(ctx.db, chatId)).get(name)?.at(-1);
+  if (!threadId) return null;
+  const threads = decodeSubagentChatThreads(await json(ctx.session.api, SUBAGENT_API_PATHS.chatThreads(chatId)));
+  return threads?.threads.find((thread) => thread.id === threadId)?.state ?? null;
 }
 
 async function waitTurnEnded(ctx: Context, chatId: string, name: string, timeoutMs: number): Promise<TurnRow | null> {
@@ -502,12 +513,17 @@ async function scenarioE(ctx: Context, run: Run): Promise<Outcome> {
   run.line.firstTerminal = (await waitRun(ctx, first)).status;
   const correction = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.E.correction(secrets));
   run.line.correctionTerminal = (await waitRun(ctx, correction)).status;
+  const [idleTool, idleRoute, idleAll] = SUBAGENT_NAMES.idle;
+  // Each stop is judged only on an idle agent the thread view still shows running right before it.
+  const stateBeforeStop: Record<StopPath, string | null> = { stopAll: null, stopRoute: null, stopTool: null };
+  await waitMainIdle(ctx, chat.id);
+  stateBeforeStop.stopTool = await threadViewState(ctx, chat.id, idleTool);
   const byTool = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.E.stopByTool());
   run.line.stopToolTerminal = (await waitRun(ctx, byTool)).status;
-  const [idleTool, idleRoute, idleAll] = SUBAGENT_NAMES.idle;
   const stopTool = await waitTurnEnded(ctx, chat.id, idleTool, 120_000);
   // The thread view's Stop, as the user presses it.
   const routeThread = (await threadIdsByName(ctx.db, chat.id)).get(idleRoute)?.at(-1);
+  stateBeforeStop.stopRoute = await threadViewState(ctx, chat.id, idleRoute);
   if (routeThread) {
     const stopped = decodeSubagentStopResponse(await json(ctx.session.api, SUBAGENT_API_PATHS.stopThread(chat.id, routeThread),
       { body: {}, method: "POST" }));
@@ -518,6 +534,7 @@ async function scenarioE(ctx: Context, run: Run): Promise<Outcome> {
   const counter = await waitTurnEnded(ctx, chat.id, SUBAGENT_NAMES.counter, 30 * 60_000);
   run.line.counterState = counter?.state ?? null;
   await waitMainIdle(ctx, chat.id);
+  stateBeforeStop.stopAll = await threadViewState(ctx, chat.id, idleAll);
   const stoppedAll = decodeSubagentStopAllResponse(await json(ctx.session.api, SUBAGENT_API_PATHS.stopAll(chat.id),
     { body: {}, method: "POST" }));
   run.line.stopAllStopped = stoppedAll ? stoppedAll.stopped : null;
@@ -535,14 +552,13 @@ async function scenarioE(ctx: Context, run: Run): Promise<Outcome> {
     deliveries[message.delivery] = (deliveries[message.delivery] ?? 0) + 1;
   }
   const stops = stopEvidence({ stopAll, stopRoute, stopTool });
-  Object.assign(run.line, { correctionFollowups: rows[0] ?? null, stops, threadViewDeliveries: deliveries, threadViewRead: view !== null,
-    wallSeconds: seconds(started) });
+  Object.assign(run.line, { correctionFollowups: rows[0] ?? null, stateBeforeStop, stops, threadViewDeliveries: deliveries,
+    threadViewRead: view !== null, wallSeconds: seconds(started) });
   const { usage } = await commonEvidence(ctx, run, chat.id);
   const checks = judge(run, await resultOf(ctx, chat.id), (read) => oracleE(read.value, secrets));
   if ((rows[0]?.delivered ?? 0) === 0) checks.push("correction_not_delivered");
-  if (!stops.stopToolStopped) checks.push("stop_subagent_failed");
-  if (!stops.stopRouteStopped) checks.push("stop_route_failed");
-  if (!stops.stopAllStopped) checks.push("stop_all_failed");
+  checks.push(...stopChecks(stops, { stopAll: stateBeforeStop.stopAll === "running",
+    stopRoute: stateBeforeStop.stopRoute === "running", stopTool: stateBeforeStop.stopTool === "running" }));
   run.line.checksFailed = checks;
   return { success: checks.length === 0, usage };
 }

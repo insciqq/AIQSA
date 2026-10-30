@@ -6,7 +6,7 @@ import {
   bindingEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
   oracleFBranched, oracleFContinued, oracleH, oracleI, peakConcurrency, peakConcurrentTurns, progressionSaw, requestedModelEvidence,
-  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, selectedSubagentScenarios, stateCounts, stopEvidence,
+  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, selectedSubagentScenarios, stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
@@ -78,6 +78,7 @@ describe("per-run secrets and prompts", () => {
     expect(SUBAGENT_PROMPTS.B()).toContain(SUBAGENT_NAMES.background.join(", "));
     expect(SUBAGENT_PROMPTS.E.start(secrets)).toContain(secrets.correctionFrom);
     expect(SUBAGENT_PROMPTS.E.correction(secrets)).toContain(secrets.correctionTo);
+    expect(SUBAGENT_PROMPTS.E.start(secrets)).toContain("`sleep 900`");
     expect(SUBAGENT_PROMPTS.F.start(secrets)).toContain(secrets.nonce);
     expect(SUBAGENT_PROMPTS.F.start(secrets)).not.toContain(notaryValue(secrets.nonce));
     expect(SUBAGENT_PROMPTS.C("gpt-6-luna")).toContain("gpt-6-luna");
@@ -169,6 +170,9 @@ describe("evidence from stored rows", () => {
       turns: 2 });
     // The catalog row id differs from the run's model id and is not what is compared.
     expect(bindingEvidence([turn({ providerModelId: "catalog-row" })]).onParentModel).toBe(1);
+    // The parent's provider is its answer binding's connection; without one nothing matches.
+    expect(bindingEvidence([turn({ parentProvider: null })]).onParentModel).toBe(0);
+    expect(bindingEvidence([turn({ parentProvider: "openai_compatible" })]).allOnParentBinding).toBe(false);
     const overridden = bindingEvidence([turn({ modelId: "other", modelSource: "call" }), turn({ reasoningEffort: "high" })]);
     expect(overridden).toMatchObject({ allOnParentBinding: false, onParentEffort: 1, onParentModel: 1, parentSourced: 1 });
     expect(bindingEvidence([]).allOnParentBinding).toBe(false);
@@ -280,8 +284,14 @@ describe("evidence from stored rows", () => {
     expect(stopEvidence({ stopAll: turn({ reasonCode: "stop_all", state: "stopped" }),
       stopRoute: turn({ reasonCode: "user_stop", state: "stopped" }), stopTool: turn({ reasonCode: "stop_subagent", state: "stopped" }) }))
       .toEqual({ stopAllStopped: true, stopRouteStopped: true, stopToolStopped: true });
-    expect(stopEvidence({ stopAll: null, stopRoute: turn({ reasonCode: "stop_all", state: "stopped" }), stopTool: turn() }))
-      .toEqual({ stopAllStopped: false, stopRouteStopped: false, stopToolStopped: false });
+    const failed = stopEvidence({ stopAll: null, stopRoute: turn({ reasonCode: "stop_all", state: "stopped" }), stopTool: turn() });
+    expect(failed).toEqual({ stopAllStopped: false, stopRouteStopped: false, stopToolStopped: false });
+    const running = { stopAll: true, stopRoute: true, stopTool: true };
+    expect(stopChecks(failed, running)).toEqual(["stop_subagent_failed", "stop_route_failed", "stop_all_failed"]);
+    // An idle agent that ended on its own before its stop is a model shortcut, not a failed stop.
+    expect(stopChecks(failed, { ...running, stopAll: false })).toEqual(["stop_subagent_failed", "stop_route_failed", "idle_agent_ended_early"]);
+    expect(stopChecks(failed, { stopAll: false, stopRoute: false, stopTool: true })).toEqual(["stop_subagent_failed", "idle_agent_ended_early"]);
+    expect(stopChecks({ stopAllStopped: true, stopRouteStopped: true, stopToolStopped: true }, running)).toEqual([]);
   });
 
   it("proves a restart interrupted every background turn into one coalesced wake-up", () => {
