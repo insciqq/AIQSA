@@ -86,7 +86,7 @@ describe("bounded MCP guard", () => {
     const request = (f.execute.mock.calls[0] as unknown as [unknown, { userPrompt: string }])[1];
     expect(JSON.parse(request.userPrompt).user_messages_newest_first).toEqual(["Use the new title", ...f.input.admission.userMessages]);
     expect(f.resolve).not.toHaveBeenCalled();
-    expect(f.followups).toHaveBeenCalledWith(expect.objectContaining({ where: { modelRunId: "run", deliveredAt: { not: null } } }));
+    expect(f.followups).toHaveBeenCalledWith(expect.objectContaining({ where: { modelRunId: "run", deliveredAt: { not: null }, origin: "user" } }));
   });
   it("asks on provider failure, malformed output, oversized input and cancellation without retries", async () => {
     const f = fixture();
