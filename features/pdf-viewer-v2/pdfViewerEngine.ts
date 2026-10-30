@@ -15,8 +15,7 @@ export async function loadPdfEngine() {
   (globalThis as { pdfjsLib?: unknown }).pdfjsLib ??= lib;
   const viewer = await import("pdfjs-dist/legacy/web/pdf_viewer.mjs");
   const assetBase = new URL(`${PDFJS_ASSET_ROOT}/${lib.version}/`, window.location.origin).href;
-  lib.GlobalWorkerOptions.workerSrc = `${assetBase}pdf.worker.min.mjs`;
-  return { assetBase, lib, viewer };
+  return { assetBase, lib, viewer, workerSrc: `${assetBase}pdf.worker.min.mjs` };
 }
 
 export type PdfEngine = Awaited<ReturnType<typeof loadPdfEngine>>;

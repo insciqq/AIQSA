@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   AnnotationEditorType,
   AnnotationMode,
+  AnnotationType,
   GlobalWorkerOptions,
   OPS,
   OutputScale,
@@ -20,9 +21,18 @@ import {
   manyPagesPdf,
   oversizedPagePdf,
   passwordPdf,
+  pdfBeaconPdf,
   predefinedCmapPdf
 } from "@/tests/support/pdfFixtures";
-import { PDF_VIEWER_MAX_PAGES, pdfDocumentOptions, pdfPageViewOptions, pdfViewerLimits } from "./pdfViewerOptions";
+import {
+  PDF_TEXT_ANNOTATION_ICONS,
+  PDF_VIEWER_MAX_PAGES,
+  guardPdfDocumentPages,
+  pdfDocumentOptions,
+  pdfPageViewOptions,
+  pdfViewerLimits,
+  safePdfAnnotations
+} from "./pdfViewerOptions";
 
 // The real library, in Node with its worker in-process, through the viewer's own options.
 const packageRoot = `${process.cwd()}/node_modules/pdfjs-dist`;
@@ -121,6 +131,39 @@ describe("hostile documents through the real library", () => {
     const urls = annotations.map(annotation => annotation.url).filter(Boolean);
     expect(urls).toEqual(["https://example.test/from-pdf?x=1"]);
     expect(annotations.some(annotation => annotation.dest)).toBe(true);
+  });
+
+  it("lets nothing in a PDF name a request: icons become shipped names, and fonts and CMaps stay on their tables", async () => {
+    const requested: string[] = [];
+    class RecordingBinaryData {
+      async fetch({ filename }: { filename: string }): Promise<Uint8Array> {
+        requested.push(filename);
+        throw new Error("synthetic: assets are not read in this test");
+      }
+    }
+    const task = getDocument({ ...options, BinaryDataFactory: RecordingBinaryData, data: pdfBeaconPdf(), useSystemFonts: false } as never);
+    tasks.push(task);
+    const document = await task.promise;
+
+    const raw = await (await document.getPage(1)).getAnnotations();
+    const text = raw.find(annotation => annotation.annotationType === AnnotationType.TEXT);
+    expect(text.name).toContain("/");
+    expect(text.name).toContain("pdf-beacon");
+    expect(safePdfAnnotations(raw).find(annotation => annotation.annotationType === AnnotationType.TEXT).name).toBe("Note");
+
+    guardPdfDocumentPages(document);
+    const page = await document.getPage(1);
+    const guarded = await page.getAnnotations();
+    expect(PDF_TEXT_ANNOTATION_ICONS.has(guarded.find(annotation => annotation.annotationType === AnnotationType.TEXT).name.toLowerCase())).toBe(true);
+    expect(JSON.stringify(guarded.map(annotation => annotation.url ?? null))).not.toContain("pdf-beacon");
+    expect(await document.getPage(1)).toBe(page);
+    await page.getOperatorList();
+    await page.getTextContent();
+
+    for (const filename of requested) {
+      expect(filename).toMatch(/^[\w.-]+$/u);
+      expect(filename).not.toContain("beacon");
+    }
   });
 
   it("does not execute a font program's matrix payload and survives its garbage", async () => {
