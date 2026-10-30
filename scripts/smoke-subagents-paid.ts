@@ -82,8 +82,8 @@ import {
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
-  SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, appendProgression, bindingEvidence, browserEvidence, callbackEvidence,
-  cleanUpScenario, notaryValue, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI,
+  SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, appendProgression, bindingEvidence, browserEvidence, callSubagentOutcomes,
+  callbackEvidence, cleanUpScenario, failedToolCalls, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI,
   peakConcurrentTurns, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, selectedSubagentScenarios,
   stateCounts, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type PurposeUsageRow, type RestartHook, type StateCounts, type SubagentHarnessOptions, type SubagentRunRecord,
@@ -240,7 +240,26 @@ async function toolRows(db: PostgresClient, chatId: string): Promise<ToolRow[]> 
       strpos(coalesce(c."result"::text, ''), 'browser_busy') > 0 AS "busy",
       strpos(coalesce(c."result"::text, ''), 'browser_memory_low') > 0 AS "memoryLow",
       (c."toolName" = 'call_subagent' AND strpos(coalesce(c."result"::text, ''), 'subagent_background_unavailable') > 0)
-        AS "backgroundRefused"
+        AS "backgroundRefused",
+      -- Stable codes only: the first content block's code fields, never its text.
+      CASE WHEN c."result"->'content'->0->>'type' = 'json' THEN coalesce(
+          CASE WHEN jsonb_typeof(c."result"->'content'->0->'value'->'error') = 'string'
+            THEN c."result"->'content'->0->'value'->>'error' END,
+          c."result"->'content'->0->'value'->'error'->>'code',
+          c."result"->'content'->0->'value'->>'code',
+          CASE WHEN c."result"->'content'->0->'value'->>'kind' = 'ended'
+            THEN 'ended_' || (c."result"->'content'->0->'value'->>'state') END)
+        WHEN c."result"->'content'->0->>'type' = 'text'
+          THEN substring(c."result"->'content'->0->>'text' from '"error":\\{"code":"([a-z][a-z0-9_]{0,63})"')
+      END AS "resultCode",
+      CASE WHEN c."result"->'content'->0->>'type' = 'json' AND c."result"->'content'->0->'value'->>'kind' = 'ended'
+        THEN c."result"->'content'->0->'value'->>'reason' END AS "resultReason",
+      CASE WHEN c."toolName" <> 'stop_subagent' OR c."subagentThreadId" IS NOT NULL THEN NULL
+        ELSE coalesce((SELECT t."mode"::text FROM "SubagentThread" th JOIN "SubagentTurn" t ON t."threadId" = th."id"
+          WHERE th."chatId" = r."chatId" AND th."name" = lower(trim(c."arguments"->>'name'))
+            AND t."startedAt" <= coalesce(c."startedAt", c."createdAt")
+            AND (t."endedAt" IS NULL OR t."endedAt" >= coalesce(c."startedAt", c."createdAt"))
+          ORDER BY t."startedAt" DESC LIMIT 1), 'none') END AS "stopTarget"
     FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1`, [chatId]);
   return rows;
 }
@@ -294,7 +313,10 @@ async function commonEvidence(ctx: Context, run: Run, chatId: string) {
     binding: bindingEvidence(turns),
     browser: browserEvidence(tools, now),
     callbacks: callbackEvidence(turns, wakeUps),
+    callSubagentOutcomes: callSubagentOutcomes(tools),
     calls: subagentCallEvidence(tools),
+    failedToolCalls: failedToolCalls(tools),
+    stopSubagentCalls: stopSubagentCalls(tools),
     peakConcurrentTurns: peakConcurrentTurns(turns, now),
     rounds: roundsPerAgent(tools),
     turnOutcomes: turnOutcomes(turns),
@@ -459,7 +481,10 @@ async function browsingScenario(ctx: Context, run: Run, input: Readonly<{
   const checks = judge(run, read, input.oracle);
   run.line.walls = await wallCodes(ctx.db, chat.id, turns, read);
   if (input.requested) {
-    const requested = requestedModelEvidence(turns, { modelId: input.requested.modelId, provider: input.requested.provider });
+    // The turn's `modelId` is the upstream id the call names; the catalog's model id is accepted too.
+    const modelIds = [input.requested.upstreamModelId, ctx.options.secondModel, input.requested.modelId]
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    const requested = requestedModelEvidence(turns, { modelIds, provider: input.requested.provider });
     run.line.requestedModel = requested;
     if (!requested.allOnRequestedModel) checks.push("turns_not_on_requested_model");
   }

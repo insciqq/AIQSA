@@ -407,12 +407,12 @@ export type TurnRow = Readonly<{
   modelSource: string;
   outcome: string | null;
   parentEffort: string | null;
-  /** The parent run's catalog model id (`ModelRun.modelId`). */
+  /** The parent run's model id (`ModelRun.modelId`), the same field as the turn's `modelId`. */
   parentModelId: string;
   parentProvider: string;
   parentRunId: string;
   provider: string;
-  /** The turn's catalog model id; `modelId` is its upstream id. */
+  /** The turn's catalog row id (`ProviderModel.id`); not comparable with the parent run's `modelId`. */
   providerModelId: string | null;
   reasonCode: string | null;
   reasoningEffort: string | null;
@@ -426,7 +426,7 @@ const isActive = (state: string) => (ACTIVE_SUBAGENT_STATES as readonly string[]
 
 /** How many turns ran on the parent's model and effort, and how many took them from the parent (no override, no type). */
 export function bindingEvidence(turns: readonly TurnRow[]) {
-  const onParentModel = turns.filter((turn) => turn.provider === turn.parentProvider && turn.providerModelId === turn.parentModelId).length;
+  const onParentModel = turns.filter((turn) => turn.provider === turn.parentProvider && turn.modelId === turn.parentModelId).length;
   const onParentEffort = turns.filter((turn) => (turn.reasoningEffort ?? null) === (turn.parentEffort ?? null)).length;
   return {
     allOnParentBinding: turns.length > 0 && onParentModel === turns.length && onParentEffort === turns.length,
@@ -440,9 +440,13 @@ export function bindingEvidence(turns: readonly TurnRow[]) {
   };
 }
 
-/** C2: how many turns ran on the model the call named (its catalog id), with the call as its source. */
-export function requestedModelEvidence(turns: readonly TurnRow[], target: Readonly<{ modelId: string; provider: string }>) {
-  const onRequested = turns.filter((turn) => turn.provider === target.provider && turn.providerModelId === target.modelId).length;
+/**
+ * C2: how many turns ran on the model the call named, with the call as its
+ * source: the turn's `modelId` is one of the second model's ids (its upstream
+ * id, which the call names, or the catalog's model id) on its connection.
+ */
+export function requestedModelEvidence(turns: readonly TurnRow[], target: Readonly<{ modelIds: readonly string[]; provider: string }>) {
+  const onRequested = turns.filter((turn) => turn.provider === target.provider && target.modelIds.includes(turn.modelId)).length;
   return {
     allOnRequestedModel: turns.length > 0 && onRequested === turns.length,
     callSourced: turns.filter((turn) => turn.modelSource === "call").length,
@@ -454,12 +458,25 @@ export function requestedModelEvidence(turns: readonly TurnRow[], target: Readon
 export function turnOutcomes(turns: readonly TurnRow[]) {
   const states: Record<string, number> = {};
   const reasons: Record<string, number> = {};
+  const reasonsByMode: Record<string, Record<string, number>> = {};
   for (const turn of turns) {
     states[turn.state] = (states[turn.state] ?? 0) + 1;
-    if (turn.reasonCode && /^[a-z][a-z0-9_]{0,63}$/u.test(turn.reasonCode)) reasons[turn.reasonCode] = (reasons[turn.reasonCode] ?? 0) + 1;
+    if (!turn.reasonCode) continue;
+    const reason = stableCode(turn.reasonCode);
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+    const mode = reasonsByMode[stableCode(turn.mode)] ??= {};
+    mode[reason] = (mode[reason] ?? 0) + 1;
   }
-  return { reasons, states };
+  return { reasons, reasonsByMode, states };
 }
+
+const CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
+/** A stable code as stored, `other` for anything that is not code-shaped (never text), `none` when absent. */
+export function stableCode(value: string | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "none";
+  return CODE_PATTERN.test(value) ? value : "other";
+}
+const toolKey = (value: string) => /^[A-Za-z0-9_.:-]{1,128}$/u.test(value) ? value : "other";
 
 export type Interval = Readonly<{ end: number | null; key: string; start: number }>;
 
@@ -507,10 +524,25 @@ export type ToolRow = Readonly<{
   busy: boolean;
   completedAt: Instant | null;
   memoryLow: boolean;
+  /**
+   * The stable code of the stored result (`ModelRunToolCall.result`), read in
+   * SQL from its first content block: a JSON block's `error` string,
+   * `error.code` or `code`, `ended_<state>` for a sub-agent call's ended
+   * result, or a text block's Workspace envelope `{"ok":false,"error":{"code":…}}`.
+   * Null when there is none.
+   */
+  resultCode: string | null;
+  /** A sub-agent call's ended `reason` (for `stop_subagent`: `stop_subagent` when this call stopped a running turn). */
+  resultReason: string | null;
   roundIndex: number;
   runId: string;
   startedAt: Instant | null;
   state: string;
+  /**
+   * For `stop_subagent` only: whether a turn of the named thread was active
+   * when the call started, and its mode (matched in SQL; the name never leaves it).
+   */
+  stopTarget: "background" | "foreground" | "none" | null;
   threadId: string | null;
   toolName: string;
   turnId: string | null;
@@ -561,6 +593,59 @@ export function subagentCallEvidence(rows: readonly ToolRow[]) {
     maxCallSubagentPerRound: Math.max(0, ...perRound.values()),
     stopSubagentCalls: rows.filter((row) => row.threadId === null && row.toolName === "stop_subagent").length
   };
+}
+
+/** Failed tool calls as `{ main | subagent: { tool: { code: count } } }`, from stable result codes only. */
+export function failedToolCalls(rows: readonly ToolRow[]) {
+  const byAgent: Record<"main" | "subagent", Record<string, Record<string, number>>> = { main: {}, subagent: {} };
+  for (const row of rows) {
+    if (row.state !== "error") continue;
+    const tools = byAgent[row.threadId === null ? "main" : "subagent"];
+    const codes = tools[toolKey(row.toolName)] ??= {};
+    const code = stableCode(row.resultCode);
+    codes[code] = (codes[code] ?? 0) + 1;
+  }
+  return byAgent;
+}
+
+/**
+ * The main agent's `stop_subagent` calls: what each found (an active
+ * background or foreground turn of that name, or none), how many stopped a
+ * running turn themselves, and the result codes by count. A stop's result is
+ * the stopped turn's ended result, which the engine stores as an error.
+ */
+export function stopSubagentCalls(rows: readonly ToolRow[]) {
+  const calls = rows.filter((row) => row.threadId === null && row.toolName === "stop_subagent");
+  const resultCodes: Record<string, number> = {};
+  for (const call of calls) {
+    const code = stableCode(call.resultCode);
+    resultCodes[code] = (resultCodes[code] ?? 0) + 1;
+  }
+  return {
+    calls: calls.length,
+    resultCodes,
+    stoppedRunningTurn: calls.filter((call) => call.resultReason === "stop_subagent").length,
+    targetedActiveBackground: calls.filter((call) => call.stopTarget === "background").length,
+    targetedActiveForeground: calls.filter((call) => call.stopTarget === "foreground").length,
+    targetedNothingActive: calls.filter((call) => call.stopTarget === "none").length
+  };
+}
+
+/**
+ * The main agent's `call_subagent` refusals by code (`subagent_background_unavailable`,
+ * `subagent_busy`, `subagent_limit_reached`, ...), and its calls whose turn
+ * ended other than done, by `ended_<state>`.
+ */
+export function callSubagentOutcomes(rows: readonly ToolRow[]) {
+  const refusals: Record<string, number> = {};
+  const endedNotDone: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.threadId !== null || row.toolName !== "call_subagent" || row.state !== "error") continue;
+    const code = stableCode(row.resultCode);
+    const bucket = code.startsWith("ended_") ? endedNotDone : refusals;
+    bucket[code] = (bucket[code] ?? 0) + 1;
+  }
+  return { endedNotDone, refusals };
 }
 
 /** A `UsageEvent` of the chat's runs: purpose and token numbers only. */
