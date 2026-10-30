@@ -117,9 +117,15 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
 
   await test.step("the others finish and the idle main agent answers their callbacks in the open chat", async () => {
     const list = await navigation(page);
+    // Nested rows show while a sub-agent of the chat runs and fold once none does (the tree's design): the folded
+    // disclosure appears when the last one ended, and opens the rows again.
+    const folded = list.getByRole("button", { name: /Show sub-agents of .*: 3 sub-agents/u });
+    await expect(folded).toBeVisible({ timeout: 60_000 });
+    await folded.click();
     for (const name of ["alpha", "gamma"]) {
-      await expect(list.getByRole("treeitem", { name: `${name}, Done` })).toBeVisible({ timeout: 60_000 });
+      await expect(list.getByRole("treeitem", { name: `${name}, Done` })).toBeVisible({ timeout: STEP_TIMEOUT });
     }
+    await expect(list.getByRole("treeitem", { name: "beta, Stopped" })).toBeVisible();
     // The wake-up turn the server started streams into the open chat without a reload.
     await expect(page.locator("[data-system-turn='subagent_callback']").last()).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText(/Wake-up answer: .*alpha done/u).last()).toBeVisible({ timeout: 60_000 });
