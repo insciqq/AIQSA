@@ -357,24 +357,24 @@ describe("SentAttachmentsV2", () => {
     const { container } = render(
       <SentAttachmentsV2
         blocks={[
-          { attachmentId: "private-attachment-id", label: "отчёт за квартал.pdf", type: "file" },
+          { attachmentId: "private-attachment-id", label: "отчёт за квартал.xlsx", type: "file" },
           { attachmentId: "private-image-id", label: "Диаграмма продаж", type: "image" }
         ]}
       />
     );
 
     const list = screen.getByRole("list", { name: "Message attachments" });
-    expect(list).toHaveTextContent("отчёт за квартал.pdf");
+    expect(list).toHaveTextContent("отчёт за квартал.xlsx");
     expect(screen.getByRole("img", { name: "Диаграмма продаж" })).toHaveAttribute(
       "src", "/api/attachments/private-image-id/content?preview=image"
     );
-    // Any file the viewer cannot show downloads on click, a PDF among them for now.
-    const pdf = screen.getByRole("link", { name: "Download отчёт за квартал.pdf" });
-    expect(pdf).toHaveAttribute("href", "/api/attachments/private-attachment-id/content");
-    expect(pdf).toHaveAttribute("download");
+    // Any file the viewer cannot show downloads on click.
+    const card = screen.getByRole("link", { name: "Download отчёт за квартал.xlsx" });
+    expect(card).toHaveAttribute("href", "/api/attachments/private-attachment-id/content");
+    expect(card).toHaveAttribute("download");
     // The icon's caption and the type are plain text, with no colour of their own.
-    expect(pdf.querySelector(".v2-sent-file-icon")).toHaveTextContent("PDF");
-    expect(pdf.querySelector("small")).toHaveTextContent("PDF");
+    expect(card.querySelector(".v2-sent-file-icon")).toHaveTextContent("XLSX");
+    expect(card.querySelector("small")).not.toBeEmptyDOMElement();
     // An image keeps its actions in the viewer, not under the thumbnail.
     expect(screen.queryByRole("link", { name: "Download" })).toBeNull();
     expect(container.innerHTML).not.toMatch(/minio|storageKey|s3:\/\//iu);

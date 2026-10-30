@@ -8,6 +8,7 @@ import { useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { ChatImageV2, ChatImageViewerV2 } from "@/features/attachments-v2/ChatImageV2";
+import { FilePreviewV2 } from "@/features/library-v2/FilePreviewV2";
 import { attachmentPreviewKind } from "@/lib/domain/attachmentPreview";
 import { FileActionsMenuV2 } from "@/features/attachments-v2/FileActionsMenuV2";
 
@@ -660,9 +661,20 @@ function generatedFileIcon(file: ThreadGeneratedFile, type: string): UiV2IconNam
   return file.mimeType.startsWith("image/") ? "image" : FILE_TYPE_ICONS[type] ?? "file";
 }
 
-/** An image file the authorized preview route can show (the same rule it applies). */
+/** What the authorized preview route can show of this file (the same rule it applies). */
+function generatedFilePreviewKind(file: ThreadGeneratedFile) {
+  return attachmentPreviewKind({ byteSize: file.byteSize, fileName: file.fileName, mimeType: file.mimeType, status: "ready" });
+}
+
 function previewableImageFile(file: ThreadGeneratedFile): boolean {
-  return attachmentPreviewKind({ byteSize: file.byteSize, fileName: file.fileName, mimeType: file.mimeType, status: "ready" }) === "image";
+  return generatedFilePreviewKind(file) === "image";
+}
+
+function GeneratedPdfViewerV2({ canSave, file, onClose }: Readonly<{ canSave: boolean; file: ThreadGeneratedFile; onClose(): void }>) {
+  const viewed = { byteSize: file.byteSize, canOpenChat: false, id: file.attachmentId, name: file.fileName,
+    previewKind: "pdf" as const, status: "ready" as const };
+  return <FilePreviewV2 canSave={canSave} compact file={viewed} group={[viewed]} onClose={onClose}
+    onSelect={() => undefined} saved={false} useDisabled={false} />;
 }
 
 /** A draft's description and the time it was saved. */
@@ -704,7 +716,7 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
             <li key={file.attachmentId}>
               <span className="v2-generated-file-tile" aria-hidden="true"><UiV2Icon name={generatedFileIcon(file, type)} /></span>
               <span className="v2-generated-file-copy">
-                {previewableImageFile(file) ? (
+                {previewableImageFile(file) || generatedFilePreviewKind(file) === "pdf" ? (
                   <button aria-haspopup="dialog" className="v2-generated-file-name v2-focusable" onClick={() => setViewing(file)}
                     title={file.relativePath} type="button">
                     <strong>{file.fileName}</strong>
@@ -735,7 +747,8 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
           );
         })}
       </ul>
-      {viewing ? <ChatImageViewerV2 attachmentId={viewing.attachmentId} label={viewing.fileName} onClose={() => setViewing(null)} /> : null}
+      {viewing && generatedFilePreviewKind(viewing) === "pdf" ? <GeneratedPdfViewerV2 canSave={canSave} file={viewing} onClose={() => setViewing(null)} />
+        : viewing ? <ChatImageViewerV2 attachmentId={viewing.attachmentId} label={viewing.fileName} onClose={() => setViewing(null)} /> : null}
     </section>
   );
 }

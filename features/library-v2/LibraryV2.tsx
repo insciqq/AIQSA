@@ -448,7 +448,7 @@ export function FilesPanelV2({
         <UiV2Button disabled={loadState === "loading"} onClick={onLoadMore}>Load more files</UiV2Button>
       </div> : null}
     </div></div>
-    {selectedFile && selectedGroup ? <FilePreviewV2 compact={compact} file={selectedFile} group={previewable}
+    {selectedFile && selectedGroup ? <FilePreviewV2 canSave={Boolean(onSave) && selectedFile.savedAt === null} compact={compact} file={selectedFile} group={previewable}
       saved={selectedGroup.saved} onClose={closePreview} onSelect={id => setSelection({ id, group: selectedGroup.key })}
       onOpen={onOpen} onUse={onUse} useDisabled={useDisabled} /> : null}
     </div>

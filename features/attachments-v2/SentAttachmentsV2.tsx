@@ -7,17 +7,18 @@ import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import { UiV2Icon } from "@/components/ui-v2";
 import { FilePreviewV2 } from "@/features/library-v2/FilePreviewV2";
 import { fileExtension, fileTypeLabel } from "@/features/library-v2/filePresentation";
-import { isTextPreviewFileName } from "@/lib/domain/attachmentPreview";
+import { isPdfFileName, isTextPreviewFileName } from "@/lib/domain/attachmentPreview";
 import { FileActionsMenuV2 } from "./FileActionsMenuV2";
 
 /**
  * The one place that decides what clicking a sent file does: open the viewer
  * or download. A thread block carries only id, label and type, so this goes by
  * extension; an oversized or undecodable file gets the route's 415, which the
- * viewer turns into its Download fallback. A PDF downloads for now.
+ * viewer turns into its Download fallback, and a PDF's refusals are the PDF
+ * viewer's own.
  */
 function sentFileOpensInViewer(fileName: string): boolean {
-  return isTextPreviewFileName(fileName);
+  return isPdfFileName(fileName) || isTextPreviewFileName(fileName);
 }
 
 function SentFileCardV2({ block, canSave, onOpen }: Readonly<{
@@ -67,7 +68,7 @@ export function SentAttachmentsV2({ blocks, canSave = false }: Readonly<{
   if (blocks.length === 0) return null;
   const viewedFile = viewing ? {
     byteSize: null, canOpenChat: false, id: viewing.attachmentId, name: viewing.label,
-    previewKind: "text" as const, status: "ready" as const
+    previewKind: isPdfFileName(viewing.label) ? "pdf" as const : "text" as const, status: "ready" as const
   } : null;
 
   return (
@@ -86,7 +87,7 @@ export function SentAttachmentsV2({ blocks, canSave = false }: Readonly<{
         ))}
       </ul>
       {viewedFile ? (
-        <FilePreviewV2 compact file={viewedFile} group={[viewedFile]} onClose={() => setViewing(null)}
+        <FilePreviewV2 canSave={canSave} compact file={viewedFile} group={[viewedFile]} onClose={() => setViewing(null)}
           onSelect={() => undefined} saved={false} useDisabled={false} />
       ) : null}
     </>
