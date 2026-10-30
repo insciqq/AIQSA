@@ -15,7 +15,7 @@ import { reconcileSubagentRuns } from "../runs/subagentBackground/recovery";
 import { createPrismaSubagentBackgroundStore } from "../runs/subagentBackground/store";
 import type { CreateRunInput, CreatedRun } from "../runs/runRepositoryContract";
 import { createUsageLimitsRepository } from "../usageLimits/repository";
-import { createPrismaWorkspaceAttachments } from "../workspace/attachments";
+import { createPrismaWorkspaceAttachments, currentWorkspaceAttachments } from "../workspace/attachments";
 import { getWorkspaceConfig } from "../workspace/config";
 import { createPrismaWorkspaceCoordinatorRepository } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
@@ -40,7 +40,11 @@ const usageLimits = createUsageLimitsRepository(prisma);
 const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", modelSource: "parent", provider: "fake",
   providerModelId: providerTemplateIds.fakeModel, reasoningEffort: null };
 
-/** The coordinator's retirement as the attachment rows see it: the run's processes proven stopped, its attachment gone. */
+/**
+ * The coordinator's retirement (`WorkspaceCoordinator.detach` → `settle`) as the session rows see it, its runtime
+ * left out: a run with other active runs attached leaves only its own attachment (`detachRun`, its processes proven
+ * stopped), and the last one settles the session, which ends the operation for every run under it (`settleSession`).
+ */
 function retirement() {
   const retired: WorkspaceDetachInput[] = [];
   const retire = async (input: WorkspaceDetachInput): Promise<WorkspaceDetachResult> => {
@@ -48,8 +52,16 @@ function retirement() {
     const current = await coordinatorRepository.binding({ runId: input.modelRunId, userId: input.userId });
     const detachRun = coordinatorRepository.detachRun;
     if (!detachRun) throw new Error("coordinator_repository_without_detach");
-    if (current) await detachRun({ binding: current, stopProven: input.execution === "settled" });
-    return { interruptedRunIds: [], kind: "detached", remainingRuns: 0 };
+    if (!current?.operationOwner) return { interruptedRunIds: [], kind: "detached", remainingRuns: 0 };
+    const others = (await currentWorkspaceAttachments(prisma, { chatId: current.chatId, operationOwner: current.operationOwner,
+      version: current.operationGeneration })).filter((run) => run.active && run.modelRunId !== input.modelRunId);
+    if (others.length > 0) {
+      await detachRun({ binding: current, stopProven: input.execution === "settled" });
+    } else {
+      await coordinatorRepository.settleSession({ operation: { generation: current.operationGeneration, owner: current.operationOwner },
+        outcome: "pending", runtimeSandboxId: current.runtimeSandboxId, sessionId: current.sessionId });
+    }
+    return { interruptedRunIds: [], kind: "detached", remainingRuns: others.length };
   };
   return { retired, workspace: createPrismaWorkspaceAttachments({ prisma, retire, waitMs: 4_000 }) };
 }
@@ -156,8 +168,9 @@ describe("sub-agents across slices on PostgreSQL", () => {
     runner.finish(first.turnId, endedSubagentResult("alpha", { report: "Three laptops" }));
     await expect.poll(async () => (await workspace.attached({ chatId: f.chatId, userId: f.userId })).length, { timeout: 10_000 }).toBe(1);
     expect(retired).toEqual([{ chatId: f.chatId, execution: "settled", modelRunId: first.hostRunId, userId: f.userId }]);
-    expect(await prisma.modelRun.findUniqueOrThrow({ select: { status: true }, where: { id: first.hostRunId } }))
-      .toEqual({ status: "complete" });
+    // The control retires the Workspace authority first, then settles the turn and its run (`control.ts` `launch`).
+    await expect.poll(async () => (await prisma.modelRun.findUniqueOrThrow({ select: { status: true },
+      where: { id: first.hostRunId } })).status, { timeout: 10_000 }).toBe("complete");
     await background.stopAll({ chatId: f.chatId, userId: f.userId });
     expect(await workspace.attached({ chatId: f.chatId, userId: f.userId })).toEqual([]);
   }));
