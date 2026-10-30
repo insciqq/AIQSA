@@ -62,6 +62,10 @@ import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/upd
 import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
 import type { VisionAnalysisService } from "../vision/service";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
+import { SUBAGENT_MANAGEMENT_TOOLS, executeSubagentManagementTool, type SubagentManagementRunDeps } from "../subagents/managementTools";
+import { workspaceBrowserAgentAvailableFor } from "../workspace/browserAgentIdentity";
+import { WORKSPACE_BROWSER_OLD_IMAGE_NOTICE } from "../workspace/browserGuidance";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { createWorkspaceImageViewer, defaultWorkspaceImageCaptures, type WorkspaceImageCaptures } from "../workspace/directImageView";
@@ -215,7 +219,11 @@ export type ToolRegistryServices = Readonly<{
    * of them (`selfServiceToolsFor`); the registry adds the run's own facts.
    * They need `secrets` too, for the Skill save guard.
    */
-  selfService?: Pick<SelfServiceRunDeps, "assistants" | "db" | "storage"> & Readonly<{ tools?: readonly string[] }>;
+  selfService?: Pick<SelfServiceRunDeps, "assistants" | "db" | "storage"> & Readonly<{
+    /** The owners of the user's custom sub-agents (`create_subagent`, `edit_subagent`, `delete_subagent`). */
+    subagents?: Pick<SubagentManagementRunDeps, "db" | "models">;
+    tools?: readonly string[];
+  }>;
   skillTools?: Pick<SkillToolService, "execute">;
   vision?: Pick<VisionAnalysisService, "execute">;
   workspace?: WorkspaceCoordinator;
@@ -224,6 +232,11 @@ export type ToolRegistryServices = Readonly<{
 }>;
 
 export type ToolRegistryInput = Readonly<{
+  /**
+   * Who the registry's Workspace calls run for (`main`, or a sub-agent's thread): the agent id the cgroup launcher and
+   * the browser lease take. Absent: the run's own agent, as the coordinator reads it from the run's binding.
+   */
+  agent?: WorkspaceAgent;
   /** Where the run's `browser_handoff` goes; absent where the run has no Workspace browser. */
   browserHandoff?: BrowserHandoffMode;
   chatId: string;
@@ -249,6 +262,23 @@ export type ToolRegistryInput = Readonly<{
   telegram?: true;
   userId: string;
 }>;
+
+/** A command that drives the Workspace browser (`aiqsa-browser`, or the helper's Python module). */
+const BROWSER_COMMAND = /aiqsa-browser|from\s+aiqsa\s+import\s+browser|aiqsa\.browser/u;
+
+function drivesBrowser(call: ModelToolCall): boolean {
+  try {
+    return BROWSER_COMMAND.test(JSON.stringify(call.arguments));
+  } catch {
+    return false;
+  }
+}
+
+/** A sub-agent's browser call on an older guest image: refused before anything starts, with the stable notice. */
+function oldImageBrowserRefusal(call: ModelToolCall): ToolExecutionResult {
+  return { callId: call.id, content: [{ type: "json", value: { error: "browser_unavailable_for_subagents",
+    message: WORKSPACE_BROWSER_OLD_IMAGE_NOTICE } }], name: call.name, status: "error" };
+}
 
 function unavailable(call: ModelToolCall, code: string): ToolExecutionResult {
   return { callId: call.id, content: [{ type: "json", value: { error: code } }], name: call.name, status: "error" };
@@ -440,6 +470,18 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
             userId: input.userId })
         }) ?? unavailable(execution.call, "tool_unavailable") });
     }
+    // The user's custom sub-agents, through the same service as Studio, each change with its card and Undo.
+    const definitions = selfService.subagents;
+    for (const descriptor of definitions ? SUBAGENT_MANAGEMENT_TOOLS : []) {
+      if (!definitions || selfService.tools && !selfService.tools.includes(descriptor.name)) continue;
+      const runDeps: SubagentManagementRunDeps = { ...definitions, run: { chatId: input.chatId, runId: input.runId, userId: input.userId } };
+      add({ activity: listed(descriptor.name), definition: descriptor.tool, effects: descriptor.effects, observationSource: "workspace",
+        execute: async (execution) => await executeSubagentManagementTool(runDeps, execution.call, {
+          callId: execution.persistedToolCallId, signal: execution.signal,
+          store: createToolCallSelfServiceStore({ callId: execution.persistedToolCallId, runId: input.runId, toolName: execution.call.name,
+            userId: input.userId })
+        }) ?? unavailable(execution.call, "tool_unavailable") });
+    }
   }
 
   // The run's one reserved report, frozen from its server-only admission and never from a request
@@ -534,14 +576,19 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   if (clientTools && request.workspace && input.services.workspace) {
     const workspace = request.workspace;
     const coordinator = input.services.workspace;
+    const agent = input.agent;
+    // An older guest image has no per-agent tabs: only the main agent may drive its browser (`browserGuidance.ts`).
+    const browserRefused = agent !== undefined && !workspaceBrowserAgentAvailableFor(agent, workspace.imageRef);
     const workspaceTools = await coordinator.tools({ runId: input.runId, userId: input.userId, workspace });
     for (const definition of workspaceTools) {
       if (!coordinator.accepts({ name: definition.name, workspace })) continue;
       add({ activity: () => ({ origin: definition.capability, serverName: "Workspace",
         toolName: workspaceToolNameFromNamespaced(definition.name) ?? definition.name }),
         definition, effects: "external", links: () => ({ workspaceRunBindingId: input.runId }), observationSource: "workspace",
-        execute: (execution) => coordinator.execute({ call: execution.call, modelRunToolCallId: execution.persistedToolCallId,
-          onActivity: input.onWorkspaceActivity, runId: input.runId, signal: execution.signal, userId: input.userId, workspace }) });
+        execute: (execution) => browserRefused && drivesBrowser(execution.call)
+          ? Promise.resolve(oldImageBrowserRefusal(execution.call))
+          : coordinator.execute({ ...(agent ? { agent } : {}), call: execution.call, modelRunToolCallId: execution.persistedToolCallId,
+            onActivity: input.onWorkspaceActivity, runId: input.runId, signal: execution.signal, userId: input.userId, workspace }) });
     }
     const offered = new Set(workspaceTools.map((definition) => definition.name));
     if (APPLY_PATCH_WORKSPACE_TOOLS.every((name) => offered.has(namespacedWorkspaceToolName(name)) &&
@@ -554,7 +601,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     if (handoffMode && offered.has(namespacedWorkspaceToolName("sandbox_exec"))) {
       add({ activity: () => ({ origin: "workspace", serverName: "Workspace", toolName: BROWSER_HANDOFF_TOOL_NAME }),
         definition: browserHandoffTool, effects: "external", observationSource: "workspace",
-        execute: (execution) => executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
+        execute: (execution) => browserRefused ? Promise.resolve(oldImageBrowserRefusal(execution.call))
+          : executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
     }
   }
 
@@ -592,6 +640,7 @@ function applyPatchEngineTool(input: ToolRegistryInput, coordinator: WorkspaceCo
     observationSource: "workspace",
     execute: async (execution) => {
       const call: WorkspaceToolCaller = (name, args, signal) => coordinator.execute({
+        ...(input.agent ? { agent: input.agent } : {}),
         call: { arguments: args, id: execution.call.id, name: namespacedWorkspaceToolName(name) },
         modelRunToolCallId: execution.persistedToolCallId, onActivity: lifecycle, runId: input.runId,
         signal: signal ?? execution.signal, userId: input.userId, workspace
