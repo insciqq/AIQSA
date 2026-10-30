@@ -382,13 +382,15 @@ test("in an Assistant chat a named sub-agent and the default run on their model,
     const calls = await chatToolCalls(chatId);
     const ownCalls = calls.filter((call) => call.subagentThreadId !== null);
     const offLimits = new Set<string>([...SUBAGENT_TOOL_NAMES]);
-    evidence[`${key}RunOnA`] = run.assistantId === target.assistantId && run.provider === chatA().connectionId &&
-      [chatA().upstreamModelId, chatA().modelId].includes(run.modelId);
+    evidence[`${key}RunAsAssistant`] = run.assistantId === target.assistantId;
+    evidence[`${key}RunProviderIsConnection`] = run.provider === chatA().connectionId;
+    evidence[`${key}RunOnA`] = [chatA().upstreamModelId, chatA().modelId].includes(run.modelId);
+    expect(evidence[`${key}RunAsAssistant`], "the answer ran as the Assistant").toBe(true);
     evidence[`${key}ManagementCalls`] = calls.filter((call) => MANAGEMENT_TOOLS.includes(call.toolName)).length;
     evidence[`${key}SubagentToolCalls`] = ownCalls.length;
     // The Assistant's tools are off, so a sub-agent reaches no MCP server and never the main agent's sub-agent tools.
     evidence[`${key}SubagentCallsBeyondRun`] = ownCalls.filter((call) => offLimits.has(call.toolName) || call.mcpRunBindingId !== null).length;
-    expect(evidence[`${key}RunOnA`], "the answer ran as the Assistant on model A").toBe(true);
+    expect(evidence[`${key}RunOnA`], "the answer ran on model A").toBe(true);
     expect(turns.length, "the sub-agent ran").toBeGreaterThan(0);
     expectHelperTurns(turns, key);
     expect(evidence[`${key}ManagementCalls`], "no management tool was called").toBe(0);
