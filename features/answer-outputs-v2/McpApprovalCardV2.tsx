@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState } from "react";
-import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import { randomUUID } from "@/lib/browser/randomUUID";
 import {
   mcpApprovalContinuationTool,
@@ -23,14 +23,6 @@ const HEADINGS: Readonly<Record<McpApprovalState, string>> = {
   allowed_server: "Always allowed",
   denied: "Denied",
   pending: "Approval needed"
-};
-
-const TONES: Readonly<Record<McpApprovalState, "neutral" | "ok" | "warn">> = {
-  allowed_automatically: "ok",
-  allowed_once: "ok",
-  allowed_server: "ok",
-  denied: "neutral",
-  pending: "warn"
 };
 
 function pendingText(card: McpApprovalCard): string {
@@ -134,7 +126,6 @@ function McpApprovalCardV2({ card, decide, live, offerContinue, onContinue, runI
           <small id={headingId}>{HEADINGS[current.state]}</small>
           <strong title={`${current.serverName} · ${current.toolName}`}>{current.serverName} · {current.toolName}</strong>
         </span>
-        <UiV2Chip tone={TONES[current.state]}>{HEADINGS[current.state]}</UiV2Chip>
       </div>
       <p className="v2-tool-approval-text" ref={statusRef} tabIndex={-1} role={current.state === "pending" ? undefined : "status"}>
         {stateText(current, live, continuable)}
