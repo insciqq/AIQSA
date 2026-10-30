@@ -9,6 +9,7 @@ import {
 } from "../../domain/chatExportDocument";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
+import { omitSubagentCallbackTurns } from "../../domain/subagentCallbackTurns";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import { collapseChatAnswerReviewTree } from "./legacyAnswerReviews";
 
@@ -54,9 +55,14 @@ export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatE
     answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
     status: row.status, systemTurnKind: row.systemTurnKind
   })), chat.activeLeafMessageId);
-  const rows = loaded.filter((row) => !collapse.removed.has(row.id))
+  const collapsed = loaded.filter((row) => !collapse.removed.has(row.id))
     .map((row) => collapse.parents.has(row.id) ? { ...row, parentMessageId: collapse.parents.get(row.id) ?? null } : row);
-  const activeLeafKey = collapse.activeLeafId;
+  // A sub-agent wake-up turn is the server's, never the user's speech: it stays out, its answer under the turn before it.
+  const wakeUps = omitSubagentCallbackTurns(collapsed.map((row) => ({ id: row.id, parentId: row.parentMessageId, role: row.role,
+    systemTurnKind: row.systemTurnKind })));
+  const rows = collapsed.filter((row) => !wakeUps.removed.has(row.id))
+    .map((row) => wakeUps.parents.has(row.id) ? { ...row, parentMessageId: wakeUps.parents.get(row.id) ?? null } : row);
+  const activeLeafKey = wakeUps.resolve(collapse.activeLeafId);
   const attachmentIds = [...new Set(rows.flatMap((row) => chatExportAttachmentIds(row.content)))];
   const attachmentRows = attachmentIds.length
     ? await db.attachment.findMany({

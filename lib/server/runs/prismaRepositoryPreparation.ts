@@ -3,6 +3,7 @@ import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepositoryFollowups";
+import { claimSubagentCallbacksForRun } from "./subagentBackground/store";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import {
@@ -1382,6 +1383,10 @@ export async function admitPreparingRunWithClient(
           taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision,
           unavailableSources: input.admissionKind === "NORMAL_SEND" ? input.scheduledUnavailableSources ?? [] : [],
           userId: input.userId, userMessageId });
+      } else if (input.admissionKind === "NORMAL_SEND" && input.subagentCallbackClaim) {
+        // A wake-up turn is the server's, never a message of the user's: it takes its callbacks or is not created.
+        await claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: run.id, turnIds: input.subagentCallbackClaim.turnIds,
+          userMessageId });
       } else {
         // Message limits count interactive admissions in a log that outlives the chat.
         await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });

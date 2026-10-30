@@ -21,7 +21,7 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../http/requestBody";
-import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import { ActiveRunConflictError, SubagentsRunningConflictError } from "../runs/runRepositoryContract";
 import {
   serializeChatDetail,
   serializeChatSummary,
@@ -345,6 +345,9 @@ function createSetArchivedHandler(deps: ChatLifecycleHandlerDeps, archived: bool
       if (result.kind === "stale") return json({ error: "chat_revision_stale" }, 409);
       return json(serializeLifecycleState(result.chat));
     } catch (error) {
+      if (error instanceof SubagentsRunningConflictError || (error instanceof Error && error.name === "SubagentsRunningConflictError")) {
+        return json({ error: "subagents_running" }, 409);
+      }
       if (isActiveRunConflictError(error)) {
         return json({ error: "active_run_in_progress" }, 409);
       }

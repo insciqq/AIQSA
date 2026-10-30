@@ -86,6 +86,12 @@ export type MessageBranchRepository = {
 export type MessageBranchHandlerDeps = {
   repository: MessageBranchRepository;
   resolveAuth: RequestAuthResolver;
+  /**
+   * Stops the background sub-agents running under a message before its
+   * subtree is deleted (abort, then settle each turn), so no deleted run's
+   * process still calls a provider, the Workspace or MCP.
+   */
+  subagents?: Readonly<{ stopUnderMessage(input: Readonly<{ messageId: string; userId: string }>): Promise<number> }>;
 };
 
 async function readJson(
@@ -286,6 +292,7 @@ export function createDeleteMessageHandler(deps: MessageBranchHandlerDeps) {
       deletedMessageIds: string[];
     } | null;
     try {
+      await deps.subagents?.stopUnderMessage({ messageId: params.messageId, userId: auth.session.userId });
       deleted = await deps.repository.deleteMessageSubtree({
         messageId: params.messageId,
         userId: auth.session.userId

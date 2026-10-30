@@ -104,7 +104,7 @@ export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields 
   const body: Record<string, unknown> = (() => {
     switch (item.kind) {
       case "user":
-        return { text: item.text, ...(item.followup ? { followup: true } : {}) };
+        return { text: item.text, ...(item.followup ? { followup: true } : {}), ...(item.callback ? { callback: true } : {}) };
       case "assistant_text":
         return { text: item.text, ...optional("native", item.native), ...optional("origin", item.origin),
           ...optional("outputTokens", item.outputTokens), ...optional("requestAnchor", item.requestAnchor) };
@@ -142,7 +142,10 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
   switch (kind) {
     case "user":
       if (body.followup !== undefined && body.followup !== true) return invalid();
-      return { ...(body.followup === true ? { followup: true as const } : {}), id, kind, text: text(body.text) };
+      // A callback is always a follow-up the server delivered.
+      if (body.callback !== undefined && (body.callback !== true || body.followup !== true)) return invalid();
+      return { ...(body.callback === true ? { callback: true as const } : {}), ...(body.followup === true ? { followup: true as const } : {}),
+        id, kind, text: text(body.text) };
     case "assistant_text": {
       const itemNative = native(body.native, false);
       const itemOrigin = origin(body.origin, false);

@@ -954,6 +954,14 @@ async function assertSubagentRelations(): Promise<void> {
     await tx.subagentTurn.update({ data: { outcome: "done", state: "done" }, where: { id: fixture.turn.id } });
   });
 
+  // An answer's ordinals hold the user's 32 follow-ups and up to 64 callbacks, never more.
+  await expectDatabaseRejection("follow-up past the widened bound", "RunFollowup_bounds", async (tx) => {
+    const fixture = await createModelRunFixture(tx);
+    await tx.runFollowup.create({ data: {
+      authorName: "Owner", chatId: fixture.chat.id, modelRunId: fixture.run.id, nonce: randomUUID(), ordinal: 97, text: "late"
+    } });
+  });
+
   await expectDatabaseRejection("callback follow-up without its turn", "RunFollowup_subagent_turn_check", async (tx) => {
     const fixture = await createModelRunFixture(tx);
     await tx.runFollowup.create({ data: {

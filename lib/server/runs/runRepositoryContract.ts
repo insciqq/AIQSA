@@ -155,6 +155,17 @@ export class ActiveRunConflictError extends Error {
   }
 }
 
+/**
+ * Only background sub-agents run in the chat, and the change waits for them
+ * (archive, restore): the user stops them first (`subagents_running`).
+ */
+export class SubagentsRunningConflictError extends Error {
+  constructor() {
+    super("subagents_running");
+    this.name = "SubagentsRunningConflictError";
+  }
+}
+
 export class ActiveLeafConflictError extends Error {
   constructor() {
     super("active_leaf_changed");
@@ -497,6 +508,12 @@ export type CreateRunInput = {
   /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
   scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
   signal?: AbortSignal;
+  /**
+   * A sub-agent wake-up turn: the background turns whose callbacks its text
+   * renders, claimed in the run's creating transaction or the run is not
+   * created (`claimSubagentCallbacksForRun`). It counts toward no message limit.
+   */
+  subagentCallbackClaim?: Readonly<{ turnIds: readonly string[] }>;
   /** The user message is a turn the server wrote for the user (`Message.systemTurnKind`). */
   systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
   userId: string;

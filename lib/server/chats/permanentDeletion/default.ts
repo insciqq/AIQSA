@@ -30,7 +30,10 @@ export const defaultPermanentChatDeletionService =
     authorizationRepository,
     capability: permanentChatDeletionCapability,
     kick: kickDefaultMemoryCoordinator,
-    repository
+    repository,
+    // Imported on first use: the deletion routes must not load the run pipeline's defaults.
+    stopSubagents: async (scope) => (await import("../../runs/subagentBackground/default"))
+      .getDefaultSubagentBackground().control.stopChat(scope)
   });
 
 export const defaultPermanentChatDeletionRateLimiter =

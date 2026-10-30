@@ -81,6 +81,9 @@ export function humanizeErrorCode(code: string): string {
   if (raw === "active_run_in_progress") {
     return "Another response is still running. Stop it or wait for it to finish before sending. (active_run_in_progress)";
   }
+  if (raw === "subagents_running") {
+    return "Sub-agents are still running in this chat. Stop the sub-agents first, then try again. (subagents_running)";
+  }
 
   const httpFailure = /^(.*)_failed_(\d{3})$/.exec(raw);
   if (httpFailure) {

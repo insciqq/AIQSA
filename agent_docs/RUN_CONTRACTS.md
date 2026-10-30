@@ -53,16 +53,15 @@ The agent may do for its user everything the user can do with their own resource
 - Interactive MCP writes follow the guard and approval rules in `agent_docs/SECURITY.md` (operator decision 2026-10-29). After an Allow the agent continues the same turn with the call's result. Once the user has written since, that turn has ended and a compaction may have cut past the call, so the Allow becomes the next instruction and the agent makes the call again, which the Allow covers only with the same arguments. In Auto the server loads the approved tool from the run's frozen catalog and sends exactly the approved call; one no longer available is refused visibly in the answer (decision 2026-10-23).
 - Assistant chats take only the guide and Skill saves (operator decision 2026-10-29): the author's instructions steer them; only Skill saves have Undo.
 - Custom sub-agents (operator decision 2026-10-29) are personal, change like Assistants with Undo, and list in run context (`lib/server/subagents/typeCatalog.ts`).
-- Memory is frozen and keeps its own change rules (`agent_docs/MEMORY.md`).
 
 ## Sub-agents
 
 Operator decisions 2026-10-29, Claude Code's Agent tool the reference (`lib/server/engine/subagents/`).
 
 - A sub-agent inherits its parent's frozen binding; `model` and `effort` come only from the chat models admission froze (`subagentModels`, decision 2026-10-30), never substituted.
-- It never changes the user's resources or nests; an MCP write the guard does not allow goes back to the main agent.
+- It never changes the user's resources or nests; an MCP write the guard refuses goes back to the main agent.
 - Only the user's message, passed verbatim, authorizes irreversible website actions; a brief or report is never user speech.
-- Thread rows stay out of the main context, Memory and exports. Threads branch with their anchor run; at most 20 run per chat, never replayed after a restart.
+- Thread rows stay out of the main context, Memory and exports. Threads branch with their anchor run; at most 20 run per chat, never replayed.
 
 ## Scheduled tasks
 
@@ -83,12 +82,15 @@ Code: `lib/server/telegram/`.
 - A Telegram message is the linked user's interactive personal run through the ordinary send handler; access is rechecked per message and delivery. The link belongs to the account (operator decision 2026-10-19): revoking all sessions, a password change or reset, deactivation or rejection (SCIM included) and disconnecting (settings, admin, `/unlink`) remove it, and disconnecting voids pending link codes; signing out of one browser does not. Approval buttons use the ordinary path. Telegram turns take no self-service tools or Skill saves: the bridge shows only approval cards, never confirmations or Undo (decision 2026-10-23).
 - Tasks with Telegram notification send their results and files through a durable outbox and never repeat an ambiguous send.
 - Answers and task results carry no Sources list; a `[N]` citation links to its source (operator decision 2026-10-25).
-- Telegram is a content egress destination (operator decision 2026-10-19); see `agent_docs/ARCHITECTURE.md`.
 
 ## Follow-ups and continuation
 
 - A follow-up adds user input to a running answer within its accepted bindings and budgets; delivery proves receipt, not obedience.
 - Continuation into a new chat summarizes the active branch's text through the admitted System Model, without tools, attachments or Workspace inspection. An enabled Workspace may copy its project files unread into a private single-use seed.
+
+## Background sub-agents
+
+- One active run per thread (operator, 2026-10-29): only the main agent's run blocks sends, edits and branch switches; its Stop spares sub-agents; deletions stop them first. Accepted risk: wake-up chains run until usage limits refuse.
 
 ## Skills
 
@@ -98,7 +100,6 @@ Code: `lib/server/telegram/`.
 ## Search and documents
 
 - Search freezes its exact sources and routes at admission and never silently drops or substitutes one. Attachments do not disable selected Search.
-- `fetch_url` link authority and transport rules are in `agent_docs/SECURITY.md`.
 - Chat PDF admission picks a verified route and freezes its destination; required document work finishes before any other dispatch, and the preparation model only transcribes. A Workspace run may continue past a classified transcription failure with the verified original and an explicit unread-content notice; access, integrity and cancellation failures stay blocking.
 - Transcription keeps visible text and meaningful visuals and never invents hidden values, causes or intent. Uncertain table rows, units and associations stay uncertain; numbers keep their exact decimals and are never converted.
 

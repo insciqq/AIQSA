@@ -11,6 +11,7 @@ const image = { consumerKey: "tool-1", descriptor: { byteSize: 10, checksum: "b"
 const items: TranscriptItem[] = [
   { id: "u1", kind: "user", text: "Look up A-17" },
   { followup: true, id: "u2", kind: "user", text: "Also B-42" },
+  { callback: true, followup: true, id: "u3", kind: "user", text: "[Sub-agent callback] researcher ended" },
   { id: "a1", kind: "assistant_text", native: { fields: { phase: "commentary" }, format: "openai_responses" }, origin,
     outputTokens: 12, text: "Checking." },
   { id: "a2", kind: "assistant_text", text: "Imported answer" },
@@ -54,6 +55,8 @@ describe("transcript codec", () => {
       { body: { text: "x" }, callId: null, id: "x", kind: "unknown_kind" },
       { body: { text: 7 }, callId: null, id: "x", kind: "user" },
       { body: { text: "x", followup: false }, callId: null, id: "x", kind: "user" },
+      // A sub-agent callback is always a delivered follow-up.
+      { body: { callback: true, text: "x" }, callId: null, id: "x", kind: "user" },
       { body: { text: "x" }, callId: "call_1", id: "x", kind: "user" },
       { body: { arguments: "{}", name: "lookup" }, callId: null, id: "x", kind: "tool_call" },
       { body: { name: "lookup", outcome: "maybe", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
