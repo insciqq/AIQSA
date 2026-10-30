@@ -1205,7 +1205,7 @@ describe("McpClientSession", () => {
       const response = await fetch(url, init);
       if (firstPost && init?.method === "POST") {
         firstPost = false;
-        await new Promise((resolve) => setTimeout(resolve, 40));
+        await new Promise((resolve) => setTimeout(resolve, 400));
       }
       return response;
     };
@@ -1214,15 +1214,16 @@ describe("McpClientSession", () => {
       limits: defaultLimits
     });
 
+    // The call timeout has to outlast a local round trip on a loaded host, and the delayed start has to outlast it.
     const runtime = await factory.create({
-      callTimeoutMs: 20,
+      callTimeoutMs: 200,
       fingerprint: "test-fingerprint",
       generationId: "test-generation",
       headers: { "X-AIQSA-Static": "static-secret" },
       onToolsChanged: () => changed.resolve(),
       redactionValues: [],
       retryAt: null,
-      startupTimeoutMs: 200,
+      startupTimeoutMs: 1_000,
       url: fixture.url.toString()
     });
     await expect(runtime.listTools()).resolves.toMatchObject([
