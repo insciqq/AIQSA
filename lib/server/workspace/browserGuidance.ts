@@ -21,8 +21,12 @@ export function workspaceBrowserAgentAvailable(imageRef: string, agentKind: "mai
   return match !== null && Number(match[1]) >= WORKSPACE_BROWSER_AGENT_IMAGE_VERSION;
 }
 
+/**
+ * The VM's one browser guide is read by the main agent and its sub-agents alike, and a sub-agent's refused browser
+ * call carries the same text, so it reads correctly for either.
+ */
 export const WORKSPACE_BROWSER_OLD_IMAGE_NOTICE =
-  "This Workspace uses an older browser image without per-agent tabs. The browser is unavailable to sub-agents until the Workspace is recreated; ask the main agent to continue or recreate the Workspace.";
+  "On this Workspace image only the main agent can use the browser; sub-agents cannot, until the Workspace is recreated on a current image. A sub-agent that needs the browser reports that to the main agent instead.";
 
 export const WORKSPACE_WEBSITE_ACTION_SAFETY =
   "Do not make payments, place orders or perform other irreversible website actions unless the current user message explicitly requests that action.";
