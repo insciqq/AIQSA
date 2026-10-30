@@ -84,7 +84,8 @@ test("keeps the draft editable and gates send across attachment processing, retr
   const chip = page.getByRole("region", { name: "Attachments" })
     .getByRole("listitem")
     .filter({ hasText: "lifecycle-report.docx" });
-  await expect(chip).toContainText("Processing…");
+  // The first upload of a cold `next dev` compiles its way through the client.
+  await expect(chip).toContainText("Processing…", { timeout: 30_000 });
   await expect(chip).toHaveAttribute("data-attachment-status", "processing");
   await expect(composer).toBeEnabled();
   await expect(composer).toHaveValue("Keep this draft while the report is processed");
