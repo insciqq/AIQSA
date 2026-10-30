@@ -61,7 +61,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   [SUBAGENT_END_REASONS.parentStopped]: "Stopped with its answer",
   [SUBAGENT_END_REASONS.deadline]: "Ran out of time",
   [SUBAGENT_END_REASONS.chatDeleted]: "The chat was deleted",
-  [SUBAGENT_END_REASONS.restart]: "Interrupted by a restart"
+  [SUBAGENT_END_REASONS.restart]: "Interrupted by a restart",
+  [SUBAGENT_END_REASONS.workspaceStopUnproven]: "Interrupted by a restart; its Workspace work may not have stopped"
 };
 
 /** Words for a known reason code; an unknown code shows nothing rather than an identifier. */
