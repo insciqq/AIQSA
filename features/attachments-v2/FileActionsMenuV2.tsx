@@ -46,3 +46,22 @@ export function FileActionsMenuV2({ attachmentId, fileName }: Readonly<{
     </span>
   );
 }
+
+/** Save to Files as a plain button, for the image viewer where a nested menu has no place. */
+export function SaveToFilesButtonV2({ attachmentId }: Readonly<{ attachmentId: string }>) {
+  const state = useFileLibraryStore((current) => current.mutations[attachmentId]);
+  const saved = state === "saved";
+  const saving = state === "saving";
+  return (
+    <span className="v2-file-actions-menu">
+      {saving ? <small role="status">Saving…</small> : null}
+      {saved ? <small className="v2-sr-only" role="status">Saved</small> : null}
+      {state === "error" ? <small role="alert">Could not save</small> : null}
+      <button aria-busy={saving || undefined} className="v2-focusable v2-save-to-files" disabled={saving || saved}
+        onClick={() => void saveFileToLibrary(attachmentId)} type="button">
+        <UiV2Icon name={saved ? "check" : "folder-plus"} />
+        {saved ? "Saved to Files" : "Save to Files"}
+      </button>
+    </span>
+  );
+}

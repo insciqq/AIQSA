@@ -19,7 +19,11 @@ export function canPreviewFile(file: FileSummaryV2) {
   return file.status === "ready" && (file.previewKind === "image" || file.previewKind === "text");
 }
 
-export function FileTypeTileV2({ file, thumbnail = false }: { file: FileSummaryV2; thumbnail?: boolean }) {
+/** What the viewer needs: a file sent in a chat is known only by its thread block, so its size may be unknown. */
+export type FilePreviewFileV2 = Pick<FileSummaryV2, "canOpenChat" | "id" | "name" | "previewKind" | "status"> &
+  Readonly<{ byteSize: number | null }>;
+
+export function FileTypeTileV2({ file, thumbnail = false }: { file: FilePreviewFileV2; thumbnail?: boolean }) {
   const [failed, setFailed] = useState(false);
   return <span className="v2-resource-row-icon v2-file-type" aria-hidden="true">
     {thumbnail && !failed && file.previewKind === "image" && file.status === "ready"
@@ -31,8 +35,8 @@ export function FileTypeTileV2({ file, thumbnail = false }: { file: FileSummaryV
 
 type Props = Readonly<{
   compact: boolean;
-  file: FileSummaryV2;
-  group: readonly FileSummaryV2[];
+  file: FilePreviewFileV2;
+  group: readonly FilePreviewFileV2[];
   saved: boolean;
   onClose(): void;
   onSelect(id: string): void;
@@ -68,7 +72,7 @@ function FilePreviewPanel({ compact, file, group, saved, onClose, onSelect, onOp
       <FileTypeTileV2 file={file} />
       <div className="v2-file-preview-heading">
         <h2 title={file.name}>{file.name}</h2>
-        <p>{fileTypeLabel(file.name)} · {formatAttachmentBytes(file.byteSize)}</p>
+        <p>{fileTypeLabel(file.name)}{file.byteSize === null ? null : ` · ${formatAttachmentBytes(file.byteSize)}`}</p>
       </div>
       <a aria-label={`Download ${file.name}`} className="v2-icon-button v2-focusable" download href={href}
         title={`Download ${file.name}`}><UiV2Icon name="download" /></a>
@@ -87,27 +91,27 @@ function FilePreviewPanel({ compact, file, group, saved, onClose, onSelect, onOp
           onClick={() => setChosenMode({ fileId: file.id, mode: option })}>{option === "rendered" ? "Rendered" : "Source"}</button>)}
       </div> : null}
     </header>
-    <div className="v2-file-preview-navigation">
+    {group.length > 1 ? <div className="v2-file-preview-navigation">
       <span>{index + 1} of {group.length} {saved ? "in Saved" : "in this chat"}</span>
       <UiV2IconButton icon="arrow-left" label="Previous file" disabled={index < 1} onClick={() => onSelect(group[index - 1].id)} />
       <UiV2IconButton icon="chevron-right" label="Next file" disabled={index < 0 || index >= group.length - 1} onClick={() => onSelect(group[index + 1].id)} />
-    </div>
+    </div> : null}
     {failedRender === file.id ? <p className="v2-file-preview-notice" role="status">Rendered view is unavailable for this file.</p> : null}
     <div className="v2-file-preview-body">
       <FilePreviewContent key={`${file.id}:${file.previewKind}`} file={file} rendered={markdown && mode === "rendered"}
         onRenderError={() => { setFailedRender(file.id); setChosenMode({ fileId: file.id, mode: "source" }); }} />
     </div>
-    <footer className="v2-file-preview-footer">
+    {onUse || (onOpen && file.canOpenChat) ? <footer className="v2-file-preview-footer">
       {onUse ? <UiV2Button tone="primary" disabled={useDisabled} onClick={() => onUse(file.id)}>Use in chat</UiV2Button> : null}
       {onOpen && file.canOpenChat ? <UiV2Button icon="external" onClick={() => onOpen(file.id)}>Open chat</UiV2Button> : null}
-    </footer>
+    </footer> : null}
   </div>;
 }
 
 type Content = { kind: "loading" } | { kind: "error" } | { kind: "image"; url: string } | { kind: "text"; text: string };
 
 function FilePreviewContent({ file, rendered, onRenderError }: {
-  file: FileSummaryV2; rendered: boolean; onRenderError(): void;
+  file: FilePreviewFileV2; rendered: boolean; onRenderError(): void;
 }) {
   const [content, setContent] = useState<Content>({ kind: "loading" });
   const [imageLoaded, setImageLoaded] = useState(false);
