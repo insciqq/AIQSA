@@ -28,35 +28,60 @@ export type SubagentBackgroundHost = (turn: SubagentTurnInput) => SubagentRunner
 export const SUBAGENT_BACKGROUND_HOST_GRACE_MS = 10 * 60_000;
 const ENDED_TURN_KEPT_MS = 60_000;
 
-type State = { hosts: Map<string, SubagentBackgroundHost>; timers: Map<string, ReturnType<typeof setTimeout>>;
+/** A host and whether a background start of its run has been asked for (only such a host is kept after its run). */
+type HostEntry = { host: SubagentBackgroundHost; used: boolean };
+
+type State = { hosts: Map<string, HostEntry>; timers: Map<string, ReturnType<typeof setTimeout>>;
   turns: Map<string, SubagentRunner> };
 
-const STATE = Symbol.for("aiqsa.subagent-background-hosts.v1");
+const STATE = Symbol.for("aiqsa.subagent-background-hosts.v2");
 const globalState = globalThis as typeof globalThis & { [STATE]?: State };
 /** Process-wide, like the run controllers: the control runs in the route bundle that admitted the turn. */
 const state: State = globalState[STATE] ??= { hosts: new Map(), timers: new Map(), turns: new Map() };
 
+export type SubagentBackgroundHostRegistration = Readonly<{
+  /** The run's end: an unused host goes at once; a used one is kept for the grace, then dropped. */
+  release(): void;
+  /**
+   * A background start of the run was asked for: called before its admission (`call_subagent`), so a turn whose
+   * Workspace attachment outlasts the run still finds the host, and again as the turn begins.
+   */
+  use(): void;
+}>;
+
 /**
- * Registers a main-agent run's host for its background turns. The returned
- * release keeps it for the grace, then drops it; a later registration of the
- * same run replaces it.
+ * Registers a main-agent run's host for its background turns. Only a host a
+ * start was asked for outlives its run, so a run that started none keeps
+ * nothing of its bindings once it ended; a later registration of the same run
+ * replaces it.
  */
 export function registerSubagentBackgroundHost(parentRunId: string, host: SubagentBackgroundHost, graceMs = SUBAGENT_BACKGROUND_HOST_GRACE_MS):
-  () => void {
+  SubagentBackgroundHostRegistration {
   const pending = state.timers.get(parentRunId);
   if (pending) clearTimeout(pending);
   state.timers.delete(parentRunId);
-  state.hosts.set(parentRunId, host);
+  const entry: HostEntry = { host, used: false };
+  state.hosts.set(parentRunId, entry);
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const timer = setTimeout(() => {
-      state.timers.delete(parentRunId);
-      if (state.hosts.get(parentRunId) === host) state.hosts.delete(parentRunId);
-    }, graceMs);
-    (timer as { unref?: () => void }).unref?.();
-    state.timers.set(parentRunId, timer);
+  const drop = () => {
+    state.timers.delete(parentRunId);
+    if (state.hosts.get(parentRunId) === entry) state.hosts.delete(parentRunId);
+  };
+  return {
+    release() {
+      if (released) return;
+      released = true;
+      if (!entry.used) {
+        drop();
+        return;
+      }
+      const timer = setTimeout(drop, graceMs);
+      (timer as { unref?: () => void }).unref?.();
+      state.timers.set(parentRunId, timer);
+    },
+    use() {
+      entry.used = true;
+    }
   };
 }
 
@@ -67,9 +92,10 @@ export function hasSubagentBackgroundHost(parentRunId: string): boolean {
 
 async function begin(input: SubagentTurnInput, kind: "continue" | "start"): Promise<SubagentTurnHandle> {
   if (input.mode !== "background") throw new Error("subagent_turn_mode_invalid");
-  const host = state.hosts.get(input.parentRunId);
-  if (!host) throw new Error("subagent_parent_unavailable");
-  const runner = host(input);
+  const entry = state.hosts.get(input.parentRunId);
+  if (!entry) throw new Error("subagent_parent_unavailable");
+  entry.used = true;
+  const runner = entry.host(input);
   const handle = kind === "start" ? await runner.start(input) : await runner.continue(input);
   state.turns.set(handle.turnId, runner);
   // The turn's runner is kept a while after it ended (the control's wait and a late stop read it), then dropped.

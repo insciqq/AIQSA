@@ -245,13 +245,21 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
   const runner = createSubagentRunner(foregroundHost);
   // Background turns this run admits run on a host of their own over the same frozen bindings (`backgroundRunner.ts`).
   const parts = input.backgroundParts;
-  const releaseBackgroundHost = parts && input.ports?.background && input.backgroundAllowed
+  const port = input.ports?.background;
+  const host = parts && port && input.backgroundAllowed
     ? registerSubagentBackgroundHost(input.runId, (turn) => backgroundSubagentRunner(input, foregroundHost, parts, turn))
-    : () => undefined;
+    : null;
+  // Only a run that asked for a background start keeps its host past its end (`SubagentBackgroundHostRegistration`).
+  const background: SubagentBackgroundControl | undefined = port && host ? { availability: port.availability.bind(port),
+    deliver: port.deliver.bind(port), start: (start) => {
+      host.use();
+      return port.start(start);
+    }, stop: port.stop.bind(port) } : port;
+  const releaseBackgroundHost = () => host?.release();
   const deps: SubagentCallDeps = {
     assistantRun: input.assistantRun,
     backgroundAllowed: input.backgroundAllowed,
-    ...(input.ports?.background ? { background: input.ports.background } : {}),
+    ...(background ? { background } : {}),
     branchRunIds: [...input.branchRunIds, input.runId],
     catalog,
     chatId: input.chatId,

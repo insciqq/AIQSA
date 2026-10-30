@@ -229,6 +229,15 @@ describe("native run with sub-agents", () => {
     expect(memory.settled).toEqual([]);
   });
 
+  it("keeps nothing of a run that started no background turn once it ended", async () => {
+    const { adapter } = scriptedAdapter([{ text: "No sub-agents needed." }]);
+    const background = new FakeSubagentBackgroundControl();
+    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-unused" }, engine: engine().deps,
+      prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
+      userId: "user" }).text();
+    expect(hasSubagentBackgroundHost("run-unused")).toBe(false);
+  });
+
   it("offers no background port to a Telegram turn", async () => {
     const { adapter } = scriptedAdapter([
       { calls: [{ arguments: { background: true, message: "Watch it.", name: "watcher" }, id: "call-bg", name: CALL_SUBAGENT_TOOL_NAME }] },
