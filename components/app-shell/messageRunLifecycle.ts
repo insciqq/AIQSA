@@ -29,6 +29,7 @@ export type ConsumeMessageRunStream = (input: {
   tokenBuffer: RunStreamTokenBuffer;
 }) => Promise<{
   failed: boolean;
+  failureMessage?: string;
   receivedChatUpdate: boolean;
   runId: string | null;
   terminalStatus: RunStreamTerminalStatus;
@@ -152,6 +153,8 @@ function finishStream(input: {
   chatId: string;
   failed: boolean;
   deferred?: boolean;
+  /** The stream's failure text, the same text the failed answer saved. */
+  failureMessage: string | null;
   producer: string;
 }) {
   const ownsAbortController =
@@ -169,6 +172,9 @@ function finishStream(input: {
       candidate.id === input.assistantMessageId && candidate.status === "streaming" && !input.deferred
         ? {
             ...candidate,
+            // The live events leave with the stream: an answer still marked streaming
+            // here missed its saved copy, and keeps the cause the stream named.
+            ...(input.failed && input.failureMessage ? { errorMessage: input.failureMessage } : {}),
             status: input.cancelled ? "cancelled" : input.failed ? "error" : "complete"
           }
         : candidate
@@ -209,6 +215,7 @@ export async function executeMessageRunLifecycle({
   let admissionNotified = false;
   let failureMessage: string | null = null;
   let failureCode: string | null = null;
+  let streamFailureMessage: string | null = null;
   let receivedChatUpdate = false;
   let rejectionMessage: string | null = null;
   let runId: string | null = null;
@@ -339,6 +346,7 @@ export async function executeMessageRunLifecycle({
       streamResult.terminalStatus === "cancelled" ||
       runWasCancelled(abortController, runId));
     failed = !answerPublished && streamResult.failed && !cancelled;
+    streamFailureMessage = streamResult.failureMessage ?? null;
     if (runId && ownsStream()) {
       useRunLifecycleStore.getState().runIdReceived({ chatId, producer, runId });
     }
@@ -408,6 +416,7 @@ export async function executeMessageRunLifecycle({
       chatId,
       failed,
       deferred,
+      failureMessage: streamFailureMessage,
       producer
     });
     if ((deferred || answerPublished) && !failed && !cancelled &&

@@ -52,6 +52,8 @@ export type RunStreamTerminalStatus = "cancelled" | "complete" | "error";
 
 type ConsumeRunStreamResult = {
   failed: boolean;
+  /** The text of the stream's error event: what the failed answer saved. */
+  failureMessage?: string;
   receivedChatUpdate: boolean;
   runId: string | null;
   terminalStatus: RunStreamTerminalStatus;
@@ -81,6 +83,7 @@ export function useRunStream({
       }
 
       let failed = false;
+      let failureMessage: string | null = null;
       let parseWarningLogged = false;
       let receivedChatUpdate = false;
       let runId: string | null = null;
@@ -148,6 +151,7 @@ export function useRunStream({
         if (event.type === "error") {
           failed = true;
           terminalStatus = "error";
+          if (isRecord(event.data) && typeof event.data.message === "string") failureMessage = event.data.message;
         } else if (event.type === "done" && isRecord(event.data)) {
           const status = event.data.status;
           if (status === "cancelled" || status === "complete" || status === "error") {
@@ -193,7 +197,7 @@ export function useRunStream({
           throw new Error("stream_connection_lost");
         }
 
-        return { failed, receivedChatUpdate, runId, terminalStatus };
+        return { failed, ...(failureMessage ? { failureMessage } : {}), receivedChatUpdate, runId, terminalStatus };
       } finally {
         transportSignal.removeEventListener("abort", detach);
         ownedTransport?.dispose();
