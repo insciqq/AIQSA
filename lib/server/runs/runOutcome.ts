@@ -4,16 +4,19 @@ import {
   RUN_OUTCOME_RESPONSE_VERSION,
   type RunOutcomeResponse
 } from "../../contracts/runs";
+import { runProviderWait } from "./providerWaits";
 import type { RunOutcomeRecord } from "./runRepositoryContract";
 
 /** Runtime privacy boundary for the owner-authorized run outcome route. */
 export function serializeRunOutcome(record: RunOutcomeRecord): RunOutcomeResponse {
   const pdfPreparation = decodeChatPdfPreparations(record.pdfPreparation);
   const followups = decodeRunFollowupState(record.followups);
+  const providerWait = runProviderWait(record.id);
   return {
     run: {
       ...(followups ? { followups } : {}),
       ...(record.answerComplete === true ? { answerComplete: true as const } : {}),
+      ...(providerWait ? { providerWait } : {}),
       ...(record.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
       ...(pdfPreparation ? { pdfPreparation } : {}),
       id: record.id,

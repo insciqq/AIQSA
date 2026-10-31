@@ -51,8 +51,9 @@
  * other paid specs' connections.
  */
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PrismaClient, type ModelRun } from "@prisma/client";
+import sharp from "sharp";
 import { expect, test, type Browser, type Locator, type Page, type TestInfo } from "@playwright/test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
@@ -410,6 +411,27 @@ const occurrences = (text: string, needle: string) => text.split(needle).length 
 test.describe("native engine on Codex LB", () => {
   test.skip(faults.size > 0, `core scenarios run on a server without ${FAULTS_ENV}`);
 
+  test("a 50 MP photo the model would refuse is answered through a smaller copy", async ({ page }, testInfo) => {
+    test.setTimeout(30 * 60_000);
+    await withNativeStand(page, testInfo, "native-large-photo", async (stand) => {
+      const chatId = await openChat(page, stand, "Native large photo");
+      // Coarse synthetic noise: photo-like byte counts at the frame size a 50 MP phone camera writes.
+      const raw = randomBytes(255 * 192 * 3);
+      const photo = await sharp(raw, { raw: { channels: 3, height: 192, width: 255 } })
+        .resize(8160, 6120, { kernel: "nearest" }).jpeg({ quality: 75 }).toBuffer();
+      await page.getByLabel("Attach files").setInputFiles({ buffer: photo, mimeType: "image/jpeg", name: "photo.jpg" });
+      const item = page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: "photo.jpg" });
+      await expect(item).toHaveAttribute("data-attachment-status", "ready", { timeout: 180_000 });
+      const earlier = await runIds(chatId);
+      await sendComposer(page, "In one short sentence, is this image a photo of a person? Do not use any tool.");
+      const run = await settledRun((await newRun(chatId, earlier)).id);
+      stand.summary.largePhoto = { photoBytes: photo.length, status: run.status,
+        code: (run.errorPayload as { code?: unknown } | null)?.code ?? null };
+      expect(run.status, "the model answered instead of rejecting the image").toBe("complete");
+      expect((await answerText(run)).trim().length).toBeGreaterThan(0);
+    });
+  });
+
   test("streams reasoning headings and answer text before the run completes, on the native engine", async ({ page, browser, baseURL },
     testInfo) => {
     test.setTimeout(30 * 60_000);
@@ -614,6 +636,8 @@ test.describe("native engine transport faults", () => {
       const startedAt = Date.now();
       await sendComposer(page, `Begin your reply with the code word ${word}, then write three short sentences about rivers. ` +
         "Mention the code word only once. Do not use any tool.");
+      // The failed attempt is named while the request is sent again, and the real answer replaces it.
+      await expect(page.getByText("The provider isn’t responding, trying again…")).toBeVisible({ timeout: 60_000 });
       const run = await settledRun((await newRun(chatId, earlier)).id);
       await waitAnswerSettled(page);
       const stream = await runStreamFacts(page, run.id);

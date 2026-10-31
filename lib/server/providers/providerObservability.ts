@@ -21,6 +21,7 @@ type ProviderObservation = Readonly<{
   attempt: number;
   timeoutMs?: number;
   requestTimeoutMs?: number;
+  onResponseHead?: () => void;
 }>;
 
 const scopeKey = Symbol.for("aiqsa.providerObservation");
@@ -305,6 +306,8 @@ export function providerHttpFailureMessage(value: unknown): string | null {
   }
   const status = `HTTP ${observed.httpStatus}`;
   switch (observed.code) {
+    case "provider_request_rejected":
+      return "The model provider rejected this request, so it was not sent again. Try changing the request or removing an attachment.";
     case "provider_auth_rejected":
       return `The model provider rejected the configured credentials (${status}). Ask an administrator to check the provider key.`;
     case "provider_quota_exhausted":
@@ -515,9 +518,10 @@ export function observeProviderOperation<T>(identity: Partial<ProviderStreamSafe
 /** Context belongs to each iterator advance, including return/throw. It never
  * becomes mutable configuration of the shared adapter or caller's context. */
 export function observeProviderStream<T, R>(identity: ProviderStreamSafetyIdentity,
-  iterator: AsyncGenerator<T, R>, options: { timeoutMs: number; requestTimeoutMs?: number; signal: AbortSignal }): AsyncGenerator<T, R> {
-  const scope: ProviderObservation = { identity, stage: "answer", attempt: 1, timeoutMs: options.timeoutMs,
-    requestTimeoutMs: options.requestTimeoutMs ?? options.timeoutMs };
+  iterator: AsyncGenerator<T, R>, options: { onResponseHead?: () => void; timeoutMs: number; requestTimeoutMs?: number;
+    signal: AbortSignal }): AsyncGenerator<T, R> {
+  const scope: ProviderObservation = { identity, stage: "answer", attempt: 1, onResponseHead: options.onResponseHead,
+    timeoutMs: options.timeoutMs, requestTimeoutMs: options.requestTimeoutMs ?? options.timeoutMs };
   const startedAt = Date.now();
   let started = false;
   let finished = false;
@@ -572,6 +576,7 @@ export function observeProviderFetch(fetchFn: typeof fetch): typeof fetch {
           code: response.ok ? "unknown" : "provider_response_failed", reason: response.ok ? "unknown" : "http",
           timeout_ms: scope.requestTimeoutMs
         });
+        if (response.ok) scope.onResponseHead?.();
         return response;
       } catch (error) {
         const signal = init?.signal ?? (request instanceof Request ? request.signal : undefined);
@@ -594,7 +599,7 @@ export function observeProviderFetch(fetchFn: typeof fetch): typeof fetch {
 export function withProviderAttempt<T>(attempt: number, operation: () => Promise<T>): Promise<T> {
   const scope = scopes.getStore();
   return scope ? scopes.run({ identity: scope.identity, stage: scope.stage, timeoutMs: scope.timeoutMs,
-    requestTimeoutMs: scope.requestTimeoutMs, attempt }, operation) : operation();
+    requestTimeoutMs: scope.requestTimeoutMs, onResponseHead: scope.onResponseHead, attempt }, operation) : operation();
 }
 
 export function observeProviderRetry(error: unknown, attempt: number, action: "retry" | "stop", delayMs?: number) {

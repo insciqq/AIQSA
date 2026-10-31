@@ -1,5 +1,6 @@
 import { CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE, encodeChatPdfArtifact } from "../uploads/chatPdfCore";
 import { createHash } from "node:crypto";
+import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderModelCapabilities } from "../providers/types";
 import { StoredObjectTooLargeError } from "../uploads/storage";
@@ -425,6 +426,40 @@ describe("run attachment materialization", () => {
     expect(getObject).toHaveBeenCalledTimes(3);
     expect(result.map(({ id }) => id)).toEqual(["first", "second", "third"]);
     expect(result.every(({ dataUrl }) => dataUrl === "data:image/png;base64,YWJj")).toBe(true);
+  });
+
+  it("sends an image over the patch limit as a smaller copy and leaves the stored object alone", async () => {
+    const source = await sharp({ create: { background: "#808080", channels: 3, height: 6120, width: 8160 } }).jpeg().toBuffer();
+    const record = { ...attachment("photo", "image", source.length), metadata: { image: { format: "jpeg", height: 6120, width: 8160 } },
+      mimeType: "image/jpeg" };
+    const getObject = vi.fn(async (storageKey: string) => ({ body: source, contentType: "image/jpeg", storageKey }));
+    const [sent] = await loadProviderAttachments({ repository: repository([record]), storage: { getObject } }, "user-1", ["photo"],
+      { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: 8_000_000, maxMaterializedBytes: 8_000_000 }) });
+    const copy = await sharp(Buffer.from(sent!.dataUrl!.split(",")[1]!, "base64")).metadata();
+    expect(Math.ceil(copy.width! / 32) * Math.ceil(copy.height! / 32)).toBeLessThanOrEqual(30_000);
+    expect(sent).toMatchObject({ fileName: "photo.bin", metadata: { image: { format: "jpeg", height: copy.height, width: copy.width } },
+      mimeType: "image/jpeg" });
+    expect(sent!.byteSize).toBe(Buffer.from(sent!.dataUrl!.split(",")[1]!, "base64").length);
+    expect(record.byteSize).toBe(source.length);
+  });
+
+  it("refuses visibly an image too large to resize, before decoding it", async () => {
+    const source = await sharp({ create: { background: "#808080", channels: 3, height: 10_100, width: 11_000 } }).jpeg({ quality: 10 }).toBuffer();
+    const record = { ...attachment("huge", "image", source.length), mimeType: "image/jpeg" };
+    const getObject = vi.fn(async (storageKey: string) => ({ body: source, contentType: "image/jpeg", storageKey }));
+    await expect(loadProviderAttachments({ repository: repository([record]), storage: { getObject } }, "user-1", ["huge"],
+      { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: 8_000_000, maxMaterializedBytes: 8_000_000 }) }))
+      .rejects.toMatchObject({ code: "attachment_materialization_limit_exceeded", status: 413 });
+  });
+
+  it("sends an image within the limit byte for byte", async () => {
+    const source = await sharp({ create: { background: "#808080", channels: 3, height: 64, width: 64 } }).png().toBuffer();
+    const record = attachment("small", "image", source.length);
+    const getObject = vi.fn(async (storageKey: string) => ({ body: source, contentType: "image/png", storageKey }));
+    const [sent] = await loadProviderAttachments({ repository: repository([record]), storage: { getObject } }, "user-1", ["small"],
+      { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: 1_000_000, maxMaterializedBytes: 1_000_000 }) });
+    expect(sent!.dataUrl).toBe(`data:image/png;base64,${source.toString("base64")}`);
+    expect(sent!.metadata).toEqual({});
   });
 
   it("accepts an encoded provider payload exactly at its estimated boundary", async () => {

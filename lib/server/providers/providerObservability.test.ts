@@ -7,6 +7,7 @@ import {
   observeProviderFetch,
   observeProviderOperation,
   observeProviderStream,
+  withProviderAttempt,
   providerContextRejection,
   providerHttpFailureMessage
 } from "./providerObservability";
@@ -45,6 +46,24 @@ describe("provider diagnostics", () => {
     expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
       code: "provider_http_invalid_request", httpStatus: 400, reason: "http" }));
     expect(JSON.stringify(records())).not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
+  });
+
+  it("reports a successful response head to the stream's owner, and no other response", async () => {
+    capture();
+    const onResponseHead = vi.fn();
+    const responses = [new Response("", { status: 503 }), new Response("", { status: 200 })];
+    const request = observeProviderFetch(async () => responses.shift()!);
+    async function* attempt(): AsyncGenerator<string, void> {
+      await withProviderAttempt(2, async () => {
+        await request("https://provider.example/one");
+        expect(onResponseHead).not.toHaveBeenCalled();
+        await request("https://provider.example/two");
+      });
+      yield "event";
+    }
+    const stream = observeProviderStream(identity, attempt(), { onResponseHead, signal: new AbortController().signal, timeoutMs: 1_000 });
+    await stream.next();
+    expect(onResponseHead).toHaveBeenCalledOnce();
   });
 
   it("keeps physical attempts and retry decisions under the accepted identity without reading bodies", async () => {

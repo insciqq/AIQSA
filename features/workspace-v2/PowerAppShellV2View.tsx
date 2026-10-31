@@ -358,6 +358,7 @@ export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentatio
   // locally invented post-loss "error" status until refresh reconciles.
   const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
   const presentation = presentRunLifecycleV2({
+    providerWait: source.providerWait,
     workspacePreparation: source.workspacePreparation,
     pdfPreparation: source.pdfPreparation,
     ...runTransportStateV2({

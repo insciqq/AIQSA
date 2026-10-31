@@ -1,5 +1,6 @@
 import { decodeMemorySearchActivity } from "@/lib/contracts/memorySearchActivity";
 import { decodeFetchUrlTarget } from "@/lib/contracts/fetchUrlActivity";
+import { isRunProviderWait, type RunProviderWait } from "@/lib/contracts/runs";
 import { CHAT_PDF_READER_OUTPUT_LIMIT, isChatPdfReaderOutputLimitFailure, type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import {
   continuableRunFailure,
@@ -33,6 +34,8 @@ export type RunFailureV2 = Readonly<{
 }>;
 
 export type RunLifecycleStateV2 = Readonly<{
+  /** From the run outcome or chat: the wait a reader without the live stream shows. A live feed's own signals win. */
+  providerWait?: RunProviderWait;
   workspacePreparation?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   authoritativeMessageStatus?: "cancelled" | "complete" | "error" | null;
@@ -50,6 +53,10 @@ export type RunActivityKindV2 =
   | "files"
   | "preparing"
   | "provider"
+  /** An attempt failed and is sent again (operator decision 2026-10-31). */
+  | "provider_retrying"
+  /** The first attempt has no answer yet, well past a healthy wait (operator decision 2026-10-31). */
+  | "provider_slow"
   | "queued"
   /** A model request after tool work. It reads their results
    * but shows the run's waiting phrase like any other model wait: in a tool
@@ -206,6 +213,10 @@ function contextCompactionCycles(
   return [...cycles.values()].sort((left, right) => left.cycle - right.cycle);
 }
 
+function providerWaitKind(wait: RunProviderWait): "provider_retrying" | "provider_slow" {
+  return wait === "retrying" ? "provider_retrying" : "provider_slow";
+}
+
 /** `resultsPending`: tool work was shown earlier in this feed. */
 function activityFromEvent(event: RunEventView, index: number, resultsPending: boolean): ActivitySignal | null {
   if (event.type !== "artifact" || !isRecord(event.data)) return null;
@@ -249,6 +260,10 @@ function activityFromEvent(event: RunEventView, index: number, resultsPending: b
 
   if (payload.stage === "files" && payload.status === "running") {
     return { index, kind: "files" };
+  }
+
+  if (payload.stage === "model" && isRunProviderWait(payload.status)) {
+    return { index, kind: providerWaitKind(payload.status) };
   }
 
   if (payload.stage === "model" && payload.status === "waiting") {
@@ -573,6 +588,8 @@ export function runWaitingPhraseV2(runId: string | null): string {
 }
 
 export const SUBAGENT_WAIT_LABEL_V2 = "Waiting for sub-agents…";
+export const PROVIDER_RETRYING_LABEL_V2 = "The provider isn’t responding, trying again…";
+export const PROVIDER_SLOW_LABEL_V2 = "The provider is taking longer than usual…";
 
 /** A `call_subagent` step of the main agent: its answer is waiting on the sub-agent, which has a place of its own in the answer. */
 export function subagentCallV2(call: ToolActivityIdentity): boolean {
@@ -596,6 +613,10 @@ function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | nu
       return `${describeToolCallV2(signal, "running")}…`;
     case "compaction":
       return "Compacting context…";
+    case "provider_retrying":
+      return PROVIDER_RETRYING_LABEL_V2;
+    case "provider_slow":
+      return PROVIDER_SLOW_LABEL_V2;
     case "files":
       return "Reading files…";
     case "results":
@@ -1057,6 +1078,13 @@ export function presentRunLifecycleV2(
       continue;
     }
 
+    // What was streamed is gone: the answer waits again until new text arrives.
+    if (event.type === "message_reset") {
+      latestTokenIndex = -1;
+      activitySignals.push({ index, kind: resultsPending ? "results" : "provider" });
+      continue;
+    }
+
     // A reasoning heading is progress of the current phase, never a phase.
     const heading = event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "summary"
       ? decodeReasoningHeading(event.data.payload) : null;
@@ -1198,6 +1226,11 @@ export function presentRunLifecycleV2(
       kind: "activity",
       runId: state.runId
     });
+  }
+
+  if (state.providerWait && latestTokenIndex < 0) {
+    const kind = providerWaitKind(state.providerWait);
+    return present({ activity: { kind, label: activityLabel({ kind }, state.runId) }, kind: "activity", runId: state.runId });
   }
 
   const activity = statusActivity(state.status, state.runId);

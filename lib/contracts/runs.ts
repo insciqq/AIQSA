@@ -162,12 +162,25 @@ export type ModelRunStatus =
 export const RUN_OUTCOME_RESPONSE_VERSION = 1 as const;
 
 /**
+ * A model request waiting on its provider: `slow` while the first attempt has
+ * no answer yet, `retrying` once an attempt failed and is sent again.
+ */
+export const RUN_PROVIDER_WAITS = ["retrying", "slow"] as const;
+export type RunProviderWait = (typeof RUN_PROVIDER_WAITS)[number];
+
+export function isRunProviderWait(value: unknown): value is RunProviderWait {
+  return (RUN_PROVIDER_WAITS as readonly unknown[]).includes(value);
+}
+
+/**
  * The complete browser-visible projection for an owner-authorized run read.
  * Answer content and outputs are reconciled through the chat projection.
  */
 export type RunOutcome = Readonly<{
   followups?: RunFollowupState;
   answerComplete?: true;
+  /** The run's model request is waiting on its provider, for a reader without the live stream. */
+  providerWait?: RunProviderWait;
   workspacePreparation?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   id: string;
@@ -291,6 +304,8 @@ export function decodeRunOutcomeResponse(value: unknown): RunOutcome | null {
   return id && status && pdfPreparation !== null
     ? { id, status, ...(pdfPreparation ? { pdfPreparation } : {}), ...(followups ? { followups } : {}),
         ...(value.run.answerComplete === true ? { answerComplete: true } : {}),
+        // A wait this client does not know reads as no wait: it only changes a status line.
+        ...(isRunProviderWait(value.run.providerWait) ? { providerWait: value.run.providerWait } : {}),
         ...(value.run.workspacePreparation === true ? { workspacePreparation: true } : {}) } : null;
 }
 
