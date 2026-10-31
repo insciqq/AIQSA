@@ -1,6 +1,7 @@
 /**
  * Pure parts of `scripts/smoke-subagents-paid.ts`: the sub-agent scenarios
- * A–I of the acceptance task (scenarios 1–9) with their Russian prompts, the
+ * A–I of the acceptance task (scenarios 1–9) and J (two production defects)
+ * with their Russian prompts, the
  * oracles over `browser-result.json` and the run's stored rows, and the
  * content-free evidence computed from read-only rows (turn bindings, usage
  * per purpose, callbacks and wake-ups, concurrency from the tool-call
@@ -40,9 +41,11 @@ const flag = (value: boolean) => value ? 1 : 0;
  * then an edit that branches it away (5). G: a restart during background
  * work (6). H: a background sub-agent's browser handoff while another agent
  * browses (8). I: a scheduled task (9; Telegram is not drivable on a
- * real-runtime stand, see the harness).
+ * real-runtime stand, see the harness). J: an image viewed by an attached
+ * sub-agent, then a Workspace-free sub-agent that ends last with the VM up,
+ * and the chat's next message at once (the capture and retire defects).
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -60,7 +63,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -145,7 +148,8 @@ export const SUBAGENT_NAMES = Object.freeze({
   notary: "notary",
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
-  probe: "probe"
+  probe: "probe",
+  capture: { quiet: "quiet", viewer: "viewer" }
 } as const);
 
 /** The result instruction for an answer that will receive sub-agent results later, not the one being written. */
@@ -175,6 +179,10 @@ const D_FIELDS = '  "products": [{"name": "...", "price": 49.99, "rating": 4.5, 
 const HOLD_WORK = (minutes: number) => `каждый ${minutes} минут подряд выполняет в Workspace команду \`sleep 60\`, по одной ` +
   "команде за раз, на переднем плане (без `&`, nohup, timeout и других обёрток), и не заканчивает работу раньше; " +
   "коротко отчитывается только после этого.";
+
+/** J's picture: a fixed 64×64 solid red PNG, written by one shell command; base64 needs no packages and no quoting. */
+export const SCENARIO_J_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsAtx/ZMZxgi+hcEK" +
+  "LNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywKqxUDxqh7TUQAAAABJRU5ErkJggg==";
 
 export const SUBAGENT_PROMPTS = Object.freeze({
   A: () => [
@@ -267,7 +275,24 @@ export const SUBAGENT_PROMPTS = Object.freeze({
     `Вызови суб-агента ${SUBAGENT_NAMES.probe}: сначала попробуй запустить его в фоне (background: true); если фоновый режим ` +
       "недоступен, запусти его и дождись результата. Пусть он выполнит в Workspace `python3 -c 'print(6*7)'` и сообщит число.",
     resultInstruction('  "value": 42')
-  ].join("\n\n")
+  ].join("\n\n"),
+  J: Object.freeze({
+    // The Workspace-free agent has no sleep to wait with: a long written answer outlasts the viewer and its wake-up.
+    start: (imageName: string) => [
+      "Сделай ровно три шага по порядку. Суб-агентов ровно два, вызовов call_subagent ровно два.",
+      `1. Выполни в Workspace ровно одну команду в shell: \`printf '%s' '${SCENARIO_J_PNG_BASE64}' | base64 -d > ` +
+        `/workspace/project/${imageName}\`. Она создаёт маленькую картинку. Не проверяй её и больше ничего в Workspace не запускай.`,
+      `2. Запусти в фоне (background: true) суб-агента ${SUBAGENT_NAMES.capture.viewer}. Его задание: ровно один раз посмотреть файл ` +
+        `/workspace/project/${imageName} инструментом view_workspace_image, а если такого инструмента нет, то analyze_image, ` +
+        "не запуская команд, и сообщить, какого цвета картинка.",
+      `3. Запусти в фоне (background: true) суб-агента ${SUBAGENT_NAMES.capture.quiet}. Его задание: не вызывать ни одного инструмента, ` +
+        "ни Workspace, ни браузера, ни поиска, и сразу написать текстом подробное рассуждение не короче 3000 слов о том, почему " +
+        `небо голубое. Рассуждение нужно, чтобы он закончил заметно позже суб-агента ${SUBAGENT_NAMES.capture.viewer}.`,
+      `${NO_WEB} ${START_AND_REPLY}`,
+      "Когда придут их результаты, не вызывай инструментов, не запускай и не продолжай суб-агентов: ответь одной короткой фразой."
+    ].join("\n\n"),
+    question: Object.freeze({ answer: "144", text: "Ответь без инструментов: сколько будет 12 × 12? Ответь одним числом." })
+  })
 });
 
 // Oracles over the result file ------------------------------------------------------
@@ -776,6 +801,137 @@ export function appendProgression(series: readonly StateCounts[], next: StateCou
 /** Whether any step of a progression had a thread in `state`. */
 export function progressionSaw(series: readonly StateCounts[], state: SubagentThreadState): boolean {
   return series.some((counts) => (counts[state] ?? 0) > 0);
+}
+
+// The capture and retire defects (J) -----------------------------------------------
+
+/** The tools a sub-agent looks at a Workspace image with (`lib/server/tools/`). */
+const IMAGE_TOOLS: readonly string[] = ["analyze_image", "view_workspace_image"];
+
+/**
+ * The longest a healthy last turn may leave its session `RUNNING`, in seconds.
+ * The ordinary path stops the VM before the turn's end is written, so this is
+ * normally zero or less; it stays under the 30 s a session must sit stale before
+ * maintenance takes it (`SESSION_BACKSTOP_STALE_MS` in `lib/server/workspace/cleanup.ts`).
+ */
+export const SCENARIO_J_STOP_SECONDS = 25;
+
+/** One thread's image tool calls: how many, how many gave a result, and the others by stable code. */
+export function imageToolEvidence(rows: readonly ToolRow[], threadId: string | null) {
+  const calls = threadId === null ? [] : rows.filter((row) => row.threadId === threadId && IMAGE_TOOLS.includes(row.toolName));
+  const succeeded = calls.filter((row) => row.state === "complete" && row.resultCode === null);
+  const failureCodes: Record<string, number> = {};
+  for (const call of calls) {
+    if (succeeded.includes(call)) continue;
+    const code = stableCode(call.resultCode);
+    failureCodes[code] = (failureCodes[code] ?? 0) + 1;
+  }
+  return { calls: calls.length, failureCodes, succeeded: succeeded.length };
+}
+
+/**
+ * Whether J reached what the retire defect needs, the model deciding: the
+ * Workspace-free agent ended last, touched no tool, and no main-agent run was
+ * still attached beside it. `order_not_reached` is data, not a failure.
+ */
+export function scenarioJOrder(input: Readonly<{
+  mainRunsActive: number; quiet: TurnRow | null; quietToolCalls: number; viewer: TurnRow | null;
+}>) {
+  const quietEnd = time(input.quiet?.endedAt);
+  const viewerEnd = time(input.viewer?.endedAt);
+  const lastTurnEnd = quietEnd === null || viewerEnd === null ? null : Math.max(quietEnd, viewerEnd);
+  const reached = quietEnd !== null && viewerEnd !== null && viewerEnd < quietEnd && input.quietToolCalls === 0 && input.mainRunsActive === 0;
+  return { lastTurnEnd, mainRunsActive: input.mainRunsActive, order_not_reached: !reached, quietToolCalls: input.quietToolCalls };
+}
+
+/** The chat's `WorkspaceSession` at one instant; `owner` is the kind of its operation, never the owner itself. */
+export type SessionSample = Readonly<{ at: Instant; closing: boolean; owner: "maintenance" | "none" | "other"; state: string }>;
+
+/** Appends a sample when the session changed, keeping at most `max` steps (the newest replaces the last). */
+export function appendSessionSample(series: readonly SessionSample[], next: SessionSample, max = 64): SessionSample[] {
+  const last = series.at(-1);
+  if (last && last.state === next.state && last.owner === next.owner && last.closing === next.closing) return [...series];
+  return series.length < max ? [...series, next] : [...series.slice(0, max - 1), next];
+}
+
+/**
+ * How the session left `RUNNING` around the last turn's end: the state it went
+ * to, the signed seconds from that end (negative: it left first, the ordinary
+ * order), and whether maintenance held it on the way, which only the backstop does.
+ */
+export function sessionStopEvidence(samples: readonly SessionSample[], lastTurnEnd: number | null) {
+  const running = samples.flatMap((sample, index) => sample.state === "RUNNING" &&
+    (lastTurnEnd === null || (time(sample.at) ?? Infinity) <= lastTurnEnd) ? [index] : []).at(-1);
+  const tail = running === undefined ? [] : samples.slice(running);
+  const left = tail.find((sample) => sample.state !== "RUNNING") ?? null;
+  const leftAt = time(left?.at);
+  return {
+    finalState: samples.at(-1)?.state ?? null,
+    leftRunningTo: left?.state ?? null,
+    maintenanceHeld: tail.some((sample) => sample.owner === "maintenance"),
+    runningSeen: running !== undefined,
+    secondsToLeaveRunning: leftAt === null || lastTurnEnd === null ? null : Math.round((leftAt - lastTurnEnd) / 100) / 10
+  };
+}
+
+/** A refusal that only means the server's wake-up took the turn first: the composer's next send goes through. */
+export const SEND_LOST_TO_WAKE_UP = "lost_to_wake_up";
+
+/**
+ * Why a send was refused. The API answers `workspace_busy` whichever rule
+ * refused (the reason stays in the server's log), so the session as it stands
+ * right after tells the rules apart: `workspace_busy_session_state` is the
+ * retire defect's signature, a `RUNNING` session that nothing owns.
+ */
+export function sendRefusal(code: string, input: Readonly<{ mainRunActive: boolean; session: SessionSample | null }>): string {
+  const state = input.session?.state;
+  if (code === "workspace_busy" && input.session?.owner === "none" && (state === "RUNNING" || state === "CREATING")) {
+    return "workspace_busy_session_state";
+  }
+  if (code === "active_run_in_progress" || code === "active_leaf_changed" || input.mainRunActive) return SEND_LOST_TO_WAKE_UP;
+  if (code === "workspace_busy") return input.session?.closing ? "workspace_busy_join_closing" : "workspace_busy_other";
+  return stableCode(code);
+}
+
+/**
+ * J's verdict. A wake-up is required only where one is due: a callback that
+ * went into a running answer needs none, and the second message may win that
+ * race, but no callback may stay owed either way. The stop's timing is judged
+ * only when the order was reached; a backstop stop never passes.
+ */
+export function oracleJ(input: Readonly<{
+  callbacks: ReturnType<typeof callbackEvidence>;
+  failures: Readonly<{ captureIdentity: number; visionInternal: number }>;
+  image: ReturnType<typeof imageToolEvidence>;
+  order: ReturnType<typeof scenarioJOrder>;
+  secondAccepted: boolean;
+  secondAnswered: boolean;
+  secondRefusals: readonly string[];
+  session: ReturnType<typeof sessionStopEvidence>;
+  settled: boolean;
+  wakeUps: readonly WakeUpRow[];
+}>): OracleVerdict {
+  const { callbacks, failures, image, order, session } = input;
+  const failed: string[] = [];
+  if (image.succeeded === 0) failed.push("image_tool_not_succeeded");
+  if (failures.captureIdentity > 0) failed.push("capture_identity_failure");
+  if (failures.visionInternal > 0) failed.push("vision_internal_failure");
+  if (input.secondRefusals.includes("workspace_busy_session_state")) failed.push("workspace_busy_session_state");
+  else if (input.secondRefusals.some((refusal) => refusal !== SEND_LOST_TO_WAKE_UP)) failed.push("second_send_refused");
+  if (!input.secondAccepted) failed.push("second_send_not_accepted");
+  else if (!input.secondAnswered) failed.push("second_message_not_answered");
+  if (callbacks.backgroundTurns !== 2) failed.push("background_turns_not_2");
+  if (!input.settled) failed.push("callbacks_still_owed");
+  else if (callbacks.callbacksOwed > 0 || callbacks.callbacksDelivered < callbacks.backgroundTurns) failed.push("callbacks_owed");
+  if (callbacks.callbacksDelivered > callbacks.callbacksIntoRunningAnswer && callbacks.wakeUpTurns === 0) failed.push("no_wake_up");
+  if (input.wakeUps.some((wakeUp) => wakeUp.runStatus !== "complete")) failed.push("wake_up_not_complete");
+  if (!session.runningSeen) failed.push("session_never_running");
+  else if (session.leftRunningTo === null) failed.push("session_still_running");
+  else if (session.leftRunningTo !== "STOPPED" && session.leftRunningTo !== "PENDING") failed.push("session_left_to_other_state");
+  if (session.maintenanceHeld) failed.push("session_stopped_by_backstop");
+  if (!order.order_not_reached && (session.secondsToLeaveRunning ?? 0) > SCENARIO_J_STOP_SECONDS) failed.push("session_stop_slow");
+  return { counts: { imageCalls: image.calls, imageSucceeded: image.succeeded, secondRefusals: input.secondRefusals.length,
+    wakeUps: input.wakeUps.length }, failed };
 }
 
 // Stops (E) and the restart (G) -----------------------------------------------------
