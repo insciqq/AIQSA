@@ -151,6 +151,23 @@ async function connected(port: number): Promise<Socket> {
   return socket;
 }
 
+/** The next connection once the relay has a free slot: it counts a client closed a moment after that client's upstream,
+ * and drops a connection past its limit. */
+async function reconnected(relayed: Awaited<ReturnType<typeof runningRelay>>): Promise<Socket> {
+  const expected = relayed.upstreams.length + 1;
+  const deadline = Date.now() + 3_000;
+  for (;;) {
+    const client = await connected(relayed.port);
+    try {
+      await until(() => relayed.upstreams.length >= expected, 1_000);
+      return client;
+    } catch (error) {
+      client.destroy();
+      if (Date.now() > deadline) throw error;
+    }
+  }
+}
+
 describe("storage relay connections", () => {
   it("closes both sides of a connection idle past the timeout", async () => {
     const relayed = await runningRelay({ AIQSA_STORAGE_RELAY_IDLE_TIMEOUT_MS: "500" });
@@ -209,12 +226,10 @@ describe("storage relay connections", () => {
     // Dropping to 4 does not re-arm; dropping to 3 does.
     clients.pop()!.destroy();
     await until(() => relayed.closedUpstreams() === 1);
-    clients.push(await connected(relayed.port));
-    await until(() => relayed.upstreams.length === 6);
+    clients.push(await reconnected(relayed));
     for (const client of clients.splice(3)) client.destroy();
     await until(() => relayed.closedUpstreams() === 3);
-    clients.push(await connected(relayed.port));
-    await until(() => relayed.upstreams.length === 7);
+    clients.push(await reconnected(relayed));
     await until(() => warnings().length === 2);
     expect(warnings().map((record) => record.count)).toEqual([4, 4]);
     for (const client of clients) client.destroy();
