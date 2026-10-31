@@ -754,6 +754,26 @@ describe("message run actions", () => {
       expect(actions.session(actions.sourceSessionKey).attachments).toEqual([archive]);
     });
 
+    it("names the recovery for a document only Workspace can open when admission refuses the Workspace", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "workspace_disabled" }, { status: 409 })));
+      const oversized: ComposerAttachment = { fileName: "big.xlsx", id: "attachment-big", kind: "document",
+        processingErrorCode: "parser_output_too_large", status: "failed" };
+      const actions = useMessageRunActionsForTest({
+        attachments: [oversized],
+        draft: "Sum the second column",
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+
+      await actions.submitComposer();
+
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        attachments: [oversized],
+        draft: "Sum the second column",
+        operationError: expect.stringContaining("Only Workspace can open “big.xlsx”: send again once Workspace is available, or remove the file."),
+        operationErrorRecoveries: []
+      });
+    });
+
     it.each([
       "workspace_model_tools_required",
       "agent_mode_removed",

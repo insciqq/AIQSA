@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { UsageLimitRefusalCode, UsageLimitRefusalFacts, UsageLimitRefusalResponse } from "@/lib/contracts/usageLimits";
+import { attachmentNeedsWorkspaceMessage } from "@/lib/domain/attachmentExtraction";
 import type { CatalogModel } from "./types";
 import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, responseErrorMessage, responseErrorMessageDetails, usageLimitRefusalMessage } from "./shellFormatting";
 
@@ -193,6 +194,11 @@ describe("shell error formatting", () => {
         "send_failed_413"
       )
     ).resolves.toBe("This run contains 24 attachments; the limit is 20.");
+
+    const needsWorkspace = attachmentNeedsWorkspaceMessage("parser_output_too_large", "ledger.xlsx");
+    await expect(
+      responseErrorMessage(Response.json({ error: "attachment_needs_workspace", message: needsWorkspace }, { status: 409 }), "send_failed_409")
+    ).resolves.toBe(needsWorkspace);
 
     await expect(
       responseErrorMessage(

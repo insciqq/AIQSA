@@ -1,3 +1,4 @@
+import { attachmentNeedsWorkspaceMessage } from "../../domain/attachmentExtraction";
 import { CHAT_PDF_ARTIFACT_MAX_BYTES, CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE, decodeChatPdfArtifact } from "../uploads/chatPdfCore";
 import type { ChatPdfAttachmentAdmission, ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import { inspectPdfForModelProcessing } from "../parsing/pdfPreparation";
@@ -30,6 +31,7 @@ export type AttachmentMaterializationErrorCode =
   | "attachment_checksum_mismatch"
   | "attachment_image_invalid"
   | "attachment_materialization_limit_exceeded"
+  | "attachment_needs_workspace"
   | "attachment_object_read_failed"
   | "attachment_object_size_mismatch"
   | "attachment_not_ready"
@@ -220,7 +222,7 @@ function requiresBinaryMaterialization(
   record: RunAttachmentRecord,
   capabilities: ProviderModelCapabilities
 ): boolean {
-  return (record.kind === "image" && capabilities.vision) ||
+  return (record.kind === "image" && capabilities.vision && record.status !== "failed") ||
     (record.kind === "pdf" && capabilities.nativePdfInput && !record.preparedPdf && !record.workspaceOriginalOnly);
 }
 
@@ -356,6 +358,9 @@ function providerAttachment(
     metadata: record.metadata,
     mimeType: record.mimeType,
     status: record.status,
+    // Adapters refuse an image without pixels, so an image processing refused
+    // (an animated GIF) rides like an opaque Workspace file: inbox only.
+    ...(record.kind === "image" && record.status === "failed" ? { kind: "file" } : {}),
     ...overrides
   };
 }
@@ -515,12 +520,31 @@ async function materializeOne(
   });
 }
 
-const directPdfBlockingErrorCodes = new Set([
+const originalUnreadableErrorCodes = new Set([
   "attachment_checksum_mismatch",
   "attachment_object_read_failed",
   "attachment_object_size_mismatch",
   "attachment_unavailable"
 ]);
+
+/** A stored object that failed its integrity check has no original to read, by any route. */
+function refuseUnreadableOriginal(record: RunAttachmentRecord): void {
+  if (record.processingErrorCode === "attachment_checksum_mismatch") {
+    throw checksumMismatch();
+  }
+  if (record.processingErrorCode === "attachment_object_size_mismatch") {
+    throw objectSizeMismatch({
+      maxBytes: safeByteSize(record),
+      recordedBytes: record.byteSize
+    });
+  }
+  if (
+    record.processingErrorCode &&
+    originalUnreadableErrorCodes.has(record.processingErrorCode)
+  ) {
+    throw objectReadFailed();
+  }
+}
 
 function validateAttachmentReadiness(
   record: RunAttachmentRecord,
@@ -528,30 +552,19 @@ function validateAttachmentReadiness(
   workspaceEnabled: boolean,
   pdfRoute?: ChatPdfRouteAdmission
 ): void {
-  // A Workspace run consumes the settled original object directly. Parser
-  // progress/failure therefore cannot block admission, while integrity and
-  // ownership checks remain mandatory.
+  refuseUnreadableOriginal(record);
+  // A Workspace run consumes the settled original object directly, so parser
+  // progress or failure cannot block admission.
   if (workspaceEnabled) return;
-  const directPdf = record.kind === "pdf" && (capabilities.nativePdfInput || Boolean(pdfRoute));
-  if (directPdf) {
-    if (record.processingErrorCode === "attachment_checksum_mismatch") {
-      throw checksumMismatch();
-    }
-    if (record.processingErrorCode === "attachment_object_size_mismatch") {
-      throw objectSizeMismatch({
-        maxBytes: safeByteSize(record),
-        recordedBytes: record.byteSize
-      });
-    }
-    if (
-      record.processingErrorCode &&
-      directPdfBlockingErrorCodes.has(record.processingErrorCode)
-    ) {
-      throw objectReadFailed();
-    }
-    return;
-  }
+  if (record.kind === "pdf" && (capabilities.nativePdfInput || Boolean(pdfRoute))) return;
 
+  if (record.status === "failed" && record.kind !== "pdf") {
+    throw new AttachmentMaterializationError({
+      code: "attachment_needs_workspace",
+      message: attachmentNeedsWorkspaceMessage(record.processingErrorCode, record.fileName),
+      status: 409
+    });
+  }
   if (record.status !== "ready") {
     throw new AttachmentMaterializationError({
       code: "attachment_not_ready",

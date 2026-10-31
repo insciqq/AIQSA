@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signInWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 
-// Workspace is ambient, and a Workspace chat neither blocks on a file's text nor warns about it, so these checks run without one.
+// Workspace is ambient, and a Workspace chat does not block on a file's text, so these checks run without one.
 const unavailableWorkspace = { workspace: { available: false, enabled: false, internetEnabled: null, sessionState: null,
   unavailableReason: "installation_disabled" } };
 
