@@ -13,6 +13,8 @@ import {
   formatWorkDurationV2,
   presentRunLifecycleV2,
   presentToolActivityV2,
+  PROVIDER_RETRYING_LABEL_V2,
+  PROVIDER_SLOW_LABEL_V2,
   RUN_WAITING_PHRASES_V2,
   runWaitingPhraseV2,
   stepDurationSumV2,
@@ -40,6 +42,54 @@ function summary(payload: Record<string, unknown>): RunEventView {
     type: "artifact"
   };
 }
+
+describe("a provider that is slow or keeps failing", () => {
+  const runId = "e479a48e-1856-4cfa-80c7-c7346164e2c5";
+  const base = { authoritativeMessageStatus: null, content: "", runId, status: "streaming" as const };
+  const search: RunEventView = { type: "artifact", data: { artifactType: "search", payload: {} } };
+  const token: RunEventView = { type: "token", data: { delta: "text" } };
+  const reset: RunEventView = { type: "message_reset", data: { round: 2 } };
+  const model = (status: string): RunEventView => ({ type: "artifact", data: { artifactType: "summary", payload: { stage: "model", status } } });
+  const present = (events: readonly RunEventView[], providerWait?: "retrying" | "slow") =>
+    presentRunLifecycleV2({ ...base, events, ...(providerWait ? { providerWait } : {}) });
+
+  it("goes back to waiting when what was streamed is taken back", () => {
+    const presentation = present([search, token, reset]);
+    expect(presentation.kind).toBe("activity");
+    expect(presentation.activity?.label).toBe(runWaitingPhraseV2(runId));
+  });
+
+  it("streams again once new text follows the reset", () => {
+    expect(present([search, token, reset, token]).kind).toBe("streaming");
+  });
+
+  it("names a retry, and the wait after the provider answered again is the run's phrase", () => {
+    const retrying = present([token, reset, model("retrying")]);
+    expect(retrying.activity).toMatchObject({ kind: "provider_retrying", label: PROVIDER_RETRYING_LABEL_V2 });
+    expect(present([token, reset, model("retrying"), model("waiting")]).activity?.label).toBe(runWaitingPhraseV2(runId));
+  });
+
+  it("names a slow provider, and text ends it", () => {
+    expect(present([model("slow")]).activity).toMatchObject({ kind: "provider_slow", label: PROVIDER_SLOW_LABEL_V2 });
+    expect(present([model("slow"), model("waiting"), token]).kind).toBe("streaming");
+  });
+
+  it("shows the outcome's wait to a reader without the stream", () => {
+    expect(present([], "retrying").activity?.label).toBe(PROVIDER_RETRYING_LABEL_V2);
+    expect(present([], "slow").activity?.label).toBe(PROVIDER_SLOW_LABEL_V2);
+    expect(present([]).activity?.label).toBe(runWaitingPhraseV2(runId));
+  });
+
+  it("lets the live feed win over a wait a chat update left on the message", () => {
+    expect(present([token], "retrying").kind).toBe("streaming");
+    expect(present([model("waiting")], "retrying").activity?.label).toBe(runWaitingPhraseV2(runId));
+  });
+
+  it("never shows a wait on a settled answer", () => {
+    const failed = presentRunLifecycleV2({ ...base, authoritativeMessageStatus: "error", events: [], providerWait: "retrying", status: "error" });
+    expect(failed.kind).toBe("terminal_error");
+  });
+});
 
 describe("the live line while sub-agents work", () => {
   const call = (round: number, ordinal: number, name: string, status: string, serverName?: string): RunEventView => ({ type: "artifact",

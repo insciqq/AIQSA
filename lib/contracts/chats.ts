@@ -11,6 +11,7 @@ import {
 } from "./fetchUrlActivity";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
+import { isRunProviderWait, type RunProviderWait } from "./runs";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
 import { decodeSessionContextStatus, type SessionContextStatus } from "./sessionStatus";
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
@@ -222,6 +223,8 @@ export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
   followups?: RunFollowupState;
+  /** Client only, from the run outcome: what a reader without the live stream shows while the provider is silent. */
+  providerWait?: RunProviderWait;
   workspacePreparation?: true;
   workspaceSettling?: true;
   errorMessage?: string | null;
@@ -460,6 +463,7 @@ export type ChatDetail = WorkspaceChatSummary & {
 
 export type ChatMessageWire = {
   followups?: RunFollowupState;
+  providerWait?: RunProviderWait;
   workspacePreparation?: true;
   workspaceSettling?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
@@ -1404,6 +1408,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   return {
     ...(pdfPreparation ? { pdfPreparation } : {}),
     ...(followups ? { followups } : {}),
+    // A wait this client does not know reads as no wait: it only changes a status line.
+    ...(isRunProviderWait(value.providerWait) ? { providerWait: value.providerWait } : {}),
     ...(value.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
     ...(value.workspaceSettling === true ? { workspaceSettling: true as const } : {}),
     artifactSummary,

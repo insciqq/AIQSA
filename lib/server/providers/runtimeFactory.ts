@@ -640,7 +640,8 @@ function withProviderStreamSafetyObservability(
           ...options,
           signal: timeout.signal,
           timeoutMs
-        }), { signal: timeout.signal, timeoutMs: runTimeoutMs, requestTimeoutMs: timeoutMs });
+        }), { onResponseHead: options?.onResponseHead, signal: timeout.signal, timeoutMs: runTimeoutMs,
+          requestTimeoutMs: timeoutMs });
       } catch (error) {
         warnProviderStreamSafetyOnce(error, {
           adapterKind: snapshot.model.adapterKind,

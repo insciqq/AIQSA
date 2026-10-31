@@ -17,6 +17,7 @@ import {
   ProviderRasterConversionError,
   providerRasterNeedsConversion
 } from "../uploads/providerRasterConversion";
+import { fitImageForProvider } from "../uploads/providerImageFit";
 import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import type { RunAttachmentRecord, RunRepository } from "./runRepositoryContract";
@@ -343,7 +344,7 @@ function objectReadFailed(): AttachmentMaterializationError {
 
 function providerAttachment(
   record: RunAttachmentRecord,
-  overrides: Partial<Pick<ProviderAttachment, "base64Data" | "byteSize" | "dataUrl" | "extractedText" | "mimeType">> = {}
+  overrides: Partial<Pick<ProviderAttachment, "base64Data" | "byteSize" | "dataUrl" | "extractedText" | "metadata" | "mimeType">> = {}
 ): ProviderAttachment {
   return {
     ...(record.preparedPdf || record.workspaceOriginalOnly ? { pdfDelivery: "prepared_text" as const } : {}),
@@ -396,6 +397,37 @@ async function convertedImageAttachment(
   // refused before the others settle; the run total is checked once all have.
   if (dataUrl.length > maxEncodedBytes) throw encodedSizeLimitError(dataUrl.length, maxEncodedBytes);
   return providerAttachment(record, { byteSize: png.length, dataUrl, mimeType: "image/png" });
+}
+
+/**
+ * An image over the model's patch limit is sent as a smaller copy
+ * (`lib/server/uploads/providerImageFit.ts`); the stored object stays as it is.
+ * Null when the image is sent unchanged.
+ */
+async function fittedImageAttachment(
+  record: RunAttachmentRecord,
+  body: Buffer,
+  maxEncodedBytes: number,
+  signal: AbortSignal
+): Promise<ProviderAttachment | null> {
+  let fitted: Awaited<ReturnType<typeof fitImageForProvider>>;
+  try {
+    fitted = await fitImageForProvider(body, signal);
+  } catch (error) {
+    if (signal.aborted) throw abortReason(signal);
+    throw new AttachmentMaterializationError({
+      code: "attachment_image_invalid",
+      message: "An attached image could not be prepared for the model.",
+      status: 400
+    });
+  }
+  if (!fitted) return null;
+  const dataUrl = `data:${fitted.mimeType};base64,${fitted.bytes.toString("base64")}`;
+  if (dataUrl.length > maxEncodedBytes) throw encodedSizeLimitError(dataUrl.length, maxEncodedBytes);
+  const metadata = record.metadata !== null && typeof record.metadata === "object" ? record.metadata as Record<string, unknown> : {};
+  const image = metadata.image !== null && typeof metadata.image === "object" ? metadata.image : {};
+  return providerAttachment(record, { byteSize: fitted.bytes.length, dataUrl, mimeType: fitted.mimeType,
+    metadata: { ...metadata, image: { ...image, height: fitted.height, width: fitted.width } } });
 }
 
 async function materializeOne(
@@ -467,6 +499,8 @@ async function materializeOne(
   if (providerRasterNeedsConversion(contentType)) {
     return convertedImageAttachment(record, object.body, contentType, maxEncodedBytes, signal);
   }
+  const fitted = record.kind === "image" ? await fittedImageAttachment(record, object.body, maxEncodedBytes, signal) : null;
+  if (fitted) return fitted;
   return providerAttachment(record, {
     dataUrl: `data:${contentType};base64,${object.body.toString("base64")}`
   });
@@ -660,12 +694,12 @@ export async function loadProviderAttachments(
       status: 409
     });
   }
-  // Converted images replace their source estimate with the exact PNG payload.
+  // Converted and resized images replace their source estimate with the exact payload.
   let encodedBytes: number | null = plan.encodedBytes;
   for (const [index, record] of records.entries()) {
     const entry = plan.binaryById.get(record.id);
     const result = results[index]!;
-    if (!entry || result.mimeType === record.mimeType || !result.dataUrl) continue;
+    if (!entry || !result.dataUrl || result.mimeType === record.mimeType && result.byteSize === record.byteSize) continue;
     encodedBytes = safeSum(encodedBytes - entry.encodedBytes, result.dataUrl.length);
     if (encodedBytes === null) break;
   }

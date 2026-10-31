@@ -25,6 +25,15 @@ function presentation(
 }
 
 describe("Run lifecycle v2", () => {
+  it("keeps the retry status over a finished step instead of a settled line above an empty answer", () => {
+    const toolActivity = { calls: [{ durationMs: 56_000, id: "search", kind: "tool", name: "search", ordinal: 1, status: "completed", toolName: "search" }] } as never;
+    render(<RunAnswerV2 content="" toolActivity={toolActivity}
+      presentation={presentation({ activity: { kind: "provider_retrying", label: "The provider isn\u2019t responding, trying again\u2026" },
+        kind: "activity", runId: "run-retry" })} />);
+    expect(screen.getByText("The provider isn\u2019t responding, trying again\u2026")).toBeVisible();
+    expect(screen.queryByText(/Worked for/u)).toBeNull();
+  });
+
   it("shows the live Browser bar under the process line only while its run works", () => {
     const workspaceActivity = { entries: [{ id: "browser", kind: "command" as const, phase: "running" as const,
       command: { preview: "aiqsa-browser open https://shop.example/" } }] };

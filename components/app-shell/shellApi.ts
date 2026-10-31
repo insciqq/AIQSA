@@ -268,6 +268,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ...(message.subagentCallback ? { subagentCallback: message.subagentCallback } : {}),
     status: normalizeThreadStatus(message.status),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
+    ...(message.providerWait ? { providerWait: message.providerWait } : {}),
     ...(message.workspacePreparation ? { workspacePreparation: true as const } : {}),
     ...(message.workspaceSettling ? { workspaceSettling: true as const } : {}),
     ...(message.followups ? { followups: message.followups } : {}),

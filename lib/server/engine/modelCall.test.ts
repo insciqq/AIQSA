@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { gatewayRoutingLane } from "../providers/gatewayRouting";
+import { providerHttpFailureMessage } from "../providers/providerObservability";
+import { providerResponseFailure } from "../providers/responseFailure";
 import { markProviderStreamDrop } from "../providers/streamDrop";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { engineTestFaults } from "./faults";
@@ -41,6 +43,81 @@ function ports(provider: ProviderAdapter, overrides: Partial<ModelCallPorts> = {
 }
 
 describe("native model call", () => {
+  it("does not send a request again that the provider rejected for a value in it", async () => {
+    const rejected = markProviderStreamDrop(providerResponseFailure("provider_response_failed",
+      { error: { code: "invalid_value", message: "too many patches", param: "input" }, status: "failed" }), "response_failed");
+    const provider = adapter([{ fail: rejected }]);
+    const call = ports(provider);
+    await expect(callModel(call, request)).rejects.toMatchObject({ code: "provider_request_rejected" });
+    expect(provider.calls).toBe(1);
+    expect(call.discarded).toEqual([]);
+    expect(providerHttpFailureMessage(rejected)).toContain("was not sent again");
+  });
+
+  describe("what the request waits on its provider for", () => {
+    const heads = (script: readonly ("head" | "drop" | "answer" | "never")[]): ProviderAdapter => {
+      let call = 0;
+      return { buildRequestPreview: () => ({}),
+        async *stream(_request, options): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+          const step = script[call]!;
+          call += 1;
+          if (step === "never") await new Promise((resolve) => setTimeout(resolve, 40));
+          if (step !== "drop") options?.onResponseHead?.();
+          if (step === "drop") throw markProviderStreamDrop(new Error("socket"), "reset");
+          if (step === "head") await new Promise((resolve) => setTimeout(resolve, 40));
+          yield token("Hi");
+          return { finalProviderResponsePreview: {}, finalText: "Hi", usage: {} };
+        } } as ProviderAdapter;
+    };
+
+    it("says nothing about a provider that answers in time", async () => {
+      const waits: unknown[] = [];
+      await callModel(ports(heads(["answer"]), { onProviderWait: (wait) => waits.push(wait), slowAfterMs: 1_000 }), request);
+      expect(waits).toEqual([]);
+    });
+
+    it("calls a silent first attempt slow until its response starts", async () => {
+      const waits: unknown[] = [];
+      await callModel(ports(heads(["never"]), { onProviderWait: (wait) => waits.push(wait), slowAfterMs: 5 }), request);
+      expect(waits).toEqual(["slow", null]);
+    });
+
+    it("ends the wait at the response head, before any event", async () => {
+      const seen: unknown[] = [];
+      const call = ports(heads(["head"]), { onProviderWait: (wait) => seen.push(wait), slowAfterMs: 1_000 });
+      call.onEvent = vi.fn(async () => { seen.push("event"); });
+      await callModel(call, request);
+      expect(seen).toEqual(["event"]);
+    });
+
+    it("says retrying after the discard, and again after each later failure", async () => {
+      const seen: unknown[] = [];
+      const call = ports(heads(["drop", "answer", "drop", "answer"]), { onProviderWait: (wait) => seen.push(wait), slowAfterMs: 1_000 });
+      call.onDiscard = vi.fn(async () => { seen.push("discard"); });
+      await callModel(call, request);
+      expect(seen).toEqual(["discard", "retrying", null]);
+      await callModel(call, request);
+      expect(seen).toEqual(["discard", "retrying", null, "discard", "retrying", null]);
+    });
+
+    it("leaves a run that ran out of attempts to its failure", async () => {
+      const waits: unknown[] = [];
+      const provider = adapter([{ fail: markProviderStreamDrop(new Error("socket"), "reset") }]);
+      await expect(callModel(ports(provider, { onProviderWait: (wait) => waits.push(wait), slowAfterMs: 1_000 }), request))
+        .rejects.toThrow("socket");
+      expect(provider.calls).toBe(6);
+      expect(waits).toEqual(["retrying"]);
+    });
+
+    it("never calls a slow attempt slow after the run gave up on it", async () => {
+      const waits: unknown[] = [];
+      const provider = adapter([{ fail: http(400) }]);
+      await expect(callModel(ports(provider, { onProviderWait: (wait) => waits.push(wait), slowAfterMs: 5 }), request)).rejects.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(waits).toEqual([]);
+    });
+  });
+
   it("sends a request that met a 502 again and returns the answer without user action", async () => {
     const provider = adapter([{ fail: http(502) }, { events: [token("Hello")], text: "Hello" }]);
     const call = ports(provider);

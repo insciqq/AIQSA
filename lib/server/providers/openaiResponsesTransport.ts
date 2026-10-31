@@ -213,7 +213,7 @@ function initialRequestRetryDecision(
 }
 
 // Reviewed classifications a repeated request would only meet again.
-const deterministicFailureCodes = new Set<unknown>([PROVIDER_CONTEXT_LENGTH_EXCEEDED, "provider_response_not_retryable",
+const deterministicFailureCodes = new Set<unknown>([PROVIDER_CONTEXT_LENGTH_EXCEEDED, "provider_request_rejected", "provider_response_not_retryable",
   "provider_capability_unsupported", "provider_response_cancelled"]);
 
 /** Own data properties only: no getter of a foreign error runs. */
