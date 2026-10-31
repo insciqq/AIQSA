@@ -249,6 +249,14 @@ describe("run streaming", () => {
     expect(thread.messages.find((message) => message.id === "next-answer")).toMatchObject({ status: "streaming" });
   });
 
+  it("reports the failure text of the stream's error event", async () => {
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
+    await expect(result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed",
+      onRunId: vi.fn(), onMessageIds: vi.fn(), tokenBuffer: { flush: vi.fn(), push: vi.fn() },
+      response: new Response('event: error\ndata: {"code":"provider_auth_rejected","message":"The key was rejected."}\n\n') }))
+      .resolves.toMatchObject({ failed: true, failureMessage: "The key was rejected.", terminalStatus: "error" });
+  });
+
   it("does not publish a completion for another answer", async () => {
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: vi.fn(() => false) }));
     const onAnswerComplete = vi.fn();
