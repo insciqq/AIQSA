@@ -124,4 +124,15 @@ describe("sub-agent thread view", () => {
     expect(screen.queryByText("Found three laptops.")).toBeNull();
     expect(useSubagentStore.getState().view?.status).toBe("unavailable");
   });
+
+  it("names an ended turn's whole duration, not only its tool steps", async () => {
+    const ended = subagentTurn("turn-1", "done", {
+      endedAt: "2026-10-30T09:03:20.000Z", startedAt: "2026-10-30T09:00:00.000Z", report: "Done.",
+      workspaceActivity: { entries: [{ command: { preview: "python forecast.py" }, durationMs: 75, id: "call:1", kind: "command", phase: "succeeded" }] }
+    });
+    const { fetch } = subagentFetch([{ path: threadPath, respond: () => jsonResponse(subagentView("chat-a", subagentThread("thread-researcher", "done"), [ended])) }]);
+    vi.stubGlobal("fetch", fetch);
+    renderView();
+    expect(await screen.findByText("Worked in Workspace for 3m 20s")).toBeInTheDocument();
+  });
 });

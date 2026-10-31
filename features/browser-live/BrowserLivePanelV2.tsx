@@ -40,6 +40,7 @@ import {
   browserLiveAgentLabelV2,
   browserLiveAgentOptionV2,
   browserLiveActivityV2,
+  browserLiveListedAgentsV2,
   browserLiveEndCopyV2,
   browserLiveErrorCopyV2,
   browserLiveHostV2,
@@ -229,12 +230,13 @@ function BrowserLiveTypingV2({ onInputs }: Readonly<{ onInputs(...inputs: Browse
 }
 
 /** Whose tab the panel shows, when several agents browse: a compact select that fits any width. */
-function AgentSwitcherV2({ agents, onSelect, selected }: Readonly<{
+function AgentSwitcherV2({ agents: reported, onSelect, selected }: Readonly<{
   agents: readonly BrowserLiveAgent[];
   onSelect(agent: string): void;
   selected: string;
 }>) {
   const id = useId();
+  const agents = browserLiveListedAgentsV2(reported, selected);
   if (agents.length < 2) return null;
   const waiting = agents.filter((agent) => agent.waitingForUser).length;
   return (

@@ -558,6 +558,14 @@ describe("BrowserLivePanelV2 with several browsing agents", () => {
     expect(screen.getByText("The agent is using the browser")).toBeVisible();
   });
 
+  it("does not count the main agent as browsing while its tab is blank", () => {
+    openPanel();
+    const blank = agents().map((agent) => agent.id === "main" ? { ...agent, page: { title: "", url: "about:blank" } } : agent);
+    send("state", liveState({ agents: blank, selected: "thread_amazon", page: { url: "https://www.amazon.es/", title: "Amazon" } }));
+    const select = screen.getByRole("combobox", { name: /2 agents browsing/u });
+    expect(within(select).queryByRole("option", { name: /Main agent/u })).toBeNull();
+  });
+
   it("lists the browsing agents with their state and site, and switches the stream to the one picked", async () => {
     openPanel();
     send("state", liveState({ agents: agents({ thread_shop: { controller: "user" } }), selected: "thread_amazon",

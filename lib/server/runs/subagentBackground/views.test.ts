@@ -2,7 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeSubagentSummaryResponse } from "../../../contracts/subagentViews";
 import { toolActivityDescriptors, TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
-import { createSubagentViews } from "./views";
+import { runEndedToolCallResult } from "../toolLoopPersistence";
+import { createSubagentViews, subagentTurnWorkspaceActivity } from "./views";
 
 vi.mock("../../toolObservations/repository", () => ({
   branchPathMessageIds: vi.fn(async () => new Set(["answer-1"]))
@@ -130,5 +131,50 @@ describe("the summary's model and current step", () => {
     const { chats } = await createSubagentViews(client).summary({ chatIds: ["chat-1", "chat-2"], userId: "user-1" });
     expect(chats).toHaveLength(2);
     expect(tx.providerModel.findMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("subagentTurnWorkspaceActivity", () => {
+  const definitions = [{ namespacedName: "mcp_workspace_sandbox_exec_abc", originalName: "sandbox_exec" }];
+  const call = (id: string, overrides: Record<string, unknown> = {}) => ({
+    arguments: { args: ["open", "https://example.com"], command: "aiqsa-browser" }, id, result: null, startedAt: at,
+    toolName: "mcp_workspace_sandbox_exec_abc", ...overrides
+  });
+  const stored = (...payloads: readonly Record<string, unknown>[]) => ({
+    artifacts: payloads.map((payload) => ({ data: { artifactType: "workspace_activity", payload }, type: "artifact" })),
+    callId: "provider", content: [{ text: "{}", type: "text" }], name: "tool", status: "complete"
+  });
+
+  it("shows a running turn's Workspace command, and only Workspace calls", () => {
+    const activity = subagentTurnWorkspaceActivity({ active: true, calls: [call("c1"), call("c2", { toolName: "web_search" })], definitions, runId: "run-1" });
+    expect(activity?.entries).toHaveLength(1);
+    expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "running" });
+    expect(activity?.entries[0]?.command?.preview).toContain("aiqsa-browser open");
+  });
+
+  it("reads a settled call's stored entries, and an async command's poll updates its starting row", () => {
+    const start = { command: { preview: "python3 report.py" }, id: "call:start", kind: "command", phase: "running" };
+    const finished = { ...start, command: { exitCode: 0, preview: "python3 report.py", stdoutPreview: "report ready" }, phase: "succeeded" };
+    const activity = subagentTurnWorkspaceActivity({ active: true, calls: [call("start", { result: stored(start) }), call("poll", { result: stored(finished) })],
+      definitions, runId: "run-1" });
+    expect(activity?.entries).toHaveLength(1);
+    expect(activity?.entries[0]).toMatchObject({ command: { exitCode: 0, stdoutPreview: "report ready" }, id: "call:start", phase: "succeeded" });
+  });
+
+  it("keeps a call that ended with the run as an unknown step instead of failing the thread", () => {
+    const activity = subagentTurnWorkspaceActivity({ active: false, calls: [call("c1", { result: runEndedToolCallResult() })], definitions, runId: "run-1" });
+    expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "unknown" });
+  });
+
+  it("keeps a settled call whose result holds no entry, such as a timeout, as an unknown step", () => {
+    const result = { callId: "provider", content: [{ type: "json", value: { error: "workspace_tool_timeout" } }], name: "tool", status: "error" };
+    const activity = subagentTurnWorkspaceActivity({ active: true, calls: [call("c1", { result }), call("c2", { result: stored({ id: "bad" }) })], definitions, runId: "run-1" });
+    expect(activity?.entries).toHaveLength(2);
+    expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "unknown" });
+  });
+
+  it("has nothing to show without Workspace calls", () => {
+    expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1")], definitions: null, runId: "run-1" })).toBeNull();
+    expect(subagentTurnWorkspaceActivity({ active: true, calls: [], definitions, runId: "run-1" })).toBeNull();
   });
 });

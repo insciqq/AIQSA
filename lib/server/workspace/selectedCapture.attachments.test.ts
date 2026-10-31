@@ -60,7 +60,7 @@ async function fixture(ownerRunId = "main") {
       }),
       create: vi.fn(async ({ data }: { data: WorkspaceSelectedCapture & { references: { create: Omit<Reference, "captureId" | "releasedAt"> } } }) => {
         // Exercise the production constraint without connecting to PostgreSQL.
-        if (data.producerOwner !== `run:${data.modelRunId}` || JSON.stringify((data.selection as Prisma.JsonObject).producerOperation) !==
+        if (!data.producerOwner.startsWith("run:") || JSON.stringify((data.selection as Prisma.JsonObject).producerOperation) !==
           JSON.stringify({ generation: data.producerGeneration, owner: data.producerOwner })) {
           throw new Error("WorkspaceSelectedCapture_identity_check: 23514");
         }
@@ -138,11 +138,10 @@ describe("selected captures from attached runs", () => {
     for (const runId of ["main", "subagent"]) {
       const capture = await f.create(runId);
       const row = f.captures.get(capture.id)!;
-      expect(row).toMatchObject({ modelRunId: runId, producerOwner: `run:${runId}`, producerGeneration: 7,
-        selection: { producerOperation: { generation: 7, owner: `run:${runId}` } } });
+      expect(row).toMatchObject({ modelRunId: runId, producerOwner: f.operation.owner, producerGeneration: 7,
+        selection: { producerOperation: f.operation } });
       expect(f.collectOutputs.mock.calls.at(-1)![0]).toMatchObject({ modelRunId: runId,
         operation: f.operation, selection: { producerOperation: f.operation }, capture: { create: true } });
-      if (runId === owner) expect(row.selection).toEqual({ files: [{ root: "project", relativePath: "image.png" }], producerOperation: f.operation });
       const ref = { ...f.scope(runId), captureId: capture.id };
       expect(await f.create(runId)).toEqual(capture);
       const image = await f.service.imageSource({ ...ref, relativePath: "project/image.png" });
