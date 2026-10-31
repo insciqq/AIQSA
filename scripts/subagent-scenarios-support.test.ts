@@ -1,18 +1,22 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
+import { read, utils } from "xlsx";
+import { parseSpreadsheetDocument } from "../lib/server/parsing/spreadsheet";
+import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
-  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
+  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
+  SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, appendProgression, appendSessionSample,
   bindingEvidence, blindImageEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence,
   mainImageToolEvidence, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
-  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
-  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
+  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
+  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
   stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
+  type LWorkspaceCall, type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 
 const at = (seconds: number) => new Date(Date.UTC(2026, 9, 30, 12, 0, seconds));
@@ -43,9 +47,15 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(13);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(14);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
+  });
+
+  it("runs L only when named, with nothing beyond the stand", () => {
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("L");
+    expect(selectedSubagentScenarios("l")).toEqual(["L"]);
+    expect(subagentHarnessOptions({}, ["L"], "m")).toMatchObject({ restart: null, secondModel: null, textModel: null });
   });
 
   it("refuses a selected scenario whose second model or restart hook is missing before any setup", () => {
@@ -136,6 +146,72 @@ describe("files and images across agents (K)", () => {
   it("recognizes a PNG by its signature", () => {
     expect(pngBytes(Buffer.from(SCENARIO_J_PNG_BASE64, "base64"))).toBe(true);
     expect(pngBytes(new Uint8Array([1, 2, 3]))).toBe(false);
+  });
+});
+
+describe("a document the parser refuses, read in the Workspace (L)", () => {
+  const facts = scenarioLFacts("0123456789abcdef");
+  const shell = namespacedWorkspaceToolName("sandbox_shell");
+  const call = (overrides: Partial<LWorkspaceCall> = {}): LWorkspaceCall =>
+    ({ namesInbox: false, state: "complete", toolName: shell, unknownOutcome: false, ...overrides });
+
+  it("builds a workbook whose second column gives the sum, and the sum depends on the nonce", () => {
+    const sheet = read(facts.workbook, { type: "buffer" }).Sheets.Ledger!;
+    const rows = utils.sheet_to_json<Record<string, number>>(sheet);
+    expect(rows).toHaveLength(26_000);
+    expect(rows.reduce((sum, row) => sum + row.amount!, 0)).toBe(facts.expectedSum);
+    expect(Number.isSafeInteger(facts.expectedSum)).toBe(true);
+    expect(scenarioLFacts("0123456789abcdef").expectedSum).toBe(facts.expectedSum);
+    expect(scenarioLFacts("fedcba9876543210").expectedSum).not.toBe(facts.expectedSum);
+  }, 60_000);
+
+  it("is over the reader's real limit, so the parser refuses it", () => {
+    expect(() => parseSpreadsheetDocument({ bytes: facts.workbook, fileName: SCENARIO_L_FILE_NAME, mimeType: SCENARIO_L_MIME_TYPE }))
+      .toThrow(expect.objectContaining({ code: "parser_output_too_large" }));
+  }, 60_000);
+
+  it("asks for one computation in the Workspace and gives the answer away nowhere", () => {
+    const prompt = SUBAGENT_PROMPTS.L();
+    expect(prompt).toContain("Workspace");
+    expect(prompt).toContain(SCENARIO_L_FILE_NAME);
+    expect(prompt).not.toContain(String(facts.expectedSum));
+    expect(prompt).not.toContain("0123456789abcdef");
+  });
+
+  it("requires the refusal the Workspace path exists for before anything paid is sent", () => {
+    const refused = { extractedTextNull: true, processingErrorCode: "parser_output_too_large", status: "failed" };
+    expect(scenarioLUploadChecks(refused)).toEqual([]);
+    expect(scenarioLUploadChecks(null)).toEqual(["upload_not_settled"]);
+    expect(scenarioLUploadChecks({ extractedTextNull: false, processingErrorCode: null, status: "ready" }))
+      .toEqual(["upload_not_failed", "upload_code_not_output_too_large", "upload_has_extracted_text"]);
+    expect(scenarioLUploadChecks({ ...refused, processingErrorCode: "parser_rejected" })).toEqual(["upload_code_not_output_too_large"]);
+  });
+
+  it("finds the whole sum in the answer, with thousands separators or without, and never a part of another number", () => {
+    const pattern = new RegExp(scenarioLAnswerPattern(1_234_567));
+    for (const answer of ["1234567", "Сумма: **1 234 567**.", "1,234,567", "1\u00a0234\u00a0567", "1\u202f234\u202f567", "{\"text\":\"1234567\"}"]) {
+      expect(answer).toMatch(pattern);
+    }
+    for (const answer of ["11234567", "12345678", "123456", "1234568", "1 23 4567"]) expect(answer).not.toMatch(pattern);
+  });
+
+  it("recognizes the stored Workspace tools and leaves other tools out", () => {
+    const rows = [call({ namesInbox: true }), call({ toolName: namespacedWorkspaceToolName("sandbox_exec_start") }),
+      call({ namesInbox: true, toolName: namespacedWorkspaceToolName("sandbox_fs_write") }),
+      call({ namesInbox: true, toolName: "mcp_jira_sandbox_shell_0123456789" }), call({ state: "error" })];
+    expect(scenarioLWorkspaceEvidence(rows)).toEqual({ commands: 2, inboxCalls: 2, unknownOutcomes: 0, workspaceCalls: 4 });
+  });
+
+  it("passes only a finished run with the sum, a command, the inbox and no unknown outcome", () => {
+    const workspace = scenarioLWorkspaceEvidence([call({ namesInbox: true })]);
+    expect(oracleL({ answerHasSum: true, terminal: "complete", workspace })).toEqual({ failed: [],
+      counts: { answerHasSum: 1, commands: 1, inboxCalls: 1, unknownOutcomes: 0, workspaceCalls: 1 } });
+    expect(oracleL({ answerHasSum: false, terminal: "error", workspace: scenarioLWorkspaceEvidence([]) }).failed)
+      .toEqual(["run_not_complete", "sum_not_in_answer", "no_workspace_command", "inbox_not_read"]);
+    const unknown = scenarioLWorkspaceEvidence([call({ namesInbox: true }), call({ namesInbox: true, state: "error", unknownOutcome: true })]);
+    expect(oracleL({ answerHasSum: true, terminal: "complete", workspace: unknown }).failed).toEqual(["workspace_outcome_unknown"]);
+    const noCommand = scenarioLWorkspaceEvidence([call({ namesInbox: true, toolName: namespacedWorkspaceToolName("sandbox_fs_read") })]);
+    expect(oracleL({ answerHasSum: true, terminal: "complete", workspace: noCommand }).failed).toEqual(["no_workspace_command"]);
   });
 });
 
