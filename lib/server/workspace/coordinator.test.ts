@@ -212,7 +212,7 @@ function fixture() {
     async binding() { return binding(); },
     async markGuestUsed() { guestUsed = true; return true; },
     async retireUnusedRun() {
-      if (binding().guestUsed) return false;
+      if (binding().guestUsed || sessionState === "RUNNING" || sessionState === "CREATING") return false;
       operationOwner = null;
       return true;
     },
@@ -369,6 +369,19 @@ describe("Workspace coordinator", () => {
     expect(onActivity).not.toHaveBeenCalled();
   });
 
+  it("hands off an untouched last run by stopping the VM a sub-agent that left first started", async () => {
+    const f = fixture();
+    f.setUntouchedSession("RUNNING");
+    await expect(f.coordinator.handoff({ runId: f.runId, userId: "user_1", workspace: f.workspace }))
+      .resolves.toEqual({ status: "ready" });
+    expect(f.runtime.retireSessionOperation).toHaveBeenCalledOnce();
+    expect(f.settledSessions).toEqual(["stopped"]);
+    expect(f.sessionState()).toBe("STOPPED");
+    expect(f.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(f.runtime.collectOutputs).not.toHaveBeenCalled();
+    expect(f.runtime.collectBrowserSessions).not.toHaveBeenCalled();
+  });
+
   it("exports after a crash-ambiguous guest command even without an initialization receipt", async () => {
     const f = fixture();
     f.setUntouchedSession("STOPPED");
@@ -487,6 +500,49 @@ describe("Workspace coordinator", () => {
     // Deleting the task leaves an ordinary continuation seed.
     Object.assign(seed, { leaseExpiresAt: null, scheduledTaskId: null, status: "TRANSFERRED" });
     await expect(claim()).resolves.not.toHaveProperty("required");
+  });
+
+  describe("retiring a run that never used the guest", () => {
+    const SUBAGENT_RUN = "run_subagent";
+    const attachment = (modelRunId: string, status: string) =>
+      ({ modelRun: { status, subagentThreadId: modelRunId === SUBAGENT_RUN ? "thread_1" : null }, modelRunId });
+    /** The repository's retirement over a session in `state`, under the shared operation of an earlier run that used the guest. */
+    function retirement(state: string, attached: readonly ReturnType<typeof attachment>[]) {
+      const session = { chatId: "chat_1", id: "session_1", operationExpiresAt: null, operationOwner: "run:run_main", state, version: 3 };
+      const tx = {
+        $queryRaw: vi.fn(async () => []),
+        workspaceRunAttachment: { deleteMany: vi.fn(async () => ({ count: 1 })), findMany: vi.fn(async () => attached) },
+        workspaceRunBinding: { findFirst: vi.fn(async () => ({ modelRunId: SUBAGENT_RUN })) },
+        workspaceSession: { findUnique: vi.fn(async () => session), update: vi.fn(async () => session) }
+      };
+      const repository = createPrismaWorkspaceCoordinatorRepository({
+        $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx)
+      } as unknown as PrismaClient);
+      const binding = { operationGeneration: 3, operationOwner: "run:run_main", runId: SUBAGENT_RUN,
+        sessionId: "session_1" } as unknown as WorkspaceExecutionBinding;
+      return { binding, repository, tx };
+    }
+
+    it.each(["RUNNING", "CREATING"])("leaves the last run of a %s session to the path that stops the VM and settles it", async (state) => {
+      const { binding, repository, tx } = retirement(state, [attachment(SUBAGENT_RUN, "streaming"), attachment("run_main", "complete")]);
+      await expect(repository.retireUnusedRun(binding)).resolves.toBe(false);
+      expect(tx.workspaceSession.update).not.toHaveBeenCalled();
+      expect(tx.workspaceRunAttachment.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it.each(["PENDING", "READY", "STOPPED"])("releases the last run of a %s session, which nothing holds busy", async (state) => {
+      const { binding, repository, tx } = retirement(state, [attachment(SUBAGENT_RUN, "streaming")]);
+      await expect(repository.retireUnusedRun(binding)).resolves.toBe(true);
+      expect(tx.workspaceSession.update).toHaveBeenCalledWith({ data: { operationExpiresAt: null, operationOwner: null }, where: { id: "session_1" } });
+      expect(tx.workspaceRunAttachment.deleteMany).toHaveBeenCalledWith({ where: { chatId: "chat_1" } });
+    });
+
+    it("takes only the run's attachment while another active run keeps the VM", async () => {
+      const { binding, repository, tx } = retirement("RUNNING", [attachment(SUBAGENT_RUN, "streaming"), attachment("run_main", "streaming")]);
+      await expect(repository.retireUnusedRun(binding)).resolves.toBe(true);
+      expect(tx.workspaceSession.update).not.toHaveBeenCalled();
+      expect(tx.workspaceRunAttachment.deleteMany).toHaveBeenCalledWith({ where: { modelRunId: SUBAGENT_RUN } });
+    });
   });
 
   it.each(["restore", "unsupported"])("never lets a run go on with an empty carried project (%s fails)", async (failure) => {

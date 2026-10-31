@@ -90,6 +90,8 @@ export type SubagentTurnInput = SubagentChatScope & Readonly<{
    * website actions and payments, never the brief alone.
    */
   userMessage: string;
+  /** The code a background turn's Workspace attach was refused with: the turn runs without the Workspace and is told so. */
+  workspaceRefused?: string;
 }>;
 
 export type SubagentTurnHandle = Readonly<{ turnId: string }>;

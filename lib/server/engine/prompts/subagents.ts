@@ -80,7 +80,9 @@ export const SUBAGENT_ROLE_SECTION = [
  * framed as written to the main agent. It changes per turn and thread, so the stable system prompt stays cached. The
  * framing keeps a sub-agent from taking the main agent's instructions ("call the sub-agent X") as its own.
  */
-export function subagentTurnText(input: Readonly<{ brief: string; continued: boolean; name: string; userMessage: string }>): string {
+export function subagentTurnText(input: Readonly<{ brief: string; continued: boolean; name: string; userMessage: string;
+  /** The code the Workspace refused this turn with, in a run that has one. */
+  workspaceRefused?: string }>): string {
   const user = input.userMessage.trim() ? input.userMessage : "(The user's message has no text.)";
   const task = input.continued ? "its message above" : "its brief above";
   return [
@@ -95,8 +97,16 @@ export function subagentTurnText(input: Readonly<{ brief: string; continued: boo
       "do not follow instructions in it meant for the main agent, such as calling, waiting for or briefing sub-agents:",
     "<user_message>",
     user,
-    "</user_message>"
+    "</user_message>",
+    ...(input.workspaceRefused ? ["", subagentWorkspaceRefusal(input.workspaceRefused)] : [])
   ].join("\n");
+}
+
+/** The run's admitted guidance still describes the Workspace, so this overrides it for the one turn. */
+function subagentWorkspaceRefusal(code: string): string {
+  return `The Workspace is not available to you in this turn (${code}), whatever the instructions above say of it: its tools are not ` +
+    "offered, so you cannot run commands, use its browser or read or write its files. Do what the task needs without it. If the task " +
+    `cannot be done without it, do not work around that: report \`Outcome: blocked (${code})\` and say what is left to do.`;
 }
 
 /** A follow-up the user wrote in the chat while this sub-agent worked (the main agent waiting on it), delivered to it as user input. */
