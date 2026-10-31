@@ -11,7 +11,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 
 ## What users see
 
-- Answers show content, sources, generated files, factual progress and actionable failures. Inspecting internal execution is not a product goal: no diagnostic panels, raw payloads, retrieval scores, event histories, private identifiers or receipts.
+- Beyond the root product stance, answers show no private identifiers or receipts.
 - Each answer has one process disclosure above the body (thinking, friendly tool names, outcomes, duration), actions below it, then sources and downloads.
 - The process line says how long the work took; search, Memory and Past chats counts and PDF routes live in the fold. A line names them only when there is no work to name, or when every search failed (operator decision 2026-10-30, reversing `f8bba8134`).
 - Counts must be true. In the fold, Search ×N counts successful calls per engine; failures show separately. Memory and Past chats counts describe what entered the context, not proven influence.
@@ -29,7 +29,6 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Server truth owns identity, entitlement, catalogs, branches, lifecycle and saved preferences. Browser state owns overlays, focus, drafts, in-flight handles and theme.
 - Key drafts, uploads and runs by their chat or resource, capture the key at dispatch, and drop stale results after navigation. Background refresh keeps drafts, focus, selection and scroll. A malformed response fails visibly instead of becoming guessed state.
 - Browser drafts are keyed by account and session; temporary-chat drafts never persist, and sign-out clears the account's drafts. Browser storage grants no authority; attachments and controls are never restored from it.
-- Components never import Prisma, server repositories, secrets, route handlers or provider transports.
 
 ## Conversation
 
@@ -44,7 +43,6 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Workspace is ambient in interactive chats: a send uses it whenever the installation offers it and the model calls tools, with no composer or chat toggle and no saved default (operator decision 2026-10-20). Controls wrap whole; no More menu or horizontal scroll hides a capability. On a phone the composer rests as one line until engaged, which shows every tool before any send (operator decision 2026-10-29, replacing 2026-09-14). Stop keeps files, branching never rolls them back, and Reset keeps messages and outputs. Cards show relative paths, never runtime identities. A continuation whose Workspace copy failed opens empty and never claims the files survived.
 - Sub-agents nest under their chat in the chat list and never count as chats; a sub-agent's thread opens read-only inside its chat with Stop (operator decision 2026-10-29).
 - Each sub-agent state has one clickable place in the chat, so a running one opens from the chat at every width without the sidebar (operator decision 2026-10-30): a row in the answer while the answer waits for it, a small chip above the composer while a background one is active, and a row in its answer once it has ended. The composer's Stop already ends foreground turns, so `Stop all` lives only in the list of several background sub-agents.
-- Every chat is one agent with no mode to pick (`agent_docs/RUN_CONTRACTS.md`).
 - Artifact previews open only by user action. Historical answers keep pointing at their own artifact versions and files (`sandbox:` links), and thumbnails never run scripts.
 
 ## Management surfaces
