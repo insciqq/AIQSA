@@ -1,5 +1,10 @@
+import type { PrismaClient } from "@prisma/client";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { describe, expect, it, vi } from "vitest";
-import { SUBAGENT_BLOCKED_REASONS, SUBAGENT_USAGE_PURPOSE, decodeSubagentCallResult, type SubagentToolGroup } from "../../../contracts/subagents";
+import {
+  SUBAGENT_BLOCKED_REASONS, SUBAGENT_FILES_TRUNCATED_NOTICE, SUBAGENT_LIMITS, SUBAGENT_USAGE_PURPOSE,
+  decodeSubagentCallResult, type SubagentToolGroup
+} from "../../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../../domain/modelRunEvents";
 import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
@@ -7,6 +12,10 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
 import type { SubagentBinding, SubagentTurnInput } from "../../subagents/ports";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
+import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackground/render";
+import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
+import { runToolBatch } from "../toolBatch";
+import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
 import { SUBAGENT_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
@@ -17,6 +26,8 @@ import { workspacePromptContract } from "../../workspace/promptContract";
 import {
   WORKSPACE_TURN_GUIDANCE_PREFIX,
   createSubagentRunner,
+  endedSubagentCallResult,
+  handedBackApproval,
   parseSubagentOutcome,
   subagentRequest,
   type SubagentHost
@@ -99,7 +110,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
     resolve: (name) => tools.find((entry) => entry.definition.name === name) };
   const usage: RunUsageAttribution[] = [];
   const defaultFences = createAgentUnknownEffects();
-  const settled: unknown[] = [];
+  const settled: Array<Parameters<SubagentHost["settleTurn"]>[0]> = [];
   const controller = new AbortController();
   const host: SubagentHost = {
     branchRunIds: options.earlier ? ["run-earlier"] : [],
@@ -148,10 +159,104 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
   return { appended, begun, controller, host, input, lookup, requests, runner, settled, toolCalls, usage };
 }
 
+function reportStore(runId: string) {
+  const memory = memoryToolObservations();
+  const saveResult: SubagentHost["saveResult"] = (input) => saveToolResultText({ ...input,
+    producer: { runId, toolCallId: input.toolCallId, userId: "user" }, service: memory.service() });
+  const prisma = { toolObservation: { findFirst: vi.fn(async (query: { where: { id: string; modelRun: { chatId: string; userId: string } } }) => {
+    if (query.where.modelRun.chatId !== "chat" || query.where.modelRun.userId !== "user") return null;
+    const row = [...memory.rows.values()].find((row) => row.id === query.where.id && row.state === "READY");
+    return row ? { ...row, toolCall: { arguments: { name: "shop" }, toolName: "call_subagent" } } : null;
+  }) } } as unknown as PrismaClient;
+  const reader = () => createSavedToolResultReader({ prisma, storage: memory.storage });
+  const readAll = async (handle: string) => {
+    // A fresh reader represents a later turn; it has no reference to the runner or its transcript.
+    const later = reader();
+    let text = "";
+    let offset: number | null = 0;
+    for (let page = 0; offset !== null && page < 10; page += 1) {
+      const result = await executeReadToolResult({ arguments: { handle, offset }, id: `read-${page}`, name: "read_tool_result" },
+        { chatId: "chat", reader: later, userId: "user" });
+      expect(result.status).toBe("complete");
+      const value = JSON.parse(toolResultOutputText(result)) as { nextOffset: number | null; text: string };
+      text += value.text;
+      offset = value.nextOffset;
+    }
+    expect(offset).toBeNull();
+    return JSON.parse(text) as { report: string };
+  };
+  return { memory, readAll, reader, saveResult };
+}
+
 const userTexts = (request: ProviderRunRequest) =>
   (request.history ?? []).flatMap((item) => item.type === "user" ? [item.text] : []);
 
 describe("sub-agent runner", () => {
+  it("delivers a 30,000-character foreground report through the ordinary tool excerpt and reads all of it later", async () => {
+    const report = "x".repeat(30_000);
+    const ctx = setup([{ text: report }]);
+    const saved = reportStore("run");
+    const tool = engineTool("call_subagent", "session", async ({ call }) => ({ callId: call.id, name: call.name, status: "complete",
+      content: [{ type: "json", value: await ctx.runner.wait(await ctx.runner.start(ctx.input())) }] }), { observationSource: "workspace" });
+    const batch = await runToolBatch({ chatId: "chat", history: new ToolCallRepeatHistory(), maxToolCalls: null,
+      onEvent: async () => undefined, onLiveEvent: () => undefined, registry: { definitions: () => [tool.definition], resolve: () => tool },
+      runId: "run", saveResult: saved.saveResult, signal: new AbortController().signal, store: ctx.toolCalls,
+      unknownEffects: createAgentUnknownEffects().agent("main"), userId: "user" }, { calls: 0 },
+    { calls: [{ arguments: { name: "shop" }, id: "main-call", name: "call_subagent" }], round: 1 });
+    const result = batch.results[0]!;
+    expect(result.output).toContain("characters omitted here");
+    expect(result.output).toContain("read_tool_result");
+    expect(result.handle).toMatch(/^tor1_[a-f0-9]{32}$/u);
+    expect((await saved.readAll(result.handle!)).report).toBe(report);
+    expect(ctx.settled[0]?.result.report).toBe(report);
+  });
+
+  it("saves a full background report before settlement and gives running callbacks and wake-ups a readable handle", async () => {
+    const report = "x".repeat(30_000);
+    const ctx = setup([{ text: report }]);
+    const saved = reportStore("background-run");
+    vi.mocked(ctx.host.saveResult).mockImplementation(saved.saveResult);
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "background-run", mode: "background" })));
+    expect(result.report).toBe(report);
+    expect(decodeSubagentCallResult(result)).toEqual(result);
+    expect(result.resultHandle).toMatch(/^tor1_[a-f0-9]{32}$/u);
+    expect(ctx.begun).toEqual([expect.objectContaining({ runId: "background-run", toolName: "call_subagent" })]);
+    expect(ctx.settled[0]?.result.resultHandle).toBe(result.resultHandle);
+    const callback = { name: "shop", result, turnId: "turn-1" };
+    for (const text of [renderCallbackFollowup(callback, { tokens: 1 }), renderWakeUp([callback]).text]) {
+      expect(text).toContain(result.resultHandle!);
+      expect(text).toContain("read_tool_result");
+      expect(text.length).toBeLessThan(report.length);
+    }
+    expect((await saved.readAll(result.resultHandle!)).report).toBe(report);
+    await expect(saved.reader().read({ chatId: "other-chat", handle: result.resultHandle!, userId: "user" })).resolves.toBeNull();
+    await expect(saved.reader().read({ chatId: "chat", handle: result.resultHandle!, userId: "other-user" })).resolves.toBeNull();
+  });
+
+  it("keeps the background report and names a storage failure", async () => {
+    const report = "x".repeat(30_000);
+    const ctx = setup([{ text: report }]);
+    vi.mocked(ctx.host.saveResult).mockResolvedValue({ unsavedReason: "saved_results_budget_reached" });
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "background-run", mode: "background" })));
+    expect(result).toMatchObject({ report, resultUnavailableReason: "saved_results_budget_reached", state: "done" });
+    expect(renderCallbackFollowup({ name: "shop", result, turnId: "turn-1" }, { tokens: 800 }))
+      .toContain("could not be saved (saved_results_budget_reached)");
+  });
+
+  it("marks omitted files as remaining on the shared disk and preserves large approval handbacks", () => {
+    const files = Array.from({ length: SUBAGENT_LIMITS.files + 1 }, (_, index) => `file-${index}.txt`);
+    const handed = handedBackApproval({ arguments: { body: "x".repeat(30_000) }, id: "c", name: "mcp_jira_create_issue" }, approval)!;
+    expect(handed.arguments).toEqual({ body: "x".repeat(30_000) });
+    const approvals = Array.from({ length: 11 }, () => handed);
+    const result = endedSubagentCallResult({ approvals, binding, files, name: "shop", report: "Full report", state: "done", steps: [] });
+    expect(result.files).toHaveLength(SUBAGENT_LIMITS.files);
+    expect(result.filesNotice).toBe(SUBAGENT_FILES_TRUNCATED_NOTICE);
+    expect(result.approvals).toEqual(approvals);
+    expect(decodeSubagentCallResult(result)).toEqual(result);
+    expect(endedSubagentCallResult({ approvals: [], binding, files: ["a", "a"], name: "shop", report: "", state: "done", steps: [] }).filesNotice)
+      .toBeUndefined();
+  });
+
   it("runs a turn on the parent's route with its own prompt, the brief and the user's message, filtered tools and thread keys", async () => {
     const ctx = setup([{ calls: [{ arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" }] },
       { text: "Outcome: partial\nFound two of three laptops." }]);
