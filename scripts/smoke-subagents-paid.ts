@@ -28,6 +28,17 @@
  *   is not covered: its only update hook (`/api/test/telegram/updates`) exists
  *   in test mode, which the stand guard refuses, and a real bot needs a token
  *   and a linked Telegram account.
+ * - J: the capture and retire defects, one chat and two sends, only when named. The main agent
+ *   writes a small PNG, starts `viewer` (views it with its image tool) and `quiet` (no tool, a long
+ *   written answer, so it ends last) and answers at once; the second message goes as soon as the
+ *   main run and both turns ended. Oracles: the image call succeeded and no capture identity or
+ *   internal vision failure exists; the second message was accepted (a refusal only because the
+ *   server's wake-up took the turn first is sent again once and recorded); no callback stays owed;
+ *   the session left `RUNNING` to `STOPPED` or `PENDING` by the ordinary path (`secondsToLeaveRunning`
+ *   from the last turn's end, signed, zero or less when healthy). `order_not_reached: true` records
+ *   that the model did not produce the defect's order, and is not a failure. Paid calls: about 8–11
+ *   codex-lb requests (main 3–4, viewer 2–3 and at most one System Vision call, quiet 1 long answer,
+ *   wake-up and second message 1–2 each) in about 3–6 minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -82,11 +93,11 @@ import {
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
-  SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, appendProgression, bindingEvidence, browserEvidence, callSubagentOutcomes,
-  callbackEvidence, cleanUpScenario, failedToolCalls, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI,
-  peakConcurrentTurns, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, selectedSubagentScenarios,
-  stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type PurposeUsageRow, type RestartHook, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
+  SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, appendProgression, appendSessionSample, bindingEvidence,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ,
+  peakConcurrentTurns, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, selectedSubagentScenarios,
+  sendRefusal, sessionStopEvidence, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
+  type PurposeUsageRow, type RestartHook, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
   type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
@@ -157,19 +168,27 @@ async function waitMainIdle(ctx: Context, chatId: string, timeoutMs = (TURN_SECO
   }, "main_not_idle", 3_000);
 }
 
-/** Sends one user message as the composer would, once the main agent is idle; resolves the admitted run's id. */
-async function send(ctx: Context, run: Run, chatId: string, text: string): Promise<string> {
-  await waitMainIdle(ctx, chatId);
+type SendAttempt = Readonly<{ code: string; ok: false } | { ok: true; runId: string }>;
+
+/** One send as the composer would make it, now: a refusal comes back, an accepted send gives the admitted run's id. */
+async function trySend(ctx: Context, run: Run, chatId: string, text: string): Promise<SendAttempt> {
   const leaf = await activeLeaf(ctx, chatId);
   const known = new Set((await mainRuns(ctx.db, chatId)).map((entry) => entry.id));
   const abort = new AbortController();
   const response = await request(ctx.session.api, `/api/chats/${encodeURIComponent(chatId)}/messages`, { body: {
     content: { blocks: [{ text, type: "text" }] }, expectedActiveLeafId: leaf, ...runControls(ctx.model)
   }, method: "POST", signal: abort.signal });
-  if (!response.ok) fail(`send_${await errorCode(response)}`);
+  if (!response.ok) return { code: await errorCode(response), ok: false };
   run.streams.push({ abort, drained: discard(response) });
-  return poll(120_000, async () => (await mainRuns(ctx.db, chatId))
-    .find((entry) => !known.has(entry.id) && !entry.systemTurn)?.id ?? null, "run_not_admitted");
+  return { ok: true, runId: await poll(120_000, async () => (await mainRuns(ctx.db, chatId))
+    .find((entry) => !known.has(entry.id) && !entry.systemTurn)?.id ?? null, "run_not_admitted") };
+}
+
+/** Sends one user message as the composer would, once the main agent is idle; resolves the admitted run's id. */
+async function send(ctx: Context, run: Run, chatId: string, text: string): Promise<string> {
+  await waitMainIdle(ctx, chatId);
+  const sent = await trySend(ctx, run, chatId, text);
+  return sent.ok ? sent.runId : fail(`send_${sent.code}`);
 }
 
 type Terminal = Readonly<{ errorCode: string | null; status: string }>;
@@ -340,6 +359,48 @@ async function settleCallbacks(ctx: Context, chatId: string, timeoutMs = 120_000
     quiet = owed === 0 && !open && awaited ? quiet + 1 : 0;
     return quiet >= 2 ? true : null;
   }, "callbacks_still_owed", 3_000).catch(() => false);
+}
+
+/** The chat's Workspace session as it stands, on the stand's clock; the owner's kind is computed here and the owner never leaves SQL. */
+async function sessionSample(db: PostgresClient, chatId: string): Promise<SessionSample | null> {
+  const { rows } = await db.query<SessionSample>(`SELECT "state"::text AS "state", ("operationExpiresAt" IS NOT NULL) AS "closing",
+      CASE WHEN "operationOwner" IS NULL THEN 'none' WHEN "operationOwner" LIKE 'maintenance:%' THEN 'maintenance' ELSE 'other' END AS "owner",
+      clock_timestamp() AT TIME ZONE 'UTC' AS "at"
+    FROM "WorkspaceSession" WHERE "chatId" = $1`, [chatId]);
+  return rows[0] ?? null;
+}
+
+/** Keeps the session's changes, read once a second. */
+function watchSession(ctx: Context, chatId: string): Readonly<{ stop(): Promise<SessionSample[]> }> {
+  let stopped = false;
+  let samples: SessionSample[] = [];
+  const loop = (async () => {
+    while (!stopped) {
+      const sample = await sessionSample(ctx.db, chatId).catch(() => null);
+      if (sample) samples = appendSessionSample(samples, sample);
+      await sleep(1_000);
+    }
+  })();
+  return {
+    async stop() {
+      stopped = true;
+      await loop;
+      return samples;
+    }
+  };
+}
+
+/** The defects' failures anywhere in the chat's runs, matched inside SQL: tool results, run errors and turn end reasons. */
+async function captureFailures(db: PostgresClient, chatId: string) {
+  const { rows } = await db.query<{ captureIdentity: number; visionInternal: number }>(`SELECT
+      count(*) FILTER (WHERE strpos(f."text", 'WorkspaceSelectedCapture_identity_check') > 0)::int AS "captureIdentity",
+      count(*) FILTER (WHERE strpos(f."text", 'vision_analysis_internal_failed') > 0)::int AS "visionInternal"
+    FROM (
+      SELECT coalesce(c."result"::text, '') AS "text" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1
+      UNION ALL SELECT coalesce("errorPayload"::text, '') FROM "ModelRun" WHERE "chatId" = $1
+      UNION ALL SELECT coalesce("reasonCode", '') FROM "SubagentTurn" WHERE "chatId" = $1
+    ) f`, [chatId]);
+  return rows[0] ?? { captureIdentity: 0, visionInternal: 0 };
 }
 
 /** The scenario's common evidence, assigned into its line, once owed callbacks have settled. */
@@ -842,6 +903,69 @@ async function scenarioI(ctx: Context, run: Run): Promise<Outcome> {
   return { success: terminal.status === "complete" && checks.length === 0, usage };
 }
 
+/** Sends J's second message at once; a send the server's wake-up beat goes again once the main agent is idle. */
+async function sendAtOnce(ctx: Context, run: Run, chatId: string, text: string) {
+  const refusals: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const sent = await trySend(ctx, run, chatId, text);
+    if (sent.ok) return { refusals, runId: sent.runId };
+    const mainRunActive = (await mainRuns(ctx.db, chatId)).some((entry) => !TERMINAL_RUN_STATES.has(entry.status));
+    refusals.push(sendRefusal(sent.code, { mainRunActive, session: await sessionSample(ctx.db, chatId) }));
+    if (refusals.at(-1) !== SEND_LOST_TO_WAKE_UP) break;
+    await waitMainIdle(ctx, chatId, 10 * 60_000).catch(() => undefined);
+  }
+  return { refusals, runId: null };
+}
+
+async function scenarioJ(ctx: Context, run: Run): Promise<Outcome> {
+  const imageName = `subagent-j-${runSecrets(randomBytes(16)).nonce}.png`;
+  const { quiet, viewer } = SUBAGENT_NAMES.capture;
+  const { question } = SUBAGENT_PROMPTS.J;
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario J");
+  run.chats.push(chat.id);
+  const session = watchSession(ctx, chat.id);
+  try {
+    const started = Date.now();
+    const first = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.J.start(imageName));
+    run.line.firstTerminal = (await waitRun(ctx, first)).status;
+    // A tight poll: the second message races the wake-up, whose coalescing window is 1.5 s.
+    await poll(15 * 60_000, async () => {
+      const turns = await Promise.all([viewer, quiet].map((name) => latestTurnOf(ctx.db, chat.id, name)));
+      return turns.every((turn) => turn !== null && turn.state !== "running" && turn.state !== "waiting") ? true : null;
+    }, "background_end_timeout", 500).catch(() => { run.line.backgroundEndTimeout = true; });
+    const mainRunsActive = (await mainRuns(ctx.db, chat.id)).filter((entry) => !TERMINAL_RUN_STATES.has(entry.status)).length;
+    const second = await sendAtOnce(ctx, run, chat.id, question.text);
+    const secondTerminal = second.runId === null ? null : await waitRun(ctx, second.runId);
+    const { rows } = await ctx.db.query<{ hit: boolean }>(`SELECT strpos(m."content"::text, $2) > 0 AS "hit"
+      FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."id" = $1`, [second.runId, question.answer]);
+    const secondAnswered = secondTerminal?.status === "complete" && rows[0]?.hit === true;
+    // A refused message leaves the callbacks to the wake-up, which the defect holds back until the backstop.
+    await waitMainIdle(ctx, chat.id, 10 * 60_000).catch(() => { run.line.mainIdleTimeout = true; });
+    const { settled, tools, turns, usage, wakeUps } = await commonEvidence(ctx, run, chat.id);
+    const threads = await threadIdsByName(ctx.db, chat.id);
+    const threadOf = (name: string) => threads.get(name)?.at(-1) ?? null;
+    const turnOf = (name: string) => turns.filter((turn) => turn.threadId === threadOf(name)).at(-1) ?? null;
+    const order = scenarioJOrder({ mainRunsActive, quiet: turnOf(quiet), viewer: turnOf(viewer),
+      quietToolCalls: tools.filter((row) => row.threadId === threadOf(quiet)).length });
+    const samples = await session.stop();
+    const stop = sessionStopEvidence(samples, order.lastTurnEnd);
+    const image = imageToolEvidence(tools, threadOf(viewer));
+    const failures = await captureFailures(ctx.db, chat.id);
+    const verdict = oracleJ({ callbacks: callbackEvidence(turns, wakeUps), failures, image, order, secondAccepted: second.runId !== null,
+      secondAnswered, secondRefusals: second.refusals, session: stop, settled, wakeUps });
+    const { lastTurnEnd: _lastTurnEnd, ...orderLine } = order;
+    Object.assign(run.line, orderLine, { captureFailures: failures, image, oracleCounts: verdict.counts,
+      secondAccepted: second.runId !== null, secondAnswered, secondRefusals: second.refusals, secondTerminal: secondTerminal?.status ?? null,
+      sessionStates: samples.map((sample) => sample.state), sessionStop: stop, wallSeconds: seconds(started) });
+    const checks = [...verdict.failed];
+    if (!usage.split) checks.push("usage_not_split");
+    run.line.checksFailed = checks;
+    return { success: checks.length === 0, usage };
+  } finally {
+    await session.stop();
+  }
+}
+
 async function runScenario(ctx: Context, id: SubagentScenarioId, index: number): Promise<SubagentRunRecord> {
   const run: Run = { chats: [], interactions: [], line: { run: index, scenario: id }, streams: [], tasks: [] };
   const started = Date.now();
@@ -871,6 +995,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "G": outcome = await scenarioG(ctx, run); break;
       case "H": outcome = await scenarioH(ctx, run); break;
       case "I": outcome = await scenarioI(ctx, run); break;
+      case "J": outcome = await scenarioJ(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";

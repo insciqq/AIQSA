@@ -1,14 +1,17 @@
 import { createHash } from "node:crypto";
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
-  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, appendProgression,
-  bindingEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, notaryValue, stableCode,
+  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
+  SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, appendProgression, appendSessionSample,
+  bindingEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
-  oracleFBranched, oracleFContinued, oracleH, oracleI, peakConcurrency, peakConcurrentTurns, progressionSaw, requestedModelEvidence,
-  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, selectedSubagentScenarios, stateCounts, stopChecks, stopEvidence,
+  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, peakConcurrency, peakConcurrentTurns, progressionSaw, requestedModelEvidence,
+  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
+  stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type ToolRow, type TurnRow, type WakeUpRow
+  type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 
 const at = (seconds: number) => new Date(Date.UTC(2026, 9, 30, 12, 0, seconds));
@@ -39,7 +42,9 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(11);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(12);
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
+    expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
 
   it("refuses a selected scenario whose second model or restart hook is missing before any setup", () => {
@@ -315,6 +320,121 @@ describe("evidence from stored rows", () => {
     // A wake-up from before the restart is not the restart's.
     expect(restartEvidence([cut("a", "wake-0")], [{ createdAt: at(50), runId: "wake-0", runStatus: "complete" }], ms(100)))
       .toMatchObject({ oneCoalescedWakeUp: false, wakeUpsAfterRestart: 0 });
+  });
+});
+
+describe("scenario J: the capture and retire defects", () => {
+  const sample = (seconds: number, state: string, owner: SessionSample["owner"] = "other", closing = false): SessionSample =>
+    ({ at: at(seconds), closing, owner, state });
+  const viewerTurn = turn({ endedAt: at(30), mode: "background", threadId: "viewer", turnId: "turn-viewer" });
+  const quietTurn = turn({ endedAt: at(90), mode: "background", threadId: "quiet", turnId: "turn-quiet" });
+  const wakeUp: WakeUpRow = { createdAt: at(32), runId: "wake-1", runStatus: "complete" };
+  const delivered = [{ ...viewerTurn, callbackRunId: "wake-1" }, { ...quietTurn, callbackRunId: "run-2" }];
+  const order = scenarioJOrder({ mainRunsActive: 0, quiet: quietTurn, quietToolCalls: 0, viewer: viewerTurn });
+  const healthy = {
+    callbacks: callbackEvidence(delivered, [wakeUp]),
+    failures: { captureIdentity: 0, visionInternal: 0 },
+    image: imageToolEvidence([tool({ threadId: "viewer", toolName: "view_workspace_image" })], "viewer"),
+    order,
+    secondAccepted: true,
+    secondAnswered: true,
+    secondRefusals: [] as string[],
+    session: sessionStopEvidence([sample(5, "RUNNING"), sample(89, "STOPPED", "none")], order.lastTurnEnd),
+    settled: true,
+    wakeUps: [wakeUp]
+  };
+
+  it("names the two agents, the per-run file and the exact fan-out, and writes an image the product can decode", async () => {
+    const prompt = SUBAGENT_PROMPTS.J.start("subagent-j-1.png");
+    expect(prompt).toContain(`printf '%s' '${SCENARIO_J_PNG_BASE64}' | base64 -d > /workspace/project/subagent-j-1.png`);
+    for (const name of Object.values(SUBAGENT_NAMES.capture)) expect(prompt).toContain(`суб-агента ${name}.`);
+    expect(prompt).toContain("Суб-агентов ровно два, вызовов call_subagent ровно два");
+    expect(SUBAGENT_PROMPTS.J.question.answer).toBe(String(12 * 12));
+    const image = sharp(Buffer.from(SCENARIO_J_PNG_BASE64, "base64"));
+    expect(await image.metadata()).toMatchObject({ format: "png", height: 64, width: 64 });
+  });
+
+  it("counts an image call as succeeded only when it completed without a code, on the viewer's own thread", () => {
+    const rows = [tool({ threadId: "viewer", toolName: "analyze_image" }),
+      tool({ resultCode: "vision_analysis_internal_failed", state: "error", threadId: "viewer", toolName: "analyze_image" }),
+      tool({ threadId: "quiet", toolName: "view_workspace_image" }), tool({ threadId: "viewer", toolName: "sandbox_shell" })];
+    expect(imageToolEvidence(rows, "viewer")).toEqual({ calls: 2, failureCodes: { vision_analysis_internal_failed: 1 }, succeeded: 1 });
+    expect(imageToolEvidence(rows, null)).toEqual({ calls: 0, failureCodes: {}, succeeded: 0 });
+  });
+
+  it("records the order the model decided instead of failing it", () => {
+    expect(order).toMatchObject({ lastTurnEnd: ms(90), order_not_reached: false });
+    expect(scenarioJOrder({ mainRunsActive: 0, quiet: viewerTurn, quietToolCalls: 0, viewer: quietTurn }).order_not_reached).toBe(true);
+    expect(scenarioJOrder({ mainRunsActive: 1, quiet: quietTurn, quietToolCalls: 0, viewer: viewerTurn }).order_not_reached).toBe(true);
+    expect(scenarioJOrder({ mainRunsActive: 0, quiet: quietTurn, quietToolCalls: 1, viewer: viewerTurn }).order_not_reached).toBe(true);
+    expect(scenarioJOrder({ mainRunsActive: 0, quiet: null, quietToolCalls: 0, viewer: viewerTurn }))
+      .toMatchObject({ lastTurnEnd: null, order_not_reached: true });
+    const reversed = scenarioJOrder({ mainRunsActive: 0, quiet: viewerTurn, quietToolCalls: 0, viewer: quietTurn });
+    expect(oracleJ({ ...healthy, order: reversed, session: sessionStopEvidence([sample(5, "RUNNING"), sample(120, "STOPPED", "none")], ms(90)) }).failed)
+      .toEqual([]);
+  });
+
+  it("keeps the session's changes and measures the signed time out of RUNNING around the last turn's end", () => {
+    let series: SessionSample[] = [];
+    for (const next of [sample(1, "PENDING"), sample(2, "PENDING"), sample(5, "RUNNING"), sample(6, "RUNNING")]) {
+      series = appendSessionSample(series, next);
+    }
+    expect(series.map((entry) => entry.state)).toEqual(["PENDING", "RUNNING"]);
+    expect(appendSessionSample(series, sample(7, "RUNNING", "none"))).toHaveLength(3);
+    expect(appendSessionSample(series, sample(7, "RUNNING", "other", true))).toHaveLength(3);
+    expect(appendSessionSample([sample(1, "A"), sample(2, "B")], sample(3, "C"), 2).map((entry) => entry.state)).toEqual(["A", "C"]);
+    // Healthy: the VM stops before the turn's end is written.
+    expect(sessionStopEvidence([sample(5, "RUNNING"), sample(89, "STOPPED", "none")], ms(90))).toEqual({ finalState: "STOPPED",
+      leftRunningTo: "STOPPED", maintenanceHeld: false, runningSeen: true, secondsToLeaveRunning: -1 });
+    // A later run's VM does not hide the stop that counted.
+    expect(sessionStopEvidence([sample(5, "RUNNING"), sample(92, "STOPPED", "none"), sample(120, "RUNNING")], ms(90)))
+      .toMatchObject({ finalState: "RUNNING", leftRunningTo: "STOPPED", secondsToLeaveRunning: 2 });
+    expect(sessionStopEvidence([sample(1, "PENDING")], ms(90))).toMatchObject({ leftRunningTo: null, runningSeen: false });
+    expect(sessionStopEvidence([sample(5, "RUNNING")], ms(90))).toMatchObject({ leftRunningTo: null, runningSeen: true,
+      secondsToLeaveRunning: null });
+  });
+
+  it("tells the defect's busy refusal from a send the wake-up simply beat", () => {
+    const stuck = sample(91, "RUNNING", "none");
+    expect(sendRefusal("workspace_busy", { mainRunActive: false, session: stuck })).toBe("workspace_busy_session_state");
+    expect(sendRefusal("workspace_busy", { mainRunActive: true, session: stuck })).toBe("workspace_busy_session_state");
+    expect(sendRefusal("workspace_busy", { mainRunActive: false, session: sample(91, "RUNNING", "other", true) })).toBe("workspace_busy_join_closing");
+    expect(sendRefusal("workspace_busy", { mainRunActive: false, session: null })).toBe("workspace_busy_other");
+    expect(sendRefusal("workspace_busy", { mainRunActive: true, session: sample(91, "RUNNING") })).toBe(SEND_LOST_TO_WAKE_UP);
+    expect(sendRefusal("active_run_in_progress", { mainRunActive: false, session: null })).toBe(SEND_LOST_TO_WAKE_UP);
+    expect(sendRefusal("active_leaf_changed", { mainRunActive: false, session: null })).toBe(SEND_LOST_TO_WAKE_UP);
+    expect(sendRefusal("Not a code", { mainRunActive: false, session: null })).toBe("other");
+  });
+
+  it("passes the healthy run and fails each defect by its own code", () => {
+    expect(oracleJ(healthy)).toEqual({ counts: { imageCalls: 1, imageSucceeded: 1, secondRefusals: 0, wakeUps: 1 }, failed: [] });
+    // The capture defect: the image tool's failure and the stored constraint name.
+    expect(oracleJ({ ...healthy, failures: { captureIdentity: 1, visionInternal: 1 }, image: imageToolEvidence([], "viewer") }).failed)
+      .toEqual(["image_tool_not_succeeded", "capture_identity_failure", "vision_internal_failure"]);
+    // The retire defect: refused, the wake-up held back, the VM left to the backstop.
+    const stuck = sessionStopEvidence([sample(5, "RUNNING"), sample(90, "RUNNING", "none"), sample(150, "RUNNING", "maintenance"),
+      sample(160, "STOPPED", "none")], order.lastTurnEnd);
+    expect(oracleJ({ ...healthy, callbacks: callbackEvidence([delivered[0]!, quietTurn], [wakeUp]), secondAccepted: false, secondRefusals: ["workspace_busy_session_state"],
+      session: stuck, settled: false }).failed).toEqual(["workspace_busy_session_state", "second_send_not_accepted", "callbacks_still_owed",
+      "session_stopped_by_backstop", "session_stop_slow"]);
+  });
+
+  it("accepts a send retried after the wake-up, and a run whose callbacks all went into running answers", () => {
+    expect(oracleJ({ ...healthy, secondRefusals: [SEND_LOST_TO_WAKE_UP] }).failed).toEqual([]);
+    const intoAnswers = [{ ...viewerTurn, callbackRunId: "run-1" }, { ...quietTurn, callbackRunId: "run-2" }];
+    expect(oracleJ({ ...healthy, callbacks: callbackEvidence(intoAnswers, []), wakeUps: [] }).failed).toEqual([]);
+    expect(oracleJ({ ...healthy, callbacks: callbackEvidence([viewerTurn, quietTurn], []), wakeUps: [] }).failed).toEqual(["callbacks_owed"]);
+    expect(oracleJ({ ...healthy, wakeUps: [{ ...wakeUp, runStatus: "error" }] }).failed).toEqual(["wake_up_not_complete"]);
+  });
+
+  it("judges where the session went and how long it took", () => {
+    const after = (state: string, seconds: number) => sessionStopEvidence([sample(5, "RUNNING"), sample(seconds, state, "none")], order.lastTurnEnd);
+    expect(oracleJ({ ...healthy, session: after("PENDING", 91) }).failed).toEqual([]);
+    expect(oracleJ({ ...healthy, session: after("READY", 91) }).failed).toEqual(["session_left_to_other_state"]);
+    expect(oracleJ({ ...healthy, session: after("STOPPED", 90 + SCENARIO_J_STOP_SECONDS) }).failed).toEqual([]);
+    expect(oracleJ({ ...healthy, session: after("STOPPED", 91 + SCENARIO_J_STOP_SECONDS) }).failed).toEqual(["session_stop_slow"]);
+    expect(oracleJ({ ...healthy, session: sessionStopEvidence([], order.lastTurnEnd) }).failed).toEqual(["session_never_running"]);
+    expect(oracleJ({ ...healthy, session: sessionStopEvidence([sample(5, "RUNNING")], order.lastTurnEnd) }).failed).toEqual(["session_still_running"]);
   });
 });
 
