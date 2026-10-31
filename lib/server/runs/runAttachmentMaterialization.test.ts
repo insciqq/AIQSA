@@ -443,6 +443,15 @@ describe("run attachment materialization", () => {
     expect(record.byteSize).toBe(source.length);
   });
 
+  it("refuses visibly an image too large to resize, before decoding it", async () => {
+    const source = await sharp({ create: { background: "#808080", channels: 3, height: 10_100, width: 11_000 } }).jpeg({ quality: 10 }).toBuffer();
+    const record = { ...attachment("huge", "image", source.length), mimeType: "image/jpeg" };
+    const getObject = vi.fn(async (storageKey: string) => ({ body: source, contentType: "image/jpeg", storageKey }));
+    await expect(loadProviderAttachments({ repository: repository([record]), storage: { getObject } }, "user-1", ["huge"],
+      { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: 8_000_000, maxMaterializedBytes: 8_000_000 }) }))
+      .rejects.toMatchObject({ code: "attachment_materialization_limit_exceeded", status: 413 });
+  });
+
   it("sends an image within the limit byte for byte", async () => {
     const source = await sharp({ create: { background: "#808080", channels: 3, height: 64, width: 64 } }).png().toBuffer();
     const record = attachment("small", "image", source.length);

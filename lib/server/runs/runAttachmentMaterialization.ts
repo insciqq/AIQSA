@@ -17,7 +17,7 @@ import {
   ProviderRasterConversionError,
   providerRasterNeedsConversion
 } from "../uploads/providerRasterConversion";
-import { fitImageForProvider } from "../uploads/providerImageFit";
+import { fitImageForProvider, PROVIDER_IMAGE_MAX_SOURCE_PIXELS, ProviderImageTooLargeError } from "../uploads/providerImageFit";
 import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import type { RunAttachmentRecord, RunRepository } from "./runRepositoryContract";
@@ -415,6 +415,15 @@ async function fittedImageAttachment(
     fitted = await fitImageForProvider(body, signal);
   } catch (error) {
     if (signal.aborted) throw abortReason(signal);
+    if (error instanceof ProviderImageTooLargeError) {
+      throw new AttachmentMaterializationError({
+        actual: { height: error.height, width: error.width },
+        code: "attachment_materialization_limit_exceeded",
+        limits: { maxPixels: PROVIDER_IMAGE_MAX_SOURCE_PIXELS },
+        message: "An attached image is too large to send to the model. Try a smaller copy of it.",
+        status: 413
+      });
+    }
     throw new AttachmentMaterializationError({
       code: "attachment_image_invalid",
       message: "An attached image could not be prepared for the model.",
