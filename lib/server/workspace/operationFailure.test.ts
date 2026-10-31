@@ -117,12 +117,12 @@ describe("Workspace command failure telemetry", () => {
 
   it("keeps a failed workspace operation an error", async () => {
     const failed = await records("workspace_operation_failed");
-    expect(failed.map((record) => [record.stage, record.level])).toEqual([["execution", "error"], ["result", "error"]]);
+    expect(failed.map((record) => [record.stage, record.level])).toEqual([["execution", "error"], ["result", "warn"]]);
   });
 
   it("names the envelope the pinned MCP sent as the failure's cause, never its message, and keeps the model's text", () => {
     const cause = (value: unknown) => workspaceFailureCause(workspaceMcpFailure(value, 1024, "sandbox_fs_read"));
-    expect(cause(wire({ ok: false, error: { code: "operation_failed", message: "PRIVATE_EXCEPTION" } }))).toBe("guest_operation_failed");
+    expect(cause(wire({ ok: false, error: { code: "operation_failed", message: "PRIVATE_EXCEPTION" } }))).toBe("guest_filesystem_failed");
     expect(cause(wire({ ok: false, error: { code: "exec_failed", message: "PRIVATE", details: { exitCode: -1 } } })))
       .toBe("guest_exec_failed");
     expect(cause(wire({ ok: false, error: { code: "host_path_denied", message: "PRIVATE_PATH" } }))).toBe("guest_path_denied");

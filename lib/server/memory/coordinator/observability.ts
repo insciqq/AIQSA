@@ -43,10 +43,10 @@ export function memoryFailureOutcome(code: string, fallback: "failed" | "blocked
   }
 }
 
-type MemoryWork = Readonly<{ id: string; attemptCount: number }>;
+type MemoryWork = Readonly<{ id: string; attemptCount: number; kind?: LifecycleFields["job_kind"] }>;
 
 export function memoryAttempt(work: MemoryWork, fields: Omit<LifecycleFields, "subsystem" | "job_id" | "attempt">): void {
-  logEvent("job_attempt", { subsystem: "memory", job_id: work.id, attempt: work.attemptCount, ...fields });
+  logEvent("job_attempt", { subsystem: "memory", job_id: work.id, job_kind: work.kind, attempt: work.attemptCount, ...fields });
 }
 
 /** A rejected write retains its original exception for the coordinator's policy. */
@@ -62,7 +62,7 @@ export async function memoryPersistence(
   try {
     const accepted = await observeTransactionTimings(write, (settled) => { timing = settled; });
     if (!quietSuccess || !accepted) logEvent("job_persistence", {
-      subsystem: "memory", job_id: work.id, attempt: work.attemptCount, stage,
+      subsystem: "memory", job_id: work.id, job_kind: work.kind, attempt: work.attemptCount, stage,
       ...fields, outcome: accepted ? "confirmed" : "not_applied",
       retry_at: accepted ? fields.retry_at : undefined,
       delay_ms: accepted ? fields.delay_ms : undefined,
@@ -71,7 +71,7 @@ export async function memoryPersistence(
     return accepted;
   } catch (error) {
     logEvent("job_persistence", {
-      subsystem: "memory", job_id: work.id, attempt: work.attemptCount, stage,
+      error, subsystem: "memory", job_id: work.id, job_kind: work.kind, attempt: work.attemptCount, stage,
       action: fields.action, work_stage: fields.work_stage, code: fields.code, outcome: "unconfirmed",
       prisma_code: databaseFailureCode(error), db_failure: databaseFailureKind(error),
       ...transactionTimingFields(timing)

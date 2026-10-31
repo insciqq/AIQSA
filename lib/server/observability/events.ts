@@ -17,7 +17,7 @@ export type DatabaseFailureKind = "transaction_expired" | "transaction_start_tim
 export type CaughtError = Readonly<{ error?: unknown }>;
 export type LifecycleFields = CaughtError & Readonly<{
   subsystem: Subsystem; stage: LifecycleStage; outcome: LifecycleOutcome;
-  work_stage?: LifecycleStage;
+  work_stage?: LifecycleStage; job_kind?: DbTransactionJobKind;
   job_id?: string; run_id?: string; generation_id?: string; attempt?: number; duration_ms?: number;
   /** Time a timed transaction spent in its lock statements (transactionTiming.ts). */
   lock_wait_ms?: number;
@@ -93,6 +93,7 @@ export type PushServiceClass = "fcm" | "mozilla" | "apple" | "other";
  * (`transport_*`), or the sandbox or MCP was not available (`state_*`).
  */
 export type WorkspaceFailureCause =
+  | "guest_filesystem_failed" | "guest_process_failed"
   | "guest_operation_failed" | "guest_exec_failed" | "guest_path_denied" | "guest_operation_refused" | "guest_other" | "guest_unparsed"
   | "transport_timeout" | "transport_closed" | "transport_output_limit" | "transport_invalid_request" | "transport_other"
   | "state_sandbox_unavailable" | "state_mcp_unavailable";
@@ -137,7 +138,7 @@ export type EventFields = {
   }>;
   run_stop_requested: Record<string, never>;
   run_stop_admission: Readonly<{ run_id?: string; outcome: "accepted" | "not_found" | "not_cancelable" | "unauthorized" | "failed"; prisma_code?: string }>;
-  run_http_failed: CaughtError & Readonly<{ stage: "send" | "regenerate" | "cancel"; code?: string; reason?: Reason; prisma_code?: string }>;
+  run_http_failed: CaughtError & Readonly<{ stage: "send" | "regenerate" | "cancel"; httpStatus?: number; cause?: string; code?: string; reason?: Reason; prisma_code?: string }>;
   run_abort_delivery: Readonly<{ run_id: string; outcome: "delivered" | "already_aborted" | "not_running"; abort_source: "stop" }>;
   /** A user's report on an answer: its reason and whether it was new, never the comment. */
   answer_problem_report: Readonly<{
@@ -150,6 +151,7 @@ export type EventFields = {
   runtime_lifecycle: LifecycleFields;
   service_operation: LifecycleFields;
   tool_execution: ToolOperationFields & ProviderIdentity & CaughtError & Readonly<{
+    mcp_server?: string; tool_identity?: string;
     tool_kind: ToolKind; stage: "admission" | "execution" | "request" | "result" | "grounding";
     outcome: "started" | "completed" | "failed" | "cancelled" | "degraded";
     duration_ms?: number; attempt?: number; code?: string; reason?: Reason | WorkspaceFailureCause; httpStatus?: number;
@@ -168,6 +170,8 @@ export type EventFields = {
     /** `awaiting_approval`: an MCP call paused for its initiator's approval. */
     tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled" | "awaiting_approval";
     code?: string; duration_ms?: number; error_category?: "unexpected";
+    httpStatus?: number; http_status_class?: string; fetch_reason?: string; tool_identity?: string;
+    mcp_server?: string; reason?: Reason | WorkspaceFailureCause; operation?: string; cause?: string;
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;
   /** Local tool search statistics; never the query or tool names. */

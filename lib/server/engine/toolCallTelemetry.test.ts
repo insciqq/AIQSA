@@ -84,4 +84,30 @@ describe("tool_call telemetry", () => {
     const hostile = new Proxy({}, { getOwnPropertyDescriptor: () => { throw new Error("trap"); } });
     expect(() => recordToolCall({ kind: "other", settled: { kind: "result", result: hostile } })).not.toThrow();
   });
+
+  it("records fetch status and reason without its URL, and hashes private MCP names", async () => {
+    const observation = await captureRunObservation();
+    recordToolCall({ kind: "fetch_url", toolName: "fetch_url", settled: { kind: "result", result: {
+      ...failed({ error: "fetch_http_status" }), rawPreview: { fetchUrl: { outcome: "fetch_http_status", httpStatus: 403, url: "PRIVATE_URL" } }
+    } } });
+    recordToolCall({ kind: "mcp", toolName: "PRIVATE_TOOL_NAME", settled: { kind: "result", result: {
+      ...failed({}), rawPreview: { isError: true }
+    } } });
+    const records = observation.records().filter((row) => row.event === "tool_call");
+    expect(records[0]).toMatchObject({ fetch_reason: "fetch_http_status", httpStatus: 403, http_status_class: "4xx", tool_identity: "fetch_url" });
+    expect(records[1]?.tool_identity).toMatch(/^mcp_[0-9a-f]{32}$/u);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
+  it.each([402, 504])("names a definite image HTTP %s refusal instead of an unknown effect", async (httpStatus) => {
+    const observation = await captureRunObservation();
+    recordToolCall({ kind: "image_generation", settled: { kind: "thrown", effectUnknown: true,
+      error: Object.assign(new Error("PRIVATE_RESPONSE"), { code: "image_provider_http_error", httpStatus }),
+      result: failed({ error: "image_provider_http_error" }) } });
+    recordToolCall({ kind: "image_generation", settled: { kind: "thrown", effectUnknown: true,
+      error: new Error("PRIVATE_RESET"), result: failed({ error: "tool_execution_failed" }) } });
+    expect(observation.records().filter((row) => row.event === "tool_call")).toMatchObject([
+      { code: "image_provider_http_error", httpStatus }, { code: "tool_call_outcome_unknown" }
+    ]);
+  });
 });

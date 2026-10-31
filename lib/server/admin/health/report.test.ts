@@ -86,6 +86,11 @@ function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSour
         credentials: [{ activeVersion: { activatedAt: "2026-10-01T00:00:00.000Z", revokedAt: null }, enabled: true }] },
       { id: "conn-disabled", displayName: "Old key", enabled: false, credentials: [] }
     ]),
+    failureCauses: vi.fn().mockResolvedValue({ rows: [], truncated: false }),
+    reach: vi.fn().mockResolvedValue({ activeUsers: 4, runs: 12, runsPerActiveUser: 3,
+      weekly: [{ from: "2026-09-30T10:00:00.000Z", to: "2026-10-07T10:00:00.000Z", activeUsers: 7, runs: 30 }],
+      tools: [{ kind: "fetch_url", users: 2, calls: 10, failed: 2, cancelled: 0, awaitingApproval: 0, failureRate: 0.2 }],
+      features: [{ feature: "search", users: 3 }], perTool: [], toolsTruncated: false, reportedWebSearches: 9, unclassifiedToolCalls: 0 }),
     failedRuns: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false }),
     slowTransactions: vi.fn().mockResolvedValue([]),
     failureStreaks: vi.fn().mockResolvedValue({ streaks: 0, users: 0, longest: 0, rows: [], truncated: false }),
@@ -102,7 +107,7 @@ describe("health report collection", () => {
     expect(input.failedRuns).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to), perCode: 3, groupLimit: 50,
       withoutRetiredEngineEnds: true });
     expect(Object.keys(report)).toEqual(["kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry", "attention",
-      "failedRuns", "summary", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
+      "failedRuns", "summary", "reach", "failureCauses", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
       "queues", "queuesCheckedAt", "slowTransactions",
       "incidents", "incidentsTruncated", "failureStreaks"]);
     expect(input.failureStreaks).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to), limit: 20,
@@ -142,6 +147,7 @@ describe("health report text", () => {
       "Needs attention (3)", "Error totals: 42 (previous 24 hours: 10)", "Failures by location (class · where in AIQSA)",
       "Provider failures", "Process restarts",
       "Background queues", "Latest incidents (UTC, newest first; 10 shown, Control Center Health lists the rest)",
+      "Product reach: 4 active users · 12 main-agent runs · 3.0 runs per active user",
       "Look up a reference: ./aiqsa.sh health --run <reference>"
     ]);
     expect(text).toContain("  By area: providers 9 · requests 3 · runs 20 · background 10\n");
@@ -322,7 +328,7 @@ describe("health report text", () => {
     expect(read).toHaveBeenCalledWith("14d");
     expect(JSON.parse(JSON.stringify(report))).toMatchObject({ kind: "health", range: "14d" });
     expect(formatHealthReport(report).split("\n")[0]).toMatch(/^AIQSA health · last 14 days · /u);
-    expect(formatHealthReport(report).split("\n").slice(2)).toEqual([
+    expect(formatHealthReport(report).split("\n").slice(-3)).toEqual([
       "No problems recorded in the last 14 days.", "No telemetry at all was recorded in this range.", ""
     ]);
     expect(formatHealthReport({ ...report, hasTelemetry: true } satisfies HealthReport)).not.toContain("No telemetry");

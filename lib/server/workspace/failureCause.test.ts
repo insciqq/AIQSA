@@ -60,15 +60,15 @@ describe("Workspace failure causes from the runner to the app", () => {
     const answer = await runnerAnswer(async () => workspaceMcpFailure({ isError: true, content: [{ type: "text",
       text: JSON.stringify({ ok: false, error: { code: "operation_failed", message: "PRIVATE_SDK_MESSAGE" } }) }] }, 4096, "sandbox_fs_read")!);
     const wire = await answer.clone().json() as Record<string, unknown>;
-    expect(wire).toMatchObject({ status: "error", errorCode: "workspace_operation_failed", failureCause: "guest_operation_failed" });
+    expect(wire).toMatchObject({ status: "error", errorCode: "workspace_operation_failed", failureCause: "guest_filesystem_failed" });
     const { runtime, records } = app(answer);
     const result = await observeWorkspaceToolExecution(() => runtime.callBoundTool(call));
     expect(result).not.toHaveProperty("failureCause");
-    expect(workspaceFailureCause(result)).toBe("guest_operation_failed");
+    expect(workspaceFailureCause(result)).toBe("guest_filesystem_failed");
     expect(records().map((record) => [record.stage, record.code, record.reason, record.operation ?? null])).toEqual([
-      ["request", "workspace_operation_failed", "guest_operation_failed", "sandbox_fs_read"],
-      ["execution", undefined, "guest_operation_failed", null],
-      ["result", undefined, "guest_operation_failed", null]
+      ["request", "workspace_operation_failed", "guest_filesystem_failed", "sandbox_fs_read"],
+      ["execution", "workspace_operation_failed", "guest_filesystem_failed", null],
+      ["result", "workspace_operation_failed", "guest_filesystem_failed", null]
     ]);
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });

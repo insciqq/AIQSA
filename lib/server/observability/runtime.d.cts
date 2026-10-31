@@ -11,6 +11,8 @@ export function getContext(): ObservabilityContext | undefined;
 /** Derives a frame from the current one. `user_id` comes only from a server-owned
  * run or job row and wins over the user the root's request authenticated as. */
 export function runWithContext<T>(fields: Partial<ObservabilityContext>, fn: () => T): T;
+/** The terminal model tool call owns its nested executor failures and their bounded cause facts. */
+export function runWithToolCallObservation<T>(fn: () => T): T;
 /** A new root frame: its own trace and attribution slot, nothing of the caller's. */
 export function runInBackground<T>(fn: () => T): T;
 export function bindContext<T extends (...args: never[]) => unknown>(fn: T): T;

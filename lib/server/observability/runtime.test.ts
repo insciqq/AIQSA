@@ -74,7 +74,7 @@ describe("bounded observability runtime", () => {
         .toMatchObject({ level: "info", outcome: "failed", code: "workspace_command_failed" });
     }
     expect(record("tool_execution", { tool_kind: "workspace", stage: "result", outcome: "failed", code: "workspace_operation_failed" }))
-      .toMatchObject({ level: "error" });
+      .toMatchObject({ level: "warn" });
     expect(record("tool_execution", { tool_kind: "workspace", stage: "execution", outcome: "failed" })).toMatchObject({ level: "error" });
     // A command that reached the Workspace time limit warns rather than counting as an error.
     expect(record("tool_execution", { tool_kind: "workspace", stage: "execution", outcome: "failed", code: "workspace_tool_timeout",

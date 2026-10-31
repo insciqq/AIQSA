@@ -13,12 +13,12 @@ export type TelemetryIncidentLevel = Extract<TelemetryLevel, "error" | "fatal">;
  * codes, statuses and installation-level identities. Never user, run, job, trace
  * or tool-call ids, counts, durations, timestamps, attempts, bytes or limits. */
 export const TELEMETRY_DIMENSIONS = Object.freeze([
-  "abort_source", "action", "adapterKind", "after", "category", "cause", "code", "connectionId", "db_failure", "error_category",
+  "abort_source", "action", "adapterKind", "after", "category", "cause", "code", "connectionId", "db_constraint", "db_failure", "error_category",
   "error_class", "error_fingerprint", "error_site",
-  "httpStatus", "job_kind", "kind", "layer", "method", "mode", "operation", "outcome", "prisma_code", "providerFamily",
+  "fetch_reason", "http_status_class", "httpStatus", "job_kind", "kind", "layer", "mcp_server", "method", "mode", "operation", "outcome", "prisma_code", "providerFamily",
   "providerModelId", "provider_code", "provider_error_code", "provider_status", "push_service", "reason", "routePath", "sign_in_method",
   "stage", "state",
-  "status", "step", "stream_drop", "subsystem", "sys_code", "syscall", "termination", "tool_kind", "transport", "work_stage"
+  "status", "step", "stream_drop", "subsystem", "sys_code", "syscall", "termination", "tool_identity", "tool_kind", "tool_scope", "transport", "work_stage"
 ] as const);
 export type TelemetryDimension = (typeof TELEMETRY_DIMENSIONS)[number];
 export type TelemetryDimensionValue = string | number | boolean;

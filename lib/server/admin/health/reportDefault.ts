@@ -5,10 +5,12 @@ import { listAnswerProblemReports } from "../../answerProblemReports/repository"
 import { prisma } from "../../prisma";
 import type { HealthAgentReportSources } from "./agentReport";
 import { adminHealthProviderNames, adminHealthService, adminHealthTelemetryStore } from "./defaultService";
+import { HEALTH_CAUSE_QUERY, healthFailureCauses } from "./causes";
 import { readFailedRunLoad } from "./failedRuns";
 import { readFailureStreakLoad } from "./failureStreaks";
 import { readModelRunLoad } from "./modelRuns";
 import { adminHealthQueuesService } from "./queuesDefault";
+import { HEALTH_TOOL_CALL_QUERY, readHealthReach } from "./reach";
 import type { HealthReportSources, HealthRunReportSources } from "./report";
 import { adminHealthRunLookup } from "./runLookupDefault";
 import { HEALTH_SLOW_TRANSACTION_QUERY } from "./slowTransactions";
@@ -24,6 +26,8 @@ const readReportFailureStreaks: HealthReportSources["failureStreaks"] = (query) 
 /** The health report over this installation's database, through the Health page's own services. */
 export const healthReportSources: HealthReportSources & HealthRunReportSources = {
   health: adminHealthService,
+  failureCauses: async (span) => healthFailureCauses(await adminHealthTelemetryStore.readCounters({ ...span, ...HEALTH_CAUSE_QUERY })),
+  reach: async (span) => readHealthReach(prisma, span, await adminHealthTelemetryStore.readCounters({ ...span, ...HEALTH_TOOL_CALL_QUERY })),
   queues: adminHealthQueuesService,
   runs: adminHealthRunLookup,
   findings: readDefaultHealthFindings,

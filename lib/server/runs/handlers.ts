@@ -784,6 +784,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       }
 
       if (isWorkspaceRunConflictError(error)) {
+        logEvent("run_http_failed", { stage: "send", code: error.code, cause: error.reason, httpStatus: 409 });
         return Response.json({ error: error.code }, { status: 409 });
       }
 
@@ -994,6 +995,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       }
 
       if (isWorkspaceRunConflictError(error)) {
+        logEvent("run_http_failed", { stage: "regenerate", code: error.code, cause: error.reason, httpStatus: 409 });
         return Response.json({ error: error.code }, { status: 409 });
       }
 
