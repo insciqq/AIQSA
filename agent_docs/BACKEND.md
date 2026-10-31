@@ -17,7 +17,6 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 ## Routes
 
 - A route authenticates, bounds and decodes input, calls its owner in `lib/server/`, and serializes an explicit projection. Reusable behavior lives below the route.
-- `lib/contracts/` (client-safe wire shapes) and `lib/domain/` (pure shared rules) are dependency leaves; never import server code into them.
 - Browser mutations pass the shared same-origin guard (`proxy.ts`, `lib/server/auth/csrf.ts`) and bounded body reading (`lib/server/http/requestBody.ts`).
 - Errors are stable codes without raw exceptions or hints that a resource exists.
 
@@ -38,7 +37,7 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 
 - A write grant to the Skill store permits changes only, never sharing or execution. A package missing from a client's listing does not mean it was deleted.
 - Every Skill write goes through `lib/server/skills/revisionWriteCore.ts`. Revisions are append-only: restoring makes an earlier revision current as a new revision, and the published revision never changes.
-- Skill saves by the agent (`manage_skill`, operator decision 2026-10-07) follow the agent-initiated change rules in `agent_docs/RUN_CONTRACTS.md`. Files must be text, and a save is refused if any file contains a delivered secret value. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. The save commits with its tool call and card, and Undo restores the previous state as a new version. Code: `lib/server/tools/manageSkill.ts`, `lib/server/skills/agentSkills.ts`.
+- Skill saves by the agent (`manage_skill`, operator decision 2026-10-07) follow the agent-initiated change rules in `agent_docs/RUN_CONTRACTS.md`, with the mitigations in `agent_docs/SECURITY.md`. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. Code: `lib/server/tools/manageSkill.ts`, `lib/server/skills/agentSkills.ts`.
 
 ## Files, jobs and shares
 
@@ -46,4 +45,4 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 - Long-running work runs as durable claimed jobs, and deletion as idempotent obligations, never as best effort inside a request.
 - An opaque Workspace upload reaches execution only through an admitted run. File reads recheck the reader's current access, and storage authority never reaches browser or guest contracts. A PDF original stays available whether or not its extraction succeeds. A document or image the parser could not digest needs Workspace: a Workspace run takes its original and the model is told what did not reach it (`workspaceMissingContentNotice`); without Workspace admission refuses it, naming the limit and a recovery (operator request 2026-10-31).
 - Chat exports (`aiqsa.chat` and `aiqsa.chat-archive`, `lib/contracts/chatExport.ts`) are held by users outside the installation. A published version never changes: a new shape bumps `version`, and import keeps accepting every published version. Exports contain export-local ids and readable text, never database ids, provider internals, usage or tool payloads.
-- Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, Memory and tool evidence, recovery state and private identifiers are dropped. A share is never live access to the chat.
+- Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, Memory and tool evidence, recovery state and private identifiers are dropped.

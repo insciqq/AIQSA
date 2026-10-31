@@ -13,7 +13,7 @@ Environment variables, secrets and key rotation, and Compose topology selection.
 ## Where configuration lives
 
 - `./aiqsa.sh configure` creates secrets once and never rewrites existing `.env` bytes. Malformed security settings fail closed, and missing optional configuration (SMTP, OAuth, parsers, Memory) never weakens authentication or readiness.
-- Provider and Search credentials and other mutable configuration live in encrypted database records, not in the environment. Sign-in methods are configured in the admin panel; `AIQSA_GOOGLE_OAUTH_*` and `AIQSA_YANDEX_OAUTH_*` only apply while no admin configuration of that provider is active. Bootstrap, session, proxy and base URL settings are environment-only.
+- Provider and Search credentials and other mutable configuration live in encrypted database records, not in the environment. Sign-in methods are configured in the admin panel (`agent_docs/SIGN_IN.md`). Bootstrap, session, proxy and base URL settings are environment-only.
 - Each container role gets only the authority it uses: parsers have no data or provider credentials, the runner only its internal token and runtime policy, maintenance no object or provider credentials, restore review no provider credentials. Keep it that way when editing Compose files.
 - Test authentication, fake providers, demo credentials and the deterministic runtime turn on only when every disposable, non-production gate is set, and never against persistent data. Telegram's test update route and the loopback-only `AIQSA_TELEGRAM_API_ORIGIN` are such fakes.
 - Accepted risk: each host added to `AIQSA_ARTIFACT_LIBRARY_HOSTS` or `AIQSA_ARTIFACT_IMAGE_HOSTS` widens model-controlled URL egress (`lib/server/artifacts/resourcePolicy.ts`); the operator accepts that disclosure.
