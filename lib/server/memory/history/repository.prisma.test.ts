@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
@@ -84,10 +85,8 @@ import * as savedSecretPersistence from "../persistence/savedSecrets";
 import { MEMORY_SAVED_SECRET_MARKER } from "../persistence/savedSecretMatching";
 import { invalidateMemoryHistoryHoldingSavedSecret } from "./sourceLifecycle";
 
-const roundConflictRecoverySql = readFileSync(new URL(
-  "../../../../prisma/migrations/20261101010200_memory_round_conflict_recovery/migration.sql",
-  import.meta.url
-), "utf8");
+const roundConflictRecoverySql = readFileSync(
+  resolve("prisma/migrations/20261101010200_memory_round_conflict_recovery/migration.sql"), "utf8");
 
 async function recoverRoundConflictsForOwner(userId: string) {
   // Run the actual upgrade SQL with only this fixture's jobs in its search path.
