@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { bindContext, logEvent, type EventFields } from "../observability";
 import { isProviderDeadlineExceededError } from "./network";
 import { GeminiHttpError, type GeminiHttpErrorCode } from "./geminiInteractionsTransport";
-import { PROVIDER_CONTEXT_LENGTH_EXCEEDED, reportedContextTokens } from "./responseFailure";
+import { isProviderResponseFailure, PROVIDER_CONTEXT_LENGTH_EXCEEDED, reportedContextTokens } from "./responseFailure";
 import { isProviderSearchExecutionError } from "./types";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import { ProviderStreamSafetyError } from "./streamSafety";
@@ -463,11 +463,13 @@ function writeOperation(scope: ProviderObservation, startedAt: number,
   outcome: "started" | "completed" | "failed" | "cancelled", error?: unknown, signal?: AbortSignal,
   result?: Readonly<{ provider_status?: ProviderStatus; action?: "retry"; code?: ObservedFailureCode; provider_error_code?: string }>) {
   const failure = observedFailure(error, signal);
+  const code = result?.code ?? failure.code;
   logEvent("provider_operation", {
     adapterKind: scope.identity.adapterKind, connectionId: scope.identity.connectionId,
     providerFamily: scope.identity.providerFamily, providerModelId: scope.identity.providerModelId,
-    stage: scope.stage, outcome, duration_ms: Math.max(0, Date.now() - startedAt),
-    action: result?.action ?? "none", timeout_ms: failure.timeout_ms ?? scope.timeoutMs, code: result?.code ?? failure.code, reason: failure.reason,
+    error, stage: scope.stage, outcome, duration_ms: Math.max(0, Date.now() - startedAt),
+    action: result?.action ?? "none", timeout_ms: failure.timeout_ms ?? scope.timeoutMs, code: code !== "unknown" ? code : isProviderResponseFailure(error) ? "provider_response_failed"
+      : failure.stream_drop !== undefined ? "provider_stream_failed" : code, reason: failure.reason,
     provider_status: result?.provider_status ?? failure.provider_status, cause: failure.cause,
     httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop,
     provider_error_code: result?.provider_error_code ?? failure.provider_error_code
@@ -533,7 +535,7 @@ export function observeProviderStream<T, R>(identity: ProviderStreamSafetyIdenti
       if (!result.done && ownValue(result.value, "type") === "error") returnedFailure = observedFailure(ownValue(result.value, "data"));
       if (result.done && !finished) {
         finished = true;
-        writeOperation(scope, startedAt, returning ? "cancelled" : returnedFailure !== undefined ? "failed" : "completed", returnedFailure);
+        writeOperation(scope, startedAt, returning ? "cancelled" : returnedFailure !== undefined ? "failed" : "completed", returnedFailure, undefined, returnedFailure);
       }
       return result;
     } catch (error) {

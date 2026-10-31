@@ -11,7 +11,7 @@ const resultCodes = new WeakMap<object, ResultCode>();
 
 /** Every `WorkspaceFailureCause`; the logging leaf validates the same list. */
 export const WORKSPACE_FAILURE_CAUSES = Object.freeze([
-  "guest_operation_failed", "guest_exec_failed", "guest_path_denied", "guest_operation_refused", "guest_other", "guest_unparsed",
+  "guest_filesystem_failed", "guest_process_failed", "guest_operation_failed", "guest_exec_failed", "guest_path_denied", "guest_operation_refused", "guest_other", "guest_unparsed",
   "transport_timeout", "transport_closed", "transport_output_limit", "transport_invalid_request", "transport_other",
   "state_sandbox_unavailable", "state_mcp_unavailable"
 ] as const satisfies readonly WorkspaceFailureCause[]);
@@ -103,7 +103,7 @@ export async function observeWorkspaceToolExecution<T extends { status: "complet
   try {
     const result = await operation();
     const outcome = result.status === "error" ? "failed" : "completed";
-    const code = resultCodes.get(result);
+    const code = resultCodes.get(result) ?? (result.status === "error" ? "workspace_operation_failed" : undefined);
     const reason = outcome === "failed" ? workspaceFailureCause(result) : undefined;
     // The result's code also tells the execution record why it failed, e.g. a
     // command's own non-zero exit, which is the model's result, not an error.

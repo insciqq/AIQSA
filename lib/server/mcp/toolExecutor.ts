@@ -34,7 +34,7 @@ export async function dispatchMcpTool(input: Readonly<{
   route: McpRunToolRoute;
   signal?: AbortSignal;
 }>): Promise<AiqsaMcpToolCallResult> {
-  const admission = beginMcpToolStage("admission");
+  const admission = beginMcpToolStage("admission", input.route.serverId, input.route.tool.namespacedName);
   const observeAbort = observeMcpAbort();
   const onAbort = () => observeAbort({ stage: "delivery", abort_source: "parent_signal", deadline_kind: "operation" });
   if (input.signal?.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "operation" });
@@ -56,7 +56,7 @@ export async function dispatchMcpTool(input: Readonly<{
         dispatched = true;
         await assertCurrent();
         admission({ outcome: "completed" });
-        execution = beginMcpToolStage("execution");
+        execution = beginMcpToolStage("execution", input.route.serverId, input.route.tool.namespacedName);
         input.onDispatch?.();
       },
       definitionHash: input.route.tool.definitionHash,
@@ -65,7 +65,7 @@ export async function dispatchMcpTool(input: Readonly<{
       name: input.route.originalName,
       signal: input.signal
     });
-    execution?.({ outcome: result.isError ? "failed" : "completed" });
+    execution?.({ outcome: result.isError ? "failed" : "completed", ...(result.isError ? { code: "mcp_tool_reported_error" } : {}) });
     logEvent("tool_execution", { tool_kind: "mcp", stage: "result", outcome: result.isError ? "failed" : "completed",
       ...mcpTruncationTelemetry(result.truncation) });
     return result;

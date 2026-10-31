@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { getAuthConfig } from "../auth/config";
 import type { ResolvedEntitlements } from "../auth/entitlements";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { createTestAuth } from "@/tests/support/auth";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
@@ -35,6 +36,7 @@ import {
   type RunHandlerDeps
 } from "./handlers";
 import {
+  WorkspaceRunConflictError,
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AssistantRunConflictError,
@@ -2058,6 +2060,19 @@ describe("model run route handlers", () => {
     expect(accepted.status).toBe(200);
     await accepted.text();
     expect(state.created).toMatchObject({ chatId: "chat-1" });
+  });
+
+  it("records the reason a busy Workspace refused a message", async () => {
+    const observation = await captureRunObservation();
+    const { repository } = createMemoryRepository(entitledFakeModel);
+    repository.createRun = async () => { throw new WorkspaceRunConflictError("workspace_busy", "workspace_busy_live_export"); };
+    const response = await createSendMessageHandler({ ...authDeps, repository, providers: { fake: createFakeProviderAdapter() } })(
+      new Request("http://app.local/api/chats/chat-1/messages", { method: "POST", headers: { cookie: authCookie() },
+        body: JSON.stringify({ provider: "fake", modelId: "fake-qsa", text: "Private message" }) }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(409);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_http_failed", stage: "send",
+      code: "workspace_busy", cause: "workspace_busy_live_export", httpStatus: 409 }));
+    expect(JSON.stringify(observation.records())).not.toContain("Private message");
   });
 
   it("sends after a reviewed answer's hidden step from the version standing for it, under that step", async () => {

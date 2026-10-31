@@ -17,14 +17,17 @@ const envelopeCauses: Readonly<Record<string, WorkspaceFailureCause>> = {
   dangerous_operation_disabled: "guest_operation_refused"
 };
 
-function envelopeCause(error: Record<string, unknown> | null): WorkspaceFailureCause {
+function envelopeCause(error: Record<string, unknown> | null, tool: WorkspaceMcpToolName): WorkspaceFailureCause {
   if (error === null || typeof error.code !== "string") return "guest_unparsed";
+  // The pinned MCP discards the SDK's error type. The selected operation is
+  // the only proven category; never guess errno from its free-form message.
+  if (error.code === "operation_failed") return tool.startsWith("sandbox_fs_") ? "guest_filesystem_failed" : "guest_process_failed";
   return Object.hasOwn(envelopeCauses, error.code) ? envelopeCauses[error.code]! : "guest_other";
 }
 
 /** The pinned microsandbox-mcp contract: fail(code, message, {details}).
- * Most filesystem failures are only operation_failed; their raw message does
- * not prove errno or missing/denied paths. No keywords or retry probes here.
+ * Its operation_failed envelope carries no structured SDK cause. The selected
+ * operation supplies a category without interpreting its message.
  */
 export function workspaceMcpFailure(value: unknown, maximum: number, tool: WorkspaceMcpToolName): WorkspaceToolResult | null {
   if (!record(value)) return null;
@@ -58,7 +61,7 @@ export function workspaceMcpFailure(value: unknown, maximum: number, tool: Works
   if (value.isError !== true) return null;
   // The model sees only the stable code; telemetry also learns which envelope the MCP sent.
   return retainWorkspaceFailureCause(workspaceOperationFailureResult(error?.code === "host_path_denied"
-    ? "workspace_path_access_denied" : "workspace_operation_failed"), envelopeCause(error));
+    ? "workspace_path_access_denied" : "workspace_operation_failed"), envelopeCause(error, tool));
 }
 
 /** UTF-8 bytes a string adds inside a `JSON.stringify` literal, quotes excluded. */

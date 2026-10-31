@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
+import toolNames from "../observability/toolNames.json";
 import observedFailureCodes from "../observability/failureCodes.json";
 import { logEvent, type EventFields, type ToolCallKind } from "../observability";
 import { MCP_APPROVAL_REQUIRED } from "../mcp/writeApproval";
@@ -114,17 +116,34 @@ export type SettledToolCall =
   /** The run stopped (Stop or its deadline, by the run signal's reason) while it ran. */
   | Readonly<{ kind: "aborted"; reason: unknown }>;
 
+function fetchFields(result: unknown) {
+  const facts = own(own(result, "rawPreview"), "fetchUrl");
+  const code = registered(own(facts, "outcome"));
+  const status = own(facts, "httpStatus");
+  return {
+    ...(code?.startsWith("fetch_") ? { fetch_reason: code } : {}),
+    ...(typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+      ? { httpStatus: status, http_status_class: `${Math.floor(status / 100)}xx` } : {})
+  };
+}
+
 function fieldsOf(settled: SettledToolCall, kind: ToolCallKind) {
   switch (settled.kind) {
     case "result": {
       const { outcome, code } = toolCallOutcome(settled.result);
-      return { outcome, ...(code ? { code } : {}), ...(kind === "mcp" ? truncationFields(settled.result) : {}) };
+      return { outcome, ...(code ? { code } : {}), ...(kind === "mcp" ? truncationFields(settled.result) : kind === "fetch_url" ? fetchFields(settled.result) : {}) };
     }
     case "awaiting_approval":
       return { outcome: "awaiting_approval" as const, code: MCP_APPROVAL_REQUIRED };
-    case "thrown":
+    case "thrown": {
+      const status = own(settled.error, "httpStatus");
+      const refusedImage = kind === "image_generation" && own(settled.error, "code") === "image_provider_http_error" &&
+        typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599;
       return { outcome: "failed" as const, error_category: "unexpected" as const, error: settled.error,
-        code: settled.effectUnknown ? TOOL_CALL_OUTCOME_UNKNOWN_CODE : toolResultFailureCode(settled.result) };
+        ...(refusedImage ? { httpStatus: status } : {}),
+        code: refusedImage ? "image_provider_http_error"
+          : settled.effectUnknown ? TOOL_CALL_OUTCOME_UNKNOWN_CODE : toolResultFailureCode(settled.result) };
+    }
     case "timed_out":
       return { outcome: "timeout" as const, code: registered(settled.code) ?? TOOL_CALL_TIMEOUT_CODE };
     case "aborted":
@@ -142,10 +161,13 @@ function fieldsOf(settled: SettledToolCall, kind: ToolCallKind) {
  * time limit, which is a timeout. It never throws into the batch, so
  * telemetry never changes a call's settlement.
  */
-export function recordToolCall(input: Readonly<{ durationMs?: number; kind: ToolCallKind; settled: SettledToolCall }>): void {
+export function recordToolCall(input: Readonly<{ durationMs?: number; kind: ToolCallKind; toolName?: string; settled: SettledToolCall }>): void {
   try {
     logEvent("tool_call", {
       tool_kind: input.kind,
+      ...(input.toolName ? { tool_identity: input.kind === "mcp" && input.toolName !== "find_tools"
+        ? `mcp_${createHash("sha256").update(input.toolName).digest("hex").slice(0, 32)}`
+        : Object.hasOwn(toolNames, input.toolName) ? input.toolName : "other" } : {}),
       ...(input.durationMs === undefined ? {} : { duration_ms: Math.max(0, Math.round(input.durationMs)) }),
       ...fieldsOf(input.settled, input.kind)
     });

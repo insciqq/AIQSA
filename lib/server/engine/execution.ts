@@ -12,7 +12,7 @@ import { isProviderDeadlineExceededError } from "../providers/network";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { codexLbConnection, effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
-import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
+import { isProviderResponseFailure, PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllers, runSettlements } from "../runs/activeRunControllerRegistry";
 import { contextCompactionArtifact } from "../runs/contextCompactionEvents";
@@ -264,7 +264,8 @@ function failurePayload(error: unknown, workspaceRun: boolean): Readonly<{ code:
     return { code: "provider_request_timed_out", message: "The model provider did not answer in time. The answer so far is kept." };
   }
   return {
-    code: failure.code !== "unknown" ? failure.code : "provider_stream_failed",
+    code: failure.code !== "unknown" ? failure.code : isProviderResponseFailure(error) ? "provider_response_failed"
+      : failure.stream_drop !== undefined ? "provider_stream_failed" : "run_execution_failed",
     message: providerHttpFailureMessage(error) ?? (workspaceRun
       ? "The answer could not be completed. Its Workspace files and the answer so far are kept."
       : "The answer could not be completed. The answer so far is kept.")
