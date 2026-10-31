@@ -19,9 +19,11 @@ import type { AdminHealthRunSummary } from "../../../contracts/adminHealthRunLoo
 import { normalizeRunReference, RUN_ID_LENGTH, runReferenceLabel } from "../../../contracts/runReference";
 import { healthAttentionItems, type HealthAttentionConnection, type HealthFinding } from "../attention/healthRules";
 import { queueAgeCopy, queueAttentionItems } from "../attention/queueRules";
+import type { HealthFailureCauses } from "./causes";
 import type { FailedRunLoad, FailedRunQuery } from "./failedRuns";
 import { FAILURE_STREAK_MIN_RUNS, type FailureStreakLoad, type FailureStreakQuery } from "./failureStreaks";
 import { adminHealthQueueFindings, type AdminHealthQueuesService } from "./queues";
+import type { HealthReach } from "./reach";
 import type { AdminHealthRunLookup } from "./runLookup";
 import type { AdminHealthService } from "./service";
 import { healthSlowTransactions, slowTransactionName, type HealthSlowTransactions } from "./slowTransactions";
@@ -70,6 +72,8 @@ export type HealthReport = {
    */
   failedRuns: HealthReportFailedRuns;
   summary: AdminHealthSummary;
+  reach: HealthReach;
+  failureCauses: HealthFailureCauses;
   /** Error and fatal records over the range per chart category. */
   errorsByCategory: Record<AdminHealthCategory, number>;
   /** Failures by fingerprint: class, application code site and at least how many users and runs they hit, new ones first. */
@@ -150,6 +154,8 @@ export type HealthReportFailedRuns = { runs: number; users: number; rows: Health
 
 export type HealthReportSources = Readonly<{
   health: Pick<AdminHealthService, "incidents" | "read">;
+  reach(span: Readonly<{ from: Date; to: Date }>): Promise<HealthReach>;
+  failureCauses(span: Readonly<{ from: Date; to: Date }>): Promise<HealthFailureCauses>;
   queues: Pick<AdminHealthQueuesService, "read">;
   findings(): Promise<readonly HealthFinding[]>;
   /** Provider connections as the attention copy names them; a missing or disabled one stays quiet. */
@@ -175,7 +181,7 @@ export async function collectHealthReport(sources: HealthReportSources, range: A
   // The counters first: an unreachable database fails once instead of once per queue.
   const health = await sources.health.read(range);
   const span = { from: new Date(health.from), to: new Date(health.to) };
-  const [queues, findings, connections, page, failedRuns, slowTransactions, streaks] = await Promise.all([
+  const [queues, findings, connections, page, failedRuns, slowTransactions, streaks, reach, failureCauses] = await Promise.all([
     sources.queues.read(),
     sources.findings(),
     sources.connections(),
@@ -184,7 +190,9 @@ export async function collectHealthReport(sources: HealthReportSources, range: A
     sources.failedRuns({ ...span, perCode: HEALTH_REPORT_FAILED_RUN_REFERENCES, groupLimit: HEALTH_REPORT_FAILED_RUN_CODE_LIMIT,
       withoutRetiredEngineEnds: true }),
     sources.slowTransactions(span),
-    sources.failureStreaks({ ...span, limit: HEALTH_REPORT_STREAK_LIMIT, runsPerStreak: HEALTH_REPORT_STREAK_REFERENCES })
+    sources.failureStreaks({ ...span, limit: HEALTH_REPORT_STREAK_LIMIT, runsPerStreak: HEALTH_REPORT_STREAK_REFERENCES }),
+    sources.reach(span),
+    sources.failureCauses(span)
   ]);
   const errorsByCategory = Object.fromEntries(adminHealthCategories.map((category) =>
     [category, health.series.reduce((total, bucket) => total + bucket.counts[category], 0)])) as Record<AdminHealthCategory, number>;
@@ -214,6 +222,8 @@ export async function collectHealthReport(sources: HealthReportSources, range: A
       truncated: failedRuns.groupsTruncated
     },
     summary: health.summary,
+    reach,
+    failureCauses,
     errorsByCategory,
     errorGroups: health.errorGroups,
     errorGroupsTruncated: health.errorGroupsTruncated,
@@ -460,12 +470,29 @@ export function incidentLines(incident: AdminHealthIncident): string[] {
     incident.connectionName,
     incident.modelName,
     incident.httpStatus === null ? null : `HTTP ${incident.httpStatus}`,
-    detailText("provider_error_code") === null ? null : `provider error ${detailText("provider_error_code")}`
+    detailText("provider_error_code") === null ? null : `provider error ${detailText("provider_error_code")}`,
+    ...["db_constraint", "job_kind", "reason", "cause", "mcp_server", "tool_identity", "fetch_reason", "http_status_class"].map((key) =>
+      detailText(key) === null || slow && key === "job_kind" ? null : `${key} ${detailText(key)}`)
   ].filter((part): part is string => part !== null);
   return [...wrapParts(head, "  ", "  "), ...wrapParts(detail, "      ", " · ")];
 }
 
 type Section = (report: HealthReport) => string[];
+
+function reachSection(report: HealthReport): string[] {
+  const reach = report.reach;
+  return [
+    `Product reach: ${reach.activeUsers} active users · ${reach.runs} main-agent runs · ${reach.runsPerActiveUser?.toFixed(1) ?? "-"} runs per active user`,
+    ...reach.weekly.map((week) => `  Week ${minute(week.from)} to ${minute(week.to)} UTC: ${week.activeUsers} active users, ${week.runs} runs`),
+    ...wrapParts(reach.features.map((row) => `${row.feature}: ${row.users} users`), "  Features: ", " · "),
+    `  Search: ${reach.reportedWebSearches} provider-reported searches (hosted Search included in reach)`,
+    "  Tool families: users from stored calls; failures from terminal telemetry (stops and approval waits excluded from rate)",
+    ...reach.tools.map((row) => `    ${row.kind}: ${row.users} users · ${row.calls} calls · ${row.failed} failed (${percent(row.failureRate)}) · ${row.cancelled} cancelled · ${row.awaitingApproval} awaiting approval`),
+    ...reach.perTool.map((row) => `    Tool ${row.tool}: ${row.users} users · ${row.calls} recorded calls · ${row.failed} failed (${percent(row.failureRate)})`),
+    ...(reach.toolsTruncated ? ["  Per-tool rows reached the report bound; some users or rates may be incomplete."] : []),
+    ...(reach.unclassifiedToolCalls > 0 ? [`  ${reach.unclassifiedToolCalls} tool calls lost their dimensions to telemetry overflow.`] : [])
+  ];
+}
 
 function attentionSection(report: HealthReport): string[] {
   if (report.attention.length === 0) return [];
@@ -557,6 +584,15 @@ function failureSection(report: HealthReport): string[] {
   ];
 }
 
+function causeSection(report: HealthReport): string[] {
+  const { rows, truncated } = report.failureCauses;
+  if (rows.length === 0) return [];
+  return ["Failure causes (counts per boundary; do not add runs, attempts and calls together)",
+    ...rows.slice(0, 20).flatMap((row) => wrapParts([row.event, `${row.count} times`,
+      ...Object.entries(row.facts).map(([key, value]) => `${key}=${value}`), `last ${minute(row.lastAt)}`], "  ", " · ")),
+    ...(rows.length > 20 || truncated ? [`  More causes in --json${truncated ? "; grouping reached its bound" : ""}.`] : [])];
+}
+
 function providerSection(report: HealthReport): string[] {
   if (report.providerFailures.length === 0) return [];
   const shown = report.providerFailures.slice(0, TEXT_PROVIDER_ROWS);
@@ -632,15 +668,18 @@ function incidentSection(report: HealthReport): string[] {
 }
 
 /** Report sections in order, attention and failed runs first; a section without findings prints nothing. */
-const SECTIONS: readonly Section[] = [attentionSection, failedRunSection, streakSection, errorSection, failureSection, providerSection,
+const SECTIONS: readonly Section[] = [attentionSection, failedRunSection, streakSection, errorSection, failureSection, causeSection, providerSection,
   restartSection, queueSection, slowTransactionSection, incidentSection];
 
 export function formatHealthReport(report: HealthReport): string {
   const header = `AIQSA health · last ${RANGE_COPY[report.range]} · ${minute(report.from)} to ${minute(report.to)} UTC`;
+  const reach = reachSection(report).flatMap((line) => wrap(line.trim(), /^ */u.exec(line)?.[0] ?? ""));
   const sections = SECTIONS.map((section) => section(report)).filter((lines) => lines.length > 0);
   if (sections.length === 0) {
     return [
       header,
+      "",
+      ...reach,
       "",
       `No problems recorded in the last ${RANGE_COPY[report.range]}.`,
       ...(report.hasTelemetry ? [] : ["No telemetry at all was recorded in this range."])
@@ -650,7 +689,7 @@ export function formatHealthReport(report: HealthReport): string {
     report.failedRuns.rows.some((row) => row.references.length > 0) ||
     report.failureStreaks.rows.some((row) => row.references.length > 0)
     ? ["Look up a reference: ./aiqsa.sh health --run <reference>"] : [];
-  return [header, ...sections.flatMap((lines) => ["", ...lines]), ...(footer.length > 0 ? ["", ...footer] : [])].join("\n") + "\n";
+  return [header, ...sections.flatMap((lines) => ["", ...lines]), "", ...reach, ...(footer.length > 0 ? ["", ...footer] : [])].join("\n") + "\n";
 }
 
 export function formatHealthRunReport(report: HealthRunReport): string {

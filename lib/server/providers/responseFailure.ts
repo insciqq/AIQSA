@@ -1,4 +1,18 @@
-import { markProviderErrorDetail } from "./providerErrorCode";
+import { markProviderErrorDetail, providerErrorCode } from "./providerErrorCode";
+
+const RESPONSE_FAILURE = Symbol.for("aiqsa.provider-response-failure");
+
+/** Identifies a decoder failure without changing the transport's retry code. */
+export function isProviderResponseFailure(error: unknown): boolean {
+  try {
+    return typeof error === "object" && error !== null &&
+      (Object.getOwnPropertyDescriptor(error, RESPONSE_FAILURE)?.value === true || providerErrorCode(error) !== null);
+  } catch { return false; }
+}
+
+function responseError(message: string): Error {
+  return Object.defineProperty(new Error(message), RESPONSE_FAILURE, { value: true });
+}
 
 const unsupportedCodes = new Set([
   "unsupported_parameter", "unsupported_value", "unsupported_feature", "unsupported_content_type",
@@ -153,7 +167,7 @@ export function providerResponseFailure(
     const parameters = /^No endpoints found that support (?:the provided|(?:all )?(?:the )?requested) parameters\b/iu.test(messageText) ||
       step === "parameters" || step === "required_parameters";
     const code = parameters ? "openrouter_required_parameters_unavailable" : "openrouter_routing_unavailable";
-    return Object.assign(new Error(openRouterRoutingFailureMessage(code)), { code });
+    return markProviderErrorDetail(Object.assign(responseError(openRouterRoutingFailureMessage(code)), { code }), detail);
   }
   // A streamed `error` event carries its code and message at the top level.
   const contextLength = providerContextLengthRejection(detail ?? (response.type === "error" ? response : null));
@@ -179,7 +193,7 @@ export function providerResponseFailure(
     choiceRecord?.finish_reason === "content_filter" || typeof choiceMessage?.refusal === "string" && choiceMessage.refusal.length > 0;
   const capabilityFailureReason = refusal ? "refusal" : incomplete?.reason === "max_output_tokens" || choiceRecord?.finish_reason === "length" ? "budget_exhausted" : undefined;
   const quotaExhausted = code === "provider_response_not_retryable" && typeof detail?.code === "string" && quotaCodes.has(detail.code);
-  return markProviderErrorDetail(Object.assign(new Error(message), code ? { code } : {}, contextLength ?? {},
+  return markProviderErrorDetail(Object.assign(responseError(message), code ? { code } : {}, contextLength ?? {},
     unsupportedInput ? { unsupportedInput: true } : {}, capabilityFailureReason ? { capabilityFailureReason } : {},
     quotaExhausted ? { quotaExhausted: true } : {}), detail ?? (response.type === "error" ? response : null));
 }

@@ -3,6 +3,7 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
+import { providerResponseFailure } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
@@ -813,4 +814,25 @@ describe("native run execution", () => {
       .toMatchObject({ abort_source: "unknown", code: "run_time_limit", reason: "deadline", run_id: "run-2",
         timeout_ms: NATIVE_TURN_LIMITS.turnMs });
   });
+
+  it("distinguishes an unclassified internal exception from a provider-reported failure", async () => {
+    const observation = await captureRunObservation();
+    vi.useFakeTimers();
+    try {
+      for (const [index, fail] of [new Error("PRIVATE_INTERNAL"), providerResponseFailure("PRIVATE_PROVIDER", {
+        error: { type: "overloaded_error", message: "PRIVATE_BODY" }
+      }), Object.defineProperty(new Error("PRIVATE_TRUNCATED"), "streamDrop", { value: "truncated" })].entries()) {
+        const reading = events(createNativeRunExecutionResponse({ adapter: scriptedAdapter([{ fail }]).adapter,
+          created: { ...created, runId: `cause-run-${index}` }, engine: memoryEngine().engine, prepared: prepared(),
+          repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+        await vi.advanceTimersByTimeAsync(120_000);
+        await reading;
+      }
+    } finally { vi.useRealTimers(); }
+    const failed = observation.records().filter((row) => row.event === "run_execution" && row.outcome === "failed");
+    expect(failed).toMatchObject([{ code: "run_execution_failed" }, { code: "provider_response_failed", provider_error_code: "overloaded_error" },
+      { code: "provider_stream_failed" }]);
+    expect(JSON.stringify(failed)).not.toContain("PRIVATE_");
+  });
+
 });

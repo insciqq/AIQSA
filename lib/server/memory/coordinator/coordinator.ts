@@ -734,7 +734,7 @@ export class MemoryCoordinator {
       const retry = failure.retryable && claim.attemptCount < maxAttempts;
       const fence = retry ? null : await this.#failureFence(registeredHandler, claim, failure);
       const now = this.#clock();
-      memoryAttempt(claim, { stage, code: failure.code, prisma_code: databaseFailureCode(error),
+      memoryAttempt(claim, { error, stage, code: failure.code, prisma_code: databaseFailureCode(error),
         db_failure: databaseFailureKind(error),
         outcome: fence && failure instanceof MemoryJobFencedError
           ? fenceOutcome(fence) : memoryFailureOutcome(failure.code),
@@ -846,7 +846,7 @@ export class MemoryCoordinator {
             this.#policy.deletionFastRetryDelaysMs,
             claim.attemptCount
           );
-      memoryAttempt(claim, { stage, outcome: memoryFailureOutcome(failure.code, blocked ? "blocked" : "failed"), code: failure.code,
+      memoryAttempt(claim, { error, stage, outcome: memoryFailureOutcome(failure.code, blocked ? "blocked" : "failed"), code: failure.code,
         prisma_code: databaseFailureCode(error), action: "retry" });
       const nextAttemptAt = addMilliseconds(now, delay);
       await memoryPersistence(claim, "retry", () => this.#repository.retryDeletion({

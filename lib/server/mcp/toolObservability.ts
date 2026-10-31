@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { bindContext, logEvent, type EventFields } from "../observability";
 import { observedFailure } from "../providers/providerObservability";
 
@@ -12,10 +13,12 @@ export function mcpToolFailure(error: unknown): Pick<ToolFields, "code" | "reaso
   };
 }
 
-export function beginMcpToolStage(stage: ToolFields["stage"]) {
+export function beginMcpToolStage(stage: ToolFields["stage"], serverId?: string, toolName?: string) {
+  const server = serverId ? createHash("sha256").update(serverId).digest("hex").slice(0, 32) : undefined;
+  const tool = toolName ? `mcp_${createHash("sha256").update(toolName).digest("hex").slice(0, 32)}` : undefined;
   const startedAt = performance.now();
   const emit = bindContext((fields: Omit<ToolFields, "tool_kind" | "stage">) => logEvent("tool_execution", {
-    tool_kind: "mcp", stage, outcome: fields.outcome, code: fields.code,
+    mcp_server: server, tool_identity: tool, tool_kind: "mcp", stage, outcome: fields.outcome, code: fields.code,
     reason: fields.reason, httpStatus: fields.httpStatus, duration_ms: Math.max(0, performance.now() - startedAt),
     ...(fields.max_bytes ? { max_bytes: fields.max_bytes } : {}),
     ...(fields.truncated ? { truncated: true, original_bytes: fields.original_bytes, delivered_bytes: fields.delivered_bytes } : {})

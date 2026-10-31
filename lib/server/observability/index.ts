@@ -1,6 +1,6 @@
 export {
   attributeRequestUser, bindContext, createTraceId, getContext, logEvent, registerRouteTemplates,
-  runInBackground, runWithContext, setProcessRole, writeEmergencyFailure,
+  runInBackground, runWithContext, runWithToolCallObservation, setProcessRole, writeEmergencyFailure,
   announceProcess, reportSubsystemFailure, reportSubsystemHealthy, reportReadiness
 } from "./runtime.cjs";
 export { setRecordObserver, type ObservedRecord } from "./runtime.cjs";

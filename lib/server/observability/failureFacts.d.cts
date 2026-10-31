@@ -2,7 +2,7 @@ import type { DatabaseFailureKind } from "./events";
 
 /** The content-free facts of a caught value's cause chain. */
 export type FailureFacts = Readonly<{
-  prisma_code?: string; sqlstate?: string; db_failure?: DatabaseFailureKind;
+  db_constraint?: string; prisma_code?: string; sqlstate?: string; db_failure?: DatabaseFailureKind;
   tx_timeout_ms?: number; tx_elapsed_ms?: number;
   sys_code?: string; syscall?: string;
   cause_class?: string; cause_site?: string;

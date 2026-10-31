@@ -321,7 +321,7 @@ describe("provider diagnostics", () => {
     await iterator.next();
     await expect(iterator.next()).rejects.toThrow("openai_response_failed");
     expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed", level: "error",
-      stream_drop: "response_failed", code: "unknown" }));
+      stream_drop: "response_failed", code: "provider_response_failed" }));
     // A value outside the closed vocabulary never reaches a record.
     expect(observedFailure(Object.assign(new Error("x"), { streamDrop: "PRIVATE_DROP_CANARY" }))).toEqual({ code: "unknown", reason: "unknown" });
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
