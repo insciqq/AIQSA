@@ -113,7 +113,6 @@ describe("Navigation v2", () => {
     const trigger = screen.getByRole("button", { name: "Open sidebar" });
     expect(trigger).not.toHaveAttribute("aria-describedby");
     expect(trigger.className).not.toContain("before:bg-critical");
-    expect(screen.queryByTestId("admin-attention-dot")).toBeNull();
   });
 
   it.each(["Chats", "New chat", "shortcut", "chat"])("defers the entire %s exit until Studio releases it", (destination) => {

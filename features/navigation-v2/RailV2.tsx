@@ -8,8 +8,6 @@ import { CONNECT_PAGE_PATH } from "@/lib/contracts/connect";
 import { NEW_CHAT_PATH } from "@/lib/domain/chatRoute";
 import { AccountMenuV2 } from "./AccountMenuV2";
 import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
-import { AdminAttentionDot } from "./AdminAttentionDot";
-import { adminAttentionIndicator, useAdminAttentionSummary } from "./useAdminAttentionSummary";
 
 export type RailSectionV2 = "chats" | "library";
 
@@ -108,7 +106,6 @@ export function RailV2({
 }>) {
   // Control Center returns to the chat it was opened from.
   const controlCenterHref = useControlCenterHref();
-  const attention = adminAttentionIndicator(useAdminAttentionSummary(adminEntryVisible));
   return (
     <nav className="v2-rail" aria-label="Workspace" data-testid="workspace-rail">
       <RailButton disabled={navigationBusy} className="v2-rail-brand" href={NEW_CHAT_PATH} icon="brand" label="New chat" onClick={onNewChat} />
@@ -134,14 +131,13 @@ export function RailV2({
         {onSettings ? <RailButton icon="settings" label="Settings" onClick={onSettings} /> : null}
         {adminEntryVisible ? (
           <a
-            className="v2-rail-button v2-focusable relative"
+            className="v2-rail-button v2-focusable"
             href={controlCenterHref}
-            aria-label={attention ? `Control Center, ${attention.label}` : "Control Center"}
-            data-tooltip={attention ? `Control Center · ${attention.label}` : "Control Center"}
+            aria-label="Control Center"
+            data-tooltip="Control Center"
             data-tooltip-side="right"
           >
             <UiV2Icon name="shield" />
-            {attention ? <AdminAttentionDot indicator={attention} /> : null}
           </a>
         ) : null}
         <AccountMenuV2

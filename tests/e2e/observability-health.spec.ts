@@ -147,12 +147,13 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
     await expect(keyItem).toBeVisible();
     await shoot(page, testInfo, "overview-key-rejected-desktop");
 
-    // The chat shell shows an administrator badge (the summary is cached up to a minute).
+    // The account menu counts what needs attention (the summary is cached up to a minute).
     await expect.poll(async () => {
       await page.goto("/");
       await expect(page.getByTestId("app-shell")).toBeVisible();
-      // The badge appears once the shell's first summary read settles after hydration.
-      return page.getByTestId("admin-attention-dot").first().waitFor({ state: "visible", timeout: 8_000 })
+      await page.getByRole("button", { name: "Account menu" }).first().click();
+      // The count appears once the shell's first summary read settles after hydration.
+      return page.getByTestId("admin-attention-count").first().waitFor({ state: "visible", timeout: 8_000 })
         .then(() => true, () => false);
     }, { timeout: 120_000, intervals: [5_000] }).toBe(true);
     await expect(page.getByRole("link", { name: /^Control Center, \d+ items? needs? attention$/u })).toBeVisible();
