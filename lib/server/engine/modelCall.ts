@@ -1,3 +1,4 @@
+import type { RunProviderWait } from "../../contracts/runs";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import { logEvent } from "../observability";
@@ -32,7 +33,10 @@ export const MODEL_CALL_RETRY = Object.freeze({
   maxAttempts: 6
 });
 
-const DETERMINISTIC_CODES = new Set<string>([PROVIDER_CONTEXT_LENGTH_EXCEEDED, "provider_response_not_retryable",
+/** Silence before a provider's first response counts as slow: about one healthy request in a hundred waits this long. */
+export const MODEL_CALL_SLOW_AFTER_MS = 20_000;
+
+const DETERMINISTIC_CODES = new Set<string>([PROVIDER_CONTEXT_LENGTH_EXCEEDED, "provider_request_rejected", "provider_response_not_retryable",
   "provider_capability_unsupported", "provider_response_cancelled", "provider_refused", "provider_budget_exhausted",
   "provider_auth_rejected", "provider_quota_exhausted"]);
 
@@ -66,6 +70,11 @@ export type ModelCallPorts = Readonly<{
   onDiscard(attempt: number): Promise<void>;
   /** A live event of the current attempt (text, reasoning headings, outputs). */
   onEvent(event: ModelRunSseEvent, attempt: number): Promise<void>;
+  /**
+   * What the request is waiting on its provider for, and null once the provider
+   * started answering. Called only on a change. Not called after the last attempt failed: the run's failure says it.
+   */
+  onProviderWait?(wait: RunProviderWait | null): void;
   /** One physical request's provider-reported usage and cost. */
   onUsage(usage: ModelRunUsage, costUsd: number | undefined): void;
   random?: () => number;
@@ -76,6 +85,8 @@ export type ModelCallPorts = Readonly<{
    */
   routing?: GatewayRoutingLane;
   signal: AbortSignal;
+  /** Overrides `MODEL_CALL_SLOW_AFTER_MS` in tests. */
+  slowAfterMs?: number;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   /** What the request is for, in its retry logs: an answer round (default) or a compaction. */
   stage?: "answer" | "compaction";
@@ -97,16 +108,32 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
   const faults = ports.faults ?? NO_ENGINE_TEST_FAULTS;
   const now = ports.now ?? Date.now;
   const stage = ports.stage ?? "answer";
+  let waiting: RunProviderWait | null = null;
+  const wait = (next: RunProviderWait | null) => {
+    if (next === waiting) return;
+    waiting = next;
+    ports.onProviderWait?.(next);
+  };
   for (let attempt = 1; ; attempt += 1) {
     let usage: ModelRunUsage | null = null;
     let stream: AsyncGenerator<ModelRunSseEvent, ProviderRunResult> | null = null;
+    // A later attempt is already `retrying`, which says more than slow.
+    let slowTimer = attempt === 1 && ports.onProviderWait
+      ? setTimeout(() => wait("slow"), ports.slowAfterMs ?? MODEL_CALL_SLOW_AFTER_MS) : null;
+    const answering = () => {
+      if (slowTimer) clearTimeout(slowTimer);
+      slowTimer = null;
+      wait(null);
+    };
     try {
       if (faults.take("model_502_once")) throw syntheticProviderBadGateway();
       const routingKey = ports.routing?.key();
-      const opened = ports.adapter.stream(request, { ...(routingKey ? { routingKey } : {}), signal: ports.signal,
-        ...(ports.timeoutMs ? { timeoutMs: ports.timeoutMs } : {}) });
+      const opened = ports.adapter.stream(request, { onResponseHead: answering, ...(routingKey ? { routingKey } : {}),
+        signal: ports.signal, ...(ports.timeoutMs ? { timeoutMs: ports.timeoutMs } : {}) });
       stream = faults.take("stream_drop_once") ? faulted(opened, true) : opened;
       let next = await stream.next();
+      // An adapter whose transport reports no response head starts answering with its first event.
+      answering();
       while (!next.done) {
         ports.signal.throwIfAborted();
         if (next.value.type === "usage") usage = mergeTokenUsage(usage ?? {}, next.value.data);
@@ -133,8 +160,10 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
       logEvent("provider_retry", { action: "retry", attempt, code: failure.code, delay_ms: delayMs, reason: failure.reason, stage,
         ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
       await ports.onDiscard(attempt);
+      wait("retrying");
       await (ports.sleep ?? sleepWithSignal)(delayMs, ports.signal);
     } finally {
+      if (slowTimer) clearTimeout(slowTimer);
       await stream?.return(undefined as never).catch(() => undefined);
     }
   }

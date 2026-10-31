@@ -1,5 +1,6 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadToolActivityOrigin } from "../../contracts/chats";
+import type { RunProviderWait } from "../../contracts/runs";
 import type { ModelToolCall } from "../tools/types";
 
 /**
@@ -60,18 +61,21 @@ export function liveToolCallStatus(
  * The server names only the phase that is doing work and the client owns the
  * words: `files` while stored conversation images are read, `knowledge`
  * while Knowledge is searched, `model` when a model request is sent (after a
- * tool round it reads the results), `tools` when a declared batch starts.
+ * tool round it reads the results) or its provider starts answering again,
+ * `tools` when a declared batch starts. `wait` is what a model request is
+ * waiting on its provider for.
  */
 export function liveRunPhaseStatus(input: Readonly<{
   count?: number;
   phase: "files" | "knowledge" | "model" | "tools";
+  wait?: RunProviderWait;
 }>): ModelRunSseEvent {
   const count = Math.max(0, Math.floor(input.count ?? 0));
   return {
     data: {
       artifactType: "summary",
       payload: input.phase === "model"
-        ? { stage: "model", status: "waiting" }
+        ? { stage: "model", status: input.wait ?? "waiting" }
         : input.phase === "tools" ? { count, stage: "tools", status: "running" } : { stage: input.phase, status: "running" }
     },
     type: "artifact"

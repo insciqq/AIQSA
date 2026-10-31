@@ -21,6 +21,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Per-answer usage is never shown. Users see their own monthly allowance in Settings and a composer warning near the limit, never installation amounts.
 - Time and animation never invent progress, readiness, cost or completion. A loading failure is not an empty result.
 - The live status names only real work: the server sends the phase and the client owns its words. Without one, the line shows the model's own latest streamed reasoning heading, untrusted and bounded to one plain line, whatever the Reasoning blocks setting; otherwise one neutral phrase chosen per answer that never rotates or names work that is not happening (operator decision 2026-10-20). A model request after tool work is such a wait too: no "Reading results" label, which in a Workspace tool loop covered most of the run (operator decision 2026-10-21).
+- A provider keeping an answer waiting is named (operator decision 2026-10-31): slow after 20 seconds without a response, retrying once an attempt failed, each until it starts answering again, because holding it longer would call a long reasoning a silent provider. Sub-agents, compaction and Telegram stay without it.
 
 ## State
 
