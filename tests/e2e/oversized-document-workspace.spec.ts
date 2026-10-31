@@ -75,6 +75,8 @@ async function shot(page: Page, testInfo: TestInfo, name: string): Promise<void>
 }
 
 test.beforeAll(async ({ browser }) => {
+  // The first page of a cold dev server compiles for longer than a hook's default 30 s.
+  test.setTimeout(240_000);
   restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
   const adminContext = await browser.newContext();
   try {
