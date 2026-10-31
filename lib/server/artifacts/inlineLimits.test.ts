@@ -28,6 +28,17 @@ describe("large inline images", () => {
     expect(() => buildArtifactBundle(operation, [asset])).not.toThrow();
   });
 
+  it.each([false, true])("accepts a long quoted string in a script with non-Latin text (linked: %s)", linked => {
+    const script = `const blob = "${"A".repeat(9 * 1024 * 1024)}"; const label = "Привет";`;
+    const operation = normalizeArtifactOperation({ intent: "create", kind: "html", title: "Long string", entrypoint: "index.html",
+      files: linked ? [{ path: "index.html", mimeType: "text/html", text: '<script src="app.js"></script>' },
+        { path: "app.js", mimeType: "text/javascript", assetRef: "script" }]
+        : [{ path: "index.html", mimeType: "text/html", assetRef: "page" }] });
+    const asset = linked ? { path: "app.js", mimeType: "text/javascript", bytes: Buffer.from(script) }
+      : { path: "index.html", mimeType: "text/html", bytes: Buffer.from(`<script>${script}</script>`) };
+    expect(() => buildArtifactBundle(operation, [asset])).not.toThrow();
+  });
+
   it("keeps accepted image literals and surrounding script text intact", () => {
     const script = `const paths = ["image.png", './image.png', "missing.png", "image.png"]; const label = "🪿";`;
     const image = { path: "image.png", mimeType: "image/png", bytes: Buffer.alloc(1024 * 1024) };
