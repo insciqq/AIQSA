@@ -32,24 +32,21 @@ afterEach(() => {
 describe("Control Center attention badge", () => {
   const summary = (bad: number, warn: number) => ({ bad, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [] as [], warn });
 
-  it("marks the rail entry with the worst severity and names the count", () => {
+  it("keeps the rail entry plain and counts only in the account menu", () => {
     attentionSummary.current = summary(1, 2);
     render(<RailV2 accountLabel="admin@example.test" active="chats" adminEntryVisible onChats={vi.fn()} onNewChat={vi.fn()} />);
-    const entry = within(screen.getByTestId("workspace-rail")).getByRole("link", { name: "Control Center, 3 items need attention" });
-    expect(within(entry).getByTestId("admin-attention-dot")).toHaveAttribute("data-severity", "bad");
-    // The rail avatar does not repeat the dot; its menu entry carries the count.
-    expect(within(screen.getByRole("button", { name: "Account menu" })).queryByTestId("admin-attention-dot")).toBeNull();
+    const entry = within(screen.getByTestId("workspace-rail")).getByRole("link", { name: "Control Center" });
+    expect(entry.querySelector("[data-severity]")).toBeNull();
+    expect(entry).toHaveAttribute("data-tooltip", "Control Center");
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-    const [railEntry, menuEntry] = screen.getAllByRole("link", { name: "Control Center, 3 items need attention" });
-    expect(railEntry).toBe(entry);
-    expect(within(menuEntry!).getByTestId("admin-attention-count")).toHaveTextContent("3");
+    const menuEntry = screen.getByRole("link", { name: "Control Center, 3 items need attention" });
+    expect(within(menuEntry).getByTestId("admin-attention-count")).toHaveTextContent("3");
   });
 
   it("keeps the drawer account row, the only entry on phones, plain and counts in its menu", () => {
     attentionSummary.current = summary(1, 1);
     render(<AccountMenuV2 accountId="admin-1" accountLabel="admin@example.test" adminEntryVisible />);
     const trigger = screen.getByRole("button", { name: "Account menu" });
-    expect(within(trigger).queryByTestId("admin-attention-dot")).toBeNull();
     expect(trigger).not.toHaveAttribute("aria-describedby");
     fireEvent.click(trigger);
     const entry = screen.getByRole("link", { name: "Control Center, 2 items need attention" });
@@ -60,7 +57,6 @@ describe("Control Center attention badge", () => {
     attentionSummary.current = summary(0, 0);
     render(<RailV2 accountLabel="admin@example.test" active="chats" adminEntryVisible onChats={vi.fn()} onNewChat={vi.fn()} />);
     expect(screen.getByRole("link", { name: "Control Center" })).toBeVisible();
-    expect(screen.queryByTestId("admin-attention-dot")).toBeNull();
   });
 
   it("never asks for counts without the administrator entry", () => {
@@ -70,7 +66,6 @@ describe("Control Center attention badge", () => {
     expect(attentionSummary.hook).toHaveBeenCalled();
     expect(attentionSummary.hook.mock.calls.every(([enabled]) => enabled === false)).toBe(true);
     expect(screen.queryByRole("link", { name: /Control Center/u })).toBeNull();
-    expect(screen.queryByTestId("admin-attention-dot")).toBeNull();
   });
 });
 

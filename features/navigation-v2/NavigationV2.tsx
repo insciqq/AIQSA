@@ -1803,8 +1803,7 @@ export function ReadingRoomShellV2({
     />
   );
 
-  // On phones the rail is hidden: the drawer toggle carries the unread-announcements hint. Control Center
-  // attention gets no dot there, only the count in the account menu (operator decision 2026-10-29).
+  // On phones the rail is hidden: the drawer toggle carries the unread-announcements hint.
   const unreadAnnouncementsHint = composition === "mobile" && Boolean(announcements && announcements.unreadCount > 0);
 
   return (
