@@ -24,7 +24,7 @@ import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
  *   after itself, then everything appended since, and one whose tail is no
  *   longer found before it is not used; the run's own context (`runContext`)
  *   is never compacted and stays, right after the compaction, and so does the
- *   input its attachments render on (`TranscriptTarget.carriedInputId`);
+ *   input its attachments or reminder render on (`TranscriptTarget.carriedInputId`);
  * - reasoning with no text or call after it in its response stays out;
  * - a result's image (`view_workspace_image`) is kept by reference, never as
  *   pixels: a request carries its pixels only while the run that viewed it
@@ -39,8 +39,9 @@ export type TranscriptOrigin = Readonly<{ model: string; provider: string }>;
 /** A request's destination and how the transcript replays there. */
 export type TranscriptTarget = TranscriptOrigin & Readonly<{
   /**
-   * The run's input while its requests carry attachments. They render only on that item, and a compaction inside the
-   * turn may cut past it, so replay keeps it beside the run's own context. A later run reads it as any earlier message.
+   * The run's input while its requests carry attachments or a response reminder. They render only on that item, and a
+   * compaction inside the turn may cut past it, so replay keeps it beside the run's own context. A later run reads it as
+   * any earlier message.
    */
   carriedInputId?: string;
   /** The route takes back its own native compaction items (Responses). */
