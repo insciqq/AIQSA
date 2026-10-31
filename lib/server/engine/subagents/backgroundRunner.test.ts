@@ -6,8 +6,9 @@ import type { ProviderRunRequest } from "../../providers/types";
 import {
   backgroundSubagentRunner, hasForegroundSubagentTurn, hasSubagentBackgroundHost, registerSubagentBackgroundHost, withForegroundTurnStops
 } from "./backgroundRunner";
-import { WORKSPACE_TURN_GUIDANCE_PREFIX } from "./runner";
-import { backgroundSubagentRequest } from "./runSubagents";
+import type { SubagentModelRoute } from "./modelRoutes";
+import { subagentRequest, WORKSPACE_TURN_GUIDANCE_PREFIX } from "./runner";
+import { BACKGROUND_OUTPUT_GUIDANCE, backgroundSubagentRequest } from "./runSubagents";
 
 const turn = (overrides: Partial<SubagentTurnInput> = {}): SubagentTurnInput => ({
   binding: { effortSource: "parent", modelId: "model", modelSource: "parent", provider: "connection", providerModelId: "model-1",
@@ -88,8 +89,23 @@ describe("the engine's background runner", () => {
       workspace: { enabled: true, outputDirectory: parentFolder } } as unknown as ProviderRunRequest;
     const own = backgroundSubagentRequest(request, "run-bg");
     expect(own.workspace?.outputDirectory).toBe(workspaceRunOutputDirectory("run-bg"));
-    expect(own.prompt.turnGuidance).toEqual([`${WORKSPACE_TURN_GUIDANCE_PREFIX}${workspaceRunOutputDirectory("run-bg")}.`, "Other."]);
+    expect(own.prompt.turnGuidance).toEqual([`${WORKSPACE_TURN_GUIDANCE_PREFIX}${workspaceRunOutputDirectory("run-bg")}. ${BACKGROUND_OUTPUT_GUIDANCE}`, "Other."]);
     const plain = { prompt: { developer: null, system: null } } as unknown as ProviderRunRequest;
     expect(backgroundSubagentRequest(plain, "run-bg")).toBe(plain);
+  });
+
+  it("names the turn's own folder, and where its files really go, in the prompt the sub-agent gets", () => {
+    const parentFolder = workspaceRunOutputDirectory("parent-run");
+    const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}${parentFolder}.\nInternet inside the workspace: enabled.`;
+    const request = { attachments: [], modelCapabilities: {}, prompt: { developer: null, system: `Contract.\n\n${paths}\n\nFiles of this chat.`,
+      turnGuidance: [paths, "Files of this chat."] }, workspace: { enabled: true, outputDirectory: parentFolder } } as unknown as ProviderRunRequest;
+    const route = { adapter: {}, request: { modelCapabilities: {}, modelId: "m", params: {}, provider: "fake", reasoningEffort: null },
+      snapshot: {}, timeoutMs: 1 } as unknown as SubagentModelRoute;
+    const sub = subagentRequest(backgroundSubagentRequest(request, "run-bg"), route);
+    const own = `${WORKSPACE_TURN_GUIDANCE_PREFIX}${workspaceRunOutputDirectory("run-bg")}. ${BACKGROUND_OUTPUT_GUIDANCE}\nInternet inside the workspace: enabled.`;
+    expect(sub.prompt.system).toBe(`Contract.\n\n${own}`);
+    expect(sub.prompt.turnGuidance).toEqual([own]);
+    expect(sub.prompt.system).not.toContain(parentFolder);
+    expect(BACKGROUND_OUTPUT_GUIDANCE).toContain("/workspace/project/");
   });
 });

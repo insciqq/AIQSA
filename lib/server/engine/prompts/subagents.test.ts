@@ -7,6 +7,13 @@ import { SUBAGENT_ROLE_SECTION, subagentFollowupText, subagentsPromptSection, su
 const environment = { now: new Date("2026-10-30T09:00:00Z"), timeZone: "Europe/Madrid" };
 const model = { modelId: "codex-lb:gpt-6-sol", provider: "openai_compatible" };
 
+describe("what a sub-agent's files need to reach the user", () => {
+  it("tells the main agent that only it hands files over, and the sub-agent to name its files", () => {
+    expect(subagentsPromptSection(undefined)).toMatch(/Only you give the user files.*`cp`.*this turn's output directory/u);
+    expect(SUBAGENT_ROLE_SECTION).toMatch(/Files reach the user only through the main agent/u);
+  });
+});
+
 describe("sub-agent prompts", () => {
   it("guide the main agent only when call_subagent is offered, listing the frozen models and custom types", () => {
     const facts = { models: [

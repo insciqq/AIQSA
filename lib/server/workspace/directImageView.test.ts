@@ -13,7 +13,7 @@ import {
   type WorkspaceImageCaptures
 } from "./directImageView";
 import { WorkspaceCaptureError } from "./selectedCapture";
-import { workspaceImageInput, workspaceImageInputForRun } from "./imageInputs";
+import { OTHER_OUTPUT_FOLDER, outputFolderOfAnotherRun, workspaceImageInput, workspaceImageInputForRun } from "./imageInputs";
 
 const workspace = { enabled: true, outputDirectory: "/workspace/output/run-1" } as ProviderRunRequest["workspace"];
 
@@ -94,6 +94,19 @@ describe("Workspace direct image view", () => {
     expect(() => workspaceImageInputForRun({ path: "/workspace/output/other/a.png" }, "/workspace/output/run-1")).toThrow("workspace_image_invalid");
   });
 
+  it("tells another run's output folder from this run's own, as a path or as a sub-agent's file list names it", () => {
+    const other = "11111111-2222-4333-8444-555555555555";
+    const own = "/workspace/output/run-1";
+    for (const path of [`/workspace/output/${other}/a.png`, `output/${other}/a.png`, `output/${other}/charts/a.png`]) {
+      expect(outputFolderOfAnotherRun(path, own)).toBe(true);
+      expect(() => workspaceImageInputForRun({ path }, own)).toThrow("workspace_image_invalid");
+    }
+    for (const path of [`${own}/a.png`, "output/run-1/a.png", "output/a.png", "output/charts/a.png", "project/a.png", "/workspace/output/a.png"]) {
+      expect(outputFolderOfAnotherRun(path, own)).toBe(false);
+    }
+    expect(workspaceImageInputForRun({ path: "output/charts/a.png" }, own).file.relativePath).toBe("charts/a.png");
+  });
+
   it.each(["/etc/passwd", "/workspace/secrets/file.png", "https://image.invalid/a.png", "project/../secrets/a.png", "inbox/index.json"])(
     "rejects nonselected authority %s", (path) => {
       expect(() => workspaceImageInput({ path })).toThrow();
@@ -159,9 +172,12 @@ describe("Workspace direct image view", () => {
     await expect(refused("/workspace/secrets/key.png")).resolves.toMatchObject({ status: "error",
       content: [{ type: "json", value: { error: "workspace_image_invalid" } }] });
     await expect(refused("/workspace/inbox/index.json")).resolves.toMatchObject({ content: [{ value: { error: "workspace_image_invalid" } }] });
-    // An earlier answer's output folder, as its earlier result names it, points to that answer's exports instead.
+    // Another run's output folder, an earlier answer's or a background sub-agent's, is reached through a copy.
     await expect(refused("/workspace/output/run-0/code.png")).resolves.toMatchObject({ content: [{ value: {
-      error: "workspace_image_invalid", message: expect.stringMatching(/earlier answer.*inbox index/u) } }] });
+      error: "workspace_image_invalid", message: OTHER_OUTPUT_FOLDER } }] });
+    expect(OTHER_OUTPUT_FOLDER).toMatch(/background sub-agent.*`cp`.*\/workspace\/project\//u);
+    // It never claims the folder's files are exports: a background sub-agent's never are.
+    expect(OTHER_OUTPUT_FOLDER).toMatch(/if an earlier answer delivered it/iu);
     await expect(refused("/workspace/output/code.png")).resolves.toMatchObject({ content: [{ value: {
       error: "workspace_image_invalid", message: expect.not.stringContaining("earlier answer") } }] });
     expect(f.owner.create).not.toHaveBeenCalled();
