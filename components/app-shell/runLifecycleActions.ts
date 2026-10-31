@@ -475,7 +475,11 @@ export function useRunLifecycleActions({
 
   async function requestRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
     try {
-      const { response, body } = await shellReadJson(`/api/model-runs/${runId}`);
+      // A read lost to a suspended page or the network proves nothing about the run. Every
+      // caller reads again and an interrupted answer stays marked, so the user has nothing to act on.
+      const read = await shellReadJson(`/api/model-runs/${runId}`).catch(() => null);
+      if (!read) return { kind: "unknown" };
+      const { response, body } = read;
       if (!response.ok) {
         return response.status === 404 ? { kind: "not_found" } : { kind: "unknown" };
       }
