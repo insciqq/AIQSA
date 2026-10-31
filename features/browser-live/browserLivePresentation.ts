@@ -93,6 +93,15 @@ export function browserLiveAgentStatusV2(agent: Pick<BrowserLiveAgent, "controll
   return agent.controller === "user" ? "you have control" : "browsing";
 }
 
+/**
+ * The agents the switcher lists. The hub always lists the main agent, but while its tab is blank it is not browsing, and
+ * counting it would claim otherwise. It stays when the panel shows it, the person holds it or it waits for them.
+ */
+export function browserLiveListedAgentsV2(agents: readonly BrowserLiveAgent[], selected: string): readonly BrowserLiveAgent[] {
+  return agents.filter((agent) => agent.id !== BROWSER_LIVE_MAIN_AGENT || agent.id === selected || agent.waitingForUser ||
+    agent.controller === "user" || browserLiveHostV2(agent.page?.url) !== null);
+}
+
 /** One switcher option: the agent, what it is doing and the site it is on ("shop · needs you · saucedemo.com"). */
 export function browserLiveAgentOptionV2(agent: BrowserLiveAgent): string {
   const host = browserLiveHostV2(agent.page?.url);
