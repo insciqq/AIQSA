@@ -208,17 +208,20 @@ function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
  * current message's attachments); the Workspace contract, the tool index and
  * the run's other admitted guidance stay. Of the turn's own guidance only its
  * Workspace paths stay: the attachment, image and artifact facts describe what
- * the sub-agent was not given.
+ * the sub-agent was not given. `withoutWorkspace` is a turn the Workspace
+ * refused: it runs as in a chat that has none, so no Workspace tool is offered.
  */
-export function subagentRequest(request: ProviderRunRequest, route: SubagentModelRoute): ProviderRunRequest {
-  const { personalContext: _personal, ...rest } = request;
+export function subagentRequest(request: ProviderRunRequest, route: SubagentModelRoute,
+  options: Readonly<{ withoutWorkspace?: boolean }> = {}): ProviderRunRequest {
+  const { personalContext: _personal, workspace, ...rest } = request;
   void _personal;
   const recorded = request.prompt.turnGuidance ?? [];
   const split = splitTurnGuidance(request.prompt.system ?? "", recorded);
-  const kept = split.turn.filter((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
+  const kept = options.withoutWorkspace ? [] : split.turn.filter((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
   const system = [split.chat, ...kept].filter((part) => part.trim()).join("\n\n");
   return {
     ...rest,
+    ...(workspace && !options.withoutWorkspace ? { workspace } : {}),
     attachmentIds: [],
     attachments: [],
     modelCapabilities: route.request.modelCapabilities,
@@ -439,7 +442,9 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       if (!routed.ok) return ended("failed", { reason: routed.code });
       const route = routed.route;
       const shape = host.requestShape(route);
-      const request = { ...subagentRequest(host.request, route), params: shape.params };
+      // In a chat with no Workspace the refusal says only that, and there is nothing to tell the agent.
+      const workspaceRefused = host.request.workspace ? input.workspaceRefused : undefined;
+      const request = { ...subagentRequest(host.request, route, { withoutWorkspace: workspaceRefused !== undefined }), params: shape.params };
       const onWorkspaceActivity = async (entry: ThreadWorkspaceActivityEntry) => {
         if (WORKSPACE_LIFECYCLE_KINDS.has(entry.kind)) await host.onWorkspaceLifecycle(entry);
         if (!WRITTEN_FILE_KINDS.has(entry.kind) || entry.phase !== "succeeded") return;
@@ -461,7 +466,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         ...(host.secrets ? { secrets: host.secrets } : {}), selfService: role, snapshot: route.snapshot, tools: registry.definitions() });
       const base = native.request;
       const inputItem: TranscriptUserItem = { id: `sub-${input.turnId}`, kind: "user",
-        text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", name: input.name, userMessage: input.userMessage }) };
+        text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", name: input.name, userMessage: input.userMessage,
+          ...(workspaceRefused ? { workspaceRefused } : {}) }) };
       // The run's one fence (`SubagentHost.unknownEffects`): only the user's own words count as them speaking, never the
       // main agent's brief or messages.
       const unknownEffects = host.unknownEffects(input.threadId);
