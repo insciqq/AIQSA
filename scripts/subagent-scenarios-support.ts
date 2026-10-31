@@ -1,8 +1,8 @@
 /**
  * Pure parts of `scripts/smoke-subagents-paid.ts`: the sub-agent scenarios
- * A–I of the acceptance task (scenarios 1–9), J (two production defects) and
- * K (files and images across agents) with their Russian prompts, the
- * oracles over `browser-result.json` and the run's stored rows, and the
+ * A–I of the acceptance task (scenarios 1–9), J (two production defects), K
+ * (files and images across agents) and L (a document the parser refuses, read
+ * in the Workspace) with their Russian prompts, the oracles over `browser-result.json` and the run's stored rows, and the
  * content-free evidence computed from read-only rows (turn bindings, usage
  * per purpose, callbacks and wake-ups, concurrency from the tool-call
  * timeline, thread-state progression). Stand guard, setup, cleanup ports and
@@ -14,6 +14,7 @@
  * oracles compare (the per-run words and nonce stay in memory).
  */
 import { createHash } from "node:crypto";
+import { utils, write } from "xlsx";
 import {
   ACTIVE_SUBAGENT_STATES, SUBAGENT_END_REASONS, SUBAGENT_THREAD_STATES, type SubagentThreadState
 } from "../lib/contracts/subagents";
@@ -47,9 +48,10 @@ const flag = (value: boolean) => value ? 1 : 0;
  * sub-agents and the main agent read each other's text and image files, in the
  * background and the foreground, finished sub-agents continued by name, "a
  * chart in the background" ending as a download, and a sub-agent on a model
- * without vision when one is configured.
+ * without vision when one is configured. L: an XLSX over the spreadsheet
+ * reader's limit, sent with a Workspace, answered from the file itself.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -67,7 +69,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -241,6 +243,34 @@ const K_READ_SECTIONS: Readonly<Record<"left" | "main" | "right", readonly KAgen
 const K_RESULT_FIELDS = Object.entries(K_READ_SECTIONS).map(([reader, agents]) => `  "${reader}": {${agents.map((agent) =>
   `"${agent}_text": "...", "${agent}_color": "..."`).join(", ")}}`).join(",\n");
 
+export const SCENARIO_L_FILE_NAME = "subagent-l-ledger.xlsx";
+export const SCENARIO_L_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const L_SHEET = "Ledger";
+const L_ROWS = 26_000;
+const L_COLUMNS = 10;
+
+/** One L run's workbook and the sum only its second column gives; the sum never reaches a prompt or the line. */
+export type ScenarioLFacts = Readonly<{ expectedSum: number; populatedCells: number; workbook: Buffer }>;
+
+/**
+ * Over `SPREADSHEET_MAX_POPULATED_CELLS`, like `tests/e2e/oversized-document-workspace.spec.ts`,
+ * with a header row so a reader's default of taking the first row as the header
+ * loses no value. Whole numbers, so the sum has one exact form however it is computed.
+ */
+export function scenarioLFacts(nonce: string): ScenarioLFacts {
+  const amount = (row: number) => Number.parseInt(createHash("sha256").update(`${nonce}-${row}`, "utf8").digest("hex").slice(0, 6), 16);
+  const amounts = Array.from({ length: L_ROWS }, (_, row) => amount(row));
+  const header = ["id", "amount", ...Array.from({ length: L_COLUMNS - 2 }, (_, column) => `filler_${column + 1}`)];
+  const rows = amounts.map((value, row) => [row + 1, value, ...Array.from({ length: L_COLUMNS - 2 }, (_, column) => row * 10 + column)]);
+  const book = utils.book_new();
+  utils.book_append_sheet(book, utils.aoa_to_sheet([header, ...rows]), L_SHEET);
+  return {
+    expectedSum: amounts.reduce((sum, value) => sum + value, 0),
+    populatedCells: (L_ROWS + 1) * L_COLUMNS,
+    workbook: write(book, { bookType: "xlsx", compression: true, type: "buffer" }) as Buffer
+  };
+}
+
 export const SUBAGENT_PROMPTS = Object.freeze({
   A: () => [
     "Найди и сравни 10 вариантов открытых (open-source) векторных баз данных. Сделай это с помощью суб-агентов, " +
@@ -379,7 +409,14 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       `(не в фоне), задай ему модель ${model} (параметр model). Его задание: ровно один раз посмотреть файл ${facts.directory}/main.png ` +
       `${K_IMAGE_TOOL}, не запуская команд, и сообщить, какого цвета картинка. ${NO_WEB} Сам на картинку не смотри. ` +
       "В ответе мне напиши этот цвет одним английским словом."
-  })
+  }),
+  L: () => [
+    `Посчитай точную сумму второго столбца (amount) листа ${L_SHEET} в приложенном файле ${SCENARIO_L_FILE_NAME}. ` +
+      "Первая строка — заголовок, значения в столбце — целые числа.",
+    "Сделай только одно вычисление: выполни в Workspace один скрипт на Python, который читает сам файл и суммирует все строки " +
+      `этого столбца. Суб-агентов не запускай, файлов для скачивания не создавай. ${NO_WEB}`,
+    "Ответь одной строкой: только сумма цифрами, без пробелов и разделителей."
+  ].join("\n\n")
 });
 
 // Oracles over the result file ------------------------------------------------------
@@ -1103,6 +1140,65 @@ export function oracleKFlow(input: Readonly<{
   if (!input.settled || callbacks.callbacksOwed > 0) failed.push("callbacks_owed");
   return { counts: { chartDownloads: chart.downloads.length, leftImages: images.left.succeeded, leftTurns: left.length,
     mainChartViews: chart.mainImage.succeeded, mainImages: images.main.succeeded, rightImages: images.right.succeeded, rightTurns: right.length }, failed };
+}
+
+// A document the parser refuses, read in the Workspace (L) --------------------------
+
+/** L's stored attachment, read in memory only: its state, its code and whether it has text. */
+export type LAttachmentRow = Readonly<{ extractedTextNull: boolean; processingErrorCode: string | null; status: string }>;
+
+/** What must hold before anything paid is sent; null is an upload the parser never settled. */
+export function scenarioLUploadChecks(row: LAttachmentRow | null): string[] {
+  if (row === null) return ["upload_not_settled"];
+  const failed: string[] = [];
+  if (row.status !== "failed") failed.push("upload_not_failed");
+  if (row.processingErrorCode !== "parser_output_too_large") failed.push("upload_code_not_output_too_large");
+  if (!row.extractedTextNull) failed.push("upload_has_extracted_text");
+  return failed;
+}
+
+/**
+ * The expected sum as a regular expression over the answer, valid in PostgreSQL
+ * and JavaScript and matched inside SQL: the whole number, with or without
+ * thousands separators (a model may ignore the prompt's format, which is not
+ * what L proves).
+ */
+export function scenarioLAnswerPattern(sum: number): string {
+  const groups = String(sum).match(/\d{1,3}(?=(?:\d{3})*$)/gu) ?? [];
+  return `(^|[^0-9])${groups.join("[ ,\u00a0\u202f]?")}([^0-9]|$)`;
+}
+
+/** A Workspace tool call of the run; `namesInbox` and `unknownOutcome` are computed in SQL from arguments and a result that never leave it. */
+export type LWorkspaceCall = Readonly<{ namesInbox: boolean; state: string; toolName: string; unknownOutcome: boolean }>;
+
+/** A Workspace tool as stored, the provider-facing name of `lib/server/workspace/toolCatalog.ts`. */
+const WORKSPACE_TOOL_NAME = /^mcp_workspace_(sandbox_[a-z_]+)_[0-9a-f]{10}$/u;
+const WORKSPACE_COMMAND_TOOLS: readonly string[] = ["sandbox_exec", "sandbox_exec_start", "sandbox_shell"];
+
+/** A sandbox file call may hold the script that names the file, so `inboxCalls` counts every Workspace tool. */
+export function scenarioLWorkspaceEvidence(rows: readonly LWorkspaceCall[]) {
+  const calls = rows.filter((row) => WORKSPACE_TOOL_NAME.test(row.toolName));
+  const finished = calls.filter((row) => row.state === "complete" && !row.unknownOutcome);
+  return {
+    commands: finished.filter((row) => WORKSPACE_COMMAND_TOOLS.includes(WORKSPACE_TOOL_NAME.exec(row.toolName)?.[1] ?? "")).length,
+    inboxCalls: finished.filter((row) => row.namesInbox).length,
+    unknownOutcomes: calls.filter((row) => row.unknownOutcome).length,
+    workspaceCalls: calls.length
+  };
+}
+
+/** L's verdict: only a real model reading the original can name a sum no prompt and no extracted text holds. */
+export function oracleL(input: Readonly<{
+  answerHasSum: boolean; terminal: string; workspace: ReturnType<typeof scenarioLWorkspaceEvidence>;
+}>): OracleVerdict {
+  const { workspace } = input;
+  const failed: string[] = [];
+  if (input.terminal !== "complete") failed.push("run_not_complete");
+  if (!input.answerHasSum) failed.push("sum_not_in_answer");
+  if (workspace.commands === 0) failed.push("no_workspace_command");
+  if (workspace.inboxCalls === 0) failed.push("inbox_not_read");
+  if (workspace.unknownOutcomes > 0) failed.push("workspace_outcome_unknown");
+  return { counts: { ...workspace, answerHasSum: flag(input.answerHasSum) }, failed };
 }
 
 // Stops (E) and the restart (G) -----------------------------------------------------
