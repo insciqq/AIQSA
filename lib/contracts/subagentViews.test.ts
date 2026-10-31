@@ -10,6 +10,7 @@ import {
   decodeSubagentSummaryQuery,
   decodeSubagentSummaryResponse,
   decodeSubagentThreadSummary,
+  decodeSubagentTurnView,
   decodeSubagentThreadView
 } from "./subagentViews";
 
@@ -134,4 +135,9 @@ describe("an answer's sub-agent steps", () => {
       .toBeNull();
     expect(decodeThreadToolActivity({ calls: [{ round: 1, status: "complete", subagentThreadId: "a b", toolName: "x" }] })).toBeNull();
   });
+});
+
+it("decodes a thread view's full report without a separate size cap", () => {
+  const report = "😀".repeat(30_000);
+  expect(decodeSubagentTurnView({ ...turn, endedAt: done.endedAt, outcome: "done", report, state: "done" })?.report).toBe(report);
 });

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  CALL_SUBAGENT_TOOL_NAME,
   SUBAGENT_BLOCKED_REASONS,
   SUBAGENT_END_REASONS,
   SUBAGENT_LIMITS,
+  SUBAGENT_FILES_TRUNCATED_NOTICE,
   SUBAGENT_USAGE_PURPOSE,
-  boundSubagentReport,
   isSubagentCode,
   type EndedSubagentCallResult,
   type EndedSubagentState,
@@ -58,6 +59,7 @@ import {
 } from "../toolBatch";
 import type { ToolCallStore } from "../toolCallStore";
 import type { ToolRegistry } from "../toolRegistry";
+import { toolOutputExcerpt } from "../toolResults";
 import {
   modelResponseItems,
   projectTranscript,
@@ -265,17 +267,15 @@ export function subagentStep(registry: ToolRegistry, call: ModelToolCall, result
 
 /** The approval a sub-agent's call needs, as the main agent makes it again; null when it cannot be handed back whole. */
 export function handedBackApproval(call: ModelToolCall, approval: McpApprovalRequest): SubagentApprovalRequest | null {
-  let serialized: string;
   try {
-    serialized = JSON.stringify(call.arguments);
+    JSON.stringify(call.arguments);
   } catch {
     return null;
   }
-  if (serialized.length > SUBAGENT_LIMITS.approvalArgumentsCharacters) return null;
   return {
     arguments: call.arguments,
     reason: approval.guard ? "guard_refused" : "approval_required",
-    serverName: boundLine(approval.serverName, SUBAGENT_LIMITS.approvalToolCharacters) || "MCP server",
+    serverName: approval.serverName,
     toolName: call.name
   };
 }
@@ -332,24 +332,24 @@ export function endedSubagentCallResult(input: Readonly<{
   state: EndedSubagentState;
   steps: readonly SubagentStep[];
 }>): EndedSubagentCallResult {
-  const report = boundSubagentReport(input.report);
   const steps = input.steps.slice(-SUBAGENT_LIMITS.steps);
-  const files = [...new Set(input.files)].filter((path) => path.trim() && path.length <= SUBAGENT_LIMITS.filePathCharacters &&
+  const uniqueFiles = [...new Set(input.files)];
+  const files = uniqueFiles.filter((path) => path.trim() && path.length <= SUBAGENT_LIMITS.filePathCharacters &&
     !path.includes("\0")).slice(0, SUBAGENT_LIMITS.files);
   const reason = input.reason && isSubagentCode(input.reason) ? input.reason : undefined;
   const outcome = input.state === "done" ? input.outcome ?? "done" : undefined;
   const blockedReason = outcome === "blocked" || input.state === "failed" ? reason ?? "subagent_blocked" : reason;
   return {
-    approvals: input.approvals.slice(0, SUBAGENT_LIMITS.approvals),
+    approvals: input.approvals,
     files,
+    ...(files.length < uniqueFiles.length ? { filesNotice: SUBAGENT_FILES_TRUNCATED_NOTICE } as const : {}),
     kind: "ended",
     model: { effort: input.binding.reasoningEffort ? input.binding.reasoningEffort.slice(0, SUBAGENT_LIMITS.effortCharacters) : null,
       id: input.binding.modelId.slice(0, SUBAGENT_LIMITS.modelCharacters) },
     name: input.name,
     ...(outcome ? { outcome } : {}),
     ...(blockedReason ? { reason: blockedReason } : {}),
-    report: report.report,
-    ...(report.truncated ? { reportTruncated: true as const } : {}),
+    report: input.report,
     state: input.state,
     steps,
     ...(input.steps.length > steps.length ? { stepsTruncated: true as const } : {})
@@ -524,7 +524,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const batchDeps: ToolBatchDeps = {
         approvalHandBack: (call, approval) => {
           const handed = handedBackApproval(call, approval);
-          if (handed && approvals.length < SUBAGENT_LIMITS.approvals) approvals.push(handed);
+          if (handed) approvals.push(handed);
         },
         chatId: host.chatId,
         history: new ToolCallRepeatHistory(),
@@ -661,6 +661,29 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     }
   }
 
+  async function saveBackgroundResult(input: SubagentTurnInput, result: EndedSubagentCallResult): Promise<EndedSubagentCallResult> {
+    if (input.mode !== "background") return result;
+    const text = JSON.stringify(result);
+    let saved: { handle: string } | { unsavedReason: string } = { unsavedReason: "storage_unavailable" };
+    try {
+      // The parent's call already returned "started". Its completion needs a producer in the background run,
+      // outside the thread's executed steps. Even a short result may exceed a callback's remaining reserve.
+      const begun = await host.toolCalls.begin({ arguments: { name: input.name }, chatId: input.chatId, ordinal: 0,
+        providerCallId: `subagent-report:${input.turnId}`, roundIndex: 1, runId: input.hostRunId,
+        toolName: CALL_SUBAGENT_TOOL_NAME, userId: input.userId });
+      if (begun.kind === "running") {
+        saved = await host.saveResult({ outcome: "complete", source: "workspace", text, toolCallId: begun.row.id });
+        const excerpt = toolOutputExcerpt(text, saved);
+        await host.toolCalls.settle({ callId: begun.row.id, runId: input.hostRunId, state: "complete",
+          result: { handle: excerpt.handle, output: excerpt.output, truncated: excerpt.truncated } });
+      }
+    } catch (error) {
+      logEvent("service_operation", { action: "degrade", code: "subagent_turn_unsettled", error, outcome: "degraded",
+        run_id: input.hostRunId, stage: "write", subsystem: "database" });
+    }
+    return { ...result, ...("handle" in saved ? { resultHandle: saved.handle } : { resultUnavailableReason: saved.unsavedReason }) };
+  }
+
   function begin(input: SubagentTurnInput, kind: "continue" | "start"): SubagentTurnHandle {
     // A host runs the turns of its own chat and owner: a foreground turn in the parent run, a background one in its own run.
     if (input.chatId !== host.chatId || input.userId !== host.userId) throw new Error("subagent_turn_scope_invalid");
@@ -668,7 +691,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     let resolveRecord!: (record: TurnRecord) => void;
     const ready = new Promise<TurnRecord>((resolve) => { resolveRecord = resolve; });
     const promise = ready.then(async (record) => {
-      const result = await executeTurn(record);
+      const result = await saveBackgroundResult(input, await executeTurn(record));
       record.result = result;
       await settleRow(input, result);
       return result;

@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { prisma } from "../prisma";
+import { endedSubagentResult } from "@/tests/support/subagentPorts";
+import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../engine/toolResults";
+import { createPrismaSubagentBackgroundStore } from "../runs/subagentBackground/store";
+import { renderWakeUp } from "../runs/subagentBackground/render";
 import { createPrismaRetentionRepository } from "../retention/prune";
 import { createFileSystemStorageAdapter, createS3StorageAdapter } from "../uploads/storage";
 import { measureObservationJson } from "./codec";
@@ -65,6 +69,64 @@ async function fixture() {
 }
 
 describe("durable tool observation ownership", () => {
+  it("keeps a background report readable by its handle after settlement and in a later turn", async () => {
+    const f = await fixture();
+    const parentCall = await f.call();
+    const thread = await prisma.subagentThread.create({ data: { anchorRunId: f.run.id, chatId: f.chat.id,
+      name: "reporter", userId: f.user.id } });
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chat.id, mode: "background", modelId: "fake-qsa",
+      parentRunId: f.run.id, parentToolCallId: parentCall.toolCallId, provider: "fake", threadId: thread.id, userId: f.user.id } });
+    const background = await prisma.modelRun.create({ data: { chatId: f.chat.id, engine: "native", modelId: "fake-qsa",
+      normalizedRequest: {}, provider: "fake", status: "streaming", subagentThreadId: thread.id, subagentTurnId: turn.id,
+      userId: f.user.id, userMessageId: f.run.userMessageId } });
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
+    const producer = await f.call({ runId: background.id, userId: f.user.id });
+    const report = "r".repeat(30_000);
+    const result = endedSubagentResult("reporter", { report });
+    const saved = await saveToolResultText({ outcome: "complete", producer, service: f.service, source: "workspace",
+      text: JSON.stringify(result) });
+    expect(saved).toHaveProperty("handle");
+    if (!("handle" in saved)) throw new Error("report_not_saved");
+    await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { state: "complete" } });
+    const settled = await createPrismaSubagentBackgroundStore(prisma).settle({ chatId: f.chat.id, userId: f.user.id,
+      turnId: turn.id, result: { ...result, resultHandle: saved.handle } });
+    expect(settled.result).toMatchObject({ report, resultHandle: saved.handle });
+    const callback = renderWakeUp([{ name: "reporter", result: settled.result!, turnId: turn.id }]);
+    expect(callback.text).toContain(saved.handle);
+    expect(callback.text.length).toBeLessThan(report.length);
+    const next = await f.makeRun(f.run.assistantMessageId);
+    const reader = createSavedToolResultReader({ prisma, storage: f.storage });
+    let offset: number | null = 0;
+    let text = "";
+    for (let page = 0; offset !== null && page < 10; page += 1) {
+      const read = await executeReadToolResult({ arguments: { handle: saved.handle, offset }, id: `read-${page}`, name: "read_tool_result" },
+        { chatId: next.chatId, reader, userId: next.userId });
+      expect(read.status).toBe("complete");
+      const value = JSON.parse(toolResultOutputText(read)) as { nextOffset: number | null; text: string };
+      text += value.text;
+      offset = value.nextOffset;
+    }
+    expect(offset).toBeNull();
+    expect(JSON.parse(text)).toEqual(result);
+    await expect(reader.read({ chatId: f.chat.id, handle: saved.handle, userId: randomUUID() })).resolves.toBeNull();
+    await expect(reader.read({ chatId: randomUUID(), handle: saved.handle, userId: f.user.id })).resolves.toBeNull();
+    await expect(f.repository.reserve(await f.call({ runId: background.id, userId: f.user.id }), "workspace", 1024))
+      .rejects.toThrow("tool_observation_not_started");
+
+    // Objects kept by background runs spend the same branch budget in later main-agent turns.
+    const calls = Array.from({ length: 8 }, (_, ordinal) => ({ id: randomUUID(), modelRunId: background.id, roundIndex: 2,
+      ordinal, providerCallId: randomUUID(), toolName: "synthetic_tool", arguments: {}, state: "complete" as const }));
+    await prisma.modelRunToolCall.createMany({ data: calls });
+    await prisma.toolObservation.createMany({ data: calls.map((call) => {
+      const id = randomUUID().replaceAll("-", "");
+      return { id, modelRunId: background.id, toolCallId: call.id, sourceKind: "workspace", state: "READY", executionOutcome: "complete",
+        reservedBytes: TOOL_OBSERVATION_LIMITS.branchBytes / calls.length, byteSize: TOOL_OBSERVATION_LIMITS.branchBytes / calls.length,
+        checksum: "d".repeat(64), storageMode: "OBJECT", storageKey: `tool-observations/v1/${id}/${"e".repeat(32)}` };
+    }) });
+    await expect(f.repository.reserve(await f.call(next.actor), "workspace", 1024))
+      .resolves.toMatchObject({ degraded: true, observation: { reservedBytes: 0 } });
+  });
+
   it("bounds a parallel batch of large originals while retaining exact filesystem recall", async () => {
     const f = await fixture();
     const directory = await mkdtemp(join(tmpdir(), "aiqsa-observation-resource-"));
