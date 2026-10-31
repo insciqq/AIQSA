@@ -35,7 +35,7 @@ function workspaceOf(runId: string): NormalizedRunWorkspace {
  * Two runs of one chat attached to one session under the main run's operation: the main agent's and a background
  * sub-agent's. Each has a sync command's cleanup obligation, as every run that ran a shell command does.
  */
-function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "absent" }> = {}) {
+function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "absent"; unusedRuns?: readonly string[] }> = {}) {
   const attached = new Set([MAIN, SUBAGENT]);
   let operationOwner: string | null = `run:${MAIN}`;
   let operationGeneration = 3;
@@ -44,14 +44,14 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
   const settled: string[] = [];
   const detached: Array<Readonly<{ runId: string; stopProven: boolean }>> = [];
   const binding = (runId: string): WorkspaceExecutionBinding => ({
-    assistantMessageId: runId === MAIN ? "assistant_1" : "user_1", chatId: "chat_1", guestUsed: true, imageRef: config.imageRef,
-    internetEnabled: true, mcpVersion: "0.6.16", operationAttached: attached.has(runId), operationGeneration, operationOwner,
+    assistantMessageId: runId === MAIN ? "assistant_1" : "user_1", chatId: "chat_1", guestUsed: !options.unusedRuns?.includes(runId),
+    imageRef: config.imageRef, internetEnabled: true, mcpVersion: "0.6.16", operationAttached: attached.has(runId), operationGeneration, operationOwner,
     outputDirectory: workspaceRunOutputDirectory(MAIN), policyRevision: 1, runId, runtimeSandboxId: "runtime_1",
     runtimeVersion: "0.6.16", sandboxName: "aiqsa-ws-shared", sessionErrorCode: null, sessionId: SESSION, sessionState: "RUNNING",
     subagentThreadId: runId === SUBAGENT ? THREAD : null, toolCatalogHash: "a".repeat(64), toolDefinitions: tools,
     userId: "user_1", userMessageId: "user_1"
   });
-  const rows: WorkspaceExecutionRecord[] = [MAIN, SUBAGENT].map((runId, index) => ({
+  const rows: WorkspaceExecutionRecord[] = [MAIN, SUBAGENT].filter((runId) => !options.unusedRuns?.includes(runId)).map((runId, index) => ({
     id: `execution_${index}`, modelRunId: runId, modelRunToolCallId: `call_${index}`,
     runtimeExecSessionId: workspaceSyncCleanupId(`call_${index}`), sessionId: SESSION, state: "ACTIVE"
   }));
@@ -225,6 +225,22 @@ describe("a Workspace session shared by attached runs", () => {
     expect(last).toEqual({ interruptedRunIds: [], kind: "detached", remainingRuns: 0 });
     expect(f.runtime.retireSessionOperation).toHaveBeenCalledOnce();
     expect(f.settled).toEqual(["stopped"]);
+  });
+
+  it("stops the VM when a run that never used it leaves last, with no browser save of its own", async () => {
+    const f = sharedFixture({ unusedRuns: [SUBAGENT] });
+    await f.coordinator.settle({ outcome: "completed", runId: MAIN, userId: "user_1" });
+    expect(f.runtime.retireSessionOperation).not.toHaveBeenCalled();
+    expect(f.runtime.collectBrowserSessions).toHaveBeenCalledOnce();
+    // The repository refuses the shortcut for the last run of a running VM: this is the path every last run takes.
+    await expect(f.coordinator.detach!({ chatId: "chat_1", execution: "settled", modelRunId: SUBAGENT, userId: "user_1" }))
+      .resolves.toEqual({ interruptedRunIds: [], kind: "detached", remainingRuns: 0 });
+    expect(f.runtime.retireSessionOperation).toHaveBeenCalledOnce();
+    expect(f.settled).toEqual(["stopped"]);
+    expect(f.attached.size).toBe(0);
+    // The main run's sign-ins were saved as it left; this run has none, and the chat waits on this stop.
+    expect(f.runtime.collectBrowserSessions).toHaveBeenCalledOnce();
+    expect(f.interrupted).not.toHaveBeenCalled();
   });
 
   it("releases the operation when the attached runs end together, each having seen the other still attached", async () => {

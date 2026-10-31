@@ -69,7 +69,7 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
   providerModelId: "model-1", reasoningEffort: null };
 
 function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
-  followups?: () => { id: string; text: string }[]; tools?: EngineTool[] }> = {}) {
+  followups?: () => { id: string; text: string }[]; request?: ProviderRunRequest; tools?: EngineTool[] }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
   const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
   const begun: unknown[] = [];
@@ -114,7 +114,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
     now: Date.now,
     onWorkspaceLifecycle: vi.fn(async () => undefined),
     recordDetachedCompaction: vi.fn(async () => true),
-    request,
+    request: options.request ?? request,
     requestShape: subagentRequestShape,
     route: vi.fn(async () => ({ ok: true as const, route: { adapter, request: { modelCapabilities: request.modelCapabilities,
       modelId: "fake-qsa", params: {}, provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 10_000 } })),
@@ -307,6 +307,50 @@ describe("sub-agent runner", () => {
       searchEnabled: false, workspace: { normalized: { inboxIndexPath: "/i", internetEnabled: true, messageManifestPath: "/m",
         outputDirectory: "/o", projectDirectory: "/p" }, toolDefinitions: [] } as never }).turn.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX))
       .toBe(true);
+  });
+
+  describe("a turn the Workspace refused", () => {
+    const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.\nInternet inside the workspace: enabled.`;
+    const withWorkspace = { ...request, prompt: { ...request.prompt, system: `Workspace contract.\n\n${paths}`, turnGuidance: [paths] },
+      workspace: { enabled: true, outputDirectory: "/workspace/out/1" } } as unknown as ProviderRunRequest;
+
+    it("runs as in a chat without one, is told why, and blocks with that reason when it needs it", async () => {
+      const ctx = setup([{ text: "Outcome: blocked (workspace_busy)\nThe task needs a shell." }], { request: withWorkspace });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ workspaceRefused: "workspace_busy" })));
+      expect(result).toMatchObject({ outcome: "blocked", reason: "workspace_busy", state: "done" });
+      // The registry and the prompt come from a request with no Workspace, which is what leaves its tools out.
+      expect(vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request.workspace).toBeUndefined();
+      const first = ctx.requests[0]!;
+      expect(first.workspace).toBeUndefined();
+      expect(first.prompt.system).not.toContain("# Workspace");
+      const texts = userTexts(first);
+      expect(texts.join("\n")).not.toContain(WORKSPACE_TURN_GUIDANCE_PREFIX);
+      expect(texts.at(-1)).toContain("The Workspace is not available to you in this turn (workspace_busy)");
+      expect(texts.at(-1)).toContain("`Outcome: blocked (workspace_busy)`");
+    });
+
+    it("finishes work that does not need it", async () => {
+      const ctx = setup([{ calls: [{ arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" }] }, { text: "Outcome: done\nFound it." }],
+        { request: withWorkspace });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ workspaceRefused: "workspace_busy" })));
+      expect(result).toMatchObject({ outcome: "done", report: "Outcome: done\nFound it.", state: "done" });
+    });
+
+    it("keeps the Workspace of a turn that attached", async () => {
+      const ctx = setup([{ text: "Outcome: done\nOk." }], { request: withWorkspace });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request.workspace).toEqual(withWorkspace.workspace);
+      expect(ctx.requests[0]!.prompt.system).toContain("# Workspace");
+      const texts = userTexts(ctx.requests[0]!);
+      expect(texts.join("\n")).toContain(WORKSPACE_TURN_GUIDANCE_PREFIX);
+      expect(texts.at(-1)).not.toContain("The Workspace is not available");
+    });
+
+    it("says nothing in a chat that has no Workspace, where the refusal is only that", async () => {
+      const ctx = setup([{ text: "Outcome: done\nOk." }]);
+      await ctx.runner.wait(await ctx.runner.start(ctx.input({ workspaceRefused: "workspace_unavailable" })));
+      expect(userTexts(ctx.requests[0]!).at(-1)).not.toContain("The Workspace is not available");
+    });
   });
 
   it("builds a custom sub-agent's tools from the run's registry, whatever its model, and its groups only narrow them", async () => {
