@@ -16,7 +16,13 @@ import { SUMMARY_SECTIONS } from "./compaction/summaryPrompt";
 import { CONTEXT_ITEM_FRAMING_TOKENS as FRAMING, contextMeasureCalibration, measureContext } from "./contextMeasure";
 import { createDetachedCompactions, DETACHED_COMPACTION, transcriptTargetKey, type DetachedCompactions } from "./detachedCompactions";
 import { COMPACTION_LIFECYCLE, createRunContext, windowOutputParams } from "./runContext";
-import { COMPACTION_SUMMARY_HEADING, projectTranscript, type TranscriptItem, type TranscriptTarget } from "./transcript";
+import {
+  COMPACTION_SUMMARY_HEADING,
+  projectTranscript,
+  type TranscriptItem,
+  type TranscriptProjectionOptions,
+  type TranscriptTarget
+} from "./transcript";
 
 /** The route and model `transcriptBuilder` attributes its items to. */
 const TARGET: TranscriptTarget = { model: "gpt-6.1-sol", provider: "codex-lb" };
@@ -78,6 +84,7 @@ function harness(items: TranscriptItem[], options: Readonly<{
   registry?: DetachedCompactions;
   live?: () => Promise<boolean>;
   native?: boolean;
+  projection?: TranscriptProjectionOptions;
   record?: (item: TranscriptItem) => TranscriptItem;
   runId?: string;
   settleUsage?: () => Promise<void>;
@@ -119,7 +126,7 @@ function harness(items: TranscriptItem[], options: Readonly<{
     items,
     ...(options.native !== undefined ? { native: options.native } : {}),
     onStatus: async (status) => { statuses.push(status); },
-    projection: {},
+    projection: options.projection ?? {},
     record: options.record ?? ((item) => item),
     rules: engineItemRules(),
     runId: options.runId ?? "run-1",
@@ -533,6 +540,65 @@ describe("a native run's context", () => {
     unhandled.answer("The export has 40 rows.");
     const stuck = harness(unhandled.items, { call: async () => ({ text: "not a summary" }), window: windowAt(unhandled.items, 1.3) });
     await expect(stuck.context.prepare(request(unhandled.items))).rejects.toThrow("context_too_large");
+  });
+
+  describe("a turn whose requests carry an attachment", () => {
+    const pdf: ProviderRunRequest["attachments"][number] = { byteSize: 4_000, extractedText: "p".repeat(4_000), fileName: "a.pdf",
+      id: "pdf-1", kind: "pdf", metadata: {}, mimeType: "application/pdf", status: "ready" };
+    const attachmentTokens = providerAttachmentBudgetTokens({ attachments: [pdf], estimateTokens: estimate,
+      modelCapabilities: request([]).modelCapabilities });
+
+    /** The chat's first turn, so only the turn itself can be compacted: the input, then `rounds` page reads. */
+    function attachedTurn(rounds: number, text = "Compare the attached report with these pages.") {
+      const chat = transcriptBuilder();
+      const input = chat.user(text);
+      for (let round = 1; round <= rounds; round += 1) chat.tool("fetch_url", { round }, `page ${round} ${"p".repeat(8_000)}`);
+      const target: TranscriptTarget = { ...TARGET, carriedInputId: input };
+      const projection: TranscriptProjectionOptions = { currentInputId: input };
+      const sent = (): ProviderRunRequest => ({ ...request(chat.items, target), attachmentIds: [pdf.id], attachments: [pdf],
+        history: projectTranscript(chat.items, target, projection) });
+      return { chat, input, projection, sent, target };
+    }
+
+    /** A window whose usable part puts the turn and its attachment at `share` of it. */
+    const windowOf = (items: readonly TranscriptItem[], target: TranscriptTarget, share: number) =>
+      ({ contextWindow: Math.ceil((measured(items, target) + attachmentTokens) / share) + 1_000, maxOutputTokens: 1_000 });
+
+    it("compacts past the input in the foreground and sends a request that fits, with the input and attachment in it", async () => {
+      const { chat, input, projection, sent, target } = attachedTurn(8);
+      const window = windowOf(chat.items, target, 0.9);
+      const run = harness(chat.items, { call: async () => summaryReply(), projection, target, window });
+      const prepared = await run.context.prepare(sent());
+      expect(run.appended).toHaveLength(1);
+      expect(run.appended[0]).toMatchObject({ kind: "compaction" });
+      expect(run.appended[0]).not.toMatchObject({ keepFromId: input });
+      expect(firstText(prepared).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+      expect(prepared.attachments).toEqual([pdf]);
+      expect(prepared.history?.filter((item) => item.type === "user" && item.currentInput)).toHaveLength(1);
+      // The attachment counts in what the context measures after the compaction.
+      expect(run.context.measured()!.tokens).toBeGreaterThan(attachmentTokens);
+      expect(run.context.measured()!.tokens).toBeLessThanOrEqual(window.contextWindow - window.maxOutputTokens);
+    });
+
+    it("keeps within the window a request whose kept tail stays large, by leaving out what a handle reads", async () => {
+      const { chat, projection, sent, target } = attachedTurn(1);
+      const callId = chat.call("fetch_url", { round: 2 });
+      chat.items.push({ callId, handle: handleFor("large"), id: chat.nextId(), kind: "tool_result", name: "fetch_url", outcome: "complete",
+        output: `page ${"g".repeat(60_000)}` });
+      const window = windowOf(chat.items, target, 1.3);
+      const run = harness(chat.items, { call: async () => summaryReply(), projection, target, window });
+      const prepared = await run.context.prepare(sent());
+      expect(prepared.history?.filter((item) => item.type === "user" && item.currentInput)).toHaveLength(1);
+      expect(prepared.history?.find((item) => item.type === "tool_result" && item.output.includes(handleFor("large")))).toBeDefined();
+    });
+
+    it("fails with the size code when the input it carries cannot fit, without paying for a compaction that cannot help", async () => {
+      const { chat, projection, sent, target } = attachedTurn(4, "x".repeat(60_000));
+      const window = windowOf(chat.items, target, 1.1);
+      const run = harness(chat.items, { call: async () => summaryReply(), projection, target, window });
+      await expect(run.context.prepare(sent())).rejects.toThrow("context_too_large");
+      expect(run.calls).toEqual([]);
+    });
   });
 
   it("summarizes a run-scoped result only as the note later turns read", async () => {

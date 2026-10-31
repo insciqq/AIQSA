@@ -18,7 +18,10 @@ import { estimateRetainedTokens } from "./retained";
  * a user message or a model response begins, at an item later runs keep the
  * id of, with every earlier tool call already answered: a call and its
  * result are never split, and a call still waiting for its result or the
- * user's approval stays in the kept tail.
+ * user's approval stays in the kept tail. The cut may pass the run's input:
+ * while its request carries attachments, which render only there, replay keeps
+ * it beside the run's own context (`TranscriptTarget.carriedInputId`), so a
+ * long turn still compacts, and its figures count it as staying.
  */
 
 export const COMPACTION_THRESHOLDS = Object.freeze({
@@ -83,11 +86,12 @@ export type CompactionCut = Readonly<{
   baseId: string | null;
   /** Window items before the kept tail, the base compaction not counted. */
   compactedItems: number;
-  /** Estimated tokens before the kept tail, the base compaction included. */
+  /** Estimated tokens before the kept tail, the base compaction included and the input replay carries not. */
   compactedTokens: number;
   /** The first item kept verbatim. */
   keepFromId: string;
   keptItems: number;
+  /** Estimated tokens of the kept tail and the input replay carries past it. */
   keptTokens: number;
 }>;
 
@@ -129,21 +133,24 @@ export function turnEndedAfter(items: readonly TranscriptItem[], itemId: string,
   return index >= 0 && items.some((item, position) => position > index && beginsTurn(item, resolved));
 }
 
-/** Window positions a compaction may cut at, ascending. Within its turn a
- * call stays open until a result that is not an approval placeholder. The
- * user's next message closes the calls their turn left without one (stopped
- * mid-call, past the deadline, or an approval never given): that run has
- * ended, replay gives such a call an unknown outcome or its placeholder, and
- * nothing sends it again by itself (`unknownEffects.ts`; a later Allow of a
- * call no longer replayed continues as a new instruction, `execution.ts`),
- * so it never holds every later cut back. */
-function cutPositions(window: readonly TranscriptItem[], first: number, rules: CompactionItemRules): number[] {
+/** Window positions a compaction may cut at, ascending. Each lies past `tail`,
+ * the start of what replay keeps in place: what stands before it rides along
+ * and is out of order (a kept tail starting at the carried input would bring
+ * back all a compaction covered since), and a cut at it keeps just what the
+ * base keeps. Within its turn a call stays open until a result that is not an
+ * approval placeholder. The user's next message closes the calls their turn
+ * left without one (stopped mid-call, past the deadline, or an approval never
+ * given): that run has ended, replay gives such a call an unknown outcome or
+ * its placeholder, and nothing sends it again by itself (`unknownEffects.ts`;
+ * a later Allow of a call no longer replayed continues as a new instruction,
+ * `execution.ts`), so it never holds every later cut back. */
+function cutPositions(window: readonly TranscriptItem[], tail: number, rules: CompactionItemRules): number[] {
   const positions: number[] = [];
   const open = new Set<string>();
   const seen = new Set<string>();
   window.forEach((item, position) => {
     if (beginsTurn(item, rules)) open.clear();
-    if (position > first && open.size === 0 && beginsTurnOrResponse(window, position) && rules.stableId(item)) positions.push(position);
+    if (position > tail && open.size === 0 && beginsTurnOrResponse(window, position) && rules.stableId(item)) positions.push(position);
     if (item.kind === "tool_call" && !seen.has(item.callId)) {
       seen.add(item.callId);
       open.add(item.callId);
@@ -155,7 +162,7 @@ function cutPositions(window: readonly TranscriptItem[], first: number, rules: C
   return positions;
 }
 
-type WindowWeights = Readonly<{ first: number; suffix: readonly number[]; window: readonly TranscriptItem[] }>;
+type WindowWeights = Readonly<{ first: number; suffix: readonly number[]; tail: number; window: readonly TranscriptItem[] }>;
 
 function windowWeights(items: readonly TranscriptItem[], target: TranscriptTarget, weights: CompactionWeights): WindowWeights & {
   baseId: string | null;
@@ -174,7 +181,7 @@ function windowWeights(items: readonly TranscriptItem[], target: TranscriptTarge
     const own = (byKey.get(item.id) ?? 0) + (item.kind === "tool_call" ? byKey.get(`${item.id}#result`) ?? 0 : 0);
     suffix[position] = suffix[position + 1]! + own;
   }
-  return { baseId: selection.base?.id ?? null, first: selection.base ? 1 : 0, suffix, window };
+  return { baseId: selection.base?.id ?? null, first: selection.base ? 1 : 0, suffix, tail: selection.tail, window };
 }
 
 export type CompactionCutInput = CompactionWeights & Readonly<{
@@ -194,8 +201,8 @@ export type CompactionCutInput = CompactionWeights & Readonly<{
  * still waits for its result.
  */
 export function findCompactionCut(input: CompactionCutInput): CompactionCut | null {
-  const { baseId, first, suffix, window } = windowWeights(input.items, input.target, input);
-  const positions = cutPositions(window, first, itemRules(input.rules));
+  const { baseId, first, suffix, tail, window } = windowWeights(input.items, input.target, input);
+  const positions = cutPositions(window, tail, itemRules(input.rules));
   if (positions.length === 0) return null;
   let chosen = positions[positions.length - 1]!;
   for (const position of positions) {
@@ -206,13 +213,15 @@ export function findCompactionCut(input: CompactionCutInput): CompactionCut | nu
       if (position > chosen && suffix[chosen]! > input.maxKeptTokens) chosen = position;
     }
   }
+  const carriedAt = window.findIndex((item) => item.id === input.target.carriedInputId);
+  const carried = carriedAt >= 0 && carriedAt < chosen ? suffix[carriedAt]! - suffix[carriedAt + 1]! : 0;
   return {
     baseId,
     compactedItems: chosen - first,
-    compactedTokens: suffix[0]! - suffix[chosen]!,
+    compactedTokens: suffix[0]! - suffix[chosen]! - carried,
     keepFromId: window[chosen]!.id,
     keptItems: window.length - chosen,
-    keptTokens: suffix[chosen]!
+    keptTokens: suffix[chosen]! + carried
   };
 }
 
@@ -222,8 +231,7 @@ export function compactionCutCurrent(cut: Pick<CompactionCut, "baseId" | "keepFr
   const selection = selectTranscript(items, target);
   if ((selection.base?.id ?? null) !== cut.baseId) return false;
   const position = selection.window.findIndex((item) => item.id === cut.keepFromId);
-  const first = selection.base ? 1 : 0;
-  return position > first && cutPositions(selection.window, first, itemRules(rules)).includes(position);
+  return cutPositions(selection.window, selection.tail, itemRules(rules)).includes(position);
 }
 
 export type BackgroundCompactionState = "failed" | "idle" | "ready" | "running";
