@@ -12,15 +12,17 @@ import { formatExecOutput } from "microsandbox-mcp/dist/utils/exec-output.js";
 import { limitText, type Truncation } from "microsandbox-mcp/dist/utils/output.js";
 import { fail, ok } from "microsandbox-mcp/dist/utils/response.js";
 import { tarGzipStream } from "../chats/tarArchive";
-import { getWorkspaceConfig, workspaceToolTransportMaxBytes } from "./config";
+import { WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
+import { getWorkspaceConfig, workspaceRuntimeIdleTimeoutSeconds, workspaceToolTransportMaxBytes } from "./config";
 import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
 import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { workspaceFailureCause } from "./toolObservability";
-import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { BOUND_WORKSPACE_UV_CACHE, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS, WORKSPACE_UV_CACHE_DIRECTORY } from "./guestCache";
+import { WORKSPACE_SECRET_ENV_EXIT } from "./secrets/guest";
 import { parseWorkspaceSecretValue } from "./secrets/validation";
 
 const sdk = vi.hoisted(() => ({
@@ -32,8 +34,9 @@ const sdk = vi.hoisted(() => ({
   listWith: vi.fn(),
   callTool: vi.fn(),
   closeMcp: vi.fn(async () => undefined),
+  connect: vi.fn(async () => undefined as void),
   transports: [] as Array<Readonly<{
-    options: Readonly<{ maxBufferSize?: number }>;
+    options: Readonly<{ env?: Record<string, string>; maxBufferSize?: number }>;
     transport: { onclose?: () => void; onerror?: (error: Error) => void };
   }>>
 }));
@@ -53,7 +56,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
   Client: class {
-    connect = vi.fn(async () => undefined);
+    connect = sdk.connect;
     getServerVersion = () => ({ version: "0.6.16" });
     listTools = async () => ({ tools: [] });
     callTool = sdk.callTool;
@@ -64,7 +67,7 @@ vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
     close = sdk.closeMcp;
     onclose?: () => void;
     onerror?: (error: Error) => void;
-    constructor(options: Readonly<{ maxBufferSize?: number }>) { sdk.transports.push({ options, transport: this }); }
+    constructor(options: Readonly<{ env?: Record<string, string>; maxBufferSize?: number }>) { sdk.transports.push({ options, transport: this }); }
   }
 }));
 // Catalog schema validation has its own official-catalog contract tests.
@@ -212,6 +215,11 @@ function fixture() {
     runtime: new MicrosandboxWorkspaceRuntime(config),
     setState(value: string) { state = value; }
   };
+}
+
+/** What the read helper's exec answers with. */
+function guestRead(code: number, stdout = "") {
+  return { code, success: code === 0, stdout: () => stdout, stdoutBytes: () => Buffer.from(stdout) };
 }
 
 function acceptedBrowserState(byteSize = WORKSPACE_BROWSER_SESSION_MAX_BYTES) {
@@ -678,11 +686,103 @@ describe("Microsandbox Workspace lifecycle", () => {
     await restarted.callBoundTool(callInput);
     expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, RECOVERED_TOKEN: "synthetic-recovered" } }) }), undefined, expect.anything());
     sdk.callTool.mockClear();
-    value.sandbox.execWith.mockResolvedValue({ success: false, stdout: () => "", stdoutBytes: () => Buffer.from("") });
+    value.sandbox.execWith.mockResolvedValue(guestRead(WORKSPACE_SECRET_ENV_EXIT.missing));
     value.secretHelper.wait.mockResolvedValue({ code: 1 });
     await expect(restarted.syncPersonalSecrets({ ...sessionInput, modelRunId: "next", secrets: [] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
-    await expect(restarted.callBoundTool({ ...callInput, modelRunId: "next" })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+    await expect(restarted.callBoundTool({ ...callInput, modelRunId: "next" })).rejects.toMatchObject({ code: "workspace_secret_env_missing" });
     expect(sdk.callTool).not.toHaveBeenCalled();
+  });
+
+  describe("reading a run's saved environment back", () => {
+    const restartedRunner = () => { const value = fixture(); return { ...value, runtime: new MicrosandboxWorkspaceRuntime(config) }; };
+
+    it.each([
+      [WORKSPACE_SECRET_ENV_EXIT.missing, "workspace_secret_env_missing"],
+      [WORKSPACE_SECRET_ENV_EXIT.unreadable, "workspace_secret_env_unreadable"]
+    ] as const)("names guest exit %i as %s and reads no further, since the guest's answer will not change", async (status, code) => {
+      const value = restartedRunner();
+      value.sandbox.execWith.mockResolvedValue(guestRead(status));
+      await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code });
+      expect(value.sandbox.execWith).toHaveBeenCalledOnce();
+      expect(sdk.callTool).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["output over the bound", { ...guestRead(0, "{}"), stdoutBytes: () => Buffer.alloc(4 * 1024 * 1024) }, "workspace_secret_env_output_limit"],
+      ["values over the bound", guestRead(0, JSON.stringify({ TOKEN: "x".repeat(WORKSPACE_SECRET_ENV_MAX_BYTES + WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES) })), "workspace_secret_env_output_limit"],
+      ["output that is not JSON", guestRead(0, "{\"TOKEN\": PRIVATE_VALUE_CANARY"), "workspace_secret_env_invalid"],
+      ["an invalid name", guestRead(0, JSON.stringify({ "PRIVATE NAME": "value" })), "workspace_secret_env_invalid"],
+      ["a value that is no string", guestRead(0, JSON.stringify({ TOKEN: 1 })), "workspace_secret_env_invalid"],
+      ["a value with a NUL", guestRead(0, JSON.stringify({ TOKEN: "a\0b" })), "workspace_secret_env_invalid"],
+      ["a list", guestRead(0, "[]"), "workspace_secret_env_invalid"]
+    ])("names %s and dispatches nothing", async (_name, output, code) => {
+      const value = restartedRunner();
+      value.sandbox.execWith.mockResolvedValue(output);
+      const failure = await value.runtime.callBoundTool(callInput).catch((error: unknown) => error as WorkspaceRuntimeError);
+      expect(failure).toMatchObject({ code, message: code });
+      expect(value.sandbox.execWith).toHaveBeenCalledOnce();
+      expect(sdk.callTool).not.toHaveBeenCalled();
+    });
+
+    it("reads again after a transient failure, and the command runs once with the values", async () => {
+      const value = restartedRunner();
+      const environment = JSON.stringify({ RECOVERED_TOKEN: "synthetic-recovered" });
+      value.sandbox.execWith.mockRejectedValueOnce(new Error("PRIVATE_EXEC_CANARY")).mockResolvedValueOnce(guestRead(1)).mockResolvedValueOnce(guestRead(0, environment));
+      await expect(value.runtime.callBoundTool(callInput)).resolves.toMatchObject({ status: "complete" });
+      expect(value.sandbox.execWith).toHaveBeenCalledTimes(3);
+      expect(sdk.callTool).toHaveBeenCalledOnce();
+      expect(sdk.callTool.mock.calls[0]![0].arguments.env).toMatchObject({ RECOVERED_TOKEN: "synthetic-recovered" });
+      await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" });
+      expect(value.sandbox.execWith).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+      ["an exec that cannot start", new Error("PRIVATE_EXEC_CANARY"), "workspace_secret_env_read_failed"],
+      ["the SDK's exec timeout", Object.assign(new Error("PRIVATE_EXEC_CANARY"), { code: "execTimeout" }), "workspace_secret_env_read_timeout"]
+    ])("gives up on %s after a few bounded reads", async (_name, error, code) => {
+      const value = restartedRunner();
+      value.sandbox.execWith.mockRejectedValue(error);
+      await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code, message: code });
+      expect(value.sandbox.execWith).toHaveBeenCalledTimes(3);
+      expect(sdk.callTool).not.toHaveBeenCalled();
+    });
+
+    it("bounds a read whose native promise never settles", async () => {
+      const value = restartedRunner();
+      const deadline = new AbortController();
+      vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+      value.sandbox.execWith.mockImplementation(() => new Promise(() => undefined));
+      const failed = value.runtime.callBoundTool(callInput);
+      await vi.waitFor(() => expect(value.sandbox.execWith).toHaveBeenCalledOnce());
+      deadline.abort();
+      await expect(failed).rejects.toMatchObject({ code: "workspace_secret_env_read_timeout" });
+      expect(sdk.callTool).not.toHaveBeenCalled();
+    });
+
+    it("leaves a cancelled read cancelled, without another read", async () => {
+      const value = restartedRunner();
+      const controller = new AbortController();
+      value.sandbox.execWith.mockImplementation(() => new Promise(() => undefined));
+      const failed = value.runtime.callBoundTool({ ...callInput, signal: controller.signal });
+      await vi.waitFor(() => expect(value.sandbox.execWith).toHaveBeenCalledOnce());
+      controller.abort();
+      await expect(failed).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+      expect(value.sandbox.execWith).toHaveBeenCalledOnce();
+    });
+
+    it("records each cause by its code alone, never a name or a value of the environment", async () => {
+      const value = restartedRunner();
+      const records: string[] = [];
+      vi.spyOn(process.stdout, "write").mockImplementation((chunk) => { records.push(String(chunk)); return true; });
+      value.sandbox.execWith.mockResolvedValueOnce(guestRead(0, "{\"PRIVATE_NAME_CANARY\": PRIVATE_VALUE_CANARY"))
+        .mockRejectedValueOnce(new Error("PRIVATE_EXEC_CANARY")).mockResolvedValueOnce(guestRead(0, JSON.stringify({ PRIVATE_NAME_CANARY: "PRIVATE_VALUE_CANARY" })));
+      await value.runtime.callBoundTool(callInput).catch(() => undefined);
+      await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" });
+      const log = records.join("");
+      expect(log).toContain("workspace_secret_env_invalid");
+      expect(log).toContain("workspace_secret_env_read_failed");
+      expect(log).not.toMatch(/PRIVATE_/u);
+    });
   });
 
   it("pipes an exact 8 MiB browser state in sequential bounded chunks before installing it", async () => {
@@ -984,6 +1084,18 @@ describe("Microsandbox Workspace lifecycle", () => {
     await expect(value.runtime.touchSession({ sessionId: ensureInput.sessionId })).resolves.toBeUndefined();
   });
 
+  it("opens one live channel for streamers that start at once, so each keeps the process that holds it", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    await value.runtime.callBoundTool(callInput);
+    const transports = sdk.transports.length;
+    let started = 0;
+    sdk.callTool.mockImplementation(async () => ({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: `live_${started += 1}` } }) }] }));
+    const live = { ...sessionInput, action: "start" as const, modelRunId: "run_fixture", stdin: "{}\n" };
+    await Promise.all([value.runtime.browserLive(live), value.runtime.browserLive({ ...live, modelRunId: "run_other" })]);
+    expect(sdk.transports.length).toBe(transports + 1);
+  });
+
   it("runs the live browser streamer on its own MCP connection, for its own run only, and never starts a guest", async () => {
     const value = fixture();
     const live = { ...sessionInput, modelRunId: "run_fixture" };
@@ -1095,6 +1207,98 @@ describe("Microsandbox Workspace lifecycle", () => {
     sdk.callTool.mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_session_lost"));
     await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code: "workspace_session_lost" });
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  describe("the MCP process that holds a guest's exec handles", () => {
+    const start = { ...callInput, arguments: { command: "sleep 90" }, modelRunToolCallId: "call_start", originalName: "sandbox_exec_start" as const };
+    const execCall = (originalName: "sandbox_exec_close" | "sandbox_exec_poll") => ({ ...callInput, arguments: { execSessionId: "synthetic_exec" },
+      modelRunToolCallId: `call_${originalName}`, originalName });
+    const answered = (data: unknown) => ({ content: [{ type: "text", text: JSON.stringify({ ok: true, data }) }] });
+    /** The pinned MCP's whole answer for a handle it does not hold. */
+    const refused = { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false,
+      error: { code: "operation_failed", message: "exec session not found: PRIVATE_ID_CANARY" } }) }] };
+
+    it("opens one connection however many runs arrive at once, so a poll reaches the process that started its command", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      const opened = sdk.transports.length;
+      await Promise.all(Array.from({ length: 5 }, () => value.runtime.loadBoundTools(sessionInput)));
+      expect(sdk.transports).toHaveLength(opened + 1);
+      await value.runtime.callBoundTool(callInput);
+      expect(sdk.transports).toHaveLength(opened + 1);
+      expect(sdk.closeMcp).not.toHaveBeenCalled();
+    });
+
+    it("opens again after a failed opening, for every caller that shared it", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      sdk.connect.mockRejectedValueOnce(new Error("private_open_failure"));
+      const results = await Promise.allSettled([value.runtime.loadBoundTools(sessionInput), value.runtime.loadBoundTools(sessionInput)]);
+      expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+      await expect(value.runtime.loadBoundTools(sessionInput)).resolves.toMatchObject({ mcpVersion: "0.6.16" });
+    });
+
+    it("closes a connection still opening when the guest stops, so no process outlives it", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      let open = () => undefined as void;
+      sdk.connect.mockImplementationOnce(() => new Promise<void>((resolve) => { open = resolve; }));
+      const loading = value.runtime.loadBoundTools(sessionInput);
+      const stopping = value.runtime.stopSession(sessionInput);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      open();
+      await Promise.all([loading, stopping]);
+      expect(sdk.closeMcp).toHaveBeenCalledOnce();
+    });
+
+    it("keeps a handle for as long as the guest stays up, not the pinned MCP's 15 quiet minutes", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      await value.runtime.loadBoundTools(sessionInput);
+      expect(sdk.transports.at(-1)!.options.env?.MICROSANDBOX_MCP_SESSION_TTL_MS).toBe(String(workspaceRuntimeIdleTimeoutSeconds(config) * 1_000));
+    });
+
+    it("answers a poll after the command ended as an ordinary result", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      sdk.callTool.mockResolvedValueOnce(answered({ execSessionId: "synthetic_exec" }))
+        .mockResolvedValueOnce(answered({ done: true, error: null, events: [], exitStatus: { code: 0, success: true }, nextCursor: 3 }));
+      await value.runtime.callBoundTool(start);
+      await expect(value.runtime.callBoundTool(execCall("sandbox_exec_poll"))).resolves.toMatchObject({ status: "complete" });
+    });
+
+    it("names a poll after close from the close it saw, and keeps the MCP's text out", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      sdk.callTool.mockResolvedValueOnce(answered({ execSessionId: "synthetic_exec" }))
+        .mockResolvedValueOnce(answered({ closed: true, execSessionId: "synthetic_exec" })).mockResolvedValueOnce(refused);
+      await value.runtime.callBoundTool(start);
+      await value.runtime.callBoundTool(execCall("sandbox_exec_close"));
+      const polled = await value.runtime.callBoundTool(execCall("sandbox_exec_poll"));
+      expect(polled).toMatchObject({ errorCode: "workspace_execution_handle_lost", status: "error" });
+      expect(workspaceFailureCause(polled)).toBe("guest_operation_failed");
+      expect(JSON.stringify(polled)).not.toContain("PRIVATE_ID_CANARY");
+    });
+
+    it("keeps a failure on a handle this process still holds unspecific: only the held handles say more", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      sdk.callTool.mockResolvedValueOnce(answered({ execSessionId: "synthetic_exec" })).mockResolvedValueOnce(refused);
+      await value.runtime.callBoundTool(start);
+      await expect(value.runtime.callBoundTool(execCall("sandbox_exec_poll"))).resolves.toMatchObject({ errorCode: "workspace_operation_failed" });
+    });
+
+    it("names a handle lost with its MCP process, and one a restarted runner never held", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      sdk.callTool.mockResolvedValueOnce(answered({ execSessionId: "synthetic_exec" })).mockResolvedValueOnce(refused);
+      await value.runtime.callBoundTool(start);
+      sdk.transports.at(-1)!.transport.onclose?.();
+      await expect(value.runtime.callBoundTool(execCall("sandbox_exec_poll"))).resolves.toMatchObject({ errorCode: "workspace_execution_handle_lost" });
+      sdk.callTool.mockResolvedValueOnce(refused);
+      await expect(new MicrosandboxWorkspaceRuntime(config).callBoundTool(execCall("sandbox_exec_poll")))
+        .resolves.toMatchObject({ errorCode: "workspace_execution_handle_lost" });
+    });
   });
 
   describe("MCP transport overflow", () => {

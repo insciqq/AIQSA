@@ -168,7 +168,6 @@ export function humanizeErrorCode(code: string): string {
     workspace_attachment_timeout: "Workspace files could not be read from storage in time. Try again shortly",
     workspace_attachment_unavailable: "A Workspace attachment is unavailable. Re-upload it and try again",
     workspace_storage_full: "Workspace does not have enough disk space for these files. Remove unused files or reset Workspace",
-    workspace_secrets_prepare_failed: "Workspace could not prepare your saved secrets. Check Secrets and try again",
     workspace_secret_limit: "Your saved secrets exceed the Workspace limit. Remove some in Studio → Secrets and try again",
     workspace_secret_unavailable: "Workspace could not read your saved secrets. Try again shortly",
     workspace_busy: "Another Workspace operation is still running. Stop it or wait, then try again",
@@ -184,7 +183,9 @@ export function humanizeErrorCode(code: string): string {
     workspace_subagents_running: "Sub-agents are working in this Workspace. Stop the sub-agents first, then try again",
     workspace_runtime_incompatible: "Workspace runtime is incompatible with this installation. Ask an administrator to check it",
     workspace_session_create_failed: "Workspace could not be created. Try again",
-    ...WORKSPACE_OPERATION_FAILURE_MESSAGES
+    ...WORKSPACE_OPERATION_FAILURE_MESSAGES,
+    // The people's wording, not the one written for the agent.
+    workspace_secrets_prepare_failed: "Workspace could not prepare your saved secrets. Check Secrets and try again"
   };
 
   return `${labels[raw] ?? raw.replace(/_/g, " ")} (${raw})`;
