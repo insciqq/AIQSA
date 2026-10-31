@@ -1442,6 +1442,14 @@ function runtimeCode(error: unknown): WorkspaceRuntimeError["code"] {
     : "workspace_runtime_unavailable";
 }
 
+const SKILL_PREPARATION_REFUSALS = ["workspace_skill_bundle_invalid", "workspace_skill_bundle_limit_exceeded",
+  "workspace_skill_conflict", "workspace_skill_run_stale", "workspace_skills_prepare_failed"] as const satisfies readonly WorkspaceOperationFailureCode[];
+
+/** One run's Skills could not be prepared: nothing of its call was dispatched, and the guest other runs share is intact. */
+function skillPreparationRefusal(error: unknown): (typeof SKILL_PREPARATION_REFUSALS)[number] | undefined {
+  return error instanceof WorkspaceRuntimeError ? SKILL_PREPARATION_REFUSALS.find((code) => code === error.code) : undefined;
+}
+
 function activityErrorCode(code: WorkspaceRuntimeError["code"]): WorkspaceErrorCode {
   if (isWorkspaceErrorCode(code)) return code;
   if (code === "workspace_operation_stale") return "workspace_busy";
@@ -2070,10 +2078,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }).catch(() => null);
           if (lostOperation) await interruptAttachedRuns(binding, others);
         }
-        await input.repository.markSessionFailed({
-          code: runtimeCode(error),
-          operation: ownedOperation(binding), sessionId: binding.sessionId
-        }).catch(() => undefined);
+        if (!skillPreparationRefusal(error)) {
+          await input.repository.markSessionFailed({
+            code: runtimeCode(error),
+            operation: ownedOperation(binding), sessionId: binding.sessionId
+          }).catch(() => undefined);
+        }
         if (lostOperation) throw new WorkspaceConfirmedSessionLoss(lostOperation);
         throw error;
       }
@@ -2324,7 +2334,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
       }
       const installed = await input.runtime.installSkillBundle({ ...archive,
         modelRunId: request.runId, manifestHash: plan.manifestHash, runtimeSandboxId: binding.runtimeSandboxId,
-        operation: ownedOperation(binding), sessionId: binding.sessionId, signal: request.signal });
+        operation: ownedOperation(binding), sessionId: binding.sessionId, signal: request.signal }).catch((error: unknown) => {
+        // This run counts as initialized but has lost its receipt: its next call prepares it again.
+        if (skillPreparationRefusal(error) === "workspace_skill_run_stale") skillPlans.delete(request.runId);
+        throw error;
+      });
       if (installed.workspacePath !== path) throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
       return path;
     },
@@ -2528,12 +2542,15 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }, "settled");
           return withActivity(rejected, entry);
         }
-        let initializedBinding = await initializeWithLostSessionRecovery(
-          initial,
-          workspace,
-          signal,
-          onActivity
-        );
+        let initializedBinding: Awaited<ReturnType<typeof initializeWithLostSessionRecovery>>;
+        try {
+          initializedBinding = await initializeWithLostSessionRecovery(initial, workspace, signal, onActivity);
+        } catch (error) {
+          // Thrown, this would read as a command whose effect is unknown, and the model could never send it again.
+          const refused = skillPreparationRefusal(error);
+          if (refused) return executionErrorResult(call, workspaceOperationFailureMessage(refused), refused);
+          throw error;
+        }
         let binding = initializedBinding.binding;
         const definition = binding.toolDefinitions.find((tool) => tool.namespacedName === call.name);
         if (!definition || !binding.runtimeSandboxId) {

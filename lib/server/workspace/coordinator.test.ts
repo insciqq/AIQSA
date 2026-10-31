@@ -444,15 +444,30 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.collectOutputs).toHaveBeenCalledOnce();
   });
 
+  it("prepares a run again after an explicit load finds its receipt gone", async () => {
+    const value = fixture();
+    const ref = { alias: "review", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
+    const skills = { plan: vi.fn(async () => ({ manifestHash: "a".repeat(64), initial: [] })), archive: vi.fn(async () => ({ bundle: ref, byteSize: 1,
+      checksum: "c".repeat(64), archive: new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }) })) };
+    const coordinator = createWorkspaceCoordinator({ ...value, skills });
+    const request = { runId: value.runId, userId: "user_1", workspace: value.workspace, alias: "review", install: true };
+    vi.mocked(value.runtime.installSkillBundle).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_skill_run_stale"));
+    await expect(coordinator.skillBundlePath!(request)).rejects.toMatchObject({ code: "workspace_skill_run_stale" });
+    expect(value.runtime.prepareSkillRun).toHaveBeenCalledOnce();
+    await expect(coordinator.skillBundlePath!(request)).resolves.toBe("/workspace/.aiqsa/skills/review");
+    expect(value.runtime.prepareSkillRun).toHaveBeenCalledTimes(2);
+  });
+
   it("does not publish preparation or execute tools after a failed bundle transfer", async () => {
     const value = fixture();
     const ref = { alias: "review", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
     const skills = { plan: vi.fn(async () => ({ manifestHash: "a".repeat(64), initial: [ref] })),
       archive: vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid"); }) };
     const coordinator = createWorkspaceCoordinator({ ...value, skills });
-    await expect(coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
-      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace }))
-      .rejects.toMatchObject({ code: "workspace_skill_bundle_invalid" });
+    const refused = await coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(refused.status).toBe("error");
+    expect(JSON.stringify(refused.content)).toContain("workspace_skill_bundle_invalid");
     expect(value.runtime.completeSkillRunPreparation).not.toHaveBeenCalled();
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
   });

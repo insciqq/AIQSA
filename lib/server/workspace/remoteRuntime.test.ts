@@ -164,6 +164,36 @@ describe("remote Workspace runner protocol", () => {
     expect(install).toHaveBeenCalledTimes(1);
   });
 
+  it("carries the operation to the guest's Skills, and a run's conflict back as its own code", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "ws_" + "e".repeat(40);
+    const created = await remote.ensureSession({ sessionId, runtimeSandboxId: null, operation,
+      sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef, cpus: 1, diskMiB: 1024, memoryMiB: 512, internetEnabled: false });
+    const first = { sessionId, runtimeSandboxId: created.runtimeSandboxId, operation, modelRunId: "first", manifestHash: "a".repeat(64) };
+    const second = { ...first, modelRunId: "second" };
+    const bundle = { alias: "shared", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
+    const bytes = Buffer.from(await new Response(tarGzipStream((async function* () {
+      yield { path: "SKILL.md", content: "Synthetic skill", mtime: new Date(0) };
+    })())).arrayBuffer());
+    const archive = { byteSize: bytes.length, checksum: createHash("sha256").update(bytes).digest("hex") };
+    await remote.prepareSkillRun({ ...first, initial: [bundle] });
+    await expect(remote.prepareSkillRun({ ...second, initial: [bundle] })).resolves.toEqual({ state: "preparing" });
+    await remote.installSkillBundle({ ...first, ...archive, bundle, archive: stream(bytes) });
+    await expect(remote.installSkillBundle({ ...second, ...archive, bundle, archive: stream(bytes) }))
+      .resolves.toEqual({ workspacePath: "/workspace/.aiqsa/skills/shared" });
+    await remote.completeSkillRunPreparation(second);
+    await remote.completeSkillRunPreparation(first);
+    await expect(remote.prepareSkillRun({ ...first, initial: [bundle] })).resolves.toEqual({ state: "ready" });
+    await expect(remote.prepareSkillRun({ ...second, modelRunId: "third", initial: [{ ...bundle, bundleDigest: "c".repeat(64) }] }))
+      .rejects.toMatchObject({ code: "workspace_skill_conflict" });
+    await expect(remote.completeSkillRunPreparation({ ...second, modelRunId: "fourth" })).rejects.toMatchObject({ code: "workspace_skill_run_stale" });
+    await remote.removeSession({ sessionId, runtimeSandboxId: created.runtimeSandboxId, operation });
+  });
+
   it("streams browser states only under the current operation, preserves same-run writes and excludes output capture", async () => {
     const local = new DeterministicWorkspaceRuntime(deterministicConfig);
     const collectBrowser = vi.spyOn(local, "collectBrowserSessions");

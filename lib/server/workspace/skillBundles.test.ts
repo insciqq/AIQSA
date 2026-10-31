@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readlink, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,15 +43,22 @@ async function guestFixture() {
   const run = (value: unknown) => spawnSync("python3", ["-I", "-c", script], {
     input: JSON.stringify(value), encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024
   }).status;
+  const runConcurrently = (value: unknown) => new Promise<number | null>((resolve, reject) => {
+    const child = spawn("python3", ["-I", "-c", script], { stdio: ["pipe", "ignore", "ignore"] });
+    child.on("error", reject);
+    child.on("close", resolve);
+    child.stdin.end(JSON.stringify(value));
+  });
   await mkdir(join(directory, "tmp"), { recursive: true });
+  const staged = async (raw: Uint8Array, alias: string) => {
+    const archive = gzipSync(raw);
+    const archivePath = join(directory, `tmp/aiqsa-skill-${randomUUID()}.tar.gz`);
+    await writeFile(archivePath, archive);
+    return { action: "install", alias, archivePath, byteSize: archive.length, checksum: createHash("sha256").update(archive).digest("hex") };
+  };
   return {
-    directory, root, discovery, run,
-    async install(raw: Uint8Array, alias = "example") {
-      const archive = gzipSync(raw);
-      const archivePath = join(directory, `tmp/aiqsa-skill-${randomUUID()}.tar.gz`);
-      await writeFile(archivePath, archive);
-      return run({ action: "install", alias, archivePath, byteSize: archive.length, checksum: createHash("sha256").update(archive).digest("hex") });
-    },
+    directory, root, discovery, run, runConcurrently, staged,
+    async install(raw: Uint8Array, alias = "example") { return run(await staged(raw, alias)); },
     async cleanup() { await rm(directory, { force: true, recursive: true }); }
   };
 }
@@ -120,6 +127,38 @@ describe("bounded Skill ustar receiver", () => {
       expect(guest.run({ action: "reset" })).toBe(0);
       expect(await readdir(guest.root)).toEqual([]);
       expect(await readdir(guest.discovery)).toEqual([]);
+    } finally { await guest.cleanup(); }
+  });
+
+  it("leaves one complete bundle and no leftovers when several installs of one alias run at once", async () => {
+    const guest = await guestFixture();
+    try {
+      expect(guest.run({ action: "reset" })).toBe(0);
+      expect(await guest.install(tar([{ path: "SKILL.md", content: "old" }, { path: "marker", content: "old" }]))).toBe(0);
+      const names = ["one", "two", "three", "four", "five", "six", "seven", "eight"];
+      const installs = await Promise.all(names.map(name =>
+        guest.staged(tar([{ path: "SKILL.md", content: name }, { path: "marker", content: name }]), "example")));
+      expect(await Promise.all(installs.map(guest.runConcurrently))).toEqual(names.map(() => 0));
+      expect(await readdir(guest.root)).toEqual(["example"]);
+      const published = await readFile(join(guest.root, "example/SKILL.md"), "utf8");
+      expect(names).toContain(published);
+      expect(await readFile(join(guest.root, "example/marker"), "utf8")).toBe(published);
+    } finally { await guest.cleanup(); }
+  });
+
+  it("moves a file or a link planted at an alias aside without following it", async () => {
+    const guest = await guestFixture();
+    try {
+      expect(guest.run({ action: "reset" })).toBe(0);
+      await mkdir(join(guest.directory, "outside"));
+      await writeFile(join(guest.directory, "outside/kept"), "kept");
+      await symlink(join(guest.directory, "outside"), join(guest.root, "linked"));
+      await writeFile(join(guest.root, "planted"), "file");
+      expect(await guest.install(tar([{ path: "SKILL.md", content: "linked" }]), "linked")).toBe(0);
+      expect(await guest.install(tar([{ path: "SKILL.md", content: "planted" }]), "planted")).toBe(0);
+      expect(await readdir(guest.root)).toEqual(["linked", "planted"]);
+      expect(await readFile(join(guest.root, "linked/SKILL.md"), "utf8")).toBe("linked");
+      expect(await readFile(join(guest.directory, "outside/kept"), "utf8")).toBe("kept");
     } finally { await guest.cleanup(); }
   });
 

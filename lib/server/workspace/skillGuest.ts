@@ -5,7 +5,7 @@ import { SKILL_RUNTIME_ARCHIVE_MAX_BYTES, SKILL_RUNTIME_CONTENT_MAX_BYTES, SKILL
 
 /** Fixed guest paths and code; bounded metadata travels on stdin, never shell source. */
 export const WORKSPACE_SKILL_GUEST_SCRIPT = String.raw`
-import gzip, hashlib, io, json, os, pathlib, re, shutil, stat, sys, tempfile
+import errno, gzip, hashlib, io, json, os, pathlib, re, shutil, stat, sys, tempfile
 
 ROOT = '${WORKSPACE_SKILLS_DIRECTORY}'
 DISCOVERY = '${WORKSPACE_SKILLS_DISCOVERY_DIRECTORY}'
@@ -33,6 +33,22 @@ def remove(path):
 def alias(value):
     if not isinstance(value, str) or len(value) > 64 or not re.fullmatch('[a-z0-9]+(?:-[a-z0-9]+)*', value): raise Invalid()
     return value
+
+# Another agent may be reading the old tree, so it leaves in one rename, never file by file. Two installs of one
+# alias take turns: each moves aside what the other published and tries again, and the last one stays.
+def publish(source, target):
+    for attempt in range(16):
+        aside = tempfile.mkdtemp(prefix='.retired-',dir=ROOT)
+        try:
+            try: os.rename(target,os.path.join(aside,'bundle'))
+            except FileNotFoundError: pass
+            try:
+                os.replace(source,target)
+                return
+            except OSError as error:
+                if error.errno not in (errno.ENOTEMPTY,errno.EEXIST): raise
+        finally: remove(aside)
+    raise Invalid()
 
 def text(header, start, length):
     raw = header[start:start+length]
@@ -159,9 +175,7 @@ try:
             os.chmod(destination,mode)
         for parent,dirs,files in os.walk(temporary):
             os.chmod(parent,0o755)
-        target = os.path.join(ROOT,name)
-        remove(target)
-        os.replace(temporary,target)
+        publish(temporary,os.path.join(ROOT,name))
         temporary = None
     else: raise Invalid()
 except BaseException as error:

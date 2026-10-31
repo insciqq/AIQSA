@@ -22,6 +22,10 @@ const hashPattern = /^[a-f0-9]{64}$/u;
 export function skillInvalid(): never { throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid"); }
 export function skillLimit(): never { throw new WorkspaceRuntimeError("workspace_skill_bundle_limit_exceeded"); }
 export function skillPreparationFailed(): never { throw new WorkspaceRuntimeError("workspace_skills_prepare_failed"); }
+/** The guest or the run's receipt holds another bundle under this alias or manifest; nothing is written. */
+export function skillConflict(): never { throw new WorkspaceRuntimeError("workspace_skill_conflict"); }
+/** No live receipt for this run on this guest: the next preparation gives it one. */
+export function skillRunStale(): never { throw new WorkspaceRuntimeError("workspace_skill_run_stale"); }
 
 export function skillOperationSignal(signal?: AbortSignal): AbortSignal {
   const deadline = AbortSignal.timeout(SKILL_RUNTIME_OPERATION_TIMEOUT_MS);
@@ -52,8 +56,9 @@ export function parseSkillInitial(value: unknown): WorkspaceSkillBundleRef[] {
   return refs;
 }
 
+/** The digest covers the whole bundle, so a restored revision is the same bundle under a new id. */
 export function sameSkillRef(a: WorkspaceSkillBundleRef, b: WorkspaceSkillBundleRef): boolean {
-  return a.alias === b.alias && a.revisionId === b.revisionId && a.bundleDigest === b.bundleDigest && a.discover === b.discover;
+  return a.alias === b.alias && a.bundleDigest === b.bundleDigest && a.discover === b.discover;
 }
 
 export function validateSkillArchiveMetadata(input: Pick<WorkspaceSkillBundleInstall, "byteSize" | "checksum">): void {

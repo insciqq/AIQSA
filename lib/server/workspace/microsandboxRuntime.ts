@@ -655,7 +655,12 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
 
   async installSkillBundle(input: Parameters<WorkspaceRuntime["installSkillBundle"]>[0]) {
     input = { ...input, signal: skillOperationSignal(input.signal) };
-    return this.skillState().install(input, input.bundle, async () => {
+    return this.skillState().install(input, input.bundle, async present => {
+      if (present) {
+        // The guest already holds these bytes and other runs work in it: only the upload is drained, so a cancellation stops no VM.
+        await readSkillArchive(input);
+        return { workspacePath: `${WORKSPACE_SKILLS_DIRECTORY}/${input.bundle.alias}` };
+      }
       const session = await this.runningSession(input);
       return this.withGuestOperation(session, input.signal, async () => {
         const archive = await readSkillArchive(input);
