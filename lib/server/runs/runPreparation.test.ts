@@ -1209,6 +1209,26 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.prompt.system).not.toContain("earlier completed exports");
   });
 
+  it("admits a file the parser could not digest with Workspace, and the turn tells the model what is missing", async () => {
+    const sheet = { ...runAttachment({ id: "big-sheet", kind: "document", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      storageKey: "synthetic/big", checksum: "a".repeat(64) }), fileName: "big.xlsx", processingErrorCode: "parser_output_too_large", status: "failed" };
+    const gif = { ...runAttachment({ id: "loop-gif", kind: "image", mimeType: "image/gif", storageKey: "synthetic/loop", checksum: "b".repeat(64) }),
+      fileName: "loop.gif", processingErrorCode: "animated_gif_not_supported", status: "failed" };
+    const h = createHarness({ attachments: [sheet, gif], capabilities: { ...baseCapabilities, toolCalling: true } });
+    const body = (workspace: boolean) => successBody({ workspace: { enabled: workspace }, content: { blocks: [
+      { type: "text", text: "Sum the second column" }, { type: "file", attachmentId: sheet.id }, { type: "image", attachmentId: gif.id, alt: "loop" }
+    ] } });
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, workspace: contractWorkspace(),
+      repository: { ...h.deps.repository, loadWorkspaceFileFacts: async () => ({ hasFiles: false, hasEarlierExports: false }) }
+    }, sendInput(body(true))));
+
+    expect(prepared.normalizedRequest.prompt.turnGuidance?.join("\n")).toContain('"attachmentId":"big-sheet","fileName":"big.xlsx","missing":"no_text"');
+    expect(prepared.normalizedRequest.prompt.turnGuidance?.join("\n")).toContain('"attachmentId":"loop-gif","fileName":"loop.gif","missing":"image_not_sent"');
+    expect(prepared.providerRequest.attachments.find(file => file.id === gif.id)).toMatchObject({ kind: "file" });
+
+    expect(await prepareRun(h.deps, sendInput(body(false)))).toMatchObject({ code: "attachment_needs_workspace", status: 409 });
+  });
+
   it.each(["openai", "anthropic", "gemini"] as const)(
     "delivers current native image pixels with Workspace on through the %s request builder", async provider => {
       const bytes = Buffer.from("synthetic native image bytes");

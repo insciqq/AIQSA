@@ -104,8 +104,8 @@ describe("run attachment materialization", () => {
     expect(resolvePdfRoute).not.toHaveBeenCalled();
   });
 
-  it.each(["processing", "failed"])("rejects a %s attachment before object reads", async (status) => {
-    const unsettled = { ...attachment("pending", "document", 10), status };
+  it("rejects a processing attachment before object reads", async () => {
+    const unsettled = { ...attachment("pending", "document", 10), status: "processing" };
     const getObject = vi.fn();
 
     await expect(loadProviderAttachments(
@@ -118,6 +118,53 @@ describe("run attachment materialization", () => {
       status: 409
     });
     expect(getObject).not.toHaveBeenCalled();
+  });
+
+  describe("a file the parser could not digest", () => {
+    const oversized = { ...attachment("big", "document", 10), extractedText: null, fileName: "big.xlsx",
+      processingErrorCode: "parser_output_too_large", status: "failed" };
+    const gif = { ...attachment("loop", "image", 10), fileName: "loop.gif", mimeType: "image/gif",
+      processingErrorCode: "animated_gif_not_supported", status: "failed" };
+
+    it("reaches a Workspace run without being read, and an image goes as a file so adapters want no pixels", async () => {
+      const getObject = vi.fn();
+      const result = await loadProviderAttachments({ repository: repository([oversized, gif]), storage: { getObject } },
+        "user-1", ["big", "loop"], { capabilities: baseCapabilities, limits: limits(), workspaceEnabled: true });
+
+      expect(result.map(({ id, kind, status }) => [id, kind, status])).toEqual([
+        ["big", "document", "failed"], ["loop", "file", "failed"]]);
+      expect(result[1]).not.toHaveProperty("dataUrl");
+      expect(getObject).not.toHaveBeenCalled();
+    });
+
+    it("refuses without a Workspace, naming the limit and a recovery that works", async () => {
+      await expect(loadProviderAttachments({ repository: repository([oversized]) }, "user-1", ["big"],
+        { capabilities: baseCapabilities, limits: limits() })).rejects.toMatchObject({
+        code: "attachment_needs_workspace", status: 409,
+        message: expect.stringMatching(/250,000 filled cells.*Remove the file/su)
+      });
+      await expect(loadProviderAttachments({ repository: repository([gif]) }, "user-1", ["loop"],
+        { capabilities: baseCapabilities, limits: limits() })).rejects.toMatchObject({
+        code: "attachment_needs_workspace", message: expect.stringContaining("one frame")
+      });
+    });
+
+    it("offers Retry only for a failure that may pass, and never names the file", async () => {
+      const failed = { ...oversized, fileName: "private-salaries.xlsx", processingErrorCode: "parser_unavailable" };
+      const refusal = await loadProviderAttachments({ repository: repository([failed]) }, "user-1", ["big"],
+        { capabilities: baseCapabilities, limits: limits() }).catch((error: Error) => error);
+      expect((refusal as Error).message).toContain("Retry its processing");
+      expect((refusal as Error).message).not.toContain("private-salaries");
+    });
+
+    it.each([
+      ["attachment_checksum_mismatch", "attachment_checksum_mismatch"],
+      ["attachment_object_size_mismatch", "attachment_object_size_mismatch"],
+      ["attachment_object_read_failed", "attachment_object_read_failed"]
+    ])("keeps refusing a Workspace run a stored object that failed with %s", async (processingErrorCode, code) => {
+      await expect(loadProviderAttachments({ repository: repository([{ ...oversized, processingErrorCode }]) }, "user-1", ["big"],
+        { capabilities: baseCapabilities, limits: limits(), workspaceEnabled: true })).rejects.toMatchObject({ code });
+    });
   });
 
   it.each([

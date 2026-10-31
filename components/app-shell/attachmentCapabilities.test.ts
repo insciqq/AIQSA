@@ -11,7 +11,8 @@ import {
   imageRouteUnavailableMessage,
   partitionAttachmentsForModel,
   pdfProcessingForAttachment,
-  unsupportedAttachmentMessage
+  unsupportedAttachmentMessage,
+  workspaceOnlyAttachmentRecovery
 } from "./attachmentCapabilities";
 
 function model(
@@ -165,6 +166,55 @@ describe("attachment capabilities", () => {
     expect(partitionAttachmentsForModel([noText], model("pdf_text_extraction", false))).toEqual({
       supported: [noText],
       unsupported: []
+    });
+  });
+
+  describe("a file only Workspace can open", () => {
+    const extraction = model("pdf_text_extraction", true);
+    const oversized = { fileName: "big.xlsx", id: "big", kind: "document" as const,
+      processingErrorCode: "parser_output_too_large", status: "failed" as const };
+    const gif = { fileName: "loop.gif", id: "loop", kind: "image" as const,
+      processingErrorCode: "animated_gif_not_supported", status: "failed" as const };
+    const processing = { fileName: "slow.docx", id: "slow", kind: "document" as const, status: "processing" as const };
+    const opaque = { fileName: "data.bin", id: "data", kind: "file" as const, status: "ready" as const };
+    const ready = { fileName: "notes.txt", id: "notes", kind: "document" as const, status: "ready" as const };
+
+    it("goes with a Workspace and is refused without one", () => {
+      for (const file of [oversized, gif]) {
+        expect(attachmentBlocksSend(file, extraction, true)).toBe(false);
+        expect(attachmentBlocksSend(file, extraction, false)).toBe(true);
+      }
+    });
+
+    it("names the recovery when admission refuses the Workspace the composer expected", () => {
+      expect(workspaceOnlyAttachmentRecovery([ready, oversized], extraction)).toContain("big.xlsx");
+      expect(workspaceOnlyAttachmentRecovery([gif], extraction)).toContain("remove the file");
+      expect(workspaceOnlyAttachmentRecovery([opaque], extraction)).toContain("data.bin");
+    });
+
+    it("says nothing when sending without Workspace keeps the file, or a wait is all it needs", () => {
+      expect(workspaceOnlyAttachmentRecovery([ready], extraction)).toBeNull();
+      expect(workspaceOnlyAttachmentRecovery([processing], extraction)).toBeNull();
+    });
+  });
+
+  describe("what the tray says about a document's text", () => {
+    const extraction = model("pdf_text_extraction", false);
+    const withDocument = (status: "no_text" | "partial", truncated: boolean) => ({
+      fileName: "report.docx", id: "report", kind: "document" as const, status: "ready" as const,
+      metadata: { document: { characterCount: status === "no_text" ? 0 : 40, extractedTextMaxChars: 100, status, truncated, warnings: [] } }
+    });
+
+    it("warns with a Workspace too, and never blocks", () => {
+      expect(attachmentWarningsForModel([withDocument("partial", true)], extraction, true)).toEqual([expect.objectContaining({
+        blocking: false, label: "Text limited", message: expect.stringContaining("whole file in Workspace") })]);
+      expect(attachmentWarningsForModel([withDocument("no_text", false)], extraction, true)).toEqual([expect.objectContaining({
+        blocking: false, label: "No text", message: expect.stringContaining("original in Workspace") })]);
+    });
+
+    it("says the model sees nothing of a textless file without a Workspace", () => {
+      expect(attachmentWarningsForModel([withDocument("no_text", false)], extraction, false)).toEqual([expect.objectContaining({
+        blocking: false, label: "No text", message: expect.stringContaining("will not see") })]);
     });
   });
 
