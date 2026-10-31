@@ -102,6 +102,13 @@ describe("decodeCancelModelRunResponse", () => {
 });
 
 describe("decodeRunOutcomeResponse", () => {
+  it("keeps a known provider wait and reads one it does not know as none", () => {
+    expect(decodeRunOutcomeResponse({ version: 1, run: { id: "run", status: "streaming", providerWait: "retrying" } }))
+      .toEqual({ id: "run", status: "streaming", providerWait: "retrying" });
+    expect(decodeRunOutcomeResponse({ version: 1, run: { id: "run", status: "streaming", providerWait: "later" } }))
+      .toEqual({ id: "run", status: "streaming" });
+  });
+
   it("keeps published answers and waiting successors as separate safe facts", () => {
     expect(decodeRunOutcomeResponse({ version: 1, run: { id: "previous", status: "streaming", answerComplete: true,
       answerCompletionUsage: { private: "omitted" } } })).toEqual({ id: "previous", status: "streaming", answerComplete: true });

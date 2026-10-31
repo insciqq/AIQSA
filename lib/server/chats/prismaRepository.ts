@@ -1,6 +1,7 @@
 import { decodeSearchPlan } from "../../domain/search";
 import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
+import { runProviderWait } from "../runs/providerWaits";
 import { loadChatUsageTotals } from "./usageTotals";
 import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
@@ -905,6 +906,7 @@ function serializeHydratedMessage(
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
+  const providerWait = message.assistantModelRuns.length && modelRun ? runProviderWait(modelRun.id) : null;
   const scheduledRun = message.scheduledTaskOccurrences?.[0];
   // A scheduled check's turn: the user message through its scheduled run, the answer through its own run.
   const scheduledOutcome = message.role === "user" ? message.userModelRuns?.[0]?.scheduledOutcome : modelRun?.scheduledOutcome;
@@ -924,6 +926,7 @@ function serializeHydratedMessage(
       projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
         ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
             retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
+    ...(providerWait ? { providerWait } : {}),
     ...(message.assistantModelRuns.length && modelRun?.workspaceWaitPending && modelRun.status === "preparing"
       ? { workspacePreparation: true as const } : {}),
     ...(followups ? { followups } : {}),

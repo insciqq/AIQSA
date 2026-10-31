@@ -453,6 +453,8 @@ export type ProviderToolArgumentEvent = Readonly<{ callIndex: number; callId?: s
 export type ProviderToolArgumentObserver = (event: ProviderToolArgumentEvent) => Promise<void>;
 
 export type ProviderRunOptions = {
+  /** The provider accepted the request and started its response (a successful response head). */
+  onResponseHead?: () => void;
   onToolArguments?: ProviderToolArgumentObserver;
   /**
    * The stable gateway routing key of the call's lane (`gatewayRouting.ts`): an

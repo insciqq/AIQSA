@@ -42,7 +42,7 @@ type MaybePromise = Promise<unknown> | unknown;
 
 type ToolCallV2 = ThreadToolActivity["calls"][number];
 
-const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "results"]);
+const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "provider_retrying", "provider_slow", "results"]);
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
   // A plan update is the plan's own progress, not a step the answer waits on.

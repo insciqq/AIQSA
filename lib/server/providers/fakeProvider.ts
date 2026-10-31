@@ -3,6 +3,7 @@ import { conversationPreview, textConversationForRequest } from "./context";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import type { ModelToolCall, RunTool } from "../tools/types";
 import type { ProviderHistoryItem } from "./history";
+import { markProviderStreamDrop } from "./streamDrop";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./types";
 
 const DETERMINISTIC_RESULT_ZIP_BASE64 =
@@ -185,6 +186,28 @@ const SUBAGENT_WAKE_UP_NAME = /^--- "([a-z0-9_-]{1,48})" \(([a-z_, ]{1,80})\)$/g
 const SUBAGENT_WAIT_MAX_MS = 120_000;
 
 type ScriptedSubagentResult = Readonly<{ result: ProviderRunResult; waitMs: number }>;
+
+/**
+ * Test-only provider trouble (`AIQSA_TEST_MODE=1` outside production):
+ * `[AIQSA_PROVIDER_WAIT_E2E:<id>:drop<N>]` makes the first N requests of that id
+ * stream a word and then drop, and `silent<ms>` holds its first request silent.
+ */
+const PROVIDER_WAIT_TEST_DIRECTIVE = /\[AIQSA_PROVIDER_WAIT_E2E:([a-z0-9-]{1,48}):(drop|silent)(\d{1,5})\]/u;
+const providerWaitAttempts = new Map<string, number>();
+
+async function* scriptedProviderTrouble(question: string, signal?: AbortSignal): AsyncGenerator<ModelRunSseEvent, void> {
+  const match = subagentScenarioAllowed() ? PROVIDER_WAIT_TEST_DIRECTIVE.exec(question) : null;
+  if (!match) return;
+  const attempt = providerWaitAttempts.get(match[1]!) ?? 0;
+  providerWaitAttempts.set(match[1]!, attempt + 1);
+  if (match[2] === "silent") {
+    if (attempt === 0) await scriptedWait(Number(match[3]), signal);
+    return;
+  }
+  if (attempt >= Number(match[3])) return;
+  yield { data: { delta: "Dropped " }, type: "token" };
+  throw markProviderStreamDrop(new Error("fake_provider_stream_drop"), "response_failed");
+}
 
 function subagentScenarioAllowed(): boolean {
   return process.env.AIQSA_TEST_MODE === "1" && process.env.NODE_ENV !== "production";
@@ -764,6 +787,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
     },
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const question = requestQuestion(request) || "empty question";
+      yield* scriptedProviderTrouble(question, options.signal);
       const subagent = scriptedSubagentResult(request, question);
       if (subagent) {
         throwIfAborted(options.signal);

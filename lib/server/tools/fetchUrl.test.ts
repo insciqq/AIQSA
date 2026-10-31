@@ -408,6 +408,34 @@ describe("fetch_url PDFs", () => {
   });
 });
 
+describe("a page the site refused", () => {
+  const refused = async (httpStatus: number, browserStep?: "nobody" | "user" | null) => {
+    const s = session({ browserStep: browserStep === undefined ? undefined : () => browserStep,
+      fetchPage: vi.fn(async () => { throw new WebFetchError("fetch_http_status", { dispatched: true, httpStatus }); }) });
+    return String(json(await s.execute(call(USER_URL), { persistedToolCallId: "c1", signal })).message);
+  };
+
+  it.each([401, 403])("points a run with a person at the browser, and at them only for a real challenge (%i)", async (status) => {
+    const message = await refused(status, "user");
+    expect(message).toContain(`HTTP status ${status}`);
+    expect(message).toContain("/workspace/guides/browser.md");
+    expect(message).toContain("Only if it then shows a sign-in or CAPTCHA, call browser_handoff");
+    expect(message).toContain("do not try again");
+  });
+
+  it("never promises a person where nobody can take over", async () => {
+    const message = await refused(403, "nobody");
+    expect(message).toContain("/workspace/guides/browser.md");
+    expect(message).toContain("Nobody can pass");
+    expect(message).not.toContain("browser_handoff");
+  });
+
+  it.each([[404, "user"], [429, "user"], [503, "user"], [403, null], [403, undefined]] as const)(
+    "keeps the plain refusal for status %i with browser step %s", async (status, step) => {
+      expect(await refused(status, step)).toBe(`The site answered with HTTP status ${status}; the page was not read.`);
+    });
+});
+
 describe("fetch_url activity facts", () => {
   it("projects only the host/path target and the settled outcome", async () => {
     const running = fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, { url: "https://news.example/today?token=secret#x" });

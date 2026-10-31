@@ -734,6 +734,7 @@
   "provider_refresh_failed",
   "provider_refused",
   "provider_request_outcome_unknown",
+  "provider_request_rejected",
   "provider_request_timed_out",
   "provider_response_cancelled",
   "provider_response_failed",

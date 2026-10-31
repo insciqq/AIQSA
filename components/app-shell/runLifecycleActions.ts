@@ -512,6 +512,7 @@ export function useRunLifecycleActions({
     useThreadStore.getState().updateMessages(chatId, (messages) => messages.map((message) => message.runId === run.id
       ? { ...message, ...(run.answerComplete ? { status: "complete" as const } : {}),
           ...(run.followups ? { followups: run.followups } : {}),
+          providerWait: run.providerWait,
           workspacePreparation: run.workspacePreparation,
           workspaceSettling: run.answerComplete && isActiveRunStatus(run.status) ? true : undefined }
       : message));

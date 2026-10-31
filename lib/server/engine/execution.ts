@@ -17,6 +17,7 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import { activeRunControllers, runSettlements } from "../runs/activeRunControllerRegistry";
 import { contextCompactionArtifact } from "../runs/contextCompactionEvents";
 import { liveRunPhaseStatus } from "../runs/liveToolStatus";
+import { setRunProviderWait } from "../runs/providerWaits";
 import { serializeChatUpdate } from "../runs/chatUpdateWire";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
@@ -780,6 +781,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               else if (projectRunOutputArtifactEvent(pinned)) pending.push(pinned);
               else if (pinned.type !== "usage") sink.send(pinned);
             },
+            onProviderWait: (wait) => {
+              setRunProviderWait(runId, wait);
+              sink.send(liveRunPhaseStatus({ phase: "model", ...(wait ? { wait } : {}) }));
+            },
             onUsage: recordModelUsage,
             routing: loopRouting,
             signal,
@@ -963,6 +968,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         if (failed) sink.send({ data: payload, type: "error" });
         else await chatUpdate();
       } finally {
+        setRunProviderWait(runId, null);
         void live?.end("run_finished");
         // Its background turns keep their host for a grace, so one still attaching starts (`backgroundRunner.ts`).
         runSubagents?.releaseBackgroundHost();

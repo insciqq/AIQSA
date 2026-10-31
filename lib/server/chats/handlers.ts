@@ -1,3 +1,4 @@
+import type { RunProviderWait } from "../../contracts/runs";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import type { ChatImportSource } from "../../contracts/chatImport";
 import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
@@ -56,6 +57,7 @@ export type {
 export type ChatMessageRecord = {
   followups?: ChatMessageWire["followups"];
   workspacePreparation?: true;
+  providerWait?: RunProviderWait;
   workspaceSettling?: true;
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
@@ -290,6 +292,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     ...(message.followups ? { followups: message.followups } : {}),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     ...(message.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
+    ...(message.providerWait ? { providerWait: message.providerWait } : {}),
     ...(message.workspaceSettling === true ? { workspaceSettling: true as const } : {}),
     artifactSummary: message.artifactSummary ?? null,
     assistantIdentity: message.assistantIdentity ?? null,

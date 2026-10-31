@@ -17,6 +17,10 @@ const quotaCodes = new Set([
   "project_spend_limit_exceeded", "organization_usage_limit_exceeded"
 ]);
 
+// The provider rejected a value in the request, as with an image over its size limit. Sending it again cannot change
+// that, and the rejection arrives as a failed response on an HTTP 200, so no status says it either.
+const rejectedRequestCodes = new Set(["invalid_value"]);
+
 const unsupportedMessage = /\b(?:does not support|do not support|not supported|unsupported)\b/iu;
 const capabilityMessage = /\b(?:inputs?|output formats?|response formats?|images?|vision|pdfs?|documents?|files?|json|schemas?|structured outputs?|tools?|function calling|response_format|input_image|input_file)\b|\b(?:this|the|requested) (?:request|feature|input|capability)\b/iu;
 // Bare "input" may refer to an unrelated input parameter such as reasoning.
@@ -163,7 +167,8 @@ export function providerResponseFailure(
     : contextLength ? PROVIDER_CONTEXT_LENGTH_EXCEEDED
     : explicitlyBlocked ? "provider_response_not_retryable"
       : explicitlyUnsupported ? "provider_capability_unsupported"
-        : hasUnsupportedMessage ? "provider_response_not_retryable" : undefined;
+        : hasUnsupportedMessage ? "provider_response_not_retryable"
+          : typeof detail?.code === "string" && rejectedRequestCodes.has(detail.code) ? "provider_request_rejected" : undefined;
   const unsupportedInput = code === "provider_capability_unsupported" &&
     (typeof detail?.code === "string" && unsupportedInputCodes.has(detail.code) ||
       hasUnsupportedMessage && inputMessage.test(messageText));
