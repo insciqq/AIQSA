@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { fitImageForProvider, PROVIDER_IMAGE_MAX_PATCHES, providerImageTargetSize } from "./providerImageFit";
+import { fitImageForProvider, PROVIDER_IMAGE_MAX_PATCHES, ProviderImageTooLargeError, providerImageTargetSize } from "./providerImageFit";
 
 const measured = (width: number, height: number) => Math.ceil(width / 32) * Math.ceil(height / 32);
 const flat = (width: number, height: number) => sharp({ create: { background: "#808080", channels: 3, height, width } });
@@ -53,6 +53,28 @@ describe("the copy of an oversized image", () => {
   it("does not touch an image within the limit, nor one it cannot read", async () => {
     expect(await fitImageForProvider(await flat(100, 100).jpeg().toBuffer())).toBeNull();
     expect(await fitImageForProvider(Buffer.from("not an image"))).toBeNull();
+  });
+
+  it("refuses a source too large to decode safely, however small its file", async () => {
+    const source = await flat(11_000, 10_100).jpeg({ quality: 10 }).toBuffer();
+    expect(source.length).toBeLessThan(5_000_000);
+    await expect(fitImageForProvider(source)).rejects.toBeInstanceOf(ProviderImageTooLargeError);
+  });
+
+  it("holds a progressive source, which buffers every scan, to a lower bound", async () => {
+    const big = flat(8000, 7800);
+    await expect(fitImageForProvider(await big.clone().jpeg({ progressive: true, quality: 10 }).toBuffer()))
+      .rejects.toBeInstanceOf(ProviderImageTooLargeError);
+    expect(await fitImageForProvider(await big.clone().jpeg({ quality: 10 }).toBuffer())).not.toBeNull();
+  });
+
+  it("resizes one image at a time across concurrent requests", async () => {
+    const source = await flat(6500, 4900).jpeg().toBuffer();
+    const finished: number[] = [];
+    const slow = fitImageForProvider(source).then(() => finished.push(1));
+    const next = fitImageForProvider(source).then(() => finished.push(2));
+    await Promise.all([slow, next]);
+    expect(finished).toEqual([1, 2]);
   });
 
   it("stops when the run was cancelled", async () => {

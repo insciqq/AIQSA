@@ -10,6 +10,29 @@ import sharp from "sharp";
 export const PROVIDER_IMAGE_MAX_PATCHES = 30_000;
 const PATCH_PX = 32;
 const QUALITY = 90;
+/**
+ * The largest source it resizes, which covers 108 MP phone cameras. A small file can decode to gigabytes (a progressive
+ * 16000x16000 JPEG of 3 MB took 1.7 GiB), and the single app process runs on 2 GiB, so size in bytes bounds nothing here.
+ * Measured peaks of the whole process: 320 MB for a baseline 108 MP JPEG, 590 MB for a progressive 50 MP one, which
+ * buffers every scan and so gets its own, lower bound.
+ */
+export const PROVIDER_IMAGE_MAX_SOURCE_PIXELS = 110_000_000;
+export const PROVIDER_IMAGE_MAX_PROGRESSIVE_SOURCE_PIXELS = 60_000_000;
+
+export class ProviderImageTooLargeError extends Error {
+  constructor(readonly width: number, readonly height: number) {
+    super("provider_image_source_too_large");
+    this.name = "ProviderImageTooLargeError";
+  }
+}
+
+// One decode at a time across the process: runs and their attachment workers would otherwise add up.
+let resizing: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(work: () => Promise<T>): Promise<T> {
+  const turn = resizing.then(work, work);
+  resizing = turn.catch(() => undefined);
+  return turn;
+}
 
 function patches(width: number, height: number): number {
   return Math.ceil(width / PATCH_PX) * Math.ceil(height / PATCH_PX);
@@ -34,7 +57,7 @@ export type FittedProviderImage = Readonly<{ bytes: Buffer; height: number; mime
  * A copy within the limit, keeping the format and the way the photo is turned.
  * Null for an image that fits, or whose header cannot be read: that one goes as
  * it always did, and the provider's answer stands. Throws when an image over
- * the limit cannot be resized.
+ * the limit cannot be resized, `ProviderImageTooLargeError` for one too large to try.
  */
 export async function fitImageForProvider(bytes: Buffer, signal?: AbortSignal): Promise<FittedProviderImage | null> {
   const metadata = await sharp(bytes, { failOn: "none" }).metadata().catch(() => null);
@@ -45,12 +68,18 @@ export async function fitImageForProvider(bytes: Buffer, signal?: AbortSignal): 
   const target = sideways ? providerImageTargetSize(metadata.height, metadata.width)
     : providerImageTargetSize(metadata.width, metadata.height);
   if (!target) return null;
-  signal?.throwIfAborted();
-  const resized = sharp(bytes, { failOn: "none" }).rotate().timeout({ seconds: 30 })
-    .resize({ fit: "fill", height: target.height, width: target.width });
-  const encoded = format === "jpeg" ? resized.jpeg({ quality: QUALITY })
-    : format === "webp" ? resized.webp({ quality: QUALITY }) : resized.png();
-  const output = await encoded.toBuffer();
-  signal?.throwIfAborted();
-  return { bytes: output, height: target.height, mimeType: ENCODED_TYPES[format], width: target.width };
+  if (metadata.width * metadata.height >
+    (metadata.isProgressive ? PROVIDER_IMAGE_MAX_PROGRESSIVE_SOURCE_PIXELS : PROVIDER_IMAGE_MAX_SOURCE_PIXELS)) {
+    throw new ProviderImageTooLargeError(metadata.width, metadata.height);
+  }
+  return oneAtATime(async () => {
+    signal?.throwIfAborted();
+    const resized = sharp(bytes, { failOn: "none", limitInputPixels: PROVIDER_IMAGE_MAX_SOURCE_PIXELS }).rotate()
+      .timeout({ seconds: 30 }).resize({ fit: "fill", height: target.height, width: target.width });
+    const encoded = format === "jpeg" ? resized.jpeg({ quality: QUALITY })
+      : format === "webp" ? resized.webp({ quality: QUALITY }) : resized.png();
+    const output = await encoded.toBuffer();
+    signal?.throwIfAborted();
+    return { bytes: output, height: target.height, mimeType: ENCODED_TYPES[format], width: target.width };
+  });
 }
