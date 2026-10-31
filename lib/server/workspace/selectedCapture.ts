@@ -7,8 +7,7 @@ import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
 import type { WorkspaceConfig } from "./config";
 import type { WorkspaceImageSource } from "./imageCapture";
 import { outputIdentities, parseWorkspaceFileSelection, type WorkspaceSelectedFile } from "./outputManifest";
-import { parseWorkspaceOperation } from "./operationFence";
-import { lockWorkspaceSession, workspaceRunOperationOwner } from "./sessionOperation";
+import { lockWorkspaceSession } from "./sessionOperation";
 import { workspaceRunHoldsOperation } from "./attachments";
 import { WorkspaceRuntimeError, type WorkspaceRuntime, type WorkspaceOutputStream } from "./runtime";
 
@@ -129,13 +128,10 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
 
   const runtimeInput = (capture: WorkspaceSelectedCapture, current: Awaited<ReturnType<typeof authority>>, signal?: AbortSignal) => {
     if (capture.workspaceSessionId !== current.session.id || capture.runtimeSandboxId !== current.session.runtimeSandboxId) throw unavailable();
-    const selection = parseWorkspaceFileSelection(capture.selection, config.outputMaxFiles);
-    const runnerOperation = (capture.selection as Prisma.JsonObject).runnerOperation;
     return { capture: { id: capture.id, create: false }, modelRunId: capture.modelRunId,
       outputDirectory: workspaceRunOutputDirectory(capture.modelRunId),
       runtimeSandboxId: capture.runtimeSandboxId, sessionId: capture.workspaceSessionId, operation: current.operation,
-      selection: { ...selection, producerOperation: runnerOperation === undefined
-        ? selection.producerOperation : parseWorkspaceOperation(runnerOperation) }, signal };
+      selection: parseWorkspaceFileSelection(capture.selection, config.outputMaxFiles), signal };
   };
 
   const collect: WorkspaceRuntime["collectOutputs"] = input => runtime.collectOutputs(input).catch(error => { throw workspaceCaptureFailure(error); });
@@ -157,11 +153,7 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
     const reserved = await prisma.$transaction(async tx => {
       const current = await authority(tx, input);
       if (!current.session.runtimeSandboxId) throw unavailable();
-      const producerOperation = { generation: current.operation.generation, owner: workspaceRunOperationOwner(input.runId) };
-      // Captures belong to their requesting run, even when another run owns the shared session fence.
-      // Freeze that fence separately for runner creation and replay; existing owner captures keep their format.
-      const selection = { ...parseWorkspaceFileSelection({ files: input.files, producerOperation }, config.outputMaxFiles),
-        ...(producerOperation.owner === current.operation.owner ? {} : { runnerOperation: current.operation }) };
+      const selection = parseWorkspaceFileSelection({ files: input.files, producerOperation: current.operation }, config.outputMaxFiles);
       const requestHash = digest(JSON.stringify(selection));
       let capture = await tx.workspaceSelectedCapture.findUnique({ where: { modelRunId_requestKey: { modelRunId: input.runId, requestKey: input.requestKey } } });
       const created = !capture;
@@ -175,7 +167,7 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
         if (await tx.workspaceSelectedCapture.count({ where: { modelRunId: input.runId } }) >= MAX_CAPTURES_PER_RUN) throw limit();
         capture = await tx.workspaceSelectedCapture.create({ data: {
           id: identifier(), modelRunId: input.runId, workspaceSessionId: current.session.id, runtimeSandboxId: current.session.runtimeSandboxId,
-          requestKey: input.requestKey, requestHash, producerGeneration: producerOperation.generation, producerOwner: producerOperation.owner,
+          requestKey: input.requestKey, requestHash, producerGeneration: current.operation.generation, producerOwner: current.operation.owner,
           selection: JSON.parse(JSON.stringify(selection)) as Prisma.InputJsonValue,
           references: { create: { consumerRunId: input.runId, consumerKey: input.consumerKey } }
         } });
