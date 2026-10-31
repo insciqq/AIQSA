@@ -67,6 +67,13 @@ function useThreadViewLoader(target: SubagentThreadTarget, summaryStamp: string 
   }, [key, summaryStamp, target]);
 }
 
+/** How long an ended turn took, start to end; its tool steps alone miss the time the model spent thinking. */
+function turnWorkDurationMs(turn: SubagentTurnView): number | null {
+  if (!turn.endedAt) return null;
+  const duration = Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
+  return Number.isFinite(duration) && duration >= 0 ? duration : null;
+}
+
 function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boolean; turn: SubagentTurnView }>) {
   const active = isActiveSubagentState(turn.state);
   const state = subagentStatePresentation(turn.state, turn.outcome);
@@ -95,7 +102,7 @@ function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boo
               disclosureId={`subagent-turn-${turn.id}`}
               liveLabel={liveLabel}
               toolActivity={turn.toolActivity}
-              workDurationMs={active ? null : stepDurationSumV2(turn.toolActivity)}
+              workDurationMs={turnWorkDurationMs(turn) ?? (active ? null : stepDurationSumV2(turn.toolActivity))}
               workspaceActivity={turn.workspaceActivity}
             />
             {latest && active ? (
