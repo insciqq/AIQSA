@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { memorySha256 } from "../persistence/lexical";
+import { MEMORY_SAVED_SECRET_MARKER } from "../persistence/savedSecretMatching";
 import { chunkMemoryRecallProjection } from "./chunking";
 import {
   boundedMemoryRecallRoundEvidenceText,
@@ -8,7 +9,8 @@ import {
 } from "./rounds";
 import {
   buildMemorySafeSourceSnapshot,
-  type MemoryHistorySourceMessageInput
+  type MemoryHistorySourceMessageInput,
+  type MemoryHistorySourceSnapshotInput
 } from "./sourceProjection";
 
 function message(input: Readonly<{
@@ -91,6 +93,59 @@ function fixture() {
 }
 
 describe("recall round projection", () => {
+  it("changes safe evidence at the same source ordinal when a value becomes a saved secret", () => {
+    const token = "tok_demo_7f3a9c21b8e4";
+    const input: MemoryHistorySourceSnapshotInput = {
+      activeLeafMessageId: "a1",
+      branchGeneration: 3,
+      chatId: "chat-rounds",
+      folderId: null,
+      messages: [
+        message({
+          createdAt: "2026-08-10T10:00:00.000Z", id: "u1", parentMessageId: null,
+          role: "user", text: `The cedar desk reference is ${token}.`
+        }),
+        message({
+          createdAt: "2026-08-10T10:01:00.000Z", id: "a1", parentMessageId: "u1",
+          influencedByMessageIds: ["u1"], role: "assistant", text: "The desk is reserved."
+        })
+      ],
+      mode: "NORMAL",
+      sourceContentHash: "c".repeat(64),
+      sourceRevision: 4,
+      timeZone: "UTC",
+      userId: "owner"
+    };
+    const project = (savedSecretValues: readonly string[]) => {
+      const snapshot = buildMemorySafeSourceSnapshot({ ...input, savedSecretValues });
+      const chunks = chunkMemoryRecallProjection(snapshot).map((chunk) => ({
+        ...chunk, id: memorySha256({ chunk: chunk.contentHash })
+      }));
+      return projectMemoryRecallRounds(snapshot, chunks)[0]!;
+    };
+    const before = project([]);
+    const after = project([token]);
+    expect(before.rawSafeText).toContain(token);
+    expect(after.rawSafeText).not.toContain(token);
+    expect(after.rawSafeText).toContain(MEMORY_SAVED_SECRET_MARKER);
+    expect(after).toMatchObject({
+      branchGeneration: before.branchGeneration, chatId: before.chatId,
+      ordinal: before.ordinal, projectionVersion: before.projectionVersion,
+      sourceProjectionVersion: before.sourceProjectionVersion,
+      sourceRevision: before.sourceRevision, sourceContentHash: before.sourceContentHash,
+      userId: before.userId
+    });
+    expect(after.messageJoins.map(({ messageId, sourceMessageContentHash, sourceMessageUpdatedAt }) =>
+      ({ messageId, sourceMessageContentHash, sourceMessageUpdatedAt })))
+      .toEqual(before.messageJoins.map(({ messageId, sourceMessageContentHash, sourceMessageUpdatedAt }) =>
+        ({ messageId, sourceMessageContentHash, sourceMessageUpdatedAt })));
+    expect(after.messageJoins[0]!.safeTextHash).not.toBe(before.messageJoins[0]!.safeTextHash);
+    expect(after.evidenceRootHash).not.toBe(before.evidenceRootHash);
+    expect(after.contentHash).not.toBe(before.contentHash);
+    expect(after.id).not.toBe(before.id);
+    expect(project([token])).toEqual(after);
+  });
+
   it("gives a new source projection its own immutable round identity", () => {
     const { chunks, snapshot } = fixture();
     const legacySnapshot = {

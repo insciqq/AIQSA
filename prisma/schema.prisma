@@ -4590,7 +4590,7 @@ model MemoryRecallRound {
   @@unique([userId, id])
   @@unique([userId, chatId, id])
   @@unique([userId, id, chatId, branchGeneration, sourceRevisionAtCreation, contentHash], map: "MemoryRecallRound_source_identity_key")
-  @@unique([userId, chatId, branchGeneration, sourceRevisionAtCreation, projectionVersion, sourceProjectionVersion, roundOrdinal], map: "MemoryRecallRound_source_ordinal_key")
+  // SQL partial unique index reserves ordinal slots only for ACTIVE/SUPPRESSED projections.
   @@index([userId, chatId, state, branchGeneration, sourceRevisionAtCreation])
   @@index([userId, parentChunkId, state])
   @@index([userId, evidenceRootHash, state])
