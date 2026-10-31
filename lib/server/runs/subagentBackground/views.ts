@@ -374,7 +374,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
             outcome: outcomeOf(turn.state, turn.outcome),
             parentMessageId: turn.parentRun.assistantMessageId!,
             reason: isSubagentCode(turn.reasonCode) ? turn.reasonCode : null,
-            report: result && typeof result.report === "string" ? Array.from(result.report).slice(0, SUBAGENT_LIMITS.reportCharacters).join("") : null,
+            report: result && typeof result.report === "string" ? result.report : null,
             startedAt: turn.startedAt.toISOString(),
             state: turn.state,
             toolActivity,

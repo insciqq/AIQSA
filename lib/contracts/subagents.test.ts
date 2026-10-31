@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   SUBAGENT_LIMITS,
   SUBAGENT_TOOL_GROUPS,
-  boundSubagentReport,
   decodeSubagentActivityRef,
   decodeSubagentCallResult,
   decodeSubagentToolGroups,
@@ -110,22 +109,24 @@ describe("call_subagent results", () => {
       { ...ended, reason: "Not A Code" },
       { ...ended, name: "Shop Amazon" },
       { ...ended, extra: true },
-      { ...ended, report: "x".repeat(SUBAGENT_LIMITS.reportCharacters + 1) },
+      { ...ended, report: 7 },
+      { ...ended, resultHandle: "invalid" },
+      { ...ended, resultUnavailableReason: "Invalid reason" },
+      { ...ended, filesNotice: "unreviewed" },
       { ...ended, files: Array.from({ length: SUBAGENT_LIMITS.files + 1 }, (_, index) => `f${index}`) },
       { ...ended, steps: [{ outcome: "maybe", summary: "", tool: "x" }] },
-      { ...ended, approvals: [{ ...ended.approvals[0], arguments: { blob: "x".repeat(SUBAGENT_LIMITS.approvalArgumentsCharacters) } }] },
       { ...ended, model: { id: "m" } },
       { continued: "no", kind: "started", name: "a", state: "running" }
     ];
     for (const value of refused) expect(decodeSubagentCallResult(value), JSON.stringify(value).slice(0, 80)).toBeNull();
   });
 
-  it("bounds a report by characters with a mark, never silently", () => {
-    expect(boundSubagentReport("short")).toEqual({ report: "short", truncated: false });
-    const long = boundSubagentReport("ё".repeat(SUBAGENT_LIMITS.reportCharacters + 5));
-    expect(long.truncated).toBe(true);
-    expect(Array.from(long.report)).toHaveLength(SUBAGENT_LIMITS.reportCharacters);
-    expect(decodeSubagentCallResult({ ...ended, report: long.report, reportTruncated: true })).not.toBeNull();
+  it("keeps full reports, large approval handbacks and historical truncation markers decodable", () => {
+    const full = { ...ended, report: "😀".repeat(30_000), resultHandle: `tor1_${"a".repeat(32)}`,
+      approvals: Array.from({ length: 11 }, () => ({ ...ended.approvals[0], arguments: { text: "x".repeat(30_000) } })) };
+    expect(decodeSubagentCallResult(full)).toEqual(full);
+    const legacy = { ...ended, reportTruncated: true };
+    expect(decodeSubagentCallResult(legacy)).toEqual(legacy);
   });
 });
 

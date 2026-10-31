@@ -1,4 +1,5 @@
 import { RUN_FOLLOWUP_MAX_CHARS } from "./runFollowups";
+import { WORKSPACE_ACTIVITY_PATH_MAX_CHARS } from "./workspace";
 
 /**
  * Sub-agents (operator decisions 2026-10-29; Claude Code's Agent, SendMessage
@@ -36,23 +37,24 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "./runFollowups";
 export const SUBAGENT_LIMITS = Object.freeze({
   /** Sub-agents running at once per chat, every branch counted (operator: a symbolic cap). */
   runningPerChat: 20,
+  /** Input slug bound shared with the database and Workspace agent protocol. */
   nameCharacters: 48,
   /** A brief, or a message to a running sub-agent, which rides on the follow-up store. */
   messageCharacters: RUN_FOLLOWUP_MAX_CHARS,
+  /** Input model selector, matching the admitted model catalog identifiers. */
   modelCharacters: 256,
+  /** Input effort selector, matching the model policy catalog. */
   effortCharacters: 32,
-  /** A stable code (blocked reason, failure, stop reason). */
-  codeCharacters: 64,
-  reportCharacters: 12_000,
+  /** Bound the file index in a result; this never limits files on the shared disk. */
   files: 50,
-  filePathCharacters: 512,
+  /** Paths in the index match the bounded Workspace activity projection. */
+  filePathCharacters: WORKSPACE_ACTIVITY_PATH_MAX_CHARS,
+  /** Keep recent step summaries in a result; this never limits executed steps or the report. */
   steps: 100,
+  /** Display labels in the step list, matching the chat activity projection. */
   stepToolCharacters: 160,
-  stepSummaryCharacters: 240,
-  approvals: 10,
-  approvalToolCharacters: 160,
-  /** Serialized arguments of one MCP call handed back for approval. */
-  approvalArgumentsCharacters: 16_384
+  /** Keep each step's status line concise; substantive findings belong in the full report. */
+  stepSummaryCharacters: 240
 });
 
 /** A sub-agent name: a lowercase slug the main agent chooses, unique among the threads visible on a branch. */
@@ -128,12 +130,9 @@ export type RunFollowupOrigin = (typeof RUN_FOLLOWUP_ORIGINS)[number];
  * Bounds of the follow-ups that are not the user's. They never count toward
  * the user's follow-ups (`RUN_FOLLOWUP_MAX_COUNT`) or a run's
  * `followupBudgetTokens`, so a sub-agent cannot use up the user's
- * clarifications. A callback is never refused: one into a running answer is
- * cut, with a cut mark, to what is left of that run's follow-up reserve
- * (`followupContextReserveTokens`), at most 16,000 characters; a wake-up
- * turn's callbacks share 32,000 characters the same way
- * (`lib/server/runs/subagentBackground/render.ts`). The whole result stays on
- * the turn (`SubagentTurn.result`) and in the thread view.
+ * clarifications. Callbacks share the receiving run's follow-up reserve or
+ * the wake-up turn's space. An excerpt names the saved result that
+ * `read_tool_result` can read; the full report also stays on the turn.
  */
 export const SUBAGENT_FOLLOWUP_LIMITS = Object.freeze({
   /** `main_agent` messages one background sub-agent run takes. */
@@ -318,7 +317,8 @@ export type SubagentStep = Readonly<{
 /**
  * A data-changing MCP call a sub-agent did not send: the guard refused it or
  * it needs the user's approval. The main agent makes exactly this call, so
- * the user sees the ordinary approval card.
+ * the user sees the ordinary approval card. Calls are bounded at admission;
+ * the handback keeps their arguments and identity whole.
  */
 export type SubagentApprovalRequest = Readonly<{
   arguments: Readonly<Record<string, unknown>>;
@@ -327,6 +327,8 @@ export type SubagentApprovalRequest = Readonly<{
   /** The tool's name as the run's frozen catalog declares it to the main agent. */
   toolName: string;
 }>;
+
+export const SUBAGENT_FILES_TRUNCATED_NOTICE = "File list truncated; the remaining files are on the shared disk.";
 
 /**
  * What `call_subagent` and `stop_subagent` return to the main agent, as the
@@ -339,6 +341,7 @@ export type SubagentCallResult =
       approvals: readonly SubagentApprovalRequest[];
       /** Workspace paths the sub-agent wrote, relative to the project folder. */
       files: readonly string[];
+      filesNotice?: typeof SUBAGENT_FILES_TRUNCATED_NOTICE;
       kind: "ended";
       /** The model and effort the turn ran with (`modelId`, the effort or null for the model's default). */
       model: Readonly<{ effort: string | null; id: string }>;
@@ -348,7 +351,11 @@ export type SubagentCallResult =
       /** A blocked outcome's reason, or why the turn failed, stopped or was interrupted. */
       reason?: string;
       report: string;
+      /** Historical turns may already contain a cut report. New turns never cut it. */
       reportTruncated?: true;
+      /** Background completion saved through the ordinary tool-result store. */
+      resultHandle?: string;
+      resultUnavailableReason?: string;
       state: EndedSubagentState;
       /** Always present, failures included. */
       steps: readonly SubagentStep[];
@@ -360,13 +367,6 @@ export type SubagentCallResult =
   | Readonly<{ kind: "delivered"; name: string; state: ActiveSubagentState }>;
 
 export type EndedSubagentCallResult = Extract<SubagentCallResult, { kind: "ended" }>;
-
-/** A report bounded for the main agent: cut at a character boundary with a mark, never silently. */
-export function boundSubagentReport(text: string): Readonly<{ report: string; truncated: boolean }> {
-  const characters = Array.from(text);
-  if (characters.length <= SUBAGENT_LIMITS.reportCharacters) return { report: text, truncated: false };
-  return { report: characters.slice(0, SUBAGENT_LIMITS.reportCharacters).join(""), truncated: true };
-}
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -385,20 +385,18 @@ function decodeStep(value: unknown): SubagentStep | null {
 function decodeApproval(value: unknown): SubagentApprovalRequest | null {
   if (!record(value) || !only(value, ["arguments", "reason", "serverName", "toolName"])) return null;
   if (!record(value.arguments) || (value.reason !== "approval_required" && value.reason !== "guard_refused") ||
-    !boundedText(value.serverName, SUBAGENT_LIMITS.approvalToolCharacters) ||
-    !boundedText(value.toolName, SUBAGENT_LIMITS.approvalToolCharacters)) return null;
-  let serialized: string;
+    typeof value.serverName !== "string" || !value.serverName.trim() || value.serverName.includes("\0") ||
+    typeof value.toolName !== "string" || !value.toolName.trim() || value.toolName.includes("\0")) return null;
   try {
-    serialized = JSON.stringify(value.arguments);
+    JSON.stringify(value.arguments);
   } catch {
     return null;
   }
-  if (serialized.length > SUBAGENT_LIMITS.approvalArgumentsCharacters) return null;
   return { arguments: value.arguments, reason: value.reason, serverName: value.serverName, toolName: value.toolName };
 }
 
-const ENDED_KEYS = ["approvals", "files", "kind", "model", "name", "outcome", "reason", "report", "reportTruncated", "state",
-  "steps", "stepsTruncated"];
+const ENDED_KEYS = ["approvals", "files", "filesNotice", "kind", "model", "name", "outcome", "reason", "report", "reportTruncated", "state",
+  "steps", "stepsTruncated", "resultHandle", "resultUnavailableReason"];
 
 /** A `call_subagent` or `stop_subagent` result, or a stored turn result; null when it is not one exactly. */
 export function decodeSubagentCallResult(value: unknown): SubagentCallResult | null {
@@ -420,8 +418,11 @@ export function decodeSubagentCallResult(value: unknown): SubagentCallResult | n
   if (value.outcome !== undefined && !isSubagentOutcome(value.outcome)) return null;
   if (value.reason !== undefined && !isSubagentCode(value.reason)) return null;
   if ((value.outcome === "blocked" || state === "failed") && value.reason === undefined) return null;
-  if (typeof value.report !== "string" || value.report.length > SUBAGENT_LIMITS.reportCharacters * 2 ||
-    Array.from(value.report).length > SUBAGENT_LIMITS.reportCharacters) return null;
+  if (typeof value.report !== "string") return null;
+  if (value.filesNotice !== undefined && value.filesNotice !== SUBAGENT_FILES_TRUNCATED_NOTICE) return null;
+  if (value.resultHandle !== undefined && (typeof value.resultHandle !== "string" || !/^tor1_[a-f0-9]{32}$/u.test(value.resultHandle))) return null;
+  if (value.resultUnavailableReason !== undefined && !isSubagentCode(value.resultUnavailableReason)) return null;
+  if (value.resultHandle !== undefined && value.resultUnavailableReason !== undefined) return null;
   if (value.reportTruncated !== undefined && value.reportTruncated !== true) return null;
   if (value.stepsTruncated !== undefined && value.stepsTruncated !== true) return null;
   if (!Array.isArray(value.files) || value.files.length > SUBAGENT_LIMITS.files ||
@@ -429,7 +430,7 @@ export function decodeSubagentCallResult(value: unknown): SubagentCallResult | n
   if (!Array.isArray(value.steps) || value.steps.length > SUBAGENT_LIMITS.steps) return null;
   const steps = value.steps.map(decodeStep);
   if (steps.some((step) => step === null)) return null;
-  if (!Array.isArray(value.approvals) || value.approvals.length > SUBAGENT_LIMITS.approvals) return null;
+  if (!Array.isArray(value.approvals)) return null;
   const approvals = value.approvals.map(decodeApproval);
   if (approvals.some((approval) => approval === null)) return null;
   if (!record(value.model) || !only(value.model, ["effort", "id"]) ||
@@ -438,12 +439,15 @@ export function decodeSubagentCallResult(value: unknown): SubagentCallResult | n
   return {
     approvals: approvals as SubagentApprovalRequest[],
     files: [...value.files as string[]],
+    ...(value.filesNotice !== undefined ? { filesNotice: SUBAGENT_FILES_TRUNCATED_NOTICE } as const : {}),
     kind: "ended",
     model: { effort: value.model.effort as string | null, id: value.model.id },
     name,
     ...(value.outcome !== undefined ? { outcome: value.outcome } : {}),
     ...(value.reason !== undefined ? { reason: value.reason } : {}),
     report: value.report,
+    ...(typeof value.resultHandle === "string" ? { resultHandle: value.resultHandle } : {}),
+    ...(typeof value.resultUnavailableReason === "string" ? { resultUnavailableReason: value.resultUnavailableReason } : {}),
     ...(value.reportTruncated === true ? { reportTruncated: true as const } : {}),
     state,
     steps: steps as SubagentStep[],
