@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendCompactRunEvent, mergeThreadMessages } from "./runState";
+import { appendAssistantDelta, appendCompactRunEvent, mergeThreadMessages } from "./runState";
 import type { RunEventView, ThreadMessage } from "./types";
 
 function message(overrides: Partial<ThreadMessage>): ThreadMessage {
@@ -23,6 +23,12 @@ const searchArtifact: RunEventView = {
 };
 
 describe("run state helpers", () => {
+  it("adds a delta to a streaming answer and never to one that settled", () => {
+    const answer = message({ content: "Done.", id: "answer", role: "assistant" });
+    expect(appendAssistantDelta([{ ...answer, status: "streaming" }], "answer", " More")[0]!.content).toBe("Done. More");
+    expect(appendAssistantDelta([answer], "answer", " More")[0]!.content).toBe("Done.");
+  });
+
   it("compacts a 2,000-token stream into one bounded timeline event", () => {
     let events: RunEventView[] = [];
 

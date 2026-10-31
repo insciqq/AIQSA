@@ -45,7 +45,9 @@ export function appendAssistantDelta(
   delta: string
 ): ThreadMessage[] {
   return messages.map((message) =>
-    message.id === assistantMessageId ? { ...message, content: `${textFromThreadContent(message.content)}${delta}` } : message
+    // A settled copy already holds the whole text, so a delta flushed after it would repeat the tail.
+    message.id === assistantMessageId && message.status === "streaming"
+      ? { ...message, content: `${textFromThreadContent(message.content)}${delta}` } : message
   );
 }
 

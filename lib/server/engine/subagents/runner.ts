@@ -213,7 +213,7 @@ function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
  */
 export function subagentRequest(request: ProviderRunRequest, route: SubagentModelRoute,
   options: Readonly<{ withoutWorkspace?: boolean }> = {}): ProviderRunRequest {
-  const { personalContext: _personal, workspace, ...rest } = request;
+  const { personalContext: _personal, workspace, workspaceCheckpoints, workspaceImageView, ...rest } = request;
   void _personal;
   const recorded = request.prompt.turnGuidance ?? [];
   const split = splitTurnGuidance(request.prompt.system ?? "", recorded);
@@ -221,7 +221,8 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
   const system = [split.chat, ...kept].filter((part) => part.trim()).join("\n\n");
   return {
     ...rest,
-    ...(workspace && !options.withoutWorkspace ? { workspace } : {}),
+    ...(options.withoutWorkspace ? {} : { ...(workspace ? { workspace } : {}), ...(workspaceCheckpoints ? { workspaceCheckpoints } : {}),
+      ...(workspaceImageView ? { workspaceImageView } : {}) }),
     attachmentIds: [],
     attachments: [],
     modelCapabilities: route.request.modelCapabilities,
