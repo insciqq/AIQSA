@@ -226,7 +226,7 @@ function apiMessage(candidate: ThreadMessage) {
     citationMessageId: candidate.citationMessageId ?? null,
     content: candidate.content,
     createdAt: "2026-06-10T00:00:00.000Z",
-    errorMessage: null,
+    errorMessage: candidate.errorMessage ?? null,
     id: candidate.id,
     modelId: candidate.modelId ?? null,
     modelRunId: candidate.runId ?? null,
@@ -1152,6 +1152,38 @@ describe("workspace actions", () => {
       messages: [{ id: "new-leaf" }],
       usageStats: { totalTokens: 8 }
     });
+  });
+
+  it("takes a settled failure from a detail read that a local thread write overtook", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    useThreadStore.getState().mergeMessages("chat-a", [message({ content: "", id: "failed", role: "assistant", status: "streaming" })],
+      { activeLeafId: "failed" });
+    let finish: ((response: Response) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
+    const read = state.actions.fetchChatDetail("chat-a");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    // The answer before it, still settling, writes to the same thread while the read is in flight.
+    useThreadStore.getState().updateMessages("chat-a", (current) => current.map((entry) => ({ ...entry })));
+    finish?.(Response.json({ chat: apiChatDetail(state.chatA, [message({ content: "", errorMessage: "The key was rejected.",
+      id: "failed", role: "assistant", status: "error" })]) }));
+    await read;
+    expect(useThreadStore.getState().threadsByChatId["chat-a"]?.messages.find((entry) => entry.id === "failed")).toMatchObject({
+      errorMessage: "The key was rejected.", status: "error" });
+  });
+
+  it("keeps a local answer that a detail read still reports as streaming", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    useThreadStore.getState().mergeMessages("chat-a", [message({ content: "", id: "live", role: "assistant", status: "streaming" })],
+      { activeLeafId: "live" });
+    let finish: ((response: Response) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
+    const read = state.actions.fetchChatDetail("chat-a");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    useThreadStore.getState().updateMessages("chat-a", (current) => current.map((entry) => ({ ...entry, content: "Live text" })));
+    finish?.(Response.json({ chat: apiChatDetail(state.chatA, [message({ content: "", id: "live", role: "assistant", status: "streaming" })]) }));
+    await read;
+    expect(useThreadStore.getState().threadsByChatId["chat-a"]?.messages.find((entry) => entry.id === "live")).toMatchObject({
+      content: "Live text", status: "streaming" });
   });
 
   it("refreshes past a suspended detail request and ignores its late stale response", async () => {

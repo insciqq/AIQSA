@@ -39,7 +39,7 @@ import {
   decodeChatSummaryResponse,
   decodeWorkspaceChatsResponse
 } from "@/lib/contracts/chats";
-import { mergeThreadMessages } from "@/components/app-shell/runState";
+import { mergeLocalThreadMessages } from "@/components/app-shell/runState";
 import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
@@ -318,7 +318,7 @@ export function useWorkspaceActions({
                 : serverHistory,
             messages:
               current.messages !== requestContext.thread?.messages
-                ? mergeThreadMessages(detail.messages, current.messages)
+                ? mergeLocalThreadMessages(detail.messages, current.messages)
                 : detail.messages,
             sourceUpdatedAt:
               current.sourceUpdatedAt !== (requestContext.thread?.sourceUpdatedAt ?? null)

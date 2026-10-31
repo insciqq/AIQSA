@@ -404,6 +404,31 @@ describe("message run lifecycle", () => {
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
+  it("keeps the stream's failure text when the settled answer could not be read", async () => {
+    prepareThread();
+    await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef: { current: new Map() },
+      chatId: "chat-1",
+      consumeRunStream: async ({ onRunId }) => {
+        onRunId("run-failed");
+        return { failed: true, failureMessage: "The key was rejected.", receivedChatUpdate: false,
+          runId: "run-failed", terminalStatus: "error" };
+      },
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix: "send_failed",
+      fetchRun: vi.fn(async () => null),
+      notifyAnswerReady: vi.fn(async () => undefined),
+      optimisticAssistantMessageId: "assistant-optimistic",
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request: async () => new Response("", { status: 200 })
+    });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
+      errorMessage: "The key was rejected.", runId: "run-failed", status: "error" });
+  });
+
   it("settles a server-confirmed cancellation without answer-ready notification", async () => {
     prepareThread();
     const notifyAnswerReady = vi.fn(async () => undefined);

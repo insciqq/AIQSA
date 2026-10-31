@@ -29,6 +29,16 @@ export function mergeThreadMessages(current: ThreadMessage[], updates: ThreadMes
   return merged;
 }
 
+/**
+ * A chat read that local writes overtook: what changed locally stays, except a
+ * copy still streaming that the server already settled. It can only be stale,
+ * and would hide the answer's saved failure, steps and outputs.
+ */
+export function mergeLocalThreadMessages(server: ThreadMessage[], local: ThreadMessage[]): ThreadMessage[] {
+  const settled = new Set(server.filter((message) => message.status !== "streaming").map((message) => message.id));
+  return mergeThreadMessages(server, local.filter((message) => message.status !== "streaming" || !settled.has(message.id)));
+}
+
 export function appendAssistantDelta(
   messages: ThreadMessage[],
   assistantMessageId: string,
