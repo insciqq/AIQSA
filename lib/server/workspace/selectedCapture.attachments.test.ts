@@ -108,7 +108,7 @@ async function fixture(ownerRunId = "main") {
     return spool.collect(input, source);
   });
   const runtime = { collectOutputs, releaseOutputCapture: (input: Parameters<WorkspaceOutputCaptureStore["release"]>[0]) =>
-    spool.release(input) } as WorkspaceRuntime;
+    spool.release(input) } as unknown as WorkspaceRuntime;
   const service = createWorkspaceSelectedCaptures({ prisma, runtime, storage: createMemoryStorageAdapter(), config });
   const scope = (runId = "subagent") => ({ runId, userId: "user", consumerKey: "tool" });
   const create = (runId = "subagent") => service.create({ ...scope(runId), requestKey: "request",

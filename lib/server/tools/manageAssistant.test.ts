@@ -26,7 +26,7 @@ const parameterControls: ModelParameterControls = {
   stream: { defaultValue: true, supported: true },
   temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
 };
-const view = { modelById: new Map([["codex-lb:gpt-5.5", { parameterControls } as CatalogWireModel]]) } as AssistantCatalogView;
+const view = { modelById: new Map([["codex-lb:gpt-5.5", { parameterControls } as CatalogWireModel]]) } as unknown as AssistantCatalogView;
 const catalog: AgentAssistantCatalog = {
   mcpServers: [{ name: "GitLab", serverId: "srv_gitlab" }, { name: "Jira", serverId: "srv_jira" }],
   models: [{ displayName: "GPT-5.5", modelId: "codex-lb:gpt-5.5" }, { displayName: "Claude Sonnet", modelId: "or:claude-sonnet" }],
