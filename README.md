@@ -25,6 +25,8 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 - **Every model in one place.** Connect OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, or any OpenAI-compatible server, including models running on your own network. Choose the model for each message; the whole team works in the same workspace.
 - **Ready in minutes.** Add an API key and AIQSA checks what each model can actually do (images, PDFs, tools, web search) and turns on exactly that. There is nothing to wire together before your team starts.
 - **A computer in every chat.** Each chat can get its own isolated Linux virtual machine. The model runs code, works with your files, and hands back reports, charts and archives to download.
+- **A browser you can watch.** The agent opens real websites in the Workspace browser and streams them into the chat. Watch it work, take control at any moment, and sign in yourself when a site asks, so the agent never needs your password.
+- **Agents that work side by side.** The agent can hand parts of a task to sub-agents that run at the same time in the same Workspace, each in its own browser tab.
 - **Answers you can check.** Web search answers come with linked sources you can open.
 - **Memory that understands, not just stores.** AIQSA learns only from what you actually say, keeps track of who each fact is about and when it was true, replaces outdated facts, settles contradictions on its own, and searches your past chats when an answer needs more. You control everything it keeps, and the same Memory works in Claude Code and Codex.
 - **Work that runs on its own.** Automations run a prompt daily, weekly or monthly, or when another system such as GitLab calls their webhook, and deliver the answer to their own chat, with an optional email.
@@ -41,6 +43,9 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 **Tools and automation**
 - Web search with sources.
 - Workspace: an isolated KVM virtual machine per chat, with file exports and personal secrets.
+- Workspace browser: a live view in the chat, Take control, sign-in handoff and saved browser logins.
+- Sub-agents: parallel agents with their own threads, plus personal custom sub-agents with their own instructions and model.
+- Telegram: chat with your agent from a linked Telegram account and receive Automation results there.
 - MCP: connect remote MCP servers with OAuth; Auto mode finds the right tool for the request.
 - Skills: reusable instructions and files that the model loads when they are relevant.
 - Automations: once, daily, weekly or monthly runs, or a run for each webhook call with its request body as event data, with optional email notifications.
