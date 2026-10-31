@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { SkillBundleError } from "./bundleErrors";
 import { deliverSkillWorkspaceBundle } from "./workspaceDelivery";
 
@@ -36,6 +37,14 @@ describe("post-budget Workspace Skill delivery", () => {
       content: [{ type: "json", value: { error: "skill_file_binary", workspacePath: `${f.path}/assets/data.bin` } }] };
     expect(await deliverSkillWorkspaceBundle({ ...f, call, result })).toBe(result);
     expect(f.skillBundlePath).toHaveBeenLastCalledWith(expect.objectContaining({ install: false }));
+  });
+
+  it("names an alias another agent holds at a different version instead of a generic failure", async () => {
+    const f = fixture();
+    f.skillBundlePath.mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_skill_conflict"));
+    const refused = await deliverSkillWorkspaceBundle(f);
+    expect(refused).toMatchObject({ status: "error", content: [{ value: { error: "workspace_skill_conflict" } }] });
+    expect(JSON.stringify(refused.content)).toContain("different version");
   });
 
   it("turns revocation/install failure into a safe unsuccessful result without a load binding", async () => {

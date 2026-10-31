@@ -1077,10 +1077,11 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   async installSkillBundle(input: Parameters<WorkspaceRuntime["installSkillBundle"]>[0]) {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     const session = this.session(input.sessionId, input.runtimeSandboxId);
-    return this.skills.install(input, input.bundle, async () => {
+    return this.skills.install(input, input.bundle, async present => {
       const entries = parseSkillArchive(await readSkillArchive(input));
       input.signal?.throwIfAborted();
       const workspacePath = `${WORKSPACE_SKILLS_DIRECTORY}/${input.bundle.alias}`;
+      if (present) return { workspacePath };
       this.clearSkillTree(session, workspacePath);
       for (const entry of entries) {
         const path = `${workspacePath}/${entry.path}`;

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceRunOutputDirectory } from "@/lib/domain/workspace";
+import { observedFailureCode } from "@/lib/server/providers/providerObservability";
 import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
+import type { WorkspaceSkillBundles } from "@/lib/server/skills/workspaceBundles";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import type { WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import type { WorkspaceAttachedRun } from "./attachments";
@@ -10,6 +12,7 @@ import {
 } from "./coordinator";
 import { workspaceSyncCleanupId, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
 import { WorkspaceRuntimeError, type WorkspaceBoundTool, type WorkspaceRuntime } from "./runtime";
+import { WorkspaceSkillRunState } from "./skillRunState";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
@@ -35,7 +38,7 @@ function workspaceOf(runId: string): NormalizedRunWorkspace {
  * Two runs of one chat attached to one session under the main run's operation: the main agent's and a background
  * sub-agent's. Each has a sync command's cleanup obligation, as every run that ran a shell command does.
  */
-function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "absent"; unusedRuns?: readonly string[] }> = {}) {
+function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "absent"; skills?: WorkspaceSkillBundles; unusedRuns?: readonly string[] }> = {}) {
   const attached = new Set([MAIN, SUBAGENT]);
   let operationOwner: string | null = `run:${MAIN}`;
   let operationGeneration = 3;
@@ -156,7 +159,7 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
   };
   const interrupted = vi.fn(async (_input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>) => undefined);
   const coordinator = createWorkspaceCoordinator({ config, onAttachedRunsInterrupted: interrupted, registry, repository, runtime,
-    storage: createMemoryStorageAdapter() });
+    ...(options.skills ? { skills: options.skills } : {}), storage: createMemoryStorageAdapter() });
   return { attached, coordinator, detached, interrupted, registry, repository, rows, runtime, settled };
 }
 
@@ -172,6 +175,56 @@ describe("a Workspace session shared by attached runs", () => {
     const operations = vi.mocked(f.runtime.callBoundTool).mock.calls.map(([input]) => input.operation);
     expect(operations).toEqual([{ generation: 3, owner: `run:${MAIN}` }, { generation: 3, owner: `run:${MAIN}` }]);
     expect(vi.mocked(f.runtime.callBoundTool).mock.calls.map(([input]) => input.modelRunId).sort()).toEqual([MAIN, SUBAGENT].sort());
+  });
+
+  it("prepares both runs' Skills side by side, and neither refuses the other's commands", async () => {
+    const ref = { alias: "review", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
+    const skills: WorkspaceSkillBundles = {
+      plan: vi.fn(async () => ({ initial: [ref], manifestHash: "c".repeat(64) })),
+      archive: vi.fn(async () => ({ bundle: ref, byteSize: 1, checksum: "d".repeat(64),
+        archive: new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }) }))
+    };
+    const f = sharedFixture({ skills });
+    const state = new WorkspaceSkillRunState();
+    const reset = vi.fn(async () => undefined);
+    const guest = vi.fn(async () => undefined);
+    vi.mocked(f.runtime.prepareSkillRun).mockImplementation((input) => state.prepare(input, reset));
+    vi.mocked(f.runtime.installSkillBundle).mockImplementation((input) => state.install(input, input.bundle, async (present) => {
+      if (!present) await guest();
+      return { workspacePath: `/workspace/.aiqsa/skills/${input.bundle.alias}` };
+    }));
+    vi.mocked(f.runtime.completeSkillRunPreparation).mockImplementation((input) => state.complete(input, async () => undefined));
+    const markFailed = vi.spyOn(f.repository, "markSessionFailed");
+    const call = (runId: string) => f.coordinator.execute({
+      call: { arguments: { command: "ls" }, id: `call-${runId}`, name: namespacedWorkspaceToolName("sandbox_shell") },
+      modelRunToolCallId: `stored-${runId}`, runId, userId: "user_1", workspace: workspaceOf(MAIN)
+    });
+    const results = await Promise.all([call(MAIN), call(SUBAGENT)]);
+    expect(results.map((result) => result.status)).toEqual(["complete", "complete"]);
+    expect(vi.mocked(f.runtime.callBoundTool).mock.calls.map(([input]) => input.modelRunId).sort()).toEqual([MAIN, SUBAGENT].sort());
+    expect(reset).toHaveBeenCalledOnce();
+    expect(guest).toHaveBeenCalledOnce();
+    expect(markFailed).not.toHaveBeenCalled();
+  });
+
+  it.each(["workspace_skill_conflict", "workspace_skill_run_stale", "workspace_skills_prepare_failed", "workspace_skill_bundle_invalid",
+    "workspace_skill_bundle_limit_exceeded"] as const)("answers a run's %s as a refusal, with the shared session untouched", async (code) => {
+    const f = sharedFixture();
+    vi.mocked(f.runtime.prepareSkillRun).mockRejectedValueOnce(new WorkspaceRuntimeError(code));
+    const markFailed = vi.spyOn(f.repository, "markSessionFailed");
+    const call = (runId: string, id: string) => f.coordinator.execute({
+      call: { arguments: { command: "ls" }, id, name: namespacedWorkspaceToolName("sandbox_shell") },
+      modelRunToolCallId: `stored-${id}`, runId, userId: "user_1", workspace: workspaceOf(MAIN)
+    });
+    const refused = await call(SUBAGENT, "refused");
+    expect(refused.status).toBe("error");
+    expect(JSON.stringify(refused.content)).toContain(code);
+    expect(observedFailureCode(new WorkspaceRuntimeError(code))).toBe(code);
+    expect(f.runtime.callBoundTool).not.toHaveBeenCalled();
+    expect(markFailed).not.toHaveBeenCalled();
+    // Its next call prepares again, and the other run never noticed.
+    await expect(call(SUBAGENT, "again")).resolves.toMatchObject({ status: "complete" });
+    await expect(call(MAIN, "main")).resolves.toMatchObject({ status: "complete" });
   });
 
   it("releases one agent's browser slot in the run's guest, and nothing once the run no longer holds the Workspace", async () => {
