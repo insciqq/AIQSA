@@ -17,7 +17,7 @@ GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on y
 </div>
 
 
-https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
+https://github.com/user-attachments/assets/04f00676-97c8-4fa9-8911-de94bdd4a7bb
 
 
 ## Why AIQSA
