@@ -15,6 +15,7 @@ import type {
 } from "@/components/app-shell/attachmentContracts";
 import { attachmentBlocksSend, pdfOriginalReadable } from "@/components/app-shell/attachmentCapabilities";
 import type { CatalogModel } from "@/components/app-shell/types";
+import { attachmentLimitSentence } from "@/lib/domain/attachmentExtraction";
 
 export type ComposerAttachmentItemV2 = Readonly<{
   notices?: readonly string[];
@@ -53,14 +54,12 @@ export function uploadProgressBytes(sentBytes: number, byteSize: number): string
 }
 
 const processingFailureMessages: Readonly<Record<string, string>> = {
-  animated_gif_not_supported: "Animated GIFs are not supported.",
   attachment_checksum_mismatch: "The file failed its integrity check.",
   attachment_object_read_failed: "Could not read the stored file.",
   attachment_object_size_mismatch: "The stored file size did not match.",
   attachment_processing_attempts_exhausted: "Processing stopped after repeated failures.",
   attachment_processing_failed: "Could not process the file.",
   parser_invalid_output: "The parser returned an invalid result.",
-  parser_output_too_large: "The processed result is too large.",
   parser_rejected: "The parser rejected the file.",
   parser_timeout: "Document processing took too long.",
   parser_unavailable: "The document processing service is unavailable.",
@@ -74,8 +73,20 @@ const processingFailureMessages: Readonly<Record<string, string>> = {
 function failureDetail(attachment: ComposerAttachment): string {
   const clientMessage = clientAttachmentFailureMessage(attachment.processingErrorCode);
   if (clientMessage) return clientMessage;
+  const limit = attachmentLimitSentence(attachment.processingErrorCode, attachment.fileName);
+  if (limit) return `${limit} Without Workspace the model can't open it.`;
   return processingFailureMessages[attachment.processingErrorCode ?? ""] ??
     "Could not process the file.";
+}
+
+/** A file whose text or pixels stay out of the message: the model opens the original in Workspace. */
+function workspaceOriginalCopy(attachment: ComposerAttachment): Readonly<{ detail: string; statusLabel: string }> {
+  const limit = attachmentLimitSentence(attachment.processingErrorCode, attachment.fileName) ??
+    "No text could be extracted from this file.";
+  return {
+    detail: `${limit} The model is told and will open the original in Workspace.`,
+    statusLabel: attachment.kind === "image" ? "Not sent as an image" : "No text extracted"
+  };
 }
 
 export function attachmentItemsForV2(
@@ -95,7 +106,10 @@ export function attachmentItemsForV2(
     const directPdf = pdfOriginalReadable(attachment, model, pdfRoute);
     // A system reader is another destination than the selected answer model.
     const systemReader = pdfRoute?.available === true && pdfRoute.route !== "direct_pdf";
-    const detail = workspaceEnabled && status === "failed" && !blocksSend
+    const workspaceOriginal = workspaceEnabled && status === "failed" && !blocksSend && attachment.kind !== "pdf"
+      ? workspaceOriginalCopy(attachment) : null;
+    const detail = workspaceOriginal ? workspaceOriginal.detail
+      : workspaceEnabled && status === "failed" && !blocksSend
       ? "Parser processing failed. Workspace can use the stored original file."
       : workspaceEnabled && status === "processing" && !blocksSend
         ? "Workspace can use the stored original while parsing continues."
@@ -120,6 +134,7 @@ export function attachmentItemsForV2(
       id: attachment.id,
       kind: attachment.kind,
       ...(attachment.kind === "file" && status === "ready" ? { statusLabel: "Available in Workspace" } : {}),
+      ...(workspaceOriginal ? { statusLabel: workspaceOriginal.statusLabel } : {}),
       retryable: status === "failed" && attachmentRetryAvailable(attachment),
       status,
       ...(warning ? {
@@ -162,7 +177,7 @@ function firstBlockingItemReason(items: readonly ComposerAttachmentItemV2[]): st
   }
   if (item.status === "failed") {
     if (item.upload) return item.retryable ? `Retry the upload or remove “${item.fileName}”.` : `Remove “${item.fileName}” and choose the file again.`;
-    return `Retry processing or remove “${item.fileName}”.`;
+    return item.retryable ? `Retry processing or remove “${item.fileName}”.` : `Remove “${item.fileName}” to send this message.`;
   }
   return item.warning?.message ?? `Check the file “${item.fileName}”.`;
 }

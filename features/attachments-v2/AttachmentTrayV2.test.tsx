@@ -231,6 +231,45 @@ describe("AttachmentTrayV2", () => {
     expect(list).not.toHaveAttribute("data-overflow-below");
   });
 
+  describe("a file the parser could not digest", () => {
+    const oversized: ComposerAttachment = { fileName: "big.xlsx", id: "big", kind: "document",
+      processingErrorCode: "parser_output_too_large", status: "failed" };
+    const gif: ComposerAttachment = { fileName: "loop.gif", id: "loop", kind: "image",
+      processingErrorCode: "animated_gif_not_supported", status: "failed" };
+
+    it("tells the truth with a Workspace: nothing extracted, the original goes, Send stays open, Retry is gone", () => {
+      const [spreadsheet, image] = attachmentItemsForV2([oversized, gif], [], undefined, true);
+      expect(spreadsheet).toMatchObject({ blocksSend: false, retryable: false, statusLabel: "No text extracted" });
+      expect(spreadsheet?.detail).toContain("250,000 filled cells");
+      expect(spreadsheet?.detail).toContain("original in Workspace");
+      expect(image).toMatchObject({ blocksSend: false, retryable: false, statusLabel: "Not sent as an image" });
+      expect(image?.detail).toContain("one frame");
+      expect(attachmentSendBlockReasonV2([spreadsheet!, image!], null, false)).toBeNull();
+
+      render(<AttachmentTrayV2 items={[spreadsheet!]} onRetry={vi.fn()} />);
+      expect(screen.getByText("No text extracted")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    });
+
+    it("keeps the refusal without a Workspace, names the limit and offers only what works", () => {
+      const mapped = attachmentItemsForV2([oversized], [], undefined, false);
+      expect(mapped[0]).toMatchObject({ blocksSend: true, retryable: false, status: "failed" });
+      expect(mapped[0]?.detail).toContain("250,000 filled cells");
+      expect(mapped[0]?.detail).toContain("Without Workspace");
+      expect(attachmentSendBlockReasonV2(mapped, null, false)).toBe("Remove “big.xlsx” to send this message.");
+
+      const animated = attachmentItemsForV2([gif], [], undefined, false);
+      expect(animated[0]?.detail).toContain("one frame");
+      expect(animated[0]?.statusLabel).toBeUndefined();
+    });
+
+    it("still offers Retry for a failure that may pass", () => {
+      const transient = attachmentItemsForV2([{ ...oversized, processingErrorCode: "parser_unavailable" }], [], undefined, false);
+      expect(transient[0]?.retryable).toBe(true);
+      expect(attachmentSendBlockReasonV2(transient, null, false)).toBe("Retry processing or remove “big.xlsx”.");
+    });
+  });
+
   it("maps server lifecycle and PDF warnings without exposing error codes", () => {
     const attachments: ComposerAttachment[] = [{
       fileName: "scan.pdf",
