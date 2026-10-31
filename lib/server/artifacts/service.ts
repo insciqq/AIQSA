@@ -28,6 +28,7 @@ import { createArtifactPublications, publicManifestFromPrivate } from "./publica
 import { artifactDownloadName } from "./downloadName";
 import { artifactReadPage } from "./readPage";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
+import { isPrismaSerializationConflict } from "../runs/prismaRepositoryShared";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import type { ArtifactResourcePolicy } from "./resourcePolicy";
 import { artifactRenderNotes, artifactToolResult, decodeArtifactVersionReport, type ArtifactVersionReport } from "./toolResult";
@@ -94,6 +95,16 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
   const objects = createArtifactObjects(db, storage);
   const publications = createArtifactPublications(db, objects);
   const inheritedAssetRef = (path: string) => `base:${checksum(Buffer.from(path))}`;
+  async function writeTransaction<T>(write: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    try { return await db.$transaction(write); }
+    catch (error) {
+      // guardRun locks ModelRun before Artifact's foreign keys lock User/Chat;
+      // admission and detached compaction take those rows in the reverse order.
+      // Only a confirmed rollback is repeatable; storage stays outside this retry.
+      if (!isPrismaSerializationConflict(error)) throw error;
+      return db.$transaction(write);
+    }
+  }
   async function guardRun(tx: Prisma.TransactionClient, input: { sourceModelRunId?: string; ownerUserId: string } & ArtifactExecutionOptions) {
     input.signal?.throwIfAborted();
     await input.assertActive?.(tx);
@@ -304,8 +315,9 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
         ? { ...file, byteSize: assetBytes.get(file.path) ?? 0 }
         : file)
     };
-    const version = await db.$transaction(async (tx) => {
+    const version = await writeTransaction(async (tx) => {
       await guardRun(tx, input);
+      let reservedArtifactId = artifactId;
       let nextNumber = 1;
       if (artifactId) {
         // Serialize edits against the current pointer, including an explicitly
@@ -327,10 +339,10 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       } else {
         const artifact = await tx.artifact.create({ data: { kind: operation.kind, ownerUserId: input.ownerUserId,
           ...(input.sourceChatId ? { sourceChatId: input.sourceChatId } : {}), title: operation.title } });
-        artifactId = artifact.id;
+        reservedArtifactId = artifact.id;
       }
-      const bundleStorageKey = `artifacts/${input.ownerUserId}/${artifactId}/${randomUUID()}.bundle.json`;
-      const row = await tx.artifactVersion.create({ data: { artifactId, bundleStorageKey, byteSize: built.bytes.byteLength,
+      const bundleStorageKey = `artifacts/${input.ownerUserId}/${reservedArtifactId}/${randomUUID()}.bundle.json`;
+      const row = await tx.artifactVersion.create({ data: { artifactId: reservedArtifactId!, bundleStorageKey, byteSize: built.bytes.byteLength,
         checksum: built.checksum, entrypoint: operation.entrypoint, kind: operation.kind,
         manifest: privateManifest(manifestOperation, built.bundle, report), sourceModelRunId: input.sourceModelRunId,
         sourceToolCallId: input.sourceToolCallId, status: "PENDING",
@@ -346,7 +358,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       await storage.putObject({ body: built.bytes, contentType: "application/vnd.aiqsa.artifact+json", storageKey: version.bundleStorageKey });
       const stored = await storage.getObject(version.bundleStorageKey, { maxBytes: built.bytes.byteLength });
       if (stored.body.byteLength !== built.bytes.byteLength || checksum(stored.body) !== built.checksum) throw new Error("artifact_bundle_write_failed");
-      await db.$transaction(async (tx) => {
+      await writeTransaction(async (tx) => {
         await guardRun(tx, input);
         await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Artifact" WHERE "id" = ${version.artifactId} FOR UPDATE`);
         const settled = await tx.artifactVersion.updateMany({ where: { id: version.id, status: "PENDING", checksum: built.checksum, createdAt: { gt: new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS) },
