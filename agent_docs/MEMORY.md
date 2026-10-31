@@ -5,7 +5,7 @@ paths:
 ---
 # Memory
 
-Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. PostgreSQL is the authority and the only search store; the separate lexical search index was removed (operator decision 2026-10-23). Memory is kept but frozen (root `AGENTS.md`): changes only simplify or stabilize it.
+Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. Memory is kept but frozen (root `AGENTS.md`): changes only simplify or stabilize it.
 
 ## Who may change Memory
 

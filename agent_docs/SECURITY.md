@@ -30,7 +30,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 - Exception: operator-controlled Nginx error diagnostics may contain public-share bearer paths. Operators restrict their retention, redact support copies and revoke leaked shares. The exception never covers access or application logs, authorization headers or provider, MCP and session credentials.
 - Telegram Bot API URLs embed the bot token and are never logged; Telegram buttons carry only random server-row ids checked against the link's owner and chat.
 - Anonymous shares are sanitized, immutable snapshots, never live access to a private chat. Reads stay repository-authorized and are served dynamic, no-store, noindex and no-referrer. The hashed bearer token, its expiry and revocation authorize access; crawler directives do not, and bearer URLs are never advertised.
-- Browser mutations pass the shared same-origin and bounded-body guard in `proxy.ts`. Forwarding headers count only under explicit proxy trust with a fixed number of reviewed hops (`lib/server/auth/clientIdentity.ts`); network ranges prove no identity.
+- Forwarding headers count only under explicit proxy trust with a fixed number of reviewed hops (`lib/server/auth/clientIdentity.ts`); network ranges prove no identity.
 
 ## Untrusted files and content
 
