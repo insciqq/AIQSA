@@ -4,10 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ASSISTANT_AVATAR_RECIPE_MIN_BYTES,
   assistantAvatarRecipeFromBytes,
+  decodeAssistantDraft,
   type AssistantDraft,
-  type AssistantRows
+  type AssistantRows,
+  type AssistantRunControls
 } from "@/lib/contracts/assistants";
+import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import type { ToolExecutionResult } from "../tools/types";
+import { executeManageAssistant } from "../tools/manageAssistant";
 import { skillAccessWhere } from "../skills/prismaRepository";
 import { createAgentAssistantService } from "./agentAssistants";
 import type { AssistantCatalogView } from "./catalogValidation";
@@ -23,10 +27,18 @@ const rows = (model: AssistantRows["model"]["value"] = { mode: "inherit" }): Ass
 });
 const draft = (model?: AssistantRows["model"]["value"]): AssistantDraft => ({ answerRules: null, avatar, category: null, description: "", name: "Reviewer",
   responseReminder: "", rows: rows(model), starterPrompts: [], systemPrompt: "Review." });
+const parameterControls: ModelParameterControls = {
+  background: { defaultValue: false, supported: false },
+  maxOutputTokens: { defaultValue: 4096, maxValue: 128_000 },
+  reasoningEffort: { defaultValue: "medium", options: ["low", "medium", "high"], supported: true },
+  reasoningMode: { defaultValue: "standard", options: ["standard", "pro"], supported: true },
+  stream: { defaultValue: true, supported: false },
+  temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
+};
 const view: AssistantCatalogView = {
   accessibleMcpServerIds: new Set(["srv_gitlab", "srv_hidden"]), entitledSearchOptionIds: new Set(),
   mcpRunPlan: { isGenerationLive: () => false, now: new Date(0), recordsByServerId: new Map([["srv_gitlab", { serverName: "GitLab" } as never]]) },
-  modelById: new Map([["codex-lb:gpt-5.5", { displayName: "GPT-5.5", modelId: "codex-lb:gpt-5.5" } as never]])
+  modelById: new Map([["codex-lb:gpt-5.5", { displayName: "GPT-5.5", modelId: "codex-lb:gpt-5.5", parameterControls } as never]])
 };
 const entry = (owned: boolean) => ({ archived: false, audience: owned ? { everyone: false, groupNames: ["Backend"] } : null, id: owned ? "asst_1" : "asst_2", owned,
   version: 3, content: { answerRules: null, avatar, category: null, description: "", name: owned ? "Mine" : "Colleague's", responseReminder: "", rows: rows(),
@@ -51,7 +63,8 @@ function setup(options: Readonly<{ claim?: "open" | "settled" }> = {}) {
   const store = { claim: vi.fn(async () => options.claim === "settled" ? { kind: "settled" as const, result } : { kind: "open" as const }),
     settle: vi.fn(async () => undefined) };
   const create = vi.fn(async () => ({ assistantId: "asst_new", kind: "ok" as const }));
-  const update = vi.fn(async () => ({ assistantId: "asst_1", kind: "ok" as const }));
+  const update = vi.fn(async (_tx: unknown, _userId: string, _assistantId: string, _expectedVersion: number, _draft: AssistantDraft) =>
+    ({ assistantId: "asst_1", kind: "ok" as const }));
   const deletion = { loadConsequences: vi.fn(async () => null) };
   const service = createAgentAssistantService({ create: create as never, db: db as never, deletion, loadCatalogView: async () => view, scope, store,
     update: update as never, handlers: { loadCatalogData: vi.fn(async () => null), repository: repository as never } });
@@ -117,5 +130,82 @@ describe("agent Assistant service", () => {
       where: { archivedAt: null, deletedAt: null, ...skillAccessWhere(USER) } }));
     await fixture.service.deletionConsequences("asst_1");
     expect(fixture.deletion.loadConsequences).toHaveBeenCalledWith(USER, "asst_1");
+  });
+});
+
+describe("manage_assistant through the Studio service", () => {
+  const call = (fields: Record<string, unknown>) => ({ arguments: fields, id: "call_1", name: "manage_assistant" });
+  const json = (output: ToolExecutionResult) => (output.content[0] as { value: Record<string, unknown> }).value;
+  const context = { skills: undefined };
+
+  it("saves the highest offered reasoning effort once and leaves a repeated update unwritten", async () => {
+    const fixture = setup();
+    let saved = entry(true);
+    fixture.repository.getDetail.mockImplementation(async () => saved);
+    fixture.update.mockImplementation(async (_tx, _userId, _assistantId, expectedVersion, next) => {
+      expect(decodeAssistantDraft(next).ok).toBe(true);
+      saved = { ...saved, content: { ...saved.content, rows: next.rows }, version: expectedVersion + 1 };
+      return { assistantId: "asst_1", kind: "ok" };
+    });
+    const fields = { action: "update", assistantId: "asst_1", controls: { reasoningEffort: "high" }, fixedControls: true, fixedModel: true, model: "GPT-5.5" };
+    const first = await executeManageAssistant(fixture.service, call({ ...fields, expectedVersion: 3 }), context);
+    expect(json(first)).toMatchObject({ saved: true, changed: ["model"], assistant: { version: 4 } });
+    expect(first.artifacts).toHaveLength(1);
+    expect(saved.content.rows.controls).toEqual({ policy: "fixed", value: { reasoningEffort: "high" } });
+    expect(fixture.store.settle).toHaveBeenCalledWith(fixture.tx, first);
+
+    const repeat = await executeManageAssistant(fixture.service, call({ ...fields, expectedVersion: 4 }), context);
+    expect(json(repeat)).toMatchObject({ saved: false, changed: [], assistant: { version: 4 } });
+    expect(json(repeat).note).toContain("do not retry");
+    expect(repeat.artifacts).toBeUndefined();
+    expect(saved.version).toBe(4);
+    expect(fixture.update).toHaveBeenCalledTimes(1);
+    expect(fixture.db.$transaction).toHaveBeenCalledTimes(1);
+    expect(fixture.store.settle).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{ reasoningEffort: "ultra" }, "reasoningEffort", 'Offered reasoningEffort values: "low", "medium", "high".'],
+    [{ reasoningMode: "ultra" }, "reasoningMode", 'Offered reasoningMode values: "standard", "pro".'],
+    [{ temperature: 3 }, "temperature", "temperature limit: 2."],
+    [{ maxOutputTokens: 128_001 }, "maxOutputTokens", "maxOutputTokens limit: 128000."],
+    [{ backgroundMode: true }, "backgroundMode", "omit the unsupported setting"],
+    [{ streamMode: true }, "streamMode", "omit the unsupported setting"]
+  ] as const)("refuses unsupported settings %j with Studio's rule before any transaction", async (controls, field, message) => {
+    const fixture = setup();
+    const output = await executeManageAssistant(fixture.service, call({ action: "update", assistantId: "asst_1", expectedVersion: 3,
+      model: "GPT-5.5", controls }), context);
+    expect(output.status).toBe("error");
+    expect(json(output)).toMatchObject({ code: "assistant_run_controls_invalid", field, saved: false });
+    expect(json(output).message).toContain(message);
+    expect(fixture.db.$transaction).not.toHaveBeenCalled();
+    expect(fixture.update).not.toHaveBeenCalled();
+    expect(output.artifacts).toBeUndefined();
+  });
+
+  it("validates adjustable controls against a concrete model on creation too", async () => {
+    const fixture = setup();
+    const fields = { action: "create", name: "Reviewer", model: "GPT-5.5" };
+    const invalid = await executeManageAssistant(fixture.service, call({ ...fields, controls: { reasoningEffort: "ultra" } }), context);
+    expect(json(invalid)).toMatchObject({ code: "assistant_run_controls_invalid", offeredValues: ["low", "medium", "high"], saved: false });
+    expect(fixture.create).not.toHaveBeenCalled();
+    const valid = await executeManageAssistant(fixture.service, call({ ...fields, controls: { reasoningEffort: "high" } }), context);
+    expect(json(valid)).toMatchObject({ saved: true });
+    expect(fixture.create).toHaveBeenCalledWith(fixture.tx, USER, expect.objectContaining({ rows: expect.objectContaining({
+      controls: { policy: "adjustable", value: { reasoningEffort: "high" } },
+      model: { policy: "adjustable", value: { mode: "model", modelId: "codex-lb:gpt-5.5" } }
+    }) }));
+  });
+
+  it("matches Studio's structural-only validation for controls with the chat-default model", async () => {
+    const fixture = setup();
+    const controls: AssistantRunControls = { reasoningEffort: "model-specific-value" };
+    const output = await executeManageAssistant(fixture.service, call({ action: "update", assistantId: "asst_1", expectedVersion: 3, controls }), context);
+    expect(json(output)).toMatchObject({ saved: true });
+    expect(fixture.update).toHaveBeenCalledWith(fixture.tx, USER, "asst_1", 3, expect.objectContaining({ rows: expect.objectContaining({
+      controls: { policy: "adjustable", value: controls }, model: { policy: "adjustable", value: { mode: "inherit" } }
+    }) }));
+    const read = await executeManageAssistant(fixture.service, call({ action: "get", assistantId: "asst_1" }), context);
+    expect(json(read)).toMatchObject({ assistant: { availableControls: null } });
   });
 });
