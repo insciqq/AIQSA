@@ -535,6 +535,8 @@ describe("transcript projection", () => {
       note: IMAGE_VIEW_NOTE };
     expect(projectTranscript(items, codex, { images: held }).at(-1)).toEqual({ callId: "call_view", images: [pixels],
       name: "view_workspace_image", output: "Preview of /workspace/project/code.png", type: "tool_result" });
+    // A sub-agent's thread keeps its notes across runs: a file of its own earlier run was never an export.
+    for (const note of [IMAGE_VIEW_NOTE, IMAGE_ANALYZE_NOTE]) expect(note).toMatch(/copy it with `cp` into \/workspace\/project\//u);
     // An earlier run's result, a compaction's span or a released preview: the reference alone, never stored pixels, with how
     // the run sees it again (a compaction calls no tools).
     for (const [images, note] of [[undefined, IMAGE_REFERENCE_NOTE], [{ attached: () => undefined, note: IMAGE_VIEW_NOTE }, IMAGE_VIEW_NOTE],

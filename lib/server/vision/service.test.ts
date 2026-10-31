@@ -5,6 +5,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { WorkspaceCaptureError, workspaceCaptureFailure, type createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
+import { OTHER_OUTPUT_FOLDER } from "../workspace/imageInputs";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import type { WorkspaceCapturedImage } from "../workspace/imageCapture";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
@@ -405,6 +406,12 @@ describe("shared System Vision boundary", () => {
     expect(f.captures.imageSource.mock.calls[0]?.[0].relativePath).toBe("output/result.png");
     expect(() => parseVisionAnalysisInput({ images: [{ path: "/workspace/output/other/result.png" }], question: "What?" }, "/workspace/output/run")).toThrow();
   });
+  it("says how to read a file in another run's output folder, as the view tool does", async () => {
+    const f = fixture(); f.call.arguments.images = [{ path: "/workspace/output/11111111-2222-4333-8444-555555555555/chart.png" }];
+    const failed = await f.service.execute(f.call, f.context);
+    expect(failed).toMatchObject({ status: "error", content: [{ value: { error: "workspace_image_invalid", hint: OTHER_OUTPUT_FOLDER } }] });
+    expect(f.captures.create).not.toHaveBeenCalled();
+  });
   it("rejects unbounded or unauthorized path arguments", () => {
     for (const images of [[], Array(9).fill({ path: "project/a.png" }), [{ path: "/etc/passwd" }], [{ path: "project/../secret" }]])
       expect(() => parseVisionAnalysisInput({ images, question: "What?" })).toThrow();
@@ -599,9 +606,9 @@ describe("Workspace capture refusals before dispatch", () => {
     observation.records().filter(record => record.event === "tool_execution" && record.tool_kind === "vision");
 
   it.each([
-    ["workspace_capture_source_invalid", "workspace_capture_source_invalid", /not a symlink or hard link\).*Copy it with `cp` into \/workspace\/output/su],
+    ["workspace_capture_source_invalid", "workspace_capture_source_invalid", /not a symlink or hard link\).*Copy it with `cp` into \/workspace\/project/su],
     ["workspace_capture_source_busy", "workspace_capture_busy", /Retry after the process writing it finishes/u],
-    ["workspace_capture_unsupported", "workspace_capture_unsupported", /Copy it with `cp` into \/workspace\/output/u],
+    ["workspace_capture_unsupported", "workspace_capture_unsupported", /Copy it with `cp` into \/workspace\/project/u],
     ["workspace_output_limit_exceeded", "workspace_capture_limit_exceeded", /fewer images/u]
   ] as const)("returns the runner's %s as %s with a Workspace hint", async (runnerCode, code, hint) => {
     const observation = await captureRunObservation();

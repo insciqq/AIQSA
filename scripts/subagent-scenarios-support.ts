@@ -1,7 +1,7 @@
 /**
  * Pure parts of `scripts/smoke-subagents-paid.ts`: the sub-agent scenarios
- * A–I of the acceptance task (scenarios 1–9) and J (two production defects)
- * with their Russian prompts, the
+ * A–I of the acceptance task (scenarios 1–9), J (two production defects) and
+ * K (files and images across agents) with their Russian prompts, the
  * oracles over `browser-result.json` and the run's stored rows, and the
  * content-free evidence computed from read-only rows (turn bindings, usage
  * per purpose, callbacks and wake-ups, concurrency from the tool-call
@@ -43,9 +43,13 @@ const flag = (value: boolean) => value ? 1 : 0;
  * browses (8). I: a scheduled task (9; Telegram is not drivable on a
  * real-runtime stand, see the harness). J: an image viewed by an attached
  * sub-agent, then a Workspace-free sub-agent that ends last with the VM up,
- * and the chat's next message at once (the capture and retire defects).
+ * and the chat's next message at once (the capture and retire defects). K: two
+ * sub-agents and the main agent read each other's text and image files, in the
+ * background and the foreground, finished sub-agents continued by name, "a
+ * chart in the background" ending as a download, and a sub-agent on a model
+ * without vision when one is configured.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -63,7 +67,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -72,9 +76,12 @@ export type SubagentHarnessOptions = Readonly<{
   secondModel: string | null;
   restart: RestartHook | null;
   runs: number;
+  /** A text-only OpenRouter chat model for K's sub-agent without vision (`ensureTextModel`). */
+  textModel: string | null;
 }>;
 
 const UPSTREAM_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const OPENROUTER_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
 
 function boundedInteger(raw: string | undefined, fallback: number, min: number, max: number, code: string): number {
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -89,6 +96,7 @@ function boundedInteger(raw: string | undefined, fallback: number, min: number, 
  * - AIQSA_SUBAGENTS_RESTART_COMMAND: one shell line the harness host runs to restart the stand's app container (G).
  * - AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS (30..900, default 300).
  * - AIQSA_SUBAGENTS_RUNS (1..3, default 1).
+ * - AIQSA_SUBAGENTS_TEXT_MODEL with OPENROUTER_API_KEY: a text-only OpenRouter model for K's last step.
  */
 export function subagentHarnessOptions(env: Readonly<Record<string, string | undefined>>, scenarios: readonly SubagentScenarioId[],
   parentModel: string): SubagentHarnessOptions {
@@ -101,10 +109,14 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   if (command !== null && (command.length > 2_000 || /[\r\n\0]/u.test(command))) fail("restart_command_invalid");
   if (needs.some((need) => need.restartHook) && command === null) fail("restart_command_required");
   const timeoutSeconds = boundedInteger(env.AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS, 300, 30, 900, "restart_timeout_invalid");
+  const text = env.AIQSA_SUBAGENTS_TEXT_MODEL?.trim() || null;
+  if (text !== null && !OPENROUTER_MODEL_PATTERN.test(text)) fail("text_model_invalid");
+  if (text !== null && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
   return {
     restart: command === null ? null : { command, timeoutMs: timeoutSeconds * 1_000 },
     runs: boundedInteger(env.AIQSA_SUBAGENTS_RUNS, 1, 1, 3, "runs_invalid"),
-    secondModel: second
+    secondModel: second,
+    textModel: text
   };
 }
 
@@ -149,7 +161,8 @@ export const SUBAGENT_NAMES = Object.freeze({
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
   probe: "probe",
-  capture: { quiet: "quiet", viewer: "viewer" }
+  capture: { quiet: "quiet", viewer: "viewer" },
+  files: { blind: "blind", chart: "chart-bg", left: "file-left", right: "file-right" }
 } as const);
 
 /** The result instruction for an answer that will receive sub-agent results later, not the one being written. */
@@ -183,6 +196,50 @@ const HOLD_WORK = (minutes: number) => `каждый ${minutes} минут по�
 /** J's picture: a fixed 64×64 solid red PNG, written by one shell command; base64 needs no packages and no quoting. */
 export const SCENARIO_J_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsAtx/ZMZxgi+hcEK" +
   "LNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywKqxUDxqh7TUQAAAABJRU5ErkJggg==";
+
+/**
+ * K's pictures: a 64×64 solid PNG of the given colour from standard Python, so
+ * no agent needs a package or copies image bytes through a model.
+ */
+export const SCENARIO_K_PNG_SCRIPT = [
+  "import struct, sys, zlib",
+  "def chunk(kind, data):",
+  "    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))",
+  "pixel = bytes(int(value) for value in sys.argv[2:5])",
+  "rows = (b'\\0' + pixel * 64) * 64",
+  "header = struct.pack('>IIBBBBB', 64, 64, 8, 2, 0, 0, 0)",
+  "image = b'\\x89PNG\\r\\n\\x1a\\n' + chunk(b'IHDR', header) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')",
+  "open(sys.argv[1], 'wb').write(image)"
+].join("\n");
+
+const K_AGENTS = ["left", "main", "right"] as const;
+type KAgent = (typeof K_AGENTS)[number];
+const K_COLORS: Readonly<Record<KAgent, Readonly<{ name: string; rgb: string }>>> = Object.freeze({
+  left: { name: "blue", rgb: "0 0 255" }, main: { name: "red", rgb: "255 0 0" }, right: { name: "green", rgb: "0 128 0" }
+});
+
+/** One K run's shared folder and what only each writer's file holds: a hash no agent is told and none reports until asked. */
+export type ScenarioKFacts = Readonly<{ directory: string; nonce: string; texts: Readonly<Record<KAgent, string>> }>;
+
+export function scenarioKFacts(nonce: string): ScenarioKFacts {
+  return { directory: `/workspace/project/subagent-k-${nonce}`, nonce,
+    texts: { left: notaryValue(`${nonce}-left`), main: notaryValue(`${nonce}-main`), right: notaryValue(`${nonce}-right`) } };
+}
+
+const kWrites = (facts: ScenarioKFacts, agent: KAgent) => `\`python3 ${facts.directory}/png.py ${facts.directory}/${agent}.png ${K_COLORS[agent].rgb}\` и ` +
+  `\`printf '%s' ${facts.nonce}-${agent} | sha256sum | cut -c1-12 > ${facts.directory}/${agent}.txt\``;
+const K_IMAGE_TOOL = "инструментом view_workspace_image, а если такого инструмента нет, то analyze_image";
+
+/** What one agent reads in K's second step: file by file, never by computing a value again. */
+const kReads = (facts: ScenarioKFacts, agents: readonly KAgent[]) => `прочитать файлы ${agents.map((agent) => `${facts.directory}/${agent}.txt`).join(", ")} ` +
+  `и посмотреть картинки ${agents.map((agent) => `${facts.directory}/${agent}.png`).join(", ")} ${K_IMAGE_TOOL}, ничего не вычисляя заново и не копируя файлы`;
+
+const K_READ_SECTIONS: Readonly<Record<"left" | "main" | "right", readonly KAgent[]>> = Object.freeze({
+  left: K_AGENTS, main: ["left", "right"], right: K_AGENTS
+});
+
+const K_RESULT_FIELDS = Object.entries(K_READ_SECTIONS).map(([reader, agents]) => `  "${reader}": {${agents.map((agent) =>
+  `"${agent}_text": "...", "${agent}_color": "..."`).join(", ")}}`).join(",\n");
 
 export const SUBAGENT_PROMPTS = Object.freeze({
   A: () => [
@@ -292,6 +349,36 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       "Когда придут их результаты, не вызывай инструментов, не запускай и не продолжай суб-агентов: ответь одной короткой фразой."
     ].join("\n\n"),
     question: Object.freeze({ answer: "144", text: "Ответь без инструментов: сколько будет 12 × 12? Ответь одним числом." })
+  }),
+  K: Object.freeze({
+    start: (facts: ScenarioKFacts) => [
+      `Сделай ровно два шага. ${NO_WEB}`,
+      `1. Сам создай в Workspace папку ${facts.directory}, запиши в файл ${facts.directory}/png.py ровно этот скрипт на Python:\n` +
+        `\`\`\`\n${SCENARIO_K_PNG_SCRIPT}\n\`\`\`\nи выполни ${kWrites(facts, "main")}.`,
+      `2. Запусти в фоне (background: true) двух суб-агентов и передай им эти команды дословно. ${SUBAGENT_NAMES.files.left}: выполнить ` +
+        `${kWrites(facts, "left")}. ${SUBAGENT_NAMES.files.right}: выполнить ${kWrites(facts, "right")}. Затем каждый должен ` +
+        `${kReads(facts, ["main"])}, и коротко отчитаться: что в файле и какого цвета картинка.`,
+      START_AND_REPLY,
+      "Когда придут их результаты, не вызывай инструментов, не запускай и не продолжай суб-агентов: ответь одной короткой фразой."
+    ].join("\n\n"),
+    reads: (facts: ScenarioKFacts) => [
+      `Сделай ровно три шага. Новых суб-агентов не создавай. ${NO_WEB}`,
+      `1. Продолжи суб-агента ${SUBAGENT_NAMES.files.left} (то же имя) и дождись его результата (не в фоне): пусть он ` +
+        `${kReads(facts, K_AGENTS)}, и сообщит содержимое каждого файла и цвет каждой картинки.`,
+      `2. Продолжи суб-агента ${SUBAGENT_NAMES.files.right} (то же имя) в фоне (background: true): задание то же, что у ` +
+        `${SUBAGENT_NAMES.files.left}, те же файлы и картинки.`,
+      `3. Сам ${kReads(facts, ["left", "right"])}.`,
+      "Цвет пиши одним английским словом строчными буквами (red, green или blue), содержимое файла — как есть.",
+      laterResult(`Когда придёт результат ${SUBAGENT_NAMES.files.right}`, `${K_RESULT_FIELDS}\nВ разделах "left" и "right" укажи то, ` +
+        "что сообщил этот суб-агент, в разделе \"main\" — то, что прочитал и увидел ты сам")
+    ].join("\n\n"),
+    chart: () => `Сделай в фоне простой столбчатый график продаж по кварталам (Q1 — 10, Q2 — 14, Q3 — 9, Q4 — 17) в виде PNG: запусти ` +
+      `для этого суб-агента ${SUBAGENT_NAMES.files.chart} в фоне (background: true). ${NO_WEB} ${START_AND_REPLY} Когда он закончит, ` +
+      "сам посмотри на готовый график и отдай мне его файлом, чтобы я мог его скачать. Ответь коротко.",
+    blind: (facts: ScenarioKFacts, model: string) => `Вызови нового суб-агента ${SUBAGENT_NAMES.files.blind} и дождись его результата ` +
+      `(не в фоне), задай ему модель ${model} (параметр model). Его задание: ровно один раз посмотреть файл ${facts.directory}/main.png ` +
+      `${K_IMAGE_TOOL}, не запуская команд, и сообщить, какого цвета картинка. ${NO_WEB} Сам на картинку не смотри. ` +
+      "В ответе мне напиши этот цвет одним английским словом."
   })
 });
 
@@ -818,7 +905,15 @@ export const SCENARIO_J_STOP_SECONDS = 25;
 
 /** One thread's image tool calls: how many, how many gave a result, and the others by stable code. */
 export function imageToolEvidence(rows: readonly ToolRow[], threadId: string | null) {
-  const calls = threadId === null ? [] : rows.filter((row) => row.threadId === threadId && IMAGE_TOOLS.includes(row.toolName));
+  return imageCallEvidence(threadId === null ? [] : rows.filter((row) => row.threadId === threadId && IMAGE_TOOLS.includes(row.toolName)));
+}
+
+/** The same for the main agent's own calls in the given runs. */
+export function mainImageToolEvidence(rows: readonly ToolRow[], runIds: readonly string[]) {
+  return imageCallEvidence(rows.filter((row) => row.threadId === null && runIds.includes(row.runId) && IMAGE_TOOLS.includes(row.toolName)));
+}
+
+function imageCallEvidence(calls: readonly ToolRow[]) {
   const succeeded = calls.filter((row) => row.state === "complete" && row.resultCode === null);
   const failureCodes: Record<string, number> = {};
   for (const call of calls) {
@@ -932,6 +1027,82 @@ export function oracleJ(input: Readonly<{
   if (!order.order_not_reached && (session.secondsToLeaveRunning ?? 0) > SCENARIO_J_STOP_SECONDS) failed.push("session_stop_slow");
   return { counts: { imageCalls: image.calls, imageSucceeded: image.succeeded, secondRefusals: input.secondRefusals.length,
     wakeUps: input.wakeUps.length }, failed };
+}
+
+// Files and images across agents (K) -----------------------------------------------
+
+/** K's reads as the result file reports them: every text exact, every picture's colour named. Only the name of a wrong read is kept. */
+export function oracleKReads(value: BrowserResult, texts: ScenarioKFacts["texts"]): OracleVerdict {
+  return shaped(value, (result) => {
+    const failed: string[] = [];
+    let reads = 0;
+    for (const [reader, agents] of Object.entries(K_READ_SECTIONS)) {
+      const reported = result[reader];
+      const section: Readonly<Record<string, unknown>> = record(reported) ? reported : {};
+      for (const agent of agents) {
+        const text = section[`${agent}_text`];
+        const color = section[`${agent}_color`];
+        const textRead = typeof text === "string" && text.trim().toLowerCase() === texts[agent];
+        const colorRead = typeof color === "string" && color.trim().toLowerCase() === K_COLORS[agent].name;
+        reads += flag(textRead) + flag(colorRead);
+        if (!textRead) failed.push(`${reader}_read_${agent}_text`);
+        if (!colorRead) failed.push(`${reader}_read_${agent}_color`);
+      }
+    }
+    return { counts: { reads }, failed };
+  });
+}
+
+/** The exported PNGs of the runs: only sizes and whether the bytes the user downloads open as a PNG. */
+export type KChartDownload = Readonly<{ bytes: number; png: boolean }>;
+
+export function pngBytes(bytes: Uint8Array): boolean {
+  return Buffer.from(bytes.subarray(0, 8)).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+}
+
+/** A sub-agent on a model without vision: direct view is never called, System Vision answers. */
+export function blindImageEvidence(rows: readonly ToolRow[], threadId: string | null) {
+  const own = threadId === null ? [] : rows.filter((row) => row.threadId === threadId);
+  return { ...imageToolEvidence(own.filter((row) => row.toolName === "analyze_image"), threadId),
+    viewCalls: own.filter((row) => row.toolName === "view_workspace_image").length };
+}
+
+/**
+ * K's verdict beyond the reads. Each named sub-agent's turns ended `done` and
+ * its second turn continued its thread; the chart's turn ran in the background,
+ * the main agent looked at the picture and the user can download it. Without a
+ * model without vision that step is `blind: null`, which is data, not a pass of it.
+ */
+export function oracleKFlow(input: Readonly<{
+  blind: Readonly<{ answered: boolean; image: ReturnType<typeof blindImageEvidence>; turn: TurnRow | null }> | null;
+  callbacks: ReturnType<typeof callbackEvidence>;
+  chart: Readonly<{ downloads: readonly KChartDownload[]; mainImage: ReturnType<typeof imageCallEvidence>; turn: TurnRow | null }>;
+  images: Readonly<{ left: ReturnType<typeof imageToolEvidence>; main: ReturnType<typeof imageCallEvidence>; right: ReturnType<typeof imageToolEvidence> }>;
+  left: readonly TurnRow[];
+  right: readonly TurnRow[];
+  settled: boolean;
+}>): OracleVerdict {
+  const { blind, callbacks, chart, images, left, right } = input;
+  const failed: string[] = [];
+  const done = (turn: TurnRow | null | undefined) => turn?.state === "done";
+  if (left.length !== 2 || left.some((turn) => !done(turn)) || left[0]?.mode !== "background" || left[1]?.mode !== "foreground") failed.push("left_not_continued_in_foreground");
+  if (right.length !== 2 || right.some((turn) => !done(turn)) || right.some((turn) => turn.mode !== "background")) failed.push("right_not_continued_in_background");
+  // One picture in the first turn, three in the continued one, its own earlier one among them.
+  if (images.left.succeeded < 4) failed.push("left_images_not_read");
+  if (images.right.succeeded < 4) failed.push("right_images_not_read");
+  if (images.main.succeeded < 2) failed.push("main_images_not_read");
+  if (!done(chart.turn) || chart.turn?.mode !== "background") failed.push("chart_turn_not_done_in_background");
+  if (chart.mainImage.succeeded === 0) failed.push("chart_not_viewed_by_main");
+  if (!chart.downloads.some((download) => download.png && download.bytes > 0)) failed.push("chart_not_downloadable");
+  if (blind) {
+    if (!done(blind.turn)) failed.push("blind_turn_not_done");
+    if (blind.image.viewCalls > 0) failed.push("blind_called_direct_view");
+    if (blind.image.succeeded === 0) failed.push("blind_image_not_analyzed");
+    if (!blind.answered) failed.push("blind_color_not_answered");
+  }
+  if (!input.settled || callbacks.callbacksOwed > 0) failed.push("callbacks_owed");
+  return { counts: { chartDownloads: chart.downloads.length, leftImages: images.left.succeeded, leftTurns: left.length,
+    mainChartViews: chart.mainImage.succeeded, mainImages: images.main.succeeded, rightImages: images.right.succeeded, rightTurns: right.length }, failed };
 }
 
 // Stops (E) and the restart (G) -----------------------------------------------------

@@ -11,7 +11,7 @@ import { observedFailureCode } from "../providers/providerObservability";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { ANALYZE_IMAGE_TOOL_NAME, VISION_ANALYSIS_LIMITS as LIMITS, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 import { prepareWorkspaceImages, WORKSPACE_IMAGE_LIMITS, WorkspaceImageError, type WorkspaceCapturedImage } from "../workspace/imageCapture";
-import { workspaceImageInput, workspaceImageInputForRun } from "../workspace/imageInputs";
+import { OTHER_OUTPUT_FOLDER, outputFolderOfAnotherRun, workspaceImageInput, workspaceImageInputForRun } from "../workspace/imageInputs";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
 import { ConversationImageError, conversationImageInput, type ConversationImageSource, type ConversationVisionImage } from "./conversationImages";
 import { authorizeVisionPlan, createVisionAnalysisStore, VisionAnalysisError, visionFailure, type VisionExecutionHooks } from "./store";
@@ -35,14 +35,14 @@ const CHAT_IMAGE_HINTS: Readonly<Record<string, string>> = {
 };
 
 /** Actionable next steps for the Workspace form's refusals before dispatch.
- * The guest's source checks stay; a regular copy in the run's output passes them. */
+ * The guest's source checks stay; a regular copy in the project passes them. */
 const WORKSPACE_IMAGE_HINTS: Readonly<Record<string, string>> = {
-  workspace_capture_source_invalid: "Analyze an existing regular file (not a symlink or hard link) under /workspace/output, /workspace/project or " +
-    "/workspace/inbox/messages. Copy it with `cp` into /workspace/output and retry with the copy's path.",
+  workspace_capture_source_invalid: "Analyze an existing regular file (not a symlink or hard link) under your output folder, /workspace/project or " +
+    "/workspace/inbox/messages. Copy it with `cp` into /workspace/project and retry with the copy's path.",
   workspace_capture_busy: "The file was being written while it was read. Retry after the process writing it finishes.",
-  workspace_capture_unsupported: "This file cannot be read safely where it is. Copy it with `cp` into /workspace/output and retry with the copy's path.",
+  workspace_capture_unsupported: "This file cannot be read safely where it is. Copy it with `cp` into /workspace/project and retry with the copy's path.",
   workspace_capture_limit_exceeded: "The selected files exceed the Workspace capture size or count limits. Use fewer images, or analyze a smaller copy.",
-  workspace_image_unsupported: "Only PNG, JPEG, WebP and static GIF images can be analyzed. Convert a copy to PNG or JPEG in /workspace/output and analyze it.",
+  workspace_image_unsupported: "Only PNG, JPEG, WebP and static GIF images can be analyzed. Convert a copy to PNG or JPEG in /workspace/project and analyze it.",
   workspace_image_limit_exceeded: "The image exceeds the analysis size or pixel limits. Use fewer images, or analyze a smaller copy."
 };
 
@@ -291,7 +291,10 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           failureCode = code;
           // Recorded by its content-free class and site only, so the next unmapped cause is diagnosable.
           if (code === "vision_analysis_internal_failed") unmapped = error;
-          const hint = (workspace ? WORKSPACE_IMAGE_HINTS : CHAT_IMAGE_HINTS)[code];
+          const named = Array.isArray(call.arguments.images) ? call.arguments.images as unknown[] : [];
+          const otherOutput = code === "workspace_image_invalid" && workspace !== undefined &&
+            named.some(image => outputFolderOfAnotherRun((image as { path?: unknown } | null)?.path, workspace.outputDirectory));
+          const hint = otherOutput ? OTHER_OUTPUT_FOLDER : (workspace ? WORKSPACE_IMAGE_HINTS : CHAT_IMAGE_HINTS)[code];
           result = visionFailure(call, code, unknown, error instanceof VisionContextLimitError && code === error.code ? { ...error.detail,
             hint: "The estimated input exceeds the Vision model context window. Use fewer images, or crop or resize them, before retrying." }
             : hint ? { hint } : undefined);

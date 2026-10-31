@@ -419,17 +419,20 @@ export type TranscriptImages = Readonly<{
 
 /*
  * The notes of a result whose image a request does not carry. Its path stays
- * readable, except an earlier answer's output folder: that answer's files are
- * then the exports its inbox index lists (`lib/server/workspace/promptContract.ts`).
+ * readable, except another run's output folder: a thread's own earlier turn may
+ * have run in one, so the way back is a copy; only an earlier answer's files are
+ * also exports its inbox index lists (`lib/server/workspace/promptContract.ts`).
  */
 /** For a run that views Workspace images itself. */
 export const IMAGE_VIEW_NOTE =
-  "[The image is not attached here any more. To see it again, call view_workspace_image with its path, or for a file in an " +
-  "earlier answer's output folder with the path of its copy in the inbox index (source=export).]";
+  "[The image is not attached here any more. To see it again, call view_workspace_image with its path. A file in another run's " +
+  "output folder is out of reach by that path: copy it with `cp` into /workspace/project/ and use the copy, or, if an earlier " +
+  "answer delivered it, its copy in the inbox index (source=export).]";
 /** For a run that reads images only through System Vision. */
 export const IMAGE_ANALYZE_NOTE =
-  "[The image is not attached here. To learn more about it, call analyze_image with its path, or for a file in an " +
-  "earlier answer's output folder with the path of its copy in the inbox index (source=export).]";
+  "[The image is not attached here. To learn more about it, call analyze_image with its path. A file in another run's " +
+  "output folder is out of reach by that path: copy it with `cp` into /workspace/project/ and use the copy, or, if an earlier " +
+  "answer delivered it, its copy in the inbox index (source=export).]";
 /** For a run with neither, and for compactions, which call no tools. */
 export const IMAGE_REFERENCE_NOTE = "[The image is not attached here; only the description above remains.]";
 
