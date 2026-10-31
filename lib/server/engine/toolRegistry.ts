@@ -34,7 +34,7 @@ import {
 import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
-import { createFetchUrlSession, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
+import { createFetchUrlSession, type FetchUrlBrowserStep, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
 import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
 import type { HarnessToolEffects } from "../tools/harnessTool";
@@ -518,9 +518,11 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   const fetchPlan = isFetchUrlPlan(request.fetchUrl) ? request.fetchUrl : null;
   let fetchUrlSession: FetchUrlSession | undefined;
+  let browserStep: FetchUrlBrowserStep | null = null;
   if (fetchPlan) {
     const repository = input.services.repository;
     const session = input.fetchUrlSession ?? createFetchUrlSession({
+      browserStep: () => browserStep,
       followupTexts: input.followupTexts,
       plan: fetchPlan,
       scheduled: fetchPlan.taskUrlDigests !== undefined,
@@ -599,6 +601,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     // everywhere; where nobody can take over (Telegram, unattended runs) it answers with a stable code.
     const handoffMode = input.browserHandoff;
     if (handoffMode && offered.has(namespacedWorkspaceToolName("sandbox_exec"))) {
+      browserStep = handoffMode.kind === "interactive" ? "user" : "nobody";
       add({ activity: () => ({ origin: "workspace", serverName: "Workspace", toolName: BROWSER_HANDOFF_TOOL_NAME }),
         definition: browserHandoffTool, effects: "external", observationSource: "workspace",
         execute: (execution) => browserRefused ? Promise.resolve(oldImageBrowserRefusal(execution.call))

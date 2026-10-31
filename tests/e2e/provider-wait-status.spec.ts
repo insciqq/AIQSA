@@ -75,5 +75,7 @@ test("a run that ran out of attempts shows its failure instead of a status", asy
   await expect(page.getByText(RETRYING)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(/kept failing/u)).toBeVisible({ timeout: 120_000 });
   await expect(page.getByText(RETRYING)).toHaveCount(0);
+  // The composer's Stop goes with the run: the failed answer leaves nothing to stop.
+  await expect(page.getByRole("button", { name: /^Stop/u })).toHaveCount(0, { timeout: 15_000 });
   await page.screenshot({ path: info.outputPath("failed-phone.png") });
 });

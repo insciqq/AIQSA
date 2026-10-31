@@ -19,6 +19,8 @@ import {
   type WebFetchResponse
 } from "../webFetch/transport";
 import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl } from "../webFetch/urls";
+import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
+import { BROWSER_HANDOFF_TOOL_NAME } from "./browserHandoff";
 import { FETCH_URL_LIMITS, persistedFetchUrlFacts, type FetchUrlPlan } from "./fetchUrlPlan";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
 
@@ -78,9 +80,31 @@ function megabytes(bytes: number): string {
   return String(Number((bytes / (1024 * 1024)).toFixed(1)));
 }
 
+/**
+ * What a run can do about a site that refuses automated reading: `user` has a person who can take over the
+ * Workspace browser, `nobody` has the browser alone (Telegram, unattended), and no value means no browser.
+ */
+export type FetchUrlBrowserStep = "nobody" | "user";
+
 type FailureContext = Readonly<{
+  browserStep?: FetchUrlBrowserStep | null;
   pdf: boolean; pdfMaxBytes: number; scope?: FetchUrlRefusalScope; httpStatus?: number; searchAvailable?: boolean;
 }>;
+
+/**
+ * The next step after a 401 or 403, which often only means the site refuses automated reading (operator decision
+ * 2026-10-31). Starting the browser costs a Workspace VM and only a page that shows a challenge needs the user, so
+ * neither is the first answer; the refused body is never read, so only the browser can tell what the site wants.
+ */
+function refusedPageNextStep(step: FetchUrlBrowserStep): string {
+  const open = " The site may be refusing automated reading. If this page is needed and other sources will not do, open it once " +
+    `in the Workspace browser (read ${WORKSPACE_GUIDE_PATHS.browser} first).`;
+  return step === "user"
+    ? `${open} Only if it then shows a sign-in or CAPTCHA, call ${BROWSER_HANDOFF_TOOL_NAME} so the user can pass it. ` +
+      "If the browser is refused too, say the site blocks automated access and do not try again."
+    : `${open} Nobody can pass a sign-in or CAPTCHA in this run: if it shows one, or the browser is refused too, say what ` +
+      "the site needs and finish with what you have.";
+}
 
 /** What the model is told for each refusal or failure. */
 function failureMessage(code: FailureCode, context: FailureContext): string {
@@ -100,7 +124,9 @@ function failureMessage(code: FailureCode, context: FailureContext): string {
         `${megabytes(context.pdfMaxBytes)} MB for a PDF), or too complex to process.`;
     case "fetch_unsupported_content_type":
       return "This link is not a web page, text or PDF (for example an image or an archive). Ask the user to upload the file instead.";
-    case "fetch_http_status": return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.`;
+    case "fetch_http_status":
+      return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.` +
+        (context.browserStep && (httpStatus === 401 || httpStatus === 403) ? refusedPageNextStep(context.browserStep) : "");
     case "fetch_network_error": return "The site could not be reached.";
     case "fetch_no_readable_text":
       return context.pdf
@@ -136,7 +162,8 @@ type Outcome =
   | Readonly<{ kind: "read"; value: ReadValue }>
   | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true }>;
 
-type FailedOptions = Readonly<{ pdfMaxBytes: number; refusalScope?: FetchUrlRefusalScope; searchAvailable?: boolean }>;
+type FailedOptions = Readonly<{ browserStep?: FetchUrlBrowserStep | null; pdfMaxBytes: number;
+  refusalScope?: FetchUrlRefusalScope; searchAvailable?: boolean }>;
 
 function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outcome, { kind: "failed" }>, url: string | null,
   options: FailedOptions): ToolExecutionResult {
@@ -147,7 +174,8 @@ function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outco
     content: [{ type: "json", value: {
       error: outcome.code,
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
-      message: failureMessage(outcome.code, { httpStatus: outcome.httpStatus, pdf, pdfMaxBytes: options.pdfMaxBytes, scope,
+      message: failureMessage(outcome.code, { browserStep: options.browserStep, httpStatus: outcome.httpStatus, pdf,
+        pdfMaxBytes: options.pdfMaxBytes, scope,
         searchAvailable: options.searchAvailable })
     } }],
     name: call.name,
@@ -238,6 +266,8 @@ export type FetchUrlSessionDeps = Readonly<{
   scheduled: boolean;
   /** The run offers web search, so a refused page is found through it before the user is asked. */
   searchAvailable?: boolean;
+  /** Read when a page is refused: the run's Workspace tools are known only after the session is created. */
+  browserStep?: () => FetchUrlBrowserStep | null;
   /** Delivered follow-ups of this run: user-authored text received mid-run. */
   followupTexts?: () => readonly string[];
   /** Source and citation URLs the run's own Search persisted so far. */
@@ -374,7 +404,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       if (pending) {
         const outcome = await pending;
         return unsent(outcome.kind === "read" ? read(call, outcome.value, true)
-          : failed(call, { ...outcome, dispatched: false }, url, { pdfMaxBytes }));
+          : failed(call, { ...outcome, dispatched: false }, url, { browserStep: deps.browserStep?.(), pdfMaxBytes }));
       }
       const others = [...sent].filter((entry) => entry !== id).length;
       if (others >= FETCH_URL_LIMITS.callsPerRun) return refuse("fetch_url_limit_reached", url);
@@ -387,7 +417,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           cache.set(url, outcome.value);
           return read(call, outcome.value, false);
         }
-        const result = failed(call, outcome, url, { pdfMaxBytes });
+        const result = failed(call, outcome, url, { browserStep: deps.browserStep?.(), pdfMaxBytes });
         return outcome.dispatched ? result : unsent(result);
       } finally {
         inFlight.delete(url);
