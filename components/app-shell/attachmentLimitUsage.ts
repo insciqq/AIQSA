@@ -57,6 +57,8 @@ function isBinaryMaterialized(
   attachment: ComposerAttachment,
   model: CatalogModel | undefined
 ): boolean {
+  // Server materialization skips an image processing refused: it goes to Workspace only.
+  if (attachment.kind === "image" && attachment.status === "failed") return false;
   if (!model) {
     return attachment.kind === "image" || attachment.kind === "pdf";
   }

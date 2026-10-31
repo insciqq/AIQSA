@@ -13,7 +13,7 @@ import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type 
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
 import { workspaceBrowserBinding } from "../workspace/browserBinding";
-import { workspaceFileContext, workspaceFileReferences } from "../workspace/fileContext";
+import { workspaceFileContext, workspaceFileReferences, workspaceMissingContentNotice } from "../workspace/fileContext";
 import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
@@ -1736,6 +1736,9 @@ export async function prepareRun(
   const visionAnalysis = workspaceVision ?? chatVision;
   // Turn paths and chat facts follow the stable checkpoint and Vision guidance.
   appendTurnGuidance(workspaceTurnContract);
+  if (workspaceAdmissionPlan) {
+    appendTurnGuidance(workspaceMissingContentNotice(attachments, workspaceAdmissionPlan.normalized.inboxIndexPath));
+  }
   if (imagePlan || imageReferences.length > 0) {
     prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
   }

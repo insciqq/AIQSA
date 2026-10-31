@@ -55,6 +55,7 @@
   "attachment_count_limit_exceeded",
   "attachment_encoded_size_limit_exceeded",
   "attachment_materialization_limit_exceeded",
+  "attachment_needs_workspace",
   "attachment_not_available",
   "attachment_not_ready",
   "attachment_object_read_failed",

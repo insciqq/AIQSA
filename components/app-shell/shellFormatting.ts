@@ -325,6 +325,7 @@ export async function responseErrorMessageDetails(
         "attachment_count_limit_exceeded",
         "attachment_encoded_size_limit_exceeded",
         "attachment_materialization_limit_exceeded",
+        "attachment_needs_workspace",
         "attachment_object_size_mismatch"
       ]);
       if (

@@ -6,7 +6,8 @@ import { composerContextConfigurationKey } from "@/components/app-shell/composer
 import {
   attachmentBlocksSend,
   firstBlockingAttachmentWarning,
-  modelSupportsAttachment
+  modelSupportsAttachment,
+  workspaceOnlyAttachmentRecovery
 } from "@/components/app-shell/attachmentCapabilities";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { ChatPdfRouteAvailability } from "@/lib/contracts/chatPdfPreparation";
@@ -1271,6 +1272,12 @@ export function useMessageRunActions({
           ...(attachmentsSendableWithoutWorkspace(sendToken.attachments, modelForSend, pdfRoute)
             ? ["send_without_workspace" as const] : [])
         ];
+        const fileRecovery = workspaceOnlyAttachmentRecovery(sendToken.attachments, modelForSend, pdfRoute);
+        // The disabled copy promises a send without Workspace, which this file cannot take.
+        if (fileRecovery) {
+          sendRejectionMessage = result.failureCode === "workspace_disabled" ? fileRecovery
+            : `${sendRejectionMessage?.replace(/\.$/u, "")}. ${fileRecovery}`;
+        }
       }
       if (result.failureCode === "memory_intent_confirmation_required") {
         sendFailureHandled = true;

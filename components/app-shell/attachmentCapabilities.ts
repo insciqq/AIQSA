@@ -67,8 +67,31 @@ export function attachmentWarningsForModel(
       });
       continue;
     }
-    if (workspaceEnabled) continue;
     const document = documentProcessingForAttachment(attachment);
+    if (document?.status === "no_text") {
+      warnings.push({
+        attachmentId: attachment.id,
+        blocking: false,
+        label: "No text",
+        message: workspaceEnabled
+          ? "No text was found in this file. The model is told and can open the original in Workspace."
+          : "No text was found in this file, so the model will not see its content."
+      });
+      continue;
+    }
+    if (workspaceEnabled) {
+      if (document?.status === "partial") {
+        warnings.push({
+          attachmentId: attachment.id,
+          blocking: false,
+          label: "Text limited",
+          message: document.truncated
+            ? `Only the first ${document.characterCount.toLocaleString("en-US")} characters of text were extracted. The model is told and can open the whole file in Workspace.`
+            : "Part of this file could not be read as text. The model is told and can open the whole file in Workspace."
+        });
+      }
+      continue;
+    }
     if (document?.status === "partial") {
       warnings.push({
         attachmentId: attachment.id,
@@ -185,6 +208,25 @@ export function attachmentBlocksSend(
     directPdfStorageFailureCodes.has(attachment.processingErrorCode)
   ) return true;
   return status !== "ready" && status !== "processing" && status !== "failed";
+}
+
+/**
+ * What to do about a file only Workspace can open when admission refused the
+ * Workspace the composer expected: the catalog speaks before send, admission
+ * decides. Null when sending without Workspace would keep every file.
+ */
+export function workspaceOnlyAttachmentRecovery(
+  attachments: readonly ComposerAttachment[],
+  model: CatalogModel | undefined,
+  pdfRoute: ChatPdfRouteAvailability | null = null
+): string | null {
+  const file = attachments.find((attachment) =>
+    (attachment.kind === "file" || attachment.status === "failed") &&
+    !attachmentBlocksSend(attachment, model, true, pdfRoute) &&
+    (!modelSupportsAttachment(model, attachment, false) || attachmentBlocksSend(attachment, model, false, pdfRoute)));
+  return file
+    ? `Only Workspace can open “${file.fileName}”: send again once Workspace is available, or remove the file.`
+    : null;
 }
 
 /**
