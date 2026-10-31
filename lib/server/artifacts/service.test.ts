@@ -37,6 +37,19 @@ function referenceHarness(rows: Array<Record<string, unknown>>, objects: Map<str
 
 describe("artifact authorized projections", () => {
   afterEach(() => vi.unstubAllEnvs());
+  it("returns an actionable inline expansion refusal before reserving an artifact", async () => {
+    const image = Buffer.alloc(1024 * 1024);
+    const f = referenceHarness([{ id: "image", mimeType: "image/png", storageKey: "image-key", byteSize: image.length, checksum: sha(image), status: "ready" }],
+      new Map([["image-key", image]]));
+    const result = await f.run([
+      { ...inlinePage, text: `<script>const images = [${'"image.png",'.repeat(1000)}];</script>` },
+      { path: "image.png", mimeType: "image/png", asset_ref: "image" }
+    ]);
+    expect(result).toMatchObject({ status: "error", content: [{ type: "json", value: {
+      error: "artifact_bundle_limit_exceeded", path: "image.png", hint: expect.stringContaining("smaller image assets")
+    } }] });
+    expect(f.transaction).not.toHaveBeenCalled();
+  });
   it("hydrates vendor code, keeps provenance private and duplicates exact owner blobs with downloads disabled", async () => {
     const external = "https://cdnjs.cloudflare.com/ajax/libs/example/1.2.3/a.js";
     const javascript = Buffer.from("\ufeffwindow.example = 42;");

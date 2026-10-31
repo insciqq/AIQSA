@@ -587,6 +587,9 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
   }
   function dataUrl(file: ArtifactBundleFile): string {
     embed(file, 1);
+    return encodedDataUrl(file);
+  }
+  function encodedDataUrl(file: ArtifactBundleFile): string {
     return memo(`data-url:${file.path}`, () => {
       const svgText = file.mimeType === "image/svg+xml" ? svgImage(file) : undefined;
       return `data:${file.mimeType};base64,${file.base64 ?? (svgText === undefined ? bundleFileBytes(file) : Buffer.from(svgText)).toString("base64")}`;
@@ -676,16 +679,27 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
   }
   /** Quoted local image paths in script text become data: URLs. */
   function scriptLiterals(source: string, from: string): string {
-    let changed = false;
-    const result = source.replace(scriptLiteral(), (match, quote: string, value: string) => {
-      if (!mayNameImage(value)) return match;
+    const replacements: Array<{ start: number; end: number; quote: string; file: ArtifactBundleFile }> = [];
+    // Check the whole expansion before allocating replacement strings. replace()
+    // also collects every regex match before calling its first replacement.
+    for (const match of source.matchAll(scriptLiteral())) {
+      const value = match[2]!;
+      if (!mayNameImage(value)) continue;
       const path = localPath(value, from);
       const file = path ? files.get(path) : null;
-      if (!file?.mimeType.startsWith("image/")) return match;
-      changed = true;
-      return `${quote}${dataUrl(file)}${quote}`;
-    });
-    return changed ? result : source;
+      if (!file?.mimeType.startsWith("image/")) continue;
+      embed(file, 1);
+      replacements.push({ start: match.index, end: match.index + match[0].length, quote: match[1]!, file });
+    }
+    if (!replacements.length) return source;
+    const pieces: string[] = [];
+    let end = 0;
+    for (const replacement of replacements) {
+      pieces.push(source.slice(end, replacement.start), replacement.quote, encodedDataUrl(replacement.file), replacement.quote);
+      end = replacement.end;
+    }
+    pieces.push(source.slice(end));
+    return pieces.join("");
   }
   if (bundle.kind === "svg" && mainFile && selected === bundle.entrypoint) {
     return { body: Buffer.from(svg(entry!.text!, entry!.path)), contentType: "image/svg+xml; charset=utf-8", fileName: "image.svg" };
