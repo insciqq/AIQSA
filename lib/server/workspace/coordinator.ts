@@ -1442,12 +1442,19 @@ function runtimeCode(error: unknown): WorkspaceRuntimeError["code"] {
     : "workspace_runtime_unavailable";
 }
 
-const SKILL_PREPARATION_REFUSALS = ["workspace_skill_bundle_invalid", "workspace_skill_bundle_limit_exceeded",
-  "workspace_skill_conflict", "workspace_skill_run_stale", "workspace_skills_prepare_failed"] as const satisfies readonly WorkspaceOperationFailureCode[];
+/** The runner could not read a run's saved environment back, so it dispatched nothing (`microsandboxRuntime.ts`). */
+const SECRET_ENVIRONMENT_REFUSALS = ["workspace_secret_env_invalid", "workspace_secret_env_missing", "workspace_secret_env_output_limit",
+  "workspace_secret_env_read_failed", "workspace_secret_env_read_timeout", "workspace_secret_env_unreadable"] as const satisfies readonly WorkspaceOperationFailureCode[];
+const RUN_PREPARATION_REFUSALS = ["workspace_secrets_prepare_failed", "workspace_skill_bundle_invalid", "workspace_skill_bundle_limit_exceeded",
+  "workspace_skill_conflict", "workspace_skill_run_stale", "workspace_skills_prepare_failed", ...SECRET_ENVIRONMENT_REFUSALS] as const satisfies readonly WorkspaceOperationFailureCode[];
 
-/** One run's Skills could not be prepared: nothing of its call was dispatched, and the guest other runs share is intact. */
-function skillPreparationRefusal(error: unknown): (typeof SKILL_PREPARATION_REFUSALS)[number] | undefined {
-  return error instanceof WorkspaceRuntimeError ? SKILL_PREPARATION_REFUSALS.find((code) => code === error.code) : undefined;
+/** One run's Skills or environment could not be prepared: nothing of its call was dispatched, and the guest other runs share is intact. */
+function runPreparationRefusal(error: unknown): (typeof RUN_PREPARATION_REFUSALS)[number] | undefined {
+  return error instanceof WorkspaceRuntimeError ? RUN_PREPARATION_REFUSALS.find((code) => code === error.code) : undefined;
+}
+
+function isSecretEnvironmentRefusal(error: unknown): boolean {
+  return error instanceof WorkspaceRuntimeError && SECRET_ENVIRONMENT_REFUSALS.some((code) => code === error.code);
 }
 
 function activityErrorCode(code: WorkspaceRuntimeError["code"]): WorkspaceErrorCode {
@@ -1981,13 +1988,15 @@ export function createWorkspaceCoordinator(input: Readonly<{
           outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
           // The run's admitted browser language and time zone ride in the same environment.
           const runEnvironment = purpose === "execution" ? { ...code?.environment, ...browserEnvironment } : {};
-          await input.runtime.syncPersonalSecrets({
+          // Each install rewrites the guest's one environment file, so two at once would lose a run's entry. The wait
+          // for the other run touches no guest, so a cancellation here stops nothing.
+          await withWorkspaceSessionExclusive(binding.sessionId, signal, () => input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId, agent: runAgent(binding),
             ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
             // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
             ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
-          });
+          }));
         } catch (error) {
           if (error instanceof WorkspaceRuntimeError) throw error;
           throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
@@ -2078,7 +2087,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }).catch(() => null);
           if (lostOperation) await interruptAttachedRuns(binding, others);
         }
-        if (!skillPreparationRefusal(error)) {
+        if (!runPreparationRefusal(error)) {
           await input.repository.markSessionFailed({
             code: runtimeCode(error),
             operation: ownedOperation(binding), sessionId: binding.sessionId
@@ -2336,7 +2345,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         modelRunId: request.runId, manifestHash: plan.manifestHash, runtimeSandboxId: binding.runtimeSandboxId,
         operation: ownedOperation(binding), sessionId: binding.sessionId, signal: request.signal }).catch((error: unknown) => {
         // This run counts as initialized but has lost its receipt: its next call prepares it again.
-        if (skillPreparationRefusal(error) === "workspace_skill_run_stale") skillPlans.delete(request.runId);
+        if (runPreparationRefusal(error) === "workspace_skill_run_stale") skillPlans.delete(request.runId);
         throw error;
       });
       if (installed.workspacePath !== path) throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
@@ -2547,7 +2556,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           initializedBinding = await initializeWithLostSessionRecovery(initial, workspace, signal, onActivity);
         } catch (error) {
           // Thrown, this would read as a command whose effect is unknown, and the model could never send it again.
-          const refused = skillPreparationRefusal(error);
+          const refused = runPreparationRefusal(error);
           if (refused) return executionErrorResult(call, workspaceOperationFailureMessage(refused), refused);
           throw error;
         }
@@ -2635,9 +2644,26 @@ export function createWorkspaceCoordinator(input: Readonly<{
               operation: ownedOperation(active), sessionId: active.sessionId,
               signal: combined
             });
+          // Nothing reached the guest when the runner refuses over the run's environment: it goes back in, once, and the
+          // call is sent. A concurrent call of this run may have done that already, and a second install would rotate
+          // the bearer that call just got. A recovery that fails leaves the refusal, which the model can act on.
+          const dispatchRestoringEnvironment = async (): Promise<WorkspaceToolResult> => {
+            try {
+              return await dispatch(binding);
+            } catch (error) {
+              if (!isSecretEnvironmentRefusal(error) || combined.aborted) throw error;
+              if (initialized.get(binding.runId) === binding) initialized.delete(binding.runId);
+              initializedBinding = await requireBinding(runId, userId, workspace)
+                .then((fresh) => initializeWithLostSessionRecovery(fresh, workspace, combined, onActivity))
+                .catch((recovery: unknown) => { throw combined.aborted ? recovery : error; });
+              binding = initializedBinding.binding;
+              invocationId = await openInvocation(binding);
+              return dispatch(binding);
+            }
+          };
           let result: WorkspaceToolResult;
           try {
-            result = await dispatch(binding);
+            result = await dispatchRestoringEnvironment();
           } catch (error) {
             if (
               !(error instanceof WorkspaceRuntimeError) ||
@@ -2730,6 +2756,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
               throw new WorkspaceRuntimeError("workspace_tool_timeout");
             }
             throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+          }
+          // Thrown, this would read as a command whose effect is unknown, and the model could never send it again.
+          const refused = runPreparationRefusal(error);
+          if (refused) {
+            const rejected = executionErrorResult(call, workspaceOperationFailureMessage(refused), refused);
+            return withActivity(rejected, projectWorkspaceActivity({ ...projectionInput, durationMs: Date.now() - startedAt.getTime(),
+              result: rejected }, "settled"));
           }
           throw error;
         } finally {

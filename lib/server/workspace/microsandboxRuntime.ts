@@ -8,10 +8,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { logEvent } from "../observability";
 import {
-  beginWorkspaceToolStage, observeWorkspaceAbort, retainWorkspaceFailureCause, workspaceFailureCause, workspaceToolFailure,
+  beginWorkspaceToolStage, inheritWorkspaceFailureCause, observeWorkspaceAbort, retainWorkspaceFailureCause, workspaceFailureCause, workspaceToolFailure,
   type WorkspaceFailureCause
 } from "./toolObservability";
-import { workspaceMcpFailure } from "./operationFailure";
+import { workspaceMcpFailure, workspaceOperationFailureResult } from "./operationFailure";
 import {
   Destination,
   Image,
@@ -48,7 +48,7 @@ import type { WorkspaceConfig } from "./config";
 import { RUNNER_GATEWAY_PORT, RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { isReservedWorkspaceEnvName, isWorkspaceEnvName, WORKSPACE_AGENT_ENV_PREFIX, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
-import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
+import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV, WORKSPACE_SECRET_ENV_EXIT } from "./secrets/guest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
   WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
 import { BOUND_WORKSPACE_UV_CACHE, parseWorkspaceUvCacheBoundOutcome, WORKSPACE_GUEST_COMMAND_DEFAULTS, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS,
@@ -99,20 +99,24 @@ import {
 type McpConnection = Readonly<{
   catalog: WorkspaceToolCatalog;
   client: Client;
+  /** The exec handles alive in this MCP process: a handle exists only in the process that started it. */
+  execs: Set<string>;
   transport: StdioClientTransport;
   /** Transport facts: a closed connection is never reused. */
   state: { closed: boolean; inFlight: number; overflow: "sole" | "shared" | null };
 }>;
 
-/** A guest's live browser streamers (exec id -> the run that started it) on their own MCP connection. */
-type LiveChannel = { execs: Map<string, string>; idle?: ReturnType<typeof setTimeout>; mcp?: McpConnection };
+/** Where a guest's connection lives; `mcpOpening` lets concurrent callers share the one being opened. */
+type McpHolder = { mcp?: McpConnection; mcpOpening?: Promise<McpConnection> };
 
-type LocalSession = {
+/** A guest's live browser streamers (exec id -> the run that started it) on their own MCP connection. */
+type LiveChannel = McpHolder & { execs: Map<string, string>; idle?: ReturnType<typeof setTimeout> };
+
+type LocalSession = McpHolder & {
   activeCalls: Map<string, Readonly<{ controller: AbortController; modelRunId: string }>>;
   execOwners: Map<string, string>;
   /** The live browser channel's own MCP connection and its streamers by run (`browserLive`). */
   live?: LiveChannel;
-  mcp?: McpConnection;
   runtimeSandboxId: string;
   sandbox: Sandbox;
   sandboxName: string;
@@ -130,6 +134,11 @@ type GuidePreparation = "reuse" | "refresh" | Readonly<{ boot: GuideInstallation
 
 const GUIDE_INSTALL_TIMEOUT_MS = 30_000;
 const GUIDE_RETIRE_TIMEOUT_MS = 2_000;
+/** Reading a run's saved environment back changes nothing in the guest, so a transient failure simply reads again. */
+const SECRET_ENV_READ_TIMEOUT_MS = 10_000;
+const SECRET_ENV_READ_ATTEMPTS = 3;
+const SECRET_ENV_READ_RETRY_MS = 250;
+const SECRET_ENV_TRANSIENT_FAILURES: ReadonlySet<string> = new Set(["workspace_secret_env_read_failed", "workspace_secret_env_read_timeout"]);
 
 const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
 const EXEC_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
@@ -149,6 +158,11 @@ const PROJECT_ARCHIVE_COMMAND =
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** The SDK's typed exec timeout, by its stable code. */
+function isExecTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "execTimeout";
 }
 
 function contentFreeReason(error: unknown): string {
@@ -256,6 +270,18 @@ function boundedMcpResult(value: unknown, maximum: number, tool: WorkspaceMcpToo
     status: "complete",
     truncated: bounded.truncated
   };
+}
+
+/**
+ * What the connection knows about an exec-session call's answer. A handle this process no longer holds (closed, or
+ * started by an MCP process that is gone) is named from that fact, never from the MCP's error text; the same failure on
+ * a handle it does hold stays the unspecific one.
+ */
+function execHandleResult(mcp: McpConnection, tool: WorkspaceMcpToolName, execSessionId: string | null, result: WorkspaceToolResult): WorkspaceToolResult {
+  if (!execSessionId || !EXEC_SESSION_TOOL_SET.has(tool)) return result;
+  if (tool === "sandbox_exec_close" && result.status === "complete") mcp.execs.delete(execSessionId);
+  return result.errorCode === "workspace_operation_failed" && !mcp.execs.has(execSessionId)
+    ? inheritWorkspaceFailureCause(result, workspaceOperationFailureResult("workspace_execution_handle_lost")) : result;
 }
 
 function execPollReportsLeaderExit(value: unknown): boolean {
@@ -537,11 +563,11 @@ async function trackedMcpRequest<T>(connection: McpConnection, request: () => Pr
   }
 }
 
-async function openPinnedOfficialMcp(mcpVersion: string, maxBufferSize = CATALOG_MCP_BUFFER_BYTES): Promise<McpConnection> {
+async function openPinnedOfficialMcp(mcpVersion: string, maxBufferSize = CATALOG_MCP_BUFFER_BYTES, execHandleTtlMs?: number): Promise<McpConnection> {
   const transport = new StdioClientTransport({
     args: [MCP_BINARY],
     command: process.execPath,
-    env: safeChildEnvironment(),
+    env: { ...safeChildEnvironment(), ...(execHandleTtlMs ? { MICROSANDBOX_MCP_SESSION_TTL_MS: String(execHandleTtlMs) } : {}) },
     maxBufferSize,
     stderr: "pipe"
   });
@@ -583,7 +609,7 @@ async function openPinnedOfficialMcp(mcpVersion: string, maxBufferSize = CATALOG
     if (catalog.hash !== WORKSPACE_BOUND_TOOL_CATALOG_HASH) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
-    return { catalog, client, transport, state };
+    return { catalog, client, execs: new Set(), transport, state };
   } catch (error) {
     await transport.close().catch(() => undefined);
     if (error instanceof WorkspaceRuntimeError) throw error;
@@ -1001,9 +1027,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     // A transport closed by overflow or process exit rejects every later
     // request with "Not connected"; replace it instead of caching it.
     this.discardClosedMcp(session, session.mcp);
-    const connection = await this.openMcpConnection();
-    session.mcp = connection;
-    return connection;
+    return this.openMcpOnce(session);
+  }
+
+  /**
+   * One connection per holder, however many callers arrive at once. An exec handle exists only in the process that
+   * started it: a second opener would replace the first, and every later poll of its commands would reach a process
+   * that never heard of them, while the first process lived on unclosed.
+   */
+  private openMcpOnce(holder: McpHolder): Promise<McpConnection> {
+    return holder.mcpOpening ??= this.openMcpConnection().then((connection) => {
+      holder.mcp = connection;
+      return connection;
+    }).finally(() => { holder.mcpOpening = undefined; });
   }
 
   private discardClosedMcp(session: LocalSession, connection: McpConnection | undefined): void {
@@ -1013,7 +1049,10 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   private async openMcpConnection(): Promise<McpConnection> {
-    return openPinnedOfficialMcp(this.config.mcpVersion, workspaceToolTransportMaxBytes(this.config.toolOutputMaxBytes));
+    // The pinned MCP forgets a quiet exec handle after 15 minutes, well inside a turn: a finished command's exit status
+    // has to stay readable for as long as the guest stays up.
+    return openPinnedOfficialMcp(this.config.mcpVersion, workspaceToolTransportMaxBytes(this.config.toolOutputMaxBytes),
+      workspaceRuntimeIdleTimeoutSeconds(this.config) * 1_000);
   }
 
   async listStagedAttachments(
@@ -1240,22 +1279,48 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     }
   }
 
-  private async secretEnvironment(session: LocalSession, modelRunId: string): Promise<Record<string, string>> {
+  private async secretEnvironment(session: LocalSession, modelRunId: string, signal: AbortSignal): Promise<Record<string, string>> {
     const cached = session.secretEnvironments?.get(modelRunId);
     if (cached) return cached;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const values = await this.readSecretEnvironment(session, modelRunId, signal);
+        (session.secretEnvironments ??= new Map()).set(modelRunId, values);
+        return values;
+      } catch (error) {
+        if (!(error instanceof WorkspaceRuntimeError) || !SECRET_ENV_TRANSIENT_FAILURES.has(error.code) || attempt >= SECRET_ENV_READ_ATTEMPTS) throw error;
+        logEvent("tool_execution", { tool_kind: "workspace", stage: "admission", outcome: "degraded", action: "retry", attempt, code: error.code });
+        await delay(SECRET_ENV_READ_RETRY_MS);
+      }
+    }
+  }
+
+  /** One read of the run's own environment. Every failure is one content-free code: no value or name leaves here. */
+  private async readSecretEnvironment(session: LocalSession, modelRunId: string, signal: AbortSignal): Promise<Record<string, string>> {
+    const deadline = AbortSignal.timeout(SECRET_ENV_READ_TIMEOUT_MS + 2_000);
+    let result: Awaited<ReturnType<Sandbox["execWith"]>>;
     try {
-      const result = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
-        .args(["-I", "-c", READ_WORKSPACE_SECRET_ENV, modelRunId]).timeout(10_000));
-      const maximum = WORKSPACE_SECRET_ENV_MAX_BYTES + WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES;
-      if (!result.success || result.stdoutBytes().byteLength > maximum * 2) throw new Error("invalid");
-      const values: unknown = JSON.parse(result.stdout());
-      if (!values || typeof values !== "object" || Array.isArray(values) ||
-        Object.entries(values).some(([name, value]) => !isWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0")) ||
-        Buffer.byteLength(JSON.stringify(values), "utf8") > maximum) throw new Error("invalid");
-      const safeValues = Object.fromEntries(Object.entries(values).filter(([name]) => !name.startsWith(WORKSPACE_AGENT_ENV_PREFIX))) as Record<string, string>;
-      (session.secretEnvironments ??= new Map()).set(modelRunId, safeValues);
-      return safeValues;
-    } catch { throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed"); }
+      // The SDK timeout kills the helper but does not bound its native promise.
+      result = await readStreamWithAbort(() => session.sandbox.execWith("/usr/bin/python3", (builder) => builder
+        .args(["-I", "-c", READ_WORKSPACE_SECRET_ENV, modelRunId]).timeout(SECRET_ENV_READ_TIMEOUT_MS)), AbortSignal.any([signal, deadline]));
+    } catch (error) {
+      if (signal.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      throw new WorkspaceRuntimeError(deadline.aborted || isExecTimeout(error) ? "workspace_secret_env_read_timeout" : "workspace_secret_env_read_failed");
+    }
+    if (!result.success) {
+      throw new WorkspaceRuntimeError(result.code === WORKSPACE_SECRET_ENV_EXIT.missing ? "workspace_secret_env_missing"
+        : result.code === WORKSPACE_SECRET_ENV_EXIT.unreadable ? "workspace_secret_env_unreadable" : "workspace_secret_env_read_failed");
+    }
+    const maximum = WORKSPACE_SECRET_ENV_MAX_BYTES + WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES;
+    if (result.stdoutBytes().byteLength > maximum * 2) throw new WorkspaceRuntimeError("workspace_secret_env_output_limit");
+    let values: unknown;
+    try { values = JSON.parse(result.stdout()); } catch { throw new WorkspaceRuntimeError("workspace_secret_env_invalid"); }
+    if (!values || typeof values !== "object" || Array.isArray(values) ||
+      Object.entries(values).some(([name, value]) => !isWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0"))) {
+      throw new WorkspaceRuntimeError("workspace_secret_env_invalid");
+    }
+    if (Buffer.byteLength(JSON.stringify(values), "utf8") > maximum) throw new WorkspaceRuntimeError("workspace_secret_env_output_limit");
+    return Object.fromEntries(Object.entries(values).filter(([name]) => !name.startsWith(WORKSPACE_AGENT_ENV_PREFIX))) as Record<string, string>;
   }
 
   async loadBoundTools(input: Parameters<WorkspaceRuntime["loadBoundTools"]>[0]): Promise<WorkspaceToolCatalog> {
@@ -1318,7 +1383,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         sandboxName: session.sandboxName
       });
       if (["sandbox_shell", "sandbox_exec", "sandbox_exec_start"].includes(input.originalName)) {
-        const environment = await this.secretEnvironment(session, input.modelRunId);
+        const environment = await this.secretEnvironment(session, input.modelRunId, controller.signal);
         const requested = argumentsWithIdentity.env;
         if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested) ||
           Object.keys(requested).some(isReservedWorkspaceEnvName))) {
@@ -1379,12 +1444,14 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         const id = execSessionIdFrom(result);
         if (!id) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         session.execOwners.set(id, input.modelRunId);
+        mcp.execs.add(id);
         const normalized = { ...boundedMcpResult(result, this.config.toolOutputMaxBytes, input.originalName), execSessionId: id };
         finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed", code: normalized.errorCode });
         return normalized;
       }
       // Closing an MCP observation cannot discharge descendant ownership.
-      const normalized = boundedMcpResult(result, this.config.toolOutputMaxBytes, input.originalName);
+      const normalized = execHandleResult(mcp, input.originalName, execSessionId,
+        boundedMcpResult(result, this.config.toolOutputMaxBytes, input.originalName));
       finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed", code: normalized.errorCode,
         reason: normalized.status === "error" ? workspaceFailureCause(normalized) : undefined });
       return normalized;
@@ -1452,11 +1519,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       live.idle = undefined;
     }
     try {
-      if (!live.mcp || live.mcp.state.closed) {
-        if (live.mcp) void live.mcp.transport.close().catch(() => undefined);
-        live.mcp = await this.openMcpConnection();
-      }
-      const mcp = live.mcp;
+      const open = live.mcp;
+      if (open?.state.closed) void open.transport.close().catch(() => undefined);
+      const mcp = open && !open.state.closed ? open : await this.openMcpOnce(live);
       const deadline = AbortSignal.timeout(WORKSPACE_BROWSER_LIVE_LIMITS.requestTimeoutMs);
       const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
       const call = async (name: WorkspaceMcpToolName, args: Record<string, unknown>) => {
@@ -1568,7 +1633,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         await delay(1_000);
         exited = execPollReportsLeaderExit(await poll(execSessionId));
       }
-      if (exited) await call("sandbox_exec_close", { execSessionId });
+      if (exited && await call("sandbox_exec_close", { execSessionId })) mcp.execs.delete(execSessionId);
       // Retain cached ownership as well: handle disposal cannot erase an
       // unresolved descendant obligation before the disk-preserving stop.
     }));
@@ -1875,7 +1940,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const live = session.live;
     session.live = undefined;
     if (live?.idle) clearTimeout(live.idle);
-    await Promise.all([mcp, live?.mcp].map((connection) => connection?.transport.close().catch(() => undefined)));
+    const close = (connection: McpConnection | undefined) => connection?.transport.close().catch(() => undefined);
+    // A connection still opening lands after this and would outlive the guest.
+    await Promise.all([close(mcp), close(live?.mcp), session.mcpOpening?.then(close, () => undefined), live?.mcpOpening?.then(close, () => undefined)]);
   }
 
   private async waitForInitialization(sessionId: string): Promise<void> {

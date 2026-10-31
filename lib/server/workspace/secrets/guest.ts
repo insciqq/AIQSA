@@ -4,6 +4,9 @@ import { WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./manifest";
 const WORKSPACE_RUN_ENVIRONMENTS_KEPT = 24;
 const WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES = 4 * 262_144;
 
+/** Exit statuses of the read helper; any other failure is its plain 1, and nothing else ever leaves it. */
+export const WORKSPACE_SECRET_ENV_EXIT = Object.freeze({ missing: 65, unreadable: 66 });
+
 /** Static code; secret bytes travel on stdin, never in executable source. */
 export const INSTALL_WORKSPACE_SECRETS = String.raw`
 import base64, json, os, pathlib, shutil, stat, subprocess, sys, tempfile
@@ -41,7 +44,10 @@ try:
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size > ${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES}: raise ValueError('run_marker_invalid')
-            previous = json.loads(stream.read(${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES + 1}))
+            # Bytes a crash left behind cost the other runs their copy, never this install: each writes itself back.
+            try: previous = json.loads(stream.read(${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES + 1}))
+            except ValueError: previous = {}
+        if not isinstance(previous, dict): previous = {}
         if isinstance(previous.get('runs'), list):
             runs = [entry for entry in previous['runs'] if isinstance(entry, dict) and isinstance(entry.get('runId'), str)]
         elif isinstance(previous.get('runId'), str):
@@ -118,21 +124,28 @@ finally:
 
 export const READ_WORKSPACE_SECRET_ENV = String.raw`
 import json, os, pathlib, stat, sys
-try:
+
+def read():
     path = pathlib.Path('/workspace/secrets/.environment.json')
-    if pathlib.Path('/workspace').is_symlink() or path.parent.is_symlink(): raise ValueError('invalid')
-    if not path.exists() and not path.is_symlink():
-        print('{}')
-    else:
+    if pathlib.Path('/workspace').is_symlink() or path.parent.is_symlink(): return ${WORKSPACE_SECRET_ENV_EXIT.unreadable}
+    if not path.exists() and not path.is_symlink(): return ${WORKSPACE_SECRET_ENV_EXIT.missing}
+    try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > ${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES}: raise ValueError('invalid')
+            if not stat.S_ISREG(info.st_mode) or info.st_size > ${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES}: return ${WORKSPACE_SECRET_ENV_EXIT.unreadable}
             data = json.loads(stream.read(${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES + 1}))
         runs = data['runs'] if isinstance(data.get('runs'), list) else [data]
         values = next((entry['values'] for entry in runs if isinstance(entry, dict) and entry.get('runId') == sys.argv[1]), None)
-        if values is None: raise ValueError('stale')
-        print(json.dumps(values, ensure_ascii=False))
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        return ${WORKSPACE_SECRET_ENV_EXIT.unreadable}
+    if values is None: return ${WORKSPACE_SECRET_ENV_EXIT.missing}
+    print(json.dumps(values, ensure_ascii=False))
+    return 0
+
+try:
+    status = read()
 except BaseException:
-    sys.exit(1)
+    status = 1
+sys.exit(status)
 `;

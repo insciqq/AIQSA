@@ -57,7 +57,6 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
     case "workspace_capture_unsupported":
     case "workspace_attachment_unavailable":
     case "workspace_storage_full":
-    case "workspace_secrets_prepare_failed":
     case "workspace_archive_limit_exceeded":
     case "workspace_archive_invalid":
     case "workspace_archive_restore_failed":

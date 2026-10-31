@@ -405,7 +405,6 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_attachment_timeout"
     | "workspace_attachment_unavailable"
     | "workspace_storage_full"
-    | "workspace_secrets_prepare_failed"
     | "workspace_archive_limit_exceeded"
     | "workspace_archive_invalid"
     | "workspace_archive_restore_failed"
