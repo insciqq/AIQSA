@@ -95,7 +95,7 @@ function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boo
               disclosureId={`subagent-turn-${turn.id}`}
               liveLabel={liveLabel}
               toolActivity={turn.toolActivity}
-              workDurationMs={stepDurationSumV2(turn.toolActivity)}
+              workDurationMs={active ? null : stepDurationSumV2(turn.toolActivity)}
               workspaceActivity={turn.workspaceActivity}
             />
             {latest && active ? (
