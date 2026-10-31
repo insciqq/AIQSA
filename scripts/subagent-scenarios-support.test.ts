@@ -3,12 +3,13 @@ import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
-  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
+  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, appendProgression, appendSessionSample,
-  bindingEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, notaryValue, stableCode,
+  bindingEvidence, blindImageEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence,
+  mainImageToolEvidence, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
-  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, peakConcurrency, peakConcurrentTurns, progressionSaw, requestedModelEvidence,
-  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
+  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
+  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
   stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
@@ -42,7 +43,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(12);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(13);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
@@ -57,7 +58,84 @@ describe("sub-agent scenario selection and options", () => {
     expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_RUNS: "4" }, ["A"], "m")).toThrow("runs_invalid");
     expect(subagentHarnessOptions({ AIQSA_SUBAGENTS_RESTART_COMMAND: " ssh stand restart ", AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS: "60",
       AIQSA_SUBAGENTS_SECOND_MODEL: "gpt-6-luna" }, ["C2", "G"], "gpt-6-astra")).toEqual({
-      restart: { command: "ssh stand restart", timeoutMs: 60_000 }, runs: 1, secondModel: "gpt-6-luna" });
+      restart: { command: "ssh stand restart", timeoutMs: 60_000 }, runs: 1, secondModel: "gpt-6-luna", textModel: null });
+  });
+
+  it("takes K's text-only model only with its key, and runs K only when named", () => {
+    expect(selectedSubagentScenarios(undefined)).not.toContain("K");
+    expect(selectedSubagentScenarios("k")).toEqual(["K"]);
+    expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_TEXT_MODEL: "deepseek/deepseek-v3.2" }, ["K"], "m")).toThrow("openrouter_key_required");
+    expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_TEXT_MODEL: "bad model", OPENROUTER_API_KEY: "k" }, ["K"], "m")).toThrow("text_model_invalid");
+    expect(subagentHarnessOptions({ AIQSA_SUBAGENTS_TEXT_MODEL: "deepseek/deepseek-v3.2", OPENROUTER_API_KEY: "k" }, ["K"], "m").textModel)
+      .toBe("deepseek/deepseek-v3.2");
+    expect(subagentHarnessOptions({}, ["K"], "m").textModel).toBeNull();
+  });
+});
+
+describe("files and images across agents (K)", () => {
+  const facts = scenarioKFacts("0123456789abcdef");
+  const { texts } = facts;
+  const reads = (reader: "left" | "main" | "right") => ({
+    left_color: "blue", left_text: texts.left, right_color: "green", right_text: texts.right,
+    ...(reader === "main" ? {} : { main_color: "red", main_text: texts.main })
+  });
+  const result = { ...base, left: reads("left"), main: reads("main"), right: reads("right") };
+
+  it("gives each writer its own value and every prompt the exact commands, with a chart request that names no folder", () => {
+    expect(new Set(Object.values(texts)).size).toBe(3);
+    const start = SUBAGENT_PROMPTS.K.start(facts);
+    expect(start).toContain(SCENARIO_K_PNG_SCRIPT);
+    expect(start).toContain(`python3 ${facts.directory}/png.py ${facts.directory}/left.png 0 0 255`);
+    expect(start).toContain(`printf '%s' ${facts.nonce}-right | sha256sum | cut -c1-12 > ${facts.directory}/right.txt`);
+    for (const value of Object.values(texts)) expect(`${start}${SUBAGENT_PROMPTS.K.reads(facts)}`).not.toContain(value);
+    expect(SUBAGENT_PROMPTS.K.reads(facts)).toContain("background: true");
+    expect(SUBAGENT_PROMPTS.K.chart()).not.toContain("/workspace");
+    expect(SUBAGENT_PROMPTS.K.blind(facts, "deepseek/deepseek-v3.2")).toContain("модель deepseek/deepseek-v3.2");
+  });
+
+  it("holds every read to the file's exact value and the picture's colour", () => {
+    expect(oracleKReads(result, texts)).toEqual({ counts: { reads: 16 }, failed: [] });
+    expect(oracleKReads({ ...result, left: { ...reads("left"), right_color: "blue", main_text: "0" } }, texts).failed)
+      .toEqual(["left_read_main_text", "left_read_right_color"]);
+    expect(oracleKReads({ ...base }, texts).failed).toContain("main_read_left_text");
+  });
+
+  const left = [turn({ mode: "background", threadId: "left" }), turn({ threadId: "left", turnId: "turn-2" })];
+  const right = [turn({ mode: "background", threadId: "right" }), turn({ mode: "background", threadId: "right", turnId: "turn-2" })];
+  const viewed = (threadId: string | null, count: number, runId = "run-1") => Array.from({ length: count }, () => tool({ runId, threadId, toolName: "view_workspace_image" }));
+  const rows = [...viewed("left", 4), ...viewed("right", 4), ...viewed(null, 2), ...viewed(null, 1, "wake-up")];
+  const flow = { blind: null, callbacks: callbackEvidence([], []),
+    chart: { downloads: [{ bytes: 90, png: true }], mainImage: mainImageToolEvidence(rows, ["wake-up"]), turn: turn({ mode: "background" }) },
+    images: { left: imageToolEvidence(rows, "left"), main: mainImageToolEvidence(rows, ["run-1"]), right: imageToolEvidence(rows, "right") },
+    left, right, settled: true };
+
+  it("passes the flow with a continued thread each way, the main agent's look at the chart and a real download", () => {
+    expect(oracleKFlow(flow).failed).toEqual([]);
+    expect(oracleKFlow(flow).counts).toMatchObject({ chartDownloads: 1, mainChartViews: 1, mainImages: 2 });
+  });
+
+  it("fails a sub-agent that was not continued or started over, a chart nobody can get, and images nobody read", () => {
+    expect(oracleKFlow({ ...flow, left: left.slice(0, 1), right: [right[0]!, turn({ threadId: "right" })] }).failed)
+      .toEqual(["left_not_continued_in_foreground", "right_not_continued_in_background"]);
+    expect(oracleKFlow({ ...flow, chart: { downloads: [{ bytes: 90, png: false }], mainImage: mainImageToolEvidence([], []), turn: turn() } }).failed)
+      .toEqual(["chart_turn_not_done_in_background", "chart_not_viewed_by_main", "chart_not_downloadable"]);
+    expect(oracleKFlow({ ...flow, images: { left: imageToolEvidence([], "left"), main: mainImageToolEvidence([], []), right: imageToolEvidence([], "right") } }).failed)
+      .toEqual(["left_images_not_read", "right_images_not_read", "main_images_not_read"]);
+  });
+
+  it("holds a sub-agent without vision to System Vision and never to direct view", () => {
+    const analyzed = [tool({ threadId: "blind", toolName: "analyze_image" })];
+    const blind = { answered: true, image: blindImageEvidence(analyzed, "blind"), turn: turn({ threadId: "blind" }) };
+    expect(blind.image).toMatchObject({ succeeded: 1, viewCalls: 0 });
+    expect(oracleKFlow({ ...flow, blind }).failed).toEqual([]);
+    const refused = [...analyzed, tool({ resultCode: "unknown_tool", state: "error", threadId: "blind", toolName: "view_workspace_image" })];
+    expect(oracleKFlow({ ...flow, blind: { answered: false, image: blindImageEvidence(refused, "blind"), turn: turn({ state: "failed", threadId: "blind" }) } }).failed)
+      .toEqual(["blind_turn_not_done", "blind_called_direct_view", "blind_color_not_answered"]);
+  });
+
+  it("recognizes a PNG by its signature", () => {
+    expect(pngBytes(Buffer.from(SCENARIO_J_PNG_BASE64, "base64"))).toBe(true);
+    expect(pngBytes(new Uint8Array([1, 2, 3]))).toBe(false);
   });
 });
 

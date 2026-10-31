@@ -39,6 +39,17 @@
  *   that the model did not produce the defect's order, and is not a failure. Paid calls: about 8–11
  *   codex-lb requests (main 3–4, viewer 2–3 and at most one System Vision call, quiet 1 long answer,
  *   wake-up and second message 1–2 each) in about 3–6 minutes.
+ * - K: files and images across agents, one chat, only when named. The main agent and two background
+ *   sub-agents each write a text file only its writer's command makes and a coloured PNG in one
+ *   `/workspace/project/` folder and read the main agent's. Then `file-left` is continued by name in
+ *   the foreground and `file-right` in the background: each reads its own earlier files and the
+ *   others', the main agent reads both, and the result file reports every read. Then "a chart in the
+ *   background" with no path in the message: the chart's turn ended, the main agent's image tool
+ *   succeeded on an answer after it, and a PNG exported by those answers opens through the user's
+ *   attachment route. Last, with a model without vision (below), `blind` on that model finishes with
+ *   System Vision and never calls direct view; without one, `blind: "not_configured"` records that
+ *   the step did not run. Paid calls: about 40–60 codex-lb requests and at most 3 System Vision calls,
+ *   plus 2–4 OpenRouter text requests with the last step, in about 10–20 minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -62,6 +73,9 @@
  *   AIQSA_SUBAGENTS_MARGIN_SECONDS (60..3600, default 600), AIQSA_SUBAGENTS_KEEP_CHATS=1
  * - AIQSA_SUBAGENTS_SECOND_MODEL (C2): an upstream model id on the same codex-lb route, not the parent's;
  *   the harness adds it as "Sub-agents second model" and requires it in the user's catalog
+ * - AIQSA_SUBAGENTS_TEXT_MODEL (K's last step) with OPENROUTER_API_KEY: a text-only OpenRouter chat model, added by
+ *   `ensureTextModel`, whose public listing proves it takes no images. Without it, K uses AIQSA_SUBAGENTS_SECOND_MODEL
+ *   only when the catalog says that model has no image input; `ensureModel` declares vision on what it adds.
  * - AIQSA_SUBAGENTS_RESTART_COMMAND (G), AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS (30..900, default 300):
  *   one shell line run on the harness host with /bin/sh -c, output discarded and only its exit code kept,
  *   that restarts the stand's app container on the server through the SSH connection that forwards the
@@ -88,16 +102,16 @@ import {
   type OracleVerdict, type ScenarioInteraction, type StandTarget
 } from "./browser-scenarios-support";
 import {
-  TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, errorCode,
+  TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureTextModel, errorCode,
   handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
-  SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, appendProgression, appendSessionSample, bindingEvidence,
-  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ,
-  peakConcurrentTurns, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, selectedSubagentScenarios,
+  SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads,
+  peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, selectedSubagentScenarios,
   sendRefusal, sessionStopEvidence, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type PurposeUsageRow, type RestartHook, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
+  type KChartDownload, type PurposeUsageRow, type RestartHook, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
   type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
@@ -113,6 +127,8 @@ const seconds = (since: number) => Math.round((Date.now() - since) / 100) / 10;
 
 type Session = { api: Api };
 type Context = Readonly<{
+  /** K's model without vision and the id its prompt names; null when none is configured. */
+  blind: Readonly<{ id: string; model: CatalogModel }> | null;
   db: PostgresClient;
   keepChats: boolean;
   marginSeconds: number;
@@ -966,6 +982,78 @@ async function scenarioJ(ctx: Context, run: Run): Promise<Outcome> {
   }
 }
 
+/** The PNGs the given main-agent runs exported, as the user's attachment route serves them. */
+async function exportedPngs(ctx: Context, runIds: readonly string[]): Promise<KChartDownload[]> {
+  const downloads: KChartDownload[] = [];
+  for (const runId of runIds) {
+    await awaitExport(ctx.db, runId);
+    const { rows } = await ctx.db.query<{ attachmentId: string; relativePath: string }>(
+      `SELECT "attachmentId", "relativePath" FROM "WorkspaceRunOutput" WHERE "workspaceRunBindingId" = $1`, [runId]);
+    for (const output of rows.filter((row) => /\.png$/iu.test(row.relativePath))) {
+      const content = await request(ctx.session.api, `/api/attachments/${encodeURIComponent(output.attachmentId)}/content`);
+      const bytes = content.ok ? new Uint8Array(await content.arrayBuffer()) : new Uint8Array();
+      downloads.push({ bytes: bytes.byteLength, png: pngBytes(bytes) });
+    }
+  }
+  return downloads;
+}
+
+const K_TURN_MS = 15 * 60_000;
+
+async function scenarioK(ctx: Context, run: Run): Promise<Outcome> {
+  const facts = scenarioKFacts(runSecrets(randomBytes(16)).nonce);
+  const { blind, chart, left, right } = SUBAGENT_NAMES.files;
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario K");
+  run.chats.push(chat.id);
+  const started = Date.now();
+  const mainRunIds = async () => (await mainRuns(ctx.db, chat.id)).map((entry) => entry.id);
+
+  const first = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.start(facts));
+  run.line.firstTerminal = (await waitRun(ctx, first)).status;
+  await Promise.all([left, right].map((name) => waitTurnEnded(ctx, chat.id, name, K_TURN_MS)));
+
+  const reads = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.reads(facts));
+  run.line.readsTerminal = (await waitRun(ctx, reads)).status;
+  await waitTurnEnded(ctx, chat.id, right, K_TURN_MS);
+  await waitMainIdle(ctx, chat.id, K_TURN_MS);
+  const readRuns = await mainRunIds();
+  const checks = judge(run, await resultOf(ctx, chat.id, readRuns), (read) => oracleKReads(read.value, facts.texts));
+
+  const charted = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.chart());
+  run.line.chartTerminal = (await waitRun(ctx, charted)).status;
+  await waitTurnEnded(ctx, chat.id, chart, K_TURN_MS);
+  await waitMainIdle(ctx, chat.id, K_TURN_MS);
+  const chartRuns = (await mainRunIds()).filter((id) => !readRuns.includes(id));
+  const downloads = await exportedPngs(ctx, chartRuns);
+
+  let blindAnswered = false;
+  if (ctx.blind) {
+    const blindRun = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.blind(facts, ctx.blind.id));
+    const terminal = await waitRun(ctx, blindRun);
+    const { rows } = await ctx.db.query<{ hit: boolean }>(`SELECT m."content"::text ~* '\\mred\\M' AS "hit"
+      FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."id" = $1`, [blindRun]);
+    blindAnswered = terminal.status === "complete" && rows[0]?.hit === true;
+  }
+
+  const { settled, tools, turns, usage, wakeUps } = await commonEvidence(ctx, run, chat.id);
+  const threads = await threadIdsByName(ctx.db, chat.id);
+  const threadOf = (name: string) => threads.get(name)?.at(-1) ?? null;
+  const turnsOf = (name: string) => turns.filter((turn) => turn.threadId === threadOf(name));
+  const blindEvidence = ctx.blind ? { answered: blindAnswered, image: blindImageEvidence(tools, threadOf(blind)),
+    turn: turnsOf(blind).at(-1) ?? null } : null;
+  const images = { left: imageToolEvidence(tools, threadOf(left)), main: mainImageToolEvidence(tools, readRuns),
+    right: imageToolEvidence(tools, threadOf(right)) };
+  const mainImage = mainImageToolEvidence(tools, chartRuns);
+  const verdict = oracleKFlow({ blind: blindEvidence, callbacks: callbackEvidence(turns, wakeUps),
+    chart: { downloads, mainImage, turn: turnsOf(chart).at(-1) ?? null }, images, left: turnsOf(left), right: turnsOf(right), settled });
+  checks.push(...verdict.failed);
+  if (!usage.split) checks.push("usage_not_split");
+  Object.assign(run.line, { blind: blindEvidence ? { answered: blindEvidence.answered, image: blindEvidence.image,
+    turnState: blindEvidence.turn?.state ?? null } : "not_configured", chart: { downloads, mainImage }, flowCounts: verdict.counts, images,
+  checksFailed: checks, wallSeconds: seconds(started) });
+  return { success: checks.length === 0, usage };
+}
+
 async function runScenario(ctx: Context, id: SubagentScenarioId, index: number): Promise<SubagentRunRecord> {
   const run: Run = { chats: [], interactions: [], line: { run: index, scenario: id }, streams: [], tasks: [] };
   const started = Date.now();
@@ -996,6 +1084,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "H": outcome = await scenarioH(ctx, run); break;
       case "I": outcome = await scenarioI(ctx, run); break;
       case "J": outcome = await scenarioJ(ctx, run); break;
+      case "K": outcome = await scenarioK(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
@@ -1052,10 +1141,20 @@ async function main() {
       const added = await ensureModel(api, { apiRoot: route.apiRoot, model: options.secondModel }, secret, SECOND_MODEL_DISPLAY_NAME);
       second = await catalogModel(api, added);
     }
+    let blind: Context["blind"] = null;
+    if (scenarios.includes("K")) {
+      if (options.textModel !== null) {
+        const added = await ensureTextModel(api, options.textModel, process.env.OPENROUTER_API_KEY ?? fail("openrouter_key_required"));
+        blind = { id: options.textModel, model: await catalogModel(api, added) };
+      } else if (second && options.secondModel !== null && !second.capabilities.imageInput) {
+        blind = { id: options.secondModel, model: second };
+      }
+      if (blind?.model.capabilities.imageInput) fail("text_model_has_image_input");
+    }
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model, contextWindow: chatProvider.contextWindow,
-      reused: chatProvider.reused, secondModel: second !== null, restartHook: options.restart !== null, configuredBounds: target.configuredBounds,
-      scenarios, runs: options.runs });
-    const ctx: Context = { db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, second,
+      reused: chatProvider.reused, secondModel: second !== null, modelWithoutVision: blind !== null, restartHook: options.restart !== null,
+      configuredBounds: target.configuredBounds, scenarios, runs: options.runs });
+    const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, second,
       session: { api }, target };
     for (let index = 1; index <= options.runs; index += 1) {
       for (const id of scenarios) records.push(await runScenario(ctx, id, index));
