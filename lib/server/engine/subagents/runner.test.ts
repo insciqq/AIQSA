@@ -312,14 +312,17 @@ describe("sub-agent runner", () => {
   describe("a turn the Workspace refused", () => {
     const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.\nInternet inside the workspace: enabled.`;
     const withWorkspace = { ...request, prompt: { ...request.prompt, system: `Workspace contract.\n\n${paths}`, turnGuidance: [paths] },
-      workspace: { enabled: true, outputDirectory: "/workspace/out/1" } } as unknown as ProviderRunRequest;
+      workspaceCheckpoints: true, workspaceImageView: true, workspace: { enabled: true, outputDirectory: "/workspace/out/1" } } as unknown as ProviderRunRequest;
 
     it("runs as in a chat without one, is told why, and blocks with that reason when it needs it", async () => {
       const ctx = setup([{ text: "Outcome: blocked (workspace_busy)\nThe task needs a shell." }], { request: withWorkspace });
       const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ workspaceRefused: "workspace_busy" })));
       expect(result).toMatchObject({ outcome: "blocked", reason: "workspace_busy", state: "done" });
       // The registry and the prompt come from a request with no Workspace, which is what leaves its tools out.
-      expect(vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request.workspace).toBeUndefined();
+      const registered = vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request;
+      expect(registered.workspace).toBeUndefined();
+      expect(registered.workspaceCheckpoints).toBeUndefined();
+      expect(registered.workspaceImageView).toBeUndefined();
       const first = ctx.requests[0]!;
       expect(first.workspace).toBeUndefined();
       expect(first.prompt.system).not.toContain("# Workspace");
@@ -339,7 +342,10 @@ describe("sub-agent runner", () => {
     it("keeps the Workspace of a turn that attached", async () => {
       const ctx = setup([{ text: "Outcome: done\nOk." }], { request: withWorkspace });
       await ctx.runner.wait(await ctx.runner.start(ctx.input()));
-      expect(vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request.workspace).toEqual(withWorkspace.workspace);
+      const registered = vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request;
+      expect(registered.workspace).toEqual(withWorkspace.workspace);
+      expect(registered.workspaceCheckpoints).toBe(true);
+      expect(registered.workspaceImageView).toBe(true);
       expect(ctx.requests[0]!.prompt.system).toContain("# Workspace");
       const texts = userTexts(ctx.requests[0]!);
       expect(texts.join("\n")).toContain(WORKSPACE_TURN_GUIDANCE_PREFIX);
