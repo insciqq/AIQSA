@@ -10,6 +10,7 @@ import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } fr
 import type { ProviderAdapter, ProviderModelCapabilities, ProviderRunRequest } from "../../providers/types";
 import { json } from "../../runs/prismaRepositoryShared";
 import type { RunModelConfiguration } from "../../runs/runRepositoryContract";
+import { supportsWorkspaceImageView } from "../../workspace/directImageView";
 import type { SubagentModelEntry } from "./modelCatalog";
 
 /**
@@ -31,6 +32,8 @@ export type SubagentModelRoute = Readonly<{
   snapshot: ProviderExecutionSnapshot;
   /** The longest one request of this model may take. */
   timeoutMs: number;
+  /** This model views Workspace images itself: its own verified vision, never the parent's (`subagentRequest`). */
+  workspaceImageView?: true;
 }>;
 
 export type SubagentRouteResult =
@@ -143,7 +146,8 @@ export function parentSubagentRoute(input: Readonly<{
   if (!params) return { code: SUBAGENT_ERROR_CODES.effortUnsupported, ok: false };
   return { ok: true, route: { adapter: input.adapter, request: { modelCapabilities: input.request.modelCapabilities,
     modelId: input.request.modelId, params, provider: input.request.provider, reasoningEffort: input.effort },
-  snapshot: input.snapshot, timeoutMs: input.timeoutMs } };
+  snapshot: input.snapshot, timeoutMs: input.timeoutMs,
+  ...(input.request.workspaceImageView ? { workspaceImageView: input.request.workspaceImageView } : {}) } };
 }
 
 export function subagentBindingKey(entry: Pick<SubagentModelEntry, "connectionId" | "providerModelId">): string {
@@ -159,7 +163,9 @@ type CatalogPrisma = AdmissionPrisma & Pick<PrismaClient, "$transaction" | "mode
  * its binding once per run, connection and model; every use, that one and
  * later ones with any effort, derives the route from that stored execution
  * snapshot, and the runtime resolver reads the same binding, so a model's
- * fields and its credential always come from one admission.
+ * fields and its credential always come from one admission. Its verified
+ * vision is an admission fact the snapshot does not hold, so the binding keeps
+ * it beside the snapshot's fields; a binding without it counts as unverified.
  */
 export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: CatalogPrisma; runtime: ProviderRuntimeResolver }>):
   SubagentModelCatalog {
@@ -189,7 +195,7 @@ export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: Catal
           if (role.modelConfiguration.capabilities.toolCalling !== true) return unavailable;
           const data = { bindingKey, connectionId: role.snapshot.connectionId, credentialId: role.snapshot.credentialId,
             credentialSource: role.credentialSource, credentialVersionId: role.snapshot.credentialVersionId,
-            executionSnapshot: json(role.snapshot), modelRunId: runId, providerModelId: role.snapshot.providerModelId, role: "answer" as const };
+            executionSnapshot: json({ ...role.snapshot, ...(role.verifiedVisionInput ? { verifiedVisionInput: true } : {}) }), modelRunId: runId, providerModelId: role.snapshot.providerModelId, role: "answer" as const };
           const recorded = await input.prisma.$transaction(async (tx) => {
             const run = await tx.modelRun.findFirst({ select: { id: true }, where: { id: runId, status: active, userId } });
             if (!run) return false;
@@ -203,6 +209,7 @@ export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: Catal
         }
         const snapshot = normalizeProviderExecutionSnapshot(binding.executionSnapshot);
         const model = snapshot.model;
+        const verifiedVision = isRecord(binding.executionSnapshot) && binding.executionSnapshot.verifiedVisionInput === true;
         if (model.capabilities.toolCalling !== true) return unavailable;
         const facts: ModelFacts = { adapterKind: model.adapterKind, capabilities: model.capabilities, defaultParams: model.defaultParams,
           providerFamily: snapshot.providerFamily,
@@ -217,7 +224,8 @@ export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: Catal
         const runtime = await input.runtime.resolve(runId, "answer", bindingKey);
         return { ok: true, route: { adapter: runtime.adapter, request: { modelCapabilities: model.capabilities,
           modelId: model.upstreamModelId, params, provider: snapshot.providerFamily, reasoningEffort: effort },
-        snapshot, timeoutMs: runtime.responseTimeoutMs } };
+        snapshot, timeoutMs: runtime.responseTimeoutMs,
+        ...(supportsWorkspaceImageView(model.adapterKind, verifiedVision) ? { workspaceImageView: true as const } : {}) } };
       } catch (error) {
         if (!(error instanceof ProviderAdmissionError)) {
           logEvent("service_operation", { action: "degrade", code: "subagent_model_unavailable", error, outcome: "degraded",
