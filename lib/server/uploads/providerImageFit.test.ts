@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { fitImageForProvider, PROVIDER_IMAGE_MAX_PATCHES, ProviderImageTooLargeError, providerImageTargetSize } from "./providerImageFit";
+import { fitImageForProvider, oneResizeAtATime, PROVIDER_IMAGE_MAX_PATCHES, ProviderImageTooLargeError,
+  providerImageTargetSize } from "./providerImageFit";
 
 const measured = (width: number, height: number) => Math.ceil(width / 32) * Math.ceil(height / 32);
 const flat = (width: number, height: number) => sharp({ create: { background: "#808080", channels: 3, height, width } });
@@ -68,13 +69,20 @@ describe("the copy of an oversized image", () => {
     expect(await fitImageForProvider(await big.clone().jpeg({ quality: 10 }).toBuffer())).not.toBeNull();
   });
 
-  it("resizes one image at a time across concurrent requests", async () => {
-    const source = await flat(6500, 4900).jpeg().toBuffer();
-    const finished: number[] = [];
-    const slow = fitImageForProvider(source).then(() => finished.push(1));
-    const next = fitImageForProvider(source).then(() => finished.push(2));
-    await Promise.all([slow, next]);
-    expect(finished).toEqual([1, 2]);
+  it("resizes one image at a time, and a failed one does not stop the next", async () => {
+    let running = 0;
+    let most = 0;
+    const work = (fails: boolean) => oneResizeAtATime(async () => {
+      running += 1;
+      most = Math.max(most, running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running -= 1;
+      if (fails) throw new Error("resize failed");
+      return "done";
+    });
+    const results = await Promise.allSettled([work(false), work(true), work(false)]);
+    expect(most).toBe(1);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
   });
 
   it("stops when the run was cancelled", async () => {

@@ -28,7 +28,7 @@ export class ProviderImageTooLargeError extends Error {
 
 // One decode at a time across the process: runs and their attachment workers would otherwise add up.
 let resizing: Promise<unknown> = Promise.resolve();
-function oneAtATime<T>(work: () => Promise<T>): Promise<T> {
+export function oneResizeAtATime<T>(work: () => Promise<T>): Promise<T> {
   const turn = resizing.then(work, work);
   resizing = turn.catch(() => undefined);
   return turn;
@@ -72,7 +72,7 @@ export async function fitImageForProvider(bytes: Buffer, signal?: AbortSignal): 
     (metadata.isProgressive ? PROVIDER_IMAGE_MAX_PROGRESSIVE_SOURCE_PIXELS : PROVIDER_IMAGE_MAX_SOURCE_PIXELS)) {
     throw new ProviderImageTooLargeError(metadata.width, metadata.height);
   }
-  return oneAtATime(async () => {
+  return oneResizeAtATime(async () => {
     signal?.throwIfAborted();
     const resized = sharp(bytes, { failOn: "none", limitInputPixels: PROVIDER_IMAGE_MAX_SOURCE_PIXELS }).rotate()
       .timeout({ seconds: 30 }).resize({ fit: "fill", height: target.height, width: target.width });
