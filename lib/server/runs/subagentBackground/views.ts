@@ -220,9 +220,9 @@ function storedActivityEntries(result: unknown): ThreadWorkspaceActivityEntry[] 
 
 /**
  * A turn's Workspace steps. A sub-agent publishes no activity events of its own, so they come from its recorded calls:
- * a settled call's stored entries, which update an async command's starting row by id, and for a call with no outcome
- * (still running, or ended with the run) a row from its arguments. The thread shows them, and they tell the live
- * Browser panel that this agent browses.
+ * a settled call's stored entries, which update an async command's starting row by id, and a row from its arguments for
+ * a call still running, or one whose result holds none (a timeout, an oversized result, the run ending), which is an
+ * unknown step. The thread shows them, and they tell the live Browser panel that this agent browses.
  */
 export function subagentTurnWorkspaceActivity(input: Readonly<{
   active: boolean; calls: readonly TurnWorkspaceCall[]; definitions: unknown; runId: string;
@@ -233,12 +233,14 @@ export function subagentTurnWorkspaceActivity(input: Readonly<{
       ? [[tool.namespacedName, tool.originalName as WorkspaceMcpToolName]] : [];
   }));
   const entries = input.calls.flatMap((call) => {
-    if (call.result !== null && call.result !== undefined && !isRunEndedToolCallResult(call.result)) return storedActivityEntries(call.result);
+    const settled = call.result !== null && call.result !== undefined && !isRunEndedToolCallResult(call.result);
+    const stored = settled ? storedActivityEntries(call.result) : [];
+    if (stored.length > 0) return stored;
     const originalName = originals.get(call.toolName);
     if (!originalName || typeof call.arguments !== "object" || call.arguments === null || Array.isArray(call.arguments)) return [];
     const entry = projectWorkspaceActivity({ arguments: call.arguments as Record<string, unknown>, callId: call.id, originalName,
       runId: input.runId, ...(call.startedAt ? { startedAt: call.startedAt } : {}) }, "running");
-    return entry ? [entry] : [];
+    return entry ? [settled ? { ...entry, phase: "unknown" as const } : entry] : [];
   }).map((entry, sequence) => ({ ...entry, sequence }));
   if (entries.length === 0) return null;
   return { entries: foldWorkspaceActivityEntries(entries, input.active ? null : "complete") };

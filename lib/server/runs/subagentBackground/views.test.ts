@@ -166,8 +166,14 @@ describe("subagentTurnWorkspaceActivity", () => {
     expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "unknown" });
   });
 
-  it("skips a malformed stored entry and has nothing to show without Workspace calls", () => {
-    expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1", { result: stored({ id: "bad" }) })], definitions, runId: "run-1" })).toBeNull();
+  it("keeps a settled call whose result holds no entry, such as a timeout, as an unknown step", () => {
+    const result = { callId: "provider", content: [{ type: "json", value: { error: "workspace_tool_timeout" } }], name: "tool", status: "error" };
+    const activity = subagentTurnWorkspaceActivity({ active: true, calls: [call("c1", { result }), call("c2", { result: stored({ id: "bad" }) })], definitions, runId: "run-1" });
+    expect(activity?.entries).toHaveLength(2);
+    expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "unknown" });
+  });
+
+  it("has nothing to show without Workspace calls", () => {
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1")], definitions: null, runId: "run-1" })).toBeNull();
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [], definitions, runId: "run-1" })).toBeNull();
   });
