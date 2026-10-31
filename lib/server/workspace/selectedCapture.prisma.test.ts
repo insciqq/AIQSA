@@ -95,13 +95,12 @@ async function fixture() {
     await runtime.claimSessionOperation!({ operation: current.operation, sessionId: session.id, runtimeSandboxId: live.runtimeSandboxId });
     return scope();
   };
-  /** A second active run of the chat, attached under the running operation as a background sub-agent's is. */
+  /** A later run attached under the operation the first one claimed, which stays the session's fence after that run ended. */
   const attachedRun = async () => {
+    await prisma.modelRun.update({ where: { id: current.runId }, data: { status: "complete" } });
     const attached = await makeRun();
     await bind(attached.id);
-    for (const runId of [current.runId, attached.id]) {
-      await recordWorkspaceAttachment(prisma, { chatId: chat.id, generation: current.operation.generation, runId });
-    }
+    await recordWorkspaceAttachment(prisma, { chatId: chat.id, generation: current.operation.generation, runId: attached.id });
     return attached.id;
   };
   return { service, runtime, raw, storage, scope, write, nextRun, attachedRun, current, session, live, chat, userId };
