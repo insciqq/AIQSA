@@ -263,7 +263,10 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
   /** Persist before guest I/O, including attempts with an ambiguous result. */
   markGuestUsed(binding: WorkspaceExecutionBinding): Promise<boolean>;
-  /** Release an unused run's authority without changing the guest or its activity window. */
+  /**
+   * Release an unused run's authority without changing the guest or its activity window. False when the run must
+   * settle like any other: it used the guest, or it is the last run of a session whose VM runs or is starting.
+   */
   retireUnusedRun(binding: WorkspaceExecutionBinding): Promise<boolean>;
   /**
    * `required`: a scheduled task's rotation carried this seed, so no run of
@@ -612,6 +615,9 @@ export function createPrismaWorkspaceCoordinatorRepository(
           await tx.workspaceRunAttachment.deleteMany({ where: { modelRunId: binding.runId } });
           return true;
         }
+        // A run that left earlier started this VM, and admission refuses a RUNNING or CREATING session with no owner:
+        // only the ordinary path closes the operation, stops the VM and frees the chat.
+        if (session.state === "RUNNING" || session.state === "CREATING") return false;
         await tx.workspaceRunAttachment.deleteMany({ where: { chatId: session.chatId } });
         await tx.workspaceSession.update({ where: { id: binding.sessionId },
           data: { operationOwner: null, operationExpiresAt: null } });
@@ -2373,11 +2379,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
         !(await input.repository.closeRunOperation({ binding: current, force: false }).catch(() => true))) {
         others = await otherAttachedRuns(current);
       }
-      let browserSaved = false;
+      // A run that never used the guest made no sign-in of its own, and the chat waits on this settlement.
+      let browserSaveOwed = !skipBrowserSave && current.guestUsed;
       if (others.length > 0) {
         if (await stopRunProcesses(current)) {
-          if (!skipBrowserSave) await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
-          browserSaved = true;
+          if (browserSaveOwed) await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
+          browserSaveOwed = false;
           const detached = await input.repository.detachRun?.({ binding: current, stopProven: true }).catch(() => false) ?? false;
           // Runs that end together each saw the others still attached (a run's status is written after its detach), so
           // none would take the last run's path: the one whose detach leaves no attachment closes the operation, in one
@@ -2399,7 +2406,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         }
       }
       let quiescence = await quiesceRun(current);
-      if (quiescence.proven && !skipBrowserSave && !browserSaved && isWorkspaceRunOperation(current.operationOwner)) {
+      if (quiescence.proven && browserSaveOwed && isWorkspaceRunOperation(current.operationOwner)) {
         await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
       }
       try {

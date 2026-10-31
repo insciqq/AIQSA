@@ -208,6 +208,16 @@ describe("Workspace attachments on PostgreSQL", () => {
     expect(await prisma.workspaceRunAttachment.count({ where: { chatId: f.chatId } })).toBe(0);
   });
 
+  it.each(["RUNNING", "CREATING"] as const)("keeps a last unused run's operation over a %s session for the path that stops the VM", async (state) => {
+    const f = await chatFixture(1);
+    expect(await attachments.attach(f.subagentAttachment(0))).toMatchObject({ kind: "attached" });
+    const held = await prisma.workspaceSession.update({ data: { state }, where: { id: f.sessionId } });
+    const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
+    expect(await repository.retireUnusedRun((await repository.binding({ runId: f.background[0]!.runId, userId: f.userId }))!)).toBe(false);
+    expect(await sessionRow(f.sessionId)).toMatchObject({ operationOwner: held.operationOwner, state, version: held.version });
+    expect(await prisma.workspaceRunAttachment.count({ where: { chatId: f.chatId } })).toBe(1);
+  });
+
   it("binds a background run to its parent's admitted Workspace with its own output folder", async () => {
     const f = await chatFixture(0);
     const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: f.main.id, ordinal: 9,
