@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
 import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
@@ -7,12 +8,14 @@ import { prisma } from "../prisma";
 import { createPrismaRetentionRepository } from "../retention/prune";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { joinWorkspaceRunOperation } from "./attachments";
 import { getWorkspaceConfig } from "./config";
 import { createPrismaWorkspaceCoordinatorRepository } from "./coordinator";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { WorkspaceRuntimeError } from "./runtime";
 import { createWorkspaceSelectedCaptures, type WorkspaceCaptureReference } from "./selectedCapture";
+import { lockWorkspaceSession } from "./sessionOperation";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
 const cleanups: Array<() => Promise<void>> = [];
@@ -94,7 +97,23 @@ async function fixture() {
     await runtime.claimSessionOperation!({ operation: current.operation, sessionId: session.id, runtimeSandboxId: live.runtimeSandboxId });
     return scope();
   };
-  return { service, runtime, raw, storage, scope, write, nextRun, current, session, live, chat, userId };
+  const attachSubagent = async () => {
+    const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: current.runId, ordinal: 0,
+      providerCallId: "capture-subagent", roundIndex: 0, toolName: "call_subagent" } });
+    const thread = await prisma.subagentThread.create({ data: { anchorRunId: current.runId, chatId: chat.id, name: "image-reader", userId } });
+    const turn = await prisma.subagentTurn.create({ data: { chatId: chat.id, mode: "background", modelId: "fake-qsa",
+      parentRunId: current.runId, parentToolCallId: call.id, provider: "fake", threadId: thread.id, userId } });
+    const subagent = await prisma.modelRun.create({ data: { chatId: chat.id, userId, userMessageId: message.id,
+      provider: "fake", modelId: "fake-qsa", normalizedRequest: {}, status: "in_progress",
+      subagentThreadId: thread.id, subagentTurnId: turn.id } });
+    await bind(subagent.id);
+    await prisma.$transaction(async tx => {
+      const locked = await lockWorkspaceSession(tx, session.id);
+      expect(await joinWorkspaceRunOperation(tx, locked!, subagent.id)).toBe(true);
+    });
+    return { runId: subagent.id, userId, consumerKey: "subagent-image" };
+  };
+  return { service, runtime, raw, storage, scope, write, nextRun, attachSubagent, current, session, live, chat, userId };
 }
 
 const selection = [{ root: "project" as const, relativePath: "данные.txt" }];
@@ -106,6 +125,47 @@ const read = async (f: Awaited<ReturnType<typeof fixture>>, ref: WorkspaceCaptur
   new Response(await f.service.openFile({ ...ref, relativePath: path })).text();
 
 describe("selected capture durable ownership", () => {
+  it("captures and reads images for two attached runs without changing their own producer identity", async () => {
+    const f = await fixture();
+    const subagent = await f.attachSubagent();
+    const bytes = await sharp({ create: { width: 3, height: 2, channels: 3, background: "#ff0000" } }).png().toBuffer();
+    await f.runtime.callBoundTool({ operation: f.current.operation, sessionId: f.session.id, runtimeSandboxId: f.live.runtimeSandboxId,
+      modelRunId: f.current.runId, modelRunToolCallId: randomUUID(), originalName: "sandbox_fs_write",
+      arguments: { path: "/workspace/project/image.png", content: bytes.toString("base64"), encoding: "base64" } });
+    expect(await prisma.workspaceRunAttachment.count({ where: { chatId: f.chat.id, operationGeneration: f.current.operation.generation } })).toBe(2);
+    const collect = vi.spyOn(f.runtime, "collectOutputs");
+    for (const consumer of [f.scope(), subagent]) {
+      const input = { ...consumer, requestKey: "shared-image", files: [{ root: "project" as const, relativePath: "image.png" }] };
+      const capture = await f.service.create(input);
+      expect(await f.service.create(input)).toEqual(capture);
+      const row = await prisma.workspaceSelectedCapture.findUniqueOrThrow({ where: { id: capture.id } });
+      expect(row).toMatchObject({ modelRunId: consumer.runId, producerOwner: `run:${consumer.runId}`,
+        producerGeneration: f.current.operation.generation, selection: {
+          producerOperation: { generation: f.current.operation.generation, owner: `run:${consumer.runId}` }
+        } });
+      const ref = { ...consumer, captureId: capture.id };
+      const image = await f.service.imageSource({ ...ref, relativePath: "project/image.png" });
+      await image.assertAccess();
+      expect(Buffer.from(await new Response(await image.open()).arrayBuffer())).toEqual(bytes);
+      expect(collect.mock.calls.at(-1)![0]).toMatchObject({ modelRunId: consumer.runId, operation: f.current.operation,
+        selection: { producerOperation: f.current.operation }, capture: { create: false } });
+      if (consumer.runId === subagent.runId) {
+        await expect(prisma.workspaceSelectedCapture.create({ data: {
+          id: randomUUID().replaceAll("-", ""), modelRunId: row.modelRunId, workspaceSessionId: row.workspaceSessionId,
+          runtimeSandboxId: row.runtimeSandboxId, requestKey: "forged-owner", requestHash: row.requestHash,
+          producerGeneration: row.producerGeneration, producerOwner: f.current.operation.owner,
+          selection: { files: input.files, producerOperation: f.current.operation }
+        } })).rejects.toThrow();
+        await prisma.workspaceRunAttachment.delete({ where: { modelRunId: subagent.runId } });
+        collect.mockClear();
+        await expect(f.service.create({ ...input, requestKey: "detached" })).rejects.toThrow("workspace_capture_stale");
+        await expect(image.open()).rejects.toThrow("workspace_capture_stale");
+        expect(collect).not.toHaveBeenCalled();
+      }
+    }
+    expect(await prisma.workspaceSelectedCapture.count({ where: { workspaceSessionId: f.session.id } })).toBe(2);
+  });
+
   it("rejects a timed export owner while the originating run is still active", async () => {
     const f = await fixture();
     await f.write("project", "данные.txt", "private selected bytes");
