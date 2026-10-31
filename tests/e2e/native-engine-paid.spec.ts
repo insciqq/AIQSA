@@ -40,6 +40,20 @@
  * synthetic and sends nothing; the dropped stream is a real request). Run 3:
  * one turn of one request.
  *
+ * The attached-PDF scenario of run 1 costs more; `-g "survives a compaction of
+ * that turn"` selects it alone. One run of 8 tool rounds and its answer (9
+ * requests of up to about 55k input tokens, cached in part) with one or two
+ * compactions of one to three summary calls each. Each of its two window
+ * publications makes the Admin path check the model again, and on a route
+ * without a verified direct PDF the assigned reader adds one transcription.
+ * It alone runs at a small window (`ATTACHED_TURN`, overridden by
+ * AIQSA_FEATURES_ATTACHED_TURN_WINDOW when a stand's fixed prompt moves the
+ * compaction out of the turn), outside the 2026-10-23 decision on real
+ * windows: it proves the shape of a request after a compaction, which the
+ * window does not change, and not how compaction behaves at real sizes. At
+ * 64k the engine compacted in the background on codex-lb; at 32k it could not
+ * (commit 0b653d03b).
+ *
  * Oracles are the browser's own run stream (event kinds, counts, times and
  * text lengths recorded by a content-free probe), the persisted runs,
  * transcript items, usage rows and approvals, the synthetic peer's received
@@ -53,19 +67,26 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { PrismaClient, type ModelRun } from "@prisma/client";
+import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { expect, test, type Browser, type Locator, type Page, type TestInfo } from "@playwright/test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
+import { decodeAdminProviderModelSaveReceipt } from "../../lib/contracts/adminProviderModelSave";
+import type { AdminSystemModelPolicyResponse } from "../../lib/contracts/adminSystemModelPolicy";
+import type { CatalogModel } from "../../lib/contracts/catalog";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import { textFromContentBlocks } from "../../lib/domain/modelRunEvents";
+import { contextWindowUpdate, readConnections, type JourneyProviderModel } from "../../scripts/context-compaction-journey-support";
 import { selectModel } from "./shell/composer";
 import { keepAccountMcpDefault } from "./support/chatDefaults";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { snapshotComposerDefaults, turnComposerToolsOff } from "./support/composerToolsOff";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
-import { createWriteApprovalFixture, startMutableMcpEndpoint } from "./support/mutableMcpEndpoint";
-import { newExcludedChat, paidEnv, pollUntil, setupCodexLbAnswerModel, type PaidAnswerModel } from "./support/paidProviders";
+import { createWriteApprovalFixture, startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
+import {
+  newExcludedChat, PAID_SETUP_TIMEOUT_MS, paidEnv, pollUntil, setupCodexLbAnswerModel, waitForCatalogModel, type PaidAnswerModel
+} from "./support/paidProviders";
 import { disableMemoryRecall, lastAnswer } from "./support/workspace";
 
 const prisma = new PrismaClient();
@@ -85,6 +106,20 @@ const DESKTOP = { height: 900, width: 1440 };
 const PHONE = { height: 844, width: 390 };
 /** The smallest jittered backoff after a first failed attempt (`MODEL_CALL_RETRY`: base 2 s, jitter 0.5–1). */
 const MIN_FIRST_RETRY_DELAY_MS = 1_000;
+/**
+ * The attached-PDF scenario. At the window's 72 % (about 43k) a compaction starts in the background; at 85 % (about 51k)
+ * the next request waits for it, so it lands inside the turn however long the summary takes. With the fixed prompt and
+ * tools at 12-20k and a record at about 7k tokens, that is rounds 4-6. A record stays below `TOOL_RESULT_LIMITS.inlineChars`,
+ * so the context grows by all of it, and each one is a step inside the 72-85 % band. Records of only 5k tokens still
+ * reach the wait at the last call, so the final request goes out compacted.
+ */
+const ATTACHED_TURN = Object.freeze({
+  contextWindow: Number(paidEnv("AIQSA_FEATURES_ATTACHED_TURN_WINDOW") ?? 64_000),
+  /** The fixture refuses every call past this one, so a model that keeps calling adds no more context. */
+  maxToolRounds: 10,
+  recordLines: 300,
+  toolCalls: 8
+});
 
 // ---------------------------------------------------------------------------
 // A content-free probe of the browser's run streams
@@ -406,6 +441,146 @@ const codeWord = (prefix: string) => `${prefix}${randomUUID().replaceAll("-", ""
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
 // ---------------------------------------------------------------------------
+// MCP fixture and Admin settings
+
+/** Registers the synthetic peer through Admin, as an administrator would. */
+async function createMcpFixture(page: Page, endpoint: MutableMcpEndpoint, name: string, description: string): Promise<AdminMcpServer> {
+  const created = await page.request.post("/api/admin/mcp", { data: {
+    activate: false,
+    description,
+    draft: { auth: { mode: "none" }, runtime: { callTimeoutMs: 60_000, startupTimeoutMs: 10_000 }, slots: [],
+      source: { allowPrivateNetwork: true, kind: "remote", url: endpoint.url }, transport: "streamable_http" },
+    name,
+    sharedValues: {}
+  } });
+  expect(created.status()).toBe(201);
+  return (await created.json() as { server: AdminMcpServer }).server;
+}
+
+/** Tests and publishes the peer, grants it to the stand's user and turns it on for them. */
+async function publishMcpFixture(page: Page, stand: Stand, server: AdminMcpServer): Promise<void> {
+  expect((await page.request.post(`/api/admin/mcp/${server.id}/test`, { data: {
+    expectedUpdatedAt: server.updatedAt, oneTimeValues: {}, publish: true
+  } })).status()).toBe(200);
+  expect((await page.request.put(`/api/admin/mcp/${server.id}/grants`, { data: {
+    canUse: true, personalSlotKeys: [], userId: stand.userId
+  } })).ok()).toBe(true);
+  expect((await page.request.patch(`/api/me/mcp/${server.id}`, { data: { enabled: true } })).ok()).toBe(true);
+}
+
+async function chooseMcpLoadAll(page: Page): Promise<void> {
+  const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
+  await mcpMode.click();
+  await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
+  await expect(mcpMode).toHaveAccessibleDescription(/^MCP: Load all/u);
+}
+
+/** The stand's model as Admin holds it, once no check of it runs. */
+async function settledAdminModel(page: Page, model: PaidAnswerModel): Promise<JourneyProviderModel> {
+  return pollUntil(PAID_SETUP_TIMEOUT_MS, async () => {
+    const connection = readConnections(await (await page.request.get("/api/admin/providers")).json())
+      ?.find((candidate) => candidate.id === model.connectionId);
+    return connection && !connection.checkRunning ? connection.models.find((candidate) => candidate.id === model.modelId) ?? null : null;
+  }, "codex_lb_checks_timeout");
+}
+
+/** Publishes the administrator-set window; returns the one it replaced and the model as the catalog then offers it. */
+async function publishContextWindow(page: Page, model: PaidAnswerModel, contextWindow: number): Promise<Readonly<{
+  catalog: CatalogModel; previous: number;
+}>> {
+  const current = await settledAdminModel(page, model);
+  const previous = current.activeConfig?.capabilities.contextWindow;
+  if (previous === undefined) throw new Error("codex_lb_window_missing");
+  const update = contextWindowUpdate(current, contextWindow);
+  if (update) {
+    const saved = await page.request.patch(
+      `/api/admin/providers/${encodeURIComponent(model.connectionId)}/models/${encodeURIComponent(model.modelId)}`,
+      { data: update, timeout: PAID_SETUP_TIMEOUT_MS });
+    expect(saved.ok(), `the window is saved (${saved.status()})`).toBe(true);
+    const receipt = decodeAdminProviderModelSaveReceipt((await saved.json() as { receipt?: unknown }).receipt);
+    expect(receipt?.publication, "the window is published").toBe("active");
+  }
+  await settledAdminModel(page, model);
+  const catalog = await waitForCatalogModel(page.request, model.connectionId,
+    (candidate) => candidate.modelId === model.modelId && candidate.contextWindow === contextWindow);
+  return { catalog, previous };
+}
+
+async function systemModelPolicy(page: Page): Promise<AdminSystemModelPolicyResponse["systemModelPolicy"]> {
+  const response = await page.request.get("/api/admin/providers/system-model-policy");
+  expect(response.ok(), `the system model policy is readable (${response.status()})`).toBe(true);
+  return (await response.json() as AdminSystemModelPolicyResponse).systemModelPolicy;
+}
+
+async function assignPdfReader(page: Page, providerModelId: string | null): Promise<void> {
+  const { policy } = await systemModelPolicy(page);
+  const saved = await page.request.patch("/api/admin/providers/system-model-policy", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
+    chatPdfProviderModelId: providerModelId, chatPdfReasoningEffort: null, expectedVersion: policy.version
+  } });
+  expect(saved.ok(), `the PDF reader role is saved (${saved.status()})`).toBe(true);
+}
+
+/**
+ * A chat refuses a PDF without a route (`resolveChatPdfRoute`), so the scenario makes sure of one before it pays for a
+ * turn: the model's verified direct PDF, the stand's assigned reader, or else the model itself reading page images.
+ * Returns the route and the role to give back, if it assigned one.
+ */
+async function ensurePdfRoute(page: Page, model: PaidAnswerModel, catalog: CatalogModel): Promise<Readonly<{
+  assigned: boolean; route: "assigned_reader" | "direct_pdf" | "existing_reader";
+}>> {
+  if (catalog.capabilities.documentInputMode === "native_pdf") return { assigned: false, route: "direct_pdf" };
+  const roles = await systemModelPolicy(page);
+  if (roles.policy.chatPdfModel?.available) return { assigned: false, route: "existing_reader" };
+  const readsPages = roles.documentCandidates.some((candidate) => candidate.id === model.modelId && candidate.visionInput === "verified");
+  expect(readsPages, "pdf_route_unavailable: the model has neither direct PDF nor verified vision, and the stand no PDF reader").toBe(true);
+  await assignPdfReader(page, model.modelId);
+  return { assigned: true, route: "assigned_reader" };
+}
+
+// ---------------------------------------------------------------------------
+// The attached-PDF scenario
+
+/** A one-page PDF with a text layer that shows `word`, large enough to read from a page image too. */
+async function codeWordPdf(word: string): Promise<Buffer> {
+  const document = await PDFDocument.create();
+  const pdfPage = document.addPage([612, 792]);
+  pdfPage.drawText("Synthetic note", { size: 24, x: 72, y: 700 });
+  pdfPage.drawText(`The code word is ${word}.`, { size: 24, x: 72, y: 650 });
+  return Buffer.from(await document.save());
+}
+
+/** One record of incompressible filler that is about 7k tokens of the context, new on every call. */
+function fillerRecord(id: string): string {
+  const label = id.slice(0, 16);
+  return Array.from({ length: ATTACHED_TURN.recordLines }, (_, line) =>
+    `${label} line ${line + 1}: ${randomBytes(16).toString("hex")}`).join("\n");
+}
+
+/** Provider-reported input of the run's model requests, in order: what a wrong window is read from. */
+async function reportedInputs(runId: string): Promise<(number | null)[]> {
+  const rows = await prisma.usageEvent.findMany({ orderBy: { createdAt: "asc" }, select: { inputTokens: true },
+    where: { modelRunId: runId, purpose: "chat_answer" } });
+  return rows.map((row) => row.inputTokens);
+}
+
+/** The main agent's transcript of the run, reduced to what the scenario decides on. */
+async function transcriptFacts(runId: string, word: string) {
+  const rows = await prisma.runTranscriptItem.findMany({ orderBy: { sequence: "asc" }, select: { body: true, id: true, kind: true, sequence: true },
+    where: { modelRunId: runId, subagentThreadId: null } });
+  const ids = new Set(rows.map((row) => row.id));
+  const later = (sequence: number) => rows.some((row) => row.sequence > sequence && (row.kind === "assistant_text" || row.kind === "tool_call"));
+  const compactions = rows.filter((row) => row.kind === "compaction").map((row) => {
+    const keepFromId = (row.body as { keepFromId?: unknown } | null)?.keepFromId;
+    return { keepsItemOfRun: typeof keepFromId === "string" && ids.has(keepFromId), modelWorkedAfter: later(row.sequence),
+      tailId: typeof keepFromId === "string" };
+  });
+  // The answer's own text is the last. Reasoning is left out: it is opaque, and a compaction drops it.
+  const finalText = [...rows].reverse().find((row) => row.kind === "assistant_text");
+  return { compactions,
+    wordBeforeAnswer: rows.some((row) => row !== finalText && row.kind !== "reasoning" && JSON.stringify(row.body).includes(word)) };
+}
+
+// ---------------------------------------------------------------------------
 // Run 1: core scenarios on a server without injected faults
 
 test.describe("native engine on Codex LB", () => {
@@ -491,32 +666,14 @@ test.describe("native engine on Codex LB", () => {
       const serverName = `Native approval records ${randomUUID().slice(0, 8)}`;
       let serverId: string | null = null;
       try {
-        const created = await page.request.post("/api/admin/mcp", { data: {
-          activate: false,
-          description: "Synthetic records server for the native engine's write approval",
-          draft: { auth: { mode: "none" }, runtime: { callTimeoutMs: 60_000, startupTimeoutMs: 10_000 }, slots: [],
-            source: { allowPrivateNetwork: true, kind: "remote", url: endpoint.url }, transport: "streamable_http" },
-          name: serverName,
-          sharedValues: {}
-        } });
-        expect(created.status()).toBe(201);
-        const server = (await created.json() as { server: AdminMcpServer }).server;
+        const server = await createMcpFixture(page, endpoint, serverName, "Synthetic records server for the native engine's write approval");
         serverId = server.id;
-        expect((await page.request.post(`/api/admin/mcp/${server.id}/test`, { data: {
-          expectedUpdatedAt: server.updatedAt, oneTimeValues: {}, publish: true
-        } })).status()).toBe(200);
-        expect((await page.request.put(`/api/admin/mcp/${server.id}/grants`, { data: {
-          canUse: true, personalSlotKeys: [], userId: stand.userId
-        } })).ok()).toBe(true);
-        expect((await page.request.patch(`/api/me/mcp/${server.id}`, { data: { enabled: true } })).ok()).toBe(true);
+        await publishMcpFixture(page, stand, server);
         // No earlier consent may skip the card this scenario expects.
         await page.request.delete(`/api/me/mcp-consents/${server.id}`).catch(() => undefined);
 
         const chatId = await openChat(page, stand, "Native MCP approval");
-        const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
-        await mcpMode.click();
-        await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
-        await expect(mcpMode).toHaveAccessibleDescription(/^MCP: Load all/u);
+        await chooseMcpLoadAll(page);
 
         const earlier = await runIds(chatId);
         await sendComposer(page, "This is a test with a synthetic records server. Call the delete_record tool exactly once with " +
@@ -616,6 +773,89 @@ test.describe("native engine on Codex LB", () => {
 
       await desktopShot(page, testInfo, lastAnswer(page), "05-continued-answer");
       await phoneShot(browser, baseURL!, chatId, testInfo, "05-continued-answer", (phone) => lastAnswer(phone));
+    });
+  });
+
+  // Last in the block: this scenario republishes the serial model's window, and a failure here stops nothing after it.
+  test("a long turn with an attached PDF survives a compaction of that turn", async ({ page }, testInfo) => {
+    test.setTimeout(45 * 60_000);
+    await withNativeStand(page, testInfo, "native-attached-compaction", async (stand) => {
+      const startedAt = new Date();
+      // Only the PDF holds it: it is in no prompt, record or file name.
+      const word = codeWord("LANTERN-");
+      const ids = Array.from({ length: ATTACHED_TURN.toolCalls }, (_, index) => `r-${index + 1}`);
+      let served = 0;
+      // Read-only by its annotation, so no call waits for an approval.
+      const tools = createWriteApprovalFixture().tools.filter((tool) => tool.name === "read_record");
+      const callTool = (_name: string, args: Readonly<Record<string, unknown>>): CallToolResult => {
+        served += 1;
+        return served <= ATTACHED_TURN.maxToolRounds && typeof args.id === "string"
+          ? { content: [{ text: fillerRecord(args.id), type: "text" }] }
+          : { content: [{ text: "No more records.", type: "text" }], isError: true };
+      };
+      const host = paidEnv("AIQSA_FEATURES_FIXTURE_HOST");
+      const publicHost = paidEnv("AIQSA_FEATURES_FIXTURE_PUBLIC_HOST");
+      const endpoint = await startMutableMcpEndpoint(tools, { callTool, ...(host ? { host } : {}), ...(publicHost ? { publicHost } : {}) });
+      let serverId: string | null = null;
+      let previousWindow: number | null = null;
+      let assignedReader = false;
+      try {
+        const server = await createMcpFixture(page, endpoint, `Native long turn records ${randomUUID().slice(0, 8)}`,
+          "Synthetic read-only records server for a long turn of the native engine");
+        serverId = server.id;
+        await publishMcpFixture(page, stand, server);
+        const published = await publishContextWindow(page, stand.model, ATTACHED_TURN.contextWindow);
+        previousWindow = published.previous;
+        const pdfRoute = await ensurePdfRoute(page, stand.model, published.catalog);
+        assignedReader = pdfRoute.assigned;
+
+        const chatId = await openChat(page, stand, "Native long turn with a PDF");
+        await chooseMcpLoadAll(page);
+        await page.getByLabel("Attach files").setInputFiles({ buffer: await codeWordPdf(word), mimeType: "application/pdf", name: "note.pdf" });
+        const item = page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: "note.pdf" });
+        await expect(item).toHaveAttribute("data-attachment-status", "ready", { timeout: 180_000 });
+
+        const earlier = await runIds(chatId);
+        await sendComposer(page, `This is a test with a synthetic records server and the attached PDF. Call the read_record tool exactly ` +
+          `${ids.length} times, once with each of these ids, in this order: ${ids.join(", ")}. Make one call at a time and wait for its ` +
+          "result before the next. Do not call any other tool. The records are meaningless filler: do not quote or summarize them. " +
+          "Write nothing between the calls, and say nothing about the PDF before the last call has returned. After the last result, " +
+          "reply in one short sentence that states the code word written in the attached PDF.");
+        const run = await settledRun((await newRun(chatId, earlier)).id);
+        await waitAnswerSettled(page);
+        const stream = await runStreamFacts(page, run.id);
+        const text = await answerText(run);
+        const transcript = await transcriptFacts(run.id, word);
+        const errorCode = (run.errorPayload as { code?: unknown } | null)?.code ?? null;
+        const incidents = await prisma.telemetryIncident.count({ where: { code: "run_current_input_missing", occurredAt: { gte: startedAt } } });
+        stand.summary.attachedCompaction = { compactions: transcript.compactions, contextWindow: ATTACHED_TURN.contextWindow, dispatches: served,
+          incidents, inputTokens: await reportedInputs(run.id), kinds: await transcriptKinds(run.id), pdfRoute: pdfRoute.route,
+          run: { engine: run.engine, status: run.status }, stream, wordBeforeAnswer: transcript.wordBeforeAnswer, wordInAnswer: text.includes(word) };
+
+        for (const id of ids) expect(endpoint.dispatches("read_record", { id }), "the model made the planned call").toBeGreaterThanOrEqual(1);
+        expect(served, "the turn stayed within its rounds").toBeLessThanOrEqual(ATTACHED_TURN.maxToolRounds);
+        expect(stream.doneStatus, "the stream ends complete").toBe("complete");
+        expect(stream.errorCode).toBeNull();
+        expect(errorCode).toBeNull();
+        expect(incidents, "no request lost the run's input").toBe(0);
+        // Each cut lies inside this run, so past its input, and the model answered at least one request built from it.
+        // Otherwise read `inputTokens` in the summary and move AIQSA_FEATURES_ATTACHED_TURN_WINDOW: this run proved nothing.
+        expect(transcript.compactions.length, "the turn compacted").toBeGreaterThanOrEqual(1);
+        expect(transcript.compactions.every((compaction) => compaction.tailId && compaction.keepsItemOfRun), "each keeps a tail of this run")
+          .toBe(true);
+        expect(transcript.compactions.some((compaction) => compaction.modelWorkedAfter), "the turn went on after a compaction").toBe(true);
+        expect(transcript.wordBeforeAnswer, "the code word entered neither a summary nor the work before the answer").toBe(false);
+        expect(text.includes(word), "the answer after the compaction read the PDF").toBe(true);
+        await expect(lastAnswer(page)).toContainText(word, { timeout: 60_000 });
+        await desktopShot(page, testInfo, lastAnswer(page), "08-attached-compaction");
+      } finally {
+        if (assignedReader) await assignPdfReader(page, null).catch(() => { stand.summary.pdfReaderRestore = "failed"; });
+        if (previousWindow !== null) {
+          await publishContextWindow(page, stand.model, previousWindow).catch(() => { stand.summary.contextWindowRestore = "failed"; });
+        }
+        if (serverId) await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);
+        await endpoint.close();
+      }
     });
   });
 });
