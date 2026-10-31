@@ -664,7 +664,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     }
   }
 
-  async function saveBackgroundResult(input: SubagentTurnInput, result: EndedSubagentCallResult): Promise<EndedSubagentCallResult> {
+  async function saveBackgroundResult(input: SubagentTurnInput, signal: AbortSignal,
+    result: EndedSubagentCallResult): Promise<EndedSubagentCallResult> {
     if (input.mode !== "background") return result;
     const text = JSON.stringify(result);
     let saved: { handle: string } | { unsavedReason: string } = { unsavedReason: "storage_unavailable" };
@@ -675,7 +676,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         providerCallId: `subagent-report:${input.turnId}`, roundIndex: 1, runId: input.hostRunId,
         toolName: CALL_SUBAGENT_TOOL_NAME, userId: input.userId });
       if (begun.kind === "running") {
-        saved = await host.saveResult({ outcome: "complete", source: "workspace", text, toolCallId: begun.row.id });
+        saved = await host.saveResult({ outcome: "complete", signal, source: "workspace", text, toolCallId: begun.row.id });
         const excerpt = toolOutputExcerpt(text, saved);
         await host.toolCalls.settle({ callId: begun.row.id, runId: input.hostRunId, state: "complete",
           result: { handle: excerpt.handle, output: excerpt.output, truncated: excerpt.truncated } });
@@ -694,7 +695,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     let resolveRecord!: (record: TurnRecord) => void;
     const ready = new Promise<TurnRecord>((resolve) => { resolveRecord = resolve; });
     const promise = ready.then(async (record) => {
-      const result = await saveBackgroundResult(input, await executeTurn(record));
+      const result = await saveBackgroundResult(input, AbortSignal.any([host.signal, input.signal, record.controller.signal]),
+        await executeTurn(record));
       record.result = result;
       await settleRow(input, result);
       return result;
