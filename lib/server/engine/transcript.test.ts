@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildAnthropicMessagesRequest } from "../providers/anthropicMessages";
 import { buildCompatibleResponsesRequest } from "../providers/compatibleResponses";
 import { buildDeepSeekResponsesRequest } from "../providers/deepSeekResponsesRequest";
 import { buildGeminiInteractionsRequest } from "../providers/geminiInteractionsRequest";
@@ -9,9 +10,10 @@ import {
   responsesHistoryFromOutput,
   type ProviderHistoryItem
 } from "../providers/history";
+import { buildOpenAICompatibleChatRequest } from "../providers/openaiCompatibleChatRequest";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 import { buildOpenRouterChatRequest } from "../providers/openRouterChatRequest";
-import type { ProviderRunRequest } from "../providers/types";
+import type { ProviderAttachment, ProviderRunRequest } from "../providers/types";
 import type { RunTool } from "../tools/types";
 import {
   IMAGE_ANALYZE_NOTE,
@@ -363,6 +365,104 @@ describe("transcript projection", () => {
       { text: "Skills index", type: "user" },
       { text: "Working on it", type: "assistant_text" }
     ]);
+  });
+
+  describe("the run's input while its request carries attachments", () => {
+    const chart: ProviderAttachment = { byteSize: 3, dataUrl: "data:image/png;base64,AAAA", extractedText: null, fileName: "chart.png",
+      id: "chart", kind: "image", metadata: {}, mimeType: "image/png", status: "ready" };
+    const response = (index: number): readonly ProviderHistoryItem[] =>
+      [{ arguments: `{"order_id":"A-${index}"}`, callId: `call_${index}`, name: "lookup_order", type: "tool_call" }];
+
+    /** An earlier turn, the run's context, its input and three tool rounds, compacted up to the last round. */
+    function compactedTurn(origin: TranscriptOrigin) {
+      const chat = transcript();
+      chat.user("Old question");
+      chat.respond(origin, [{ text: "Old answer", type: "assistant_text" }]);
+      chat.items.push({ id: "ctx-2", kind: "user", runContext: true, text: "Skills index" });
+      const input = chat.user("What does the chart say?");
+      for (const index of [1, 2, 3]) {
+        chat.respond(origin, response(index));
+        chat.result(`call_${index}`, `result ${index}`);
+      }
+      const kept = chat.items.findIndex((item) => item.kind === "tool_call" && item.callId === "call_3");
+      chat.items.push({ id: "c1", keepFromId: chat.items[kept]!.id, kind: "compaction", origin, summary: "Two lookups done." });
+      return { input, items: chat.items, kept: chat.items[kept]!.id };
+    }
+
+    const attached = { attachmentIds: [chart.id], attachments: [chart] };
+
+    it("replays it right after the run's context, once, with the kept tail after it", () => {
+      const { input, items, kept } = compactedTurn(codex);
+      const target = { ...gemini, carriedInputId: input };
+      expect(selectTranscript(items, target).window.map((item) => item.id).slice(0, 4)).toEqual(["c1", "ctx-2", input, kept]);
+      expect(projectTranscript(items, target, { currentInputId: input })).toEqual([
+        { text: "Summary of the earlier conversation:\n\nTwo lookups done.", type: "user" },
+        { text: "Skills index", type: "user" },
+        { currentInput: true, text: "What does the chart say?", type: "user" },
+        { arguments: "{\"order_id\":\"A-3\"}", callId: "call_3", name: "lookup_order", type: "tool_call" },
+        { callId: "call_3", name: "lookup_order", output: "result 3", type: "tool_result" }
+      ]);
+      // Without attachments to carry it for, it goes with the cut, as it always did.
+      expect(selectTranscript(items, gemini).window.map((item) => item.id).slice(0, 3)).toEqual(["c1", "ctx-2", kept]);
+    });
+
+    it("stays where it stands while the kept tail holds it, and stays too after a route's own compaction, which keeps no tail", () => {
+      const chat = compactedTurn(codex);
+      const held = chat.items.map((item) => item.id === "c1" ? { ...item, keepFromId: chat.input } as TranscriptItem : item);
+      expect(selectTranscript(held, { ...codex, carriedInputId: chat.input }).window.filter((item) => item.id === chat.input)).toHaveLength(1);
+
+      const route = transcript();
+      const input = route.user("What does the chart say?");
+      route.respond(codex, response(1));
+      route.result("call_1", "result 1");
+      route.respond(codex, responsesHistoryFromOutput([{ encrypted_content: "ENC", id: "cmp_1", type: "compaction" }]));
+      route.respond(codex, [{ text: "Almost there", type: "assistant_text" }]);
+      const history = projectTranscript(route.items, { ...codex, carriedInputId: input, nativeCompaction: true }, { currentInputId: input });
+      expect(history.map((item) => item.type)).toEqual(["compaction", "user", "assistant_text"]);
+      expect(history[1]).toEqual({ currentInput: true, text: "What does the chart say?", type: "user" });
+    });
+
+    it("starts the turn for a current-turn target: the turn's reasoning stays, earlier reasoning stays out", () => {
+      const anthropic: TranscriptTarget = { model: "claude-haiku-5-5", provider: "anthropic", reasoningScope: "current_turn" };
+      const native = (id: string): ProviderHistoryItem => ({ native: { fields: { id }, format: "anthropic_messages" }, type: "reasoning" });
+      const chat = transcript();
+      chat.user("Old question");
+      chat.respond(anthropic, [native("old"), { text: "Old answer", type: "assistant_text" }]);
+      const input = chat.user("What does the chart say?");
+      chat.respond(anthropic, response(1));
+      chat.result("call_1", "result 1");
+      chat.respond(anthropic, [native("kept"), { text: "Almost there", type: "assistant_text" }]);
+      const kept = chat.items.at(-2)!.id;
+      chat.items.push({ id: "c1", keepFromId: kept, kind: "compaction", origin: anthropic, summary: "One lookup done." });
+      expect(projectTranscript(chat.items, { ...anthropic, carriedInputId: input }, { currentInputId: input }).map((item) => item.type))
+        .toEqual(["user", "user", "reasoning", "assistant_text"]);
+    });
+
+    it("renders the attachment on every adapter after a compaction of the turn", () => {
+      const history = (target: TranscriptTarget) => {
+        const { input, items } = compactedTurn(target);
+        return projectTranscript(items, { ...target, carriedInputId: input }, { currentInputId: input });
+      };
+      const chatParams = { params: { maxTokens: 256, stream: true } };
+      const bodies: Readonly<Record<string, unknown>> = {
+        anthropic: buildAnthropicMessagesRequest(request(openai, history(openai), { ...attached, params: { maxTokens: 256 },
+          provider: "anthropic" })),
+        codex: buildCompatibleResponsesRequest(request(codex, history(codex), { ...attached, provider: "openai_compatible" })),
+        compatibleChat: buildOpenAICompatibleChatRequest(request(openai, history(openai), { ...attached, ...chatParams,
+          provider: "openai_compatible" })),
+        deepseek: buildDeepSeekResponsesRequest(request(deepseek, history(deepseek), attached)),
+        gemini: buildGeminiInteractionsRequest(request(gemini, history(gemini), attached)),
+        openai: buildOpenAIResponsesRequest(request(openai, history(openai), { ...attached,
+          params: { background: false, maxOutputTokens: 256, reasoning: { effort: "low" }, store: false, stream: true }, provider: "openai" })),
+        openrouter: buildOpenRouterChatRequest(request(openrouter, history(openrouter), { ...attached, ...chatParams, provider: "openrouter" }))
+      };
+      for (const [adapter, body] of Object.entries(bodies)) {
+        const text = JSON.stringify(body);
+        expect({ adapter, attached: text.includes("AAAA") }).toEqual({ adapter, attached: true });
+        // The kept round follows the input; the two rounds the compaction covered do not.
+        expect({ adapter, covered: text.includes("result 1"), kept: text.includes("result 3") }).toEqual({ adapter, covered: false, kept: true });
+      }
+    });
   });
 
   it("keeps only the current turn's reasoning for a current-turn target, across follow-ups", () => {

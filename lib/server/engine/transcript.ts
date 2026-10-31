@@ -23,7 +23,8 @@ import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
  *   that keeps a recent tail verbatim (`keepFromId`) replays that tail right
  *   after itself, then everything appended since, and one whose tail is no
  *   longer found before it is not used; the run's own context (`runContext`)
- *   is never compacted and stays, right after the compaction;
+ *   is never compacted and stays, right after the compaction, and so does the
+ *   input its attachments render on (`TranscriptTarget.carriedInputId`);
  * - reasoning with no text or call after it in its response stays out;
  * - a result's image (`view_workspace_image`) is kept by reference, never as
  *   pixels: a request carries its pixels only while the run that viewed it
@@ -37,6 +38,11 @@ export type TranscriptOrigin = Readonly<{ model: string; provider: string }>;
 
 /** A request's destination and how the transcript replays there. */
 export type TranscriptTarget = TranscriptOrigin & Readonly<{
+  /**
+   * The run's input while its requests carry attachments. They render only on that item, and a compaction inside the
+   * turn may cut past it, so replay keeps it beside the run's own context. A later run reads it as any earlier message.
+   */
+  carriedInputId?: string;
   /** The route takes back its own native compaction items (Responses). */
   nativeCompaction?: boolean;
   /** `current_turn`: reasoning before the current turn's user input stays out (run context and follow-ups start no turn). */
@@ -258,8 +264,12 @@ export type TranscriptSelection = Readonly<{
   entries: readonly SelectedTranscriptItem[];
   /** Index of the first transcript item replay may use (its compaction). */
   start: number;
+  /** Window position where the items replay keeps in place begin: 0 without a base, else past the base and what stays from
+   * before its tail. */
+  tail: number;
   /** The items replay draws from, in transcript order: the base compaction,
-   * the tail it keeps verbatim, then every item after it. */
+   * what stays from before its tail, the tail it keeps verbatim, then every
+   * item after it. */
   window: readonly TranscriptItem[];
 }>;
 
@@ -287,14 +297,16 @@ function keptTailIndex(items: readonly TranscriptItem[], index: number, item: Tr
   return keepFrom >= 0 && keepFrom < index ? keepFrom : -1;
 }
 
-/** Replay's items from the base compaction at `start`: the base, the run's
- * own context from before it (never compacted), the tail it keeps verbatim,
- * then the items after it. */
-function replayWindow(items: readonly TranscriptItem[], start: number, base: TranscriptCompactionItem | null): TranscriptItem[] {
-  if (!base) return items.slice(start);
+/** Replay's items from the base compaction at `start`: the base, what stays
+ * from before its tail (the run's own context, never compacted, and the input
+ * the run carries), the tail it keeps verbatim, then the items after it. */
+function replayWindow(items: readonly TranscriptItem[], start: number, base: TranscriptCompactionItem | null,
+  target: TranscriptTarget): Pick<TranscriptSelection, "tail" | "window"> {
+  if (!base) return { tail: 0, window: items.slice(start) };
   const keepFrom = base.keepFromId ? keptTailIndex(items, start, base) : start;
-  const runContext = items.slice(0, keepFrom).filter((item) => item.kind === "user" && item.runContext === true);
-  return [base, ...runContext, ...items.slice(keepFrom, start), ...items.slice(start + 1)];
+  const stays = items.slice(0, keepFrom).filter((item) =>
+    item.kind === "user" && (item.runContext === true || item.id === target.carriedInputId));
+  return { tail: stays.length + 1, window: [base, ...stays, ...items.slice(keepFrom, start), ...items.slice(start + 1)] };
 }
 
 /** The transcript items a request to `target` carries, in replay order. */
@@ -314,7 +326,7 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
       break;
     }
   }
-  const window = replayWindow(items, start, base);
+  const { tail, window } = replayWindow(items, start, base, target);
   const leadingCompaction = base !== null;
 
   let turnStart = -1;
@@ -388,7 +400,7 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
     }
   });
   closeBlock();
-  return { base, entries, start, window };
+  return { base, entries, start, tail, window };
 }
 
 /**

@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { assertProviderHistoryRequest, RUN_CURRENT_INPUT_MISSING } from "../providers/history";
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
-import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
+import type { ProviderAdapter, ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { SUMMARIZER_INSTRUCTIONS, SUMMARY_SECTIONS } from "./compaction/summaryPrompt";
@@ -23,11 +24,12 @@ import type { TranscriptRepository } from "./transcriptRepository";
 const SUMMARY = SUMMARY_SECTIONS.map((section) => `## ${section}\n- ${section} facts`).join("\n\n");
 const ORIGIN = { model: "fake-qsa", provider: "connection-1" };
 
-type AnswerStep = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: unknown; text?: string }>;
+type AnswerStep = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: unknown; text?: string; usage?: ProviderRunResult["usage"] }>;
 
 const isSummary = (request: ProviderRunRequest) => request.prompt.system === SUMMARIZER_INSTRUCTIONS;
 
-/** Answers from `steps` in order; summary requests get the summary after `summaryDelayMs`. */
+/** Answers from `steps` in order; summary requests get the summary after `summaryDelayMs`. Like every adapter it refuses a
+ * request whose attachments have no input to render on. */
 function scriptedAdapter(steps: readonly AnswerStep[], summaryDelayMs = 0) {
   const answers: ProviderRunRequest[] = [];
   const summaries: ProviderRunRequest[] = [];
@@ -35,6 +37,7 @@ function scriptedAdapter(steps: readonly AnswerStep[], summaryDelayMs = 0) {
   const adapter: ProviderAdapter = {
     buildRequestPreview: () => ({}),
     async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+      assertProviderHistoryRequest(request);
       if (isSummary(request)) {
         summaries.push(request);
         order.push("summary");
@@ -48,10 +51,25 @@ function scriptedAdapter(steps: readonly AnswerStep[], summaryDelayMs = 0) {
       if (step.fail) throw step.fail;
       if (step.text) yield { data: { delta: step.text }, type: "token" };
       return { finalProviderResponsePreview: {}, finalText: step.text ?? "", toolCalls: [...(step.calls ?? [])],
-        usage: { inputTokens: 100, outputTokens: 10 } };
+        usage: step.usage ?? { inputTokens: 100, outputTokens: 10 } };
     }
   };
   return { adapter, answers, order, summaries };
+}
+
+const report: ProviderAttachment = { byteSize: 4_000, extractedText: "r".repeat(4_000), fileName: "report.pdf", id: "report", kind: "pdf",
+  metadata: {}, mimeType: "application/pdf", status: "ready" };
+/** A saved page read back in full, about 5,000 tokens. */
+const SAVED_PAGE = "p".repeat(20_000);
+const isCurrentInput = (item: NonNullable<ProviderRunRequest["history"]>[number]) => item.type === "user" && item.currentInput === true;
+
+/** `rounds` rounds that each read a saved page, then the answer. Nothing reports usage, so each request is measured whole. */
+function pageRounds(rounds: number, text: string): AnswerStep[] {
+  return [
+    ...Array.from({ length: rounds }, (_, round): AnswerStep => ({ calls: [{ arguments: { handle: `tor1_${"a".repeat(31)}${round % 10}` },
+      id: `call-page-${round}`, name: "read_tool_result" }], usage: {} })),
+    { text, usage: {} }
+  ];
 }
 
 /** An earlier native answer of many tool rounds, about `tokens` of context. */
@@ -69,7 +87,7 @@ function earlierWork(tokens: number): TranscriptItem[] {
   return items;
 }
 
-function memoryEngine(earlier: readonly TranscriptItem[]) {
+function memoryEngine(earlier: readonly TranscriptItem[], savedPage: string | null = null) {
   const transcriptRows: TranscriptItem[] = [];
   const rows = new Map<string, ToolCallRow>();
   const transcripts = {
@@ -109,9 +127,12 @@ function memoryEngine(earlier: readonly TranscriptItem[]) {
   } satisfies NativeRunStore;
   const engine: NativeEngineDeps = {
     approvedCall: vi.fn(async () => null), mcpBindingRows: vi.fn(async () => []),
-    observations: vi.fn(async () => ({ withReservation: vi.fn() }) as never), runs,
+    observations: vi.fn(async () => ({ withReservation: vi.fn(async () => ({ unsavedReason: "saved_results_budget_reached" })) }) as never), runs,
     // A slow reader: the tool round takes a moment, as real tools do.
-    savedResults: { read: vi.fn(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); return null; }) },
+    savedResults: { read: vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return savedPage === null ? null : { arguments: {}, text: savedPage, toolName: "fetch_url" };
+    }) },
     toolCalls, transcripts
   };
   return { engine, published: () => published, runs, transcriptRows };
@@ -132,10 +153,11 @@ function repository() {
 }
 
 /** Each test its own chat: compactions that outlive their run are listed per chat, process-wide. */
-function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`, defaultMaxOutputTokens = 1_000): MaterializedPreparedRunData {
+function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`, defaultMaxOutputTokens = 1_000,
+  attachments: ProviderRunRequest["attachments"] = []): MaterializedPreparedRunData {
   const text = (value: string) => ({ blocks: [{ text: value, type: "text" }] });
   const request = {
-    attachmentIds: [], attachments: [], chatId, content: text("Next step, please."),
+    attachmentIds: attachments.map((attachment) => attachment.id), attachments, chatId, content: text("Next step, please."),
     context: { messages: [
       { content: text("Run the reconciliation round by round."), id: "user-0", role: "user" as const },
       { content: { blocks: [] }, id: "answer-0", role: "assistant" as const },
@@ -144,8 +166,9 @@ function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`, defaul
     modelCapabilities: { contextWindow, defaultMaxOutputTokens, nativePdfInput: false, nativeSearch: false, pdf: false,
       reasoning: true, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: {}, prompt: { developer: null, system: "Be brief." }, provider: "fake",
-    searchPlan: { mode: "all_selected" as const, options: [] }, toolMode: "auto" as const
-  } as ProviderRunRequest;
+    searchPlan: { mode: "all_selected" as const, options: [] }, toolBudgets: { maxToolCalls: null, maxToolRounds: null },
+    toolMode: "auto" as const
+  } as unknown as ProviderRunRequest;
   return {
     contextTruncation: null, defaults: null, expectedActiveLeafId: null, mcpBindings: [],
     normalizedRequest: request, providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 60_000 },
@@ -298,6 +321,75 @@ describe("native run compaction", () => {
     expect(result.at(-1)).toMatchObject({ data: { code: "context_too_large" }, type: "error" });
     expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "context_too_large" }),
       { recoveryTerminal: true });
+  });
+
+  it("finishes a long turn with an attachment: a compaction of the turn itself keeps the input in every request", async () => {
+    const scripted = scriptedAdapter(pageRounds(9, "Compared the report with the pages."));
+    const memory = memoryEngine([], SAVED_PAGE);
+    const runRepository = repository();
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(50_000, undefined, undefined, [report]), repository: runRepository as unknown as RunRepository, services: {},
+      userId: "user" }));
+    expect(runRepository.failRun).not.toHaveBeenCalled();
+    expect(memory.published()).toBe("Compared the report with the pages.");
+    expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+
+    // The compaction cut inside the turn: only its last rounds are kept, and the requests after it start from its summary.
+    const compaction = memory.transcriptRows.find((item) => item.kind === "compaction");
+    expect(compaction?.kind === "compaction" ? compaction.keepFromId : null).toEqual(expect.any(String));
+    expect(memory.transcriptRows.map((item) => item.id)).toContain(compaction?.kind === "compaction" ? compaction.keepFromId : null);
+    const after = scripted.answers.filter((request) => firstText(request).startsWith(COMPACTION_SUMMARY_HEADING));
+    expect(after.length).toBeGreaterThan(0);
+    expect(after[0]!.history!.filter((item) => item.type === "tool_result").length).toBeLessThan(5);
+
+    // The model still receives the attachment; the summary call never does.
+    for (const request of scripted.answers) {
+      expect(request.attachments).toEqual([report]);
+      expect(request.history!.filter(isCurrentInput)).toEqual([{ currentInput: true, text: "Next step, please.", type: "user" }]);
+    }
+    expect(scripted.summaries.length).toBeGreaterThan(0);
+    for (const request of scripted.summaries) expect(request.attachments).toEqual([]);
+  });
+
+  it("keeps the input through every compaction of a turn that outgrows the window again and again", async () => {
+    const scripted = scriptedAdapter(pageRounds(30, "All thirty pages compared."));
+    const memory = memoryEngine([], SAVED_PAGE);
+    const runRepository = repository();
+    await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(50_000, undefined, undefined, [report]), repository: runRepository as unknown as RunRepository, services: {},
+      userId: "user" }));
+    expect(runRepository.failRun).not.toHaveBeenCalled();
+    expect(memory.published()).toBe("All thirty pages compared.");
+    expect(memory.transcriptRows.filter((item) => item.kind === "compaction").length).toBeGreaterThanOrEqual(2);
+    for (const request of scripted.answers) expect(request.history!.filter(isCurrentInput)).toHaveLength(1);
+  });
+
+  it("fails visibly with the size code when the attachment leaves a turn no room, and never as a provider failure", async () => {
+    const whole: ProviderAttachment = { ...report, extractedText: "r".repeat(200_000) };
+    const scripted = scriptedAdapter(pageRounds(3, "Never reached."));
+    const repo = repository();
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memoryEngine([], SAVED_PAGE).engine,
+      prepared: prepared(50_000, undefined, undefined, [whole]), repository: repo as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(scripted.answers).toHaveLength(0);
+    expect(result.at(-1)).toMatchObject({ data: { code: "context_too_large" }, type: "error" });
+  });
+
+  it("reports a request that lost its input as the run's own failure, never the provider's", async () => {
+    const lost = (() => {
+      try {
+        return assertProviderHistoryRequest({ attachments: [report], history: [] });
+      } catch (error) {
+        return error;
+      }
+    })();
+    const scripted = scriptedAdapter([{ fail: lost }]);
+    const repo = repository();
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memoryEngine([]).engine,
+      prepared: prepared(200_000), repository: repo as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(scripted.answers).toHaveLength(1);
+    expect(result.at(-1)).toMatchObject({ data: { code: RUN_CURRENT_INPUT_MISSING }, type: "error" });
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", { code: RUN_CURRENT_INPUT_MISSING,
+      message: "The answer could not be completed. The answer so far is kept." }, { recoveryTerminal: true });
   });
 
   it("sends a chat's loop rounds one gateway routing key across its runs, and its compactions their own", async () => {
