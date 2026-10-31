@@ -10,6 +10,7 @@ import { createPooledStorageAdapter } from "@/tests/support/storage";
 import { createWorkspaceAttachmentAcquisition } from "./attachmentAcquisition";
 import { getWorkspaceConfig, workspaceToolTransportMaxBytes, type WorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
+import { workspaceOperationFailureResult } from "./operationFailure";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
 import { WorkspaceRuntimeError, workspaceOutputCollection, type WorkspaceRuntime } from "./runtime";
@@ -191,6 +192,24 @@ describe("remote Workspace runner protocol", () => {
     await expect(remote.prepareSkillRun({ ...second, modelRunId: "third", initial: [{ ...bundle, bundleDigest: "c".repeat(64) }] }))
       .rejects.toMatchObject({ code: "workspace_skill_conflict" });
     await expect(remote.completeSkillRunPreparation({ ...second, modelRunId: "fourth" })).rejects.toMatchObject({ code: "workspace_skill_run_stale" });
+    await remote.removeSession({ sessionId, runtimeSandboxId: created.runtimeSandboxId, operation });
+  });
+
+  it("carries a refused environment across the runner as that refusal, and a lost handle as an ordinary failed result", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const call = vi.spyOn(local, "callBoundTool").mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_secret_env_missing"));
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "ws_" + "f".repeat(40);
+    const created = await remote.ensureSession({ sessionId, runtimeSandboxId: null, operation,
+      sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef, cpus: 1, diskMiB: 1024, memoryMiB: 512, internetEnabled: false });
+    const request = { sessionId, runtimeSandboxId: created.runtimeSandboxId, operation, modelRunId: "run", modelRunToolCallId: "call",
+      arguments: { execSessionId: "exec" }, originalName: "sandbox_exec_poll" as const };
+    await expect(remote.callBoundTool(request)).rejects.toMatchObject({ code: "workspace_secret_env_missing" });
+    call.mockResolvedValueOnce(workspaceOperationFailureResult("workspace_execution_handle_lost"));
+    await expect(remote.callBoundTool(request)).resolves.toMatchObject({ errorCode: "workspace_execution_handle_lost", status: "error" });
     await remote.removeSession({ sessionId, runtimeSandboxId: created.runtimeSandboxId, operation });
   });
 
