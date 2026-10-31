@@ -3004,7 +3004,7 @@ async function applyPlan(
     }
   });
   const currentRounds = await tx.memoryRecallRound.findMany({
-    select: { id: true, state: true },
+    select: { id: true, roundOrdinal: true, state: true },
     where: {
       chatId: claim.chatId,
       state: { in: ["ACTIVE", "SUPPRESSED"] },
@@ -3110,6 +3110,16 @@ async function applyPlan(
     await tx.memoryRecallChunk.updateMany({
       data: { invalidatedAt: now, state: "INVALIDATED" },
       where: { id: { in: [...reorderedIds] }, userId: claim.userId }
+    });
+  }
+  const desiredRoundOrdinals = new Map(plan.rounds.map((round) => [round.id, round.ordinal]));
+  const reorderedRoundIds = new Set(currentRounds.flatMap((round) =>
+    desiredRoundOrdinals.has(round.id) &&
+      desiredRoundOrdinals.get(round.id) !== round.roundOrdinal ? [round.id] : []));
+  if (reorderedRoundIds.size > 0) {
+    await tx.memoryRecallRound.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: { id: { in: [...reorderedRoundIds] }, userId: claim.userId }
     });
   }
   const retainedEntries = plan.chunks.length === 0
@@ -3271,7 +3281,8 @@ async function applyPlan(
     } else {
       searchArtifactNeedsRepair = activeRoundEntries.length > 0;
     }
-    if ((!rebuiltRounds.has(round.id) || storedExactRoundIds.has(round.id)) &&
+    if (!reorderedRoundIds.has(round.id) &&
+      (!rebuiltRounds.has(round.id) || storedExactRoundIds.has(round.id)) &&
       !segmentArtifactNeedsRepair &&
       !searchArtifactNeedsRepair) continue;
     writtenEntries.push(...await persistRound(tx, activeIndex, plan, round));
