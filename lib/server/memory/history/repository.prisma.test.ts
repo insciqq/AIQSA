@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import {
@@ -79,6 +80,32 @@ import {
   MEMORY_TOOL_EVENT_SOURCE_READ_BATCH
 } from "./toolEvents";
 import { purgeMemoryHistorySelection } from "./purge";
+import * as savedSecretPersistence from "../persistence/savedSecrets";
+import { MEMORY_SAVED_SECRET_MARKER } from "../persistence/savedSecretMatching";
+import { invalidateMemoryHistoryHoldingSavedSecret } from "./sourceLifecycle";
+
+const roundConflictRecoverySql = readFileSync(new URL(
+  "../../../../prisma/migrations/20261101010200_memory_round_conflict_recovery/migration.sql",
+  import.meta.url
+), "utf8");
+
+async function recoverRoundConflictsForOwner(userId: string) {
+  // Run the actual upgrade SQL with only this fixture's jobs in its search path.
+  // Copy the result back by owner; other tests' jobs cannot be changed.
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`CREATE TEMP TABLE "MemoryJob" (LIKE public."MemoryJob") ON COMMIT DROP`;
+    await tx.$executeRaw`
+      INSERT INTO pg_temp."MemoryJob" SELECT * FROM public."MemoryJob" WHERE "userId" = ${userId}
+    `;
+    await tx.$executeRawUnsafe(roundConflictRecoverySql);
+    await tx.$executeRaw`
+      UPDATE public."MemoryJob" AS job
+      SET "state" = repaired."state", "updatedAt" = repaired."updatedAt"
+      FROM pg_temp."MemoryJob" AS repaired
+      WHERE job."id" = repaired."id" AND job."userId" = ${userId}
+    `;
+  });
+}
 
 async function mutateSource(
   userId: string,
@@ -1143,6 +1170,213 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it("limits the upgrade retry to terminal history uniqueness failures at apply", async () => {
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        CREATE TEMP TABLE "MemoryJob" (
+          "id" text PRIMARY KEY, "kind" "MemoryJobKind", "state" "MemoryJobState",
+          "pipelineVersion" text, "stage" text, "errorCode" text, "updatedAt" timestamp
+        ) ON COMMIT DROP
+      `;
+      await tx.$executeRaw`
+        INSERT INTO pg_temp."MemoryJob" VALUES
+          ('conflict', 'INDEX_HISTORY', 'TERMINAL_FAILED', 'memory-history-incremental-v10',
+            'lexical_apply', 'memory_job_commit_database_p2002', TIMESTAMP '2000-01-01'),
+          ('other_error', 'INDEX_HISTORY', 'TERMINAL_FAILED', 'memory-history-incremental-v10',
+            'lexical_apply', 'memory_job_commit_database_p2003', TIMESTAMP '2000-01-01'),
+          ('other_stage', 'INDEX_HISTORY', 'TERMINAL_FAILED', 'memory-history-incremental-v10',
+            'source_snapshot', 'memory_job_commit_database_p2002', TIMESTAMP '2000-01-01'),
+          ('other_pipeline', 'INDEX_HISTORY', 'TERMINAL_FAILED', 'memory-history-incremental-v9',
+            'lexical_apply', 'memory_job_commit_database_p2002', TIMESTAMP '2000-01-01'),
+          ('other_kind', 'REBUILD_INDEX', 'TERMINAL_FAILED', 'memory-history-incremental-v10',
+            'lexical_apply', 'memory_job_commit_database_p2002', TIMESTAMP '2000-01-01'),
+          ('leased', 'INDEX_HISTORY', 'CLAIMED', 'memory-history-incremental-v10',
+            'lexical_apply', 'memory_job_commit_database_p2002', TIMESTAMP '2000-01-01'),
+          ('succeeded', 'INDEX_HISTORY', 'SUCCEEDED', 'memory-history-incremental-v10',
+            'lexical_apply', 'memory_job_commit_database_p2002', TIMESTAMP '2000-01-01')
+      `;
+      const readJobs = () => tx.$queryRaw<Array<{
+        id: string; state: string; updatedAt: Date;
+      }>>`SELECT * FROM pg_temp."MemoryJob" ORDER BY "id"`;
+      const before = await readJobs();
+      await expect(tx.$executeRawUnsafe(roundConflictRecoverySql)).resolves.toBe(1);
+      const after = await readJobs();
+      expect(after.filter(({ id }) => id !== "conflict"))
+        .toEqual(before.filter(({ id }) => id !== "conflict"));
+      expect(after.find(({ id }) => id === "conflict")).toMatchObject({
+        ...before.find(({ id }) => id === "conflict"), state: "STALE", updatedAt: expect.any(Date)
+      });
+      await expect(tx.$executeRawUnsafe(roundConflictRecoverySql)).resolves.toBe(0);
+      await expect(readJobs()).resolves.toEqual(after);
+    });
+  });
+
+  it.each(["active", "invalidated", "failed"] as const)(
+    "replaces a round from an %s index at the same source ordinal after saved-secret redaction",
+    async (previousState) => {
+      const userId = await createOwner("memory-history-round-replacement");
+      const savedValues = vi.spyOn(savedSecretPersistence, "memorySavedSecretValues")
+        .mockResolvedValue([]);
+      try {
+        const token = "tok_demo_7f3a9c21b8e4";
+        const chat = await prisma.chat.create({ data: { title: "Cedar desk", userId } });
+        const turn = await createTurn({
+          assistantText: "The cedar desk is reserved.", chatId: chat.id,
+          createdAt: new Date("2026-08-12T12:00:00.000Z"), parentMessageId: null,
+          userId, userText: `The cedar desk reference is ${token}.`
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["NORMAL_APPEND", "TERMINAL_SETTLEMENT"],
+          patch: { activeLeafMessageId: turn.assistantMessage.id },
+          terminalSettlement: {
+            assistantMessageId: turn.assistantMessage.id, runId: turn.run.id, status: "complete"
+          }
+        });
+        const { claim: initialClaim } = await processHistoryJob(userId);
+        const before = await prisma.memoryRecallRound.findFirstOrThrow({ where: { userId } });
+        const sourceBefore = await prisma.chat.findUniqueOrThrow({ where: { id: chat.id } });
+        expect(before.rawSafeText).toContain(token);
+        expect(await prisma.memorySearchEntry.count({
+          where: { recallRoundId: before.id, userId }
+        })).toBeGreaterThan(0);
+
+        savedValues.mockResolvedValue([token]);
+        if (previousState === "active") {
+          await prisma.chatMemoryCheckpoint.update({
+            data: { pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION },
+            where: { userId_chatId: { chatId: chat.id, userId } }
+          });
+        } else {
+          // The saved-secret scrub invalidates first and queues a separate purge.
+          // Re-indexing must also work when it wins the race with that purge.
+          await withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
+            invalidateMemoryHistoryHoldingSavedSecret(tx, settings, {
+              hidden: [], visible: [chat.id]
+            }, new Date()));
+        }
+        if (previousState === "failed") {
+          const completedAt = new Date();
+          await prisma.memoryJob.update({
+            data: {
+              acceptedResultHash: null, completedAt, errorCode: "memory_job_commit_database_p2002",
+              nextAttemptAt: null, stage: "lexical_apply", state: "TERMINAL_FAILED"
+            },
+            where: { id: initialClaim.id }
+          });
+          await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+          await recoverRoundConflictsForOwner(userId);
+          const released = await prisma.memoryJob.findUniqueOrThrow({ where: { id: initialClaim.id } });
+          expect(released).toMatchObject({
+            completedAt, errorCode: "memory_job_commit_database_p2002", state: "STALE"
+          });
+          await recoverRoundConflictsForOwner(userId);
+          await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: initialClaim.id } }))
+            .resolves.toEqual(released);
+        }
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+        const { claim, result } = await processHistoryJob(userId);
+        const live = await prisma.memoryRecallRound.findMany({
+          where: { chatId: chat.id, state: { in: ["ACTIVE", "SUPPRESSED"] }, userId }
+        });
+        expect(live).toHaveLength(1);
+        const after = live[0]!;
+        expect(after).toMatchObject({
+          branchGeneration: before.branchGeneration, roundOrdinal: before.roundOrdinal,
+          sourceRevisionAtCreation: before.sourceRevisionAtCreation,
+          projectionVersion: before.projectionVersion, sourceProjectionVersion: before.sourceProjectionVersion
+        });
+        expect(after.id).not.toBe(before.id);
+        expect(after.rawSafeText).toContain(MEMORY_SAVED_SECRET_MARKER);
+        expect(after.rawSafeText).not.toContain(token);
+        await expect(prisma.chat.findUniqueOrThrow({ where: { id: chat.id } }))
+          .resolves.toEqual(sourceBefore);
+        await expect(prisma.memoryRecallRound.findUniqueOrThrow({ where: { id: before.id } }))
+          .resolves.toMatchObject({ ...before, invalidatedAt: expect.any(Date), state: "INVALIDATED" });
+        await expect(prisma.memoryRecallRoundSegment.count({
+          where: { roundId: before.id, state: "ACTIVE", userId }
+        })).resolves.toBe(0);
+        await expect(prisma.memorySearchEntry.count({
+          where: { recallRoundId: before.id, userId }
+        })).resolves.toBe(0);
+        const entries = await prisma.memorySearchEntry.findMany({ orderBy: { id: "asc" }, where: { userId } });
+        expect(entries.some((entry) => entry.recallRoundId === after.id)).toBe(true);
+        expect(JSON.stringify(entries)).not.toContain(token);
+
+        // Live uniqueness still applies to both serving and suppressed rows.
+        for (const state of ["ACTIVE", "SUPPRESSED"] as const) {
+          await expect(prisma.memoryRecallRound.create({
+            data: {
+              ...after, id: randomUUID(), state,
+              ...(state === "SUPPRESSED" ? {
+                safetyClass: "SECRET_TAINTED", redactionState: "EXCLUDED"
+              } : {})
+            }
+          })).rejects.toMatchObject({ code: "P2002" });
+        }
+        const rounds = await prisma.memoryRecallRound.findMany({ orderBy: { id: "asc" }, where: { userId } });
+        await prisma.$transaction(async (tx) => result.apply?.(tx, claim));
+        await expect(prisma.memoryRecallRound.findMany({ orderBy: { id: "asc" }, where: { userId } }))
+          .resolves.toEqual(rounds);
+        await expect(prisma.memorySearchEntry.findMany({ orderBy: { id: "asc" }, where: { userId } }))
+          .resolves.toEqual(entries);
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+        await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
+          .resolves.toMatchObject({ completedChats: 1, state: "READY", totalChats: 1 });
+        const now = new Date();
+        const plan = planMemoryRetrieval({
+          currentUserText: "cedar desk", filters: { sourceKinds: ["HISTORY"] },
+          mode: "PAST_CHAT_SEARCH", now, temporalIntent: "ANY"
+        });
+        const retrieved = await createPrismaLocalMemoryRetrievalRepository(prisma).retrieve({
+          assistantId: null, chatId: chat.id, now, plan, userId
+        });
+        const ranked = fuseMemoryRetrievalCandidates(plan, retrieved.laneResults, now);
+        expect(ranked.some((candidate) => candidate.itemId === after.id)).toBe(true);
+        expect(ranked.some((candidate) => candidate.itemId === before.id)).toBe(false);
+      } finally {
+        savedValues.mockRestore();
+        await cleanupOwner(userId);
+      }
+    }
+  );
+
+  it("reorders retained round identities without colliding with occupied ordinals", async () => {
+    const userId = await createOwner("memory-history-round-order");
+    try {
+      const { chat } = await createPagedHistoryChat(userId, 2);
+      await processHistoryJob(userId);
+      const rounds = await prisma.memoryRecallRound.findMany({
+        orderBy: { roundOrdinal: "asc" }, where: { state: "ACTIVE", userId }
+      });
+      expect(rounds).toHaveLength(2);
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryRecallRound.updateMany({
+          data: { roundOrdinal: { increment: 2 } }, where: { userId }
+        });
+        for (const [index, round] of rounds.entries()) {
+          await tx.memoryRecallRound.update({
+            data: { roundOrdinal: 1 - index }, where: { id: round.id }
+          });
+        }
+        await tx.chatMemoryCheckpoint.update({
+          data: { pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION },
+          where: { userId_chatId: { chatId: chat.id, userId } }
+        });
+      });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      const { claim, result } = await processHistoryJob(userId);
+      await expect(prisma.memoryRecallRound.findMany({
+        orderBy: { roundOrdinal: "asc" }, where: { state: "ACTIVE", userId }
+      })).resolves.toEqual(rounds);
+      await prisma.$transaction(async (tx) => result.apply?.(tx, claim));
+      await expect(prisma.memoryRecallRound.findMany({
+        orderBy: { roundOrdinal: "asc" }, where: { state: "ACTIVE", userId }
+      })).resolves.toEqual(rounds);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("indexes a settled chat with learning off and replays idempotently", async () => {
     const userId = await createOwner("memory-history-index");
     try {
@@ -1569,10 +1803,14 @@ describe("Memory lexical history index persistence", () => {
     }
   );
 
-  it.each(["append", "rebuild", "projection-upgrade", "branch"] as const)(
+  it.each(["append", "rebuild", "projection-upgrade", "branch", "redaction"] as const)(
     "preserves accepted round references across %s and an idempotent commit",
     async (transition) => {
       const userId = await createOwner("memory-history-retained-round");
+      const token = "tok_demo_7f3a9c21b8e4";
+      const savedValues = transition === "redaction"
+        ? vi.spyOn(savedSecretPersistence, "memorySavedSecretValues").mockResolvedValue([])
+        : null;
       try {
         const chat = await prisma.chat.create({
           data: { title: "Retained history evidence", userId }
@@ -1583,7 +1821,7 @@ describe("Memory lexical history index persistence", () => {
           createdAt: new Date("2026-08-12T12:00:00.000Z"),
           parentMessageId: null,
           userId,
-          userText: "I reserved the cedar desk."
+          userText: `I reserved the cedar desk.${savedValues ? ` Reference ${token}.` : ""}`
         });
         await mutateSource(userId, chat.id, {
           mutations: ["NORMAL_APPEND", "TERMINAL_SETTLEMENT"],
@@ -1756,13 +1994,14 @@ describe("Memory lexical history index persistence", () => {
           return { attemptItem, feedback, runItem };
         });
 
-        if (transition === "rebuild") {
+        if (transition === "rebuild" || transition === "redaction") {
+          savedValues?.mockResolvedValue([token]);
           await prisma.chatMemoryCheckpoint.update({
             data: { pipelineVersion: "memory-history-incremental-v7" },
             where: { userId_chatId: { chatId: chat.id, userId } }
           });
         }
-        const appended = await createTurn({
+        const appended = transition === "redaction" ? first : await createTurn({
           assistantText: "The walnut shelf is also reserved.",
           chatId: chat.id,
           createdAt: new Date("2026-08-12T12:02:00.000Z"),
@@ -1770,7 +2009,9 @@ describe("Memory lexical history index persistence", () => {
           userId,
           userText: "I also reserved the walnut shelf."
         });
-        await mutateSource(userId, chat.id, {
+        if (transition === "redaction") {
+          await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+        } else await mutateSource(userId, chat.id, {
           mutations: [transition === "branch" ? "BRANCH_PATH_CHANGE" : "NORMAL_APPEND",
             "TERMINAL_SETTLEMENT"],
           patch: { activeLeafMessageId: appended.assistantMessage.id },
@@ -1808,7 +2049,7 @@ describe("Memory lexical history index persistence", () => {
           id: round.id,
           rawSafeText: round.rawSafeText,
           sourceRevisionAtCreation: round.sourceRevisionAtCreation,
-          state: transition === "projection-upgrade" ? "INVALIDATED" : "ACTIVE"
+          state: transition === "projection-upgrade" || transition === "redaction" ? "INVALIDATED" : "ACTIVE"
         };
         await expect(prisma.memoryRecallRound.findUniqueOrThrow({
           where: { id: round.id }
@@ -1844,7 +2085,7 @@ describe("Memory lexical history index persistence", () => {
           orderBy: { id: "asc" }, where: { userId }
         })).resolves.toEqual(entries);
         const currentRound = await prisma.memoryRecallRound.findFirstOrThrow({
-          where: { evidenceRootHash: round.evidenceRootHash, state: "ACTIVE", userId }
+          where: { roundOrdinal: 0, state: "ACTIVE", userId }
         });
         const currentSegment = await prisma.memoryRecallRoundSegment.findFirstOrThrow({
           where: { roundId: currentRound.id, state: "ACTIVE", userId }
@@ -1861,6 +2102,15 @@ describe("Memory lexical history index persistence", () => {
             where: { recallRoundId: round.id, userId }
           })).resolves.toBe(0);
           await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+        }
+        if (transition === "redaction") {
+          expect(currentRound.id).not.toBe(round.id);
+          expect(currentRound.sourceRevisionAtCreation).toBe(round.sourceRevisionAtCreation);
+          expect(currentRound.rawSafeText).toContain(MEMORY_SAVED_SECRET_MARKER);
+          expect(currentRound.rawSafeText).not.toContain(token);
+          await expect(prisma.memorySearchEntry.count({
+            where: { recallRoundId: round.id, userId }
+          })).resolves.toBe(0);
         }
         const rejoined = await prisma.$transaction((tx) => resolvePreparingMemoryItem(
           tx,
@@ -1907,6 +2157,7 @@ describe("Memory lexical history index persistence", () => {
           })).resolves.toBe(0);
         }
       } finally {
+        savedValues?.mockRestore();
         await cleanupOwner(userId);
       }
     }
