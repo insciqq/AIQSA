@@ -176,6 +176,28 @@ describe("progressive Skill run persistence", () => {
     });
   });
 
+  it("plans a background sub-agent's pinned Skills from its parent's rows, on the same manifest", async () => {
+    await withFixture(async f => {
+      const manifest = { ...f.manifest, available: [], pinned: [{ alias: f.alias, name: "Progressive workflow", revisionId: f.revisionId, skillId: f.skillId }] };
+      const normalizedRequest = { ...f.request, skills: manifest, workspace: { enabled: true } } as unknown as Prisma.InputJsonValue;
+      await prisma.modelRun.update({ data: { normalizedRequest }, where: { id: f.runId } });
+      await prisma.modelRunSkillBinding.create({ data: { alias: f.alias, mode: "pinned", modelRunId: f.runId, revisionId: f.revisionId, skillId: f.skillId } });
+      const call = await prisma.modelRunToolCall.create({ data: { arguments: { background: true }, modelRunId: f.runId, ordinal: 100,
+        providerCallId: "fixture-subagent-call", roundIndex: 0, state: "running", toolName: "call_subagent" } });
+      const thread = await prisma.subagentThread.create({ data: { anchorRunId: f.runId, chatId: f.chatId, name: "helper", userId: f.userId } });
+      const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "background", modelId: "fixture-model", parentRunId: f.runId,
+        parentToolCallId: call.id, provider: "fake", threadId: thread.id, userId: f.userId } });
+      const background = await prisma.modelRun.create({ data: { chatId: f.chatId, engine: "native", modelId: "fixture-model", normalizedRequest,
+        provider: "fake", status: "streaming", subagentThreadId: thread.id, subagentTurnId: turn.id, userId: f.userId, userMessageId: f.questionId } });
+      const service = createWorkspaceSkillBundles(prisma, textOnlyStorage);
+      const parent = await service.plan({ runId: f.runId, userId: f.userId });
+      expect(await service.plan({ runId: background.id, userId: f.userId })).toEqual(parent);
+      expect(parent.initial).toEqual([expect.objectContaining({ alias: f.alias, revisionId: f.revisionId })]);
+      await expect(service.archive({ alias: f.alias, runId: background.id, userId: f.userId }))
+        .resolves.toMatchObject({ bundle: { alias: f.alias, revisionId: f.revisionId } });
+    });
+  });
+
   it("loads the frozen revision after editing and commits one loaded binding atomically with its result", async () => {
     await withFixture(async (f) => {
       const load = f.calls[0]!, repeat = f.calls[1]!, read = f.calls[2]!;

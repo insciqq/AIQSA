@@ -11,6 +11,7 @@ import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/s
 import { formatExecOutput } from "microsandbox-mcp/dist/utils/exec-output.js";
 import { limitText, type Truncation } from "microsandbox-mcp/dist/utils/output.js";
 import { fail, ok } from "microsandbox-mcp/dist/utils/response.js";
+import { tarGzipStream } from "../chats/tarArchive";
 import { getWorkspaceConfig, workspaceToolTransportMaxBytes } from "./config";
 import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
 import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
@@ -450,6 +451,49 @@ describe("Microsandbox Workspace lifecycle", () => {
     stopped(); await rejected; await next;
     expect(value.sandbox.execWith).toHaveBeenCalledTimes(2);
     expect(value.fs.writeStream).not.toHaveBeenCalled();
+  });
+
+  it("joins a run of the same operation without a guest reset, and spends no guest call on a bundle already staged", async () => {
+    const value = fixture();
+    const directory = await mkdtemp(join(tmpdir(), "aiqsa-skill-runtime-")); skillDirectories.push(directory);
+    const runtime = new MicrosandboxWorkspaceRuntime(config, undefined, directory);
+    await runtime.ensureSession(ensureInput);
+    const skillGuestCalls = () => value.sandbox.execWith.mock.calls.filter(([command]) => command === "/usr/bin/python3").length;
+    const bundle = { alias: "example", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
+    const bytes = Buffer.from(await new Response(tarGzipStream((async function* () {
+      yield { path: "SKILL.md", content: "Synthetic skill", mtime: new Date(0) };
+    })())).arrayBuffer());
+    const archive = () => ({ bundle, byteSize: bytes.length, checksum: createHash("sha256").update(bytes).digest("hex"),
+      archive: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } }) });
+    const operation = { generation: 7, owner: "run:run_fixture" };
+    const first = { ...skillIdentity, operation };
+    const second = { ...skillIdentity, modelRunId: "run_second", operation };
+    await runtime.prepareSkillRun({ ...first, initial: [bundle] });
+    const resetCalls = skillGuestCalls();
+    expect(resetCalls).toBe(1);
+    await expect(runtime.prepareSkillRun({ ...second, initial: [bundle] })).resolves.toEqual({ state: "preparing" });
+    expect(skillGuestCalls()).toBe(resetCalls);
+    await runtime.installSkillBundle({ ...first, ...archive() });
+    const installCalls = skillGuestCalls();
+    expect(value.fs.writeStream).toHaveBeenCalledOnce();
+    await expect(runtime.installSkillBundle({ ...second, ...archive() })).resolves.toEqual({ workspacePath: "/workspace/.aiqsa/skills/example" });
+    expect(skillGuestCalls()).toBe(installCalls);
+    expect(value.fs.writeStream).toHaveBeenCalledOnce();
+    await runtime.completeSkillRunPreparation(first);
+    await runtime.completeSkillRunPreparation(second);
+    await expect(runtime.prepareSkillRun({ ...first, initial: [bundle] })).resolves.toEqual({ state: "ready" });
+    // A cancelled run that was only waiting for a staged bundle leaves the VM other runs work in alone.
+    const cancelled = new AbortController();
+    const third = { ...skillIdentity, modelRunId: "run_third", operation };
+    await runtime.prepareSkillRun({ ...third, initial: [] });
+    let reading!: () => void;
+    const entered = new Promise<void>(resolve => { reading = resolve; });
+    const pending = runtime.installSkillBundle({ ...third, signal: cancelled.signal, bundle, byteSize: 1, checksum: "c".repeat(64),
+      archive: new ReadableStream<Uint8Array>({ pull() { reading(); } }, { highWaterMark: 0 }) });
+    await entered;
+    cancelled.abort(new Error("synthetic_cancelled"));
+    await expect(pending).rejects.toThrow("synthetic_cancelled");
+    expect(value.sandbox.stopWithTimeout).not.toHaveBeenCalled();
   });
 
   it.each([true, false])("reports only a proven SDK timeout before the public fallback (typed=%s)", async (typed) => {

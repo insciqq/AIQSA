@@ -70,4 +70,42 @@ describe("Skill bundles in a persistent deterministic guest", () => {
     expect(await call("sandbox_fs_read", { path: "/workspace/.aiqsa/skills/available/SKILL.md" })).toMatchObject({ content: "frozen restored loaded" });
     await runtime.removeSession(identity);
   });
+
+  it("keeps every run's Skills beside the others in one guest, and clears them for the next operation", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "ws_" + "f".repeat(40);
+    const created = await runtime.ensureSession({ sessionId, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId),
+      imageRef: config.imageRef, cpus: config.cpus, memoryMiB: config.memoryMiB, diskMiB: config.diskMiB, internetEnabled: false });
+    const operation = { generation: 2, owner: "run:main" };
+    const shared = { sessionId, runtimeSandboxId: created.runtimeSandboxId, operation };
+    const main = { ...shared, modelRunId: "main", manifestHash: "a".repeat(64) };
+    const subagent = { ...shared, modelRunId: "subagent", manifestHash: "a".repeat(64) };
+    const custom = { ...shared, modelRunId: "custom", manifestHash: "d".repeat(64) };
+    const read = async (path: string) => {
+      const result = await runtime.callBoundTool({ ...main, arguments: { path }, originalName: "sandbox_fs_exists", modelRunToolCallId: "synthetic-call" });
+      return (JSON.parse(result.content[0]?.text ?? "null") as { data: { exists: boolean } }).data.exists;
+    };
+    await runtime.prepareSkillRun({ ...main, initial: [pinned] });
+    await runtime.prepareSkillRun({ ...subagent, initial: [pinned] });
+    await install(runtime, main, pinned, "shared bytes");
+    await install(runtime, subagent, pinned, "bytes that must not replace the staged ones");
+    await runtime.completeSkillRunPreparation(subagent);
+    await runtime.completeSkillRunPreparation(main);
+    await expect(runtime.prepareSkillRun({ ...custom, initial: [available] })).resolves.toEqual({ state: "preparing" });
+    await install(runtime, custom, available, "custom bytes");
+    await runtime.completeSkillRunPreparation(custom);
+    expect(await read("/workspace/.aiqsa/skills/example/SKILL.md")).toBe(true);
+    expect(await read("/workspace/.aiqsa/skills/available/SKILL.md")).toBe(true);
+    const content = await runtime.callBoundTool({ ...main, arguments: { path: "/workspace/.aiqsa/skills/example/SKILL.md" }, originalName: "sandbox_fs_read", modelRunToolCallId: "synthetic-read" });
+    expect(JSON.parse(content.content[0]?.text ?? "null")).toMatchObject({ data: { content: "shared bytes" } });
+    const revised = { ...pinned, revisionId: "revision-next", bundleDigest: "e".repeat(64) };
+    await expect(runtime.prepareSkillRun({ ...custom, modelRunId: "late", initial: [revised] })).rejects.toMatchObject({ code: "workspace_skill_conflict" });
+    expect(await read("/workspace/.aiqsa/skills/example/SKILL.md")).toBe(true);
+
+    const next = { ...main, modelRunId: "next", operation: { generation: 3, owner: "run:next" } };
+    await runtime.prepareSkillRun({ ...next, initial: [revised] });
+    expect(await read("/workspace/.aiqsa/skills/example/SKILL.md")).toBe(false);
+    expect(await read("/workspace/.aiqsa/skills/available/SKILL.md")).toBe(false);
+    await runtime.removeSession({ ...shared });
+  });
 });

@@ -1,8 +1,10 @@
+import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import type { NormalizedRunRequest } from "../providers/types";
 import { LOAD_SKILL_TOOL_NAME, READ_SKILL_FILE_TOOL_NAME, skillToolError } from "../tools/skill";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { WorkspaceCoordinator, WorkspaceActivityListener } from "../workspace/coordinator";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { SkillBundleError } from "./bundleErrors";
 
 /** Called only after result-budget acceptance and before durable settlement.
@@ -40,6 +42,9 @@ export async function deliverSkillWorkspaceBundle(input: Readonly<{
     return path === expected ? result : skillToolError(call, "skill_workspace_unavailable");
   } catch (error) {
     input.signal.throwIfAborted();
+    if (error instanceof WorkspaceRuntimeError && error.code === "workspace_skill_conflict") {
+      return skillToolError(call, error.code, { message: workspaceOperationFailureMessage(error.code) });
+    }
     return skillToolError(call, error instanceof SkillBundleError && error.issue.code === "skill_not_available"
       ? "skill_not_available" : "skill_workspace_unavailable");
   }
