@@ -157,6 +157,17 @@ describe("Run lifecycle v2", () => {
     expect(disclosure.querySelector(".v2-spinner")).toBeNull();
   });
 
+  it("names no duration from the tool steps until the answer has settled", () => {
+    const toolActivity = { calls: [{ durationMs: 11_000, round: 1, status: "complete" as const, toolName: "web_search" }] };
+    const { rerender } = render(<RunAnswerV2 content="Almost there" toolActivity={toolActivity}
+      presentation={presentation({ kind: "streaming" })} />);
+    const label = () => screen.getByTestId("tool-activity-disclosure").querySelector(".v2-answer-process-label");
+    expect(label()).not.toHaveTextContent("11s");
+    rerender(<RunAnswerV2 content="Almost there" toolActivity={toolActivity}
+      presentation={presentation({ kind: "complete" })} />);
+    expect(label()).toHaveTextContent("Worked for 11s");
+  });
+
   it("keeps the whole failure reason in the settled fold label", () => {
     render(<RunAnswerV2 content="" workDurationMs={64_000}
       toolActivity={{ calls: [{ durationMs: 800, round: 1, status: "complete", toolName: "web_search" }] }}
