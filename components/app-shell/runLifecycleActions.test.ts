@@ -676,6 +676,28 @@ describe("run lifecycle actions", () => {
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
+  it("keeps a status read lost to a suspended page out of the user's sight and reads again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<Response>(() => undefined))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(Response.json(runResponse("complete")));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, notice } = useRunLifecycleActionsForTest();
+
+    const resume = actions.resumeChatRun(streamingChat());
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await resume;
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(notice()).toBeNull();
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+  });
+
   it("rejects a malformed outcome before updating client state", async () => {
     const malformed = runResponse();
     malformed.run.status = "preparing" as "complete";

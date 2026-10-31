@@ -1781,6 +1781,21 @@ describe("workspace actions", () => {
     expect(state.setNotice).not.toHaveBeenCalled();
   });
 
+  it("ends a load failure when a later read of the chat succeeds", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const opened = { ...state.chatA, messageCount: 1 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(null, { status: 503 })));
+    await state.actions.activateChat(opened);
+    expect(useWorkspaceStore.getState().activeChatDetailError).not.toBeNull();
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(Response.json({
+      chat: apiChatDetail(opened, [message({ id: "recovered-message" })])
+    })));
+    await state.actions.refreshActiveChat("chat-a", { forceDetail: true, preserveControls: true });
+
+    expect(useWorkspaceStore.getState().activeChatDetailError).toBeNull();
+  });
+
   it("authoritatively loads an unlisted Personal deep-link chat and rejects a missing one", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const personal = chat({

@@ -408,10 +408,13 @@ export function useWorkspaceActions({
         }
         useChatAssistantProjectionStore.getState().setProjection(chatId, chat.assistant);
 
-        return cacheChatDetail(chatDetailFromApi(chat), {
+        const detail = cacheChatDetail(chatDetailFromApi(chat), {
           summary: requestSummary,
           thread: requestBase
         });
+        // A later read that succeeds (a return to the page) ends an earlier load failure.
+        if (activeChatIdRef.current === chatId) useWorkspaceStore.getState().setActiveChatDetailError(null);
+        return detail;
       } catch (error) {
         const message = errorMessage(error);
         if (!options.signal?.aborted && loadingChatDetailIdRef.current === chatId && activeChatIdRef.current === chatId) {
