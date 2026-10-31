@@ -20,9 +20,13 @@ import {
   type SubagentTurnModel,
   type SubagentTurnView
 } from "../../../contracts/subagentViews";
+import { decodeThreadWorkspaceActivityEntry, type ThreadWorkspaceActivity, type ThreadWorkspaceActivityEntry } from "../../../contracts/workspace";
+import type { WorkspaceMcpToolName } from "../../../domain/workspace";
 import { summarizeMessageRunToolActivity } from "../../chats/prismaRepository";
 import { TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { branchPathMessageIds } from "../../toolObservations/repository";
+import { foldWorkspaceActivityEntries, projectWorkspaceActivity } from "../../workspace/activityProjection";
+import { isRunEndedToolCallResult } from "../toolLoopPersistence";
 import { impliedResult } from "./store";
 
 /**
@@ -202,6 +206,46 @@ export type SubagentViews = Readonly<{
   ownsChat(input: Readonly<{ chatId: string; userId: string }>): Promise<boolean>;
 }>;
 
+type TurnWorkspaceCall = Readonly<{ arguments: unknown; id: string; result: unknown; startedAt: Date | null; toolName: string }>;
+
+/** The sanitized `workspace_activity` entries a settled Workspace call carries in its stored result. */
+function storedActivityEntries(result: unknown): ThreadWorkspaceActivityEntry[] {
+  const artifacts = typeof result === "object" && result !== null ? (result as { artifacts?: unknown }).artifacts : null;
+  return (Array.isArray(artifacts) ? artifacts : []).flatMap((artifact) => {
+    const data = (artifact as { data?: { artifactType?: unknown; payload?: unknown } } | null)?.data;
+    const entry = data?.artifactType === "workspace_activity" ? decodeThreadWorkspaceActivityEntry(data.payload) : null;
+    return entry ? [entry] : [];
+  });
+}
+
+/**
+ * A turn's Workspace steps. A sub-agent publishes no activity events of its own, so they come from its recorded calls:
+ * a settled call's stored entries, which update an async command's starting row by id, and a row from its arguments for
+ * a call still running, or one whose result holds none (a timeout, an oversized result, the run ending), which is an
+ * unknown step. The thread shows them, and they tell the live Browser panel that this agent browses.
+ */
+export function subagentTurnWorkspaceActivity(input: Readonly<{
+  active: boolean; calls: readonly TurnWorkspaceCall[]; definitions: unknown; runId: string;
+}>): ThreadWorkspaceActivity | null {
+  const originals = new Map((Array.isArray(input.definitions) ? input.definitions : []).flatMap((value): [string, WorkspaceMcpToolName][] => {
+    const tool = value as { namespacedName?: unknown; originalName?: unknown } | null;
+    return typeof tool?.namespacedName === "string" && typeof tool.originalName === "string"
+      ? [[tool.namespacedName, tool.originalName as WorkspaceMcpToolName]] : [];
+  }));
+  const entries = input.calls.flatMap((call) => {
+    const settled = call.result !== null && call.result !== undefined && !isRunEndedToolCallResult(call.result);
+    const stored = settled ? storedActivityEntries(call.result) : [];
+    if (stored.length > 0) return stored;
+    const originalName = originals.get(call.toolName);
+    if (!originalName || typeof call.arguments !== "object" || call.arguments === null || Array.isArray(call.arguments)) return [];
+    const entry = projectWorkspaceActivity({ arguments: call.arguments as Record<string, unknown>, callId: call.id, originalName,
+      runId: input.runId, ...(call.startedAt ? { startedAt: call.startedAt } : {}) }, "running");
+    return entry ? [settled ? { ...entry, phase: "unknown" as const } : entry] : [];
+  }).map((entry, sequence) => ({ ...entry, sequence }));
+  if (entries.length === 0) return null;
+  return { entries: foldWorkspaceActivityEntries(entries, input.active ? null : "complete") };
+}
+
 export function createSubagentViews(client: PrismaClient): SubagentViews {
   async function activePath(tx: Prisma.TransactionClient, chatId: string, userId: string): Promise<ReadonlySet<string> | null> {
     const chat = await tx.chat.findFirst({ select: { activeLeafMessageId: true }, where: { id: chatId, permanentDeletionAt: null, userId } });
@@ -275,7 +319,8 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
         const shown = visible.turns.slice(-SUBAGENT_VIEW_LIMITS.turnsPerView);
         const hostRunIds = [...new Set(shown.map((turn) => turn.executionRun?.id ?? turn.parentRunId))];
         const [hostRuns, activityRequests, calls, mailbox, models] = await Promise.all([
-          tx.modelRun.findMany({ select: { errorPayload: true, id: true, status: true }, where: { id: { in: hostRunIds } } }),
+          tx.modelRun.findMany({ select: { errorPayload: true, id: true, status: true,
+            workspaceRunBinding: { select: { toolDefinitions: true } } }, where: { id: { in: hostRunIds } } }),
           loadActivityRequests(tx, [...new Set(shown.map((turn) => turn.parentRunId))], input.userId),
           tx.modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }], select: {
             arguments: true, completedAt: true, id: true, mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
@@ -314,10 +359,9 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
               return text ? [{ createdAt: entry.createdAt.toISOString(),
                 delivery: entry.deliveredAt ? "delivered" : isActiveSubagentState(turn.state) ? "accepted" : "undelivered", text }] : [];
             });
+          const turnCalls = calls.filter((entry) => entry.modelRunId === hostRunId && entry.subagentTurnId === turn.id);
           const toolActivity = host && normalizedRequest !== undefined ? summarizeMessageRunToolActivity({
-            errorPayload: host.errorPayload, normalizedRequest, status: host.status,
-            toolCalls: calls.filter((entry) => entry.modelRunId === hostRunId && entry.subagentTurnId === turn.id),
-            userId: input.userId
+            errorPayload: host.errorPayload, normalizedRequest, status: host.status, toolCalls: turnCalls, userId: input.userId
           }, input.userId) : null;
           return {
             brief: brief || "-",
@@ -334,7 +378,8 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
             startedAt: turn.startedAt.toISOString(),
             state: turn.state,
             toolActivity,
-            workspaceActivity: null
+            workspaceActivity: subagentTurnWorkspaceActivity({ active: isActiveSubagentState(turn.state), calls: turnCalls,
+              definitions: host?.workspaceRunBinding?.toolDefinitions, runId: hostRunId })
           };
         });
         return { chatId: input.chatId, thread: visible.summary, truncated: visible.turns.length > shown.length, turns };
