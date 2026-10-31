@@ -36,6 +36,7 @@ describe("self-service prompt section", () => {
     const full = selfServicePromptSection({ tools: allTools });
     for (const name of allTools) expect(full).toContain(`\`${name}\``);
     expect(full).toContain("- Automations: `create_scheduled_task` and `manage_scheduled_task`.");
+    expect(full).toContain("model settings (including reasoning effort)");
     expect(selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.manageScheduledTask] }))
       .toContain("- Automations: `manage_scheduled_task`.");
   });

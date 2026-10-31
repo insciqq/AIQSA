@@ -7,6 +7,7 @@ import {
   type AssistantDraft
 } from "@/lib/contracts/assistants";
 import { decodeResourceChangeCard } from "@/lib/contracts/resourceChanges";
+import type { CatalogWireModel, ModelParameterControls } from "@/lib/contracts/catalog";
 import { logEvent } from "../observability";
 import type { AgentAssistant, AgentAssistantCatalog, AgentAssistantService } from "../assistants/agentAssistants";
 import type { AssistantCatalogView } from "../assistants/catalogValidation";
@@ -17,7 +18,15 @@ vi.mock("../observability", async (importOriginal) => ({
   ...await importOriginal<typeof import("../observability")>(), logEvent: vi.fn()
 }));
 
-const view = { marker: "catalog-view" } as unknown as AssistantCatalogView;
+const parameterControls: ModelParameterControls = {
+  background: { defaultValue: false, supported: true },
+  maxOutputTokens: { defaultValue: 4096, maxValue: 128_000 },
+  reasoningEffort: { defaultValue: "medium", options: ["low", "medium", "high"], supported: true },
+  reasoningMode: { defaultValue: "standard", options: ["standard", "pro"], supported: true },
+  stream: { defaultValue: true, supported: true },
+  temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
+};
+const view = { modelById: new Map([["codex-lb:gpt-5.5", { parameterControls } as CatalogWireModel]]) } as AssistantCatalogView;
 const catalog: AgentAssistantCatalog = {
   mcpServers: [{ name: "GitLab", serverId: "srv_gitlab" }, { name: "Jira", serverId: "srv_jira" }],
   models: [{ displayName: "GPT-5.5", modelId: "codex-lb:gpt-5.5" }, { displayName: "Claude Sonnet", modelId: "or:claude-sonnet" }],
@@ -84,7 +93,8 @@ describe("manage_assistant", () => {
     expect(json(listed).assistants).not.toContainEqual(expect.objectContaining({ instructions: expect.anything() }));
     const read = await executeManageAssistant(fake, call({ action: "get", assistantId: "asst_1" }), context);
     expect(json(read)).toMatchObject({ assistant: { instructions: "Review the code.\nBe brief.\n", link: "/?library=assistants&assistant=asst_1",
-      mcpTools: "Chat default", starterPrompts: ["Review my MR"], webSearch: "Chat default" } });
+      mcpTools: "Chat default", starterPrompts: ["Review my MR"], webSearch: "Chat default", controls: {}, fixedControls: false,
+      fixedModel: true, availableControls: parameterControls } });
   });
 
   it("answers another user's Assistant exactly like a missing one", async () => {
@@ -145,6 +155,85 @@ describe("manage_assistant", () => {
     expect(card(result)).toMatchObject({ action: "updated", changes: [{ field: "instructions", summary: null },
       { field: "model", summary: "GPT-5.5 (fixed) → Claude Sonnet (fixed)" }], definitionVersion: 4,
       instructionsDiff: { lines: [{ kind: "context", text: "Review the code." }, { kind: "del", text: "Be brief." }, { kind: "add", text: "Be thorough." }], truncated: false } });
+  });
+
+  it("sets model settings through the editor's decoder and describes them in the card", async () => {
+    const fake = service();
+    const controls = { backgroundMode: false, maxOutputTokens: 8192, reasoningEffort: "high", reasoningMode: "pro", streamMode: false, temperature: 0 };
+    const result = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 3,
+      model: "GPT-5.5", controls, fixedControls: true }), context);
+    const written = vi.mocked(fake.update).mock.calls[0]![2];
+    expect(decodeAssistantDraft(written)).toMatchObject({ ok: true, draft: { rows: { controls: { policy: "fixed", value: controls } } } });
+    expect(json(result)).toMatchObject({ saved: true, changed: ["model"], assistant: { version: 4 } });
+    expect(card(result)).toMatchObject({ changes: [{ field: "model", summary: expect.stringContaining("Reasoning effort: Not set → high") }] });
+    vi.mocked(fake.get).mockResolvedValueOnce({ ...reviewer, draft: written, version: 4 });
+    expect(json(await executeManageAssistant(fake, call({ action: "get", assistantId: "asst_1" }), context)))
+      .toMatchObject({ assistant: { controls, fixedControls: true, fixedModel: true } });
+  });
+
+  it.each([
+    [{ name: " Reviewer " }],
+    [{ instructions: reviewer.draft.systemPrompt, description: reviewer.draft.description, starterPrompts: [" Review my MR "] }],
+    [{ model: "GPT-5.5", fixedModel: true, controls: {}, fixedControls: false, skills: [], mcpTools: "default", webSearch: "default" }]
+  ])("does not write or show a card for unchanged fields %j", async (fields) => {
+    const fake = service();
+    const result = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 3, ...fields }), context);
+    expect(result.status).toBe("complete");
+    expect(json(result)).toMatchObject({ saved: false, changed: [], assistant: { version: 3 } });
+    expect(json(result).note).toContain("nothing to change");
+    expect(json(result).note).toContain("do not retry");
+    expect(result.artifacts).toBeUndefined();
+    expect(fake.create).not.toHaveBeenCalled();
+    expect(fake.update).not.toHaveBeenCalled();
+  });
+
+  it("compares stored object values independently of property order", async () => {
+    const current = { ...reviewer, draft: { ...reviewer.draft, rows: { ...reviewer.draft.rows,
+      model: { value: reviewer.draft.rows.model.value, policy: reviewer.draft.rows.model.policy },
+      controls: { policy: "adjustable" as const, value: { temperature: 0.2, reasoningEffort: "high" } }
+    } } };
+    const fake = service({ get: vi.fn(async () => current) });
+    const result = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 3,
+      model: "GPT-5.5", controls: { reasoningEffort: "high", temperature: 0.2 } }), context);
+    expect(json(result)).toMatchObject({ saved: false, changed: [] });
+    expect(fake.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps version and lifecycle checks for no-op updates", async () => {
+    const fake = service({ get: vi.fn(async () => ({ ...reviewer, archived: true })) });
+    const stale = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 2, name: "Reviewer" }), context);
+    expect(json(stale)).toMatchObject({ code: "assistant_version_conflict", saved: false });
+    const archived = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 3, name: "Reviewer" }), context);
+    expect(json(archived)).toMatchObject({ code: "assistant_archived", saved: false });
+    expect(fake.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ model: "GPT-5.5", controls: { reasoningEffort: "high" }, fixedControls: true }, "assistant_row_controls_require_fixed_model", "fixedModel true"],
+    [{ model: "GPT-5.5", fixedModel: true, controls: {}, fixedControls: true }, "assistant_row_fixed_requires_value", "at least one control"],
+    [{ controls: { reasoningEffort: "high" }, fixedControls: true }, "assistant_row_controls_require_fixed_model", "fixedControls false"],
+    [{ controls: { reasoningEffort: 3 } }, "assistant_run_controls_invalid", "reasoningEffort"],
+    [{ controls: { maxOutputTokens: 0 } }, "assistant_run_controls_invalid", "maxOutputTokens"],
+    [{ controls: { temperature: 11 } }, "assistant_run_controls_invalid", "temperature"],
+    [{ controls: { streamMode: "false" } }, "assistant_run_controls_invalid", "streamMode"],
+    [{ controls: { unsupported: true } }, "assistant_run_controls_invalid", "only"]
+  ])("refuses invalid controls or policies %j without fixing the model implicitly", async (fields, code, message) => {
+    const fake = service();
+    const result = await executeManageAssistant(fake, call({ action: "create", name: "Reporter", ...fields }), context);
+    expect(json(result)).toMatchObject({ code, saved: false });
+    expect(json(result).message).toContain(message);
+    expect(fake.create).not.toHaveBeenCalled();
+  });
+
+  it("clears settings explicitly and reports policy-only changes", async () => {
+    const current = { ...reviewer, draft: { ...reviewer.draft, rows: { ...reviewer.draft.rows,
+      controls: { policy: "fixed" as const, value: { reasoningEffort: "high" } } } } };
+    const fake = service({ get: vi.fn(async () => current) });
+    const policy = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 3, fixedControls: false }), context);
+    expect(card(policy)).toMatchObject({ changes: [{ field: "model", summary: "Model settings: fixed → adjustable" }] });
+    const cleared = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 3, controls: {}, fixedControls: false }), context);
+    expect(vi.mocked(fake.update).mock.calls[1]![2].rows.controls).toEqual({ policy: "adjustable", value: {} });
+    expect(card(cleared)).toMatchObject({ changes: [{ field: "model", summary: "Reasoning effort: high → Not set; Model settings: fixed → adjustable" }] });
   });
 
   it("refuses a stale version and passes the write's refusals on", async () => {
