@@ -112,9 +112,11 @@ export type SubagentBackgroundDeps = Readonly<{
   turnTimeMs?: number;
   usageLimits: Pick<UsageLimitsRepository, "loadUsageLimitStatus">;
   /**
-   * The chat's shared Workspace. Every background run asks to attach; one it
-   * refuses (no Workspace in the run, or not now) runs unattached, and its
-   * Workspace calls are refused visibly where they are made.
+   * The chat's shared Workspace. Every background run asks to attach. One it
+   * refuses (no Workspace in the run, or not now) still runs, without the
+   * Workspace, and the turn carries the code: work that needs no code execution
+   * never requires the VM, so a search does not fail with it, and a turn that
+   * does need it reports that reason instead of a stale operation.
    */
   workspace?: WorkspaceAttachments;
 }>;
@@ -205,6 +207,7 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       (deadline as { unref?: () => void }).unref?.();
       let attached = false;
       let executionUnknown = false;
+      let workspaceRefused: string | null = null;
       let result: EndedSubagentCallResult;
       try {
         // A Stop that came between admission and launch: the turn never runs.
@@ -213,6 +216,7 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
             modelRunId: ids.runId }, signal);
           attached = attach.kind === "attached";
           if (attach.kind === "refused") {
+            workspaceRefused = attach.code;
             logEvent("run_execution", { code: "subagent_workspace_unattached", outcome: "failed", run_id: ids.runId, stage: "dispatch" });
           }
           // A Stop retired this run's authority while it attached: the attachment it just got goes at once, before anything ran.
@@ -224,7 +228,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         if (execution.stopReason) throw new Error("subagent_stopped_before_start");
         const turn = { ...scope, binding: input.binding, brief: input.brief, deadlineAt, hostRunId: ids.runId,
           mode: "background" as const, name: input.name, parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
-          signal, threadId: input.threadId, turnId: ids.turnId, type: input.type, userMessage: input.userMessage };
+          signal, threadId: input.threadId, turnId: ids.turnId, type: input.type, userMessage: input.userMessage,
+          ...(workspaceRefused ? { workspaceRefused } : {}) };
         const handle = input.kind === "start" ? await runner.start(turn) : await runner.continue(turn);
         execution.handle = handle;
         if (execution.stopReason) await runner.stop(handle, execution.stopReason);

@@ -50,6 +50,7 @@ describe("background sub-agent runs", () => {
       userMessage: "Find the 5 best" });
     expect(turn.input.deadlineAt.getTime() - Date.now()).toBeGreaterThan(59 * 60_000);
     expect(turn.kind).toBe("start");
+    expect(turn.input).not.toHaveProperty("workspaceRefused");
     expect(activeRunControllerRegistry.has(store.turns[0]!.runId!)).toBe(true);
     expect(await workspace.attached({ chatId: "chat-1", userId: "user-1" })).toMatchObject([{
       agent: { kind: "subagent", name: "researcher", threadId: "thread-researcher" }, modelRunId: store.turns[0]!.runId }]);
@@ -164,16 +165,21 @@ describe("background sub-agent runs", () => {
     expect(sink.callbacks).toHaveLength(1);
   });
 
-  it("runs a turn its Workspace refuses unattached, so its Workspace calls are refused where they are made", async () => {
+  it("runs a turn its Workspace refuses unattached, naming the refusal so it goes without the Workspace tools", async () => {
     const store = new MemorySubagentStore();
     store.callers.add("parent-run");
     const runner = new FakeSubagentRunner();
-    const control = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink(), runner, store,
-      usageLimits: unlimited, workspace: new FakeWorkspaceAttachments({ refuseAttach: "workspace_unavailable" }) });
+    const workspace = new FakeWorkspaceAttachments({ refuseAttach: "workspace_busy" });
+    const detach = vi.spyOn(workspace, "detach");
+    const control = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink(), runner, store, usageLimits: unlimited, workspace });
     const started = await control.start(startInput("nows"));
     const turnId = started.kind === "started" ? started.turnId : "";
     await vi.waitFor(() => expect(runner.turns.get(turnId)).toBeDefined());
-    await control.stopAll({ chatId: "chat-1", userId: "user-1" });
+    expect(runner.turns.get(turnId)!.input.workspaceRefused).toBe("workspace_busy");
+    // It never held the Workspace, so its end retires nothing there.
+    runner.finish(turnId, endedSubagentResult("nows", { report: "Three sources" }));
+    await vi.waitFor(() => expect(store.turns[0]).toMatchObject({ runActive: false, state: "done" }));
+    expect(detach).not.toHaveBeenCalled();
   });
 
   it("never runs a turn stopped between its admission becoming visible and its launch", async () => {
