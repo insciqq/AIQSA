@@ -24,7 +24,7 @@ describe("one MCP incident per failed call", () => {
             const finish = beginMcpToolStage("request");
             finish({ outcome: "failed", code: thrown ? "mcp_call_failed" : "mcp_tool_reported_error" });
             if (thrown) throw Object.assign(new Error("PRIVATE_FAILURE"), { code: "mcp_call_failed" });
-            return { isError: true, text: ["PRIVATE_RESULT"], unsupportedContentTypes: [] };
+            return { isError: true, structuredContent: null, text: ["PRIVATE_RESULT"], unsupportedContentTypes: [] };
           }
         });
         recordToolCall({ kind: "mcp", toolName: call.name, settled: { kind: "result", result: mcpToolExecutionResult(call, result) } });

@@ -1276,7 +1276,7 @@ describe("Microsandbox Workspace lifecycle", () => {
       await value.runtime.callBoundTool(execCall("sandbox_exec_close"));
       const polled = await value.runtime.callBoundTool(execCall("sandbox_exec_poll"));
       expect(polled).toMatchObject({ errorCode: "workspace_execution_handle_lost", status: "error" });
-      expect(workspaceFailureCause(polled)).toBe("guest_operation_failed");
+      expect(workspaceFailureCause(polled)).toBe("guest_process_failed");
       expect(JSON.stringify(polled)).not.toContain("PRIVATE_ID_CANARY");
     });
 

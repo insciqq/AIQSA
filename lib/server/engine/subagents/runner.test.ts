@@ -438,6 +438,12 @@ describe("sub-agent runner", () => {
     });
   });
 
+  it("saves a background report under the turn's cancellation signal", async () => {
+    const ctx = setup([{ text: "Outcome: done\nFinished." }]);
+    await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "background-run", mode: "background" })));
+    expect(ctx.host.saveResult).toHaveBeenCalledWith(expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
   describe("a turn the Workspace refused", () => {
     const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.\nInternet inside the workspace: enabled.`;
     const withWorkspace = { ...request, prompt: { ...request.prompt, system: `Workspace contract.\n\n${paths}`, turnGuidance: [paths] },
