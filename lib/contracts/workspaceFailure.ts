@@ -18,6 +18,11 @@ export const WORKSPACE_OPERATION_FAILURE_MESSAGES = {
   workspace_execution_stop_failed: "Workspace could not confirm that execution stopped. The session remains fenced until cleanup is confirmed.",
   workspace_execution_settlement_failed: "Workspace stopped execution, but could not durably confirm cleanup. The session remains fenced.",
   workspace_carryover_unavailable: "The Workspace files of this automation's previous chat could not be restored here, so nothing ran. The next run tries again; the previous chat keeps its Workspace meanwhile.",
+  workspace_skills_prepare_failed: "This agent's Skills could not be prepared in the Workspace, so nothing ran. The next call tries again; tell the user if it keeps failing.",
+  workspace_skill_bundle_invalid: "One of this agent's Skills failed its integrity check, so nothing ran. Repeating this will not help: tell the user.",
+  workspace_skill_bundle_limit_exceeded: "One of this agent's Skills is over the Workspace size limit, so nothing ran. Repeating this will not help: tell the user.",
+  workspace_skill_conflict: "Another agent of this chat has one of this agent's Skills staged at a different version, and one Workspace holds one version, so nothing ran. Repeating this will not help: tell the user. A message sent after all of the chat's agents have finished starts with a clean copy.",
+  workspace_skill_run_stale: "This agent's Skills are no longer prepared in the Workspace, so nothing ran. Calling the tool again prepares them.",
 } as const;
 
 export type WorkspaceOperationFailureCode = keyof typeof WORKSPACE_OPERATION_FAILURE_MESSAGES;

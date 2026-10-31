@@ -1,8 +1,9 @@
+import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { StorageAdapter } from "../uploads/storage";
 import { parseSkillArchive } from "../workspace/skillBundles";
 import { createSkillBundle, parseSkillMarkdown } from "./bundle";
-import { assembleWorkspaceSkillArchive } from "./workspaceBundles";
+import { assembleWorkspaceSkillArchive, createWorkspaceSkillBundles } from "./workspaceBundles";
 
 function fixture() {
   const binary = Buffer.from([0, 255, 2, 128]);
@@ -50,6 +51,29 @@ describe("frozen Workspace Skill archives", () => {
       expect(storage.getObject).not.toHaveBeenCalled();
     }
   );
+
+  describe("a background sub-agent's run", () => {
+    const pinned = { alias: "review", name: "Review", revisionId: "revision", skillId: "skill" };
+    const row = { alias: "review", mode: "pinned", revisionId: "revision", skillId: "skill" };
+    const request = { skills: { version: 2, mode: "auto", pinned: [pinned], available: [] }, workspace: { enabled: true } };
+    const service = (run: Record<string, unknown>) => createWorkspaceSkillBundles({
+      modelRun: { findFirst: vi.fn(async () => ({ chat: { userId: "user" }, normalizedRequest: request, ...run })) },
+      skillRevision: { findMany: vi.fn(async () => [{ bundleDigest: "b".repeat(64), id: "revision", skillId: "skill" }]) },
+      user: { findUnique: vi.fn(async () => ({ status: "active" })) }
+    } as unknown as PrismaClient, {} as StorageAdapter);
+
+    it("plans its parent's pinned Skills, whose rows stay on the parent", async () => {
+      const plan = await service({ skillRunBindings: [], subagentTurn: { parentRun: { skillRunBindings: [row] } } }).plan({ runId: "run", userId: "user" });
+      expect(plan.initial).toEqual([{ alias: "review", bundleDigest: "b".repeat(64), discover: false, revisionId: "revision" }]);
+    });
+
+    it("still refuses a pinned Skill that neither the run nor its parent admitted", async () => {
+      await expect(service({ skillRunBindings: [], subagentTurn: null }).plan({ runId: "run", userId: "user" }))
+        .rejects.toMatchObject({ code: "workspace_skill_bundle_invalid" });
+      await expect(service({ skillRunBindings: [], subagentTurn: { parentRun: { skillRunBindings: [] } } }).plan({ runId: "run", userId: "user" }))
+        .rejects.toMatchObject({ code: "workspace_skill_bundle_invalid" });
+    });
+  });
 
   it("detects same-length object corruption and cancellation without returning an archive", async () => {
     const { revision, storage } = fixture();

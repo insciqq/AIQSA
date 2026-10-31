@@ -338,7 +338,9 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         validateSkillIdentity(identity);
         if (suffix === "/skills/prepare") {
           const initial = parseSkillInitial(body.initial);
-          sendJson(response, 200, await execute(body.operation, signal => input.runtime.prepareSkillRun({ ...identity, initial, signal: skillOperationSignal(signal) })));
+          // The operation tells a run that joins this guest's Skills from the first run of a new one.
+          sendJson(response, 200, await execute(body.operation, signal => input.runtime.prepareSkillRun({ ...identity, initial,
+            operation: parseWorkspaceOperation(body.operation), signal: skillOperationSignal(signal) })));
         } else {
           await execute(body.operation, signal => input.runtime.completeSkillRunPreparation({ ...identity, signal: skillOperationSignal(signal) }));
           sendJson(response, 200, { ok: true });
