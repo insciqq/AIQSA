@@ -422,6 +422,9 @@ describe("full agent report", () => {
     const health = createAdminHealthService({ store: input.store, providerNames: input.providerNames, now: () => NOW });
     const defaultReport = await collectHealthReport({
       health, queues: input.queues, findings: vi.fn().mockResolvedValue([]), connections: vi.fn().mockResolvedValue([]),
+      reach: async () => ({ activeUsers: 0, runs: 0, runsPerActiveUser: null, weekly: [], tools: [], features: [],
+        perTool: [], toolsTruncated: false, reportedWebSearches: 0, unclassifiedToolCalls: 0 }),
+      failureCauses: async () => ({ rows: [], truncated: false }),
       failedRuns: input.failedRunGroups,
       slowTransactions: (span) => input.store.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY }),
       failureStreaks: input.failureStreaks

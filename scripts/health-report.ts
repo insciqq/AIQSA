@@ -3,7 +3,7 @@
 //   node --import tsx scripts/health-report.ts [--since 24h|7d|14d|30d] [--json]
 //     [--run <reference> | --full | --user <id>]
 // --full and --user print internal user ids and problem-report comments; the
-// default report and --run stay safe to paste.
+// default report includes aggregate product reach and tool failure rates; --run stays content-free.
 // Exit codes: 0 report printed, 1 the database could not be read, 2 usage.
 import {
   collectHealthReport,

@@ -1198,7 +1198,7 @@ export function createPrismaMemoryCoordinatorRepository(
             (rollbackSafeTransactionConflict(error) ||
               rollbackSafeJobCommitTimeout(error))
           ) {
-            logEvent("job_persistence", { subsystem: "memory", job_id: input.claim.id,
+            logEvent("job_persistence", { error, job_kind: input.claim.kind, subsystem: "memory", job_id: input.claim.id,
               attempt: input.claim.attemptCount, stage: "complete", outcome: "unconfirmed",
               code: "memory_job_commit_failed", prisma_code: databaseFailureCode(error),
               db_failure: databaseFailureKind(error), action: "retry",

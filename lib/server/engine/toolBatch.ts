@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
-import { logEvent } from "../observability";
+import { logEvent, runWithToolCallObservation } from "../observability";
 import { isRetryableProviderHttpStatus, isRetryableProviderNetworkError, sleepWithSignal } from "../providers/providerRetry";
 import { observedFailure } from "../providers/providerObservability";
 import { liveRunPhaseStatus, liveToolCallStatus } from "../runs/liveToolStatus";
@@ -410,7 +410,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       if (before.correctable) correctable += 1;
       const row = await deps.store.refuse({ ...record, result: before.result, toolName: before.toolName });
       if (!row) throw new ToolBatchInactiveError();
-      recordToolCall({ kind, settled: { kind: "result", result: before.result } });
+      recordToolCall({ toolName: call.name, kind, settled: { kind: "result", result: before.result } });
       deps.history.record(row);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: before.output };
     }
@@ -422,7 +422,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       const result = jsonError(call, { error: "tool_binding_unavailable", message });
       const row = await deps.store.refuse({ ...record, result, toolName: call.name });
       if (!row) throw new ToolBatchInactiveError();
-      recordToolCall({ kind, settled: { kind: "result", result } });
+      recordToolCall({ toolName: call.name, kind, settled: { kind: "result", result } });
       deps.history.record(row);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: message };
     }
@@ -441,7 +441,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       const result = jsonError(call, { error: "needs_approval", message: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT });
       const row = await deps.store.refuse({ ...record, result, toolName: call.name });
       if (!row) throw new ToolBatchInactiveError();
-      recordToolCall({ kind, settled: { kind: "awaiting_approval" } });
+      recordToolCall({ toolName: call.name, kind, settled: { kind: "awaiting_approval" } });
       deps.history.record(row);
       deps.approvalHandBack(call, approval);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
@@ -453,7 +453,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {
-      recordToolCall({ kind, settled: { kind: "awaiting_approval" } });
+      recordToolCall({ toolName: call.name, kind, settled: { kind: "awaiting_approval" } });
       approvals.push(begun.approvalId);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
         output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT };
@@ -466,7 +466,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     let durationMs = 0;
     const settled = (outcome: SettledToolCall) => {
       durationMs = performance.now() - startedAt;
-      recordToolCall({ durationMs, kind, settled: outcome });
+      recordToolCall({ toolName: call.name, durationMs, kind, settled: outcome });
     };
     // The live step settles once the call's record and outputs have; an unknown effect never reads as success, and a
     // stopped call gets nothing here, since the run's end settles it.
@@ -519,7 +519,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     while (next < input.calls.length) {
       const index = next;
       next += 1;
-      results[index] = await runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index);
+      results[index] = await runWithToolCallObservation(() => runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index));
     }
   };
   await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));
