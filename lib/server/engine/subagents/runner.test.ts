@@ -21,6 +21,7 @@ import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCal
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
 import { createAgentUnknownEffects, type AgentUnknownEffects } from "../unknownEffects";
+import type { SubagentModelRoute } from "./modelRoutes";
 import { subagentRequestShape } from "./runSubagents";
 import { workspacePromptContract } from "../../workspace/promptContract";
 import {
@@ -80,7 +81,7 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
   providerModelId: "model-1", reasoningEffort: null };
 
 function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
-  followups?: () => { id: string; text: string }[]; request?: ProviderRunRequest; tools?: EngineTool[] }> = {}) {
+  followups?: () => { id: string; text: string }[]; request?: ProviderRunRequest; tools?: EngineTool[]; workspaceImageView?: true }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
   const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
   const begun: unknown[] = [];
@@ -128,7 +129,8 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
     request: options.request ?? request,
     requestShape: subagentRequestShape,
     route: vi.fn(async () => ({ ok: true as const, route: { adapter, request: { modelCapabilities: request.modelCapabilities,
-      modelId: "fake-qsa", params: {}, provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 10_000 } })),
+      modelId: "fake-qsa", params: {}, provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 10_000,
+      ...(options.workspaceImageView ? { workspaceImageView: options.workspaceImageView } : {}) } })),
     runContextItems: [{ id: "ctx-0", kind: "user", runContext: true, text: "Skills index: research" }],
     saveResult: vi.fn(async () => ({ unsavedReason: "test" })),
     setTurnState: vi.fn(async () => true),
@@ -414,6 +416,28 @@ describe("sub-agent runner", () => {
       .toBe(true);
   });
 
+  describe("image tools follow the sub-agent's own route", () => {
+    const visionAnalysis = { available: true, version: 1 } as unknown as ProviderRunRequest["visionAnalysis"];
+    const inWorkspace = { ...request, visionAnalysis, workspace: { enabled: true, outputDirectory: "/workspace/out/1" } } as unknown as ProviderRunRequest;
+    const route = (workspaceImageView?: true): SubagentModelRoute => ({ adapter: {} as ProviderAdapter, request: { modelCapabilities: request.modelCapabilities,
+      modelId: "other", params: {}, provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 1, ...(workspaceImageView ? { workspaceImageView } : {}) });
+
+    it("offers no direct view on a model without verified vision, under a parent that has it, and keeps System Vision", () => {
+      const sub = subagentRequest({ ...inWorkspace, workspaceImageView: true }, route());
+      expect(sub.workspaceImageView).toBeUndefined();
+      expect(sub.visionAnalysis).toBe(visionAnalysis);
+    });
+
+    it("offers direct view on a model with verified vision, under a parent without it", () => {
+      expect(subagentRequest(inWorkspace, route(true)).workspaceImageView).toBe(true);
+    });
+
+    it("offers no direct view without a Workspace, whatever the route verified", () => {
+      expect(subagentRequest(request, route(true)).workspaceImageView).toBeUndefined();
+      expect(subagentRequest(inWorkspace, route(true), { withoutWorkspace: true }).workspaceImageView).toBeUndefined();
+    });
+  });
+
   describe("a turn the Workspace refused", () => {
     const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.\nInternet inside the workspace: enabled.`;
     const withWorkspace = { ...request, prompt: { ...request.prompt, system: `Workspace contract.\n\n${paths}`, turnGuidance: [paths] },
@@ -445,7 +469,7 @@ describe("sub-agent runner", () => {
     });
 
     it("keeps the Workspace of a turn that attached", async () => {
-      const ctx = setup([{ text: "Outcome: done\nOk." }], { request: withWorkspace });
+      const ctx = setup([{ text: "Outcome: done\nOk." }], { request: withWorkspace, workspaceImageView: true });
       await ctx.runner.wait(await ctx.runner.start(ctx.input()));
       const registered = vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request;
       expect(registered.workspace).toEqual(withWorkspace.workspace);

@@ -8,7 +8,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import type { WorkspaceImageEvidence } from "./directImageEvidence";
 import { prepareWorkspaceImages, WorkspaceImageError, type WorkspaceImageDescriptor, type WorkspaceImageTransform } from "./imageCapture";
-import { workspaceImageInputForRun } from "./imageInputs";
+import { OTHER_OUTPUT_FOLDER, outputFolderOfAnotherRun, workspaceImageInputForRun } from "./imageInputs";
 import type { createWorkspaceSelectedCaptures } from "./selectedCapture";
 
 /**
@@ -186,27 +186,23 @@ type HeldPreview = Readonly<{
 const REFUSALS: Readonly<Record<string, string>> = {
   workspace_capture_busy: "The file was being written while it was read. View it again after the process writing it finishes.",
   workspace_capture_limit_exceeded: "The file exceeds the Workspace capture limits, or this answer read too many files. View a smaller copy.",
-  workspace_capture_source_invalid: "View an existing regular file (not a symlink or hard link) under /workspace/output, /workspace/project or " +
-    "/workspace/inbox/messages. Copy it with `cp` into /workspace/output and view the copy.",
+  workspace_capture_source_invalid: "View an existing regular file (not a symlink or hard link) under your output folder, /workspace/project or " +
+    "/workspace/inbox/messages. Copy it with `cp` into /workspace/project and view the copy.",
   workspace_capture_stale: "The Workspace session changed while the image was read. View the image again.",
   workspace_capture_unavailable: "The file could not be read from the Workspace. Check that it exists (list its folder), then view it again.",
-  workspace_capture_unsupported: "This file cannot be read safely where it is. Copy it with `cp` into /workspace/output and view the copy.",
+  workspace_capture_unsupported: "This file cannot be read safely where it is. Copy it with `cp` into /workspace/project and view the copy.",
   workspace_image_busy: "Image previews are at their limit on this server right now. View the image again in a moment, view fewer " +
     "images at once, or crop it to the part you need.",
   workspace_image_cancelled: "Reading the image took too long. View a smaller copy, or try again.",
   workspace_image_invalid: "Use the exact /workspace/inbox/, /workspace/project/ or /workspace/output/ path of an existing PNG or JPEG file, " +
     "and keep a crop inside the image.",
   workspace_image_limit_exceeded: "The image is too large to view. Crop the region you need or resize it to a smaller box.",
-  workspace_image_unsupported: "Only static PNG and JPEG files can be viewed. Convert a copy to PNG in /workspace/output (render a PSD, PDF " +
+  workspace_image_unsupported: "Only static PNG and JPEG files can be viewed. Convert a copy to PNG in /workspace/project (render a PSD, PDF " +
     "page or SVG first) and view the copy."
 };
 
 const REQUEST_FULL =
   "This answer already holds as many image previews as one model request can carry. View fewer images at once.";
-
-/** Another answer's output folder: only this answer's is viewable, and that answer's files are its exports. */
-const EARLIER_OUTPUT = "That output folder belongs to an earlier answer. Its files are the exports the inbox index lists " +
-  "(source=export): view the file by the path of its copy there.";
 
 function refusal(call: ModelToolCall, code: string, message: string): ToolExecutionResult {
   return { callId: call.id, content: [{ type: "json", value: { error: code, message } }], name: call.name, status: "error" };
@@ -328,10 +324,8 @@ export function createWorkspaceImageViewer(input: Readonly<{
         selected = workspaceImageInputForRun(call.arguments, workspace.outputDirectory);
       } catch {
         // Only selected-file authority under the guest's own roots: any other path or shape is the model's to correct.
-        const path = typeof call.arguments.path === "string" ? call.arguments.path : "";
-        const earlierOutput = path.startsWith("/workspace/output/") && path.split("/").length > 4 &&
-          !path.startsWith(`${workspace.outputDirectory}/`);
-        return refusal(call, "workspace_image_invalid", earlierOutput ? EARLIER_OUTPUT : REFUSALS.workspace_image_invalid!);
+        return refusal(call, "workspace_image_invalid", outputFolderOfAnotherRun(call.arguments.path, workspace.outputDirectory)
+          ? OTHER_OUTPUT_FOLDER : REFUSALS.workspace_image_invalid!);
       }
       const consumer = { consumerKey: execution.persistedToolCallId, runId: input.runId, userId: input.userId };
       // A retry captures afresh under the same consumer: the attempt before it released its capture, which the same

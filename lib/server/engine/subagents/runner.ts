@@ -210,13 +210,16 @@ function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
  * current message's attachments); the Workspace contract, the tool index and
  * the run's other admitted guidance stay. Of the turn's own guidance only its
  * Workspace paths stay: the attachment, image and artifact facts describe what
- * the sub-agent was not given. `withoutWorkspace` is a turn the Workspace
- * refused: it runs as in a chat that has none, so no Workspace tool is offered.
+ * the sub-agent was not given. Direct image view is the route's: the parent's
+ * flag was decided from the parent's model, while `analyze_image` stays for
+ * every model. `withoutWorkspace` is a turn the Workspace refused: it runs as in
+ * a chat that has none, so no Workspace tool is offered.
  */
 export function subagentRequest(request: ProviderRunRequest, route: SubagentModelRoute,
   options: Readonly<{ withoutWorkspace?: boolean }> = {}): ProviderRunRequest {
-  const { personalContext: _personal, workspace, workspaceCheckpoints, workspaceImageView, ...rest } = request;
+  const { personalContext: _personal, workspace, workspaceCheckpoints, workspaceImageView: _parentView, ...rest } = request;
   void _personal;
+  void _parentView;
   const recorded = request.prompt.turnGuidance ?? [];
   const split = splitTurnGuidance(request.prompt.system ?? "", recorded);
   const kept = options.withoutWorkspace ? [] : split.turn.filter((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
@@ -224,7 +227,7 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
   return {
     ...rest,
     ...(options.withoutWorkspace ? {} : { ...(workspace ? { workspace } : {}), ...(workspaceCheckpoints ? { workspaceCheckpoints } : {}),
-      ...(workspaceImageView ? { workspaceImageView } : {}) }),
+      ...(workspace && route.workspaceImageView ? { workspaceImageView: route.workspaceImageView } : {}) }),
     attachmentIds: [],
     attachments: [],
     modelCapabilities: route.request.modelCapabilities,

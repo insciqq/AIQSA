@@ -303,18 +303,29 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
   return { catalog: types, defaultType, prompt: { ...prompt, types: [] }, releaseBackgroundHost, runner, tools: subagentEngineTools(deps) };
 }
 
+/** Follows a background turn's output directory in its guidance: only main-agent runs export, so that folder is a dead end. */
+export const BACKGROUND_OUTPUT_GUIDANCE = "You run in the background: nothing in that folder reaches the user, whatever the " +
+  "instructions above say about downloads, and the main agent cannot read it by path. Put every file the main agent or the user " +
+  "needs under `/workspace/project/` and name its full path in your report; the main agent hands files to the user.";
+
 /**
  * The request of a background turn's own run: its parent's, with the run's own output directory, which its Workspace
- * binding names (`bindSubagentRunWorkspace`), in its Workspace and in the turn guidance a sub-agent keeps.
+ * binding names (`bindSubagentRunWorkspace`), in its Workspace and in the turn guidance a sub-agent keeps. The system
+ * prompt holds that guidance too and changes with its record, or `splitTurnGuidance` no longer finds the part and the
+ * parent's folder stays in the prompt.
  */
 export function backgroundSubagentRequest(request: ProviderRunRequest, runId: string): ProviderRunRequest {
   const workspace = request.workspace;
   if (!workspace) return request;
   const outputDirectory = workspaceRunOutputDirectory(runId);
-  const guidance = request.prompt.turnGuidance?.map((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX)
-    ? part.split(workspace.outputDirectory).join(outputDirectory) : part);
-  return { ...request, prompt: { ...request.prompt, ...(guidance ? { turnGuidance: guidance } : {}) },
-    workspace: { ...workspace, outputDirectory } };
+  const parts = request.prompt.turnGuidance;
+  const paths = parts?.find((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
+  const workspaceOnly = { ...request, workspace: { ...workspace, outputDirectory } };
+  if (!parts || paths === undefined) return workspaceOnly;
+  const [first, ...others] = paths.split(workspace.outputDirectory).join(outputDirectory).split("\n");
+  const own = [`${first} ${BACKGROUND_OUTPUT_GUIDANCE}`, ...others].join("\n");
+  return { ...workspaceOnly, prompt: { ...request.prompt, ...(request.prompt.system ? { system: request.prompt.system.split(paths).join(own) } : {}),
+    turnGuidance: parts.map((part) => part === paths ? own : part) } };
 }
 
 /**
