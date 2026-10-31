@@ -20,13 +20,13 @@ import {
   type SubagentTurnModel,
   type SubagentTurnView
 } from "../../../contracts/subagentViews";
-import type { ThreadWorkspaceActivity } from "../../../contracts/workspace";
+import { decodeThreadWorkspaceActivityEntry, type ThreadWorkspaceActivity, type ThreadWorkspaceActivityEntry } from "../../../contracts/workspace";
 import type { WorkspaceMcpToolName } from "../../../domain/workspace";
 import { summarizeMessageRunToolActivity } from "../../chats/prismaRepository";
 import { TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { branchPathMessageIds } from "../../toolObservations/repository";
 import { foldWorkspaceActivityEntries, projectWorkspaceActivity } from "../../workspace/activityProjection";
-import type { ToolExecutionResult } from "../../tools/types";
+import { isRunEndedToolCallResult } from "../toolLoopPersistence";
 import { impliedResult } from "./store";
 
 /**
@@ -206,12 +206,23 @@ export type SubagentViews = Readonly<{
   ownsChat(input: Readonly<{ chatId: string; userId: string }>): Promise<boolean>;
 }>;
 
-type TurnWorkspaceCall = Readonly<{ arguments: unknown; completedAt: Date | null; id: string; result: unknown; startedAt: Date | null; state: string;
-  toolName: string }>;
+type TurnWorkspaceCall = Readonly<{ arguments: unknown; id: string; result: unknown; startedAt: Date | null; toolName: string }>;
+
+/** The sanitized `workspace_activity` entries a settled Workspace call carries in its stored result. */
+function storedActivityEntries(result: unknown): ThreadWorkspaceActivityEntry[] {
+  const artifacts = typeof result === "object" && result !== null ? (result as { artifacts?: unknown }).artifacts : null;
+  return (Array.isArray(artifacts) ? artifacts : []).flatMap((artifact) => {
+    const data = (artifact as { data?: { artifactType?: unknown; payload?: unknown } } | null)?.data;
+    const entry = data?.artifactType === "workspace_activity" ? decodeThreadWorkspaceActivityEntry(data.payload) : null;
+    return entry ? [entry] : [];
+  });
+}
 
 /**
- * A turn's Workspace steps, projected from its recorded calls the way the main agent's feed is: a sub-agent publishes
- * no activity events of its own. The thread shows them, and they tell the live Browser panel that this agent browses.
+ * A turn's Workspace steps. A sub-agent publishes no activity events of its own, so they come from its recorded calls:
+ * a settled call's stored entries, which update an async command's starting row by id, and for a call with no outcome
+ * (still running, or ended with the run) a row from its arguments. The thread shows them, and they tell the live
+ * Browser panel that this agent browses.
  */
 export function subagentTurnWorkspaceActivity(input: Readonly<{
   active: boolean; calls: readonly TurnWorkspaceCall[]; definitions: unknown; runId: string;
@@ -222,17 +233,13 @@ export function subagentTurnWorkspaceActivity(input: Readonly<{
       ? [[tool.namespacedName, tool.originalName as WorkspaceMcpToolName]] : [];
   }));
   const entries = input.calls.flatMap((call) => {
+    if (call.result !== null && call.result !== undefined && !isRunEndedToolCallResult(call.result)) return storedActivityEntries(call.result);
     const originalName = originals.get(call.toolName);
     if (!originalName || typeof call.arguments !== "object" || call.arguments === null || Array.isArray(call.arguments)) return [];
-    const settled = call.result !== null && call.result !== undefined;
-    const entry = projectWorkspaceActivity({
-      arguments: call.arguments as Record<string, unknown>, callId: call.id,
-      ...(call.startedAt && call.completedAt ? { durationMs: Math.max(0, call.completedAt.getTime() - call.startedAt.getTime()) } : {}),
-      originalName, ...(settled ? { result: call.result as ToolExecutionResult } : {}), runId: input.runId,
-      ...(call.startedAt ? { startedAt: call.startedAt } : {})
-    }, settled ? "settled" : "running");
+    const entry = projectWorkspaceActivity({ arguments: call.arguments as Record<string, unknown>, callId: call.id, originalName,
+      runId: input.runId, ...(call.startedAt ? { startedAt: call.startedAt } : {}) }, "running");
     return entry ? [entry] : [];
-  });
+  }).map((entry, sequence) => ({ ...entry, sequence }));
   if (entries.length === 0) return null;
   return { entries: foldWorkspaceActivityEntries(entries, input.active ? null : "complete") };
 }
