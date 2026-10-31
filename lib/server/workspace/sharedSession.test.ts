@@ -227,6 +227,126 @@ describe("a Workspace session shared by attached runs", () => {
     await expect(call(MAIN, "main")).resolves.toMatchObject({ status: "complete" });
   });
 
+  describe("a run's saved environment", () => {
+    const command = (f: ReturnType<typeof sharedFixture>, runId: string, id: string, signal?: AbortSignal) => f.coordinator.execute({
+      call: { arguments: { command: "ls" }, id, name: namespacedWorkspaceToolName("sandbox_shell") },
+      modelRunToolCallId: `stored-${id}`, runId, ...(signal ? { signal } : {}), userId: "user_1", workspace: workspaceOf(MAIN)
+    });
+    const syncedRuns = (f: ReturnType<typeof sharedFixture>) => vi.mocked(f.runtime.syncPersonalSecrets).mock.calls.map(([input]) => input.modelRunId);
+    const READ_BACK_CODES = ["workspace_secret_env_invalid", "workspace_secret_env_missing", "workspace_secret_env_output_limit",
+      "workspace_secret_env_read_failed", "workspace_secret_env_read_timeout", "workspace_secret_env_unreadable"] as const;
+
+    it("is installed one run at a time, so a run starting beside another never loses its entry", async () => {
+      const f = sharedFixture();
+      // The guest installer's shape: read the shared file, add this run, replace the file.
+      let file: readonly string[] = [];
+      vi.mocked(f.runtime.syncPersonalSecrets).mockImplementation(async ({ modelRunId }) => {
+        const read = file;
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        file = [...read, modelRunId];
+      });
+      const results = await Promise.all([command(f, MAIN, "main"), command(f, SUBAGENT, "subagent")]);
+      expect(results.map((result) => result.status)).toEqual(["complete", "complete"]);
+      expect([...file].sort()).toEqual([MAIN, SUBAGENT].sort());
+    });
+
+    it("waits for the other run's install without touching the guest, so a Stop there stops only the wait", async () => {
+      const f = sharedFixture();
+      let finish = () => undefined as void;
+      vi.mocked(f.runtime.syncPersonalSecrets).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+      const main = command(f, MAIN, "main");
+      await vi.waitFor(() => expect(f.runtime.syncPersonalSecrets).toHaveBeenCalledOnce());
+      const controller = new AbortController();
+      const waiting = command(f, SUBAGENT, "subagent", controller.signal);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      controller.abort();
+      await expect(waiting).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+      expect(f.runtime.syncPersonalSecrets).toHaveBeenCalledOnce();
+      finish();
+      await expect(main).resolves.toMatchObject({ status: "complete" });
+    });
+
+    it.each(READ_BACK_CODES)("goes back into the guest after %s, and the call that nothing dispatched is sent once", async (code) => {
+      const f = sharedFixture();
+      const markFailed = vi.spyOn(f.repository, "markSessionFailed");
+      vi.mocked(f.runtime.callBoundTool).mockRejectedValueOnce(new WorkspaceRuntimeError(code));
+      await expect(command(f, SUBAGENT, "sent")).resolves.toMatchObject({ status: "complete" });
+      expect(syncedRuns(f)).toEqual([SUBAGENT, SUBAGENT]);
+      expect(vi.mocked(f.runtime.callBoundTool).mock.calls.map(([input]) => input.modelRunToolCallId)).toEqual(["stored-sent", "stored-sent"]);
+      expect(observedFailureCode(new WorkspaceRuntimeError(code))).toBe(code);
+      expect(markFailed).not.toHaveBeenCalled();
+      expect(f.interrupted).not.toHaveBeenCalled();
+    });
+
+    it("installs once for two calls of a run refused together", async () => {
+      const f = sharedFixture();
+      vi.mocked(f.runtime.callBoundTool)
+        .mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_secret_env_missing"))
+        .mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_secret_env_missing"));
+      const results = await Promise.all([command(f, MAIN, "first"), command(f, MAIN, "second")]);
+      expect(results.map((result) => result.status)).toEqual(["complete", "complete"]);
+      expect(syncedRuns(f)).toEqual([MAIN, MAIN]);
+      expect(f.runtime.callBoundTool).toHaveBeenCalledTimes(4);
+    });
+
+    it("answers a refusal that outlives the recovery as a known failure the model can act on, and the next call works", async () => {
+      const f = sharedFixture();
+      const markFailed = vi.spyOn(f.repository, "markSessionFailed");
+      vi.mocked(f.runtime.callBoundTool)
+        .mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_secret_env_missing"))
+        .mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_secret_env_unreadable"));
+      const refused = await command(f, SUBAGENT, "refused");
+      expect(refused.status).toBe("error");
+      expect(JSON.stringify(refused.content)).toContain("workspace_secret_env_unreadable");
+      expect(JSON.stringify(refused.content)).toContain("nothing ran");
+      expect(markFailed).not.toHaveBeenCalled();
+      await expect(command(f, SUBAGENT, "again")).resolves.toMatchObject({ status: "complete" });
+      await expect(command(f, MAIN, "main")).resolves.toMatchObject({ status: "complete" });
+    });
+
+    it("keeps the first refusal when putting the environment back fails too", async () => {
+      const f = sharedFixture();
+      vi.mocked(f.runtime.callBoundTool).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_secret_env_missing"));
+      vi.mocked(f.runtime.syncPersonalSecrets).mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_runtime_unavailable"));
+      const refused = await command(f, SUBAGENT, "refused");
+      expect(refused.status).toBe("error");
+      expect(JSON.stringify(refused.content)).toContain("workspace_secret_env_missing");
+      expect(f.runtime.callBoundTool).toHaveBeenCalledOnce();
+    });
+
+    it("answers a failed install as a refusal of this run, with the shared session untouched", async () => {
+      const f = sharedFixture();
+      const markFailed = vi.spyOn(f.repository, "markSessionFailed");
+      vi.mocked(f.runtime.syncPersonalSecrets).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_secrets_prepare_failed"));
+      const refused = await command(f, SUBAGENT, "refused");
+      expect(refused.status).toBe("error");
+      expect(JSON.stringify(refused.content)).toContain("workspace_secrets_prepare_failed");
+      expect(f.runtime.callBoundTool).not.toHaveBeenCalled();
+      expect(markFailed).not.toHaveBeenCalled();
+      await expect(command(f, SUBAGENT, "again")).resolves.toMatchObject({ status: "complete" });
+    });
+
+    it("leaves a Stop that lands on a refusal a cancellation, with no recovery", async () => {
+      const f = sharedFixture();
+      const controller = new AbortController();
+      vi.mocked(f.runtime.callBoundTool).mockImplementationOnce(async () => {
+        controller.abort();
+        throw new WorkspaceRuntimeError("workspace_secret_env_missing");
+      });
+      await expect(command(f, MAIN, "stopped", controller.signal)).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+      expect(f.runtime.syncPersonalSecrets).toHaveBeenCalledOnce();
+    });
+
+    it("never reads an error after dispatch as a refusal", async () => {
+      const f = sharedFixture();
+      vi.mocked(f.runtime.callBoundTool).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_tool_outcome_unknown"));
+      await expect(command(f, MAIN, "sent")).rejects.toMatchObject({ code: "workspace_tool_outcome_unknown" });
+      expect(f.runtime.callBoundTool).toHaveBeenCalledOnce();
+      expect(f.runtime.syncPersonalSecrets).toHaveBeenCalledOnce();
+    });
+  });
+
   it("releases one agent's browser slot in the run's guest, and nothing once the run no longer holds the Workspace", async () => {
     const f = sharedFixture();
     const agent = { kind: "subagent" as const, name: "shop", threadId: THREAD };

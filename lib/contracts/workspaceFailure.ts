@@ -1,3 +1,6 @@
+/** The read-back codes differ only for telemetry: for the agent they all mean the same thing. */
+const SECRET_ENVIRONMENT_UNAVAILABLE = "This agent's saved environment could not be read back in the Workspace, so nothing ran. The next call prepares it again; tell the user if it keeps failing.";
+
 /** Reviewed messages only: runtime/provider text is never diagnostic authority. */
 export const WORKSPACE_OPERATION_FAILURE_MESSAGES = {
   workspace_session_lost: "The Workspace session is no longer available. Inspect the current session and attachment references before continuing; earlier commands were not repeated.",
@@ -15,9 +18,17 @@ export const WORKSPACE_OPERATION_FAILURE_MESSAGES = {
   workspace_request_too_large: "The Workspace request exceeded the runner's request limit and was not dispatched. Send smaller input before trying again.",
   workspace_execution_stopped: "Workspace execution was stopped, but its command exit outcome is unknown. Do not repeat an uncertain action.",
   workspace_execution_outcome_unknown: "This execution's outcome is unknown. Historical cleanup status does not prove command success or a current cleanup failure.",
+  workspace_execution_handle_lost: "This execution's handle is gone: it was closed, or the Workspace's tool process restarted, so it cannot be polled or signalled any more. That does not say whether the command finished. Stop polling it and check its effects with a new command.",
   workspace_execution_stop_failed: "Workspace could not confirm that execution stopped. The session remains fenced until cleanup is confirmed.",
   workspace_execution_settlement_failed: "Workspace stopped execution, but could not durably confirm cleanup. The session remains fenced.",
   workspace_carryover_unavailable: "The Workspace files of this automation's previous chat could not be restored here, so nothing ran. The next run tries again; the previous chat keeps its Workspace meanwhile.",
+  workspace_secrets_prepare_failed: "This agent's saved secrets could not be prepared in the Workspace, so nothing ran. The next call tries again; tell the user if it keeps failing.",
+  workspace_secret_env_missing: SECRET_ENVIRONMENT_UNAVAILABLE,
+  workspace_secret_env_unreadable: SECRET_ENVIRONMENT_UNAVAILABLE,
+  workspace_secret_env_read_failed: SECRET_ENVIRONMENT_UNAVAILABLE,
+  workspace_secret_env_read_timeout: SECRET_ENVIRONMENT_UNAVAILABLE,
+  workspace_secret_env_output_limit: SECRET_ENVIRONMENT_UNAVAILABLE,
+  workspace_secret_env_invalid: SECRET_ENVIRONMENT_UNAVAILABLE,
   workspace_skills_prepare_failed: "This agent's Skills could not be prepared in the Workspace, so nothing ran. The next call tries again; tell the user if it keeps failing.",
   workspace_skill_bundle_invalid: "One of this agent's Skills failed its integrity check, so nothing ran. Repeating this will not help: tell the user.",
   workspace_skill_bundle_limit_exceeded: "One of this agent's Skills is over the Workspace size limit, so nothing ran. Repeating this will not help: tell the user.",
