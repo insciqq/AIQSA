@@ -29,9 +29,9 @@ describe("the size of an image sent to a model", () => {
 
 describe("the copy of an oversized image", () => {
   it.each([
-    ["jpeg", "image/jpeg", (image: sharp.Sharp) => image.jpeg()],
-    ["png", "image/png", (image: sharp.Sharp) => image.png()],
-    ["webp", "image/webp", (image: sharp.Sharp) => image.webp()]
+    ["jpeg", "image/jpeg", (image: ReturnType<typeof sharp>) => image.jpeg()],
+    ["png", "image/png", (image: ReturnType<typeof sharp>) => image.png()],
+    ["webp", "image/webp", (image: ReturnType<typeof sharp>) => image.webp()]
   ] as const)("keeps the %s format and fits the limit", async (format, mimeType, encode) => {
     const fitted = (await fitImageForProvider(await encode(flat(6500, 4900)).toBuffer()))!;
     const copy = await sharp(fitted.bytes).metadata();

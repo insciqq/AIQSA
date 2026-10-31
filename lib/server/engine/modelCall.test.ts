@@ -84,16 +84,15 @@ describe("native model call", () => {
 
     it("ends the wait at the response head, before any event", async () => {
       const seen: unknown[] = [];
-      const call = ports(heads(["head"]), { onProviderWait: (wait) => seen.push(wait), slowAfterMs: 1_000 });
-      call.onEvent = vi.fn(async () => { seen.push("event"); });
-      await callModel(call, request);
+      await callModel(ports(heads(["head"]), { onEvent: vi.fn(async () => { seen.push("event"); }),
+        onProviderWait: (wait) => seen.push(wait), slowAfterMs: 1_000 }), request);
       expect(seen).toEqual(["event"]);
     });
 
     it("says retrying after the discard, and again after each later failure", async () => {
       const seen: unknown[] = [];
-      const call = ports(heads(["drop", "answer", "drop", "answer"]), { onProviderWait: (wait) => seen.push(wait), slowAfterMs: 1_000 });
-      call.onDiscard = vi.fn(async () => { seen.push("discard"); });
+      const call = ports(heads(["drop", "answer", "drop", "answer"]), { onDiscard: vi.fn(async () => { seen.push("discard"); }),
+        onProviderWait: (wait) => seen.push(wait), slowAfterMs: 1_000 });
       await callModel(call, request);
       expect(seen).toEqual(["discard", "retrying", null]);
       await callModel(call, request);
