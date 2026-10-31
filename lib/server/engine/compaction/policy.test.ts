@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { measureContext } from "../contextMeasure";
-import { selectTranscript, type TranscriptItem } from "../transcript";
+import { assertProviderHistoryRequest } from "../../providers/history";
+import type { ProviderAttachment } from "../../providers/types";
+import { contextItemTokens, measureContext } from "../contextMeasure";
+import { projectTranscript, selectTranscript, type TranscriptItem, type TranscriptTarget } from "../transcript";
 import { CODEX, charTokens, transcriptBuilder } from "./compaction.testFixtures";
 import { APPROVAL_PENDING_TEXT, engineItemRules } from "./items";
 import {
@@ -211,6 +213,111 @@ describe("compaction cut", () => {
     chat.compaction({ keepFromId: cut.keepFromId, summary: "S" });
     expect(compactionCutCurrent(cut, chat.items, CODEX)).toBe(false);
     expect(compactionCutCurrent({ ...cut, keepFromId: "missing" }, chat.items.slice(0, -1), CODEX)).toBe(false);
+  });
+});
+
+describe("a turn's input while its request carries attachments", () => {
+  const report: ProviderAttachment = { byteSize: 4_000, extractedText: "The report.", fileName: "report.pdf", id: "report", kind: "pdf",
+    metadata: {}, mimeType: "application/pdf", status: "ready" };
+
+  /** A chat's first turn: its run context, its input, then `rounds` of `fetch_url`, so only the turn itself can be compacted. */
+  function attachedTurn(rounds: number, text = "Compare the attached report with these pages.") {
+    const chat = transcriptBuilder();
+    chat.items.push({ id: "ctx-turn", kind: "user", runContext: true, text: "It is Monday morning." });
+    const input = chat.user(text);
+    const round = (index: number) => chat.tool("fetch_url", { url: `https://example.test/${index}` }, `page ${index} ${"p".repeat(4_000)}`);
+    for (let index = 1; index <= rounds; index += 1) round(index);
+    const target: TranscriptTarget = { ...CODEX, carriedInputId: input };
+    return { chat, input, round, target };
+  }
+
+  const positionIn = (items: readonly TranscriptItem[], id: string, target: TranscriptTarget) =>
+    selectTranscript(items, target).window.findIndex((item) => item.id === id);
+
+  it("keeps the input in the request after the review's reproduction: a cut inside the turn, wherever the kept-tail limit pushes it", () => {
+    for (const limits of [{ recentTokens: 6_000 }, { maxKeptTokens: 5_000, recentTokens: 30_000 }]) {
+      const { chat, input, target } = attachedTurn(8);
+      const cut = findCompactionCut({ estimate: charTokens, items: chat.items, ...limits, target })!;
+      expect(positionIn(chat.items, cut.keepFromId, target)).toBeGreaterThan(positionIn(chat.items, input, target));
+      chat.compaction({ keepFromId: cut.keepFromId, summary: "Eight pages read so far." });
+      const history = projectTranscript(chat.items, target, { currentInputId: input });
+      expect(() => assertProviderHistoryRequest({ attachments: [report], history })).not.toThrow();
+      expect(history.slice(0, 3)).toEqual([
+        { text: expect.stringContaining("Eight pages read so far."), type: "user" },
+        { text: "It is Monday morning.", type: "user" },
+        { currentInput: true, text: "Compare the attached report with these pages.", type: "user" }
+      ]);
+      // The tail follows in its own order and what the compaction covers is gone.
+      expect(history[3]).toMatchObject({ type: "tool_call" });
+      expect(history.filter((item) => item.type === "tool_call").length).toBeLessThan(8);
+    }
+  });
+
+  it("counts the carried input as staying, so a plan never expects a compaction to remove it", () => {
+    const { chat, input, target } = attachedTurn(8);
+    const carried = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 6_000, target })!;
+    const plain = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 6_000, target: CODEX })!;
+    expect(carried.keepFromId).toBe(plain.keepFromId);
+    const inputTokens = contextItemTokens(chat.items.find((item) => item.id === input)!, target, charTokens, "opaque");
+    expect(carried.compactedTokens).toBe(plain.compactedTokens - inputTokens);
+    expect(carried.keptTokens).toBe(plain.keptTokens + inputTokens);
+    // In the kept tail already, it counts once.
+    const total = measureContext({ estimate: charTokens, fixedTokens: 0, items: chat.items, target }).tokens;
+    const fromInput = total - contextItemTokens(chat.items[0]!, target, charTokens, "opaque");
+    const early = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: fromInput, target })!;
+    expect(early.keepFromId).toBe(input);
+    expect(early.keptTokens + early.compactedTokens).toBe(total);
+  });
+
+  it("cuts later every time: the carried input starts no tail, so nothing a compaction covered comes back", () => {
+    for (const recentTokens of [1, 5_000, 12_000, 16_000, 20_000, 21_000, 25_000, 30_000, 100_000]) {
+      const { chat, input, round, target } = attachedTurn(8, `Compare ${"the report ".repeat(1_000)}`);
+      const first = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 6_000, target })!;
+      chat.compaction({ keepFromId: first.keepFromId, summary: "First rounds." });
+      round(9);
+      round(10);
+      const before = new Set(selectTranscript(chat.items, target).window.map((item) => item.id));
+      const second = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens, target })!;
+      expect(second.keepFromId).not.toBe(input);
+      expect(second.keepFromId).not.toBe(first.keepFromId);
+      expect(compactionCutCurrent(second, chat.items, target)).toBe(true);
+      chat.compaction({ keepFromId: second.keepFromId, summary: "More rounds." });
+      const after = selectTranscript(chat.items, target).window.map((item) => item.id);
+      expect(after.slice(1).filter((id) => !before.has(id))).toEqual([]);
+      expect(after.slice(1, 3)).toEqual(["ctx-turn", input]);
+      expect(projectTranscript(chat.items, target, { currentInputId: input }).filter((item) => item.type === "user" && item.currentInput))
+        .toHaveLength(1);
+    }
+  });
+
+  it("offers no cut that only keeps the tail its base already keeps", () => {
+    const { chat, target } = attachedTurn(4);
+    const first = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target })!;
+    chat.compaction({ keepFromId: first.keepFromId, summary: "Earlier rounds." });
+    expect(findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target })).toBeNull();
+
+    // Run context alone stands before the tail just the same.
+    const plain = attachedTurn(4);
+    const cut = findCompactionCut({ estimate: charTokens, items: plain.chat.items, recentTokens: 1, target: CODEX })!;
+    plain.chat.compaction({ keepFromId: cut.keepFromId, summary: "Earlier rounds." });
+    expect(findCompactionCut({ estimate: charTokens, items: plain.chat.items, recentTokens: 1, target: CODEX })).toBeNull();
+  });
+
+  it("leaves a run without attachments as it was: its input goes with the cut", () => {
+    const { chat, input } = attachedTurn(8);
+    const cut = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 6_000, target: CODEX })!;
+    chat.compaction({ keepFromId: cut.keepFromId, summary: "Eight pages read so far." });
+    expect(selectTranscript(chat.items, CODEX).window.map((item) => item.id)).not.toContain(input);
+  });
+
+  it("plans with the input staying: a giant one no compaction removes leaves nothing to offer", () => {
+    const window = { contextWindow: 120_000, maxOutputTokens: 20_000 };
+    const { chat, target } = attachedTurn(8, "x".repeat(90_000));
+    const tokens = measureContext({ estimate: charTokens, fixedTokens: 0, items: chat.items, target }).tokens;
+    const plan = { background: "idle" as const, estimate: charTokens, items: chat.items, tokens, window };
+    // Taken for removed, its bulk would buy a paid compaction that leaves the request as large as it was.
+    expect(planCompaction({ ...plan, target: CODEX })).toMatchObject({ kind: "foreground" });
+    expect(planCompaction({ ...plan, target })).toMatchObject({ kind: "unavailable", reason: "threshold" });
   });
 });
 
