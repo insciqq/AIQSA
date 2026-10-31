@@ -2,7 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeSubagentSummaryResponse } from "../../../contracts/subagentViews";
 import { toolActivityDescriptors, TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
-import { createSubagentViews } from "./views";
+import { createSubagentViews, subagentTurnWorkspaceActivity } from "./views";
 
 vi.mock("../../toolObservations/repository", () => ({
   branchPathMessageIds: vi.fn(async () => new Set(["answer-1"]))
@@ -130,5 +130,34 @@ describe("the summary's model and current step", () => {
     const { chats } = await createSubagentViews(client).summary({ chatIds: ["chat-1", "chat-2"], userId: "user-1" });
     expect(chats).toHaveLength(2);
     expect(tx.providerModel.findMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("subagentTurnWorkspaceActivity", () => {
+  const definitions = [{ namespacedName: "mcp_workspace_sandbox_exec_abc", originalName: "sandbox_exec" }];
+  const call = (id: string, overrides: Record<string, unknown> = {}) => ({
+    arguments: { args: ["open", "https://example.com"], command: "aiqsa-browser" }, completedAt: null, id, result: null, startedAt: at,
+    state: "running", toolName: "mcp_workspace_sandbox_exec_abc", ...overrides
+  });
+
+  it("shows a running turn's Workspace commands, and leaves out calls of other tools", () => {
+    const activity = subagentTurnWorkspaceActivity({ active: true, calls: [call("c1"), call("c2", { toolName: "web_search" })], definitions, runId: "run-1" });
+    expect(activity?.entries).toHaveLength(1);
+    expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "running" });
+    expect(activity?.entries[0]?.command?.preview).toContain("aiqsa-browser open");
+  });
+
+  it("reads a finished call's stored result", () => {
+    const result = { callId: "c1", content: [{ text: JSON.stringify({ data: { exitCode: 0, stdout: "[browser #1] opened" }, ok: true }), type: "text" }],
+      name: "mcp_workspace_sandbox_exec_abc", status: "complete" };
+    const activity = subagentTurnWorkspaceActivity({ active: false,
+      calls: [call("c1", { completedAt: new Date(at.getTime() + 1500), result, state: "complete" })], definitions, runId: "run-1" });
+    expect(activity?.entries[0]).toMatchObject({ durationMs: 1500, phase: "succeeded" });
+    expect(activity?.entries[0]?.command?.stdoutPreview).toContain("[browser #1]");
+  });
+
+  it("has nothing to show without a binding's tools or Workspace calls", () => {
+    expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1")], definitions: null, runId: "run-1" })).toBeNull();
+    expect(subagentTurnWorkspaceActivity({ active: true, calls: [], definitions, runId: "run-1" })).toBeNull();
   });
 });
