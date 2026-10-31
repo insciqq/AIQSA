@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomBytes, randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceRunOutputDirectory, workspaceSandboxName } from "../../domain/workspace";
@@ -19,8 +19,12 @@ import type { CreateRunInput, CreatedRun } from "../runs/runRepositoryContract";
 import { createUsageLimitsRepository } from "../usageLimits/repository";
 import { createPrismaWorkspaceAttachments, currentWorkspaceAttachments } from "../workspace/attachments";
 import { getWorkspaceConfig } from "../workspace/config";
-import { createPrismaWorkspaceCoordinatorRepository } from "../workspace/coordinator";
+import { createPrismaWorkspaceCoordinatorRepository, createWorkspaceCoordinator } from "../workspace/coordinator";
+import { DeterministicWorkspaceRuntime } from "../workspace/deterministicRuntime";
+import { createPrismaWorkspaceExecutionRegistry } from "../workspace/executionRegistry";
+import { fenceDeterministicWorkspaceRuntime } from "../workspace/fencedRuntime";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { createMemoryStorageAdapter } from "../../../tests/support/storage";
 import { FakeSubagentCallbackSink, FakeSubagentRunner, endedSubagentResult } from "../../../tests/support/subagentPorts";
 import { createSubagentDefinitionService } from "./definitionService";
 import { readSubagentDefault } from "./definitionStore";
@@ -310,6 +314,47 @@ describe("sub-agents across slices on PostgreSQL", () => {
     const wakeUp = await mainRun(f, "[Sub-agent callbacks, written by the server, not by the user]");
     await prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan(f, wakeUp)));
     expect((await prisma.workspaceSession.findUniqueOrThrow({ where: { id: f.sessionId } })).operationOwner).toBe(`run:${wakeUp.id}`);
+  }));
+
+  it("frees the chat when a sub-agent that only searched ends last over the main agent's running VM", async () => fixture(async (f) => {
+    const runtime = fenceDeterministicWorkspaceRuntime(new DeterministicWorkspaceRuntime(config));
+    const retire = vi.spyOn(runtime, "retireSessionOperation");
+    const coordinator = createWorkspaceCoordinator({ config, registry: createPrismaWorkspaceExecutionRegistry(prisma),
+      repository: coordinatorRepository, runtime, storage: createMemoryStorageAdapter() });
+    const workspace = createPrismaWorkspaceAttachments({ prisma, retire: (input) => coordinator.detach!(input), waitMs: 4_000 });
+    // The wake-up goes through the send's own Workspace reservation, right after the turn settled: the operation it
+    // claimed, or the reason it was refused.
+    const wakeUps: string[] = [];
+    const callbacks = createSubagentCallbacks({ coalesceMs: 10, store, admitWakeUp: async () => {
+      const run = await mainRun(f, "[Sub-agent callbacks, written by the server, not by the user]");
+      return prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan(f, run))).then(() => {
+        wakeUps.push(`run:${run.id}`);
+        return "admitted" as const;
+      }, (error: { reason?: string }) => {
+        wakeUps.push(error.reason ?? "refused");
+        return "busy" as const;
+      });
+    } });
+    const runner = new FakeSubagentRunner();
+    const background = createSubagentBackgroundControl({ callbacks: callbacks.sink, runner, stopWaitMs: 5_000, store, usageLimits, workspace });
+    expect(await workspace.attach({ agent: { kind: "main" }, chatId: f.chatId, modelRunId: f.main.runId, userId: f.userId }))
+      .toMatchObject({ kind: "attached" });
+    const turn = await started(await background.start(startInput(f, "search", await f.thread("search"))), runner);
+    // The main agent ran a shell command in the VM, then answered: it leaves with its processes proven stopped.
+    await prisma.workspaceRunBinding.update({ data: { guestUsedAt: new Date() }, where: { modelRunId: f.main.runId } });
+    await prisma.workspaceSession.update({ data: { runtimeSandboxId: `runtime-${randomUUID()}`, state: "RUNNING" }, where: { id: f.sessionId } });
+    const mainBinding = (await coordinatorRepository.binding({ runId: f.main.runId, userId: f.userId }))!;
+    expect(await coordinatorRepository.detachRun!({ binding: mainBinding, stopProven: true })).toBe(true);
+    expect(await coordinatorRepository.closeRunOperationIfLast!(mainBinding)).toBe(false);
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: f.main.runId } });
+    // The sub-agent searched and used no guest; its end is the last one.
+    runner.finish(turn.turnId, endedSubagentResult("search", { report: "Three sources" }));
+    await expect.poll(() => wakeUps.length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(wakeUps).toEqual([expect.stringMatching(/^run:/u)]);
+    expect(retire).toHaveBeenCalledOnce();
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: f.sessionId } }))
+      .toMatchObject({ operationExpiresAt: null, operationOwner: wakeUps[0], state: "STOPPED" });
+    expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: turn.turnId } })).state).toBe("done");
   }));
 
   it("counts sub-agent usage toward the allowance, refuses a turn past it and keeps the callback owed when a wake-up is refused", async () =>
