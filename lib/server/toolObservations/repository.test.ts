@@ -25,9 +25,11 @@ function row(index: number, input: Partial<Row> = {}): Row {
 
 /** Relational double for the authority and lookup queries of one availability
  * check. Real SQL, locking and source owners run in repository.prisma.test.ts. */
-function fixture(rows: Row[], ancestors: readonly string[] = ["answer-1"]) {
+function fixture(rows: Row[], ancestors: readonly string[] = ["answer-1"],
+  background?: { parentAnswerId: string | null }) {
   const tx = {
-    modelRun: { findFirst: vi.fn(async () => ({ id: "run-2", chatId: "chat-1", assistantMessageId: "answer-2", status: "in_progress",
+    modelRun: { findFirst: vi.fn(async () => ({ id: "run-2", chatId: "chat-1", assistantMessageId: background ? null : "answer-2", status: "in_progress",
+      subagentTurn: background ? { parentRun: { assistantMessageId: background.parentAnswerId } } : null,
       errorPayload: null, chat: { archived: false, permanentDeletionAt: null } })) },
     user: { findFirst: vi.fn(async () => ({ id: actor.userId })) },
     chat: { findUnique: vi.fn(async () => ({ archived: false, permanentDeletionAt: null, userId: actor.userId })) },
@@ -103,6 +105,14 @@ describe("observation availability", () => {
     // A run without a surviving answer still qualifies by its question.
     const orphan = row(1, { modelRun: { chatId: "chat-1", assistantMessageId: null, userMessageId: "question-1" } });
     await expect(fixture([orphan], ["answer-2", "question-1"]).repository.available(actor, [orphan.id])).resolves.toBe(true);
+  });
+
+  it("anchors a background run's observations to its parent answer and refuses a missing anchor", async () => {
+    const f = fixture([row(1)], ["answer-1"], { parentAnswerId: "parent-answer" });
+    await expect(f.repository.available(actor, [row(1).id])).resolves.toBe(true);
+    expect(f.tx.$queryRaw).toHaveBeenCalledWith(expect.anything(), "chat-1", "parent-answer", "chat-1");
+    const unanchored = fixture([row(0)], [], { parentAnswerId: null });
+    await expect(unanchored.repository.available(actor, [row(0).id])).resolves.toBe(false);
   });
 
   it("refuses a run that lost its authority", async () => {

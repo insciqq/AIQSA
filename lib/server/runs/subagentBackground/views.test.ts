@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { decodeSubagentSummaryResponse } from "../../../contracts/subagentViews";
+import { decodeSubagentSummaryResponse, decodeSubagentThreadView } from "../../../contracts/subagentViews";
 import { toolActivityDescriptors, TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { runEndedToolCallResult } from "../toolLoopPersistence";
 import { createSubagentViews, subagentTurnWorkspaceActivity } from "./views";
@@ -177,4 +177,15 @@ describe("subagentTurnWorkspaceActivity", () => {
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1")], definitions: null, runId: "run-1" })).toBeNull();
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [], definitions, runId: "run-1" })).toBeNull();
   });
+});
+
+it("returns the full report in the thread view", async () => {
+  const report = "x".repeat(30_000);
+  const row = thread("alpha", [turn("turn-a", "done", { result: { files: [], report } })]);
+  const { client, tx } = fakeClient({ threads: [row] });
+  Object.assign(tx.subagentThread, { findFirst: vi.fn(async () => row) });
+  Object.assign(tx, { modelRun: { findMany: vi.fn(async () => []) }, runFollowup: { findMany: vi.fn(async () => []) } });
+  const view = await createSubagentViews(client).threadView({ chatId: "chat-1", threadId: "alpha", userId: "user-1" });
+  expect(view?.turns[0]?.report).toBe(report);
+  expect(decodeSubagentThreadView(view)).toEqual(view);
 });

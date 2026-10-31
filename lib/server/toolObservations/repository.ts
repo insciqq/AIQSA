@@ -41,13 +41,16 @@ export async function observationRunAuthority(tx: Prisma.TransactionClient, acto
   }
   const run = await tx.modelRun.findFirst({ where: { id: actor.runId, userId: actor.userId }, select: {
     id: true, chatId: true, assistantMessageId: true, userMessageId: true, status: true, errorPayload: true,
-    chat: { select: { archived: true, permanentDeletionAt: true } }
+    chat: { select: { archived: true, permanentDeletionAt: true } },
+    subagentTurn: { select: { parentRun: { select: { assistantMessageId: true } } } }
   } });
-  if (!run || !run.assistantMessageId || !activeToolLoopRun(run) ||
+  const assistantMessageId = run?.assistantMessageId ?? run?.subagentTurn?.parentRun.assistantMessageId;
+  if (!run || !assistantMessageId || !activeToolLoopRun(run) ||
     run.chat.archived || run.chat.permanentDeletionAt ||
     !await tx.user.findFirst({ where: { id: actor.userId, status: "active" }, select: { id: true } }) ||
     !await resolveChatAccess(tx, { chatId: run.chatId, userId: actor.userId })) throw unavailable();
-  return run as typeof run & { assistantMessageId: string };
+  // Background runs answer no message; their parent answer anchors the same observation budgets and branch.
+  return { ...run, assistantMessageId };
 }
 
 /** Message ids of the branch path from `leafMessageId` to the root. */
@@ -156,7 +159,10 @@ export function createToolObservationRepository(input: Readonly<{
             ) SELECT COALESCE(SUM(o."reservedBytes") FILTER (WHERE o."modelRunId" = ${run.id}), 0)::bigint AS "runBytes",
               COALESCE(SUM(o."reservedBytes"), 0)::bigint AS "branchBytes"
             FROM "ToolObservation" o JOIN "ModelRun" r ON r."id" = o."modelRunId"
-            WHERE r."chatId" = ${run.chatId} AND (r."id" = ${run.id} OR r."assistantMessageId" IN (SELECT "id" FROM path))
+            LEFT JOIN "SubagentTurn" turn ON turn."id" = r."subagentTurnId"
+            LEFT JOIN "ModelRun" parent ON parent."id" = turn."parentRunId"
+            WHERE r."chatId" = ${run.chatId} AND (r."id" = ${run.id} OR
+              COALESCE(r."assistantMessageId", parent."assistantMessageId") IN (SELECT "id" FROM path))
               AND o."sourceKind" IN ('mcp', 'workspace', 'search')
               AND (o."state" = 'RESERVED' OR o."state" IN ('STORING', 'READY') AND o."storageMode" = 'OBJECT')`;
           // Exhaustion never refuses the business call: beginWrite refuses any

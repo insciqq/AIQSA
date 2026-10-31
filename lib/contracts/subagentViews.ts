@@ -302,7 +302,7 @@ export function decodeSubagentTurnView(value: unknown): SubagentTurnView | null 
   const active = isActiveSubagentState(value.state);
   if (active ? value.endedAt !== null : !timestamp(value.endedAt)) return null;
   if (value.state === "done" ? !isSubagentOutcome(value.outcome) : value.outcome !== null) return null;
-  if (value.report !== null && !text(value.report, SUBAGENT_LIMITS.reportCharacters * 2, true)) return null;
+  if (value.report !== null && (typeof value.report !== "string" || value.report.includes("\0"))) return null;
   if (!Array.isArray(value.files) || value.files.length > SUBAGENT_LIMITS.files ||
     !value.files.every((path) => text(path, SUBAGENT_LIMITS.filePathCharacters))) return null;
   if (!Array.isArray(value.messages) || value.messages.length > SUBAGENT_VIEW_LIMITS.messagesPerTurn) return null;
