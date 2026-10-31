@@ -351,6 +351,18 @@ describe("native run compaction", () => {
     for (const request of scripted.summaries) expect(request.attachments).toEqual([]);
   });
 
+  it("keeps the input a response reminder renders on through a compaction of the turn, with no attachment", async () => {
+    const scripted = scriptedAdapter(pageRounds(9, "Compared the pages."));
+    const memory = memoryEngine([], SAVED_PAGE);
+    const run = prepared(50_000);
+    run.providerRequest.prompt = { ...run.providerRequest.prompt, responseReminder: "Answer in one line." };
+    await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine, prepared: run,
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.published()).toBe("Compared the pages.");
+    expect(scripted.answers.some((request) => firstText(request).startsWith(COMPACTION_SUMMARY_HEADING))).toBe(true);
+    for (const request of scripted.answers) expect(request.history!.filter(isCurrentInput)).toHaveLength(1);
+  });
+
   it("keeps the input through every compaction of a turn that outgrows the window again and again", async () => {
     const scripted = scriptedAdapter(pageRounds(30, "All thirty pages compared."));
     const memory = memoryEngine([], SAVED_PAGE);

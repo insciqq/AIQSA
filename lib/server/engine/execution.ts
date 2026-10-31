@@ -691,7 +691,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
 
         const reasoningScope = reasoningReplayScope(snapshot);
         const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId,
-          ...(conversation.currentInputId && base.attachments.length > 0 ? { carriedInputId: conversation.currentInputId } : {}),
+          ...(conversation.currentInputId && (base.attachments.length > 0 || base.prompt.responseReminder)
+            ? { carriedInputId: conversation.currentInputId } : {}),
           ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}), ...(reasoningScope ? { reasoningScope } : {}) };
         // How the run's requests render the transcript: its input with its attachments, and the Workspace previews it viewed.
         const projection: TranscriptProjectionOptions = {

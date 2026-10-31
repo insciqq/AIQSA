@@ -19,7 +19,7 @@ import { estimateRetainedTokens } from "./retained";
  * id of, with every earlier tool call already answered: a call and its
  * result are never split, and a call still waiting for its result or the
  * user's approval stays in the kept tail. The cut may pass the run's input:
- * while its request carries attachments, which render only there, replay keeps
+ * while its request carries attachments or a reminder, which render only there, replay keeps
  * it beside the run's own context (`TranscriptTarget.carriedInputId`), so a
  * long turn still compacts, and its figures count it as staying.
  */
