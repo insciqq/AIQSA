@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeSubagentSummaryResponse } from "../../../contracts/subagentViews";
 import { toolActivityDescriptors, TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
+import { runEndedToolCallResult } from "../toolLoopPersistence";
 import { createSubagentViews, subagentTurnWorkspaceActivity } from "./views";
 
 vi.mock("../../toolObservations/repository", () => ({
@@ -136,27 +137,37 @@ describe("the summary's model and current step", () => {
 describe("subagentTurnWorkspaceActivity", () => {
   const definitions = [{ namespacedName: "mcp_workspace_sandbox_exec_abc", originalName: "sandbox_exec" }];
   const call = (id: string, overrides: Record<string, unknown> = {}) => ({
-    arguments: { args: ["open", "https://example.com"], command: "aiqsa-browser" }, completedAt: null, id, result: null, startedAt: at,
-    state: "running", toolName: "mcp_workspace_sandbox_exec_abc", ...overrides
+    arguments: { args: ["open", "https://example.com"], command: "aiqsa-browser" }, id, result: null, startedAt: at,
+    toolName: "mcp_workspace_sandbox_exec_abc", ...overrides
+  });
+  const stored = (...payloads: readonly Record<string, unknown>[]) => ({
+    artifacts: payloads.map((payload) => ({ data: { artifactType: "workspace_activity", payload }, type: "artifact" })),
+    callId: "provider", content: [{ text: "{}", type: "text" }], name: "tool", status: "complete"
   });
 
-  it("shows a running turn's Workspace commands, and leaves out calls of other tools", () => {
+  it("shows a running turn's Workspace command, and only Workspace calls", () => {
     const activity = subagentTurnWorkspaceActivity({ active: true, calls: [call("c1"), call("c2", { toolName: "web_search" })], definitions, runId: "run-1" });
     expect(activity?.entries).toHaveLength(1);
     expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "running" });
     expect(activity?.entries[0]?.command?.preview).toContain("aiqsa-browser open");
   });
 
-  it("reads a finished call's stored result", () => {
-    const result = { callId: "c1", content: [{ text: JSON.stringify({ data: { exitCode: 0, stdout: "[browser #1] opened" }, ok: true }), type: "text" }],
-      name: "mcp_workspace_sandbox_exec_abc", status: "complete" };
-    const activity = subagentTurnWorkspaceActivity({ active: false,
-      calls: [call("c1", { completedAt: new Date(at.getTime() + 1500), result, state: "complete" })], definitions, runId: "run-1" });
-    expect(activity?.entries[0]).toMatchObject({ durationMs: 1500, phase: "succeeded" });
-    expect(activity?.entries[0]?.command?.stdoutPreview).toContain("[browser #1]");
+  it("reads a settled call's stored entries, and an async command's poll updates its starting row", () => {
+    const start = { command: { preview: "python3 report.py" }, id: "call:start", kind: "command", phase: "running" };
+    const finished = { ...start, command: { exitCode: 0, preview: "python3 report.py", stdoutPreview: "report ready" }, phase: "succeeded" };
+    const activity = subagentTurnWorkspaceActivity({ active: true, calls: [call("start", { result: stored(start) }), call("poll", { result: stored(finished) })],
+      definitions, runId: "run-1" });
+    expect(activity?.entries).toHaveLength(1);
+    expect(activity?.entries[0]).toMatchObject({ command: { exitCode: 0, stdoutPreview: "report ready" }, id: "call:start", phase: "succeeded" });
   });
 
-  it("has nothing to show without a binding's tools or Workspace calls", () => {
+  it("keeps a call that ended with the run as an unknown step instead of failing the thread", () => {
+    const activity = subagentTurnWorkspaceActivity({ active: false, calls: [call("c1", { result: runEndedToolCallResult() })], definitions, runId: "run-1" });
+    expect(activity?.entries[0]).toMatchObject({ kind: "command", phase: "unknown" });
+  });
+
+  it("skips a malformed stored entry and has nothing to show without Workspace calls", () => {
+    expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1", { result: stored({ id: "bad" }) })], definitions, runId: "run-1" })).toBeNull();
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1")], definitions: null, runId: "run-1" })).toBeNull();
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [], definitions, runId: "run-1" })).toBeNull();
   });
