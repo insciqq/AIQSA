@@ -380,7 +380,8 @@ export function RunAnswerV2({
       reasoningTruncated={reasoningShown && artifact?.reasoningTruncated === true}
       runId={presentation.runId}
       toolActivity={toolActivity}
-      workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? stepDurationSumV2(toolActivity)}
+      // The tool steps' own time is no answer's duration; it stands in only for a settled answer that recorded none.
+      workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? (settled ? stepDurationSumV2(toolActivity) : null)}
       workspaceActivity={workspaceActivity}
     />
   );

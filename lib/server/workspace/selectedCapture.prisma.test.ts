@@ -13,6 +13,7 @@ import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { WorkspaceRuntimeError } from "./runtime";
 import { createWorkspaceSelectedCaptures, type WorkspaceCaptureReference } from "./selectedCapture";
+import { recordWorkspaceAttachment } from "./attachments";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
 const cleanups: Array<() => Promise<void>> = [];
@@ -94,7 +95,16 @@ async function fixture() {
     await runtime.claimSessionOperation!({ operation: current.operation, sessionId: session.id, runtimeSandboxId: live.runtimeSandboxId });
     return scope();
   };
-  return { service, runtime, raw, storage, scope, write, nextRun, current, session, live, chat, userId };
+  /** A second active run of the chat, attached under the running operation as a background sub-agent's is. */
+  const attachedRun = async () => {
+    const attached = await makeRun();
+    await bind(attached.id);
+    for (const runId of [current.runId, attached.id]) {
+      await recordWorkspaceAttachment(prisma, { chatId: chat.id, generation: current.operation.generation, runId });
+    }
+    return attached.id;
+  };
+  return { service, runtime, raw, storage, scope, write, nextRun, attachedRun, current, session, live, chat, userId };
 }
 
 const selection = [{ root: "project" as const, relativePath: "данные.txt" }];
@@ -106,6 +116,19 @@ const read = async (f: Awaited<ReturnType<typeof fixture>>, ref: WorkspaceCaptur
   new Response(await f.service.openFile({ ...ref, relativePath: path })).text();
 
 describe("selected capture durable ownership", () => {
+  it("captures for a run attached to the operation another run claimed", async () => {
+    const f = await fixture();
+    await f.write("project", "данные.txt", "seen by the attached run");
+    const owner = f.current.operation.owner;
+    const runId = await f.attachedRun();
+    const captured = await f.service.create({ runId, userId: f.userId, consumerKey: "attached", requestKey: "request", files: selection });
+    expect(captured.readiness).toBe("captured");
+    const row = await prisma.workspaceSelectedCapture.findUniqueOrThrow({ where: { id: captured.id } });
+    expect(row).toMatchObject({ modelRunId: runId, producerOwner: owner });
+    await expect(read(f, { runId, userId: f.userId, consumerKey: "attached", captureId: captured.id }))
+      .resolves.toBe("seen by the attached run");
+  });
+
   it("rejects a timed export owner while the originating run is still active", async () => {
     const f = await fixture();
     await f.write("project", "данные.txt", "private selected bytes");
