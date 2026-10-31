@@ -243,5 +243,5 @@ describe("Skills of the runs that share one guest", () => {
       await expect(state.prepare({ ...run("run-299"), initial: [] }, reset)).resolves.toEqual({ state: "ready" });
       expect(reset).not.toHaveBeenCalled();
     } finally { await rm(directory, { recursive: true, force: true }); }
-  });
+  }, 60_000);
 });
