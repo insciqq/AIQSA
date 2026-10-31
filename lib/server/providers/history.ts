@@ -93,6 +93,13 @@ const RESPONSES_TEXT_PARTS = new Set(["output_text"]);
 const CHAT_TEXT_PARTS = new Set(["text"]);
 const GEMINI_TEXT_PARTS = new Set(["text"]);
 
+/**
+ * The run's outcome when a request lost the input its attachments render on: this installation's own transcript broke,
+ * before any provider saw the request, so the code never reads as a provider failure. It is deterministic and never sent
+ * again (`modelCallRetryDecision`), and it is registered so the run's record keeps it (`failureCodes.json`).
+ */
+export const RUN_CURRENT_INPUT_MISSING = "run_current_input_missing";
+
 /** A request carrying `history` replaces every other conversation source. */
 export function assertProviderHistoryRequest(request: Readonly<{
   attachments: readonly unknown[];
@@ -106,7 +113,7 @@ export function assertProviderHistoryRequest(request: Readonly<{
     throw new Error("provider_history_request_invalid");
   }
   if (request.attachments.length > 0 && !history.some((item) => item.type === "user" && item.currentInput)) {
-    throw new Error("provider_history_current_input_missing");
+    throw Object.assign(new Error("provider_history_current_input_missing"), { code: RUN_CURRENT_INPUT_MISSING });
   }
   return history;
 }

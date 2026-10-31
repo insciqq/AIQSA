@@ -7,17 +7,20 @@ import { buildCompatibleResponsesRequest } from "./compatibleResponses";
 import { buildDeepSeekResponsesRequest, buildDeepSeekResponsesRequestPreview } from "./deepSeekResponsesRequest";
 import { buildGeminiInteractionsRequest, buildGeminiInteractionsRequestPreview } from "./geminiInteractionsRequest";
 import {
+  assertProviderHistoryRequest,
   chatHistoryFromMessage,
   chatMessagesFromHistory,
   geminiHistoryFromSteps,
   responsesHistoryFromOutput,
   responsesInputFromHistory,
+  RUN_CURRENT_INPUT_MISSING,
   type ProviderHistoryItem
 } from "./history";
 import { buildOpenAICompatibleChatRequest, buildOpenAICompatibleChatRequestPreview } from "./openaiCompatibleChatRequest";
 import { buildOpenAIResponsesRequest, buildOpenAIResponsesRequestPreview } from "./openaiResponsesRequest";
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "./openRouterChatRequest";
 import { streamOpenRouterSseResponse } from "./openRouterChatResponse";
+import { observedFailure, providerHttpFailureMessage } from "./providerObservability";
 import type { ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "./types";
 
 const tool: RunTool = {
@@ -264,6 +267,18 @@ describe("provider history rendering", () => {
       .toThrow("provider_history_current_input_missing");
     expect(responsesInputFromHistory([{ native: { fields: { encrypted_content: "C", type: "compaction" }, format: "openai_responses" },
       type: "compaction" }], { currentInput: () => [], preview: false })).toEqual([{ encrypted_content: "C", type: "compaction" }]);
+  });
+
+  it("names a lost input as the run's own failure, no provider's", () => {
+    let thrown: unknown;
+    try {
+      assertProviderHistoryRequest({ attachments: [image], history: [{ text: "Hi", type: "user" }] });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(observedFailure(thrown)).toMatchObject({ code: RUN_CURRENT_INPUT_MISSING, reason: "unknown" });
+    expect(RUN_CURRENT_INPUT_MISSING).not.toMatch(/provider/u);
+    expect(providerHttpFailureMessage(thrown)).toBeNull();
   });
 });
 
