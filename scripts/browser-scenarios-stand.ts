@@ -69,13 +69,13 @@ export function standDatabase(connectionString: string): PostgresClient {
 }
 
 export type Api = Readonly<{ baseUrl: URL; cookie: string }>;
-export type CallInit = Readonly<{ body?: unknown; method?: string; signal?: AbortSignal; timeoutMs?: number }>;
+export type CallInit = Readonly<{ body?: unknown; form?: FormData; method?: string; signal?: AbortSignal; timeoutMs?: number }>;
 
 export async function request(api: Pick<Api, "baseUrl"> & Partial<Pick<Api, "cookie">>, path: string, init: CallInit = {}) {
   const hasBody = Object.hasOwn(init, "body");
   try {
     return await fetch(new URL(path, api.baseUrl), {
-      ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
+      ...(hasBody ? { body: JSON.stringify(init.body) } : init.form ? { body: init.form } : {}),
       cache: "no-store",
       headers: {
         ...(hasBody ? { "content-type": "application/json" } : {}),
