@@ -914,6 +914,6 @@ describe("scenarios Q and R", () => {
     const verdict = oracleR([{ expected: true, index: 0, started: false, status: "complete" }, { expected: false, index: 5, started: true, status: "cancelled" },
       { expected: true, index: 1, started: true, status: "cancelled" }]);
     expect(verdict.failed).toEqual(["phrase_0_not_started", "phrase_5_started"]);
-    expect(verdict.counts).toEqual({ asked: 3, correct: 1, started: 2 });
+    expect(verdict.counts).toEqual({ asked: 3, askedFirst: 0, correct: 1, started: 2 });
   });
 });

@@ -1377,20 +1377,32 @@ async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
   for (const [index, phrase] of SCENARIO_R_PHRASES.entries()) {
     const chat = await createScenarioChat(ctx.session.api, `Sub-agent scenario R ${index}`);
     run.chats.push(chat.id);
+    // Started, or the run ended without starting: either answers this phrase.
+    const outcome = async (runId: string) => {
+      const reached = await poll(R_PHRASE_MS, async () => {
+        const { rows } = await ctx.db.query<{ calls: number; started: number; status: string }>(`SELECT r."status"::text AS "status",
+          (SELECT count(*)::int FROM "ModelRunToolCall" c WHERE c."modelRunId" = r."id") AS "calls",
+          (SELECT count(*)::int FROM "ModelRunToolCall" c WHERE c."modelRunId" = r."id" AND c."toolName" = 'start_research') AS "started" FROM "ModelRun" r WHERE r."id" = $1`, [runId]);
+        const row = rows[0];
+        if ((row?.started ?? 0) > 0) return "started" as const;
+        return row && TERMINAL_RUN_STATES.has(row.status) ? row.calls === 0 ? "no_tools" as const : "ended" as const : null;
+      }, "phrase_timeout", 1_000);
+      if (reached === "started") await request(ctx.session.api, `/api/model-runs/${encodeURIComponent(runId)}/cancel`, { body: {}, method: "POST" }).catch(() => undefined);
+      return { reached, terminal: await waitRun(ctx, runId, R_PHRASE_MS) };
+    };
     const sent = await trySend(ctx, run, chat.id, phrase.text, [], { search: route });
     if (!sent.ok) fail(`send_${sent.code}`);
-    const runId = sent.ok ? sent.runId : "";
-    // Started, or the run ended without starting: either answers this phrase.
-    const started_ = await poll(R_PHRASE_MS, async () => {
-      const { rows } = await ctx.db.query<{ count: number; status: string }>(`SELECT r."status"::text AS "status", (SELECT count(*)::int FROM "ModelRunToolCall" c
-        WHERE c."modelRunId" = r."id" AND c."toolName" = 'start_research') AS "count" FROM "ModelRun" r WHERE r."id" = $1`, [runId]);
-      const row = rows[0];
-      if ((row?.count ?? 0) > 0) return "started" as const;
-      return row && TERMINAL_RUN_STATES.has(row.status) ? "ended" as const : null;
-    }, "phrase_timeout", 1_000);
-    if (started_ === "started") await request(ctx.session.api, `/api/model-runs/${encodeURIComponent(runId)}/cancel`, { body: {}, method: "POST" }).catch(() => undefined);
-    const terminal = await waitRun(ctx, runId, R_PHRASE_MS);
-    results.push({ expected: phrase.start, index, started: started_ === "started", status: terminal.status });
+    let reached = await outcome(sent.ok ? sent.runId : "");
+    let askedFirst = false;
+    // A request this open may get a question first: what counts then is that the user's answer starts research.
+    if (reached.reached === "no_tools" && phrase.reply) {
+      await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
+      const replied = await trySend(ctx, run, chat.id, phrase.reply, [], { search: route });
+      if (!replied.ok) fail(`send_${replied.code}`);
+      reached = await outcome(replied.ok ? replied.runId : "");
+      askedFirst = reached.reached === "started";
+    }
+    results.push({ ...(askedFirst ? { askedFirst } : {}), expected: phrase.start, index, started: reached.reached === "started", status: reached.terminal.status });
     await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
   }
   const verdict = oracleR(results);
