@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME } from "../../contracts/research";
 import type { TranscriptItem } from "../engine/transcript";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import type { ResearchOpenedSource } from "./gates";
-import { checkQuotes, normalizeQuotedText, QUOTE_EXCERPT_LIMITS } from "./quoteCheck";
+import { checkQuotes, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn } from "./quoteCheck";
 import { createResearchSources, researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 
 const LINK = "https://lab.example/x1";
@@ -147,6 +148,28 @@ describe("the quote check", () => {
     expect(checkQuotes([finding("the words")], [other])[0]).toMatchObject({ excerpt: { source: { kind: "other", url: "shop-b.example" } } });
     const same = page("[browser #1] open @ www.lab.example/x\nthe words", null, { toolName: SHELL });
     expect(checkQuotes([finding("the words")], [same])[0]).toMatchObject({ excerpt: { source: { kind: "unknown" } } });
+  });
+
+  it("says which source holds the quote, so a write keeps that one", () => {
+    const opened = [page("nothing here", OTHER_PAGE), page("search result: the words", null, { toolName: "search_engine_1" }), page("the words")];
+    expect(checkQuotes([finding("the words")], opened)[0]).toMatchObject({ opened: 2, status: "found" });
+  });
+
+  it("reads a miss as not knowing when the caller stopped at a bound, and never a find", () => {
+    const check = (moreUnread: boolean) => checkQuotes([finding("held up", NEVER_OPENED)], [page("nothing here", OTHER_PAGE)], { moreUnread })[0];
+    expect(check(false)).toEqual({ reason: "not_in_opened_text", status: "unsupported" });
+    expect(check(true)).toEqual({ reason: "sources_over_limit", status: "not_checked" });
+    expect(checkQuotes([finding("nothing")], [page("nothing here")], { moreUnread: true })[0]).toMatchObject({ status: "found" });
+  });
+
+  it("answers for a text the way the check reads it", () => {
+    expect(quoteIsIn("«held up» ... 10 years", "It held up after 10 years.")).toBe(true);
+    expect(quoteIsIn("held up", "It held firm.")).toBe(false);
+  });
+
+  it.each([RECORD_EVIDENCE_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, CHANGE_RESEARCH_FRAME_TOOL_NAME])("takes what %s returns for an agent's own words", (toolName) => {
+    expect(researchEvidenceKind({ text: "held up after 10 years", toolName })).toBe("agent_written");
+    expect(one("held up after 10 years", [page("held up after 10 years", null, { toolName })])).toEqual({ reason: "not_in_opened_text", status: "unsupported" });
   });
 
   it("normalizes both sides alike", () => {

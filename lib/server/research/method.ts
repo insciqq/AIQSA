@@ -42,6 +42,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "measurements), owner_reviews (what owners and users report, complaints included), action_channel (where the user will buy or act, " +
       "with current prices, stock and terms).",
     "For each source class of your question, open real pages with fetch_url or the browser: a search snippet is not evidence.",
+    "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
       "claimed by a party or not verified.",
     "List what you could not reach and why. If a site the user named shows a CAPTCHA or asks to sign in, call browser_handoff so the user " +

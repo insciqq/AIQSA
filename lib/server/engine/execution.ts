@@ -82,6 +82,7 @@ import {
 import { renderSubagentTypeCatalog } from "../subagents/typeCatalog";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
+import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
 import { createRunResearch, researchOffered, researchRunOf, type ResearchEngineDeps, type RunResearch } from "../research/run";
 
 /**
@@ -157,6 +158,9 @@ export type NativeRunExecutionInput = Readonly<{
 
 /** The main agent's key among a run's agent fences; a sub-agent's is its thread id (a UUID, never this). */
 const MAIN_AGENT_FENCE = "main";
+
+/** Where every agent of a run's research writes its evidence: the one port, under the plan that stands. */
+const researchEvidenceTarget = (research: RunResearch): RecordEvidenceTarget => ({ evidence: research.ports.evidence, planStands: research.holding });
 
 /** The web chat's address a Telegram turn's handoff points to; the chat id is its only parameter. */
 function webChatUrl(chatId: string): string {
@@ -620,6 +624,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             ...(subagentHandoff(agentInput.agent, agentInput.host) ?? {}),
             ...(agentInput.host ? { onUsage: agentInput.host.onUsage, runId: agentInput.host.runId } : {}),
             ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),
+            // Read at each build: the run's research is made after this input, and before any sub-agent's turn.
+            ...(research ? { researchEvidence: researchEvidenceTarget(research) } : {}),
             followupTexts: agentInput.followupTexts,
             // A sub-agent's outputs stay its own; the answer shows its steps under its call.
             onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
@@ -656,7 +662,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         research = runResearch;
         if (input.approvalContinuation) runResearch?.resume(conversation.items);
         const registry = subagents ? withSubagentTools(mainRegistry, [...(runResearch?.withResearcherBriefs(subagents.tools) ?? subagents.tools),
-          ...(runResearch?.tools ?? [])]) : mainRegistry;
+          ...(runResearch?.tools ?? []), ...(runResearch ? [recordEvidenceEngineTool(researchEvidenceTarget(runResearch), { kind: "main" })] : [])]) : mainRegistry;
         // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
         // only for this run rides in with its input (`systemPrompt.ts`).
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
