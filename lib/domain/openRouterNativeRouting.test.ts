@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { openRouterEndpointServesProvider, openRouterSelectedProvidersMissingParameters,
+import { openRouterRoleRoutingConflicts, openRouterEndpointServesProvider, openRouterSelectedProvidersMissingParameters,
   resolveOpenRouterNativeProvider } from "./openRouterNativeRouting";
 
 describe("OpenRouter native provider selection", () => {
@@ -54,4 +54,14 @@ describe("OpenRouter native provider selection", () => {
     expect(resolveOpenRouterNativeProvider({ modelId: "deepseek/fixture", endpoints, requiredParameters: ["tools"], requireForcedToolChoice: true }))
       .toMatchObject({ available: false, reason: "native_incompatible", mismatch: { provider: "deepseek", forcedToolChoice: true } });
   });
+});
+
+
+it.each(["research_researcher", "research_verifier"] as const)("requires tools for %s on the chosen OpenRouter endpoint", (role) => {
+  const input = { roles: [role], providers: ["chosen"] };
+  expect(openRouterRoleRoutingConflicts({ ...input, endpoints: [
+    { tag: "chosen", supportedParameters: ["response_format", "structured_outputs"] },
+    { tag: "unselected", supportedParameters: ["tools"] }
+  ] })).toEqual([{ role, missingParameters: ["tools"] }]);
+  expect(openRouterRoleRoutingConflicts({ ...input, endpoints: [{ tag: "chosen", supportedParameters: ["tools"] }] })).toEqual([]);
 });

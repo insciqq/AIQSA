@@ -824,14 +824,14 @@ describe("through the engine", () => {
     expect(memory.published()).toContain("Claims: 1; supported: 1.");
   });
 
-  it("runs nothing on another model when the role is unusable, and the answer says the independent check did not run", async () => {
-    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [HOLDS])] }]);
+  it("refuses research at start when the checks role is unusable", async () => {
+    const main = scripted([{ calls: [start] }, { text: "Research could not start: the checks model is unavailable." }]);
     const memory = engineOf({ verifier: { frozenChoice: async () => ({ effort: null, kind: "set", providerModelId: "gone" }), route: async () => null } });
     await run(main.adapter, memory);
     expect(main.requests).toHaveLength(2);
     expect(memory.threads.admitForeground).not.toHaveBeenCalled();
-    expect(memory.published()).toContain("The independent check did not run");
-    expect(memory.published()).toContain("Quotes: found in opened pages: 1.");
+    expect(JSON.stringify(main.requests[1]!.history)).toContain("research_verifier_unavailable");
+    expect(memory.published()).toBe("Research could not start: the checks model is unavailable.");
   });
 
   it("does not lose the answer when the verifier's provider fails", async () => {

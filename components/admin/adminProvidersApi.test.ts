@@ -208,6 +208,15 @@ describe("admin provider browser API", () => {
     expect(adminProviderErrorMessage({ blockers: [], code: "provider_model_check_failed_roles", resourceIds: [],
       roles: [{ role: "vision", missingParameters: [] }] }))
       .toBe("Its check failed, so Vision Model is paused until a check passes. Restore the previous settings or run the check again.");
+    for (const [role, label] of [["research_researcher", "Researchers"], ["research_verifier", "Research checks"]] as const) {
+      expect(adminProviderErrorMessage({ blockers: [], code: "provider_routing_role_incompatible", resourceIds: [],
+        roles: [{ role, missingParameters: ["tools"] }] }))
+        .toBe(`${label} use this model and need tool calling, which the selected providers do not support. ` +
+          `Choose Automatic or providers that support it, or assign ${label} to another model first.`);
+      expect(adminProviderErrorMessage({ blockers: [], code: "provider_model_check_failed_roles", resourceIds: [],
+        roles: [{ role, missingParameters: [] }] }))
+        .toBe(`Its check failed, so ${label} are paused until a check passes. Restore the previous settings or run the check again.`);
+    }
     // A malformed role list from the server falls back to the generic code text.
     expect(adminProviderErrorMessage({ blockers: [], code: "provider_routing_role_incompatible", resourceIds: [] }))
       .toContain("A system role uses this model");
