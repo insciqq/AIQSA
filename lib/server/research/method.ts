@@ -2,6 +2,7 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RESEARCH_ROUND_LIMITS, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchPlan, type ResearchQuestion } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { PlanUpdate } from "../tools/updatePlan";
+import { RESEARCH_REVIEWS_REFERENCE } from "./dataCollection";
 import { researchEmptyByRow, type ResearchEmptyRow, type ResearchMatrix } from "./matrix";
 
 /**
@@ -51,6 +52,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
       `A candidate or an option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. A criterion only when the question needs it, with your reason.`,
+    RESEARCH_REVIEWS_REFERENCE,
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
       "claimed by a party or not verified.",
     "List what you could not reach and why. If a site the user named shows a CAPTCHA or asks to sign in, call browser_handoff so the user " +

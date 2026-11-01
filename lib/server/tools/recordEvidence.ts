@@ -11,6 +11,7 @@ import {
   type ResearchFrame
 } from "../../contracts/research";
 import type { EngineTool } from "../engine/toolRegistry";
+import { researchClaimGivesRate, researchSmallSampleNote } from "../research/dataCollection";
 import { RESEARCH_CHECK_REASONS } from "../research/evidenceStore";
 import type { ResearchCoveragePort, ResearchEvidencePort } from "../research/ports";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
@@ -22,7 +23,8 @@ import type { RunTool, ToolExecutionResult } from "./types";
  * agent and every researcher of a run that offers research. Who wrote it comes from the registry that built the tool, never from the model.
  * `strict: false` like the other research tools, though every field is required: `decodeResearchRecord` wants null where a kind has no use for
  * a field, and names the one to correct. A tool of the `session` capability, so a turn whose tool groups narrow its tools, such as a gate's,
- * is never offered it (`lib/server/engine/subagents/registry.ts`). The result stays short: the id, the quote check's word and what to do.
+ * is never offered it (`lib/server/engine/subagents/registry.ts`). The result stays short: the id, the quote check's word, a small sample's
+ * word and what to do.
  */
 export { RECORD_EVIDENCE_TOOL_NAME };
 
@@ -54,9 +56,9 @@ export const recordEvidenceTool: RunTool = {
             properties: { count: { type: "integer" }, label: { type: "string" } }, required: ["label", "count"], type: "object" }, type: "array" },
           examples: { description: "A few verbatim examples, each with its link.", items: { additionalProperties: false,
             properties: { quote: { type: "string" }, url: { type: "string" } }, required: ["quote", "url"], type: "object" }, type: "array" },
-          left_out: text("What was left out of the sample."),
-          method: text("How it was collected."),
-          sample_size: { description: "The number of items read.", type: "integer" }
+          left_out: text("What was left out of the sample: what a filter dropped, with numbers, and where collecting stopped."),
+          method: text("How it was collected and how it was filtered."),
+          sample_size: { description: "The number of items the counts are out of: those kept after filtering, not all that were read.", type: "integer" }
         },
         required: ["method", "sample_size", "left_out", "counts", "examples"],
         type: "object"
@@ -144,9 +146,20 @@ function cellHint(record: ResearchEvidenceRecord, frame: ResearchFrame): string 
     `or add a new key with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} and it counts as it stands.`;
 }
 
+/** A small sample's word, at once, while the agent can still say it in counts; null for every other record. */
+function sampleMessage(record: ResearchEvidenceRecord): string | null {
+  if (record.kind !== "dataset") return null;
+  const note = researchSmallSampleNote(record.dataset);
+  if (!note) return null;
+  return researchClaimGivesRate(record.claim) ? `${note} This claim gives a percentage: ${CORRECT} and the claim in counts.` : note;
+}
+
 function recordedResult(call: Readonly<{ id: string; name: string }>, record: ResearchEvidenceRecord, hint: string | null): ToolExecutionResult {
   const check = record.quoteCheck;
-  return { callId: call.id, content: [{ type: "json", value: { ...hint ? { matrix: hint } : {}, message: check ? checkMessage(check) : "Recorded.", ...check ? { quote_check: check.status } : {}, record_id: record.id } }],
+  const sample = sampleMessage(record);
+  const message = `${check ? checkMessage(check) : "Recorded."}${sample ? ` ${sample}` : ""}`;
+  return { callId: call.id, content: [{ type: "json", value: { ...hint ? { matrix: hint } : {}, message, ...check ? { quote_check: check.status } : {}, record_id: record.id,
+    ...sample ? { sample: "small" } : {} } }],
     name: call.name, status: "complete" };
 }
 
