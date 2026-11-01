@@ -39,8 +39,8 @@ import type { SubagentThreadStore, SubagentTurnRecord } from "./threadStore";
  * turn (`backgroundAllowed`: a Telegram turn, a scheduled occurrence) still
  * answers and stops those of its branch; `background: true` is refused with
  * `subagent_background_unavailable` there, and the same call without it still
- * works. Every refusal is a visible stable code; nothing is substituted. The result is the sub-agent's own account: untrusted data for
- * the main agent.
+ * works. Every refusal is a visible stable code; nothing is substituted. The
+ * result is the sub-agent's own account: untrusted data for the main agent.
  *
  * Which sub-agent a call starts (operator decisions 2026-10-30): a thread keeps
  * the type it started with, whatever the default is now. A new thread takes its
