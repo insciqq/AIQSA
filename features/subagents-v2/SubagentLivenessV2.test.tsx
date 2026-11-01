@@ -103,4 +103,31 @@ describe("sub-agent liveness", () => {
     expect(useSubagentStore.getState().chats.a?.running).toBe(0);
     expect(onActiveChatSettled).toHaveBeenCalledWith("a");
   });
+
+  it("reports a sub-agent that starts waiting for the main agent, whose question may wake it", async () => {
+    let asking = false;
+    const { fetch } = subagentFetch([
+      { path: "/api/subagents", respond: () => jsonResponse({ chats: [] }) },
+      { path: "/api/chats/a/subagents", respond: () => jsonResponse(subagentChat("a", [asking
+        ? subagentThread("thread-alpha", "waiting", { reason: "waiting_for_answer" }) : subagentThread("thread-alpha")])) }
+    ]);
+    vi.stubGlobal("fetch", fetch);
+    const workspace = useWorkspaceStore.getState();
+    workspace.setChats([{ activeLeafMessageId: "leaf-1", createdAt: "2026-10-30T08:00:00.000Z", defaultModelId: "m",
+      defaultProvider: "p", folderId: null, id: "a", messageCount: 2, title: "a", updatedAt: "2026-10-30T08:00:00.000Z" }]);
+    workspace.setActiveChatId("a");
+    const onActiveChatSettled = vi.fn();
+    render(<SubagentLivenessV2 onActiveChatSettled={onActiveChatSettled} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(onActiveChatSettled).not.toHaveBeenCalled();
+    asking = true;
+    await act(async () => {
+      useWorkspaceStore.getState().setChats([{ ...useWorkspaceStore.getState().chats[0]!, activeLeafMessageId: "leaf-2" }]);
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(useSubagentStore.getState().chats.a?.running).toBe(1);
+    expect(onActiveChatSettled).toHaveBeenCalledWith("a");
+  });
 });

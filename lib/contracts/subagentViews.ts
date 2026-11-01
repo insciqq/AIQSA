@@ -1,6 +1,7 @@
 import { decodeThreadToolActivity, isThreadToolActivityOrigin, type ThreadToolActivity, type ThreadToolActivityOrigin } from "./chats";
 import { decodeFetchUrlTarget } from "./fetchUrlActivity";
 import {
+  MAIN_AGENT_NAME,
   SUBAGENT_LIMITS,
   isActiveSubagentState,
   isSubagentCode,
@@ -45,8 +46,8 @@ export const SUBAGENT_VIEW_LIMITS = Object.freeze({
   threadsPerChat: 100,
   /** Turns one thread view holds, oldest first; more set `truncated` (the oldest are left out). */
   turnsPerView: 50,
-  /** Messages the main agent sent one running turn. */
-  messagesPerTurn: 32,
+  /** Messages one turn shows, whoever wrote them: what it may take from the main agent and other sub-agents, and what it sent. */
+  messagesPerTurn: 64,
   displayCharacters: 256
 });
 
@@ -141,11 +142,19 @@ export type SubagentChatThreads = Readonly<{
 /** The chats of a summary request that have sub-agents on their active branch. */
 export type SubagentSummaryResponse = Readonly<{ chats: readonly SubagentChatThreads[] }>;
 
-/** One message the main agent sent a running sub-agent, with its delivery (receipt, not obedience). */
+/**
+ * One row of a thread between its brief and its reply: a message the turn received, with its delivery (receipt, not
+ * obedience), or one it wrote (`to`). `from` is a sub-agent's name; neither names the main agent, which a row names by
+ * `MAIN_AGENT_NAME` in `to` and by leaving `from` out.
+ */
 export type SubagentTurnMessage = Readonly<{
   createdAt: string;
   delivery: "accepted" | "delivered" | "undelivered";
+  from?: string;
+  /** What the turn asked its parent, rather than told an agent. */
+  question?: true;
   text: string;
+  to?: string;
 }>;
 
 /** One turn in the thread view: the brief, its later messages, its steps as an answer shows them, and its reply. */
@@ -284,11 +293,17 @@ export function decodeSubagentSummaryQuery(params: URLSearchParams): string[] | 
   return [...new Set(chatIds)];
 }
 
+const isAgentName = (value: unknown) => value === MAIN_AGENT_NAME || (typeof value === "string" && normalizeSubagentName(value) === value);
+
 function decodeTurnMessage(value: unknown): SubagentTurnMessage | null {
-  if (!record(value) || !only(value, ["createdAt", "delivery", "text"])) return null;
+  if (!record(value) || !only(value, ["createdAt", "delivery", "from", "question", "text", "to"])) return null;
   if (!timestamp(value.createdAt) || !["accepted", "delivered", "undelivered"].includes(value.delivery as string) ||
     !text(value.text, SUBAGENT_LIMITS.messageCharacters)) return null;
-  return { createdAt: value.createdAt, delivery: value.delivery as SubagentTurnMessage["delivery"], text: value.text };
+  if ((value.from !== undefined && !isAgentName(value.from)) || (value.to !== undefined && !isAgentName(value.to)) ||
+    (value.question !== undefined && value.question !== true)) return null;
+  return { createdAt: value.createdAt, delivery: value.delivery as SubagentTurnMessage["delivery"],
+    ...(typeof value.from === "string" ? { from: value.from } : {}), ...(value.question === true ? { question: true as const } : {}),
+    text: value.text, ...(typeof value.to === "string" ? { to: value.to } : {}) };
 }
 
 const TURN_KEYS = ["brief", "endedAt", "files", "id", "messages", "mode", "model", "outcome", "parentMessageId", "reason", "report",
