@@ -15,7 +15,10 @@ import argparse
 import os
 import sys
 from typing import Any, Dict, List, Optional, TextIO
+from urllib.parse import urlsplit
 
+from ..proxy import client as proxy_client
+from ..proxy import selection as proxy_selection
 from ._client import BrowserError, call
 from ._format import step_line
 
@@ -30,12 +33,18 @@ EXIT_SESSION = 7
 EXIT_USER_IN_CONTROL = 8
 _ELEMENT = {"element_not_found", "stale_element", "element_not_actionable", "not_a_select", "option_not_found"}
 _PAGE = {"invalid_url", "navigation_failed", "navigation_timeout", "wait_timeout", "timeout", "tab_not_found", "script_error"}
-_UNAVAILABLE = {"browser_unavailable", "browser_start_failed", "browser_crashed", "protocol_error"}
+_UNAVAILABLE = {"browser_unavailable", "browser_start_failed", "browser_crashed", "protocol_error", "proxy_browser_restart_required",
+                proxy_client.UNAVAILABLE}
+#: What a shell answers when a command is missing or not executable.
+EXIT_COMMAND_NOT_RUN = 127
+_PROXY_HELP = "A proxy's name or id, `direct`, or `auto` to follow its hints again (a proxy called direct or auto is named by id)."
 
 
 def exit_code(code: str) -> int:
     if code in _UNAVAILABLE:
         return EXIT_UNAVAILABLE
+    if code.startswith("proxy_"):
+        return EXIT_PAGE
     if code in _ELEMENT:
         return EXIT_ELEMENT
     if code in _PAGE:
@@ -70,6 +79,7 @@ def _parser() -> argparse.ArgumentParser:
     quiet.add_argument("--quiet", action="store_true", help="Print only the step line, not the page.")
     command = commands.add_parser("open", parents=[quiet], help="Open a web address in the current tab.")
     command.add_argument("url")
+    command.add_argument("--proxy", metavar="NAME", help=_PROXY_HELP)
     command = commands.add_parser("info", help="The page: URL, title and numbered elements on screen.")
     command.add_argument("--all", action="store_true", help="List the elements of the whole page.")
     command.add_argument("--limit", type=int)
@@ -118,6 +128,7 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("index", type=int)
     command = commands.add_parser("new-tab", parents=[quiet], help="Open a new tab, optionally at URL.")
     command.add_argument("url", nargs="?")
+    command.add_argument("--proxy", metavar="NAME", help=_PROXY_HELP)
     command = commands.add_parser("close-tab", parents=[quiet], help="Close tab INDEX (default: the current one).")
     command.add_argument("index", type=int, nargs="?")
     command = commands.add_parser("save-session", help="Save the current site's sign-in for later requests.")
@@ -127,6 +138,12 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--markers", action="store_true", help="Also check automation markers in the page and a worker.")
     commands.add_parser("close", help="Close the browser now.")
     commands.add_parser("release", help="Release this agent's browser slot and close its tabs.")
+    command = commands.add_parser("proxies", help="This chat's proxies; with HOST, what opens it and which proxies to try.")
+    command.add_argument("host", nargs="?")
+    command = commands.add_parser("proxied", help="Run a command with its network through this chat's proxies, chosen per site as the browser's are: "
+                                  "aiqsa-browser proxied curl -sS https://shop.kz/")
+    command.add_argument("--proxy", metavar="NAME", help=_PROXY_HELP)
+    command.add_argument("argv", nargs=argparse.REMAINDER, metavar="COMMAND")
     return parser
 
 
@@ -160,23 +177,92 @@ def _request(parsed: argparse.Namespace) -> tuple:
     if name == "save-session":
         return "save_session", {"name": parsed.name}
     if name in ("new-tab", "close-tab"):
-        return name.replace("-", "_"), {key: value for key, value in vars(parsed).items() if key in ("url", "index")}
+        return name.replace("-", "_"), {key: value for key, value in vars(parsed).items() if key in ("url", "index", "proxy")}
     if name == "status":
         return "status", {"markers": parsed.markers}
     if name == "upload":
         return "upload", {"n": parsed.n, "path": os.path.abspath(parsed.path)}
-    keys = {"open": ("url",), "find": ("text",), "click": ("n",), "select": ("n", "option"), "press": ("key",),
+    keys = {"open": ("url", "proxy"), "find": ("text",), "click": ("n",), "select": ("n", "option"), "press": ("key",),
             "tab": ("index",), "js": ("expression",)}
     return name, {key: getattr(parsed, key) for key in keys.get(name, ())}
+
+
+def _listed(proxy: Dict[str, Any], names: List[str]) -> str:
+    """One proxy, by what names it: a name a choice cannot mean, or that two proxies share, also shows its id."""
+    name = str(proxy["name"])
+    ambiguous = name.lower() in (proxy_client.DIRECT, proxy_client.AUTO) or names.count(name.lower()) > 1
+    states = [] if proxy["active"] and proxy["available"] else ["switched off" if not proxy["active"] else "unavailable now"]
+    return "- " + ", ".join([name + (f" (id {proxy['id']})" if ambiguous else ""), str(proxy["protocol"]),
+                             *([f"country {proxy['country']}"] if proxy["country"] else []),
+                             "hints " + " ".join(proxy["domainHints"]) if proxy["domainHints"] else "no hints",
+                             "shared by an administrator" if proxy["owner"] == "administrator" else "personal", *states])
+
+
+def _proxies_text(value: Optional[str]) -> str:
+    plan = proxy_client.load_plan()
+    if plan is None:
+        return "This chat has no proxies."
+    listed = plan.public()
+    names = [str(proxy["name"]).lower() for proxy in listed]
+    lines = ["Proxies of this chat. Hints are advice: any of them opens any site when named. Logins and passwords, for a program that needs "
+             "its own, are in /workspace/secrets/files/aiqsa-proxies.json.", *(_listed(proxy, names) for proxy in listed)]
+    if value:
+        host = (urlsplit(value).hostname if "://" in value else value) or value
+        peek = proxy_client.call("peek", {"host": host})
+        decision = peek.get("decision") or {}
+        if decision.get("kind") == "proxy":
+            lines.append(f"{host} opens through {proxy_client.labels([decision])}.")
+        elif decision.get("kind") == "direct":
+            lines.append(f"{host} opens directly.")
+        else:
+            lines.append(f"{host} has no proxy left to open it ({decision.get('code')}); its next request tries them again.")
+        outcome = peek.get("outcome") or {}
+        if outcome.get("code"):
+            lines.append(f"Its last connection failed: {outcome['code']}.")
+        lines.append(f"Proxies to try: {proxy_client.labels(peek.get('toTry') or []) or 'none'}.")
+    return "\n".join(lines)
+
+
+def _run_proxied(parsed: argparse.Namespace, stderr: TextIO) -> int:
+    command = list(parsed.argv)
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if not command:
+        raise _UsageError("give the command to run")
+    choice = proxy_client.parse_choice(parsed.proxy)
+    plan = proxy_client.load_plan()
+    route = None
+    if plan is None:
+        if choice not in (None, proxy_client.AUTO) and choice["kind"] == "proxy":
+            raise proxy_client.ProxyError("proxy_not_found", "This chat has no proxies, so `--proxy` has nothing to name.")
+    elif choice not in (None, proxy_client.AUTO):
+        decision, _ = proxy_selection.select(plan.proxies, "", proxy_selection.empty_state(), choice)
+        if decision["kind"] == "failed":
+            raise proxy_client.ProxyError(decision["code"], "That is no usable proxy of this chat; `aiqsa-browser proxies` lists them.")
+        route = decision["proxyId"] if decision["kind"] == "proxy" else proxy_client.DIRECT
+    env = proxy_client.command_environment(os.environ, route) if plan is not None else dict(os.environ)
+    try:
+        os.execvpe(command[0], command, env)
+    except OSError as error:
+        stderr.write(f"error[command_not_run]: {command[0]}: {error.strerror}.\n")
+    return EXIT_COMMAND_NOT_RUN
 
 
 def main(argv: Optional[List[str]] = None, *, stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr) -> int:
     try:
         parsed = _parser().parse_args(argv)
+        if parsed.command == "proxied":
+            return _run_proxied(parsed, stderr)
+        if parsed.command == "proxies":
+            stdout.write(_proxies_text(parsed.host) + "\n")
+            return 0
         op, args = _request(parsed)
     except _UsageError as error:
         stderr.write(f"error[usage]: {error}. See `aiqsa-browser --help`.\n")
         return EXIT_USAGE
+    except proxy_client.ProxyError as error:
+        stderr.write(f"error[{error.code}]: {error.message}\n")
+        return exit_code(error.code)
     try:
         result: Dict[str, Any] = call(op, args)
     except BrowserError as error:

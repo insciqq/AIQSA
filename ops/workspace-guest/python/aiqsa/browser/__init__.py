@@ -55,9 +55,9 @@ def _page(result: Dict[str, Any]) -> Page:
     return Page(builtins.str(result.get("text") or ""), result.get("info"))
 
 
-def open(url: str) -> Page:  # noqa: A001 - the helper's verb
-    """Open a web address in the current tab."""
-    return _page(_run("open", url=url))
+def open(url: str, proxy: Optional[str] = None) -> Page:  # noqa: A001 - the helper's verb
+    """Open a web address in the current tab; `proxy` names a proxy, `direct`, or `auto` to follow hints again."""
+    return _page(_run("open", url=url, proxy=proxy))
 
 
 def page_info(all: bool = False, limit: Optional[int] = None) -> Page:  # noqa: A002
@@ -155,8 +155,8 @@ def switch_tab(index: int) -> Page:
     return _page(_run("tab", index=index))
 
 
-def new_tab(url: Optional[str] = None) -> Page:
-    return _page(_run("new_tab", url=url))
+def new_tab(url: Optional[str] = None, proxy: Optional[str] = None) -> Page:
+    return _page(_run("new_tab", url=url, proxy=proxy))
 
 
 def close_tab(index: Optional[int] = None) -> Page:
