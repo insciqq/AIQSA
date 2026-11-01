@@ -42,6 +42,10 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "measurements), owner_reviews (what owners and users report, complaints included), action_channel (where the user will buy or act, " +
       "with current prices, stock and terms).",
     "For each source class of your question, open real pages with fetch_url or the browser: a search snippet is not evidence.",
+    "Source quality: prefer primary documents and measured results with a stated method. A page selling the product is the seller's " +
+      "claim, even when it calls itself an independent review; affiliate rating sites are weak evidence. Two pages of one site and " +
+      "copies of one press release are one source, not independent corroboration. For a claim that depends on time, use the page's " +
+      "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date.",
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
       "claimed by a party or not verified.",
