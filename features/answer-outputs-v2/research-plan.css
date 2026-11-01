@@ -1,0 +1,158 @@
+/* The research plan above an answer's text: quiet scoping line, then a card that acts on the run, on the approval card's frame. */
+.v2-research-plan-scoping {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0.25rem 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.v2-research-plan-scoping .v2-spinner { flex: none; }
+
+.v2-research-plan {
+  display: grid;
+  min-width: 0;
+  gap: 0.75rem;
+  margin: 0.375rem 0 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.v2-research-plan-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+}
+
+.v2-research-plan-heading strong { font-weight: 600; }
+
+/* Tabular figures: the line keeps its width as the seconds change. */
+.v2-research-plan-clock {
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.v2-research-plan[data-held] .v2-research-plan-clock { color: var(--v2-color-warn); }
+
+.v2-research-plan-part { display: grid; min-width: 0; gap: 0.25rem; justify-items: start; }
+.v2-research-plan-part > * { max-width: 100%; }
+
+.v2-research-plan-part h3 {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.v2-research-plan-part p,
+.v2-research-plan-part ul,
+.v2-research-plan-part ol {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.v2-research-plan-part ul,
+.v2-research-plan-part ol { padding-left: 1.25rem; }
+.v2-research-plan-part ul { list-style: disc; }
+.v2-research-plan-part ol { list-style: decimal; }
+.v2-research-plan-part li + li { margin-top: 0.125rem; }
+
+.v2-research-plan-part ol.v2-research-plan-rows {
+  display: grid;
+  width: 100%;
+  gap: 0.375rem;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-research-plan-rows > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.25rem;
+  margin: 0;
+}
+
+.v2-research-plan-rows[data-numbered] { counter-reset: research-plan-step; }
+
+.v2-research-plan-rows[data-numbered] > li {
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+  counter-increment: research-plan-step;
+}
+
+.v2-research-plan-rows[data-numbered] > li::before {
+  padding-top: 0.4375rem;
+  color: var(--v2-color-text3);
+  content: counter(research-plan-step) ".";
+  font-variant-numeric: tabular-nums;
+}
+
+.v2-research-plan-field {
+  width: 100%;
+  min-width: 0;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font: inherit;
+  field-sizing: content;
+  resize: vertical;
+}
+
+.v2-research-plan-field:disabled { color: var(--v2-color-text2); }
+
+/* Kept text can be long: it scrolls here, never the page. */
+.v2-research-plan-part .v2-research-plan-kept {
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.v2-research-plan-status {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.v2-research-plan-status:focus { outline: none; }
+
+.v2-research-plan-error {
+  margin: 0;
+  color: var(--v2-color-danger);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.v2-research-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* A software keyboard zooms a page whose field is under 16px. */
+@media (hover: none), (pointer: coarse) {
+  .v2-research-plan-field { min-height: 2.75rem; font-size: 1rem; }
+  .v2-research-plan-rows[data-numbered] > li::before { padding-top: 0.625rem; }
+}
+
+@media (max-width: 30rem) {
+  .v2-research-plan-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .v2-research-plan-actions .v2-button { width: 100%; justify-content: center; }
+  .v2-research-plan-actions .v2-button[data-tone="primary"] { order: -1; }
+}
