@@ -1,4 +1,4 @@
-import type { ResearchDraft, ResearchGateResult, ResearchPlan } from "../../contracts/research";
+import { RESEARCH_ROUND_LIMITS, type ResearchDraft, type ResearchGateResult, type ResearchPlan } from "../../contracts/research";
 import type { EndedSubagentCallResult, SubagentToolGroup } from "../../contracts/subagents";
 import { logEvent } from "../observability";
 import { gapCheckGate } from "./gapCheck";
@@ -21,6 +21,10 @@ import { verifierGate } from "./verifier";
  * - Answer first: a gate that throws or outlasts `time.remainingMs` costs its
  *   check and adds a visible note, never the answer. A send back with no time
  *   left to act on it turns into its `unresolvedNote`.
+ * - A gate sends back at most `RESEARCH_ROUND_LIMITS.sendBacksPerCheck` times in
+ *   a research, approvals included: past that its send back turns into its
+ *   `unresolvedNote` too and the next gate runs. A real run went round for 70
+ *   minutes on one more detail each time.
  * - `subagents.run` starts a sub-agent turn the gate waits for. It counts toward
  *   the chat's running sub-agents (`SUBAGENT_LIMITS.runningPerChat`) and a full
  *   chat refuses it (`kind: "refused"`); `model: "verifier"` runs on the
@@ -61,8 +65,14 @@ export type ResearchOpenedSource = Readonly<{
   url: string | null;
 }>;
 
-/** One earlier draft of this run and what the gates said of it: what "a round added nothing new" compares against. */
-export type ResearchAttempt = Readonly<{ draft: ResearchDraft; message: string | null }>;
+/**
+ * One earlier draft of this run and what the gates said of it: what "a round added nothing new" compares against. `gate` is the one that
+ * sent it back, by its name, and what the cap on send backs counts; a stored result from before the cap names none.
+ */
+export type ResearchAttempt = Readonly<{ draft: ResearchDraft; gate?: string; message: string | null }>;
+
+/** Why no researcher can start now, which is what a gate's send back for research hangs on: rounds that filled no new cell, or the clock. */
+export type ResearchersClosed = "no_new_cell" | "time" | null;
 
 export type ResearchGateContext = Readonly<{
   /** 1 for the run's first draft. */
@@ -72,6 +82,8 @@ export type ResearchGateContext = Readonly<{
   earlier: readonly ResearchAttempt[];
   evidence?: ResearchEvidencePort;
   plan: ResearchPlan;
+  /** Absent, as for a gate's own test, researchers can start. */
+  researchersClosed?(): ResearchersClosed;
   signal: AbortSignal;
   sources: Readonly<{ opened(signal: AbortSignal): Promise<readonly ResearchOpenedSource[]> }>;
   subagents: Readonly<{ run(request: ResearchSubagentRequest, signal: AbortSignal): Promise<ResearchSubagentOutcome> }>;
@@ -104,7 +116,7 @@ export function researchCarriedNotes(gates: readonly ResearchGate[], draft: Rese
 
 export type ResearchGatesOutcome =
   | Readonly<{ kind: "accepted"; notes: readonly string[] }>
-  | Readonly<{ kind: "sent_back"; message: string; notes?: readonly string[] }>;
+  | Readonly<{ gate: string; kind: "sent_back"; message: string; notes?: readonly string[] }>;
 
 class GateTimedOut extends Error {
   override name = "GateTimedOut";
@@ -146,12 +158,13 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
       finished.add(gate);
       notes.push(...result.notes ?? []);
       if (result.kind === "send_back") {
-        if (context.time.sendBackAllowed()) {
+        const capped = context.earlier.filter((attempt) => attempt.gate === gate.name).length >= RESEARCH_ROUND_LIMITS.sendBacksPerCheck;
+        if (!capped && context.time.sendBackAllowed()) {
           if (result.unresolvedNote) notes.push(result.unresolvedNote);
           const sentBackNotes = withCarried();
-          return { kind: "sent_back", message: result.message, ...sentBackNotes.length > 0 ? { notes: sentBackNotes } : {} };
+          return { gate: gate.name, kind: "sent_back", message: result.message, ...sentBackNotes.length > 0 ? { notes: sentBackNotes } : {} };
         }
-        notes.push(result.unresolvedNote ?? researchNote("time_out", draft.report));
+        notes.push(result.unresolvedNote ?? researchNote(capped ? "unresolved" : "time_out", draft.report));
       }
     } catch (error) {
       if (context.signal.aborted) throw error;

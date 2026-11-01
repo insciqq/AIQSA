@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
-  type ResearchDraft, type ResearchFinding, type ResearchPlan, type ResearchSourceClass
+  RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
+  type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchFrame, type ResearchPlan, type ResearchSourceClass
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
@@ -21,7 +21,9 @@ import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { proposeCall } from "./planWindow.testFixtures";
 import { gapCheckGate } from "./gapCheck";
 import { runResearchGates, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome } from "./gates";
+import { researchMatrixCoverage } from "./matrix";
 import { researchAnswerText, researchNote } from "./notes";
+import type { ResearchCoveragePort } from "./ports";
 
 const LABELS: Record<ResearchSourceClass, string> = {
   primary_official: "official sources", independent_tests: "independent tests", owner_reviews: "owner reviews", action_channel: "purchase options and terms"
@@ -580,6 +582,126 @@ describe("bounded messages", () => {
     // The decoder's total bound is independent of the individual field bounds.
     const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ gaps: issues.map((issue) => gap(issue, issue)), limits: issues })) } });
     expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished", DRAFT.report)] });
+  });
+});
+
+describe("where a frame exists", () => {
+  const FRAME: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Durability", key: "durability", why: "It is bought for years." }, { criterion: "Firmness", key: "firmness", why: "It decides comfort." }],
+    rows: [{ key: "x1", label: "Lonax X1" }, { key: "y2", label: "Dreamline Y2" }] };
+  const record = (rowKey: string, criterionKey: string) => ({ claim: "c", criterionKey, id: `${rowKey}-${criterionKey}`, kind: "finding", quoteCheck: { reason: null, status: "found" }, rowKey }) as unknown as ResearchEvidenceRecord;
+  const ALL = FRAME.rows.flatMap((row) => FRAME.criteria.map((criterion) => record(row.key, criterion.key)));
+  const framed = (frame: ResearchFrame, records: readonly ResearchEvidenceRecord[]): ResearchCoveragePort =>
+    ({ change: async () => ({ message: "No.", ok: false }), coverage: async () => researchMatrixCoverage(frame, records), frame: async () => frame });
+  const withMatrix = (records: readonly ResearchEvidenceRecord[] = ALL, overrides: Partial<ResearchGateContext> = {}, frame = FRAME) => context({ coverage: framed(frame, records), ...overrides });
+  const judge = (ctx: ResearchGateContext) => vi.mocked(ctx.subagents.run).mock.calls[0]![0];
+
+  it("sends back the empty cells, row by row with their keys, and asks for not_found where nothing can be found", async () => {
+    const ctx = withMatrix(ALL.slice(0, 1));
+    const result = await gapCheckGate.run(DRAFT, ctx);
+    expect(result.kind).toBe("send_back");
+    expect(messageOf(result)).toContain("Lonax X1: Firmness");
+    expect(messageOf(result)).toContain("Dreamline Y2: Durability, Firmness");
+    expect(messageOf(result)).toContain("Fill the cells of row y2: durability, firmness. If nothing can be found, record not_found.");
+    expect(ctx.subagents.run).not.toHaveBeenCalled();
+  });
+
+  it("writes the next step in the plan's language, and for a frame with no rows names the criteria alone", async () => {
+    const rowless = { ...FRAME, rows: [] };
+    const russian = await gapCheckGate.run(DRAFT, withMatrix([], { plan: { ...structuredClone(PLAN), goal: "Выбрать матрас." } }, rowless));
+    expect(messageOf(russian)).toContain("Заполните ячейки: durability, firmness. Если сведений нет, запишите not_found.");
+    expect(messageOf(await gapCheckGate.run(DRAFT, withMatrix([], {}, rowless)))).toContain("Fill the cells: durability, firmness.");
+  });
+
+  it("gives way to coverage: a source class nobody opened is no gap once the matrix is full, and a full matrix reaches the judge", async () => {
+    const ctx = withMatrix();
+    expect((await gapCheckGate.run(without("owner_reviews"), ctx)).kind).toBe("pass");
+    expect(ctx.subagents.run).toHaveBeenCalledOnce();
+    const unopened = withMatrix(ALL, { sources: { opened: async () => [] } });
+    expect((await gapCheckGate.run(DRAFT, unopened)).notes).toEqual([]);
+  });
+
+  it("narrows the judge to what the matrix cannot see, with the rule for actionable gaps, on the checks model and with no tools", async () => {
+    const ctx = withMatrix();
+    await gapCheckGate.run(DRAFT, ctx);
+    const request = judge(ctx);
+    expect(request).toMatchObject({ model: "verifier", name: "gap-judge", tools: [] });
+    expect(request.instructions).toContain("Every gap needs a concrete next_step");
+    expect(request.instructions).toContain("an empty cell is never your gap");
+    expect(request.instructions).toContain("one more detail for a filled one");
+    expect(request.instructions).toContain("contradict each other");
+    expect(request.instructions).toContain("change_research_frame");
+    expect(JSON.parse(request.brief)).toMatchObject({ matrix: { criteria: ["Durability", "Firmness"], emptyCells: 0, filledCells: 4, rows: ["Lonax X1", "Dreamline Y2"] }, plan: PLAN });
+  });
+
+  it("keeps the judge's job and brief with no frame, as they always were", async () => {
+    const ctx = context();
+    await gapCheckGate.run(DRAFT, ctx);
+    expect(judge(ctx).instructions).not.toContain("the matrix");
+    expect(JSON.parse(judge(ctx).brief)).not.toHaveProperty("matrix");
+  });
+
+  it("sends a judged gap back, within the same rule", async () => {
+    const ctx = withMatrix(ALL, { subagents: { run: vi.fn(async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("Two tests contradict each other on sagging.", "Open both tests.")] }))) } });
+    const result = await gapCheckGate.run(DRAFT, ctx);
+    expect(result.kind).toBe("send_back");
+    expect(messageOf(result)).toContain("Two tests contradict");
+  });
+
+  it("sends nothing back for research once rounds ran dry: the empty cells go into the answer with why", async () => {
+    const ctx = withMatrix(ALL.slice(0, 2), { researchersClosed: () => "no_new_cell" });
+    const result = await gapCheckGate.run(DRAFT, ctx);
+    expect(result.kind).toBe("pass");
+    expect(result.notes).toEqual(["Research ended here: several rounds in a row found nothing new.", expect.stringContaining("Dreamline Y2: Durability, Firmness")]);
+  });
+
+  it("sends nothing back for research once the clock closed researchers, and says nothing of rounds", async () => {
+    const result = await gapCheckGate.run(DRAFT, withMatrix(ALL.slice(0, 2), { researchersClosed: () => "time" }));
+    expect(result.kind).toBe("pass");
+    expect(result.notes).toEqual([expect.stringContaining("Dreamline Y2: Durability, Firmness")]);
+  });
+
+  it("turns a judged gap into a note once researchers are closed, in the report's language", async () => {
+    const ctx = withMatrix(ALL, { researchersClosed: () => "no_new_cell", subagents: { run: vi.fn(async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("Два теста расходятся.", "Откройте оба.")] }))) } });
+    const result = await gapCheckGate.run({ ...DRAFT, report: "# Отчёт" }, ctx);
+    expect(result.kind).toBe("pass");
+    expect(result.notes?.join("\n")).toContain("Исследование завершилось здесь");
+    expect(result.notes?.join("\n")).toContain("Два теста расходятся.");
+  });
+
+  it("adds no word of rounds when nothing stayed open", async () => {
+    expect(await gapCheckGate.run(DRAFT, withMatrix(ALL, { researchersClosed: () => "no_new_cell" }))).toEqual({ kind: "pass", notes: [] });
+  });
+
+  it("keeps today's send back with no frame, whatever closed researchers", async () => {
+    expect((await gapCheckGate.run(without("owner_reviews"), context({ researchersClosed: () => "no_new_cell" }))).kind).toBe("send_back");
+  });
+
+  it("falls back to today's check when the matrix cannot be read: it costs the matrix, never the answer", async () => {
+    const down = async () => { throw new Error("down"); };
+    const coverage = { change: async () => ({ message: "No.", ok: false as const }), coverage: down, frame: down };
+    const result = await gapCheckGate.run(without("owner_reviews"), context({ coverage }));
+    expect(messageOf(result)).toContain("owner reviews");
+  });
+
+  it("stays within its bound on the largest matrix: every row named, and the judge's brief whole", async () => {
+    const large: ResearchFrame = { branches: [], changes: [], criteria: Array.from({ length: RESEARCH_FRAME_LIMITS.criteria }, (_value, index) => ({ criterion: "c".repeat(RESEARCH_FRAME_LIMITS.labelCharacters), key: `c-${index}`, why: "W." })),
+      rows: Array.from({ length: RESEARCH_FRAME_LIMITS.rows }, (_value, index) => ({ key: `r-${index}`, label: "r".repeat(RESEARCH_FRAME_LIMITS.labelCharacters) })) };
+    const sentBack = await gapCheckGate.run(DRAFT, withMatrix([], {}, large));
+    expect(messageOf(sentBack).length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+    const everything = large.rows.flatMap((row) => large.criteria.map((criterion) => record(row.key, criterion.key)));
+    const ctx = withMatrix(everything, {}, large);
+    await gapCheckGate.run(DRAFT, ctx);
+    const { brief } = judge(ctx);
+    expect(brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+    expect(JSON.parse(brief)).toMatchObject({ matrix: { filledCells: everything.length } });
+  });
+
+  it("past the cap its gaps reach the answer through the gate's own note", async () => {
+    const earlier = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: without("owner_reviews"), gate: gapCheckGate.name, message: "Missing." }));
+    const ctx = withMatrix(ALL.slice(0, 2), { earlier, sources: { opened: async () => [...SOURCES, { partial: false, text: "New page.", toolName: "fetch_url", url: "https://example.test/new" }] } });
+    const outcome = await runResearchGates({ context: ctx, draft: DRAFT, gates: [gapCheckGate], runId: "r" });
+    expect(outcome.kind).toBe("accepted");
+    expect(outcome.notes?.join("\n")).toContain("Dreamline Y2: Durability, Firmness");
   });
 });
 
