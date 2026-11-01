@@ -59,7 +59,7 @@ const flag = (value: boolean) => value ? 1 : 0;
  * sub-agent that waits. N: a DOCX attached in one turn and answered from in the
  * next, with the Workspace off for the installation.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -73,11 +73,11 @@ export function selectedSubagentScenarios(raw: string | undefined): SubagentScen
 }
 
 /** What a scenario needs beyond the stand: a second model (C2), the restart hook (G), or the live panel driven by Playwright. */
-export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restartHook?: true; secondModel?: true }>;
+export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restartHook?: true; search?: true; secondModel?: true }>;
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -122,6 +122,7 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   const text = env.AIQSA_SUBAGENTS_TEXT_MODEL?.trim() || null;
   if (text !== null && !OPENROUTER_MODEL_PATTERN.test(text)) fail("text_model_invalid");
   if (text !== null && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
+  if (needs.some((need) => need.search) && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
   return {
     restart: command === null ? null : { command, timeoutMs: timeoutSeconds * 1_000 },
     runs: boundedInteger(env.AIQSA_SUBAGENTS_RUNS, 1, 1, 3, "runs_invalid"),
@@ -168,6 +169,7 @@ export const SUBAGENT_NAMES = Object.freeze({
   hold: ["hold-1", "hold-2"],
   idle: ["idle-1", "idle-2"],
   listener: "p-listener",
+  reader: "q-reader",
   notary: "notary",
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
@@ -514,6 +516,15 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       `этого столбца. Суб-агентов не запускай, файлов для скачивания не создавай. ${NO_WEB}`,
     "Ответь одной строкой: только сумма цифрами, без пробелов и разделителей."
   ].join("\n\n"),
+  Q: Object.freeze({
+    // Search calls are counted: paid search prompts name exactly how many, because models fan out otherwise.
+    start: () => `Запусти в фоне (background: true) ровно одного суб-агента ${SUBAGENT_NAMES.reader} и больше ничего не делай. ` +
+      "Его задание: вызвать веб-поиск ровно 3 раза, по одному запросу на каждую тему: «история протокола HTTP», «стандарт ISO 216 форматы бумаги», " +
+      "«что такое протокол SMTP». Затем прочитать инструментом fetch_url по одной ссылке из результатов каждого поиска, только через fetch_url, " +
+      "без браузера и Workspace. В отчёте перечислить все ссылки из результатов поиска, которые он не читал, и по одному предложению о каждой прочитанной странице.",
+    next: () => "Теперь сам, инструментом fetch_url, прочитай 4 разные ссылки из отчёта этого суб-агента, которые он не читал, только через fetch_url, без поиска, браузера и Workspace. " +
+      "Если какую-то прочитать не удалось, возьми следующую из отчёта. Ответь одним предложением, сколько страниц прочитано."
+  }),
   P: Object.freeze({
     // The brief says nothing about the user: following the message is the product's doing, not this prompt's.
     start: () => `Запусти в фоне (background: true) ровно одного суб-агента ${SUBAGENT_NAMES.listener} и больше ничего не делай. ` +
@@ -1464,6 +1475,61 @@ export function oracleP(input: PEvidence): OracleVerdict {
   if (input.mainChatHoldsNote) failed.push("user_message_in_main_chat");
   if (!input.settled) failed.push("callbacks_owed");
   return { counts: input.messages, failed };
+}
+
+/** The page reader's calls by stored outcome; a stable code, never a link. */
+export type PageReads = Readonly<Record<string, number>>;
+
+const pageReadCount = (reads: PageReads, outcome: string) => reads[outcome] ?? 0;
+const pageReadTotal = (reads: PageReads) => Object.values(reads).reduce((total, count) => total + count, 0);
+
+export type QEvidence = Readonly<{
+  main: PageReads;
+  reader: PageReads;
+  /** The reader's search calls that returned; the old limit let one agent make 2 on production. */
+  searches: number;
+  settled: boolean;
+  turn: TurnRow | null;
+}>;
+
+/** Q's verdict: a background turn reads what its own search found, another agent reads it too, and one answer reads more than 5 pages. */
+export function oracleQ(input: QEvidence): OracleVerdict {
+  const failed: string[] = [];
+  const reads = pageReadCount(input.reader, "read") + pageReadCount(input.main, "read");
+  if (input.turn?.state !== "done") failed.push("reader_did_not_finish");
+  if (input.searches < 3) failed.push("searches_stopped_early");
+  if (pageReadCount(input.reader, "read") === 0) failed.push("reader_read_nothing");
+  if (pageReadCount(input.reader, "fetch_url_not_in_conversation") > 0) failed.push("reader_link_refused");
+  if (pageReadCount(input.main, "read") === 0) failed.push("main_read_nothing");
+  if (pageReadCount(input.main, "fetch_url_not_in_conversation") > 0) failed.push("other_agents_link_refused");
+  if (reads <= 5) failed.push("no_more_than_five_pages");
+  if (pageReadCount(input.reader, "fetch_url_limit_reached") + pageReadCount(input.main, "fetch_url_limit_reached") > 0) failed.push("page_limit_still_applies");
+  if (!input.settled) failed.push("callbacks_owed");
+  return { counts: { mainCalls: pageReadTotal(input.main), mainReads: pageReadCount(input.main, "read"), readerCalls: pageReadTotal(input.reader),
+    readerReads: pageReadCount(input.reader, "read"), searches: input.searches }, failed };
+}
+
+/** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
+export const SCENARIO_R_PHRASES: readonly Readonly<{ start: boolean; text: string }>[] = Object.freeze([
+  { start: true, text: "поищи хорошо, какой робот-пылесос лучше" },
+  { start: true, text: "проведи исследование рынка электросамокатов" },
+  { start: true, text: "глубокий анализ тарифов мобильной связи" },
+  { start: true, text: "проанализируй, какой ноутбук взять для работы" },
+  { start: true, text: "сравни эти матрасы, хочу купить надолго: Askona и Ormatek" },
+  { start: false, text: "поищи, какие матрасы есть современные" },
+  { start: false, text: "какой сейчас курс доллара" },
+  { start: false, text: "найди сайт магазина DNS" },
+  { start: false, text: "что такое OLED" },
+  { start: false, text: "когда вышел последний iPhone" }
+]);
+
+export type RPhraseResult = Readonly<{ expected: boolean; index: number; started: boolean; status: string }>;
+
+/** R's verdict by phrase index: the words stay in this file, and each wrong direction has a name of its own. */
+export function oracleR(results: readonly RPhraseResult[]): OracleVerdict {
+  const failed = results.flatMap((result) => result.started === result.expected ? [] : [`phrase_${result.index}_${result.expected ? "not_started" : "started"}`]);
+  return { counts: { asked: results.length, correct: results.filter((result) => result.started === result.expected).length,
+    started: results.filter((result) => result.started).length }, failed };
 }
 
 /** M's verdict: every acceptance line of the task, each with a name of its own when it fails. */

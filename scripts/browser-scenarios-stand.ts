@@ -143,7 +143,7 @@ export type StandModel = Readonly<{ connectionId: string; contextWindow: number;
  * identical usable one exists, otherwise added as an administrator would.
  */
 export async function ensureModel(api: Api, route: Readonly<{ apiRoot: string; model: string }>, secret: string,
-  displayName: string = MODEL_DISPLAY_NAME, options: Readonly<{ vision?: boolean }> = {}): Promise<StandModel> {
+  displayName: string = MODEL_DISPLAY_NAME, options: Readonly<{ nativeSearch?: boolean; vision?: boolean }> = {}): Promise<StandModel> {
   let catalogProof: string | undefined;
   let contextWindow: number = JOURNEY_LIMITS.defaultContextWindow;
   const discovery = await request(api, "/api/admin/providers/custom-setup/discover", { body: {
@@ -167,7 +167,7 @@ export async function ensureModel(api: Api, route: Readonly<{ apiRoot: string; m
     capabilities: {
       contextWindow, defaultMaxOutputTokens: 16_384, streaming: true, toolCalling: true, parallelToolCalls: false,
       reasoning: true, reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium",
-      nativePdfInput: false, nativeImageGeneration: false, nativeSearch: false, pdf: options.vision !== false, vision: options.vision !== false
+      nativePdfInput: false, nativeImageGeneration: false, nativeSearch: options.nativeSearch === true, pdf: options.vision !== false, vision: options.vision !== false
     },
     confirmPaidRequest: true, connectionDisplayName: `Browser scenarios codex-lb ${randomUUID().slice(0, 8)}`,
     modelDisplayName: displayName, protocol: "responses", responseTimeoutSeconds: 180, secret,
@@ -255,6 +255,47 @@ export async function ensureWorkspaceInternet(api: Api): Promise<void> {
 export async function setWorkspaceEnabled(api: Api, enabled: boolean): Promise<void> {
   const updated = await json(api, "/api/admin/workspace", { body: { enabled, expectedVersion: await workspacePolicyVersion(api) }, method: "PATCH" });
   if (!isRecord(updated) || !isRecord(updated.workspace) || updated.workspace.enabled !== enabled) fail("workspace_policy_not_applied");
+}
+
+type SearchSourceInput = Readonly<{ connectionId: string; kind: "web_search" } | { kind: "deepseek_search_api"; provider: "deepseek"; secret: string }>;
+
+type StandSearchIntegration = Readonly<{ archivedAt: unknown; configurationActive: unknown; enabled: unknown; id: string; kind: unknown; sourceConnectionId: unknown; strategyId: string }>;
+
+async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegration[]> {
+  const value = await json(api, "/api/admin/search");
+  const list = isRecord(value) && isRecord(value.search) && Array.isArray(value.search.integrations) ? value.search.integrations : fail("search_catalog_invalid");
+  return list as readonly StandSearchIntegration[];
+}
+
+/**
+ * The plan option id of an enabled Search source, as an administrator gets one: DeepSeek through Quick Setup, which turns its source on
+ * and runs its one probe search, and a hosted one that the model's own setup created.
+ */
+export async function ensureSearchSource(api: Api, input: SearchSourceInput): Promise<string> {
+  let connectionId: string | null = input.kind === "web_search" ? input.connectionId : null;
+  if (input.kind === "deepseek_search_api") {
+    const existing = (await connections(api)).find((connection) => (connection as { family?: unknown }).family === input.provider && !connection.checkRunning);
+    if (existing) connectionId = existing.id;
+    else {
+      const snapshot = await json(api, "/api/admin/providers/quick-setup");
+      const providers = isRecord(snapshot) && Array.isArray(snapshot.providers) ? snapshot.providers as readonly Record<string, unknown>[] : fail("quick_setup_invalid");
+      const offered = providers.find((entry) => entry.provider === input.provider) ?? fail("quick_setup_not_offered");
+      let result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: offered.stateToken, provider: input.provider, secret: input.secret },
+        method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+      if (isRecord(result) && result.outcome === "selection_required" && Array.isArray(result.candidates)) {
+        const candidate = (result.candidates as readonly Record<string, unknown>[])[0] ?? fail("quick_setup_no_candidate");
+        result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: result.expectedState, provider: input.provider, secret: input.secret,
+          selectedModel: { candidateId: candidate.candidateId, policyVersion: result.policyVersion } }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+      }
+      if (!isRecord(result) || typeof result.connectionId !== "string" || (result.outcome !== "ready" && result.outcome !== "partial")) fail("quick_setup_failed");
+      connectionId = (result as { connectionId: string }).connectionId;
+      await checksIdle(api, connectionId);
+    }
+  }
+  const integration = await poll(SETUP_TIMEOUT_MS, async () => (await searchIntegrations(api)).find((entry) =>
+    entry.sourceConnectionId === connectionId && entry.kind === input.kind && entry.archivedAt === null && entry.configurationActive) ?? null, "search_source_missing", 3_000);
+  if (!integration.enabled) await json(api, `/api/admin/search/${encodeURIComponent(integration.id)}/actions`, { body: { action: "enable" }, method: "POST" });
+  return integration.strategyId;
 }
 
 /** The user's catalog entry of a configured model, once it offers tool calling. */
