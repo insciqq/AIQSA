@@ -36,7 +36,7 @@ export type NativeEngineHandlerDeps = Readonly<{
    */
   subagents?: Readonly<{ background?: () => SubagentBackgroundControl; messaging?: () => SubagentMessaging; types?: SubagentTypeResolver }>;
   /** The owners of the harness and self-service tools (`defaultNativeToolServices`). */
-  tools?: Pick<ToolRegistryServices, "secrets" | "selfService">;
+  tools?: Pick<ToolRegistryServices, "runProxies" | "secrets" | "selfService">;
 }>;
 
 /**
