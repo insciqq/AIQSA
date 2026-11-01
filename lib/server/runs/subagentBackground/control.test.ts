@@ -376,3 +376,134 @@ describe("background sub-agent runs", () => {
     expect(sink.callbacks).toHaveLength(1);
   });
 });
+
+describe("a sub-agent's background children", () => {
+  const parentAgent = { name: "research", runId: "parent-bg-run", threadId: "thread-research", toolState: { calls: 0 }, turnId: "turn-research" };
+  const childInput = (name: string, overrides: Partial<SubagentBackgroundStartInput> = {}) => startInput(name, { parentAgent, ...overrides });
+
+  /** The parent sub-agent, active: where a child's report lands. */
+  function withParent() {
+    const ctx = setup();
+    ctx.store.callers.add("parent-bg-run");
+    ctx.store.turns.push({ callbackRunId: null, chatId: "chat-1", endedAt: null, mailbox: [], mode: "background", modelId: "fake-model", name: "research",
+      parentAnswerId: "answer-1", parentRunId: "parent-run", result: null, runActive: true, runId: "parent-bg-run", state: "running",
+      threadId: "thread-research", turnId: "turn-research", userId: "user-1" });
+    return ctx;
+  }
+
+  async function child(ctx: ReturnType<typeof setup>, name: string, overrides: Partial<SubagentBackgroundStartInput> = {}) {
+    const started = await ctx.control.start(childInput(name, overrides));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    await vi.waitFor(() => expect(ctx.runner!.turns.get(turnId)).toBeDefined());
+    return turnId;
+  }
+
+  it("runs under its parent's own run and name, and ends by its parent's time", async () => {
+    const ctx = withParent();
+    const deadlineAt = new Date(Date.now() + 5_000);
+    const turnId = await child(ctx, "helper", { deadlineAt });
+    const turn = ctx.store.turns.find((entry) => entry.turnId === turnId)!;
+    expect(turn).toMatchObject({ parentRunId: "parent-bg-run", parentThreadId: "thread-research" });
+    expect(ctx.runner!.turns.get(turnId)!.input).toMatchObject({ parentAgent, parentRunId: "parent-run" });
+    const left = ctx.runner!.turns.get(turnId)!.input.deadlineAt.getTime() - Date.now();
+    expect(left).toBeLessThanOrEqual(5_000);
+    expect(left).toBeGreaterThan(4_000);
+    await ctx.control.stopAll({ chatId: "chat-1", userId: "user-1" });
+  });
+
+  it("asks only whether its parent may start one", async () => {
+    const ctx = setup();
+    ctx.store.callers.clear();
+    expect(await ctx.control.start(childInput("helper"))).toEqual({ code: "subagent_background_unavailable", kind: "refused" });
+    ctx.store.callers.add("parent-bg-run");
+    expect(await ctx.control.availability({ chatId: "chat-1", parentAgent, parentRunId: "ended-main-run", parentToolCallId: "c", userId: "user-1" }))
+      .toEqual({ available: true });
+  });
+
+  it("refuses a third at once, across the store's lock", async () => {
+    const ctx = withParent();
+    await child(ctx, "one");
+    await child(ctx, "two");
+    expect(await ctx.control.start(childInput("three"))).toEqual({ code: "subagent_child_limit_reached", kind: "refused" });
+    await ctx.control.stopAll({ chatId: "chat-1", userId: "user-1" });
+  });
+
+  it("reports to its parent's mailbox and owes the main agent nothing", async () => {
+    const ctx = withParent();
+    const turnId = await child(ctx, "helper");
+    ctx.runner!.finish(turnId, endedSubagentResult("helper", { report: "Three offers" }));
+    const parent = ctx.store.turns.find((entry) => entry.turnId === "turn-research")!;
+    await vi.waitFor(() => expect(parent.mailbox).toHaveLength(1));
+    expect(parent.mailbox[0]).toMatchObject({ from: "helper", nonce: `subagent-callback:${turnId}`, origin: "subagent_callback" });
+    expect(parent.mailbox[0]!.text).toContain("Three offers");
+    expect(ctx.runner!.turns.get("turn-research")).toBeUndefined();
+    expect(ctx.sink.callbacks).toEqual([]);
+    expect((await ctx.store.owedCallbacks({ chatId: "chat-1", userId: "user-1" }))?.activeBranch).toEqual([]);
+  });
+
+  it("delivers its report past the bound on agents' messages: it is what its parent waits for", async () => {
+    const ctx = withParent();
+    const parent = ctx.store.turns.find((entry) => entry.turnId === "turn-research")!;
+    parent.mailbox.push(...Array.from({ length: SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn }, (_, index) => ({ delivered: false, from: "a",
+      nonce: `n-${index}`, origin: "subagent_message" as const, text: "x" })));
+    const turnId = await child(ctx, "helper");
+    ctx.runner!.finish(turnId, endedSubagentResult("helper"));
+    await vi.waitFor(() => expect(parent.mailbox.some((entry) => entry.origin === "subagent_callback")).toBe(true));
+  });
+
+  it("finds its parent gone without error: its result stays on its turn", async () => {
+    const ctx = withParent();
+    const turnId = await child(ctx, "helper");
+    ctx.store.turns.find((entry) => entry.turnId === "turn-research")!.state = "done";
+    ctx.runner!.finish(turnId, endedSubagentResult("helper", { report: "Late" }));
+    await vi.waitFor(() => expect(ctx.store.turns.find((entry) => entry.turnId === turnId)!.state).toBe("done"));
+    expect(ctx.sink.callbacks).toEqual([]);
+    expect(ctx.store.turns.find((entry) => entry.turnId === "turn-research")!.mailbox).toEqual([]);
+  });
+
+  it("ends with its parent, whatever mode it runs in, and reports nothing to a parent that ended it", async () => {
+    const ctx = withParent();
+    const one = await child(ctx, "one");
+    const two = await child(ctx, "two");
+    const other = await ctx.control.start(startInput("neighbour"));
+    expect(await ctx.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" })).toBe(2);
+    for (const turnId of [one, two]) {
+      expect(ctx.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ result: { reason: "parent_stopped", state: "stopped" }, state: "stopped" });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(ctx.store.turns.find((entry) => entry.turnId === "turn-research")!.mailbox).toEqual([]);
+    expect(ctx.store.turns.find((entry) => entry.name === "neighbour")).toMatchObject({ state: "running" });
+    expect(other).toMatchObject({ kind: "started" });
+    await ctx.control.stopAll({ chatId: "chat-1", userId: "user-1" });
+  });
+
+  it("stops one still being admitted when its parent ends, so it never runs", async () => {
+    const ctx = withParent();
+    let release!: () => void;
+    ctx.store.admitBeforeGate = () => new Promise<void>((resolve) => { release = resolve; });
+    const starting = ctx.control.start(childInput("late"));
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const stopped = ctx.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" });
+    ctx.store.admitBeforeGate = null;
+    release();
+    await starting;
+    await stopped;
+    await vi.waitFor(() => expect(ctx.store.turns.find((entry) => entry.name === "late")).toMatchObject({ state: "stopped" }));
+    expect([...ctx.runner!.turns.values()].filter((turn) => turn.input.name === "late")).toEqual([]);
+  });
+
+  it("carries a child's question to its parent's mailbox as a question, and refuses it once its parent ended", async () => {
+    const ctx = withParent();
+    await child(ctx, "helper");
+    const question = { chatId: "chat-1", from: "helper", nonce: "subagent-question:call-1", parentRunId: "parent-run", question: true as const, text: "Which size?",
+      to: "research", userId: "user-1" };
+    expect(await ctx.control.send(question)).toEqual({ kind: "delivered" });
+    const parent = ctx.store.turns.find((entry) => entry.turnId === "turn-research")!;
+    expect(parent.mailbox).toMatchObject([{ from: "helper", origin: "subagent_question", text: "Which size?" }]);
+    parent.state = "done";
+    parent.runActive = false;
+    parent.result = endedSubagentResult("research");
+    expect(await ctx.control.send({ ...question, nonce: "subagent-question:call-2" })).toEqual({ code: "subagent_not_active", kind: "refused", state: "done" });
+    await ctx.control.stopAll({ chatId: "chat-1", userId: "user-1" });
+  });
+});

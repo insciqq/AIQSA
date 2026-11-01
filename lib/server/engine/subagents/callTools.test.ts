@@ -6,11 +6,11 @@ import {
   endedSubagentResult
 } from "@/tests/support/subagentPorts";
 import { SUBAGENT_BUILT_IN_TYPE, SUBAGENT_ERROR_CODES, type SubagentCallResult } from "../../../contracts/subagents";
-import type { SubagentBackgroundControl, SubagentTypeSnapshot } from "../../subagents/ports";
+import type { SubagentBackgroundControl, SubagentParentAgent, SubagentTypeSnapshot } from "../../subagents/ports";
 import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import type { EngineToolExecution } from "../toolRegistry";
-import { executeCallSubagent, executeStopSubagent, type SubagentCallDeps } from "./callTools";
+import { executeCallSubagent, executeStopSubagent, withSubagentDepthRefusals, type SubagentCallDeps } from "./callTools";
 import { freezeSubagentModels } from "./modelCatalog";
 import type { HostedSubagentRunner } from "./runner";
 import type { SubagentThreadLookup, SubagentTurnRecord } from "./threadStore";
@@ -32,7 +32,8 @@ function turn(extra: Partial<SubagentTurnRecord> = {}): SubagentTurnRecord {
 }
 
 function setup(options: Readonly<{ background?: SubagentBackgroundControl; backgroundAllowed?: boolean; defaultType?: FrozenSubagentDefault;
-  found?: SubagentThreadLookup | null; orphans?: number; parent?: SubagentCallDeps["parent"]; refuse?: "subagent_busy" | "subagent_limit_reached";
+  found?: SubagentThreadLookup | null; orphans?: number; parent?: SubagentCallDeps["parent"]; parentAgent?: SubagentParentAgent;
+  refuse?: "subagent_busy" | "subagent_child_limit_reached" | "subagent_depth_limit_reached" | "subagent_limit_reached" | "subagent_not_own_child";
   result?: unknown; types?: FakeSubagentTypeResolver }> = {}) {
   const fake = new FakeSubagentRunner((input) => endedSubagentResult(input.name, { model: { effort: input.binding.reasoningEffort,
     id: input.binding.modelId }, report: `Outcome: done\n${input.brief}` }));
@@ -58,7 +59,9 @@ function setup(options: Readonly<{ background?: SubagentBackgroundControl; backg
     ...(options.background ? { background: options.background } : {}),
     backgroundAllowed: options.backgroundAllowed ?? true,
     branchRunIds: ["run-earlier", "run"], catalog, chatId: "chat", deadlineAt: () => new Date(Date.now() + 60_000),
-    defaultType: options.defaultType ?? null, parent: options.parent ?? parent, runId: "run",
+    defaultType: options.defaultType ?? null, parent: options.parent ?? parent,
+    ...(options.parentAgent ? { branchRunId: "run", onChildStarted: vi.fn(), parentAgent: options.parentAgent } : {}),
+    runId: options.parentAgent?.runId ?? "run",
     runner, store, ...(options.types ? { types: options.types } : {}), userMessage: "Find me a laptop.", userId: "user"
   };
   return { deps, fake, runner, store };
@@ -462,5 +465,109 @@ describe("stop_subagent", () => {
     const none = setup();
     expect(value(await executeStopSubagent(none.deps, { ...execution({ name: "nobody" }), call: { arguments: { name: "nobody" }, id: "c1",
       name: "stop_subagent" } })).error).toBe(SUBAGENT_ERROR_CODES.notFound);
+  });
+});
+
+describe("a sub-agent's own children", () => {
+  const parentAgent: SubagentParentAgent = { name: "research", runId: "run-bg", threadId: "thread-parent", toolState: { calls: 0 }, turnId: "turn-parent" };
+  const child = (extra: Partial<SubagentThreadLookup> = {}) => visible({ thread: { anchorRunId: "run", definitionId: null, id: "thread-1", name: "shop",
+    parentThreadId: "thread-parent", typeName: null }, ...extra });
+  const stopCall = (name: string) => ({ ...execution({ name }), call: { arguments: { name }, id: "c1", name: "stop_subagent" } });
+
+  it("starts a foreground child in the run that holds its call, placed on the main agent's branch, and returns its report", async () => {
+    const ctx = setup({ parentAgent });
+    const result = await executeCallSubagent(ctx.deps, execution({ message: "Check one shop.", name: "shop" }));
+    expect(value(result)).toMatchObject({ kind: "ended", name: "shop", report: "Outcome: done\nCheck one shop.", state: "done" });
+    expect(ctx.store.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ parentAgent, parentRunId: "run", parentToolCallId: "row-c1" }));
+    expect([...ctx.fake.turns.values()][0]!.input).toMatchObject({ hostRunId: "run-bg", mode: "foreground", parentAgent, parentRunId: "run" });
+  });
+
+  it("carries a Workspace its parent was refused down to a foreground child, which runs in the same run", async () => {
+    const ctx = setup({ parentAgent });
+    await executeCallSubagent({ ...ctx.deps, workspaceRefused: "workspace_busy" }, execution({ message: "Go", name: "shop" }));
+    expect([...ctx.fake.turns.values()][0]!.input).toMatchObject({ workspaceRefused: "workspace_busy" });
+  });
+
+  it("starts a background child under its own thread and time, and tells the parent to expect its report", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const ctx = setup({ background, parentAgent });
+    const at = new Date(Date.now() + 5_000);
+    const deps = { ...ctx.deps, deadlineAt: () => at };
+    expect(value(await executeCallSubagent(deps, execution({ background: true, message: "Go", name: "shop" }))))
+      .toEqual({ continued: false, kind: "started", name: "shop", state: "running" });
+    expect(ctx.store.ensureThread).toHaveBeenCalledWith(expect.objectContaining({ parentRunId: "run", parentThreadId: "thread-parent" }));
+    expect(background.turns[0]!.input).toMatchObject({ deadlineAt: at, parentAgent, parentRunId: "run" });
+    expect(ctx.deps.onChildStarted).toHaveBeenCalledWith("shop");
+  });
+
+  it("refuses a third at once and a grandchild with their own codes, and starts nothing", async () => {
+    for (const code of [SUBAGENT_ERROR_CODES.childLimit, SUBAGENT_ERROR_CODES.depthLimit] as const) {
+      const ctx = setup({ parentAgent, refuse: code });
+      const result = await executeCallSubagent(ctx.deps, execution({ message: "Go", name: "third" }));
+      expect(result.status).toBe("error");
+      expect(value(result).error).toBe(code);
+      expect(ctx.fake.turns.size).toBe(0);
+    }
+    const background = new FakeSubagentBackgroundControl({ refuse: SUBAGENT_ERROR_CODES.childLimit });
+    const refused = await executeCallSubagent(setup({ background, parentAgent }).deps, execution({ background: true, message: "Go", name: "third" }));
+    expect(value(refused)).toMatchObject({ error: SUBAGENT_ERROR_CODES.childLimit,
+      message: expect.stringContaining("the most a sub-agent may run at once") });
+  });
+
+  it("continues only its own: another agent's name is refused and nothing runs", async () => {
+    const own = setup({ found: child(), parentAgent });
+    await executeCallSubagent(own.deps, execution({ message: "More", name: "shop" }));
+    expect([...own.fake.turns.values()][0]).toMatchObject({ kind: "continue" });
+    for (const stranger of [visible(), child({ thread: { ...child().thread, parentThreadId: "thread-other" } })]) {
+      const ctx = setup({ found: stranger, parentAgent });
+      expect(value(await executeCallSubagent(ctx.deps, execution({ message: "More", name: "shop" }))).error).toBe(SUBAGENT_ERROR_CODES.notOwnChild);
+      expect(ctx.fake.turns.size).toBe(0);
+    }
+  });
+
+  it("writes to its running background child under its own name, on the branch of the main-agent run behind it", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const deliver = vi.spyOn(background, "deliver");
+    const found = child({ active: turn({ branchRunId: "run", mode: "background", parentRunId: "run-bg", state: "running" }) });
+    const ctx = setup({ background, found, parentAgent });
+    await executeCallSubagent(ctx.deps, execution({ message: "Also this", name: "shop" }));
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ message: { from: "research", nonce: "c1", origin: "main_agent", text: "Also this" },
+      parentAgent, parentRunId: "run" }));
+  });
+
+  it("lets the main agent write to a running child and stop one, but only its parent continues it", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const deliver = vi.spyOn(background, "deliver");
+    const running = setup({ background, found: child({ active: turn({ mode: "background", parentRunId: "run", state: "running" }) }) });
+    await executeCallSubagent(running.deps, execution({ message: "Hurry", name: "shop" }));
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ message: { nonce: "c1", origin: "main_agent", text: "Hurry" } }));
+    const ended = setup({ found: child() });
+    expect(value(await executeCallSubagent(ended.deps, execution({ message: "Again", name: "shop" }))).error).toBe(SUBAGENT_ERROR_CODES.notOwnChild);
+    expect(ended.fake.turns.size).toBe(0);
+    expect(value(await executeStopSubagent(ended.deps, stopCall("shop")))).toMatchObject({ kind: "ended", report: "Earlier report" });
+  });
+
+  it("stops only its own", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const stop = vi.spyOn(background, "stop");
+    const ctx = setup({ background, found: visible(), parentAgent });
+    expect(value(await executeStopSubagent(ctx.deps, stopCall("shop"))).error).toBe(SUBAGENT_ERROR_CODES.notOwnChild);
+    expect(stop).not.toHaveBeenCalled();
+    const own = setup({ found: child({ active: turn({ branchRunId: "run", id: "turn-child", mode: "foreground", parentRunId: "run-bg", state: "running" }) }), parentAgent });
+    const stopping = vi.spyOn(own.deps.runner, "stop").mockResolvedValue(endedSubagentResult("shop", { outcome: undefined, reason: "stop_subagent", state: "stopped" }));
+    expect(value(await executeStopSubagent(own.deps, stopCall("shop")))).toMatchObject({ reason: "stop_subagent", state: "stopped" });
+    expect(stopping).toHaveBeenCalledWith({ turnId: "turn-child" }, "stop_subagent");
+  });
+
+  it("answers a child that calls what it is not offered with its own code, and offers it nothing", async () => {
+    const registry = withSubagentDepthRefusals({ definitions: () => [], resolve: () => undefined });
+    expect(registry.definitions()).toEqual([]);
+    for (const name of ["call_subagent", "stop_subagent"]) {
+      const tool = registry.resolve(name)!;
+      const call = { arguments: { name: "x" }, id: "c1", name };
+      const result = await tool.execute({ call, ordinal: 0, persistedToolCallId: "row", round: 1, signal: new AbortController().signal });
+      expect(value(result).error).toBe(SUBAGENT_ERROR_CODES.depthLimit);
+    }
+    expect(registry.resolve("manage_secret")).toBeUndefined();
   });
 });

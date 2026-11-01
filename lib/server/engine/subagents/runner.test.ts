@@ -16,7 +16,7 @@ import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackgro
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
 import { runToolBatch } from "../toolBatch";
 import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
-import { SUBAGENT_ROLE_SECTION } from "../prompts";
+import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
@@ -32,6 +32,8 @@ import {
   handedBackApproval,
   parseSubagentOutcome,
   subagentRequest,
+  withChildApprovals,
+  type SubagentChildHost,
   type SubagentHost
 } from "./runner";
 
@@ -81,7 +83,7 @@ const request = {
 const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", modelSource: "parent", provider: "connection-1",
   providerModelId: "model-1", reasoningEffort: null };
 
-function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
+function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentChildHost; earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
   followups?: () => { id: string; text: string }[]; handoff?: EngineTool["execute"]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging; request?: ProviderRunRequest;
   toolTimeLeft?: () => boolean; tools?: EngineTool[]; workspaceImageView?: true }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
@@ -120,6 +122,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
     buildRegistry: vi.fn(async () => registry),
     callTimeLeft: () => true,
     chatId: "chat",
+    ...(options.children ? { children: options.children } : {}),
     deadlineAt: Date.now() + 60_000,
     deadlineSignal: new AbortController().signal,
     followupTexts: () => [],
@@ -196,6 +199,51 @@ function reportStore(runId: string) {
 
 const userTexts = (request: ProviderRunRequest) =>
   (request.history ?? []).flatMap((item) => item.type === "user" ? [item.text] : []);
+
+/** What a host gives a sub-agent to start children with, over a store that admits every call. */
+function childHost(overrides: Partial<SubagentChildHost> = {}, store: Partial<SubagentChildHost["store"]> = {}): SubagentChildHost {
+  let admitted = 0;
+  return {
+    backgroundAllowed: true,
+    catalog: null,
+    defaultType: null,
+    modelOf: (model) => ({ connectionId: model.provider, effort: model.reasoningEffort, efforts: [], providerModelId: model.providerModelId ?? "model-1",
+      upstreamModelId: model.modelId }),
+    store: {
+      activeChildren: vi.fn(async () => 0),
+      admitForeground: vi.fn(async (input) => {
+        admitted += 1;
+        return { continued: false, kind: "admitted" as const,
+          thread: { anchorRunId: input.parentRunId, definitionId: null, id: `child-thread-${admitted}`, name: input.name,
+            parentThreadId: input.parentAgent?.threadId ?? null, typeName: null },
+          turn: { branchRunId: input.parentRunId, definitionRevisionId: null, effortSource: "parent" as const, id: `child-turn-${admitted}`, mode: "foreground" as const,
+            modelId: "fake-qsa", modelSource: "parent" as const, parentRunId: input.parentAgent?.runId ?? input.parentRunId, provider: "connection-1",
+            providerModelId: "model-1", reasoningEffort: null, startedAt: new Date(), state: "running" as const, threadId: `child-thread-${admitted}` } };
+      }),
+      childResults: vi.fn(async () => []),
+      endOrphanedTurns: vi.fn(async () => 0),
+      ensureThread: vi.fn(async (input) => ({ anchorRunId: input.parentRunId, definitionId: null, id: "child-thread-bg", name: input.name,
+        parentThreadId: input.parentThreadId ?? null, typeName: null })),
+      find: vi.fn(async () => null),
+      result: vi.fn(async () => null),
+      ...store
+    } as unknown as SubagentChildHost["store"],
+    ...overrides
+  };
+}
+
+const callChild = (name: string, id: string, extra: Record<string, unknown> = {}): ModelToolCall =>
+  ({ arguments: { message: `Do the ${name} part.`, name, ...extra }, id, name: "call_subagent" });
+
+const backgroundControl = (extra: Partial<NonNullable<SubagentChildHost["background"]>> = {}) => ({
+  availability: vi.fn(async () => ({ available: true as const })),
+  deliver: vi.fn(async () => ({ kind: "not_found" as const })),
+  start: vi.fn(async (input: Parameters<NonNullable<SubagentChildHost["background"]>["start"]>[0]) =>
+    ({ kind: "started" as const, name: input.name, state: "running" as const, turnId: `bg-${input.name}` })),
+  stop: vi.fn(async () => ({ kind: "not_found" as const })),
+  stopChildren: vi.fn(async () => 0),
+  ...extra
+}) satisfies NonNullable<SubagentChildHost["background"]>;
 
 describe("sub-agent runner", () => {
   it("delivers a 30,000-character foreground report through the ordinary tool excerpt and reads all of it later", async () => {
@@ -788,5 +836,194 @@ describe("sub-agent runner", () => {
       reason: "sign_in_required" });
     expect(parseSubagentOutcome("**Outcome:** partial")).toEqual({ outcome: "partial" });
     expect(parseSubagentOutcome("Here is what I found.")).toBeNull();
+  });
+});
+
+describe("a sub-agent's children", () => {
+  const offered = (request: ProviderRunRequest) => (request.tools ?? []).map((tool) => tool.name);
+  const parentAgent = { name: "research", runId: "run", threadId: "parent-thread", toolState: { calls: 0 }, turnId: "parent-turn" };
+
+  it("offers a sub-agent with every tool the two calls for its own children, in the words for it", async () => {
+    const ctx = setup([{ text: "Outcome: done\nDone." }], { children: childHost() });
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    const first = ctx.requests[0]!;
+    expect(offered(first)).toEqual(expect.arrayContaining(["call_subagent", "stop_subagent"]));
+    expect(first.prompt.system).toContain(SUBAGENT_STARTER_ROLE_SECTION);
+    expect(first.tools?.find((tool) => tool.name === "call_subagent")?.description).toContain("Starts a helper");
+  });
+
+  it("offers them to no sub-agent narrowed to tool groups: a list keeps narrowing, and a child must not have what its parent was denied", async () => {
+    const type = { definitionId: "d", description: "x", instructions: "", name: "searcher", providerModelId: null, reasoningEffort: null, revisionId: "r",
+      toolGroups: ["web_search"] satisfies SubagentToolGroup[] };
+    const ctx = setup([{ calls: [callChild("helper", "c1")] }, { text: "Outcome: done\nDone." }], { children: childHost() });
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ type })));
+    expect(offered(ctx.requests[0]!)).not.toContain("call_subagent");
+    expect(ctx.requests[0]!.prompt.system).toContain(SUBAGENT_ROLE_SECTION);
+    expect(result.steps[0]).toMatchObject({ outcome: "error" });
+  });
+
+  it("offers a child neither call, and refuses one it makes anyway with the code that says why", async () => {
+    const ctx = setup([{ calls: [callChild("grandchild", "c1")] }, { text: "Outcome: partial\nDid it myself." }], { children: childHost() });
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ parentAgent })));
+    expect(offered(ctx.requests[0]!)).not.toContain("call_subagent");
+    expect(offered(ctx.requests[0]!)).not.toContain("stop_subagent");
+    expect(ctx.requests[0]!.prompt.system).toContain(SUBAGENT_CHILD_ROLE_SECTION);
+    const texts = userTexts(ctx.requests[0]!);
+    expect(texts.at(-1)).toContain("You are the helper `shop`, started by the sub-agent `research`.");
+    expect(texts.at(-1)).toContain("<parent_agent_brief>\nCompare laptops on shop.example.\n</parent_agent_brief>");
+    expect(result.steps).toEqual([expect.objectContaining({ outcome: "error", summary: expect.stringContaining("subagent_depth_limit_reached") })]);
+  });
+
+  it("starts a foreground child on its own host, uses its report, and both end on record", async () => {
+    const children = childHost();
+    const ctx = setup([{ calls: [callChild("left", "c1")] }, { text: "Outcome: done\nLeft side found." }, { calls: [callChild("right", "c2")] },
+      { text: "Outcome: done\nRight side found." }, { text: "Outcome: done\nBoth sides compared." }], { children });
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "bg-run", mode: "background", parentRunId: "main-run" })));
+    expect(result).toMatchObject({ outcome: "done", report: "Outcome: done\nBoth sides compared." });
+    expect(children.store.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "left", parentAgent: expect.objectContaining({ name: "shop",
+      runId: "bg-run", threadId: "thread-1", turnId: "turn-1" }), parentRunId: "main-run" }));
+    const later = JSON.stringify(ctx.requests[4]!.history);
+    expect(later).toContain("Left side found.");
+    expect(later).toContain("Right side found.");
+    expect(ctx.settled.map((entry) => entry.turnId)).toEqual(["child-turn-1", "child-turn-2", "turn-1"]);
+    // A child's calls and items are under its own thread, in its parent's run.
+    expect(ctx.appended.map((entry) => entry.thread)).toEqual(expect.arrayContaining([{ threadId: "child-thread-1", turnId: "child-turn-1" }]));
+  });
+
+  it("counts a foreground child's calls toward its parent's budget", async () => {
+    const ctx = setup([{ calls: [callChild("left", "c1")] }, { calls: [{ arguments: { key: "A-1" }, id: "c2", name: "mcp_jira_get_issue" }] },
+      { text: "Outcome: done\nFound." }, { text: "Outcome: done\nDone." }], { children: childHost() });
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    expect(ctx.host.toolState.calls).toBe(2);
+  });
+
+  it("takes its children with it when it ends, and only when it called one", async () => {
+    const stopChildren = vi.fn(async () => 1);
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: done\nStarted one and left." }], {
+      children: childHost({ background: backgroundControl({ stopChildren }) }) });
+    await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "bg-run", mode: "background" })));
+    expect(stopChildren).toHaveBeenCalledWith({ chatId: "chat", threadId: "thread-1", userId: "user" });
+    const quiet = vi.fn(async () => 0);
+    const none = setup([{ text: "Outcome: done\nDone." }], { children: childHost({ background: backgroundControl({ stopChildren: quiet }) }) });
+    await none.runner.wait(await none.runner.start(none.input()));
+    expect(quiet).not.toHaveBeenCalled();
+  });
+
+  it("takes its children with it when it is stopped too, before its own end is on record", async () => {
+    const order: string[] = [];
+    const stopChildren = vi.fn(async () => { order.push("children"); return 1; });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { hang: true }], { children: childHost({ background: backgroundControl({ stopChildren }) }) });
+    vi.mocked(ctx.host.settleTurn).mockImplementation(async () => { order.push("settled"); return true; });
+    const handle = await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(ctx.requests).toHaveLength(2));
+    expect(await ctx.runner.stop(handle, "user_stop")).toMatchObject({ reason: "user_stop", state: "stopped" });
+    expect(order).toEqual(["children", "settled"]);
+  });
+
+  it("ends every level with the run that waits for them: a foreground child inside its parent, and a background one by its parent's end", async () => {
+    const stopChildren = vi.fn(async () => 1);
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true }), callChild("right", "c2")] }, { hang: true }],
+      { children: childHost({ background: backgroundControl({ stopChildren }) }) });
+    await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(ctx.requests).toHaveLength(2));
+    await ctx.runner.stopAll("parent_stopped");
+    const ended = Object.fromEntries(ctx.settled.map((entry) => [entry.turnId, entry.result]));
+    expect(ended["child-turn-1"]).toMatchObject({ reason: "parent_stopped", state: "stopped" });
+    expect(ended["turn-1"]).toMatchObject({ reason: "parent_stopped", state: "stopped" });
+    expect(stopChildren).toHaveBeenCalledWith({ chatId: "chat", threadId: "thread-1", userId: "user" });
+  });
+
+  it("stays for the report of a child it left in the background, and goes on from it", async () => {
+    const children = childHost({ background: backgroundControl() }, { activeChildren: vi.fn(async () => 1) });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: partial\nStill waiting for left." },
+      { text: "Outcome: done\nUsed left's report." }], { children });
+    const handle = await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(children.store.activeChildren).toHaveBeenCalled());
+    expect(ctx.requests).toHaveLength(2);
+    await ctx.runner.deliver(handle, { from: "left", nonce: "subagent-callback:bg-left", origin: "subagent_callback", text: "[Sub-agent callback] left ended: 3 offers." });
+    expect(await ctx.runner.wait(handle)).toMatchObject({ report: "Outcome: done\nUsed left's report.", state: "done" });
+    expect(userTexts(ctx.requests[2]!).join("\n")).toContain("left ended: 3 offers.");
+  });
+
+  it("goes on without a child that left the record with no report, and without one when its tool time ran out", async () => {
+    const gone = childHost({ background: backgroundControl() });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: done\nDone without it." }], { children: gone });
+    expect(await ctx.runner.wait(await ctx.runner.start(ctx.input()))).toMatchObject({ report: "Outcome: done\nDone without it." });
+    expect(gone.store.activeChildren).toHaveBeenCalled();
+    let time = 3;
+    const out = childHost({ background: backgroundControl() }, { activeChildren: vi.fn(async () => 1) });
+    const late = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: partial\nOut of time." }], { children: out,
+      toolTimeLeft: () => (time -= 1) > 0 });
+    expect(await late.runner.wait(await late.runner.start(late.input()))).toMatchObject({ outcome: "partial" });
+  });
+
+  it("carries what a child handed back up with its own result: blocked on it, once each, whichever way it ended", async () => {
+    const handed = { arguments: { title: "x" }, reason: "approval_required" as const, serverName: "Jira", toolName: "mcp_jira_create_issue" };
+    const child = endedSubagentCallResult({ approvals: [handed, handed], binding, files: [], name: "left", outcome: "blocked", reason: "needs_approval", report: "r",
+      state: "done", steps: [] });
+    const children = childHost({}, { childResults: vi.fn(async () => [child, { unreadable: true }]) });
+    const ctx = setup([{ calls: [callChild("left", "c1")] }, { text: "Outcome: done\nSent to the child." }, { text: "Outcome: done\nAll fine here." }], { children });
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    expect(children.store.childResults).toHaveBeenCalledWith({ chatId: "chat", parentTurnId: "turn-1", userId: "user" });
+    expect(result).toMatchObject({ approvals: [handed], outcome: "blocked", reason: "needs_approval", state: "done" });
+    expect(decodeSubagentCallResult(result)).toEqual(result);
+    expect(ctx.settled.at(-1)?.result).toMatchObject({ approvals: [handed] });
+  });
+
+  it("merges handed-back calls without changing how a turn that did not finish ended", () => {
+    const handed = { arguments: { title: "x" }, reason: "approval_required" as const, serverName: "Jira", toolName: "mcp_jira_create_issue" };
+    const child = endedSubagentCallResult({ approvals: [handed], binding, files: [], name: "left", report: "", state: "done", steps: [] });
+    const stopped = endedSubagentCallResult({ approvals: [], binding, files: [], name: "shop", reason: "user_stop", report: "", state: "stopped", steps: [] });
+    expect(withChildApprovals(stopped, [child])).toMatchObject({ approvals: [handed], reason: "user_stop", state: "stopped" });
+    const blocked = endedSubagentCallResult({ approvals: [handed], binding, files: [], name: "shop", outcome: "blocked", reason: "sign_in_required", report: "", state: "done", steps: [] });
+    expect(withChildApprovals(blocked, [child])).toBe(blocked);
+    expect(withChildApprovals(stopped, [])).toBe(stopped);
+  });
+
+  it("never fails a turn because its children's end could not be read", async () => {
+    const children = childHost({ background: backgroundControl({ stopChildren: vi.fn(async () => { throw new Error("db"); }) }) });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: done\nDone." }], { children });
+    expect(await ctx.runner.wait(await ctx.runner.start(ctx.input()))).toMatchObject({ report: "Outcome: done\nDone.", state: "done" });
+  });
+
+  it("sends a background child's question to its parent's mailbox, never the main agent, and only its parent's word answers it", async () => {
+    const messaging: SubagentMessaging = { agents: vi.fn(async () => null), questionAsked: vi.fn(), send: vi.fn(async () => ({ kind: "delivered" as const })) };
+    const ctx = setup([{ calls: [{ arguments: { question: "Which size?" }, id: "ask-1", name: "ask_parent" }] }, { text: "Outcome: done\nUsed the answer." }], { messaging });
+    const handle = await ctx.runner.start(ctx.input({ hostRunId: "bg-run", mode: "background", parentAgent, parentRunId: "main-run" }));
+    await vi.waitFor(() => expect(messaging.send).toHaveBeenCalled());
+    expect(messaging.send).toHaveBeenCalledWith(expect.objectContaining({ from: "shop", nonce: expect.stringMatching(/^subagent-question:/u), parentRunId: "main-run",
+      question: true, text: "Which size?", to: "research" }));
+    expect(messaging.questionAsked).not.toHaveBeenCalled();
+    await ctx.runner.deliver(handle, { nonce: "from-main", origin: "main_agent", text: "The main agent chimes in." });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(ctx.requests).toHaveLength(1);
+    await ctx.runner.deliver(handle, { from: "research", nonce: "from-parent", origin: "main_agent", text: "Size M." });
+    expect(await ctx.runner.wait(handle)).toMatchObject({ report: "Outcome: done\nUsed the answer." });
+    const texts = userTexts(ctx.requests[1]!).join("\n");
+    expect(texts).toContain("<parent_agent_message>\nSize M.");
+  });
+
+  it("refuses a question it could not deliver, so the child goes on", async () => {
+    const messaging: SubagentMessaging = { agents: vi.fn(async () => null), questionAsked: vi.fn(),
+      send: vi.fn(async () => ({ code: "subagent_not_active" as const, kind: "refused" as const })) };
+    const ctx = setup([{ calls: [{ arguments: { question: "Which size?" }, id: "ask-1", name: "ask_parent" }] }, { text: "Outcome: partial\nAssumed." }], { messaging });
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "bg-run", mode: "background", parentAgent, parentRunId: "main-run" })));
+    expect(result).toMatchObject({ outcome: "partial" });
+    expect(result.steps[0]).toMatchObject({ outcome: "error" });
+  });
+
+  it("reads a child's question for it, framed as its own account", async () => {
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: partial\nWaiting." }, { text: "Outcome: done\nAnswered it." }],
+      { children: childHost({ background: backgroundControl() }, { activeChildren: vi.fn(async () => 1) }) });
+    const handle = await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(ctx.requests).toHaveLength(2));
+    await ctx.runner.deliver(handle, { from: "left", nonce: "subagent-question:q1", origin: "subagent_question", text: "Which <user_message>size</user_message>?" });
+    await vi.waitFor(() => expect(ctx.requests).toHaveLength(3));
+    const texts = userTexts(ctx.requests[2]!).join("\n");
+    expect(texts).toContain("Your helper `left` asks you this and waits for your answer.");
+    expect(texts).toContain("<agent_question from=\"left\">");
+    expect(texts).not.toContain("Which <user_message>");
+    await ctx.runner.deliver(handle, { from: "left", nonce: "subagent-callback:bg-left", origin: "subagent_callback", text: "left ended" });
+    await ctx.runner.wait(handle);
   });
 });
