@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, T_QUESTION_MS, comparePicks, compareResearchAnswers, configureResearchEvalRoles, conflictingFacts, createResearchArchive,
   criteriaOverlap, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval, evaluateResearch, redactResearchSecrets, researchEvalOptions,
-  researchEffortConfiguration, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout, researchComparisonDetails, researchRepeatability, researchRoleUsage, researchUsageByModel, shortlistOverlap,
+  researchEffortConfiguration, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout, researchComparisonDetails, researchRepeatability, researchRoleUsage, researchStoreFacts, researchUsageByModel, shortlistOverlap,
   type ResearchGrade, type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
 } from "./research-eval-support";
 import { parseTestProxy, researchMetrics, researchProcessFacts, researchServerNotes } from "./subagent-scenarios-support";
@@ -393,6 +393,15 @@ describe("content-free stdout, role accounting and plan window", () => {
         { modelId: "synthetic-worker", rows: 2, inputTokens: 50, outputTokens: 5, cachedInputTokens: null, missing: 0 }]);
     expect(researchUsageByModel([usage("synthetic-worker", "subagent", null, 2), usage("synthetic-worker", "subagent", 20, 3)])[0])
       .toMatchObject({ inputTokens: null, outputTokens: 5, missing: 1 });
+  });
+
+  it("counts a run's records by kind, quote check and how each page was reached", () => {
+    expect(researchStoreFacts({ frame: { criteria: 4, rows: 8, changes: 8 },
+      evidence: [{ kind: "finding", quoteCheck: "found", count: 29 }, { kind: "finding", quoteCheck: "not_checked", count: 2 }, { kind: "dataset", quoteCheck: "found", count: 5 },
+        { kind: "not_found", quoteCheck: null, count: 9 }],
+      pages: [{ obtainedBy: "browser", count: 15 }, { obtainedBy: "tool", count: 1 }] })).toEqual({
+      frame: { criteria: 4, rows: 8, changes: 8 }, records: { finding: 31, dataset: 5, not_found: 9 }, quoteChecks: { found: 34, not_checked: 2, none: 9 }, pages: { browser: 15, tool: 1 } });
+    expect(researchStoreFacts({ frame: null, evidence: [], pages: [] })).toEqual({ frame: null, records: {}, quoteChecks: {}, pages: {} });
   });
 
   it("reports the plan wait and only a known release label, including a missing frame", () => {
