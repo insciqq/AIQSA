@@ -514,21 +514,29 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   };
 
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);
-  let next = 0;
-  /** The end of the batch's latest serial call (`EngineTool.serial`), which the next one starts behind. */
-  let serial: Promise<unknown> = Promise.resolve();
-  const afterSerial = (work: () => Promise<TranscriptToolResultItem>) => {
-    const turn = serial.then(work);
-    serial = turn.catch(() => undefined);
-    return turn;
+  /** The calls not started yet, in the response's order. */
+  const waiting = input.calls.map((_, index) => index);
+  const isSerial = (index: number) => deps.registry.resolve(input.calls[index]!.name)?.serial === true;
+  let serialRunning = false;
+  /**
+   * The next call that may start. A serial call (`EngineTool.serial`) waits for the one before it here, holding no
+   * worker, so the workers take the calls behind it; the running one's worker takes the next when it ends.
+   */
+  const nextCall = () => {
+    const position = waiting.findIndex((index) => !serialRunning || !isSerial(index));
+    return position < 0 ? undefined : waiting.splice(position, 1)[0];
   };
   const worker = async () => {
-    while (next < input.calls.length) {
-      const index = next;
-      next += 1;
-      const call = input.calls[index]!;
-      const run = () => runWithToolCallObservation(() => runCall(call, (input.firstOrdinal ?? 0) + index));
-      results[index] = await (deps.registry.resolve(call.name)?.serial ? afterSerial(run) : run());
+    for (;;) {
+      const index = nextCall();
+      if (index === undefined) return;
+      const serial = isSerial(index);
+      if (serial) serialRunning = true;
+      try {
+        results[index] = await runWithToolCallObservation(() => runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index));
+      } finally {
+        if (serial) serialRunning = false;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));
