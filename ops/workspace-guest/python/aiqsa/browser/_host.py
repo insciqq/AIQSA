@@ -31,7 +31,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from playwright.async_api import Error as PlaywrightError
@@ -39,6 +39,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from . import _dom, _format, _identity, _livehub, _paths, _sessions
+from ..proxy import client as _proxy
+from ..proxy import selection as _proxy_selection
 from ..agents import AGENT_ID_ENV, AGENT_ID_PATTERN, AGENT_NAME_ENV, AGENT_NAME_MAX_CHARS, BROWSER_AGENT_SLOTS, BROWSER_BUSY_CODE, BROWSER_MEMORY_LOW_CODE, MAIN_AGENT_ID
 
 PROTOCOL = 1
@@ -66,6 +68,11 @@ MAX_ELEMENTS = 500
 MAX_FRAMES = 8
 MAX_STEPS = 500
 KEEP_SHOTS = 20
+#: Marks the forwarder's own answer among a site's headers; what it means is read from the forwarder, never the header.
+PROXY_CODE_HEADER = "x-aiqsa-proxy-code"
+#: Chromium's errors that read as a site or a network refusing this address, so the failure names proxies to try.
+REFUSAL_ERRORS = ("ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_EMPTY_RESPONSE", "ERR_TIMED_OUT",
+                  "ERR_CONNECTION_TIMED_OUT", "ERR_TUNNEL_CONNECTION_FAILED", "ERR_SSL_PROTOCOL_ERROR", "ERR_HTTP2_PROTOCOL_ERROR")
 TEXT_MAX_CHARS = 20_000
 JS_MAX_CHARS = 8_000
 ACTION_TIMEOUT_MS = 10_000
@@ -198,6 +205,8 @@ class Host:
         self._closing = False
         self.stopped = asyncio.Event()
         self.shot_count = 0
+        #: The local forwarder's port when this browser started on a plan; None means no forwarder and no flag.
+        self.proxy_port: Optional[int] = None
 
     @staticmethod
     def _valid_agent_id(value: str) -> str:
@@ -406,6 +415,9 @@ class Host:
     # Lifecycle -------------------------------------------------------------------------------------------------
 
     async def start(self) -> None:
+        if _proxy.has_plan():
+            # Failing to start it fails the browser: a browser without it would open hinted sites directly.
+            self.proxy_port = await asyncio.to_thread(_proxy.ensure)
         self.playwright = await async_playwright().start()
         chromium = self.playwright.chromium
         env = _identity.launch_env(self.environ, self.locale, self.timezone)
@@ -427,7 +439,7 @@ class Host:
         self.user_agent = _identity.native_user_agent(headless_ua)
         self.metadata = _identity.user_agent_metadata(reported)
         self.browser = await chromium.launch(channel="chromium", headless=True, ignore_default_args=_identity.IGNORED_DEFAULT_ARGS,
-                                             args=_identity.launch_args(self.locale, self.user_agent), env=env)
+                                             args=_identity.launch_args(self.locale, self.user_agent, self.proxy_port), env=env)
         self.browser.on("disconnected", self._on_disconnected)
         state = self.store.load()
         self.local_storage = {origin["origin"]: origin["localStorage"] for origin in state["origins"]}
@@ -624,6 +636,178 @@ class Host:
                 self.current = page
         await self._setup(self.current)
         return self.current
+
+    # Proxies ---------------------------------------------------------------------------------------------------
+
+    async def _proxy_call(self, op: str, **args: Any) -> Dict[str, Any]:
+        try:
+            return await asyncio.to_thread(_proxy.call, op, args)
+        except _proxy.ProxyError as error:
+            raise HostError(error.code, error.message) from None
+
+    def _no_forwarder(self, host: str, choice: Any) -> None:
+        """This browser has no forwarder: either the chat has no proxies, or they came after it started."""
+        wanted = choice is not None and choice != _proxy.AUTO and choice["kind"] == "proxy"
+        if not _proxy.has_plan():
+            if wanted:
+                raise HostError("proxy_not_found", "This chat has no proxies, so `--proxy` has nothing to name.")
+            return
+        try:
+            plan = _proxy.load_plan()
+        except _proxy.ProxyError as error:
+            raise HostError(error.code, error.message) from None
+        decision, _ = _proxy_selection.select(plan.proxies if plan else [], host, _proxy_selection.empty_state(),
+                                              None if choice == _proxy.AUTO else choice)
+        if decision["kind"] == "direct":
+            return
+        if decision["kind"] == "failed" and decision["code"] != "proxy_all_failed":
+            raise HostError(decision["code"], f"No proxy of this chat can be used for {_format.quoted(host, 80)}; `aiqsa-browser proxies` lists them.")
+        raise HostError("proxy_browser_restart_required", "This browser started before this chat had proxies, so this site would open "
+                        "without one. The main agent runs `aiqsa-browser close` and opens it again: saved sign-ins return, open tabs do not. "
+                        "`--proxy direct` opens it without a proxy now.")
+
+    async def _route_navigation(self, page: Any, url: str, value: Optional[str]) -> None:
+        """Before a navigation: the agent's choice reaches the forwarder, and the page presents itself for the proxy it will use."""
+        host = urlsplit(url).hostname
+        if not host:
+            return
+        choice = _proxy.parse_choice(value)
+        if self.proxy_port is None:
+            self._no_forwarder(host, choice)
+            return
+        if choice is not None:
+            routed = await self._proxy_call("route", host=host, choice=None if choice == _proxy.AUTO else choice)
+            decision = routed.get("decision") or {}
+            if decision.get("kind") == "failed" and choice != _proxy.AUTO:
+                raise HostError(decision["code"], f"No proxy of this chat is called {self._said(value, 64)}, or it is switched off; `aiqsa-browser proxies` lists them.")
+            if routed.get("moved"):
+                self._tell_other_agents(str(routed.get("site")), decision)
+        peek = await self._proxy_call("peek", host=host)
+        await self._present_for_proxy(page, (peek.get("decision") or {}).get("country"))
+
+    async def _present_for_proxy(self, page: Any, country: Optional[str]) -> None:
+        """The seam for language and time zone following a proxy's country (`_identity.presentation_for_proxy`)."""
+        locale, zone = _identity.presentation_for_proxy(country, self.locale, self.timezone)
+        session = self.cdp.get(page)
+        if (locale, zone) == (self.locale, self.timezone) or session is None:
+            return
+        await session.send("Emulation.setUserAgentOverride", {"userAgent": self.user_agent, "userAgentMetadata": self.metadata, "acceptLanguage": locale})
+        await session.send("Emulation.setLocaleOverride", {"locale": locale})
+        await session.send("Emulation.setTimezoneOverride", {"timezoneId": zone})
+
+    def _tell_other_agents(self, site: str, decision: Mapping[str, Any]) -> None:
+        """A site has one exit, because Chromium pools its connections by host: another agent's tabs on it move too."""
+        me = self._active_state()
+        for state in self._states.values():
+            if state is me:
+                continue
+            if any(not tab.is_closed() and self._site_of(tab.url) == site for tab in state.tabs):
+                state.notes.append(f"Another agent chose {self._via(decision)} for {site}; your tabs on it use that now too.")
+
+    @staticmethod
+    def _site_of(url: Optional[str]) -> Optional[str]:
+        try:
+            host = urlsplit(url or "").hostname
+        except ValueError:
+            return None
+        return _proxy_selection.site_of(host) if host else None
+
+    @staticmethod
+    def _via(outcome: Mapping[str, Any]) -> str:
+        if outcome.get("kind") == "proxy":
+            moved = outcome.get("movedFrom") or []
+            after = f" after {_proxy.labels(moved)} failed" if moved else ""
+            return f"proxy {_proxy.labels([outcome])}{after}"
+        return "direct"
+
+    def _try_text(self, to_try: Sequence[Mapping[str, Any]], excluded: Sequence[Optional[str]]) -> str:
+        others = [entry for entry in to_try if entry.get("id") not in excluded]
+        if not others:
+            return "This chat has no other proxy to try."
+        return f"Proxies to try: {_proxy.labels(others)}, with `aiqsa-browser open ADDRESS --proxy NAME`."
+
+    async def _outcome_failure(self, host: str) -> Optional[HostError]:
+        """What the forwarder knows went wrong for this host: nothing else may be reported as its failure."""
+        info = await self._proxy_call("outcome", host=host)
+        outcome = info.get("outcome") or {}
+        to_try = info.get("toTry") or []
+        if outcome.get("kind") == "failed":
+            attempts = outcome.get("attempts") or []
+            tried = ", ".join(f"{entry['name']} ({entry['code']})" for entry in attempts)
+            return HostError(outcome["code"], f"{host} did not open" + (f" through {tried}" if tried else "") + ". Nothing was sent directly. " +
+                             self._try_text(to_try, [entry["id"] for entry in attempts]) + " `--proxy direct` opens it without a proxy.")
+        if outcome.get("kind") == "refused":
+            return HostError(outcome["code"], f"{host} is a private or local address, which is not opened from here.")
+        if outcome.get("kind") == "direct" and outcome.get("code"):
+            return HostError("navigation_failed", f"The direct connection to {host} failed ({outcome['code']}). " + self._try_text(to_try, []))
+        return None
+
+    async def _proxy_navigation_failure(self, page: Any, url: str, error: BaseException) -> Optional[HostError]:
+        """A navigation Chromium could not finish, in a browser on the forwarder; None leaves the error as it is."""
+        if self.proxy_port is None:
+            return None
+        text = self._error_text(error)
+        # Its error page commits a moment later and would interrupt the next address tried, which is what this failure suggests.
+        try:
+            await page.wait_for_url("chrome-error://**", timeout=1000)
+        except PlaywrightError:
+            pass
+        if "ERR_PROXY_CONNECTION_FAILED" in text:
+            return HostError(_proxy.UNAVAILABLE, "The local proxy forwarder did not answer, so nothing was sent. Try again; the next command restarts it.")
+        host = urlsplit(url).hostname or ""
+        failure = await self._outcome_failure(host)
+        if failure is not None:
+            return failure
+        if any(marker in text for marker in REFUSAL_ERRORS):
+            info = await self._proxy_call("outcome", host=host)
+            outcome = info.get("outcome") or {}
+            return HostError("navigation_failed", f"{text} ({self._via(outcome)}). {self._try_text(info.get('toTry') or [], [outcome.get('id')])}")
+        return None
+
+    async def _goto(self, page: Any, url: str) -> Optional[int]:
+        """Navigates and returns the status. What went wrong on the way to the site is reported as that."""
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            raise
+        except PlaywrightError as error:
+            failure = await self._proxy_navigation_failure(page, url, error)
+            if failure is not None:
+                raise failure from None
+            raise
+        if response is None:
+            return None
+        # A plain-http request's failure is the forwarder's own response; a site sending this header only makes this look.
+        if self.proxy_port is not None and response.headers.get(PROXY_CODE_HEADER):
+            failure = await self._outcome_failure(urlsplit(url).hostname or "")
+            if failure is not None:
+                raise failure
+        return response.status
+
+    async def _blocked_note(self, url: str, status: Optional[int]) -> str:
+        """A site's answer that reads as a block names the proxies to try; the site answered, so moving on is the agent's call."""
+        if self.proxy_port is None or status not in _proxy_selection.BLOCKED_HTTP_STATUSES:
+            return ""
+        info = await self._proxy_call("outcome", host=urlsplit(url).hostname or "")
+        outcome = info.get("outcome") or {}
+        return (f"This site refused the request ({status}, {self._via(outcome)}), which may be a block on the address it sees. "
+                f"{self._try_text(info.get('toTry') or [], [outcome.get('id')])}\n")
+
+    async def _note_proxy(self, step: Dict[str, Any], page: Any, action: str, before: Optional[str]) -> None:
+        """The step line shows what opened a site: on opening one, and on arriving at another."""
+        site = self._site_of(getattr(page, "url", None))
+        if site is None or (action not in ("open", "new_tab") and site == before):
+            return
+        try:
+            host = urlsplit(page.url).hostname or ""
+            outcome = (await self._proxy_call("outcome", host=host)).get("outcome")
+        except HostError:
+            return
+        if outcome is None or outcome.get("kind") not in ("proxy", "direct"):
+            return
+        via = self.hidden.text(self._via(outcome))
+        shown = f"through {via}" if outcome["kind"] == "proxy" else via
+        step["target"] = f"{step['target']} {shown}" if step.get("target") else shown
 
     # Waiting ---------------------------------------------------------------------------------------------------
 
@@ -991,6 +1175,7 @@ class Host:
         """Run one agent action, record its step, keep sessions current and summarize the page."""
         page = await self._page()
         step = self._record(action, target, page.url)
+        site_before = self._site_of(page.url)
         self.acting = True
         try:
             await run(page)
@@ -1004,6 +1189,8 @@ class Host:
         await asyncio.sleep(0)
         page = await self._page()
         await self._finish_step(step, page)
+        if self.proxy_port is not None:
+            await self._note_proxy(step, page, action, site_before)
         await self._autosave()
         result: Dict[str, Any] = {"step": step}
         if info:
@@ -1045,20 +1232,21 @@ class Host:
 
     async def op_open(self, args: Dict[str, Any]) -> Dict[str, Any]:
         url = _web_url(_text(args, "url", 4096))
+        choice = _text(args, "proxy", 128, required=False)
         status: Dict[str, Any] = {}
 
         async def run(page: Any) -> None:
+            await self._route_navigation(page, url, choice)
             try:
-                response = await page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+                status["code"] = await self._goto(page, url)
             except PlaywrightTimeoutError:
                 raise HostError("navigation_timeout", "The page did not start loading within 45 seconds.") from None
             except PlaywrightError as error:
                 raise HostError("navigation_failed", self._error_text(error)) from None
-            status["code"] = response.status if response else None
 
         result = await self._act("open", None, run)
         if status.get("code") and status["code"] >= 400:
-            result["text"] = f"HTTP status {status['code']}.\n" + result["text"]
+            result["text"] = f"HTTP status {status['code']}.\n" + await self._blocked_note((result.get("info") or {}).get("url") or url, status["code"]) + result["text"]
         result["data"] = status
         return result
 
@@ -1197,10 +1385,17 @@ class Host:
         return await self._act("forward", None, run)
 
     async def op_reload(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        async def run(page: Any) -> None:
-            await page.reload(wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+        status: Dict[str, Any] = {}
 
-        return await self._act("reload", None, run)
+        async def run(page: Any) -> None:
+            response = await page.reload(wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+            status["code"] = response.status if response else None
+
+        result = await self._act("reload", None, run)
+        note = await self._blocked_note((result.get("info") or {}).get("url") or "", status.get("code"))
+        if note:
+            result["text"] = f"HTTP status {status['code']}.\n" + note + result["text"]
+        return result
 
     async def op_wait(self, args: Dict[str, Any]) -> Dict[str, Any]:
         timeout = _int(args, "timeout", 15, 1, 120) * 1000
@@ -1319,6 +1514,9 @@ class Host:
 
     async def op_new_tab(self, args: Dict[str, Any]) -> Dict[str, Any]:
         url = _web_url(_text(args, "url", 4096)) if args.get("url") else None
+        choice = _text(args, "proxy", 128, required=False)
+        if choice is not None and url is None:
+            raise HostError("invalid_arguments", "`--proxy` needs the address to open.")
         self._check_memory()
         state = self._active_state()
         while len([tab for tab in state.tabs if not tab.is_closed()]) >= MAX_AGENT_TABS:
@@ -1336,11 +1534,18 @@ class Host:
         await self._setup(page)
         self.current = page
 
+        status: Dict[str, Any] = {}
+
         async def run(current: Any) -> None:
             if url:
-                await current.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+                await self._route_navigation(current, url, choice)
+                status["code"] = await self._goto(current, url)
 
-        return await self._act("new_tab", None, run, settle=url is not None)
+        result = await self._act("new_tab", None, run, settle=url is not None)
+        note = await self._blocked_note((result.get("info") or {}).get("url") or url or "", status.get("code"))
+        if note:
+            result["text"] = f"HTTP status {status['code']}.\n" + note + result["text"]
+        return result
 
     async def op_close_tab(self, args: Dict[str, Any]) -> Dict[str, Any]:
         tab = self._tab(args) if args.get("index") is not None else await self._page()

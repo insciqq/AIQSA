@@ -55,6 +55,21 @@ def sessions_dir() -> Path:
     return _at("/workspace/secrets/browser")
 
 
+def proxy_plan_path() -> Path:
+    """The run's proxies with their credentials, a managed file every install replaces or removes (`WORKSPACE_PROXY_PLAN_PATH`)."""
+    return _at("/workspace/secrets/files/aiqsa-proxies.json")
+
+
+def proxy_state_path() -> Path:
+    """Which proxy each site stays on and where each rotation stands: the chat's, so it outlives a VM stop. Never exported."""
+    return _at("/workspace/secrets/.proxy-rotation.json")
+
+
+def proxy_run_dir() -> Path:
+    """Control socket, port, start lock and log of this boot's proxy forwarder."""
+    return _at("/tmp/aiqsa-proxy")
+
+
 def workspace_dir() -> Path:
     """The Workspace a file to upload must come from."""
     return _at("/workspace")

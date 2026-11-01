@@ -12,7 +12,7 @@ documented defaults.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Mapping, Optional
+from typing import Dict, List, Mapping, Optional, Tuple
 
 LOCALE_ENV = "AIQSA_BROWSER_LOCALE"
 TIMEZONE_ENV = "AIQSA_BROWSER_TIMEZONE"
@@ -47,8 +47,12 @@ def browser_timezone(environ: Mapping[str, str]) -> str:
     return value if len(value) <= 64 and _ZONE.fullmatch(value) else DEFAULT_TIMEZONE
 
 
-def launch_args(locale: str, user_agent: Optional[str] = None) -> List[str]:
-    """Flags only: no automation blink feature, the user's language, a desktop window and screen."""
+def launch_args(locale: str, user_agent: Optional[str] = None, proxy_port: Optional[int] = None) -> List[str]:
+    """Flags only: no automation blink feature, the user's language, a desktop window and screen.
+
+    A run with proxies adds the local forwarder, and WebRTC keeps to it: its UDP would show a site the VM's own
+    address beside the proxy's. Chromium itself bypasses the proxy for loopback, so a local page still opens.
+    """
     args = [
         "--disable-blink-features=AutomationControlled",
         f"--lang={locale}",
@@ -57,7 +61,19 @@ def launch_args(locale: str, user_agent: Optional[str] = None) -> List[str]:
     ]
     if user_agent:
         args.append(f"--user-agent={user_agent}")
+    if proxy_port is not None:
+        args += [f"--proxy-server=http://127.0.0.1:{proxy_port}", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"]
     return args
+
+
+def presentation_for_proxy(country: Optional[str], locale: str, timezone: str) -> Tuple[str, str]:
+    """The language and time zone a page opened through a proxy of this country presents.
+
+    Unchanged today: the user's own. `proxy-acceptance` tests whether they should follow the proxy's country (a
+    Russian shop through a Russian address with en-US and UTC is a mismatch a site can read); this function is the
+    one place to change, and `Host._present_for_proxy` applies whatever it returns to the page before it navigates.
+    """
+    return locale, timezone
 
 
 def launch_env(environ: Mapping[str, str], locale: str, timezone: str) -> Dict[str, str]:
