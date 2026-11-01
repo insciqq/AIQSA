@@ -79,7 +79,7 @@ describe("Workspace browser guide", () => {
   });
 
   it("gates only sub-agents on the per-agent guest image", () => {
-    expect(WORKSPACE_BROWSER_AGENT_IMAGE).toBe("aiqsa-workspace:0.1.40");
+    expect(WORKSPACE_BROWSER_AGENT_IMAGE).toBe("aiqsa-workspace:0.1.41");
     expect(workspaceBrowserAgentAvailable("aiqsa-workspace:0.1.39", "main")).toBe(true);
     expect(workspaceBrowserAgentAvailable("aiqsa-workspace:0.1.39", "subagent")).toBe(false);
     expect(workspaceBrowserAgentAvailable(WORKSPACE_BROWSER_AGENT_IMAGE, "subagent")).toBe(true);

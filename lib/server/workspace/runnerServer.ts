@@ -19,7 +19,7 @@ import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperati
 import { workspaceAgentStopRequest, type WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseBrowserLiveAction, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
-import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
+import { parseAcceptedWorkspaceSecrets, parseWorkspaceRunProxies, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
 import { workspaceAgentEnvironment, type WorkspaceAgent } from "../subagents/guestProtocol";
 import { WORKSPACE_TURN_TIMEOUT_MAX_SECONDS } from "./config";
@@ -382,9 +382,16 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           throw new Error("field_invalid");
         }
         if (body.boundUvCache !== undefined && typeof body.boundUvCache !== "boolean") throw new Error("field_invalid");
+        let proxies: ReturnType<typeof parseWorkspaceRunProxies>;
+        try {
+          proxies = parseWorkspaceRunProxies(body.proxies);
+        } catch {
+          throw new Error("field_invalid");
+        }
         await execute(body.operation, (signal) => input.runtime.syncPersonalSecrets({
           secrets, modelRunId, ...(agent ? { agent } : {}),
           ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
+          ...(proxies.length > 0 ? { proxies } : {}),
           ...(body.boundUvCache === true ? { boundUvCache: true } : {}),
           runtimeSandboxId, sessionId, signal
         }));

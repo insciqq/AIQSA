@@ -101,6 +101,7 @@ function run(name: string, files: readonly StoredOriginal[], hooks: Readonly<{ a
     async markSessionStarting() { sessionState = "CREATING"; return true; },
     markExportComplete: unused, markExportFailed: unused, markExportPending: unused, outputHandoffReady: unused,
     async personalSecrets() { return []; },
+    async runProxyPlan() { return null; },
     prepareOutput: unused, renewExportLease: unused, reserveOutputCapture: unused, retireUnusedRun: unused,
     saveBrowserSessions: unused, sealOutputCapture: unused, settleOutput: unused, settleSession: unused,
     async unregisteredCommands() { return 0; }
