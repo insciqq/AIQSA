@@ -991,8 +991,8 @@ html[data-motion="off"] .v2-skeleton {
   color: var(--v2-color-text3);
 }
 
-/* Waiting for the user reads in words and in the warn tone. */
-[data-state="waiting"] .v2-subagent-line-detail,
+/* Waiting for the user reads in words and in the warn tone; waiting for the main agent asks nothing of them. */
+[data-state="waiting"][data-tone="warn"] .v2-subagent-line-detail,
 button[data-tone="warn"] .v2-subagent-line-name {
   color: var(--v2-color-warn);
 }

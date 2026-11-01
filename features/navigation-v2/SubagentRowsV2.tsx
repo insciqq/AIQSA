@@ -96,7 +96,7 @@ function SubagentRowV2({
   selected: boolean;
   thread: SubagentThreadSummary;
 }>) {
-  const state = subagentStatePresentation(thread.state, thread.outcome);
+  const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason);
   return (
     <div className="v2-subagent-row-wrap" data-navigation-subagent-id={thread.id} data-v2-tree-row="true">
       <button

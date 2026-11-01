@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { SUBAGENT_VIEW_LIMITS } from "@/lib/contracts/subagentViews";
+import { subagentWaitsForAgent } from "./subagentPresentation";
 import {
   SUBAGENT_POLL_INTERVAL_MS,
   invalidateChatSubagents,
@@ -26,8 +27,9 @@ export function SubagentLivenessV2({
   onActiveChatSettled
 }: Readonly<{
   /**
-   * A sub-agent of the open chat ended while its main agent was idle: the
-   * server may have started a wake-up answer the chat has not seen yet.
+   * A sub-agent of the open chat ended, or started waiting for an answer, while
+   * its main agent was idle: the server may have started a wake-up answer the
+   * chat has not seen yet.
    */
   onActiveChatSettled?(chatId: string): void;
 }>) {
@@ -43,6 +45,8 @@ export function SubagentLivenessV2({
   const runningKey = useSubagentStore((state) => Object.values(state.chats)
     .filter((chat) => chat.running > 0).map((chat) => chat.chatId).sort().join("\0"));
   const activeRunning = useSubagentStore((state) => activeChatId ? state.chats[activeChatId]?.running ?? 0 : 0);
+  const activeAsking = useSubagentStore((state) => activeChatId
+    ? state.chats[activeChatId]?.threads.filter(subagentWaitsForAgent).length ?? 0 : 0);
   const settledRef = useRef(onActiveChatSettled);
   useEffect(() => {
     settledRef.current = onActiveChatSettled;
@@ -110,15 +114,15 @@ export function SubagentLivenessV2({
     if (ended.length > 0) void refreshSubagentSummary(ended);
   }, [streamKey]);
 
-  const previousRef = useRef<Readonly<{ chatId: string | null; running: number }>>({ chatId: null, running: 0 });
+  const previousRef = useRef<Readonly<{ asking: number; chatId: string | null; running: number }>>({ asking: 0, chatId: null, running: 0 });
   useEffect(() => {
     const previous = previousRef.current;
-    previousRef.current = { chatId: activeChatId, running: activeRunning };
-    if (!activeChatId || previous.chatId !== activeChatId || activeRunning >= previous.running) return;
-    // A callback into a streaming answer joins that answer; only an idle chat may wake.
+    previousRef.current = { asking: activeAsking, chatId: activeChatId, running: activeRunning };
+    if (!activeChatId || previous.chatId !== activeChatId || activeRunning >= previous.running && activeAsking <= previous.asking) return;
+    // A callback or a question into a streaming answer joins that answer; only an idle chat may wake.
     if (useRunLifecycleStore.getState().activeStreams[activeChatId]) return;
     settledRef.current?.(activeChatId);
-  }, [activeChatId, activeRunning]);
+  }, [activeAsking, activeChatId, activeRunning]);
 
   return null;
 }
