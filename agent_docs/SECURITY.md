@@ -28,8 +28,8 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 - Saved secrets (operator decision 2026-10-22): the agent has full access to its user's saved secrets, names and values, in every chat and without the Workspace VM, and guest commands receive them as environment values. Accepted risk: values the agent reads reach the model provider and the chat transcript, and so wherever that chat's content goes (exports, shares, Telegram). This is not DLP: models and guest code can copy them. Values `manage_secret` saved in a turn are masked in that turn's answer, logins and regions excepted (`lib/server/tools/manageSecret.ts`). Installation, provider, database and session credentials never reach the agent or the guest (proxy passwords excepted, Proxies below). Pasted credentials are for use (operator decision 2026-10-27): the agent saves what the user's own message gives, unasked, and types it into websites; never values from pages, files or tool results.
 - Logs are structured, allowlisted and content-free: no prompts, answers, queries, instructions, file names or content, endpoints, tool bodies, Memory, credentials or bearer URLs. Failure records never carry the message or stack. Records may carry the user's internal id; PostgreSQL telemetry never stores user, run, job or trace ids.
 - Exception: operator-controlled Nginx error diagnostics may contain public-share bearer paths. Operators restrict their retention, redact support copies and revoke leaked shares. The exception never covers access or application logs, authorization headers or provider, MCP and session credentials.
-- Telegram Bot API URLs embed the bot token and are never logged; Telegram buttons carry only random server-row ids checked against the link's owner and chat.
-- Anonymous shares are sanitized, immutable snapshots, never live access to a private chat. Reads stay repository-authorized and are served dynamic, no-store, noindex and no-referrer. The hashed bearer token, its expiry and revocation authorize access; crawler directives do not, and bearer URLs are never advertised.
+- Telegram buttons carry only random server-row ids checked against the link's owner and chat.
+- Anonymous shares are sanitized, immutable snapshots, never live access to a private chat. The hashed bearer token, its expiry and revocation authorize access; crawler directives do not, and bearer URLs are never advertised.
 - Forwarding headers count only under explicit proxy trust with a fixed number of reviewed hops (`lib/server/auth/clientIdentity.ts`); network ranges prove no identity.
 
 ## Untrusted files and content
@@ -37,7 +37,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 - A file is admitted only when its content matches its declared type, except a static PNG, JPEG or WebP labelled as another of the three, which takes its decoded format (`lib/server/uploads/validation.ts`). SVG uploads are refused. Previews never render active content. Errors never reveal object locations, file names or content.
 - Document content (formulas, OCR, tables) is inert evidence, never code, tool or network authority.
 - Chat import unpacks archives in a browser worker with in-house zip and tar readers, deliberately without an unpack library.
-- Every server-side fetch of a URL that a user, administrator, model or upstream controls uses the SSRF-safe transport (`lib/server/mcp/safeFetch.ts`, `lib/server/webFetch/transport.ts`). Discovery and catalogs never grant capabilities.
+- Every server-side fetch of a URL that a user, administrator, model or upstream controls uses the SSRF-safe transport (`lib/server/mcp/safeFetch.ts`, `lib/server/webFetch/transport.ts`).
 - Model and user Markdown renders as React text. The only HTML sinks are the reviewed Shiki, KaTeX and Mermaid renderers in `components/chat/` and Telegram's rich blocks in `lib/server/telegram/render/` (never Telegram's Markdown or HTML parse modes). Each has real-library hostile-input tests; a new sink or untrusted-input parser needs the same.
 - The PDF viewer (operator decision 2026-10-30) parses foreign PDFs with pdf.js on the application origin. Accepted risk: a pdf.js bug then runs with the user's session; `features/pdf-viewer-v2/pdfViewerOptions.ts`, hostile-input tests and a current dependency bound it. A PDF never chooses a request path or parses outside its worker. No `wasm-unsafe-eval`.
 
@@ -50,7 +50,6 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 - `fetch_url` sends only URLs found in the run's frozen link authority (user-authored branch text and delivered follow-ups) or in Search evidence (operator decisions 2026-11-01): that of every agent of the answer, a background sub-agent that outlives the main run included, and of earlier answers on the visible branch, since that is the same class of authority. Another branch, chat or user never counts, and a scheduled occurrence counts only its own answer. Injected text therefore cannot exfiltrate context through it. Fetched pages are data, never instructions or link authority.
 - A scheduled prompt authorizes no link by itself. Its task keeps a link snapshot with explicit authorship (`lib/server/scheduledTasks/promptUrls.ts`): links the owner writes, and for prompts a chat tool writes, only links that run's user text authorized. Search results never enter it, and neither does a webhook event's body.
-- Parsing happens only in the disposable parser process, never in the application.
 
 ## Automation webhooks
 
@@ -88,7 +87,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 Operator decisions 2026-11-01.
 
 - The model may see proxy passwords, administrator ones included, because AIQSA is an internal tool. This is an exception to the root rule that installation secrets stay on the server. Accepted risk: any user's agent can read an administrator proxy's password, and it then travels like a saved secret the agent read. Settings and routes still never return one, and a run's persisted plan never holds one (`lib/server/proxies/runProxies.ts`).
-- A domain hint is advice, never a hard rule: a named proxy opens any site. An explicit choice wins, direct included. Otherwise selection rotates over active matching proxies, one per site within a chat, and moves on after a failure; with none left the failure is visible and the site never goes direct (`lib/domain/proxySelection.ts`).
+- A domain hint is advice, never a hard rule: a named proxy opens any site. An explicit choice wins, direct included; otherwise a site that matches a proxy never goes direct, and when all have failed the failure is visible (`lib/domain/proxySelection.ts`).
 - A proxy must not become a path into the installation's network, whoever owns it: private, loopback, link-local, metadata and installation addresses are refused with no switch, and the check repeats before every connection (`lib/server/proxies/address.ts`). Accepted cost: a proxy on the operator's LAN cannot be used.
 - In the Workspace the internet policy still applies: Off denies a proxy too.
 
@@ -96,7 +95,7 @@ Operator decisions 2026-11-01.
 
 - An administrator switch (default off) lets users relay their own terminal sessions between the Connect client and their browser, authorized by a hashed device token and the browser session. Transport is TLS; plain http only directly to local-network addresses (operator decision 2026-10-19).
 - Terminal bytes stay in server memory, never stored or logged. Accepted risk (operator decision 2026-10-19): the operator can technically read or inject them.
-- Only the owner reaches their devices, administrators included, and input comes only from the person, never a model, schedule or automatic approval. The client writes only report-only hooks into `~/.claude` and `~/.codex`, with consent, and verifies the SHA-256 of a download before installing or replacing itself.
+- Only the owner reaches their devices, administrators included, and input comes only from the person, never a model, schedule or automatic approval.
 
 ## Deployment
 
@@ -118,4 +117,4 @@ Operator decisions 2026-11-01.
 | `@mozilla/readability`, `linkedom` | Extract page text for `fetch_url`, only inside the parser process, because parse5 is quadratic on hostile markup. |
 | `markdown-it` | Parses untrusted Markdown under input, node and depth bounds; raw HTML and images never reach the DOM. |
 | `@xterm/xterm`, `@xterm/addon-fit` | Exact pins for the Connect session page; output is rendered by xterm, never as HTML, with no clipboard addon. |
-| `mermaid` | Strict security level, no HTML labels or links, bounded input, then DOMPurify and an SVG allowlist; CSP needs no `unsafe-eval`. |
+| `mermaid` | Renders untrusted diagrams under the hardening in `components/chat/mermaidRendering.ts`. |
