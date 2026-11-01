@@ -1394,6 +1394,14 @@
     overflow: hidden;
   }
 
+  /* No "+" in a message to a sub-agent: its column goes, and the text rests where it stands once engaged. */
+  .v2-composer[data-message-only][data-resting] .v2-composer-entry {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "input send";
+  }
+
+  .v2-composer[data-message-only][data-resting] .v2-composer-input { padding-left: 0.75rem; }
+
   .v2-composer-controls > .v2-icon-button:not(:disabled) { color: var(--v2-color-text); }
   .v2-composer-controls > .v2-icon-button .v2-icon { width: 1.375rem; height: 1.375rem; stroke-width: 2; }
 
