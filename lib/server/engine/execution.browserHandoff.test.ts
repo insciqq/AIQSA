@@ -1,19 +1,27 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
+import { RECORD_EVIDENCE_TOOL_NAME, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
+  type ResearchEvidenceRecord } from "../../contracts/research";
+import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
-import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
+import { BROWSER_HANDOFF_TOOL_NAME, BROWSER_HANDOFF_WAIT_MS } from "../tools/browserHandoff";
+import { proposeCall } from "../research/planWindow.testFixtures";
+import type { ResearchEvidencePort } from "../research/ports";
+import type { ResearchEngineDeps } from "../research/run";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import { browserLiveRelay, type BrowserLiveView } from "../workspace/browserLive";
+import { browserLiveRelay, type BrowserLiveRunHandle, type BrowserLiveView } from "../workspace/browserLive";
 import { fakeLiveGuest, recordingWriter, until } from "../workspace/browserLive.testFixtures";
+import { WORKSPACE_BROWSER_AGENT_IMAGE } from "../workspace/browserGuidance";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
+import type { SubagentThreadStore } from "./subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { TranscriptRepository } from "./transcriptRepository";
 
@@ -44,15 +52,17 @@ function workspace(guest = fakeLiveGuest()) {
 
 let currentChat = "chat";
 
-function adapter(calls: ProviderRunResult["toolCalls"]) {
+type Step = Readonly<{ calls?: ProviderRunResult["toolCalls"]; text?: string }>;
+
+function adapter(steps: readonly Step[]) {
   const requests: ProviderRunRequest[] = [];
   const value: ProviderAdapter = {
     buildRequestPreview: () => ({}),
     async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       requests.push(request);
-      const first = requests.length === 1;
-      if (!first) yield { data: { delta: "Done." }, type: "token" };
-      return { finalProviderResponsePreview: {}, finalText: first ? "" : "Done.", toolCalls: first ? [...(calls ?? [])] : [],
+      const step: Step = steps[requests.length - 1] ?? { text: "Done." };
+      if (step.text) yield { data: { delta: step.text }, type: "token" };
+      return { finalProviderResponsePreview: {}, finalText: step.text ?? "", toolCalls: [...(step.calls ?? [])],
         usage: { inputTokens: 100, outputTokens: 10 } };
     }
   };
@@ -86,20 +96,22 @@ function engine(now?: () => number): NativeEngineDeps {
   };
 }
 
-function prepared(chatId: string, turnTimeoutSeconds = 900): MaterializedPreparedRunData {
+function prepared(chatId: string, turnTimeoutSeconds = 900, research = false): MaterializedPreparedRunData {
   const request = {
     attachmentIds: [], attachments: [], chatId, content: { blocks: [{ text: "Order from the shop", type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text: "Order from the shop", type: "text" }] }, id: "current-user-message", role: "user" as const }],
       mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: {}, prompt: { developer: null, system: "Be brief." }, provider: "fake",
-    searchPlan: { mode: "all_selected" as const, options: [] }, toolMode: "auto" as const,
-    workspace: { enabled: true, syncToolTimeoutSeconds: 120, turnTimeoutSeconds }
+    searchPlan: { mode: "all_selected" as const, options: research ? [{ adapterKind: "openai_hosted", config: {}, credentialMode: "answer", executionModes: ["all_selected"],
+      modelId: "fake-qsa", optionId: "hosted", protocol: "hosted", provider: "fake", providerModelId: "model-1", revisionId: "rev", searchStrategyRowId: "strategy" }] : [] }, toolMode: "auto" as const,
+    workspace: { enabled: true, imageRef: WORKSPACE_BROWSER_AGENT_IMAGE, syncToolTimeoutSeconds: 120, turnTimeoutSeconds }
   } as unknown as ProviderRunRequest;
   return {
     contextTruncation: null, defaults: null, expectedActiveLeafId: null, normalizedRequest: request,
-    providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 60_000 }, connectionId: "connection-1",
-      model: { adapterKind: "fake" }, providerFamily: "fake", providerModelId: "model-1" } } } as never,
+    providerAdmissionPlan: { answer: { modelConfiguration: { adapterKind: "fake", capabilities: request.modelCapabilities, defaultParams: {} },
+      snapshot: { connection: { responseTimeoutMs: 60_000 }, connectionId: "connection-1",
+        model: { adapterKind: "fake", upstreamModelId: "fake-qsa" }, providerFamily: "fake", providerModelId: "model-1" } } } as never,
     providerRequest: request, providerRequestPreview: {}, sourceKind: "send"
   };
 }
@@ -115,15 +127,33 @@ function repository() {
 const handoffCall = { arguments: { message: "Please sign in to the shop and press Done.", reason: "sign_in" }, id: "call-1",
   name: BROWSER_HANDOFF_TOOL_NAME };
 
-function start(options: Readonly<{ now?: () => number; scheduled?: true; telegram?: true; turnTimeoutSeconds?: number }> = {}) {
+function researchThreads(): SubagentThreadStore {
+  return {
+    activeChildren: async () => 0,
+    admitForeground: async (input) => ({ continued: false, kind: "admitted",
+      thread: { anchorRunId: input.parentRunId, definitionId: null, id: "thread-lab", name: input.name, parentThreadId: null, typeName: null },
+      turn: { branchRunId: input.parentRunId, definitionRevisionId: null, effortSource: input.binding.effortSource, id: "turn-lab", mode: "foreground",
+        modelId: input.binding.modelId, modelSource: input.binding.modelSource, parentRunId: input.parentRunId, provider: input.binding.provider,
+        providerModelId: input.binding.providerModelId, reasoningEffort: input.binding.reasoningEffort, startedAt: new Date(), state: "running", threadId: "thread-lab" } }),
+    backgroundRunIds: async () => [], childResults: async () => [], endOrphanedTurns: async () => 0,
+    ensureThread: async () => { throw new Error("Only foreground researchers run here."); },
+    find: async () => null, result: async () => null, setActiveState: async () => true, settle: async () => true,
+    threadEffectItems: async () => [], threadRunIds: async ({ parentRunIds }) => [...parentRunIds], unreadMessages: async () => []
+  };
+}
+
+function start(options: Readonly<{ now?: () => number; research?: ResearchEngineDeps; scheduled?: true; steps?: readonly Step[];
+  telegram?: true; turnTimeoutSeconds?: number }> = {}) {
   runs += 1;
   currentChat = `chat-${runs}`;
   const runId = `run-${runs}`;
   const space = workspace();
-  const model = adapter([handoffCall]);
+  const model = adapter(options.steps ?? [{ calls: [handoffCall] }]);
   const repo = repository();
   const response = createNativeRunExecutionResponse({ adapter: model.adapter, created: { assistantMessageId: `answer-${runs}`, runId,
-    userMessageId: `question-${runs}` }, engine: engine(options.now), prepared: prepared(currentChat, options.turnTimeoutSeconds),
+    userMessageId: `question-${runs}` }, engine: { ...engine(options.now),
+      ...options.research ? { research: options.research, subagentThreads: researchThreads() } : {} },
+  prepared: prepared(currentChat, options.turnTimeoutSeconds, options.research !== undefined),
   repository: repo as unknown as RunRepository, ...(options.scheduled ? { scheduled: true } : {}),
   ...(options.telegram ? { telegram: true } : {}), services: {}, userId: "user", workspace: space.coordinator });
   return { chatId: currentChat, model, repo, response, runId, space };
@@ -154,6 +184,84 @@ function handoffResult(requests: readonly ProviderRunRequest[]): Record<string, 
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe("a research run's browser handoff", () => {
+  const target = "https://shop.example/login";
+  const reason = "The site asks to sign in and the handoff timed out.";
+  const record = { arguments: { claim: null, criterion_key: null, dataset: null, kind: "unreachable", quote: null, reason, row_key: null,
+    source_class: "action_channel", standing: null, supersedes: null, target, url: null }, id: "record-unreachable", name: RECORD_EVIDENCE_TOOL_NAME };
+  const begin = [{ arguments: { goal: "Compare the options." }, id: "start-research", name: START_RESEARCH_TOOL_NAME },
+    proposeCall({ questions: [{ question: "Which option?", sites: [target], source_classes: [...RESEARCH_SOURCE_CLASSES] }] })];
+  const submit = { arguments: { findings: [], report: "The shop could not be reached: sign-in handoff timed out.",
+    unreachable: [{ reason, source_class: "action_channel", target }] }, id: "submit-draft", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME };
+
+  function liveWait() {
+    const handoff = vi.fn<BrowserLiveRunHandle["handoff"]>(({ waitMs }) => new Promise((resolve) => {
+      setTimeout(() => resolve({ kind: "ended", outcome: "timed_out", page: { title: "Sign in", url: target }, saved: null }), waitMs);
+    }));
+    vi.spyOn(browserLiveRelay(), "register").mockReturnValue({ end: async () => undefined, handoff });
+    return handoff;
+  }
+
+  it.each(["main", "researcher"] as const)("lets the %s record an unreachable site and finish after the research wait", async (agent) => {
+    vi.useFakeTimers();
+    const handoff = liveWait();
+    const records: ResearchEvidenceRecord[] = [];
+    const evidence: ResearchEvidencePort = {
+      page: async () => null, records: async () => [...records],
+      record: async (write) => {
+        const stored: ResearchEvidenceRecord = { ...write.record, author: write.author, createdAt: new Date().toISOString(),
+          id: "0b6f4a2e-7d1c-4c3b-9a55-1f2e3d4c5b6a", pageId: null, publishedOn: null, quoteCheck: null, registrableDomain: null,
+          runId: "research-run", sequence: records.length, textGroupKey: null };
+        records.push(stored);
+        return { kind: "recorded", record: stored };
+      }
+    };
+    const checkReport = vi.fn(async () => ({ kind: "pass" as const }));
+    const researcher = { arguments: { message: "Check the shop.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME };
+    const run = start({ research: { gates: [{ name: "report", run: checkReport }], ports: { evidence: () => evidence } }, steps: [
+      { calls: begin }, ...agent === "researcher" ? [{ calls: [researcher] }] : [], { calls: [handoffCall] }, { calls: [record] },
+      ...agent === "researcher" ? [{ text: "Outcome: done\n\nThe shop is unreachable; its reason is recorded." }] : [], { calls: [submit] }
+    ] });
+    const reading = events(run.response);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(handoff).toHaveBeenCalledWith(expect.objectContaining({ waitMs: RESEARCH_TIME_MS.handoffWait,
+      ...agent === "researcher" ? { agent: { id: "thread-lab", name: "lab" } } : {} }));
+    await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.handoffWait - 1);
+    expect(records).toEqual([]);
+    expect(checkReport).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await reading;
+    const handoffOutput = run.model.requests.flatMap((request) => request.history ?? [])
+      .find((item) => item.type === "tool_result" && item.name === BROWSER_HANDOFF_TOOL_NAME);
+    if (handoffOutput?.type !== "tool_result") throw new Error("Expected the handoff result in the next model request.");
+    expect(JSON.parse(handoffOutput.output)).toMatchObject({ outcome: "timed_out", next: expect.stringContaining('record_evidence with kind "unreachable"') });
+    for (const instruction of ["target set to the site", "reason explaining", "go on with the remaining research"]) {
+      expect(handoffOutput.output).toContain(instruction);
+    }
+    expect(await evidence.records(new AbortController().signal)).toEqual([expect.objectContaining({ kind: "unreachable", reason, target,
+      author: agent === "researcher" ? { name: "lab", threadId: "thread-lab" } : { name: null, threadId: null } })]);
+    expect(checkReport).toHaveBeenCalledWith(expect.objectContaining({ unreachable: [{ reason, sourceClass: "action_channel", target }] }),
+      expect.objectContaining({ evidence }));
+    expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+  });
+
+  it("keeps the ordinary wait when research is offered but never starts", async () => {
+    vi.useFakeTimers();
+    const handoff = liveWait();
+    const run = start({ research: { gates: [] }, turnTimeoutSeconds: BROWSER_HANDOFF_WAIT_MS / 1_000 * 3 });
+    const reading = events(run.response);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(handoff).toHaveBeenCalledWith(expect.objectContaining({ waitMs: BROWSER_HANDOFF_WAIT_MS }));
+    await vi.advanceTimersByTimeAsync(BROWSER_HANDOFF_WAIT_MS - 1);
+    expect(run.model.requests).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await reading;
+    expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "timed_out", next: expect.stringContaining("finish with what you have") });
+    expect(handoffResult(run.model.requests).next).not.toContain("record_evidence");
+  });
 });
 
 describe("browser_handoff in a native run", () => {
