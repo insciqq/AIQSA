@@ -114,8 +114,9 @@ describe("background sub-agent runs", () => {
     // The sub-agent reads it at its next round: the runner received it, and only reading stamps it (`SubagentHost.mailbox`).
     expect(runner!.turns.get(turnId)!.messages).toEqual([message.message]);
     expect(store.turns[0]!.mailbox).toEqual([{ delivered: false, nonce: "call-2", text: "Also check prices" }]);
-    for (let index = 1; index < 32; index += 1) await control.deliver({ ...message, message: { ...message.message, nonce: `n-${index}` } });
-    await expect(control.deliver({ ...message, message: { ...message.message, nonce: "n-33" } })).rejects.toBeInstanceOf(SubagentMailboxFullError);
+    for (let index = 1; index < 64; index += 1) await control.deliver({ ...message, message: { ...message.message, nonce: `n-${index}` } });
+    expect(store.turns[0]!.mailbox).toHaveLength(64);
+    await expect(control.deliver({ ...message, message: { ...message.message, nonce: "n-65" } })).rejects.toBeInstanceOf(SubagentMailboxFullError);
     runner!.finish(turnId, endedSubagentResult("researcher"));
     await vi.waitFor(() => expect(store.turns[0]!.state).toBe("done"));
     expect(await control.deliver({ ...message, message: { ...message.message, nonce: "late" } }))
@@ -337,11 +338,11 @@ describe("background sub-agent runs", () => {
       const started = await control.start(startInput("researcher"));
       const turnId = started.kind === "started" ? started.turnId : "";
       await vi.waitFor(() => expect(runner!.turns.get(turnId)).toBeDefined());
-      for (let index = 0; index < SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn; index += 1) {
+      for (let index = 0; index < 32; index += 1) {
         expect(await control.send({ ...send, nonce: `m-${index}` })).toEqual({ kind: "delivered" });
       }
       expect(await control.send({ ...send, nonce: "one-more" })).toEqual({ code: "subagent_message_limit_reached", kind: "refused" });
-      expect(store.turns[0]!.mailbox).toHaveLength(SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn);
+      expect(store.turns[0]!.mailbox).toHaveLength(32);
       expect(await control.deliver({ chatId: "chat-1", message: { nonce: "main", origin: "main_agent", text: "Hold on" }, name: "researcher",
         parentRunId: "parent-run", parentToolCallId: "c", threadId: "thread-researcher", userId: "user-1" })).toEqual({ kind: "delivered", state: "running" });
       await control.stopAll({ chatId: "chat-1", userId: "user-1" });

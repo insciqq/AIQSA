@@ -2,6 +2,7 @@ import { decodeThreadToolActivity, isThreadToolActivityOrigin, type ThreadToolAc
 import { decodeFetchUrlTarget } from "./fetchUrlActivity";
 import {
   MAIN_AGENT_NAME,
+  SUBAGENT_FOLLOWUP_LIMITS,
   SUBAGENT_LIMITS,
   isActiveSubagentState,
   isSubagentCode,
@@ -48,7 +49,7 @@ export const SUBAGENT_VIEW_LIMITS = Object.freeze({
   /** Turns one thread view holds, oldest first; more set `truncated` (the oldest are left out). */
   turnsPerView: 50,
   /** Messages one turn shows, whoever wrote them: what it may take from the main agent and other sub-agents, and what it sent. */
-  messagesPerTurn: 64,
+  messagesPerTurn: SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun + SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn + SUBAGENT_FOLLOWUP_LIMITS.questionsPerTurn,
   displayCharacters: 256
 });
 
