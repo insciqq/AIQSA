@@ -4,6 +4,7 @@ import { CREATE_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { ARTIFACT_TOOL_NAME } from "../../tools/artifact";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../../tools/aiqsaGuide";
 import { MANAGE_ASSISTANT_TOOL_NAME } from "../../tools/manageAssistant";
+import { MANAGE_PROXY_TOOL_NAME } from "../../tools/manageProxy";
 import { MANAGE_SECRET_TOOL_NAME } from "../../tools/manageSecret";
 import { MANAGE_SKILL_TOOL_NAME } from "../../tools/manageSkill";
 import { MANAGE_SCHEDULED_TASK_TOOL_NAME } from "../../tools/scheduledTaskManagement";
@@ -25,11 +26,11 @@ describe("self-service prompt section", () => {
     expect(bare).toContain("administrator settings are out of your reach");
     for (const name of allTools) expect(bare).not.toContain(name);
     // Without the tools (a Telegram turn, an automation) the agent names where the change is made.
-    expect(bare).toContain("- Changing the user's Skills, secrets and Assistants is not available in this conversation; the user can make the change in Studio.");
+    expect(bare).toContain("- Changing the user's Skills, secrets, proxies and Assistants is not available in this conversation; the user can make the change in Studio or Settings.");
     expect(selfServicePromptSection({ tools: allTools })).not.toContain("not available in this conversation");
     // An Assistant chat saves Skills but changes no secrets or Assistants.
     expect(selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.guide, SELF_SERVICE_TOOL_NAMES.skills] }))
-      .toContain("- Changing the user's secrets and Assistants is not available in this conversation;");
+      .toContain("- Changing the user's secrets, proxies and Assistants is not available in this conversation;");
   });
 
   it("adds one line per offered tool", () => {
@@ -86,6 +87,7 @@ describe("self-service prompt section", () => {
       createScheduledTask: CREATE_SCHEDULED_TASK_TOOL_NAME,
       guide: READ_AIQSA_GUIDE_TOOL_NAME,
       manageScheduledTask: MANAGE_SCHEDULED_TASK_TOOL_NAME,
+      proxies: MANAGE_PROXY_TOOL_NAME,
       secrets: MANAGE_SECRET_TOOL_NAME,
       skills: MANAGE_SKILL_TOOL_NAME,
       subagents: CREATE_SUBAGENT_TOOL_NAME

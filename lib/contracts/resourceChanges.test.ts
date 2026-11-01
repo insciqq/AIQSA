@@ -7,7 +7,9 @@ import {
   clipResourceChangeText,
   decodeResourceChangeCard,
   foldResourceChangeCards,
+  resourceChangeCardKey,
   type AssistantChangeCard,
+  type ProxyChangeCard,
   type SecretChangeCard,
   type SkillDeleteProposalCard
 } from "./resourceChanges";
@@ -23,8 +25,22 @@ const assistant: AssistantChangeCard = { action: "updated", assistantId: "asst_1
   proposalId: null, resource: "assistant", version: 1 };
 const publishProposal: AssistantChangeCard = { ...assistant, action: "publish_proposed", audience: { groupId: "grp_1", groupName: "Backend", kind: "group" },
   changes: [], instructionsDiff: null, proposalId: "proposal_2" };
+const proxy: ProxyChangeCard = { action: "created", country: "KZ", domainHints: [".kz", "ozon.ru"], name: "Almaty", passwordChanged: false, previousName: null, proposalId: null,
+  protocol: "socks5", proxyId: "10000000-0000-4000-8000-000000000002", proxyVersion: 1, resource: "proxy", version: 1 };
 
 describe("resource change cards", () => {
+  it("decode a proxy's card and refuse anything beside its fields", () => {
+    const updated: ProxyChangeCard = { ...proxy, action: "updated", passwordChanged: true, previousName: "Old", proxyVersion: 2 };
+    const proposal: ProxyChangeCard = { ...proxy, action: "delete_proposed", proposalId: "proposal_9" };
+    for (const card of [proxy, updated, proposal]) expect(decodeResourceChangeCard(JSON.parse(JSON.stringify(card)))).toEqual(card);
+    for (const card of [{ ...proxy, password: "synthetic" }, { ...proxy, host: "proxy.example.com" }, { ...proxy, protocol: "socks4" }, { ...proxy, country: "kz" },
+      { ...proxy, proxyVersion: 0 }, { ...proxy, name: "a".repeat(RESOURCE_CHANGE_TEXT_LIMITS.proxyName + 1) }, { ...proxy, previousName: "Old" }, { ...proxy, passwordChanged: true },
+      { ...proxy, proposalId: "proposal_9" }, { ...proxy, action: "delete_proposed" }, { ...proxy, domainHints: [""] }]) {
+      expect(decodeResourceChangeCard(card)).toBeNull();
+    }
+    expect(new Set([proxy, updated, proposal].map(resourceChangeCardKey)).size).toBe(3);
+  });
+
   it("decode exactly what the tools write", () => {
     for (const card of [secret, skill, assistant, publishProposal]) expect(decodeResourceChangeCard(JSON.parse(JSON.stringify(card)))).toEqual(card);
     expect(decodeResourceChangeCard({ ...assistant, action: "delete_proposed", changes: [], consequences: { chatCount: 2, everyone: false,

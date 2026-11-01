@@ -1001,6 +1001,7 @@ model User {
   usageMessageAdmissions              UsageMessageAdmission[]
   workspaceSecrets                    WorkspaceSecret[]
   workspaceSecretValues               WorkspaceSecretValue[]
+  networkProxies                      NetworkProxy[]
   workspaceBrowserSequence            BigInt                             @default(0)
   workspaceBrowserManualSequence      BigInt                             @default(0)
 }
@@ -4193,6 +4194,32 @@ model WorkspaceRunSecret {
 
   @@id([modelRunId, secretId])
   @@index([valueId])
+}
+
+/// A proxy a run may open sites through (`lib/server/proxies/`). `userId` null is an administrator's.
+/// Names are unique per owner in any case: partial indexes in the migration. `version` guards
+/// changes, and a check's result leaves it alone.
+model NetworkProxy {
+  id               String    @id @default(uuid())
+  userId           String?
+  name             String    @db.VarChar(64)
+  protocol         String    @db.VarChar(16)
+  host             String    @db.VarChar(253)
+  port             Int
+  login            String?   @db.VarChar(255)
+  passwordEnvelope String?
+  country          String?   @db.Char(2)
+  domainHints      String[]  @default([])
+  active           Boolean   @default(true)
+  version          Int       @default(1)
+  lastCheckedAt    DateTime?
+  lastCheckStatus  String?   @db.VarChar(64)
+  lastExitAddress  String?   @db.VarChar(45)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([userId, createdAt])
 }
 
 model WorkspaceOutputCheckpoint {
