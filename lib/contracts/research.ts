@@ -686,7 +686,7 @@ function decodeDataset(value: unknown): DecodedResearch<ResearchDataset> {
   if (!storableText(value.method, limits.methodCharacters)) return refused(`dataset.method must say in 1 to ${limits.methodCharacters} characters how it was collected.`);
   const sampleSize = value.sample_size;
   if (typeof sampleSize !== "number" || !Number.isInteger(sampleSize) || sampleSize < 1 || sampleSize > limits.sampleSize) {
-    return refused(`dataset.sample_size must be the number of items read, 1 to ${limits.sampleSize}.`);
+    return refused(`dataset.sample_size must be the number of items the counts are out of, those kept after filtering, 1 to ${limits.sampleSize}.`);
   }
   if (!storableText(value.left_out, RESEARCH_LIMITS.reasonCharacters)) return refused(`dataset.left_out must say in 1 to ${RESEARCH_LIMITS.reasonCharacters} characters what was left out.`);
   if (!Array.isArray(value.examples) || value.examples.length < 1 || value.examples.length > limits.datasetExamples) {

@@ -47,7 +47,7 @@ const quoteOf = (review: string) => review.split("\n").at(-1)!;
 function datasetCall(found: ReturnType<typeof collect>) {
   const { left, long, read, sagging, kept, smell } = found;
   return { claim: `Sagging: ${sagging.length} of ${kept.length} owners of the 160×200 report it.`, criterion_key: "durability", kind: "dataset", quote: null, reason: null, row_key: "lumo-flex-20-160x200",
-    source_class: "owner_reviews", standing: "claimed", supersedes: null, target: null, url: CARD,
+    source_class: "owner_reviews", standing: "confirmed", supersedes: null, target: null, url: CARD,
     dataset: { counts: [{ count: sagging.length, label: "sagging" }, { count: smell.length, label: "smell" }, { count: long.length, label: "owned a year or more" }],
       examples: sagging.map((review) => ({ quote: quoteOf(review), url: CARD })),
       left_out: `${left.otherSize} of other sizes, ${left.model} of Lumo Flex 24, ${left.noSize} naming no size, out of ${read} on the card.`,
@@ -135,7 +135,7 @@ describe("the method on a saved card", () => {
     const [write] = appended;
     const record = write!.record;
     if (record.kind !== "dataset") throw new Error(record.kind);
-    expect(record).toMatchObject({ criterionKey: "durability", rowKey: "lumo-flex-20-160x200", sourceClass: "owner_reviews", standing: "claimed", url: CARD });
+    expect(record).toMatchObject({ criterionKey: "durability", rowKey: "lumo-flex-20-160x200", sourceClass: "owner_reviews", standing: "confirmed", url: CARD });
     expect(record.dataset).toMatchObject({ leftOut: "5 of other sizes, 1 of Lumo Flex 24, 2 naming no size, out of 19 on the card.", sampleSize: 11 });
     expect(researchDatasetWords(record.dataset)).toBe("Small sample of 11. sagging: 3 of 11; smell: 2 of 11; owned a year or more: 4 of 11.");
     expect(record.dataset.examples).toHaveLength(3);
@@ -172,6 +172,8 @@ describe("the method on a saved card", () => {
       expect(value(await tool.execute(execution(without(change))))).toMatchObject({ code: "research_record_invalid", message: expect.stringContaining(field) });
     }
     expect(value(await tool.execute(execution({ ...args, dataset: null })))).toMatchObject({ code: "research_record_invalid" });
+    // The refusal means by a sample what the schema does: the filtered number, not all that was read.
+    expect(value(await tool.execute(execution(without({ sample_size: 0 }))))).toMatchObject({ message: expect.stringContaining("those kept after filtering") });
     expect(appended).toHaveLength(0);
   });
 });
@@ -190,6 +192,11 @@ describe("where a researcher reads the method", () => {
     const plan = { goal: "Choose.", questions: [{ question: "Which one?", sites: [], sourceClasses: [] }], skipped: [] };
     expect(researcherMethodFooter(plan)).toContain(RESEARCH_REVIEWS_REFERENCE);
     expect(researcherBrief("Cover it.", plan)).toContain(RESEARCH_REVIEWS_GUIDE_PATH);
+  });
+
+  it("calls a read count confirmed, since it is of what owners wrote, and never a party's claim", () => {
+    expect(RESEARCH_REVIEWS_GUIDANCE).toContain("`standing` confirmed when you read the examples on the page (the count is of what owners wrote, not proof that the complaint is true)");
+    expect(RESEARCH_REVIEWS_GUIDANCE).not.toContain("`standing` claimed");
   });
 
   it("holds the small sample's bound, and goes past no block", () => {
