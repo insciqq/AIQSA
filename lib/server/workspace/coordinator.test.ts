@@ -724,10 +724,9 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
     const results = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>).filter((entry) => entry.stage === "result");
     expect(results).toEqual([
-      expect.objectContaining({ tool_kind: "workspace", outcome: "failed" }),
+      expect.objectContaining({ tool_kind: "workspace", outcome: "failed", code: "workspace_operation_failed" }),
       expect.objectContaining({ tool_kind: "workspace", outcome: "failed", code: "workspace_shell_syntax_requires_shell" })
     ]);
-    expect(results[0]).not.toHaveProperty("code");
     expect(JSON.stringify(results)).not.toContain("PRIVATE_");
   });
 
