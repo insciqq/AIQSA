@@ -6,7 +6,9 @@ import { researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 /**
  * The check with no model in it: each finding's verbatim quote must be in text
  * an agent of this run really opened. It catches invented quotes and unread
- * sources without anyone's opinion.
+ * sources without anyone's opinion. It runs when a record is written, over what
+ * the writing agent itself read (`evidenceStore.ts`), so the agent hears at once
+ * while it still has the page, and over a whole run's text at its end.
  *
  * Only `fetch_url` results and what a browser command printed are opened pages
  * (`researchEvidenceKind`): a quote `echo`ed into a file is no reading of a page.
@@ -28,7 +30,8 @@ import { researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
  *   (`search_snippet_only`).
  */
 export type QuoteCheck =
-  | Readonly<{ excerpt: QuoteExcerpt; status: "found" }>
+  /** `opened`: which of the sources the check read holds it. */
+  | Readonly<{ excerpt: QuoteExcerpt; opened: number; status: "found" }>
   | Readonly<{ status: "not_verbatim" }>
   | Readonly<{ reason: "browser_page" | "other_tool_output" | "partial_source" | "sources_over_limit" | "sources_unreadable"; status: "not_checked" }>
   | Readonly<{ reason: "not_in_opened_text" | "search_snippet_only"; status: "unsupported" }>;
@@ -118,6 +121,11 @@ function spanOf(text: string, parts: readonly string[]): Readonly<{ end: number;
 
 const holds = (text: string, parts: readonly string[]) => spanOf(text, parts) !== null;
 
+/** Whether this text holds the quote, read as the check reads it. */
+export function quoteIsIn(quote: string, text: string): boolean {
+  return holds(normalizeQuotedText(text), quoteParts(quote));
+}
+
 function excerptOf(text: string, span: Readonly<{ end: number; start: number }>, source: QuoteSource): QuoteExcerpt {
   const limits = QUOTE_EXCERPT_LIMITS;
   const quotedEnd = Math.min(span.end, span.start + limits.quotedCharacters);
@@ -125,7 +133,7 @@ function excerptOf(text: string, span: Readonly<{ end: number; start: number }>,
     quoted: text.slice(span.start, quotedEnd), source };
 }
 
-type OpenedPage = Readonly<{ hosts: readonly string[]; link: string | null; text: string }>;
+type OpenedPage = Readonly<{ hosts: readonly string[]; index: number; link: string | null; text: string }>;
 
 /** A fetched page knows its address. A browser page only shows hosts in its step lines, if it has any, and one on another host is another page. */
 function sourceOf(page: OpenedPage, link: string | null, host: string | null): QuoteSource {
@@ -158,8 +166,12 @@ function browserHosts(text: string): readonly string[] {
   return [...unescaped(text).matchAll(BROWSER_STEP)].map((match) => match[1]!.replace(/:\d+$/u, "").replace(/^www\./u, "").toLowerCase());
 }
 
-/** Reads the run's opened text once and answers per finding, in order. `opened` null: it could not be read at all. */
-export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "url">[], opened: readonly ResearchOpenedSource[] | null): readonly QuoteCheck[] {
+/**
+ * Reads the opened text once and answers per finding, in order. `opened` null: it could not be read at all. `moreUnread`: the caller
+ * stopped at a bound, so a quote it did not find may be in what it left out.
+ */
+export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "url">[], opened: readonly ResearchOpenedSource[] | null,
+  options: Readonly<{ moreUnread?: boolean }> = {}): readonly QuoteCheck[] {
   if (!opened) return findings.map(() => ({ reason: "sources_unreadable", status: "not_checked" }));
   const pages: OpenedPage[] = [];
   const others: string[] = [];
@@ -169,7 +181,7 @@ export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "
   const browsed = new Set<string>();
   let unlinkedPartial = false;
   let characters = 0;
-  for (const source of opened) {
+  for (const [index, source] of opened.entries()) {
     characters += source.text.length;
     const kind = researchEvidenceKind(source);
     if (kind === "agent_written") continue;
@@ -182,10 +194,10 @@ export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "
     const hosts = browserHosts(source.text);
     for (const host of hosts) browsed.add(host);
     const text = normalizeQuotedText(source.text);
-    if (kind === "page") pages.push({ hosts, link, text });
+    if (kind === "page") pages.push({ hosts, index, link, text });
     else (kind === "search" ? snippets : others).push(text);
   }
-  const overLimit = opened.length >= RESEARCH_SOURCE_LIMITS.results || characters >= RESEARCH_SOURCE_LIMITS.totalCharacters;
+  const overLimit = options.moreUnread === true || opened.length >= RESEARCH_SOURCE_LIMITS.results || characters >= RESEARCH_SOURCE_LIMITS.totalCharacters;
   return findings.map((finding): QuoteCheck => {
     const parts = quoteParts(finding.quote);
     const link = normalizeFetchUrl(finding.url);
@@ -194,7 +206,7 @@ export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "
     const ranked = pages.map((page) => ({ page, source: sourceOf(page, link, citedHost) })).sort((a, b) => SOURCE_ORDER[a.source.kind] - SOURCE_ORDER[b.source.kind]);
     for (const { page, source } of ranked) {
       const span = spanOf(page.text, parts);
-      if (span) return { excerpt: excerptOf(page.text, span, source), status: "found" };
+      if (span) return { excerpt: excerptOf(page.text, span, source), opened: page.index, status: "found" };
     }
     if (link && partialLinks.has(link)) return { reason: "partial_source", status: "not_checked" };
     if (link && fetched.has(link)) return { status: "not_verbatim" };
