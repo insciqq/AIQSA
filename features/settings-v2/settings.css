@@ -2273,3 +2273,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Proxies: one list in Settings and in the Control Center; forms open in place. */
+.v2-proxy-panel { min-width: 0; }
+.v2-proxy-intro { max-width: 42rem; margin: 0; color: var(--v2-color-text2); font-size: 0.8125rem; line-height: 1.5; }
+.v2-proxy-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin-top: 0.875rem; }
+.v2-proxy-list { margin: 0.75rem 0 0; padding: 0; list-style: none; }
+.v2-proxy-row { min-width: 0; padding-block: 0.875rem; border-bottom: 1px solid var(--v2-color-border); }
+.v2-proxy-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem; }
+.v2-proxy-copy { display: grid; min-width: 0; gap: 0.25rem; }
+.v2-proxy-name { margin: 0; color: var(--v2-color-text); font-size: 0.875rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.v2-proxy-text { margin: 0; font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.v2-proxy-switch { display: inline-flex; align-self: start; }
+.v2-proxy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.625rem; }
+.v2-proxy-confirm { flex: 1 1 100%; margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.v2-proxy-form { max-width: 42rem; margin-top: 0.875rem; }
+.v2-proxy-row > .v2-proxy-form { margin-top: 0; }
+.v2-proxy-fields { display: grid; min-width: 0; gap: 0.875rem; margin: 0; padding: 0; border: 0; }
+.v2-proxy-pair { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem; align-items: start; gap: 0.625rem; }
+.v2-proxy-credentials { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); align-items: start; gap: 0.625rem; }
+.v2-proxy-password-state { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; }
+.v2-proxy-fields textarea { resize: vertical; }
+@media (hover: none), (pointer: coarse) {
+  .v2-proxy-fields input, .v2-proxy-fields textarea, .v2-proxy-actions .v2-button, .v2-proxy-toolbar .v2-button, .v2-proxy-password-state .v2-button { min-height: 2.75rem; }
+}

@@ -8,7 +8,7 @@ describe("SettingsV2", () => {
       onClose={vi.fn()} onThemeChange={vi.fn()} themeId="light" />);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(nav).getAllByRole("button").map(button => button.textContent?.trim())).toEqual([
-      "General", "Account", "Connections", "Claude Code & Codex", "Data"
+      "General", "Account", "Connections", "Claude Code & Codex", "Proxies", "Data"
     ]);
   });
   it("exposes exactly System, Light, and Dark and supports roving selection", () => {
@@ -116,6 +116,35 @@ describe("SettingsV2", () => {
     expect(screen.getByRole("button", { name: "Close settings" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("dialog", { name: "Settings" }), { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("lists personal proxies, and an unsaved proxy holds the section until it is discarded", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ proxies: [], shared: [] }))));
+    const onDiscard = vi.fn();
+    try {
+      render(
+        <SettingsV2
+          connectedAppsContent={<p>Connected apps owner</p>}
+          initialSection="proxies"
+          onClose={vi.fn()}
+          onDiscard={onDiscard}
+          onThemeChange={vi.fn()}
+          themeId="dark"
+        />
+      );
+      expect(await screen.findByText(/No proxies yet/)).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Add proxy" }));
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Draft" } });
+      fireEvent.click(screen.getByRole("button", { name: "General" }));
+      const confirmation = screen.getByRole("alertdialog", { name: "Unsaved proxy changes" });
+      fireEvent.click(within(confirmation).getByRole("button", { name: "Discard changes" }));
+      expect(screen.getByRole("radiogroup", { name: "Theme" })).toBeInTheDocument();
+      expect(onDiscard).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Claude Code & Codex" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps authorized apps separate from MCP servers AIQSA calls", () => {
