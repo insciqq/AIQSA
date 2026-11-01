@@ -166,11 +166,11 @@ describe("native run execution", () => {
     expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text"]);
   });
 
-  it("takes a sub-agent's callback into the running turn as the server's item, never as the user's speech", async () => {
+  it.each(["subagent_callback", "subagent_message", "subagent_question"] as const)("takes a sub-agent's %s into the running turn as the server's item, never as the user's speech", async (origin) => {
     const { adapter, requests } = scriptedAdapter([{ text: "First." }, { text: "With the research." }]);
     const memory = memoryEngine();
     let delivered = false;
-    const callback = { author: "Sub-agent", createdAt: "2026-10-30T10:00:00.000Z", id: "f1", ordinal: 1, origin: "subagent_callback" as const,
+    const callback = { author: "Sub-agent", createdAt: "2026-10-30T10:00:00.000Z", id: "f1", ordinal: 1, origin,
       text: "[Sub-agent callback, written by the server, not by the user] researcher ended" };
     const followups = {
       accept: vi.fn(),

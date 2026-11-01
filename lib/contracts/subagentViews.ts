@@ -144,8 +144,8 @@ export type SubagentSummaryResponse = Readonly<{ chats: readonly SubagentChatThr
 
 /**
  * One row of a thread between its brief and its reply: a message the turn received, with its delivery (receipt, not
- * obedience), or one it wrote (`to`). `from` is a sub-agent's name; neither names the main agent, which a row names by
- * `MAIN_AGENT_NAME` in `to` and by leaving `from` out.
+ * obedience), or one it wrote. `from` names the sub-agent that wrote to it, the main agent when absent; `to` is set only
+ * on what it wrote and names who that went to.
  */
 export type SubagentTurnMessage = Readonly<{
   createdAt: string;
