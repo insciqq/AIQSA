@@ -14,6 +14,22 @@ function orphan(store: MemorySubagentStore, chatId: string, name: string) {
 }
 
 describe("background sub-agent recovery", () => {
+  it("leaves no wait stuck: a turn a restart cut off in `waiting` ends interrupted, and its end reaches the main agent", async () => {
+    const store = new MemorySubagentStore();
+    orphan(store, "chat-a", "asker");
+    Object.assign(store.turns[0]!, { question: "Which size?", state: "waiting" });
+    const wakeUps: Array<readonly string[]> = [];
+    const callbacks = createSubagentCallbacks({ coalesceMs: 5, store, admitWakeUp: async (input) => {
+      store.claim("wake", input.turnIds);
+      wakeUps.push(input.turnIds);
+      return "admitted";
+    } });
+    expect(await reconcileSubagentRuns({ backoff: new Map(), bootedAt: new Date(), deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [],
+      staleMs: 60_000, store })).toBe(1);
+    expect(store.turns[0]).toMatchObject({ result: { reason: "restart", state: "interrupted" }, state: "interrupted" });
+    await vi.waitFor(() => expect(wakeUps).toEqual([["turn-chat-a-asker"]]));
+  });
+
   it("ends every cut-off run interrupted and wakes each chat at most once, listing every interruption", async () => {
     const store = new MemorySubagentStore();
     orphan(store, "chat-a", "one");
