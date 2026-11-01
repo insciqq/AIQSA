@@ -14,8 +14,10 @@
  * oracles compare (the per-run words and nonce stay in memory).
  */
 import { createHash } from "node:crypto";
+import { RESEARCH_SOURCE_CLASSES } from "../lib/contracts/research";
 import { utils, write } from "xlsx";
 import { writeZip } from "../lib/server/artifacts/zip";
+import type { researchPlanWindow } from "./research-eval-support";
 import {
   ACTIVE_SUBAGENT_STATES, SUBAGENT_BLOCKED_REASONS, SUBAGENT_END_REASONS, SUBAGENT_FOLLOWUP_LIMITS, SUBAGENT_THREAD_STATES, SUBAGENT_WAIT_REASONS,
   type SubagentThreadState
@@ -1604,21 +1606,23 @@ export type TMetrics = Readonly<{
   researcherTurns: number;
   sentBack: number;
   started: boolean;
+  planWindow?: ReturnType<typeof researchPlanWindow>;
 }>;
 
 /** T's counts from the drafts handed in, oldest first, and the page links agents really read. Links and claims stay in memory. */
 export function researchMetrics(input: Readonly<{ drafts: readonly (readonly TDraftFinding[])[]; opened: ReadonlySet<string>;
-  researcherTurns: number; sentBack: number; started: boolean }>): TMetrics {
+  researcherTurns: number; sentBack: number; started: boolean; planWindow?: ReturnType<typeof researchPlanWindow> }>): TMetrics {
   const key = (finding: TDraftFinding) => JSON.stringify([finding.claim.trim().toLowerCase(), finding.url]);
   const first = new Set((input.drafts[0] ?? []).map(key));
   const last = input.drafts.at(-1) ?? [];
   const openedByClass: Record<string, number> = {};
   for (const finding of last) {
-    if (input.opened.has(finding.url)) openedByClass[finding.sourceClass] = (openedByClass[finding.sourceClass] ?? 0) + 1;
+    const sourceClass = (RESEARCH_SOURCE_CLASSES as readonly string[]).includes(finding.sourceClass) ? finding.sourceClass : "other";
+    if (input.opened.has(finding.url)) openedByClass[sourceClass] = (openedByClass[sourceClass] ?? 0) + 1;
   }
   return { addedByLaterRounds: last.filter((finding) => !first.has(key(finding))).length, attempts: input.drafts.length, findings: last.length,
     independentOpened: (openedByClass.independent_tests ?? 0) + (openedByClass.owner_reviews ?? 0), openedByClass, researcherTurns: input.researcherTurns,
-    sentBack: input.sentBack, started: input.started };
+    sentBack: input.sentBack, started: input.started, ...(input.planWindow ? { planWindow: input.planWindow } : {}) };
 }
 
 /** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
