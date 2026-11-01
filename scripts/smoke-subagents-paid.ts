@@ -342,7 +342,7 @@ async function turnRows(db: PostgresClient, chatId: string): Promise<TurnRow[]> 
       t."modelSource"::text AS "modelSource", t."effortSource"::text AS "effortSource", t."parentRunId",
       -- The parent's answer connection: the same kind of id as the turn's provider (ModelRun.provider is the adapter kind).
       (SELECT b."connectionId" FROM "ProviderRunBinding" b WHERE b."modelRunId" = p."id" AND b."role"::text = 'answer'
-        ORDER BY b."bindingKey" LIMIT 1) AS "parentProvider",
+        AND b."bindingKey" = 'answer' ORDER BY b."bindingKey" LIMIT 1) AS "parentProvider",
       p."modelId" AS "parentModelId", p."normalizedRequest"->>'reasoningEffort' AS "parentEffort",
       t."startedAt", t."endedAt", t."callbackRunId", e."id" AS "executionRunId"
     FROM "SubagentTurn" t JOIN "ModelRun" p ON p."id" = t."parentRunId"

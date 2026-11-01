@@ -120,7 +120,7 @@ export function createSubagentWakeUpAdmitter(deps: Readonly<{
       const path = await branchPathMessageIds(tx, chatId, chat.activeLeafMessageId);
       const run = await tx.modelRun.findFirst({ orderBy: { createdAt: "desc" },
         select: { normalizedRequest: true, providerRunBindings: { select: { connectionId: true, providerModelId: true },
-          where: { role: "answer" } } },
+          where: { bindingKey: "answer", role: "answer" } } },
         where: { assistantMessageId: { in: [...path] }, chatId, subagentTurnId: null, userId } });
       return { chat, run };
     });
