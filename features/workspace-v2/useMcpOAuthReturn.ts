@@ -12,10 +12,11 @@ export function useMcpOAuthReturn(accountId: string, openMcpSettings: () => void
       if (!current) return;
       const url = new URL(window.location.href);
       // A link from outside the chat shell (AIQSA Connect) to the agent connection commands.
-      if (url.searchParams.get("settings") === "connected_apps") {
+      const direct = url.searchParams.get("settings");
+      if (direct === "connected_apps" || direct === "proxies") {
         url.searchParams.delete("settings");
         window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-        useSettingsDestinationStore.getState().openSettings("connected_apps");
+        useSettingsDestinationStore.getState().openSettings(direct);
         return;
       }
       const shouldOpenConnections = url.searchParams.get("settings") === "connections";

@@ -147,7 +147,7 @@ ${REMOVED_FEATURES}`,
   proxies: `# Proxies
 - A proxy lets the Workspace browser, Workspace commands and page reading open a site from another address or country. Search, MCP and model traffic never use one. Each user keeps personal proxies, and administrators may add proxies everyone can use, which a member sees by name without their address.
 - A domain hint (a zone such as .kz, or a domain such as ozon.ru) suggests which sites a proxy opens, and is never a limit: a proxy the user or the agent names opens any site. Several proxies for one zone take turns, and one site stays on its proxy within a chat. A site that matches a proxy never silently goes direct: when all have failed the answer says so.
-- The agent saves a proxy the user gives it in a message, and changes, lists and tests the user's own (manage_proxy); a new proxy's card offers Undo, and it works from the next message. Deleting waits for the user's click in the card. The agent cannot change an administrator's proxy.
+- The agent saves a proxy the user gives it in a message, and changes, lists and tests the user's own (manage_proxy); a new proxy's card offers Undo, and it works from the next message. Deleting waits for the user's click in the card. The agent cannot change an administrator's proxy. The user manages theirs in [Settings, Proxies](/?settings=proxies).
 - Accepted risk: a password in a message stays in the chat's history and reaches the model provider like any text, and the agent can read proxy passwords, administrators' included. The owner of a proxy can see the sites opened through it. A proxy's own address must be public.`,
 
   skills: `# Skills
