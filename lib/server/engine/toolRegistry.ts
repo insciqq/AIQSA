@@ -42,6 +42,7 @@ import { imageGenerationTool } from "../tools/imageGeneration";
 import { executeMonitoringVerdict, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { createChatFileTool, readChatFileTool, type ChatFileReader } from "../tools/readChatFile";
 import { executeReadSecret, readSecretTool } from "../tools/readSecret";
+import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
 import type { liveToolCallStatus } from "../runs/liveToolStatus";
 import { executeCreateScheduledTask, isScheduledTaskCreateCall, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import {
@@ -269,6 +270,11 @@ export type ToolRegistryInput = Readonly<{
   onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   /** The run's request as admission froze it; executors read their frozen plans from it. */
   request: ProviderRunRequest;
+  /**
+   * Where `record_evidence` writes, in a sub-agent's registry of a run that offers research: a run's research is made after its services,
+   * and a background child's registry has a run of its own, so `buildRegistry` binds it (`execution.ts`). Absent, the tool is not offered.
+   */
+  researchEvidence?: RecordEvidenceTarget;
   runId: string;
   services: ToolRegistryServices;
   /** A Telegram turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
@@ -468,6 +474,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
         return result;
       } });
   }
+  if (clientTools && input.researchEvidence) add(recordEvidenceEngineTool(input.researchEvidence, input.agent));
   const secrets = input.services.secrets;
   if (clientTools && secrets) {
     add({ activity: listed(readSecretTool.name), definition: readSecretTool.tool, effects: readSecretTool.effects,
