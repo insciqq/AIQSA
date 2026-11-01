@@ -546,7 +546,7 @@ export function inspectAnthropicWebSearchContent(
   const sources = normalizeSearchSources([
     ...citedSearchSources(citationCandidates),
     ...resultCandidates
-  ], 20);
+  ]);
   artifacts.push(...sources.map((source): ModelRunSseEvent => ({
     data: {
       artifactType: "citation",
@@ -650,7 +650,7 @@ function normalizedAggregateSources(
     ...(source.snippet ? { snippet: source.snippet } : {}),
     title: source.title,
     url: source.url
-  })), 20);
+  })));
 }
 
 export function createAnthropicMessagesSearchAdapter(

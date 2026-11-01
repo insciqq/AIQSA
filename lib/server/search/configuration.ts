@@ -53,6 +53,8 @@ function providerModelId(value: unknown): string | null {
   return value.trim();
 }
 
+/** Old persisted drafts may carry retired call/result limits; the explicit
+ * projection ignores them without requiring a data migration or a new probe. */
 export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
   if (!isRecord(value)) throw new SearchConfigurationError("search_configuration_invalid");
   const adapterKind = enumValue(value.adapterKind, searchAdapterKinds);
@@ -65,12 +67,6 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
       value.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum
-    ),
-    maxResults: boundedInteger(value.maxResults, 1, 20),
-    maxSearchCallsPerAnswer: boundedInteger(
-      value.maxSearchCallsPerAnswer,
-      adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
-      adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum
     ),
     protocol,
     providerModelId: providerModelId(value.providerModelId),
@@ -114,8 +110,9 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Fingerprint effective settings even when the caller supplies a stored legacy draft. */
 export function searchDraftHash(value: AdminSearchDraft): string {
-  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+  return createHash("sha256").update(canonicalJson(normalizeSearchDraft(value)), "utf8").digest("hex");
 }
 
 export function searchExecutionModes(adapterKind: SearchAdapterKind): SearchPlanMode[] {
@@ -198,8 +195,6 @@ export function builtInSearchDraft(input: Readonly<{
       ? "provider_model"
       : "answer_provider",
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: adminSearchExecutionDefaults.maxResults,
-    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: input.kind === "anthropic_native_web_search"
       ? "anthropic_web_search"
       : input.kind === "deepseek_native_web_search"

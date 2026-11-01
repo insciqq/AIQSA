@@ -168,8 +168,7 @@ function boundedText(value: string | undefined, maxLength: number): string | und
  */
 export function mergeSearchEvidence(
   planOptionIds: readonly string[],
-  evidence: readonly SearchEngineEvidence[],
-  maxSources = 24
+  evidence: readonly SearchEngineEvidence[]
 ): NormalizedSearchSource[] {
   const planOrder = new Map(planOptionIds.map((optionId, index) => [optionId, index]));
   const rows = evidence.flatMap((engine) =>
@@ -202,7 +201,6 @@ export function mergeSearchEvidence(
       }
       continue;
     }
-    if (merged.size >= maxSources) break;
     merged.set(row.url, {
       ...(row.date ? { date: row.date } : {}),
       engines: [{ optionId: row.optionId, rank: row.rank }],

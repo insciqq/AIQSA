@@ -8,8 +8,6 @@ const currentDraft = {
   adapterKind: "provider_model_client",
   credentialMode: "provider_model",
   maxOutputTokens: 4_096,
-  maxResults: 8,
-  maxSearchCallsPerAnswer: 2,
   protocol: "openai_responses_web_search",
   providerModelId: "search-model-1",
   queryMaxCharacters: 500,
@@ -81,7 +79,6 @@ describe("administrator Search contract", () => {
     expect(decodeAdminSearchDraft(currentDraft)).toEqual(currentDraft);
     for (const key of [
       "maxOutputTokens",
-      "maxSearchCallsPerAnswer",
       "reasoningPolicy"
     ] as const) {
       const incomplete = { ...currentDraft };
@@ -111,20 +108,16 @@ describe("administrator Search contract", () => {
     expect(decodeAdminSearchDraft({
       ...currentDraft,
       maxOutputTokens: 32_768,
-      maxSearchCallsPerAnswer: 32,
       queryMaxCharacters: 4_000,
       reasoningPolicy: "provider_default"
     })).toMatchObject({
       maxOutputTokens: 32_768,
-      maxSearchCallsPerAnswer: 32,
       queryMaxCharacters: 4_000,
       reasoningPolicy: "provider_default"
     });
     expect(decodeAdminSearchDraft({ ...currentDraft, maxOutputTokens: 15 })).toBeNull();
-    expect(decodeAdminSearchDraft({ ...currentDraft, maxSearchCallsPerAnswer: 33 })).toBeNull();
     expect(decodeAdminSearchDraft({ ...currentDraft, queryMaxCharacters: 4_001 })).toBeNull();
     expect(decodeAdminSearchDraft({ ...currentDraft, timeoutMs: 900_001 })).toBeNull();
-    expect(decodeAdminSearchDraft({ ...currentDraft, maxResults: 21 })).toBeNull();
     expect(decodeAdminSearchDraft({ ...currentDraft, reasoningPolicy: "answer_default" })).toBeNull();
     expect(decodeAdminSearchCatalog(catalog({
       ...currentDraft,

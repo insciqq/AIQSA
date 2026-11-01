@@ -21,7 +21,7 @@ import type {
 } from "../providers/types";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import {
-  boundedEngineSearchSources,
+  engineSearchSources,
   normalizeSearchFindings,
   SEARCH_NO_RESULTS_FINDINGS,
   type SearchSource
@@ -53,8 +53,6 @@ const allSelectedToolName = "search_selected_engines";
 // newly admitted integrations always persist explicit controls.
 const legacySearchExecutionDefaults = Object.freeze({
   maxOutputTokens: 4_096,
-  maxResults: 8,
-  maxSearchCallsPerAnswer: 2,
   queryMaxCharacters: 500,
   reasoningPolicy: "lowest_supported" as const,
   timeoutMs: 300_000
@@ -264,8 +262,6 @@ export function searchExecutionConfiguration(option: NormalizedSearchPlanOption,
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   maxOutputTokens: number;
-  maxResults: number;
-  maxSearchCallsPerAnswer: number;
   queryMaxCharacters: number;
   reasoningPolicy: AdminSearchReasoningPolicy;
   timeoutMs: number;
@@ -294,18 +290,6 @@ export function searchExecutionConfiguration(option: NormalizedSearchPlanOption,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum,
       legacySearchExecutionDefaults.maxOutputTokens
-    ),
-    maxResults: boundedInteger(
-      config.maxResults,
-      adminSearchExecutionLimits.maxResults.minimum,
-      adminSearchExecutionLimits.maxResults.maximum,
-      legacySearchExecutionDefaults.maxResults
-    ),
-    maxSearchCallsPerAnswer: boundedInteger(
-      config.maxSearchCallsPerAnswer,
-      adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
-      adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum,
-      legacySearchExecutionDefaults.maxSearchCallsPerAnswer
     ),
     queryMaxCharacters: Number.isSafeInteger(config.queryMaxCharacters) &&
       Number(config.queryMaxCharacters) >= 1 &&
@@ -371,7 +355,6 @@ function queryOnlyRequest(
     };
   } else if (option.protocol === "deepseek_search_api" && option.provider === "deepseek") {
     searchPolicy = {
-      maxResults: configured.maxResults,
       modelId: option.modelId ?? "",
       provider: "deepseek",
       strategyId: "deepseek-search-api"
@@ -439,7 +422,7 @@ async function consumeProviderSearch(
     }
     return { costUsd, findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, sourceAttribution, sources: [], usage: result.usage };
   }
-  const sources = boundedEngineSearchSources(result.sources, searchExecutionConfiguration(option).maxResults);
+  const sources = engineSearchSources(result.sources);
   const providerSourcesUnavailable =
     sourceAttribution === "provider_unavailable" &&
     option.provider === "deepseek" &&
@@ -791,34 +774,17 @@ export function fitDurableSearchToolResult(input: Readonly<{
 }
 
 export function createSearchPlanToolRouter(input: Readonly<{
-  initialInvocationCounts?: Readonly<Record<string, number>>;
   plan: NormalizedSearchPlan;
   retry?: SearchRetryPorts;
   runtimes: Readonly<Record<string, ProviderRuntimeBinding | undefined>>;
 }>): SearchPlanToolRouter | null {
   const searchRoutes = searchToolRoutes(input.plan);
   if (searchRoutes.length === 0) return null;
-  const clientOptions = searchRoutes.flatMap((route) => route.options);
-  const invocationCounts = new Map(clientOptions.map((option) => {
-    const count = input.initialInvocationCounts?.[option.optionId];
-    return [
-      option.optionId,
-      Number.isSafeInteger(count) && Number(count) > 0 ? Number(count) : 0
-    ] as const;
-  }));
-  const budgetDescription = (options: readonly NormalizedSearchPlanOption[]) => {
-    const available = Math.min(
-      ...options.map((option) => searchExecutionConfiguration(option).maxSearchCallsPerAnswer)
-    );
-    return ` This source can be requested at most ${available} ${
-      available === 1 ? "time" : "times"
-    } for this answer.`;
-  };
   const routes = searchRoutes.map((route) => ({
     options: route.options,
     tool: searchTool(
       route.name,
-      route.description + budgetDescription(route.options),
+      route.description,
       Math.min(...route.options.map((option) => searchExecutionConfiguration(option).queryMaxCharacters))
     )
   }));
@@ -877,34 +843,6 @@ export function createSearchPlanToolRouter(input: Readonly<{
         };
       }
       if (!validation.ok) throw new Error("search_query_validation_invariant");
-      const exhaustedOption = route.options.find((option) =>
-        (invocationCounts.get(option.optionId) ?? 0) >=
-          searchExecutionConfiguration(option).maxSearchCallsPerAnswer
-      );
-      if (exhaustedOption) {
-        const limitCode = "search_invocation_limit_reached";
-        logEvent("tool_execution", {
-          tool_kind: "search", stage: "admission", outcome: "degraded",
-          code: limitCode, reason: "policy", action: "skip"
-        });
-        logEvent("tool_execution", {
-          tool_kind: "search", stage: "result", outcome: "failed", code: limitCode
-        });
-        return {
-          callId: call.id,
-          content: [{
-            text: `Search failed: ${limitCode}. Continue with the Search evidence already returned.`,
-            type: "text"
-          }],
-          name: call.name,
-          rawPreview: { providerCall: false },
-          status: "error",
-          usage: zeroUsage()
-        };
-      }
-      for (const option of route.options) {
-        invocationCounts.set(option.optionId, (invocationCounts.get(option.optionId) ?? 0) + 1);
-      }
       logEvent("tool_execution", { tool_kind: "search", stage: "admission", outcome: "completed" });
       stage = "execution";
       const query = validation.query;

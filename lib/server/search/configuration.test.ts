@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { decodeAdminSearchDraft } from "../../contracts/adminSearch";
 import {
   builtInSearchDraft,
   compatibleTechnicalAdapter,
@@ -13,8 +14,6 @@ const clientDraft = {
   adapterKind: "provider_model_client",
   credentialMode: "provider_model",
   maxOutputTokens: 8_192,
-  maxResults: 8,
-  maxSearchCallsPerAnswer: 3,
   protocol: "openai_responses_web_search",
   providerModelId: "technical-model",
   queryMaxCharacters: 500,
@@ -29,11 +28,24 @@ describe("Search adapter configuration", () => {
     expect(searchExecutionModes(clientDraft.adapterKind)).toEqual(["all_selected", "model_choice"]);
   });
 
+  it("loads old stored settings and discards retired limits for admission and the admin contract", () => {
+    for (const retired of [
+      {},
+      { maxResults: 2, maxSearchCallsPerAnswer: 2 },
+      { maxResults: 20, maxSearchCallsPerAnswer: 32 },
+      { maxResults: null, maxSearchCallsPerAnswer: "retired" }
+    ]) {
+      const stored = JSON.parse(JSON.stringify({ ...clientDraft, ...retired }));
+      expect(normalizeSearchDraft(stored)).toEqual(clientDraft);
+      expect(decodeAdminSearchDraft(stored)).toEqual(clientDraft);
+      expect(searchDraftHash(normalizeSearchDraft(stored))).toBe(searchDraftHash(clientDraft));
+      expect(searchDraftHash(stored)).toBe(searchDraftHash(clientDraft));
+    }
+  });
+
   it("requires every current execution field", () => {
     for (const key of [
       "maxOutputTokens",
-      "maxResults",
-      "maxSearchCallsPerAnswer",
       "providerModelId",
       "queryMaxCharacters",
       "reasoningPolicy",
@@ -61,11 +73,8 @@ describe("Search adapter configuration", () => {
     expect(() => normalizeSearchDraft({ ...clientDraft, maxOutputTokens: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
       "search_configuration_invalid"
     );
-    expect(() => normalizeSearchDraft({ ...clientDraft, maxSearchCallsPerAnswer: 33 })).toThrow(
-      "search_configuration_invalid"
-    );
-    expect(normalizeSearchDraft({ ...clientDraft, maxSearchCallsPerAnswer: 32, queryMaxCharacters: 4_000 }))
-      .toMatchObject({ maxSearchCallsPerAnswer: 32, queryMaxCharacters: 4_000 });
+    expect(normalizeSearchDraft({ ...clientDraft, queryMaxCharacters: 4_000 }))
+      .toMatchObject({ queryMaxCharacters: 4_000 });
     expect(() => normalizeSearchDraft({ ...clientDraft, queryMaxCharacters: 4_001 })).toThrow(
       "search_configuration_invalid"
     );
@@ -85,8 +94,6 @@ describe("Search adapter configuration", () => {
       adapterKind: "answer_provider_hosted",
       credentialMode: "answer_provider",
       maxOutputTokens: 4_096,
-      maxResults: 8,
-      maxSearchCallsPerAnswer: 2,
       protocol: "anthropic_web_search",
       providerModelId: null,
       queryMaxCharacters: 500,

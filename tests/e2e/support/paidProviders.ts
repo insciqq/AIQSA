@@ -206,7 +206,7 @@ export async function connectionSearchSource(
     const created = await request.post("/api/admin/search", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
       check: true, description: "Paid usage check Search source.", displayName: `Paid usage Search ${randomUUID().slice(0, 8)}`,
       draft: { ...adminSearchExecutionDefaults, adapterKind: "provider_model_client", credentialMode: "provider_model",
-        maxSearchCallsPerAnswer: 1, protocol: create.protocol, providerModelId: technical!.id }
+        protocol: create.protocol, providerModelId: technical!.id }
     } });
     expect(created.ok(), `the Search source is created and checked (${created.status()})`).toBe(true);
     integration = find(await searchCatalog(request));

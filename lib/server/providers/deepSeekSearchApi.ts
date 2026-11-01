@@ -4,7 +4,6 @@ import { storableUtf16Text, takeUtf16SafePrefix } from "../../domain/utf16";
 import { DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS } from "../../contracts/adminSearch";
 import { parseRetryAfterMs } from "../retryAfter";
 import {
-  MAX_SEARCH_ENGINE_SOURCES,
   normalizeSearchFindings,
   normalizeSearchSources,
   SEARCH_NO_RESULTS_FINDINGS,
@@ -42,6 +41,10 @@ export const DEEPSEEK_SEARCH_API_REQUEST_USD = 0.00075;
 export const DEEPSEEK_SEARCH_API_MAX_ATTEMPTS = 3;
 /** DeepSeek admits 5 Search requests per second per account. */
 export const DEEPSEEK_SEARCH_API_REQUESTS_PER_SECOND = 5;
+
+/** DeepSeek's documented maximum `count`, independent of retired source
+ * settings (https://api-docs.deepseek.com/guides/search/, checked 2026-11-01). */
+export const DEEPSEEK_SEARCH_API_MAX_RESULTS = 50;
 
 const DEFAULT_API_ROOT = "https://api.deepseek.com";
 const RESPONSE_MAX_BYTES = 1024 * 1024;
@@ -196,10 +199,7 @@ function policy(request: ProviderSearchRequest) {
   const value = request.searchPolicy;
   if (
     value.provider !== "deepseek" ||
-    value.strategyId !== DEEPSEEK_SEARCH_API_STRATEGY_ID ||
-    !Number.isSafeInteger(value.maxResults) ||
-    value.maxResults < 1 ||
-    value.maxResults > MAX_SEARCH_ENGINE_SOURCES
+    value.strategyId !== DEEPSEEK_SEARCH_API_STRATEGY_ID
   ) {
     throw new Error("deepseek_search_policy_invalid");
   }
@@ -207,13 +207,13 @@ function policy(request: ProviderSearchRequest) {
 }
 
 export function buildDeepSeekSearchApiRequest(request: ProviderSearchRequest): DeepSeekSearchApiRequestBody {
-  const configured = policy(request);
+  policy(request);
   // The admitted query is already validated against the source's limit;
   // a longer one is refused here rather than cut.
   if (!request.query || request.query.length > DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS) {
     throw new Error("search_query_too_long");
   }
-  return { count: configured.maxResults, need_content: false, query: request.query };
+  return { count: DEEPSEEK_SEARCH_API_MAX_RESULTS, need_content: false, query: request.query };
 }
 
 /** Tokens are not part of this API's price; a request costs only when it
@@ -260,11 +260,10 @@ type SearchApiEntry = Readonly<{
 
 /** Each result with a usable link becomes one cited source, numbered in the
  * provider's order. Results without one cannot be cited and are dropped. */
-function searchApiEntries(results: readonly unknown[], maximum: number): SearchApiEntry[] {
+function searchApiEntries(results: readonly unknown[]): SearchApiEntry[] {
   const entries: SearchApiEntry[] = [];
   const seen = new Set<string>();
   for (const result of results) {
-    if (entries.length >= maximum) break;
     if (!isRecord(result)) continue;
     const siteName = plainText(result.site_name, LABEL_MAX_CHARACTERS);
     const title = plainText(result.title, TITLE_MAX_CHARACTERS) ?? siteName;
@@ -274,7 +273,7 @@ function searchApiEntries(results: readonly unknown[], maximum: number): SearchA
       ...(snippet ? { snippet } : {}),
       ...(title ? { title } : {}),
       url: result.url
-    }], 1);
+    }]);
     if (!normalized || seen.has(normalized.url)) continue;
     seen.add(normalized.url);
     const citation = entries.length + 1;
@@ -362,7 +361,7 @@ export function createDeepSeekSearchApiAdapter(input: Readonly<{
       };
     },
     async search(request, options = {}): Promise<ProviderSearchResult> {
-      const configured = policy(request);
+      policy(request);
       const body = buildDeepSeekSearchApiRequest(request);
       const signal = options.signal ?? new AbortController().signal;
       // The caller's signal carries the Search deadline; retries and their
@@ -422,7 +421,7 @@ export function createDeepSeekSearchApiAdapter(input: Readonly<{
         };
       }
       const usage = searchUsage(true);
-      const entries = searchApiEntries(results, configured.maxResults);
+      const entries = searchApiEntries(results);
       if (entries.length === 0) {
         throw new ProviderSearchExecutionError({
           artifacts: [],

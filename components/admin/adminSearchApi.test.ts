@@ -13,8 +13,6 @@ const draft = {
   adapterKind: "provider_model_client" as const,
   credentialMode: "provider_model" as const,
   maxOutputTokens: 4_096,
-  maxResults: 8,
-  maxSearchCallsPerAnswer: 2,
   protocol: "openai_responses_web_search" as const,
   providerModelId: "technical-1",
   queryMaxCharacters: 500,
@@ -58,6 +56,19 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("adminSearchApi", () => {
+  it("loads a legacy catalog and drops retired limits from its editable configuration", async () => {
+    const legacy = {
+      ...search,
+      integrations: search.integrations.map((source) => ({
+        ...source,
+        configuration: { ...draft, maxResults: 2, maxSearchCallsPerAnswer: 2 }
+      }))
+    };
+    await expect(requestAdminSearchCatalog(
+      vi.fn().mockResolvedValue(response({ search: legacy }))
+    )).resolves.toEqual({ ok: true, search });
+  });
+
   it("returns the exact logical source selected by create or reuse", async () => {
     await expect(createAdminSearchIntegration({
       description: "Query-only evidence",

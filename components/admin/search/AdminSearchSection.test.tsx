@@ -19,8 +19,6 @@ function source(overrides: Partial<AdminSearchIntegration> = {}): AdminSearchInt
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
       maxOutputTokens: 4_096,
-      maxResults: 8,
-      maxSearchCallsPerAnswer: 2,
       protocol: "openrouter_perplexity_chat",
       providerModelId: "model-sonar",
       queryMaxCharacters: 500,
@@ -69,8 +67,6 @@ function catalog(): AdminSearchCatalog {
           adapterKind: "provider_model_client",
           credentialMode: "provider_model",
           maxOutputTokens: 4_096,
-          maxResults: 8,
-          maxSearchCallsPerAnswer: 2,
           protocol: "openai_responses_web_search",
           providerModelId: "model-terra",
           queryMaxCharacters: 500,
@@ -487,25 +483,23 @@ describe("AdminSearchSection", () => {
     expect(within(sheet).getByLabelText(/^Search model/)).toBeVisible();
     expect(within(sheet).getByLabelText(/^Search model/)).toHaveValue("model-sonar");
     const output = within(sheet).getByRole("spinbutton", { name: /^Maximum Search output/ });
-    const requests = within(sheet).getByRole("spinbutton", { name: /^Maximum requests to this source/ });
+    expect(within(sheet).queryByRole("spinbutton", { name: /^Maximum requests to this source/ })).not.toBeInTheDocument();
+    expect(within(sheet).queryByRole("spinbutton", { name: /^Results per search/ })).not.toBeInTheDocument();
     fireEvent.change(output, { target: { value: "8193" } });
-    fireEvent.change(requests, { target: { value: "32" } });
     fireEvent.change(within(sheet).getByRole("spinbutton", { name: /^Generated query limit/ }), { target: { value: "4000" } });
     fireEvent.change(within(sheet).getByRole("spinbutton", { name: /^Search timeout per request/ }), { target: { value: "121" } });
     expect(output).toBeValid();
-    expect(requests).toBeValid();
-    fireEvent.change(requests, { target: { value: "33" } });
+    fireEvent.change(output, { target: { value: "15" } });
     expect(within(sheet).getByRole("button", { name: "Save" })).toBeDisabled();
-    fireEvent.change(requests, { target: { value: "32" } });
+    fireEvent.change(output, { target: { value: "8193" } });
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Broken Search" } });
-    fireEvent.change(within(sheet).getByRole("spinbutton", { name: /^Results per search/ }), { target: { value: "12" } });
     expect(sheet.textContent).not.toMatch(bannedWords);
     fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
 
     const alert = await within(sheet).findByRole("alert");
     expect(alert).toHaveTextContent("The check found no working source, so nothing was changed.");
     expect(within(sheet).getByLabelText("Name")).toHaveValue("Broken Search");
-    expect(within(sheet).getByRole("spinbutton", { name: /^Results per search/ })).toHaveValue(12);
+    expect(output).toHaveValue(8193);
     expect(screen.getByTestId("search-source-page")).toHaveTextContent("Perplexity Search");
     expect(feedback.reportError).not.toHaveBeenCalled();
     expect(feedback.reportNotice).not.toHaveBeenCalled();
@@ -513,10 +507,16 @@ describe("AdminSearchSection", () => {
     expect(calls.find(({ body }) => body?.action === "save_and_check")?.body).toMatchObject({
       action: "save_and_check",
       displayName: "Broken Search",
-      draft: expect.objectContaining({ maxResults: 12, providerModelId: "model-sonar",
-        maxOutputTokens: 8193, maxSearchCallsPerAnswer: 32, queryMaxCharacters: 4000, timeoutMs: 121_000 }),
+      draft: expect.objectContaining({ providerModelId: "model-sonar",
+        maxOutputTokens: 8193, queryMaxCharacters: 4000, timeoutMs: 121_000 }),
       expectedDraftVersion: 1
     });
+
+    const savedDraft = calls.find(({ body }) => body?.action === "save_and_check")?.body?.draft;
+    expect(Object.keys(savedDraft as object).sort()).toEqual([
+      "adapterKind", "credentialMode", "maxOutputTokens", "protocol", "providerModelId",
+      "queryMaxCharacters", "reasoningPolicy", "timeoutMs"
+    ]);
 
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Perplexity Search EU" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
@@ -619,6 +619,9 @@ describe("AdminSearchSection", () => {
     ]);
     fireEvent.change(model, { target: { value: "model-flash" } });
     expect(within(sheet).getByLabelText("Name")).toHaveValue("DeepSeek Search API");
+    expect(within(sheet).queryByText("Advanced Search execution")).not.toBeInTheDocument();
+    expect(within(sheet).queryByRole("spinbutton", { name: /^Results per search/ })).not.toBeInTheDocument();
+    expect(within(sheet).queryByRole("spinbutton", { name: /^Maximum requests to this source/ })).not.toBeInTheDocument();
     expect(within(sheet).getByLabelText("Generated query limit, characters")).toHaveValue(128);
     expect(within(sheet).getByLabelText("Generated query limit, characters")).toHaveAttribute("max", "128");
     expect(within(sheet).getByText(/the model itself is never called/u)).toBeInTheDocument();

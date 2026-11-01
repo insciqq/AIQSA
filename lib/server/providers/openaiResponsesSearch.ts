@@ -266,7 +266,7 @@ function safeActionSources(response: Readonly<Record<string, unknown>>) {
       Array.isArray(item.action.sources)
       ? item.action.sources
       : []
-  ), 20);
+  ));
 }
 
 /** The page a URL names for matching a cited source to a browsed one:
@@ -397,7 +397,7 @@ export function createOpenAIResponsesSearchAdapter(
           return same ? { ...same, citation: source.citation } : source;
         }),
         ...browsed
-      ], 20);
+      ]);
       if (sources.length === 0) {
         throw new ProviderSearchExecutionError({
           artifacts: operationArtifacts,

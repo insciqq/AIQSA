@@ -19,7 +19,6 @@ import type { AdminSearchController } from "@/components/admin/search/useAdminSe
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import {
-  adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
   DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
   type AdminSearchCatalog,
@@ -131,8 +130,6 @@ function SourceFields({
   const ids = useId();
   const outputHelpId = `${ids}-output-help`;
   const outputErrorId = `${ids}-output-error`;
-  const requestsHelpId = `${ids}-requests-help`;
-  const requestsErrorId = `${ids}-requests-error`;
   const updateDraft = (patch: Partial<AdminSearchDraft>) => setForm({ ...form, draft: { ...form.draft, ...patch } });
   const reasoningProtocol = form.draft.protocol === "anthropic_web_search" ||
     form.draft.protocol === "deepseek_responses_web_search" ||
@@ -171,19 +168,7 @@ function SourceFields({
         />
         <span className={helpText}>Shown to people when they choose sources.</span>
       </label>
-      <div className="grid gap-4 sm:grid-cols-3">
-        <label className="block min-w-0">
-          <span className={fieldLabel}>Results per search</span>
-          <input
-            className={inputClass}
-            disabled={disabled}
-            max={20}
-            min={1}
-            onChange={(event) => updateDraft({ maxResults: Number(event.currentTarget.value) })}
-            type="number"
-            value={form.draft.maxResults}
-          />
-        </label>
+      <div className="grid gap-4 sm:grid-cols-2">
         <label className="block min-w-0">
           <span className={fieldLabel}>Generated query limit, characters</span>
           <input
@@ -211,7 +196,7 @@ function SourceFields({
         </label>
       </div>
       <p className="text-xs leading-5 text-ink-muted">
-        The query limit applies to the text the answer model sends to Search. Results per search caps the returned source list.
+        The query limit applies to the text the answer model sends to Search.
       </p>
       <p className="text-xs leading-5 text-ink-muted">
         Each source request may run for up to {form.draft.timeoutMs / 1_000} seconds.
@@ -219,7 +204,7 @@ function SourceFields({
           ? ` The selected model allows ${selectedModelTimeoutSeconds} seconds per answer; the earlier limit wins, so the effective limit is ${Math.min(form.draft.timeoutMs / 1_000, selectedModelTimeoutSeconds)} seconds.`
           : ` Maximum ${adminSearchExecutionLimits.timeoutMs.maximum / 60_000} minutes.`}
       </p>
-      {form.draft.adapterKind === "provider_model_client" ? (
+      {form.draft.adapterKind === "provider_model_client" && (!creating || !searchApi) ? (
         <details className="group rounded-[10px] border border-trace-subtle bg-control-surface/45 px-3">
           <summary className={`flex min-h-touch cursor-pointer list-none items-center justify-between gap-3 py-2.5 text-left ${focusRing}`}>
             <span>
@@ -285,30 +270,6 @@ function SourceFields({
                 Search reasoning is not configurable for this model. AIQSA uses the service default.
               </p>
             ) : null}
-            <label className="block min-w-0">
-              <span className={fieldLabel}>Maximum requests to this source per answer</span>
-              <input
-                aria-describedby={`${requestsHelpId}${validation.maxSearchCallsPerAnswer ? ` ${requestsErrorId}` : ""}`}
-                aria-invalid={validation.maxSearchCallsPerAnswer ? true : undefined}
-                className={inputClass}
-                disabled={disabled}
-                max={adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum}
-                min={adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum}
-                onChange={(event) => setForm({
-                  ...form,
-                  draft: { ...form.draft, maxSearchCallsPerAnswer: Number(event.currentTarget.value) },
-                  executionInputs: { ...form.executionInputs, maxSearchCallsPerAnswer: event.currentTarget.value }
-                })}
-                type="number"
-                value={form.executionInputs.maxSearchCallsPerAnswer}
-              />
-              <span className={helpText} id={requestsHelpId}>
-                Each generated query sent here uses one request. A round that searches several selected sources uses one request from each. Default: {adminSearchExecutionDefaults.maxSearchCallsPerAnswer}; maximum: {adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum}. The total tool-call and round limits in Defaults &amp; roles also apply. These settings apply when a separate Search model is used; hosted Search follows the limits of the answer provider.
-              </span>
-              {validation.maxSearchCallsPerAnswer ? (
-                <span className="mt-1 block text-xs text-critical" id={requestsErrorId}>{validation.maxSearchCallsPerAnswer}</span>
-              ) : null}
-            </label>
           </div>
         </details>
       ) : null}

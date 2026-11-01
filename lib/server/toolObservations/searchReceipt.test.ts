@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SEARCH_TOOL_RESULT_VERSION, searchExecutionsFromToolResult, searchToolResultContent, searchUsageAttribution,
   type SearchExecutionEvidence } from "../search/toolResult";
 import type { ToolExecutionResult } from "../tools/types";
@@ -22,7 +22,7 @@ function searchResult(shape: Shape): ToolExecutionResult {
     sources: Array.from({ length: shape.sources ?? 20 }, (_, index) => {
       const prefix = `https://example.com/${engine}/${index}/`;
       const title = `Result ${engine}-${index} `;
-      return { rank: index + 1, title: title + "t".repeat(shape.title - title.length),
+      return { citation: index + 1, rank: index + 1, title: title + "t".repeat(shape.title - title.length),
         url: prefix + "p".repeat(shape.url - prefix.length), snippet: letter.repeat(shape.snippet) };
     }),
     usage: { inputTokens: 100 * engine, outputTokens: engine, totalTokens: 100 * engine + engine,
@@ -35,6 +35,46 @@ const snippetLengths = (receipt: ReturnType<typeof searchObservationReceipt>) =>
   [...new Set(receipt.executions.flatMap(execution => execution.sources.map(source => Array.from(source.snippet ?? "").length)))];
 
 describe("bounded Search receipt", () => {
+  it("keeps fifty sources per engine, including citations and snippets, through a stored receipt", () => {
+    const result = searchResult({ sources: 50, snippet: 50, title: 30, url: 50 });
+    const receipt = searchObservationReceipt(result);
+    expect(receipt.executions.map(execution => execution.sources.length)).toEqual([50, 50, 50]);
+    expect(receipt.executions.map(execution => execution.sources))
+      .toEqual(searchExecutionsFromToolResult(result).map(execution => execution.sources));
+    expect(receipt.executions[0]!.sources[49]).toMatchObject({ citation: 50, rank: 50 });
+    expect(decodeSearchObservationReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
+  });
+
+  it.each([50, 300])("fits %i-source engines with logarithmically many candidates and preserves their original", (count) => {
+    const result = searchResult({ sources: count, snippet: 2000, title: 500, url: 1500 });
+    const original = JSON.stringify(result);
+    const stringify = vi.spyOn(JSON, "stringify");
+    let receipt: ReturnType<typeof searchObservationReceipt>;
+    let candidates: number;
+    try {
+      receipt = searchObservationReceipt(result);
+      candidates = stringify.mock.calls.filter(([value]) => value?.version === 1 && Array.isArray(value.executions)).length;
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(candidates).toBeLessThanOrEqual(7 + Math.ceil(Math.log2(count + 1)));
+    const kept = receipt.executions[0]!.sources.length;
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(count);
+    expect(snippetLengths(receipt)).toEqual([0]);
+    const originals = searchExecutionsFromToolResult(result);
+    expect(receipt.executions.map(execution => execution.sources))
+      .toEqual(originals.map(execution => execution.sources.slice(0, kept).map(({ snippet: _snippet, ...source }) => source)));
+    expect(receipt.executions.map(execution => execution.usage)).toEqual(originals.map(execution => execution.usage));
+    expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(SEARCH_OBSERVATION_RECEIPT_BYTES);
+    expect(Buffer.byteLength(jsonbText(receipt))).toBeLessThanOrEqual(65536);
+    expect(decodeSearchObservationReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
+    const next = { ...receipt, executions: receipt.executions.map((execution, index) => ({ ...execution,
+      sources: originals[index]!.sources.slice(0, kept + 1).map(({ snippet: _snippet, ...source }) => source) })) };
+    expect(decodeSearchObservationReceipt(next)).toBeNull();
+    expect(JSON.stringify(result)).toBe(original);
+  });
+
   it("keeps every thread source and snippet of an ordinary three-engine result exactly as Off persists them", () => {
     const result = searchResult({ snippet: 300, title: 120, url: 400 });
     const receipt = searchObservationReceipt(result);
@@ -109,13 +149,11 @@ describe("bounded Search receipt", () => {
       status: "complete", usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 } }] });
   });
 
-  it("keeps jsonb separator overhead far below the check's headroom at the largest receipt shape", () => {
-    // Three executions of 20 dated sources with every usage field present.
-    const receipt = searchObservationReceipt(searchResult({ snippet: 10, title: 30, url: 40 }));
-    const dated = { ...receipt, executions: receipt.executions.map(execution => ({ ...execution,
-      sources: execution.sources.map(source => ({ ...source, date: "2026-09-26" })) })) };
-    const overhead = Buffer.byteLength(jsonbText(dated)) - Buffer.byteLength(JSON.stringify(dated));
-    expect(overhead).toBeLessThan(1024);
-    expect(SEARCH_OBSERVATION_RECEIPT_BYTES + overhead).toBeLessThanOrEqual(65536);
+  it("accounts for jsonb separator overhead when hundreds of short sources exceed the old headroom", () => {
+    const receipt = searchObservationReceipt(searchResult({ sources: 300, snippet: 0, title: 30, url: 40 }));
+    expect(receipt.executions[0]!.sources.length).toBeGreaterThan(100);
+    expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(SEARCH_OBSERVATION_RECEIPT_BYTES);
+    expect(Buffer.byteLength(jsonbText(receipt))).toBeLessThanOrEqual(65536);
+    expect(decodeSearchObservationReceipt(receipt)).toEqual(receipt);
   });
 });
