@@ -580,7 +580,8 @@ export function getAdminProviderCheckRun(
 }
 
 const assignedRoleLabels: Record<AdminProviderAssignedRole, string> = {
-  mcp_guard: "MCP guard", memory: "Memory", research_verifier: "Research verifier", system_model: "System model", chat_titles: "Chat titles", vision: "Vision Model",
+  mcp_guard: "MCP guard", memory: "Memory", research_researcher: "Researchers", research_verifier: "Research checks",
+  system_model: "System model", chat_titles: "Chat titles", vision: "Vision Model",
   chat_pdf: "PDF processing in chats", chat_pdf_native: "PDF reader"
 };
 const routingParameterLabels: Record<string, string> = {
@@ -594,7 +595,7 @@ function listText(values: readonly string[]): string {
 /** `System model and Memory use this model and need structured output`. */
 export function roleRoutingConflictSummary(conflicts: readonly AdminProviderRoleRoutingConflict[]): string {
   const names = listText(conflicts.map(({ role }) => assignedRoleLabels[role]));
-  const plural = conflicts.length > 1;
+  const plural = conflicts.length > 1 || conflicts.some(({ role }) => role === "research_researcher" || role === "research_verifier");
   const needs = listText([...new Set(conflicts.flatMap(({ missingParameters }) =>
     missingParameters.map((parameter) => routingParameterLabels[parameter] ?? parameter)))]);
   return `${names} ${plural ? "use" : "uses"} this model and ${plural ? "need" : "needs"} ${needs}`;
@@ -605,7 +606,7 @@ function assignedRoleMessage(error: AdminProviderClientError): string | null {
   const roles = error.roles ?? [];
   if (!roles.length) return null;
   const names = listText(roles.map(({ role }) => assignedRoleLabels[role]));
-  const plural = roles.length > 1;
+  const plural = roles.length > 1 || roles.some(({ role }) => role === "research_researcher" || role === "research_verifier");
   if (error.code === "provider_routing_role_incompatible") {
     return `${roleRoutingConflictSummary(roles)}, which the selected providers do not support. ` +
       `Choose Automatic or providers that support it, or assign ${names} to another model first.`;

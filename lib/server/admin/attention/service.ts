@@ -264,7 +264,8 @@ function roleItem(
   label: string,
   assignment: RoleAssignment,
   missingDetail: string,
-  missingSeverity: "neutral" | "warn"
+  missingSeverity: "neutral" | "warn",
+  unavailableConsequence?: string
 ): AdminAttentionItem | null {
   if (assignment === null) {
     return {
@@ -283,7 +284,9 @@ function roleItem(
     action: "Open roles",
     code: "system_role_unavailable",
     count: null,
-    detail: `${label} uses ${assignment.displayName} on ${assignment.connectionDisplayName}, which is not available — pick another model`,
+    detail: unavailableConsequence
+      ? `${label}: ${assignment.displayName} on ${assignment.connectionDisplayName} is not available. ${unavailableConsequence}`
+      : `${label} uses ${assignment.displayName} on ${assignment.connectionDisplayName}, which is not available — pick another model`,
     id: `system_role_unavailable:${role}`,
     severity: "bad",
     target: { resource: role, section: "roles" },
@@ -294,6 +297,7 @@ function roleItem(
 function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttentionItem[] {
   const policy = catalog.policy;
   const pdfReader = activeChatPdfReader(policy);
+  const researchUnavailable = "Research does not start until the assigned model is available. Check the assignment or choose another model.";
   return [
     roleItem(
       "system",
@@ -322,9 +326,13 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
       ? roleItem("mcp_guard", "MCP guard", policy.mcpGuardModel,
           "data-changing MCP calls ask for approval until the guard is available", "warn")
       : null,
+    policy.researchResearcherModel
+      ? roleItem("research_researcher", "Researchers", policy.researchResearcherModel,
+          researchUnavailable, "warn", researchUnavailable)
+      : null,
     policy.researchVerifierModel
-      ? roleItem("research_verifier", "Research verifier", policy.researchVerifierModel,
-          "research answers go out unchecked, saying so, until the verifier is available", "warn")
+      ? roleItem("research_verifier", "Research checks", policy.researchVerifierModel,
+          researchUnavailable, "warn", researchUnavailable)
       : null,
     policy.chatTitleModel
       ? roleItem(

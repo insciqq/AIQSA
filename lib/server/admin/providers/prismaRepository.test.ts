@@ -1125,13 +1125,14 @@ describe("Prisma admin provider repository", () => {
         displayName: "Model", draftConfig: candidate().model.configuration, draftVersion: 7, id: "model-1" })) },
       memoryUtilityModelPolicy: { findUnique: vi.fn(async () => ({ providerModelId: "model-1" })) },
       systemModelPolicy: { findUnique: vi.fn(async () => ({ providerModelId: "model-2", chatTitleProviderModelId: "model-1",
+        researchResearcherProviderModelId: "model-1", researchVerifierProviderModelId: "model-1",
         visionProviderModelId: null, chatPdfProviderModelId: "model-1", chatPdfNativeProviderModelId: "model-3" })) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
     const loaded = await repository.loadModelActivationCandidate({ connectionId: "connection-1", modelId: "model-1" });
     expect(loaded?.model).toMatchObject({ activeConfiguration: candidate().model.configuration,
-      assignedRoles: ["memory", "chat_titles", "chat_pdf"] });
-    expect(db.systemModelPolicy.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "installation" } }));
+      assignedRoles: ["memory", "chat_titles", "research_researcher", "research_verifier", "chat_pdf"] });
+    expect(db.systemModelPolicy.findUnique).toHaveBeenCalledWith(expect.objectContaining({ select: expect.objectContaining({ researchResearcherProviderModelId: true, researchVerifierProviderModelId: true }), where: { id: "installation" } }));
   });
 
   it("activates exactly one model draft by CAS, taking a never-activated connection live with it", async () => {
