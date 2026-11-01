@@ -10,6 +10,10 @@ import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
+import { FakeSubagentCallbackSink, FakeSubagentRunner } from "@/tests/support/subagentPorts";
+import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
+import { createSubagentBackgroundControl } from "../../runs/subagentBackground/control";
+import type { UsageLimitStatus } from "../../usageLimits/repository";
 import type { SubagentBinding, SubagentMessage, SubagentMessaging, SubagentTurnInput } from "../../subagents/ports";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackground/render";
@@ -950,6 +954,37 @@ describe("a sub-agent's children", () => {
     expect(ended["child-turn-1"]).toMatchObject({ reason: "parent_stopped", state: "stopped" });
     expect(ended["turn-1"]).toMatchObject({ reason: "parent_stopped", state: "stopped" });
     expect(stopChildren).toHaveBeenCalledWith({ chatId: "chat", threadId: "thread-1", userId: "user" });
+  });
+
+  it("never lets a child's start outlive a parent stopped beside it, whose call to start it was still reading the usage limits", async () => {
+    let reached!: () => void;
+    let release!: () => void;
+    const atGate = new Promise<void>((resolve) => { reached = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const store = new MemorySubagentStore();
+    store.callers.add("run");
+    store.turns.push({ callbackRunId: null, chatId: "chat", endedAt: null, mailbox: [], mode: "foreground", modelId: "fake-qsa", name: "shop", parentAnswerId: "answer-1",
+      parentRunId: "run", result: null, runActive: true, runId: null, state: "running", threadId: "thread-1", turnId: "turn-1", userId: "user" });
+    const children = new FakeSubagentRunner();
+    const background = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink("wake_up"), runner: children, stopWaitMs: 100, store,
+      usageLimits: { loadUsageLimitStatus: async () => {
+        reached();
+        await gate;
+        return { effective: { exempt: false, messagesPerDay: { source: null, value: null }, messagesPerHour: { source: null, value: null },
+          monthlyBudgetMicros: { source: null, value: null } }, installationCapMicros: null, installationSpentMicros: 0, lastDay: { count: 0, freesAt: null },
+        lastHour: { count: 0, freesAt: null }, userSpentMicros: 0 } satisfies UsageLimitStatus;
+      } } });
+    const hang = engineTool("wait_here", "session", (execution) => new Promise((_, reject) =>
+      execution.signal.addEventListener("abort", () => reject(execution.signal.reason as Error), { once: true })), { effects: "external" });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true }), { arguments: {}, id: "c2", name: "wait_here" }] }],
+      { children: childHost({ background }), tools: [hang] });
+    const handle = await ctx.runner.start(ctx.input());
+    await atGate;
+    expect(await ctx.runner.stop(handle, "user_stop")).toMatchObject({ reason: "user_stop", state: "stopped" });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(store.turns.filter((turn) => turn.name === "left")).toEqual([]);
+    expect([...children.turns.values()].filter((turn) => !turn.input.signal.aborted)).toEqual([]);
   });
 
   it("stays for the report of a child it left in the background, and goes on from it", async () => {
