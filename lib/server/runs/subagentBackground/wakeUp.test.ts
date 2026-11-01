@@ -53,12 +53,13 @@ describe("sub-agent wake-up turn", () => {
       return new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } });
     });
     const admit = createSubagentWakeUpAdmitter({ client: client as unknown as PrismaClient, send });
-    expect(await admit({ chatId: "chat-1", text: "callbacks", turnIds: ["t1", "t2"], userId: "user-1" })).toBe("admitted");
-    expect(send.mock.calls[0]![0]).toMatchObject({ chatId: "chat-1", wakeUp: { text: "callbacks", turnIds: ["t1", "t2"] } });
+    const turns = [{ kind: "callback" as const, turnId: "t1" }, { callId: "ask-1", kind: "question" as const, turnId: "t2" }];
+    expect(await admit({ chatId: "chat-1", text: "callbacks", turns, userId: "user-1" })).toBe("admitted");
+    expect(send.mock.calls[0]![0]).toMatchObject({ chatId: "chat-1", wakeUp: { text: "callbacks", turns } });
     expect(user.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "user-1", scimDeactivatedAt: null, status: "active" } }));
     send.mockResolvedValueOnce(Response.json({ error: "usage_budget_exhausted" }, { status: 429 }));
-    expect(await admit({ chatId: "chat-1", text: "callbacks", turnIds: ["t1"], userId: "user-1" })).toBe("usage_limited");
+    expect(await admit({ chatId: "chat-1", text: "callbacks", turns, userId: "user-1" })).toBe("usage_limited");
     tx.chat.findFirst.mockResolvedValueOnce(null as never);
-    expect(await admit({ chatId: "chat-1", text: "callbacks", turnIds: ["t1"], userId: "user-1" })).toBe("failed");
+    expect(await admit({ chatId: "chat-1", text: "callbacks", turns, userId: "user-1" })).toBe("failed");
   });
 });

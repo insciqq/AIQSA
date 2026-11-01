@@ -63,15 +63,15 @@ describe("sub-agent callback rendering", () => {
   });
 
   it("wakes the main agent for a question, says how to answer it, and shares a wake-up with callbacks", () => {
-    const question = { name: "asker", question: "Which size?", turnId: "turn-asker" };
+    const question = { callId: "ask-1", name: "asker", question: "Which size?", turnId: "turn-asker" };
     const alone = renderWakeUp([question]);
-    expect(alone.turnIds).toEqual(["turn-asker"]);
+    expect(alone.turns).toEqual([{ callId: "ask-1", kind: "question", turnId: "turn-asker" }]);
     expect(alone.text).toMatch(/^\[Sub-agent question, written by the server, not by the user\] A background sub-agent you started is waiting/u);
     expect(alone.text).toContain("<agent_question from=\"asker\">\nWhich size?");
     expect(alone.text).toContain("call_subagent with name \"asker\"");
     expect(alone.text).toContain("ask the user");
     const mixed = renderWakeUp([big("a"), question]);
-    expect(mixed.turnIds).toEqual(["turn-a", "turn-asker"]);
+    expect(mixed.turns).toEqual([{ kind: "callback", turnId: "turn-a" }, { callId: "ask-1", kind: "question", turnId: "turn-asker" }]);
     expect(mixed.text).toMatch(/^\[Sub-agent callbacks and questions, written by the server, not by the user\]/u);
     expect(mixed.text.length).toBeLessThanOrEqual(SUBAGENT_WAKE_UP_TEXT_CHARACTERS);
   });
@@ -80,13 +80,13 @@ describe("sub-agent callback rendering", () => {
     const callbacks = ["a", "b", "c", "d", "e"].map(big);
     const wakeUp = renderWakeUp(callbacks);
     expect(wakeUp.text.length).toBeLessThanOrEqual(SUBAGENT_WAKE_UP_TEXT_CHARACTERS);
-    expect(wakeUp.turnIds).toEqual(callbacks.map((callback) => callback.turnId));
+    expect(wakeUp.turns).toEqual(callbacks.map((callback) => ({ kind: "callback", turnId: callback.turnId })));
     expect(wakeUp.text).toMatch(/^\[Sub-agent callbacks, written by the server, not by the user\]/u);
     expect(wakeUp.text.match(/"reader":"read_tool_result"/gu)).toHaveLength(5);
     // Far more than fit: the oldest go now, the rest stay owed.
     const many = renderWakeUp(Array.from({ length: 60 }, (_, index) => big(`agent-${index}`)));
-    expect(many.turnIds[0]).toBe("turn-agent-0");
-    expect(many.turnIds.length).toBeLessThan(60);
+    expect(many.turns[0]).toEqual({ kind: "callback", turnId: "turn-agent-0" });
+    expect(many.turns.length).toBeLessThan(60);
     expect(many.text.length).toBeLessThanOrEqual(SUBAGENT_WAKE_UP_TEXT_CHARACTERS);
   });
 });
