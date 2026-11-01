@@ -67,7 +67,7 @@ function storeOf(calls: readonly ResearchAgentCall[]) {
   } as unknown as ResearchEvidenceRepository;
   const run = { branchRunIds: [], chatId: "chat", researchRunId: "run-1", runId: "run-1", userId: "user" } as unknown as ResearchRunScope;
   const port = createResearchEvidenceStore({ repository, savedResults: { read: vi.fn(async () => null) }, threads: { backgroundRunIds: vi.fn(async () => []) } as never })(run);
-  return { appended, tool: recordEvidenceEngineTool({ evidence: port, researching: () => true }, { kind: "subagent", name: "reviews", threadId: "thread-1" }) };
+  return { appended, tool: recordEvidenceEngineTool({ coverage: { frame: async () => null }, evidence: port, researching: () => true }, { kind: "subagent", name: "reviews", threadId: "thread-1" }) };
 }
 
 const shellCall = (id: string, command: string, text: string): ResearchAgentCall =>
