@@ -1,8 +1,8 @@
 /**
  * Pure parts of `scripts/smoke-subagents-paid.ts`: the sub-agent scenarios
  * A–I of the acceptance task (scenarios 1–9), J (two production defects), K
- * (files and images across agents) and L (a document the parser refuses, read
- * in the Workspace) with their Russian prompts, the oracles over `browser-result.json` and the run's stored rows, and the
+ * (files and images across agents), L (a document the parser refuses, read
+ * in the Workspace) and N (an earlier file read without a Workspace) with their Russian prompts, the oracles over `browser-result.json` and the run's stored rows, and the
  * content-free evidence computed from read-only rows (turn bindings, usage
  * per purpose, callbacks and wake-ups, concurrency from the tool-call
  * timeline, thread-state progression). Stand guard, setup, cleanup ports and
@@ -15,6 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import { utils, write } from "xlsx";
+import { writeZip } from "../lib/server/artifacts/zip";
 import {
   ACTIVE_SUBAGENT_STATES, SUBAGENT_END_REASONS, SUBAGENT_THREAD_STATES, type SubagentThreadState
 } from "../lib/contracts/subagents";
@@ -49,9 +50,11 @@ const flag = (value: boolean) => value ? 1 : 0;
  * background and the foreground, finished sub-agents continued by name, "a
  * chart in the background" ending as a download, and a sub-agent on a model
  * without vision when one is configured. L: an XLSX over the spreadsheet
- * reader's limit, sent with a Workspace, answered from the file itself.
+ * reader's limit, sent with a Workspace, answered from the file itself. N: a
+ * DOCX attached in one turn and answered from in the next, with the Workspace
+ * off for the installation.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "N"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -69,7 +72,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, N: {}
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -271,6 +274,52 @@ export function scenarioLFacts(nonce: string): ScenarioLFacts {
   };
 }
 
+export const SCENARIO_N_FILE_NAME = "subagent-n-beacon.docx";
+export const SCENARIO_N_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const N_XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+const N_WML = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const N_OFFICE_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const N_PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const N_WORD_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml";
+
+/** One N run's document and the word only its third section holds; the word never reaches a prompt or the line. */
+export type ScenarioNFacts = Readonly<{ codeWord: string; document: Buffer }>;
+
+/** A real OOXML package with Word's own heading styles, built like `tests/e2e/support/artifactFileFixtures.ts`; lower case, so SQL can match it in a lowered answer. */
+export function scenarioNFacts(nonce: string): ScenarioNFacts {
+  const codeWord = `beacon${nonce}`.toLowerCase();
+  const paragraph = (text: string, style?: string) =>
+    `<w:p>${style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ""}<w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`;
+  const body = [
+    paragraph("Регламент учебного маяка", "Title"),
+    paragraph("Раздел 1. Назначение", "Heading1"),
+    paragraph("Учебный маяк нужен для тренировок смены и работает только в учебные дни."),
+    paragraph("Раздел 2. Порядок работы", "Heading1"),
+    paragraph("Смена включает маяк вечером, проверяет лампу и записывает время в журнал."),
+    paragraph("Раздел 3. Контрольные сведения", "Heading1"),
+    paragraph(`В этом разделе сказано, что журнал смены проверяют раз в неделю. Кодовое слово проверки: ${codeWord}.`)
+  ].join("");
+  const style = (id: string, name: string, size: number) => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/>` +
+    `<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="${size}"/></w:rPr></w:style>`;
+  const parts: Readonly<Record<string, string>> = {
+    "[Content_Types].xml": `${N_XML_HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      `<Override PartName="/word/document.xml" ContentType="${N_WORD_TYPE}.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="${N_WORD_TYPE}.styles+xml"/></Types>`,
+    "_rels/.rels": `${N_XML_HEAD}<Relationships xmlns="${N_PACKAGE_RELATIONSHIPS}">` +
+      `<Relationship Id="rId1" Type="${N_OFFICE_RELATIONSHIPS}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    "word/_rels/document.xml.rels": `${N_XML_HEAD}<Relationships xmlns="${N_PACKAGE_RELATIONSHIPS}">` +
+      `<Relationship Id="rId1" Type="${N_OFFICE_RELATIONSHIPS}/styles" Target="styles.xml"/></Relationships>`,
+    "word/document.xml": `${N_XML_HEAD}<w:document xmlns:w="${N_WML}"><w:body>${body}` +
+      '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>',
+    "word/styles.xml": `${N_XML_HEAD}<w:styles xmlns:w="${N_WML}">` +
+      '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>' +
+      `${style("Title", "Title", 40)}${style("Heading1", "heading 1", 32)}</w:styles>`
+  };
+  return { codeWord, document: writeZip(Object.entries(parts).map(([path, text]) => ({ bytes: Buffer.from(text, "utf8"), path }))) };
+}
+
 export const SUBAGENT_PROMPTS = Object.freeze({
   A: () => [
     "Найди и сравни 10 вариантов открытых (open-source) векторных баз данных. Сделай это с помощью суб-агентов, " +
@@ -416,7 +465,17 @@ export const SUBAGENT_PROMPTS = Object.freeze({
     "Сделай только одно вычисление: выполни в Workspace один скрипт на Python, который читает сам файл и суммирует все строки " +
       `этого столбца. Суб-агентов не запускай, файлов для скачивания не создавай. ${NO_WEB}`,
     "Ответь одной строкой: только сумма цифрами, без пробелов и разделителей."
-  ].join("\n\n")
+  ].join("\n\n"),
+  N: Object.freeze({
+    first: () => `Как называется приложенный документ ${SCENARIO_N_FILE_NAME}? Ответь одной строкой: только название с его первой строки. ` +
+      "Инструменты не вызывай, суб-агентов не запускай, содержание разделов не пересказывай.",
+    second: () => [
+      "Что написано в разделе 3 документа, который я приложил к предыдущему сообщению, и какое там кодовое слово?",
+      "Сделай только одно: прочитай этот файл инструментом read_chat_file по attachment_id из пометки к тому сообщению. Если раздел 3 " +
+        `не попал в прочитанное, продолжи с nextOffset, пока не дойдёшь до него. Суб-агентов не запускай. ${NO_WEB}`,
+      "Ответь одним коротким предложением о разделе 3 и приведи кодовое слово дословно."
+    ].join("\n\n")
+  })
 });
 
 // Oracles over the result file ------------------------------------------------------
@@ -1199,6 +1258,55 @@ export function oracleL(input: Readonly<{
   if (workspace.inboxCalls === 0) failed.push("inbox_not_read");
   if (workspace.unknownOutcomes > 0) failed.push("workspace_outcome_unknown");
   return { counts: { ...workspace, answerHasSum: flag(input.answerHasSum) }, failed };
+}
+
+// An earlier file read without a Workspace (N) --------------------------------------
+
+/**
+ * What must hold before anything paid is sent; null is an upload the parser never
+ * settled, and `textHasCodeWord` (computed in SQL) proves section 3 survived parsing.
+ */
+export function scenarioNUploadChecks(row: LAttachmentRow | null, textHasCodeWord: boolean): string[] {
+  if (row === null) return ["upload_not_settled"];
+  const failed: string[] = [];
+  if (row.status !== "ready") failed.push("upload_not_ready");
+  if (row.extractedTextNull) failed.push("upload_has_no_text");
+  else if (!textHasCodeWord) failed.push("upload_text_lacks_section_3");
+  return failed;
+}
+
+/** N's tool calls, from the chat's rows: reads per turn, and whether any Workspace tool ran at all. */
+export function scenarioNToolEvidence(tools: readonly ToolRow[], runs: Readonly<{ first: string; second: string }>) {
+  const reads = (runId: string) => tools.filter((row) => row.runId === runId && row.toolName === "read_chat_file");
+  const second = reads(runs.second);
+  return {
+    firstTurnReads: reads(runs.first).length,
+    secondTurnReads: second.length,
+    secondTurnReadsSucceeded: second.filter((row) => row.state === "complete" && row.resultCode === null).length,
+    workspaceCalls: tools.filter((row) => row.toolName.startsWith("mcp_workspace_")).length
+  };
+}
+
+/**
+ * N's verdict. The word stays out of the first answer, or the second could
+ * repeat that answer instead of reading the file (`firstTurnReads` in the
+ * counts explains a second turn that needed no read: a first turn's read replays).
+ */
+export function oracleN(input: Readonly<{
+  answerHasCodeWord: boolean; firstAnswerHasCodeWord: boolean; firstTerminal: string; secondTerminal: string; sessionStarted: boolean;
+  tools: ReturnType<typeof scenarioNToolEvidence>;
+}>): OracleVerdict {
+  const { tools } = input;
+  const failed: string[] = [];
+  if (input.firstTerminal !== "complete") failed.push("first_run_not_complete");
+  if (input.secondTerminal !== "complete") failed.push("second_run_not_complete");
+  if (input.sessionStarted) failed.push("workspace_session_started");
+  if (tools.workspaceCalls > 0) failed.push("workspace_tool_called");
+  if (input.firstAnswerHasCodeWord) failed.push("code_word_in_first_answer");
+  if (!input.answerHasCodeWord) failed.push("code_word_not_in_answer");
+  if (tools.secondTurnReads === 0) failed.push("chat_file_not_read");
+  else if (tools.secondTurnReadsSucceeded === 0) failed.push("chat_file_read_failed");
+  return { counts: { ...tools, answerHasCodeWord: flag(input.answerHasCodeWord), sessionStarted: flag(input.sessionStarted) }, failed };
 }
 
 // Stops (E) and the restart (G) -----------------------------------------------------
