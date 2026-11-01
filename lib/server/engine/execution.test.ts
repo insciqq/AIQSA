@@ -8,6 +8,7 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineTestFaults } from "./faults";
 import { createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "./execution";
 import { ANSWER_NOW_INSTRUCTION, MAX_CORRECTION_ROUNDS } from "./loop";
@@ -154,6 +155,17 @@ async function events(response: Response): Promise<ModelRunSseEvent[]> {
 const created = { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" };
 
 describe("native run execution", () => {
+  it.each(["workspace_execution_cleanup_failed", "workspace_output_limit_exceeded"] as const)(
+    "does not claim a saved answer for %s before publication", async (code) => {
+      const { adapter } = scriptedAdapter([{ fail: new WorkspaceRuntimeError(code), text: "Partial answer." }]);
+      const memory = memoryEngine();
+      const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
+        repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      expect(memory.published()).toBeNull();
+      expect(result.at(-1)).toMatchObject({ type: "error", data: { code, message: "The Workspace could not complete this turn." } });
+    }
+  );
+
   it("streams reasoning headings and text, publishes the answer before completion and usage", async () => {
     const { adapter } = scriptedAdapter([{ heading: "Thinking it through", text: "Hello there." }]);
     const memory = memoryEngine();
