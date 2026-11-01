@@ -58,7 +58,7 @@ import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, parseWorkspaceRunProxies, workspaceProxyPlanEntry, workspaceSecretEnvironment, workspaceSecretsGuide,
-  WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES, type WorkspaceRunProxy } from "./secrets/manifest";
+  WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
 import { workspaceAgentEnvironment, workspaceAgentId } from "../subagents/guestProtocol";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
@@ -1194,7 +1194,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     }
   }
 
-  async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0] & Readonly<{ proxies?: readonly WorkspaceRunProxy[] }>): Promise<void> {
+  async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0]): Promise<void> {
     const session = await this.runningSession(input);
     session.secretEnvironments?.delete(input.modelRunId);
     try {

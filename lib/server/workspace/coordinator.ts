@@ -2,6 +2,9 @@ import { databaseFailureCode, databaseFailureKind, rememberDatabaseFailure } fro
 import { logEvent } from "../observability";
 import type { DbTransactionOperation } from "../observability/events";
 import { measureTransaction, transactionTimingFields, transactionTimingOf } from "../observability/transactionTiming";
+import { PROXY_UNAVAILABLE_CODE, type ProxyRunPlan } from "@/lib/contracts/proxies";
+import type { RunProxies } from "../proxies/runProxies";
+import { workspaceRunProxies } from "./secrets/manifest";
 import { WorkspaceActivityText, type WorkspaceSecretMatch } from "./activityText";
 import { WorkspaceSecretOutputMask } from "./secretOutput";
 import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
@@ -244,6 +247,8 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   unregisteredCommands(input: Readonly<{ runId: string }>): Promise<number>;
   attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
   personalSecrets(binding: WorkspaceExecutionBinding): Promise<readonly AcceptedWorkspaceSecret[]>;
+  /** The proxies this run froze at admission; null without any. */
+  runProxyPlan(binding: WorkspaceExecutionBinding): Promise<ProxyRunPlan | null>;
   /**
    * MCP from guest code. Each execution initialization rotates the run's
    * bearer (fencing the previous incarnation's invocations and receipts);
@@ -685,6 +690,11 @@ export function createPrismaWorkspaceCoordinatorRepository(
         }
         return true;
       });
+    },
+    async runProxyPlan(binding) {
+      const accepted = await prisma.modelRun.findUnique({ where: { id: binding.runId }, select: { normalizedRequest: true } });
+      const plan = (accepted?.normalizedRequest as { proxies?: ProxyRunPlan } | null)?.proxies;
+      return plan && Array.isArray(plan.entries) ? plan : null;
     },
     async attachments(binding) {
       const accepted = await prisma.modelRun.findUnique({ where: { id: binding.runId }, select: { normalizedRequest: true } });
@@ -1598,6 +1608,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
   onAttachedRunsInterrupted?(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>): Promise<void>;
   registry: WorkspaceExecutionRegistry;
   repository: WorkspaceCoordinatorRepository;
+  /** Credentials of a run's frozen proxies, delivered to its VM with the secrets; absent, a run's proxies read as unavailable. */
+  runProxies?: RunProxies;
   runtime: WorkspaceRuntime;
   skills?: WorkspaceSkillBundles;
   storage: StorageAdapter;
@@ -1988,11 +2000,17 @@ export function createWorkspaceCoordinator(input: Readonly<{
           outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
           // The run's admitted browser language and time zone ride in the same environment.
           const runEnvironment = purpose === "execution" ? { ...code?.environment, ...browserEnvironment } : {};
+          // Only an execution with internet needs them: Off denies a proxy too, so no password reaches that VM. A store that cannot
+          // load them leaves every proxy unavailable, so a site that matches one fails visibly and never goes direct.
+          const proxyPlan = purpose === "execution" && binding.internetEnabled ? await input.repository.runProxyPlan(binding) : null;
+          const proxies = proxyPlan ? workspaceRunProxies(proxyPlan, await input.runProxies?.load({ plan: proxyPlan, userId: binding.userId }).catch(() => null) ??
+            { connections: [], unavailable: proxyPlan.entries.filter((entry) => entry.active).map(({ id, name }) => ({ code: PROXY_UNAVAILABLE_CODE, id, name })) }) : [];
           // Each install rewrites the guest's one environment file, so two at once would lose a run's entry. The wait
           // for the other run touches no guest, so a cancellation here stops nothing.
           await withWorkspaceSessionExclusive(binding.sessionId, signal, () => input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId, agent: runAgent(binding),
             ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
+            ...(proxies.length > 0 ? { proxies } : {}),
             // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
             ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal

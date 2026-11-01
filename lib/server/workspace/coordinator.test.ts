@@ -196,6 +196,7 @@ function fixture() {
   const repository: WorkspaceCoordinatorRepository = {
     saveBrowserSessions: vi.fn(async () => ({ saved: 0, unchanged: 0, skipped: {} })),
     personalSecrets: vi.fn(async () => []),
+    runProxyPlan: vi.fn(async () => null),
     async unregisteredCommands() { return unregisteredCommands.count; },
     async attachments() {
       return [{
@@ -3084,5 +3085,29 @@ describe("Workspace coordinator under a native engine run", () => {
     // The run logged its records, none of them with the value.
     expect(lines.some((line) => line.includes("\"run_execution\""))).toBe(true);
     expect(lines.join("\n")).not.toContain(token);
+  });
+});
+
+describe("a run's proxies reach its VM with the secrets", () => {
+  const plan = { entries: [{ active: true, country: null, hints: [".ru"], host: "203.0.113.7", id: "proxy-1", name: "ru", owner: "personal" as const, port: 8080, protocol: "http" as const }] };
+
+  async function deliver(load: (() => Promise<never>) | null) {
+    const f = fixture();
+    vi.mocked(f.repository.runProxyPlan).mockResolvedValue(plan);
+    const coordinator = createWorkspaceCoordinator({ ...f, repository: f.repository, runtime: f.runtime,
+      ...(load ? { runProxies: { load } } : {}) });
+    await coordinator.execute({ call: { arguments: { path: "/workspace/SECRETS.md" }, id: "first", name: namespacedWorkspaceToolName("sandbox_fs_read") },
+      modelRunToolCallId: "first", runId: f.runId, userId: "user_1", workspace: f.workspace });
+    return vi.mocked(f.runtime.syncPersonalSecrets).mock.calls[0]?.[0];
+  }
+
+  it("marks every proxy unavailable when the store fails, so a matching site fails visibly instead of going direct", async () => {
+    const delivered = await deliver(async () => { throw new Error("store down"); });
+    expect(delivered?.proxies).toEqual([expect.objectContaining({ available: false, id: "proxy-1", password: null })]);
+  });
+
+  it("reads a proxy with no credentials store as unavailable too", async () => {
+    const delivered = await deliver(null);
+    expect(delivered?.proxies).toEqual([expect.objectContaining({ available: false, id: "proxy-1" })]);
   });
 });

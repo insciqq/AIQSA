@@ -204,7 +204,7 @@ describe("native tool registry", () => {
     const execution = (command: string) => ({ call: { arguments: { command }, id: "c1", name: "workspace_shell" }, ordinal: 0,
       persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
     const subagent = { kind: "subagent" as const, name: "shop", threadId: "thread-1" };
-    await (await build(subagent, "aiqsa-workspace:0.1.40")).resolve("workspace_shell")!.execute(execution("aiqsa-browser open https://shop.example"));
+    await (await build(subagent, "aiqsa-workspace:0.1.41")).resolve("workspace_shell")!.execute(execution("aiqsa-browser open https://shop.example"));
     expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ agent: subagent, runId: "run" }));
     await (await build({ kind: "main" }, "aiqsa-workspace:0.1.39")).resolve("workspace_shell")!.execute(execution("aiqsa-browser open x"));
     expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { kind: "main" } }));

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/server/prisma";
+import { createPrismaRunProxies } from "@/lib/server/proxies/store";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
 import { getWorkspaceConfig } from "./config";
 import { createWorkspaceRuntime } from "./defaultRuntime";
@@ -56,6 +57,7 @@ export function workspaceCoordinatorForStorage(storage: StorageAdapter) {
     onAttachedRunsInterrupted: interruptAttachedRuns,
     registry: createPrismaWorkspaceExecutionRegistry(prisma),
     repository: createPrismaWorkspaceCoordinatorRepository(prisma),
+    runProxies: createPrismaRunProxies(prisma),
     skills: createWorkspaceSkillBundles(prisma, storage),
     runtime: workspaceRuntime,
     storage

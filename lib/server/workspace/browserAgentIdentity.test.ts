@@ -16,6 +16,6 @@ describe("Workspace browser agent identity", () => {
   it("treats old images as main-only", () => {
     expect(workspaceBrowserAgentAvailableFor({ kind: "main" }, "aiqsa-workspace:0.1.39")).toBe(true);
     expect(workspaceBrowserAgentAvailableFor({ kind: "subagent", name: "shop", threadId: "thread-7" }, "aiqsa-workspace:0.1.39")).toBe(false);
-    expect(workspaceBrowserAgentAvailableFor({ kind: "subagent", name: "shop", threadId: "thread-7" }, "aiqsa-workspace:0.1.40")).toBe(true);
+    expect(workspaceBrowserAgentAvailableFor({ kind: "subagent", name: "shop", threadId: "thread-7" }, "aiqsa-workspace:0.1.41")).toBe(true);
   });
 });

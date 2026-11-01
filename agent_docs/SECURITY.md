@@ -90,7 +90,7 @@ Operator decisions 2026-11-01.
 - The model may see proxy passwords, administrator ones included, because AIQSA is an internal tool. This is an exception to the root rule that installation secrets stay on the server. Accepted risk: any user's agent can read an administrator proxy's password, and it then travels like a saved secret the agent read. Settings and routes never return one, and a run's persisted plan never holds one (`lib/server/proxies/runProxies.ts`); the model's own reader is `manage_proxy`'s `read`, for an administrator's only while switched on.
 - A domain hint is advice, never a hard rule: a named proxy opens any site. An explicit choice wins, direct included; otherwise a site that matches a proxy never goes direct, and when all have failed the failure is visible (`lib/domain/proxySelection.ts`).
 - A proxy must not become a path into the installation's network, whoever owns it: private, loopback, link-local, metadata and installation addresses are refused with no switch, and the check repeats before every connection (`lib/server/proxies/address.ts`). Accepted cost: a proxy on the operator's LAN cannot be used.
-- In the Workspace the internet policy still applies: Off denies a proxy too.
+- In the Workspace the internet policy still applies: Off denies a proxy too. A forwarder on the VM's loopback holds the run's credentials (`ops/workspace-guest/python/aiqsa/proxy/`); guest code can use them. A browser has one exit per site: agents naming different proxies for one site share the last choice.
 
 ## AIQSA Connect
 

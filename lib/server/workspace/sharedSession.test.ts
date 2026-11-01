@@ -116,6 +116,7 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
     markSessionStarting: async () => true,
     outputHandoffReady: async () => exportPending && (operationOwner === null || !attached.has(MAIN)),
     personalSecrets: async () => [],
+    runProxyPlan: async () => null,
     prepareOutput: async () => false,
     renewExportLease: async () => true,
     reserveOutputCapture: async () => ({ create: true, id: "c".repeat(32), outputs: null }),

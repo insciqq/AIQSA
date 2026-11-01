@@ -11,7 +11,7 @@ export const BROWSER_HANDOFF_TOOL = "browser_handoff";
 export const BROWSER_GUIDE_IMAGE_TOOLS = { view: "view_workspace_image", analyze: "analyze_image" } as const;
 
 /** The first guest image that understands per-agent browser slots and tabs. */
-export const WORKSPACE_BROWSER_AGENT_IMAGE = "aiqsa-workspace:0.1.40";
+export const WORKSPACE_BROWSER_AGENT_IMAGE = "aiqsa-workspace:0.1.41";
 export const WORKSPACE_BROWSER_AGENT_IMAGE_VERSION = 40;
 
 /** Old guests are safe for the main agent, but not for shared sub-agent tabs. */

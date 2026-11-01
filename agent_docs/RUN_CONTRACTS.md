@@ -87,7 +87,7 @@ Code: `lib/server/telegram/`.
 ## Follow-ups and continuation
 
 - A follow-up adds user input to a running answer within its accepted bindings and budgets; delivery proves receipt, not obedience.
-- Continuation into a new chat summarizes the active branch's text through the admitted System Model, without tools, attachments or Workspace inspection. An enabled Workspace may copy its project files unread into a private single-use seed.
+- Continuation into a new chat summarizes the active branch's text through the admitted System Model, without tools, attachments or Workspace inspection.
 
 ## Background sub-agents
 
