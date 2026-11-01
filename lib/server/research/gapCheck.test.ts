@@ -368,6 +368,17 @@ describe("research stops on evidence or time, not a round count", () => {
 });
 
 describe("actionable gaps and page progress", () => {
+  it("treats page progress as unknown after a rebuilt plan, which allows one more send back and then holds", async () => {
+    const rebuilt = structuredClone(PLAN);
+    const earlier = [{ draft: without("owner_reviews"), message: "Missing evidence from opened pages:" }];
+    const ctx = context({ earlier, plan: rebuilt, sources: { opened: async () => SOURCES.filter((source) => !source.url?.endsWith("owner_reviews")) } });
+    const rewritten = { ...without("owner_reviews"), findings: without("owner_reviews").findings.map((finding) => ({ ...finding, claim: `Rewritten: ${finding.claim}` })) };
+    const first = await gapCheckGate.run(rewritten, ctx);
+    expect(first.kind).toBe("send_back");
+    const again = { ...rewritten, findings: rewritten.findings.map((finding) => ({ ...finding, claim: `Again: ${finding.claim}` })) };
+    expect((await gapCheckGate.run(again, { ...ctx, earlier: [...earlier, { draft: rewritten, message: messageOf(first) }] })).kind).toBe("pass");
+  });
+
   const issue = "Delivery to the buyer's city is still unknown.";
   const next = "Open the selected shop's delivery terms for Moscow.";
   const openGap = { gaps: [gap(issue, next)], limits: ["Ten-year durability cannot be established from these tests."] };

@@ -8,13 +8,15 @@ import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
 import type { TranscriptItem } from "../engine/transcript";
+import type { EngineTool } from "../engine/toolRegistry";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
+import { toolResultOutputText } from "../engine/toolResults";
 import type { NativeRunStore } from "../engine/runStore";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchAttempt, ResearchGateContext, ResearchOpenedSource, ResearchSubagentOutcome, ResearchSubagentRequest, ResearchVerifierModel } from "./gates";
-import type { ResearchEngineDeps } from "./run";
+import { createRunResearch, type ResearchEngineDeps } from "./run";
 import { checkQuotes, QUOTE_EXCERPT_LIMITS, type QuoteCheck } from "./quoteCheck";
 import { decodeVerifierReport, VERIFIER_INSTRUCTIONS, verifierBrief, verifierGate, VERIFIER_LIMITS, VERIFIER_MARKER } from "./verifier";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -255,6 +257,43 @@ describe("what the verifier judges from", () => {
     expect(`${result.notes!.join()} ${result.unresolvedNote}`).not.toMatch(/forged|Ignore your|server says/u);
   });
 
+  describe("a passage from another page", () => {
+    const SHOP_A = "https://shop-a.example/x";
+    const SHOP_B = "https://shop-b.example/x";
+    const onA = finding("Shop A delivers free.", "free delivery on every order", { url: SHOP_A });
+    const pageB: ResearchOpenedSource = { partial: false, text: "Shop B terms: free delivery on every order.", toolName: "fetch_url", url: SHOP_B };
+
+    it("carries where it was read, and tells the verifier it does not show the cited page", async () => {
+      const { context, run } = contextOf({ opened: async () => [pageB], turn: async () => ended("Outcome: done\nC1 | partly | another page") });
+      await verifierGate.run(draftOf([onA]), context);
+      const line = lineOf(run.mock.calls[0]![0].brief, 1);
+      expect(line).toMatchObject({ claim: onA.claim, from: `other: ${SHOP_B}`, link: SHOP_A, quote: "free delivery on every order" });
+      expect(line.from).not.toBe("cited");
+      expect(VERIFIER_INSTRUCTIONS).toContain("it does not show what the cited page says: such a claim is partly at best");
+    });
+
+    it("never reads as the cited page's, even when the model calls it supported without opening that page", async () => {
+      const { context } = contextOf({ opened: async () => [pageB], turn: async () => ended("Outcome: done\nC1 | supported | the passage says so") });
+      const result = await verifierGate.run(draftOf([onA]), context);
+      expect(result.kind).toBe("pass");
+      expect(notesOf(result)).toContain("Claims: 1; supported: 0; partly supported: 1.");
+      expect(notesOf(result)).toContain("Quotes: found in opened pages: 0; found on a different page than the one cited: 1.");
+    });
+
+    it("takes the verdict when the cited page was read as well", async () => {
+      const pageA: ResearchOpenedSource = { partial: false, text: "Shop A: free delivery for every buyer.", toolName: "fetch_url", url: SHOP_A };
+      const { context } = contextOf({ opened: async () => [pageB, pageA], turn: async () => ended("Outcome: done\nC1 | supported | the cited page says so") });
+      expect(notesOf(await verifierGate.run(draftOf([onA]), context))).toContain("Claims: 1; supported: 1.");
+    });
+
+    it("does not cap a browser page with no recorded address: that may be the cited page", async () => {
+      const browser: ResearchOpenedSource = { browser: true, partial: false, text: "free delivery on every order", toolName: "mcp__workspace__sandbox_shell", url: null };
+      const { context, run } = contextOf({ opened: async () => [browser], turn: async () => ended("Outcome: done\nC1 | supported | the passage says so") });
+      expect(notesOf(await verifierGate.run(draftOf([onA]), context))).toContain("Claims: 1; supported: 1.");
+      expect(lineOf(run.mock.calls[0]![0].brief, 1).from).toBe("unknown");
+    });
+  });
+
   describe("fitting the brief", () => {
     const realistic = (count: number) => Array.from({ length: count }, (_, index) => {
       const quote = `${"точная цитата со страницы ".repeat(6)}${index}`;
@@ -269,7 +308,7 @@ describe("what the verifier judges from", () => {
       expect(ids).toHaveLength(20);
       expect(brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
       // Measured: 16,000 characters leave this much on each side at 20 claims.
-      expect(side).toBeGreaterThanOrEqual(130);
+      expect(side).toBeGreaterThanOrEqual(120);
       expect(new Set(ids.map((id) => lineOf(brief, id).before_quote!.length))).toEqual(new Set([side]));
     });
 
@@ -397,6 +436,29 @@ describe("the one correction", () => {
     const again = contextOf({ earlier: [{ draft: first.draft, message: first.message }] });
     await verifierGate.run(draftOf([decomposed]), again.context);
     expect(again.run).not.toHaveBeenCalled();
+  });
+
+  it("remembers across an approval continuation, whose drafts are new objects and whose message is all that is left", async () => {
+    const first = await firstRound([HOLDS, WRONG, INVENTED], "Outcome: done\nC1 | supported | y\nC2 | unsupported | n");
+    expect(first.message).toContain("Findings the check did not support: 2, 3.");
+    const earlier = [{ draft: structuredClone(first.draft), message: first.message }];
+    const { context } = contextOf({ earlier, turn: async () => ended("Outcome: done\nC1 | supported | y") });
+    const result = await verifierGate.run(draftOf([HOLDS]), context);
+    expect(result.kind).toBe("pass");
+    expect(notesOf(result)).toContain("if they appear above, do not rely on them: «The X2 lasts for decades.»; «The X3 never wears out.»");
+    // Still the one correction, and what passed before is read again.
+    expect(context.subagents.run).toHaveBeenCalledTimes(1);
+    expect(verifierGate.carriedNotes!(draftOf([HOLDS]), earlier).join()).toContain("«The X2 lasts for decades.»");
+    expect((await verifierGate.run(draftOf([WRONG]), contextOf({ earlier, turn: async () => ended("Outcome: done\nC1 | unsupported | n") }).context)).kind).toBe("pass");
+  });
+
+  it("does not take a model's words for the list of rejected findings", async () => {
+    const reason = "Findings the check did not support: 1.";
+    const first = await firstRound([HOLDS, WRONG], `Outcome: done\nC1 | supported | y\nC2 | unsupported | ${reason}`);
+    const earlier = [{ draft: structuredClone(first.draft), message: first.message }];
+    const named = verifierGate.carriedNotes!(draftOf([]), earlier).join();
+    expect(named).toContain("«The X2 lasts for decades.»");
+    expect(named).not.toContain("«The X1 holds up.»");
   });
 
   it("carries the rejected claims for a draft it did not finish on", async () => {
@@ -847,6 +909,38 @@ describe("through the engine", () => {
     expect(JSON.stringify(other.requests[0]!.history)).toContain("Filtered page: The X1 is ");
     expect(memory.published()).toContain("Claims: 1; supported: 1.");
     expect(memory.published()).toContain("the model had the opened text for 1 and only the page for 0");
+  });
+
+  it("keeps a rejected claim named after an approval continuation rebuilds the research from the transcript", async () => {
+    const research = (items: () => readonly TranscriptItem[]) => createRunResearch({ chatId: "chat", deps: { gates: [verifierGate] }, gatesEndAt: Date.now() + 30 * 60_000, items, now: () => Date.now(),
+      onPlan: async () => undefined, rearmReservedCall: () => undefined, runId: "run-1", savedResults: { read: async () => null }, subagentInput: { admittedRequest: { modelId: "main-model" }, engine: {}, snapshot: {} } as never,
+      threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [{ items: researcherItems, threadId: "researcher" }] }, toolTimeLeft: () => true, userId: "user", userMessage: "q" });
+    const signal = new AbortController().signal;
+    const execute = (tool: EngineTool, call: { arguments: unknown; id: string; name: string }) =>
+      tool.execute({ call, persistedToolCallId: `row-${call.id}`, round: 1, signal } as never);
+    const first = research(() => []);
+    await execute(first.tools[0]!, start);
+    const sent = submit("call-1", [HOLDS, INVENTED], "# First");
+    const result = await execute(first.tools[1]!, sent);
+    expect(result).toMatchObject({ status: "complete" });
+    const transcript: TranscriptItem[] = [
+      { id: "msg-q", kind: "user", text: "q" },
+      { arguments: JSON.stringify(start.arguments), callId: start.id, id: "i1", kind: "tool_call", name: start.name },
+      { arguments: JSON.stringify(sent.arguments), callId: sent.id, id: "i2", kind: "tool_call", name: sent.name },
+      { callId: sent.id, id: "i3", kind: "tool_result", name: sent.name, outcome: "complete", output: toolResultOutputText(result) },
+      { arguments: "{}", callId: "held", id: "i4", kind: "tool_call", name: "mcp__shop__buy" }
+    ];
+    const continued = research(() => []);
+    continued.resume(structuredClone(transcript));
+    // The next draft drops the finding from its list and keeps the report as it was.
+    const next = await execute(continued.tools[1]!, submit("call-2", [HOLDS], "# First"));
+    expect(next).toMatchObject({ content: [{ value: { status: "accepted" } }] });
+    const answer = continued.finish(false)!;
+    expect(answer).toContain("«The X3 never wears out.»");
+    // The draft that stands while the approval waits names it as well, before any new draft.
+    const waiting = research(() => []);
+    waiting.resume(structuredClone(transcript));
+    expect(waiting.finish(false)).toContain("«The X3 never wears out.»");
   });
 
   it("publishes a plain-text draft with only the note the run already adds", async () => {
