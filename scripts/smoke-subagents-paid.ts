@@ -207,7 +207,7 @@ import { createFetchOpenAIResponsesClient } from "../lib/server/providers/openai
 import {
   RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, configureResearchEvalRoles, createResearchArchive, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval,
   evaluateResearch, redactResearchSecrets, researchEvalOptions, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout,
-  researchComparisonDetails, researchRepeatability, researchRoleUsage, researchThreadRole, researchUsageByModel, researchEffortConfiguration, type ResearchEvalCall, type ResearchGrade, type ResearchJob, type ResearchTiming,
+  researchComparisonDetails, researchRepeatability, researchRoleUsage, researchStoreFacts, researchThreadRole, researchUsageByModel, researchEffortConfiguration, type ResearchEvalCall, type ResearchGrade, type ResearchJob, type ResearchTiming,
   type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
 } from "./research-eval-support";
 
@@ -1548,10 +1548,21 @@ async function researchUsage(ctx: Context, chatId: string, turns: readonly TurnR
         'outputTokens', "body"->'outputTokens', 'requestAnchor', CASE WHEN "body" ? 'requestAnchor'
           THEN jsonb_build_object('inputTokens', "body"->'requestAnchor'->'inputTokens') ELSE NULL END) AS "body"
     FROM "RunTranscriptItem" WHERE "chatId" = $1 ORDER BY "modelRunId", "subagentThreadId", "sequence"`, [chatId])).rows;
-  const main = (await ctx.db.query<ResearchTiming>(`SELECT NULL AS "threadId", "answerStartedAt" AS "startedAt", "answerCompletedAt" AS "endedAt"
+  const main = (await ctx.db.query<ResearchTiming>(`SELECT NULL AS "threadId", "createdAt" AS "startedAt", "answerCompletedAt" AS "endedAt"
     FROM "ModelRun" WHERE "chatId" = $1 AND "subagentTurnId" IS NULL`, [chatId])).rows;
   return { roles: researchRoleUsage(transcript, [...main, ...turns.map((turn) => ({ threadId: turn.threadId,
     startedAt: turn.startedAt, endedAt: turn.endedAt }))], names), byModel: researchUsageByModel(rows), total: usageByPurpose(rows) };
+}
+
+/** The run's records as counts, read before cleanup takes them with the chat. */
+async function researchStore(db: Context["db"], chatId: string, runId: string) {
+  const frame = (await db.query<{ criteria: number; rows: number; changes: number }>(`SELECT jsonb_array_length("frame"->'criteria') AS "criteria",
+    jsonb_array_length("frame"->'rows') AS "rows", jsonb_array_length("frame"->'changes') AS "changes"
+    FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chatId, runId])).rows[0] ?? null;
+  const evidence = (await db.query<{ kind: string; quoteCheck: string | null; count: number }>(`SELECT "kind", "quoteCheck", count(*)::int AS "count"
+    FROM "ResearchEvidence" WHERE "chatId" = $1 GROUP BY 1, 2`, [chatId])).rows;
+  const pages = (await db.query<{ obtainedBy: string; count: number }>(`SELECT "obtainedBy", count(*)::int AS "count" FROM "ResearchPage" WHERE "chatId" = $1 GROUP BY 1`, [chatId])).rows;
+  return researchStoreFacts({ evidence, frame, pages });
 }
 
 async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
@@ -1653,7 +1664,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         Object.assign(facts, researchProcessFacts({ calls, drafts, gates }));
         const usage = await researchUsage(ctx, chat.id, turns, names);
         Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
-          roles: usage.roles, tokensByModel: usage.byModel, planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
+          roles: usage.roles, tokensByModel: usage.byModel, store: await researchStore(ctx.db, chat.id, runId), planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
           searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
         questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && metrics.independentOpened === 0);
       } catch {

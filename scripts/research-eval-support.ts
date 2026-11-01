@@ -390,6 +390,22 @@ export function researchPlanWindow(frame: Readonly<{ createdAt: Date | string | 
     releasedBy: typeof frame?.releasedBy === "string" && (RESEARCH_PLAN_RELEASES as readonly string[]).includes(frame.releasedBy) ? frame.releasedBy : null };
 }
 
+export type ResearchStoreRows = Readonly<{
+  frame: Readonly<{ criteria: number; rows: number; changes: number }> | null;
+  evidence: readonly Readonly<{ kind: string; quoteCheck: string | null; count: number }>[];
+  pages: readonly Readonly<{ obtainedBy: string; count: number }>[];
+}>;
+
+/** What a run's records came to, in counts: read while the chat exists, and none of it is the model's text. */
+export function researchStoreFacts(store: ResearchStoreRows) {
+  const by = <T>(rows: readonly T[], key: (row: T) => string | null, count: (row: T) => number) => rows.reduce<Record<string, number>>((totals, row) => {
+    const name = key(row) ?? "none";
+    return { ...totals, [name]: (totals[name] ?? 0) + count(row) };
+  }, {});
+  return { frame: store.frame, records: by(store.evidence, (row) => row.kind, (row) => row.count), quoteChecks: by(store.evidence, (row) => row.quoteCheck, (row) => row.count),
+    pages: by(store.pages, (row) => row.obtainedBy, (row) => row.count) };
+}
+
 /** An explicit projection: model text, identifiers, chosen names, links and error messages have no stdout field. */
 export function researchEvaluationSummary(input: Readonly<{ job: ResearchJob; answerCount: number; gateReportCount: number;
   grade: EvalResult<ResearchGrade>; extraction: EvalResult<StructuredResearchAnswer>; failed: boolean; wallSeconds: number }>) {
