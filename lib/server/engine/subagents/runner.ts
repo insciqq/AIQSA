@@ -128,11 +128,11 @@ export type SubagentHost = Readonly<{
   /** User text delivered into the parent run: `fetch_url` link authority. */
   followupTexts(): readonly string[];
   /**
-   * The thread's mailbox on record (`RunFollowup`): what its turns of these runs have not read, oldest first, and the
-   * receipt once a turn read it. Only reading stamps a message, so one a turn never got to is read by the next.
+   * The thread's mailbox on record (`RunFollowup`): what its turns of these runs have not read, oldest first. Only the
+   * transcript write that holds a message stamps it (`TranscriptRepository.append`), so one a turn never got on record is
+   * read by the next.
    */
   mailbox?: Readonly<{
-    markRead(input: Readonly<{ nonces: readonly string[]; runIds: readonly string[]; threadId: string }>): Promise<void>;
     unread(input: Readonly<{ runIds: readonly string[]; threadId: string }>): Promise<readonly SubagentMessage[]>;
   }>;
   maxToolCalls: number | null;
@@ -304,19 +304,65 @@ export function handedBackApproval(call: ModelToolCall, approval: McpApprovalReq
   };
 }
 
-/** While a sub-agent waits in a browser handoff for the user, its turn is `waiting` (an active state), then `running` again. */
-function waitingDuringHandoff(registry: ToolRegistry, mark: (state: "running" | "waiting") => Promise<void>): ToolRegistry {
+/** What a turn's row says of it while it is active. */
+type TurnActivity = Readonly<{ reason?: string; state: "running" | "waiting" }>;
+
+type TurnWait = Readonly<{
+  leave(): Promise<boolean>;
+  /** The row says so; false when it could not be written. */
+  marked: boolean;
+}>;
+
+type TurnWaits = Readonly<{ enter(kind: "answer" | "user"): Promise<TurnWait> }>;
+
+/**
+ * A turn's waits and the one row they make. They overlap when one response asks the parent and hands the browser to the
+ * user: a question makes the row wait for its answer, else a handoff makes it wait for the user, else the turn runs. The
+ * row is written only when that changes, one write at a time: every write clears the claim on the turn's question
+ * (`setActiveState`), so a handoff ending beside a question writes nothing, and only the question's own end clears its
+ * reason and its claim. After a failed write the row is unknown, and the next one is written whatever it says.
+ */
+function createTurnWaits(write: (activity: TurnActivity) => Promise<boolean>): TurnWaits {
+  const waits = new Set<Readonly<{ kind: "answer" | "user" }>>();
+  let written: TurnActivity | null = { state: "running" };
+  let writes: Promise<boolean> = Promise.resolve(true);
+  const sync = () => {
+    writes = writes.then(async () => {
+      const activity: TurnActivity = [...waits].some((wait) => wait.kind === "answer") ? { reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting" }
+        : waits.size > 0 ? { state: "waiting" } : { state: "running" };
+      if (activity.state === written?.state && activity.reason === written?.reason) return true;
+      const saved = await write(activity).catch(() => false);
+      written = saved ? activity : null;
+      return saved;
+    });
+    return writes;
+  };
+  return {
+    async enter(kind) {
+      const wait = { kind };
+      waits.add(wait);
+      const marked = await sync();
+      return { leave: () => {
+        waits.delete(wait);
+        return sync();
+      }, marked };
+    }
+  };
+}
+
+/** While a sub-agent waits in a browser handoff for the user, its turn waits (an active state) and runs again after. */
+function waitingDuringHandoff(registry: ToolRegistry, waits: TurnWaits): ToolRegistry {
   return {
     ...registry,
     resolve: (name) => {
       const tool = registry.resolve(name);
       if (!tool || name !== BROWSER_HANDOFF_TOOL_NAME) return tool;
       return { ...tool, execute: async (execution) => {
-        await mark("waiting");
+        const wait = await waits.enter("user");
         try {
           return await tool.execute(execution);
         } finally {
-          await mark("running");
+          await wait.leave();
         }
       } };
     }
@@ -492,11 +538,16 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     /** A foreground turn's question: its parent can read nothing until it ends, so the turn ends with it. */
     const handBack: { question: string | null } = { question: null };
     let questions = 0;
+    /** Mailbox messages this turn took and has not yet on record, by the transcript item that holds each: item id, nonce. */
+    const unrecorded = new Map<string, string>();
     const ended = (state: EndedSubagentState, extra: Readonly<{ outcome?: SubagentOutcome; reason?: string }> = {}) =>
       endedSubagentCallResult({ approvals, binding: input.binding, files: [...files], name: input.name, report: report || roundText,
         state, steps, ...(handBack.question ? { question: handBack.question } : {}), ...extra });
+    const waits = createTurnWaits((activity) => host.setTurnState?.({ ...activity, turnId: input.turnId }) ?? Promise.resolve(false));
     // Its parent is the main agent until sub-agents have children of their own.
     const fromParent = (message: SubagentMessage) => message.origin === "main_agent";
+    /** Messages of its parent an earlier question of this batch took: one stays in the mailbox until the turn's next step. */
+    const answers = new Set<string>();
     const agentTurn: AgentToolTurn = {
       name: input.name,
       async ask(question, execution) {
@@ -506,13 +557,17 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           handBack.question ??= question;
           return "handed_back";
         }
-        const marked = await host.setTurnState?.({ reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting", turnId: input.turnId }).catch(() => false);
-        if (!marked) return "unavailable";
+        const wait = await waits.enter("answer");
         try {
+          if (!wait.marked) return "unavailable";
           host.messaging?.questionAsked({ chatId: host.chatId, userId: host.userId });
-          return await mailArrived(turn, fromParent, execution.signal, host.toolTimeLeft) ? "answered" : "no_answer";
+          const unanswered = (message: SubagentMessage) => fromParent(message) && !answers.has(message.nonce);
+          if (!await mailArrived(turn, unanswered, execution.signal, host.toolTimeLeft)) return "no_answer";
+          const answer = turn.mailbox.find(unanswered);
+          if (answer) answers.add(answer.nonce);
+          return "answered";
         } finally {
-          await host.setTurnState?.({ state: "running", turnId: input.turnId }).catch(() => false);
+          await wait.leave();
         }
       },
       async waitForReply(from, execution) {
@@ -543,8 +598,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       // No tool group narrows them: they reach the agents of the chat, nothing outside it.
       const registry = waitingDuringHandoff(host.messaging
         ? withSubagentTools(filtered, subagentMessageTools({ chatId: host.chatId, messaging: host.messaging, parentRunId: input.parentRunId,
-          userId: host.userId }, agentTurn)) : filtered,
-      (state) => host.setTurnState?.({ state, turnId: input.turnId }).then(() => undefined, () => undefined) ?? Promise.resolve());
+          userId: host.userId }, agentTurn)) : filtered, waits);
       // A thread's earlier turns may have run in the background, in runs of their own that answer nothing.
       const runIds = [...new Set([...(host.threadRunIds ? await host.threadRunIds(input.threadId) : host.branchRunIds),
         input.hostRunId])];
@@ -575,26 +629,24 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           deliveredTexts.push(followup.text);
           unknownEffects.userSpoke();
         }
-        const read: string[] = [];
         for (const message of turn.mailbox.splice(0)) {
           if (threadState.readMessages.has(message.nonce)) continue;
           threadState.readMessages.add(message.nonce);
-          read.push(message.nonce);
+          const id = randomUUID();
+          unrecorded.set(id, message.nonce);
           if (message.origin === "user") {
-            added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(message.text) });
+            added.push({ followup: true, id, kind: "user", text: subagentFollowupText(message.text) });
             deliveredTexts.push(message.text);
             unknownEffects.userSpoke();
           } else if (message.origin === "subagent_message") {
             // Another agent's message is no user speech and no brief: it releases nothing, authorizes nothing and changes no task.
-            added.push({ id: randomUUID(), kind: "user", text: subagentAgentMessageText({ from: message.from ?? "unknown", text: message.text }) });
+            added.push({ id, kind: "user", text: subagentAgentMessageText({ from: message.from ?? "unknown", text: message.text }) });
           } else {
             // The main agent's message is no user speech: it never releases an unknown effect or authorizes a link.
-            added.push({ id: randomUUID(), kind: "user", text: subagentTurnText({ brief: message.text, continued: true, name: input.name,
+            added.push({ id, kind: "user", text: subagentTurnText({ brief: message.text, continued: true, name: input.name,
               userMessage: input.userMessage }) });
           }
         }
-        // Bookkeeping behind the turn: a receipt that fails leaves the message unread, and the thread's next turn reads it again.
-        if (read.length > 0) await host.mailbox?.markRead({ nonces: read, runIds, threadId: input.threadId }).catch(() => undefined);
         return added;
       };
       // What the user already wrote into this answer (a correction the main agent read before it called) comes with the brief.
@@ -602,7 +654,14 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const items: TranscriptItem[] = [...host.runContextItems, ...history, turnContextItem(native.turnContext), inputItem, ...earlier];
       // One sequence per thread for the life of the run: a later turn continues where the last one stopped, and a compaction
       // that finished after its turn reserves from the thread's current writer.
-      const activeWriter = createTranscriptWriter({ append: (from, added) => host.transcripts.append(scope, from, added),
+      const activeWriter = createTranscriptWriter({
+        // A message is read when the write that holds it commits, which stamps it: never before, so none is lost, and in one
+        // transaction, so none is read twice.
+        append: async (from, added) => {
+          const nonces = added.flatMap((item) => unrecorded.get(item.id) ?? []);
+          await host.transcripts.append(scope, from, added, nonces.length > 0 ? { nonces, runIds, threadId: input.threadId } : undefined);
+          for (const item of added) unrecorded.delete(item.id);
+        },
         firstSequence: threadState.writer ? threadState.writer.reserve(0) : await host.transcripts.nextSequence(scope),
         runId: input.hostRunId });
       threadState.writer = activeWriter;
@@ -764,6 +823,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       await writer?.flush();
       return ended(ending.state, { reason: ending.reason });
     } finally {
+      // What it took but never got on record stays unread, and the thread's next turn in this run reads it instead of skipping it.
+      for (const nonce of unrecorded.values()) threadState.readMessages.delete(nonce);
       if (host.browserIdentity) {
         await host.browserIdentity.release({ agent, chatId: host.chatId, modelRunId: input.hostRunId, userId: host.userId })
           .catch(() => undefined);

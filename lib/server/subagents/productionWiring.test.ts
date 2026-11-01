@@ -61,7 +61,7 @@ describe("sub-agent production wiring", () => {
     expect(deps.engine.subagentThreads).toBeDefined();
   });
 
-  it("gives web and Assistant runs the background port and every run its Workspace's browser identity", async () => {
+  it("gives every run the background port, messaging, custom types and its Workspace's browser identity", async () => {
     const { subagentRunPorts } = await import("../engine/handlerSupport");
     const background = { availability: vi.fn(), deliver: vi.fn(), start: vi.fn(), stop: vi.fn() };
     const types = { catalog: vi.fn(), resolve: vi.fn() };
@@ -69,18 +69,11 @@ describe("sub-agent production wiring", () => {
     const releaseBrowserAgent = vi.fn(async () => undefined);
     const native = { subagents: { background: () => background, messaging: () => messaging, types } } as unknown as Parameters<typeof subagentRunPorts>[0];
     const workspace = { releaseBrowserAgent } as unknown as NonNullable<Parameters<typeof subagentRunPorts>[1]["workspace"]>;
-    const web = subagentRunPorts(native, { scheduled: false, telegram: false, workspace });
-    expect(web.background).toBe(background);
-    expect(web.types).toBe(types);
-    expect(subagentRunPorts(native, { scheduled: true, telegram: false }).background).toBeUndefined();
-    expect(subagentRunPorts(native, { scheduled: false, telegram: true }).background).toBeUndefined();
-    // A scheduled occurrence and a Telegram turn follow the same rule for custom sub-agents and the default.
-    expect(subagentRunPorts(native, { scheduled: true, telegram: false }).types).toBe(types);
-    expect(subagentRunPorts(native, { scheduled: false, telegram: true }).types).toBe(types);
-    // Their foreground sub-agents see and reach each other all the same.
-    for (const run of [{ scheduled: false, telegram: false }, { scheduled: true, telegram: false }, { scheduled: false, telegram: true }]) {
-      expect(subagentRunPorts(native, run).messaging).toBe(messaging);
-    }
+    // Whatever the kind of run: a Telegram turn or a scheduled occurrence answers and stops a background sub-agent of its
+    // branch (only starting one is gated, by `backgroundAllowed`), and its foreground sub-agents reach the others.
+    const web = subagentRunPorts(native, { workspace });
+    expect(web).toMatchObject({ background, messaging, types });
+    expect(subagentRunPorts(native, {})).toEqual({ background, messaging, types });
     const agent = { kind: "subagent" as const, name: "shop", threadId: "thread-1" };
     expect(web.browserIdentity?.environment(agent)).toMatchObject({ AIQSA_AGENT_ID: "thread-1", AIQSA_AGENT_NAME: "shop" });
     await web.browserIdentity?.release({ agent, chatId: "chat", modelRunId: "run-1", userId: "user" });

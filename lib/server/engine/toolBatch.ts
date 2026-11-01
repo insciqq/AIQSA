@@ -515,11 +515,20 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
 
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);
   let next = 0;
+  /** The end of the batch's latest serial call (`EngineTool.serial`), which the next one starts behind. */
+  let serial: Promise<unknown> = Promise.resolve();
+  const afterSerial = (work: () => Promise<TranscriptToolResultItem>) => {
+    const turn = serial.then(work);
+    serial = turn.catch(() => undefined);
+    return turn;
+  };
   const worker = async () => {
     while (next < input.calls.length) {
       const index = next;
       next += 1;
-      results[index] = await runWithToolCallObservation(() => runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index));
+      const call = input.calls[index]!;
+      const run = () => runWithToolCallObservation(() => runCall(call, (input.firstOrdinal ?? 0) + index));
+      results[index] = await (deps.registry.resolve(call.name)?.serial ? afterSerial(run) : run());
     }
   };
   await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));

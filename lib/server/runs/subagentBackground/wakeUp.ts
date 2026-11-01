@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import type { AuthenticatedSession, RequestAuthResolver } from "../../auth/requestAuth";
 import { logEvent } from "../../observability";
+import type { SubagentCallbackClaim } from "../../subagents/ports";
 import { branchPathMessageIds } from "../../toolObservations/repository";
 import type { SubagentWakeUpAdmitter, SubagentWakeUpOutcome } from "./callbacks";
 
@@ -22,7 +23,7 @@ export type SubagentWakeUpSend = (input: Readonly<{
   body: Record<string, unknown>;
   chatId: string;
   resolveAuth: RequestAuthResolver;
-  wakeUp: Readonly<{ text: string; turnIds: readonly string[] }>;
+  wakeUp: Readonly<{ text: string; turns: readonly SubagentCallbackClaim[] }>;
 }>) => Promise<Response>;
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -111,7 +112,7 @@ export function createSubagentWakeUpAdmitter(deps: Readonly<{
   client: Pick<PrismaClient, "$transaction" | "chat" | "modelRun" | "user">;
   send: SubagentWakeUpSend;
 }>): SubagentWakeUpAdmitter {
-  return async ({ chatId, text, turnIds, userId }) => {
+  return async ({ chatId, text, turns, userId }) => {
     const base = await deps.client.$transaction(async (tx) => {
       const chat = await tx.chat.findFirst({ select: { activeLeafMessageId: true, assistantId: true },
         where: { archived: false, id: chatId, permanentDeletionAt: null, userId } });
@@ -129,7 +130,7 @@ export function createSubagentWakeUpAdmitter(deps: Readonly<{
       answerBinding: binding?.providerModelId && binding.connectionId
         ? { connectionId: binding.connectionId, providerModelId: binding.providerModelId } : null,
       assistantChat: base.chat.assistantId !== null, normalizedRequest: base.run?.normalizedRequest ?? null });
-    const response = await deps.send({ body, chatId, resolveAuth: subagentOwnerAuth(deps.client, userId), wakeUp: { text, turnIds } });
+    const response = await deps.send({ body, chatId, resolveAuth: subagentOwnerAuth(deps.client, userId), wakeUp: { text, turns } });
     if (response.ok) {
       // The run executes on its own; its stream stays private.
       void drain(response.body).catch(() => undefined);

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { endedSubagentResult } from "@/tests/support/subagentPorts";
-import type { SubagentCallback } from "@/lib/server/subagents/ports";
+import type { SubagentCallback, SubagentCallbackClaim } from "@/lib/server/subagents/ports";
 import { MemorySubagentStore, type MemoryTurn } from "@/tests/support/subagentBackgroundStore";
 import { createSubagentCallbacks, type SubagentWakeUpAdmitter, type SubagentWakeUpOutcome } from "./callbacks";
 
@@ -8,13 +8,13 @@ const scope = { chatId: "chat-1", userId: "user-1" };
 
 function setup(outcomes: SubagentWakeUpOutcome[] = [], recheckMs: readonly number[] = []) {
   const store = new MemorySubagentStore();
-  const wakeUps: Array<Readonly<{ text: string; turnIds: readonly string[] }>> = [];
+  const wakeUps: Array<Readonly<{ text: string; turns: readonly SubagentCallbackClaim[] }>> = [];
   const admitWakeUp: SubagentWakeUpAdmitter = vi.fn(async (input) => {
     const outcome = outcomes.shift() ?? "admitted";
     if (outcome === "admitted") {
-      // The admission claims what it renders, and its run is then the chat's running answer.
-      expect(store.claim(`wake-${wakeUps.length + 1}`, input.turnIds)).toBe(true);
-      wakeUps.push({ text: input.text, turnIds: input.turnIds });
+      // The admission claims what it renders or is refused, and its run is then the chat's running answer.
+      if (!store.claim(`wake-${wakeUps.length + 1}`, input.turns)) return "stale";
+      wakeUps.push({ text: input.text, turns: input.turns });
       store.mainRuns.push({ callbacks: [], chatId: input.chatId, open: true, runId: `wake-${wakeUps.length}`, status: "streaming" });
     }
     return outcome;
@@ -22,6 +22,8 @@ function setup(outcomes: SubagentWakeUpOutcome[] = [], recheckMs: readonly numbe
   const callbacks = createSubagentCallbacks({ admitWakeUp, coalesceMs: 5, recheckMs, store });
   return { admitWakeUp, callbacks, store, wakeUps };
 }
+
+const turnIdsOf = (wakeUp: Readonly<{ turns: readonly SubagentCallbackClaim[] }>) => wakeUp.turns.map((turn) => turn.turnId);
 
 /** The callback of an ended fixture turn, as its run's settlement sends it. */
 function callbackOf(turn: MemoryTurn): SubagentCallback {
@@ -52,7 +54,7 @@ describe("background sub-agent callbacks", () => {
     store.mainRuns[0]!.status = "complete";
     callbacks.mainRunEnded(scope);
     await vi.waitFor(() => expect(wakeUps).toHaveLength(1));
-    expect(wakeUps[0]!.turnIds).toEqual([turn.turnId]);
+    expect(turnIdsOf(wakeUps[0]!)).toEqual([turn.turnId]);
   });
 
   it("wakes the main agent behind an answer that closed and still ends, as the user's next message would", async () => {
@@ -62,7 +64,7 @@ describe("background sub-agent callbacks", () => {
     const turn = store.addEnded({ ...scope, name: "a", result: endedSubagentResult("a") });
     expect(await callbacks.sink.deliver(callbackOf(turn))).toBe("wake_up");
     expect(admitWakeUp).toHaveBeenCalledTimes(1);
-    expect(wakeUps[0]!.turnIds).toEqual([turn.turnId]);
+    expect(turnIdsOf(wakeUps[0]!)).toEqual([turn.turnId]);
     expect(store.mainRuns[0]!.callbacks).toEqual([]);
   });
 
@@ -78,7 +80,7 @@ describe("background sub-agent callbacks", () => {
       expect(wakeUps).toEqual([]);
       await vi.advanceTimersByTimeAsync(1_100);
       expect(admitWakeUp).toHaveBeenCalledTimes(2);
-      expect(wakeUps[0]!.turnIds).toEqual([turn.turnId]);
+      expect(turnIdsOf(wakeUps[0]!)).toEqual([turn.turnId]);
       // Nothing left owed: no further flush.
       await vi.advanceTimersByTimeAsync(10_000);
       expect(admitWakeUp).toHaveBeenCalledTimes(2);
@@ -96,7 +98,7 @@ describe("background sub-agent callbacks", () => {
     expect(admitWakeUp).not.toHaveBeenCalled();
     const later = store.addEnded({ ...scope, name: "late", result: endedSubagentResult("late") });
     expect(await callbacks.sink.deliver(callbackOf(later))).toBe("wake_up");
-    expect(wakeUps[0]!.turnIds).toEqual([later.turnId]);
+    expect(turnIdsOf(wakeUps[0]!)).toEqual([later.turnId]);
   });
 
   it("coalesces callbacks that end close together into one wake-up turn", async () => {
@@ -105,7 +107,7 @@ describe("background sub-agent callbacks", () => {
     const dispositions = await Promise.all(turns.map((turn) => callbacks.sink.deliver(callbackOf(turn))));
     expect(dispositions).toEqual(["wake_up", "wake_up", "wake_up"]);
     expect(admitWakeUp).toHaveBeenCalledTimes(1);
-    expect(wakeUps[0]!.turnIds).toEqual(turns.map((turn) => turn.turnId));
+    expect(turnIdsOf(wakeUps[0]!)).toEqual(turns.map((turn) => turn.turnId));
     expect(wakeUps[0]!.text).toContain("\"two\"");
   });
 
@@ -168,7 +170,7 @@ describe("background sub-agent callbacks", () => {
       const woken = setup();
       const turn = asking(woken.store);
       expect((await woken.callbacks.flush(scope)).dispositions.get(turn.turnId)).toBe("wake_up");
-      expect(woken.wakeUps[0]).toMatchObject({ turnIds: [turn.turnId] });
+      expect(woken.wakeUps[0]!.turns).toEqual([{ callId: `ask-${turn.turnId}`, kind: "question", turnId: turn.turnId }]);
       expect(woken.wakeUps[0]!.text).toContain("waiting for your answer");
       expect(woken.wakeUps[0]!.text).toContain("Which size?");
 
@@ -176,6 +178,41 @@ describe("background sub-agent callbacks", () => {
       const held = asking(limited.store);
       expect((await limited.callbacks.flush(scope)).dispositions.get(held.turnId)).toBe("pending");
       expect(held.callbackRunId).toBeNull();
+    });
+
+    it("reads the turn again when it ended before the wake-up rendered for its question was admitted", async () => {
+      const { admitWakeUp, callbacks, store, wakeUps } = setup();
+      const turn = asking(store);
+      const claim = store.claim.bind(store);
+      // Stop, or the deadline, inside the coalesce window: the question that wake-up carries is obsolete.
+      vi.spyOn(store, "claim").mockImplementationOnce((runId, turns) => {
+        Object.assign(turn, { endedAt: 99, question: undefined, result: endedSubagentResult("asker", { outcome: undefined, reason: "user_stop", state: "stopped" }),
+          state: "stopped" });
+        return claim(runId, turns);
+      });
+      expect((await callbacks.flush(scope)).dispositions.get(turn.turnId)).toBe("wake_up");
+      expect(admitWakeUp).toHaveBeenCalledTimes(2);
+      // The main agent is told it ended, never that it still awaits an answer, and that callback is the one on record.
+      expect(wakeUps).toHaveLength(1);
+      expect(wakeUps[0]!.turns).toEqual([{ kind: "callback", turnId: turn.turnId }]);
+      expect(wakeUps[0]!.text).toContain("user_stop");
+      expect(wakeUps[0]!.text).not.toContain("Which size?");
+      expect(turn.callbackRunId).toBe("wake-1");
+    });
+
+    it("reads the turn again when it moved on to another question before the wake-up was admitted", async () => {
+      const { callbacks, store, wakeUps } = setup();
+      const turn = asking(store, { questionCallId: "ask-1" });
+      const claim = store.claim.bind(store);
+      vi.spyOn(store, "claim").mockImplementationOnce((runId, turns) => {
+        Object.assign(turn, { question: "And which colour?", questionCallId: "ask-2" });
+        return claim(runId, turns);
+      });
+      await callbacks.flush(scope);
+      expect(wakeUps).toHaveLength(1);
+      expect(wakeUps[0]!.turns).toEqual([{ callId: "ask-2", kind: "question", turnId: turn.turnId }]);
+      expect(wakeUps[0]!.text).toContain("And which colour?");
+      expect(wakeUps[0]!.text).not.toContain("Which size?");
     });
 
     it("wakes nothing for a branch that is no longer active", async () => {

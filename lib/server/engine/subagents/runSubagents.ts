@@ -160,7 +160,7 @@ export type PrepareRunSubagentsInput = Readonly<{
   modelConfiguration: RunModelConfiguration;
   now(): number;
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
-  /** Background turns are offered (web chats); never in a Telegram turn or a scheduled occurrence. */
+  /** Background turns may start (web chats); never from a Telegram turn or a scheduled occurrence, which still reach them. */
   backgroundAllowed: boolean;
   ports?: SubagentRunPorts;
   runContextItems: readonly TranscriptItem[];
@@ -229,10 +229,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     deadlineSignal: input.deadline,
     ...(input.faults ? { faults: input.faults } : {}),
     followupTexts: input.followupTexts,
-    ...(messaging ? { mailbox: {
-      markRead: (read) => store.markMessagesRead({ ...scopeOf, ...read }),
-      unread: (thread) => store.unreadMessages({ ...scopeOf, ...thread })
-    }, messaging } : {}),
+    ...(messaging ? { mailbox: { unread: (thread) => store.unreadMessages({ ...scopeOf, ...thread }) }, messaging } : {}),
     maxToolCalls: input.budgets.maxToolCalls,
     maxToolRounds: input.budgets.maxToolRounds,
     now: input.now,

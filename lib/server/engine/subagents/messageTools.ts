@@ -104,8 +104,9 @@ export function subagentMessageTools(scope: AgentToolScope, turn: AgentToolTurn)
         if (sent.kind === "refused") return refusal(call, sent.code, sendRefusalText(sent, to));
         return result(call, { delivered: true, to, ...(waitForReply ? { replied: await turn.waitForReply(to, execution) } : {}) });
       } },
+    // One open question at a time: the open call is what the main agent is told it asks, so each asks and is claimed on its own.
     { activity: () => ({ origin: "tool" as const, toolName: ASK_PARENT_TOOL_NAME }), definition: askParentTool.tool, effects: askParentTool.effects,
-      observationSource: "workspace", execute: async (execution) => {
+      observationSource: "workspace", serial: true, execute: async (execution) => {
         const call = execution.call;
         const parsed = parseAskParentArguments(call.arguments);
         if (!parsed.ok) return refusal(call, parsed.code, parsed.message);

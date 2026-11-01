@@ -20,8 +20,8 @@ describe("background sub-agent recovery", () => {
     Object.assign(store.turns[0]!, { question: "Which size?", state: "waiting" });
     const wakeUps: Array<readonly string[]> = [];
     const callbacks = createSubagentCallbacks({ coalesceMs: 5, store, admitWakeUp: async (input) => {
-      store.claim("wake", input.turnIds);
-      wakeUps.push(input.turnIds);
+      store.claim("wake", input.turns);
+      wakeUps.push(input.turns.map((turn) => turn.turnId));
       return "admitted";
     } });
     expect(await reconcileSubagentRuns({ backoff: new Map(), bootedAt: new Date(), deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [],
@@ -37,8 +37,8 @@ describe("background sub-agent recovery", () => {
     orphan(store, "chat-b", "three");
     const wakeUps: Array<Readonly<{ chatId: string; turnIds: readonly string[] }>> = [];
     const callbacks = createSubagentCallbacks({ coalesceMs: 5, store, admitWakeUp: async (input) => {
-      store.claim(`wake-${input.chatId}`, input.turnIds);
-      wakeUps.push({ chatId: input.chatId, turnIds: input.turnIds });
+      store.claim(`wake-${input.chatId}`, input.turns);
+      wakeUps.push({ chatId: input.chatId, turnIds: input.turns.map((turn) => turn.turnId) });
       return "admitted";
     } });
     const workspace = new FakeWorkspaceAttachments();
@@ -63,8 +63,8 @@ describe("background sub-agent recovery", () => {
       modelRunId: "run-chat-w-browser", userId: "user-1" });
     const wakeUps: string[][] = [];
     const callbacks = createSubagentCallbacks({ coalesceMs: 1, recheckMs: [], store, admitWakeUp: async (input) => {
-      store.claim("wake", input.turnIds);
-      wakeUps.push([...input.turnIds]);
+      store.claim("wake", input.turns);
+      wakeUps.push(input.turns.map((turn) => turn.turnId));
       return "admitted";
     } });
     const retireFailures = new Map<string, number>();
@@ -136,8 +136,8 @@ describe("background sub-agent recovery", () => {
     const callbacks = createSubagentCallbacks({ coalesceMs: 1, store, admitWakeUp: async (input) => {
       const outcome = outcomes.shift() ?? "admitted";
       if (outcome === "admitted") {
-        store.claim("wake", input.turnIds);
-        admitted.push([...input.turnIds]);
+        store.claim("wake", input.turns);
+        admitted.push(input.turns.map((turn) => turn.turnId));
       }
       return outcome;
     } });
@@ -179,7 +179,7 @@ describe("background sub-agent recovery", () => {
     const callbacks = createSubagentCallbacks({ coalesceMs: 1, store, admitWakeUp: async (input) => {
       admits.push(clock);
       const outcome = outcomes.shift() ?? "admitted";
-      if (outcome === "admitted") store.claim("wake", input.turnIds);
+      if (outcome === "admitted") store.claim("wake", input.turns);
       return outcome;
     } });
     const deferred = new Map<string, ReadonlySet<string>>();
