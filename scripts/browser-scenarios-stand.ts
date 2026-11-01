@@ -143,7 +143,7 @@ export type StandModel = Readonly<{ connectionId: string; contextWindow: number;
  * identical usable one exists, otherwise added as an administrator would.
  */
 export async function ensureModel(api: Api, route: Readonly<{ apiRoot: string; model: string }>, secret: string,
-  displayName: string = MODEL_DISPLAY_NAME): Promise<StandModel> {
+  displayName: string = MODEL_DISPLAY_NAME, options: Readonly<{ vision?: boolean }> = {}): Promise<StandModel> {
   let catalogProof: string | undefined;
   let contextWindow: number = JOURNEY_LIMITS.defaultContextWindow;
   const discovery = await request(api, "/api/admin/providers/custom-setup/discover", { body: {
@@ -167,7 +167,7 @@ export async function ensureModel(api: Api, route: Readonly<{ apiRoot: string; m
     capabilities: {
       contextWindow, defaultMaxOutputTokens: 16_384, streaming: true, toolCalling: true, parallelToolCalls: false,
       reasoning: true, reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium",
-      nativePdfInput: false, nativeImageGeneration: false, nativeSearch: false, pdf: true, vision: true
+      nativePdfInput: false, nativeImageGeneration: false, nativeSearch: false, pdf: options.vision !== false, vision: options.vision !== false
     },
     confirmPaidRequest: true, connectionDisplayName: `Browser scenarios codex-lb ${randomUUID().slice(0, 8)}`,
     modelDisplayName: displayName, protocol: "responses", responseTimeoutSeconds: 180, secret,
