@@ -133,7 +133,8 @@ export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: 
     findRetiredRuns: createRetiredEngineRunFinder(client),
     mcpRuntime: () => getDefaultMcpRuntimeCoordinator(),
     // The real ports of the other sub-agent slices: background turns (`configureSubagentBackground`) and custom types.
-    subagents: { background: () => getDefaultSubagentBackground().control, types: createSubagentTypeResolver(client) },
+    subagents: { background: () => getDefaultSubagentBackground().control, messaging: () => getDefaultSubagentBackground().messaging,
+      types: createSubagentTypeResolver(client) },
     tools: defaultNativeToolServices(storage, client)
   };
 }

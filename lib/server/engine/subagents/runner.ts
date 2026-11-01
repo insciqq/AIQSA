@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
   CALL_SUBAGENT_TOOL_NAME,
+  MAIN_AGENT_NAME,
   SUBAGENT_BLOCKED_REASONS,
   SUBAGENT_END_REASONS,
+  SUBAGENT_FOLLOWUP_LIMITS,
   SUBAGENT_LIMITS,
   SUBAGENT_FILES_TRUNCATED_NOTICE,
   SUBAGENT_USAGE_PURPOSE,
+  SUBAGENT_WAIT_REASONS,
   isSubagentCode,
   type EndedSubagentCallResult,
   type EndedSubagentState,
@@ -30,6 +33,7 @@ import type {
   SubagentBinding,
   SubagentDeliveryOutcome,
   SubagentMessage,
+  SubagentMessaging,
   SubagentRunner,
   SubagentStopReason,
   SubagentTurnHandle,
@@ -46,7 +50,7 @@ import { detachedCompactions } from "../detachedCompactions";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "../faults";
 import { ANSWER_NOW_INSTRUCTION, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type LoopToolChoice } from "../loop";
 import { callModel } from "../modelCall";
-import { SUBAGENT_ROLE_SECTION, subagentFollowupText, subagentTurnText } from "../prompts";
+import { SUBAGENT_ROLE_SECTION, subagentAgentMessageText, subagentFollowupText, subagentTurnText } from "../prompts";
 import { createRunContext, type RunContext } from "../runContext";
 import { splitTurnGuidance, withNativeSystemPrompt } from "../systemPrompt";
 import {
@@ -72,6 +76,8 @@ import {
 import type { TranscriptRepository, TranscriptThreadKey } from "../transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "../transcriptWriter";
 import type { UnknownEffects } from "../unknownEffects";
+import { withSubagentTools } from "./callTools";
+import { subagentMessageTools, type AgentToolTurn } from "./messageTools";
 import type { SubagentModelRoute, SubagentRouteResult } from "./modelRoutes";
 import { subagentToolRegistry } from "./registry";
 
@@ -84,10 +90,13 @@ import { subagentToolRegistry } from "./registry";
  * authority for irreversible website actions), after its own stable system
  * prompt, the run's context (Skills index, pinned Skills) and the Workspace
  * prompt contract; never the main transcript. Its tools are the run's
- * registry filtered (`registry.ts`), its records carry the thread key, its
- * compaction and gateway lanes are its own, and its model calls are usage
- * of purpose `subagent`. Stop and the deadline (the host's signal) end it;
- * its thread keeps what it recorded.
+ * registry filtered (`registry.ts`) with what reaches the chat's other agents
+ * (`messageTools.ts`), its records carry the thread key, its compaction and
+ * gateway lanes are its own, and its model calls are usage of purpose
+ * `subagent`. Stop and the deadline (the host's signal) end it; its thread
+ * keeps what it recorded. A message reaches it in its mailbox, foreground or
+ * background, and it reads them at its next step; a wait for one ends with the
+ * message or the signal.
  */
 
 /** What a sub-agent turn needs of the run that hosts it. */
@@ -118,8 +127,18 @@ export type SubagentHost = Readonly<{
   faults?: EngineTestFaults;
   /** User text delivered into the parent run: `fetch_url` link authority. */
   followupTexts(): readonly string[];
+  /**
+   * The thread's mailbox on record (`RunFollowup`): what its turns of these runs have not read, oldest first, and the
+   * receipt once a turn read it. Only reading stamps a message, so one a turn never got to is read by the next.
+   */
+  mailbox?: Readonly<{
+    markRead(input: Readonly<{ nonces: readonly string[]; runIds: readonly string[]; threadId: string }>): Promise<void>;
+    unread(input: Readonly<{ runIds: readonly string[]; threadId: string }>): Promise<readonly SubagentMessage[]>;
+  }>;
   maxToolCalls: number | null;
   maxToolRounds: number | null;
+  /** How the turn's agent sees and reaches the others (`messageTools.ts`); absent, it has no such tools. */
+  messaging?: SubagentMessaging;
   now(): number;
   /** The run's Workspace lifecycle rows (the VM starting or stopping), which the answer shows whoever caused them. */
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
@@ -136,8 +155,8 @@ export type SubagentHost = Readonly<{
   /** Saves a long result for a later read, as the parent does. */
   saveResult: ToolBatchDeps["saveResult"];
   secrets?: RunSecretSource;
-  /** Marks the turn as waiting for the user (its browser handoff) or running again; bookkeeping only. */
-  setTurnState?(input: Readonly<{ state: "running" | "waiting"; turnId: string }>): Promise<boolean>;
+  /** Marks the turn as waiting for the user (its browser handoff) or its parent's answer (`reason`), or running again. */
+  setTurnState?(input: Readonly<{ reason?: string; state: "running" | "waiting"; turnId: string }>): Promise<boolean>;
   /** Ends a turn's `SubagentTurn` row with its result. */
   settleTurn(input: Readonly<{ result: EndedSubagentCallResult; turnId: string }>): Promise<boolean>;
   /** Writes the run's usage records once more (a detached compaction's late usage). */
@@ -187,6 +206,10 @@ const BROWSER_STEP_LINE = /\[browser #\d+\][^\n]*/u;
 const OUTCOME_LINE = /^\s*\**\s*outcome\s*\**\s*:\s*\**\s*(done|partial|blocked)\b\s*(?:\(\s*([a-z][a-z0-9_]{0,63})\s*\))?/iu;
 /** Attempts to end a turn's row; one that stays unsettled ends with its run's next admission (`threadStore.ts`). */
 const SETTLE_ATTEMPTS = 3;
+/** How often a wait looks at the clock; a message ends it at once. */
+const MAIL_CHECK_MS = 1_000;
+/** The longest `wait_for_reply`: a neighbour replies within a few steps, and past that the agent is better off going on. */
+export const SUBAGENT_REPLY_WAIT_MS = 5 * 60_000;
 
 const boundLine = (value: string, max: number) => {
   const line = value.replace(/\s+/gu, " ").trim();
@@ -304,16 +327,19 @@ function waitingDuringHandoff(registry: ToolRegistry, mark: (state: "running" | 
 
 /**
  * What one thread keeps across its turns in a host run: the highest round its calls took, the writer whose sequence
- * a later turn continues, and the user's follow-ups it already received.
+ * a later turn continues, and the user's follow-ups and the messages it already received.
  */
 type ThreadState = {
   deliveredTexts: string[];
+  readMessages: Set<string>;
   rounds: number;
   seenFollowups: Set<string>;
   writer: TranscriptWriter | null;
 };
 
 type TurnRecord = {
+  /** Calls waiting for a message: a delivery wakes each. */
+  readonly arrivals: Set<() => void>;
   readonly controller: AbortController;
   readonly input: SubagentTurnInput;
   readonly kind: "continue" | "start";
@@ -323,6 +349,31 @@ type TurnRecord = {
   stopReason: SubagentStopReason | null;
 };
 
+/**
+ * Waits until a message that matches is in the turn's mailbox, for as long as `open` says. It stays in the mailbox for
+ * the turn's next step to read like any other. A stop or the deadline ends the wait by the signal, through the same path
+ * as any call they cut.
+ */
+async function mailArrived(turn: TurnRecord, matches: (message: SubagentMessage) => boolean, signal: AbortSignal, open: () => boolean): Promise<boolean> {
+  for (;;) {
+    signal.throwIfAborted();
+    if (turn.mailbox.some(matches)) return true;
+    if (!open()) return false;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        turn.arrivals.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, MAIL_CHECK_MS);
+      (timer as { unref?: () => void }).unref?.();
+      signal.addEventListener("abort", done, { once: true });
+      turn.arrivals.add(done);
+    });
+  }
+}
+
 /** The ended result of a turn, bounded as `decodeSubagentCallResult` accepts it. */
 export function endedSubagentCallResult(input: Readonly<{
   approvals: readonly SubagentApprovalRequest[];
@@ -330,6 +381,7 @@ export function endedSubagentCallResult(input: Readonly<{
   files: readonly string[];
   name: string;
   outcome?: SubagentOutcome;
+  question?: string;
   reason?: string;
   report: string;
   state: EndedSubagentState;
@@ -351,6 +403,7 @@ export function endedSubagentCallResult(input: Readonly<{
       id: input.binding.modelId.slice(0, SUBAGENT_LIMITS.modelCharacters) },
     name: input.name,
     ...(outcome ? { outcome } : {}),
+    ...(input.question ? { question: input.question } : {}),
     ...(blockedReason ? { reason: blockedReason } : {}),
     report: input.report,
     state: input.state,
@@ -389,7 +442,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     const key = `${input.hostRunId}\n${input.threadId}`;
     let state = threadStates.get(key);
     if (!state) {
-      state = { deliveredTexts: [], rounds: 0, seenFollowups: new Set(), writer: null };
+      state = { deliveredTexts: [], readMessages: new Set(), rounds: 0, seenFollowups: new Set(), writer: null };
       threadStates.set(key, state);
     }
     return state;
@@ -438,9 +491,39 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     let context: RunContext | null = null;
     let report = "";
     let roundText = "";
+    /** A foreground turn's question: its parent can read nothing until it ends, so the turn ends with it. */
+    const handBack: { question: string | null } = { question: null };
+    let questions = 0;
     const ended = (state: EndedSubagentState, extra: Readonly<{ outcome?: SubagentOutcome; reason?: string }> = {}) =>
       endedSubagentCallResult({ approvals, binding: input.binding, files: [...files], name: input.name, report: report || roundText,
-        state, steps, ...extra });
+        state, steps, ...(handBack.question ? { question: handBack.question } : {}), ...extra });
+    const fromMain = (message: SubagentMessage) => message.origin === "main_agent";
+    const agentTurn: AgentToolTurn = {
+      name: input.name,
+      async ask(question, execution) {
+        if (questions >= SUBAGENT_FOLLOWUP_LIMITS.questionsPerTurn) return "limit";
+        questions += 1;
+        if (input.mode === "foreground") {
+          handBack.question ??= question;
+          return "handed_back";
+        }
+        const marked = await host.setTurnState?.({ reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting", turnId: input.turnId }).catch(() => false);
+        if (!marked) return "unavailable";
+        try {
+          host.messaging?.questionAsked({ chatId: host.chatId, userId: host.userId });
+          return await mailArrived(turn, fromMain, execution.signal, host.toolTimeLeft) ? "answered" : "no_answer";
+        } finally {
+          await host.setTurnState?.({ state: "running", turnId: input.turnId }).catch(() => false);
+        }
+      },
+      async waitForReply(from, execution) {
+        // A foreground parent reads nothing until the turn ends: no wait can get its reply.
+        if (from === MAIN_AGENT_NAME && input.mode === "foreground") return false;
+        const until = host.now() + SUBAGENT_REPLY_WAIT_MS;
+        return mailArrived(turn, (message) => from === MAIN_AGENT_NAME ? fromMain(message) : message.from === from, execution.signal,
+          () => host.now() < until && host.toolTimeLeft());
+      }
+    };
     try {
       const routed = await routeFor(input.binding, signal);
       if (!routed.ok) return ended("failed", { reason: routed.code });
@@ -456,13 +539,21 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         const path = entry.file?.targetPath ?? entry.file?.displayPath;
         if (path && entry.kind !== "file_change") files.add(path);
       };
-      const registry = waitingDuringHandoff(subagentToolRegistry(await host.buildRegistry({ agent,
-        followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request }), input.type?.toolGroups ?? null),
+      const filtered = subagentToolRegistry(await host.buildRegistry({ agent,
+        followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request }), input.type?.toolGroups ?? null);
+      // No tool group narrows them: they reach the agents of the chat, nothing outside it.
+      const registry = waitingDuringHandoff(host.messaging
+        ? withSubagentTools(filtered, subagentMessageTools({ chatId: host.chatId, messaging: host.messaging, parentRunId: input.parentRunId,
+          userId: host.userId }, agentTurn)) : filtered,
       (state) => host.setTurnState?.({ state, turnId: input.turnId }).then(() => undefined, () => undefined) ?? Promise.resolve());
       // A thread's earlier turns may have run in the background, in runs of their own that answer nothing.
       const runIds = [...new Set([...(host.threadRunIds ? await host.threadRunIds(input.threadId) : host.branchRunIds),
         input.hostRunId])];
       const loaded = await host.transcripts.loadRuns({ chatId: host.chatId, runIds, threadId: input.threadId, userId: host.userId });
+      // What an earlier turn never read, or what came while this one was attaching, is read first.
+      for (const message of await host.mailbox?.unread({ runIds, threadId: input.threadId }).catch(() => []) ?? []) {
+        if (!turn.mailbox.some((entry) => entry.nonce === message.nonce)) turn.mailbox.push(message);
+      }
       const history = runIds.flatMap((runId) => loaded.get(runId) ?? []);
       const role = input.type?.instructions.trim()
         ? `${SUBAGENT_ROLE_SECTION}\n\n# Your instructions\n${input.type.instructions.trim()}` : SUBAGENT_ROLE_SECTION;
@@ -485,17 +576,26 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           deliveredTexts.push(followup.text);
           unknownEffects.userSpoke();
         }
+        const read: string[] = [];
         for (const message of turn.mailbox.splice(0)) {
+          if (threadState.readMessages.has(message.nonce)) continue;
+          threadState.readMessages.add(message.nonce);
+          read.push(message.nonce);
           if (message.origin === "user") {
             added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(message.text) });
             deliveredTexts.push(message.text);
             unknownEffects.userSpoke();
+          } else if (message.origin === "subagent_message") {
+            // Another agent's message is no user speech and no brief: it releases nothing, authorizes nothing and changes no task.
+            added.push({ id: randomUUID(), kind: "user", text: subagentAgentMessageText({ from: message.from ?? "unknown", text: message.text }) });
           } else {
             // The main agent's message is no user speech: it never releases an unknown effect or authorizes a link.
             added.push({ id: randomUUID(), kind: "user", text: subagentTurnText({ brief: message.text, continued: true, name: input.name,
               userMessage: input.userMessage }) });
           }
         }
+        // Bookkeeping behind the turn: a receipt that fails leaves the message unread, and the thread's next turn reads it again.
+        if (read.length > 0) await host.mailbox?.markRead({ nonces: read, runIds, threadId: input.threadId }).catch(() => undefined);
         return added;
       };
       // What the user already wrote into this answer (a correction the main agent read before it called) comes with the brief.
@@ -638,12 +738,20 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           return batch;
         },
         signal,
-        toolTimeLeft: host.toolTimeLeft
+        // A handed-back question closes tools: the next round is the report its parent is waiting for.
+        toolTimeLeft: () => handBack.question === null && host.toolTimeLeft()
       });
       await activeContext.afterAnswer();
       await activeWriter.flush();
-      if (outcome.kind === "empty" || !(report || roundText).trim()) return ended("failed", { reason: "model_answer_empty" });
+      // The question reaches the parent whatever the model made of its last round.
+      if (handBack.question !== null && !(report || roundText).trim()) {
+        report = `Outcome: blocked (${SUBAGENT_BLOCKED_REASONS.needsAnswer})\n\n${handBack.question}`;
+      }
+      if (outcome.kind === "empty" && handBack.question === null || !(report || roundText).trim()) return ended("failed", { reason: "model_answer_empty" });
       const stated = parseSubagentOutcome(report || roundText);
+      if (handBack.question !== null) {
+        return ended("done", { outcome: "blocked", reason: stated?.outcome === "blocked" && stated.reason ? stated.reason : SUBAGENT_BLOCKED_REASONS.needsAnswer });
+      }
       if (approvals.length > 0 && stated?.outcome !== "blocked") {
         return ended("done", { outcome: "blocked", reason: SUBAGENT_BLOCKED_REASONS.needsApproval });
       }
@@ -701,7 +809,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       await settleRow(input, result);
       return result;
     });
-    const record: TurnRecord = { controller: new AbortController(), input, kind, mailbox: [], promise, result: null, stopReason: null };
+    const record: TurnRecord = { arrivals: new Set(), controller: new AbortController(), input, kind, mailbox: [], promise, result: null, stopReason: null };
     turns.set(input.turnId, record);
     resolveRecord(record);
     return { turnId: input.turnId };
@@ -742,6 +850,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       if (!turn) return { kind: "not_found" };
       if (turn.result) return { kind: "ended", result: turn.result };
       if (!turn.mailbox.some((entry) => entry.nonce === message.nonce)) turn.mailbox.push(message);
+      for (const arrived of turn.arrivals) arrived();
       return { kind: "delivered", state: "running" };
     },
     async stop(handle, reason) {

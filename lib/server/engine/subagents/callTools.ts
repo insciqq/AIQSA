@@ -10,6 +10,7 @@ import type {
   SubagentBackgroundControl,
   SubagentBinding,
   SubagentCallerScope,
+  SubagentMessaging,
   SubagentTypeResolver,
   SubagentTypeSnapshot
 } from "../../subagents/ports";
@@ -17,6 +18,7 @@ import { callSubagentTool, parseCallSubagentArguments, parseStopSubagentArgument
 import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import type { EngineTool, EngineToolExecution } from "../toolRegistry";
+import { listAgentsEngineTool } from "./messageTools";
 import {
   chooseSubagentModel,
   type FrozenSubagentModels,
@@ -63,6 +65,8 @@ export type SubagentCallDeps = Readonly<{
   deadlineAt(): Date;
   /** The user's default sub-agent as admission froze it; null: none set. */
   defaultType: FrozenSubagentDefault | null;
+  /** What gives the main agent `list_agents`; it writes to its sub-agents with `call_subagent`. */
+  messaging?: SubagentMessaging;
   parent: SubagentParentModel;
   runId: string;
   runner: HostedSubagentRunner;
@@ -218,9 +222,9 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
           name: args.name, threadId: lookup.thread.id });
       } catch (error) {
         // A mailbox at its bound (`SubagentMailboxFullError`) refuses the message visibly; nothing was delivered.
-        if (errorCode(error) !== SUBAGENT_ERROR_CODES.messageInvalid) throw error;
-        return refusal(call, SUBAGENT_ERROR_CODES.messageInvalid,
-          "This sub-agent has too many unread messages; wait for its result before writing again.");
+        if (errorCode(error) !== SUBAGENT_ERROR_CODES.messageLimit) throw error;
+        return refusal(call, SUBAGENT_ERROR_CODES.messageLimit,
+          "This sub-agent has taken as many messages as it may; wait for its result before writing again.");
       }
       if (delivered.kind === "delivered") return resultOf(call, { kind: "delivered", name: args.name, state: delivered.state });
       if (delivered.kind === "ended") return resultOf(call, delivered.result);
@@ -335,7 +339,8 @@ export function subagentEngineTools(deps: SubagentCallDeps): readonly EngineTool
     { activity: activity(callSubagentTool.name), definition: callSubagentTool.tool, effects: callSubagentTool.effects,
       observationSource: "workspace", execute: (execution) => executeCallSubagent(deps, execution) },
     { activity: activity(stopSubagentTool.name), definition: stopSubagentTool.tool, effects: stopSubagentTool.effects,
-      observationSource: "workspace", execute: (execution) => executeStopSubagent(deps, execution) }
+      observationSource: "workspace", execute: (execution) => executeStopSubagent(deps, execution) },
+    ...(deps.messaging ? [listAgentsEngineTool({ chatId: deps.chatId, messaging: deps.messaging, parentRunId: deps.runId, userId: deps.userId })] : [])
   ];
 }
 

@@ -806,7 +806,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const batch = await followupOps.load({ runId, userId: input.userId });
             const accepted = batch?.entries.filter((entry) => entry.delivery === "accepted") ?? [];
             if (!batch || accepted.length === 0) return [];
-            // Only the user's own follow-ups are their speech and link authority; a sub-agent's callback is untrusted data.
+            // Only the user's own follow-ups are their speech and link authority; what a sub-agent sends is untrusted data.
             const fromUser = accepted.filter((entry) => entry.origin === undefined || entry.origin === "user");
             await answer.flush();
             if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: answer.text, revision: batch.revision, runId,
@@ -818,7 +818,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             answer.restart();
             sink.send({ data: { round: batch.revision }, type: "message_reset" });
             await chatUpdate();
-            return accepted.map((entry) => ({ ...(entry.origin === "subagent_callback" ? { callback: true as const } : {}),
+            return accepted.map((entry) => ({ ...(fromUser.includes(entry) ? {} : { callback: true as const }),
               followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
           },
           maxToolRounds: budgets.maxToolRounds,
