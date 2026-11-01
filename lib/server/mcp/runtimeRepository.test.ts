@@ -224,6 +224,8 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
   } as unknown as RuntimeRecord;
 }
 
+const ACTIVE = ["preparing", "queued", "streaming", "in_progress"];
+
 describe("remote MCP runtime candidates", () => {
   it("sends a bare personal Authorization value as Bearer without rewriting it or changing identity", async () => {
     const prefixed = remoteRuntimeCandidate({ key: KEY, record: runtimeRecord() });
@@ -930,12 +932,14 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
         id: "generation-accepted",
         runBindings: {
           some: {
-            // The run holds it while it is active, or while a background sub-agent run it started is.
+            // The run holds it while it is active, or while a background sub-agent run it started is, or a child of that run.
             modelRun: {
               OR: [
-                { status: { in: ["preparing", "queued", "streaming", "in_progress"] } },
-                { subagentTurnsStarted: { some: { executionRun: { is: { status: { in: ["preparing", "queued", "streaming",
-                  "in_progress"] } } }, mode: "background" } } }
+                { status: { in: ACTIVE } },
+                { subagentTurnsStarted: { some: { mode: "background", OR: [
+                  { executionRun: { is: { status: { in: ACTIVE } } } },
+                  { executionRun: { is: { subagentTurnsStarted: { some: { executionRun: { is: { status: { in: ACTIVE } } }, mode: "background" } } } } }
+                ] } } }
               ]
             }
           }

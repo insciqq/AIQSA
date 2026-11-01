@@ -13,10 +13,10 @@ import type { SubagentParentAgent } from "./ports";
 
 const parentAgent: SubagentParentAgent = { name: "research", runId: "run-bg", threadId: "thread-parent", toolState: { calls: 0 }, turnId: "turn-parent" };
 
-function tx(input: Readonly<{ running?: number; starter?: Readonly<{ parentThreadId: string | null }> | null }> = {}) {
+function tx(input: Readonly<{ parentTurn?: Readonly<{ id: string }> | null; running?: number; starter?: Readonly<{ parentThreadId: string | null }> | null }> = {}) {
   return {
     subagentThread: { findFirst: vi.fn(async () => input.starter === undefined ? { parentThreadId: null } : input.starter) },
-    subagentTurn: { count: vi.fn(async () => input.running ?? 0) }
+    subagentTurn: { count: vi.fn(async () => input.running ?? 0), findFirst: vi.fn(async () => input.parentTurn === undefined ? { id: "turn-parent" } : input.parentTurn) }
   } as unknown as Parameters<typeof childAdmissionRefusal>[0];
 }
 
@@ -64,6 +64,13 @@ describe("what a sub-agent may start", () => {
 
   it("refuses a parent it cannot find under the caller's chat and owner", async () => {
     expect(await refusal(tx({ starter: null }))).toBe(SUBAGENT_ERROR_CODES.notFound);
+  });
+
+  it("needs its parent's very turn active, whatever the run behind it does", async () => {
+    const client = tx({ parentTurn: null });
+    expect(await refusal(client)).toBe(SUBAGENT_ERROR_CODES.notActive);
+    expect(client.subagentTurn.findFirst).toHaveBeenCalledWith({ select: { id: true }, where: { chatId: "chat", id: "turn-parent", state: { in: ["running", "waiting"] },
+      threadId: "thread-parent", userId: "user" } });
   });
 
   it("keeps a thread with the agent that started it, and leaves the main agent's own alone", async () => {

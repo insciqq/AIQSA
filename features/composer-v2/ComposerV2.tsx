@@ -1323,6 +1323,7 @@ export function ComposerV2({
         data-drop-active={dragActive ? "true" : undefined}
         data-empty={nothingToSend || undefined}
         data-layer-open={layer ?? undefined}
+        data-message-only={messageOnly || undefined}
         data-resting={resting || undefined}
         onBlur={(event) => {
           const next = event.relatedTarget;

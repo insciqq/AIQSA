@@ -493,11 +493,20 @@ describe("a sub-agent's own children", () => {
     const ctx = setup({ background, parentAgent });
     const at = new Date(Date.now() + 5_000);
     const deps = { ...ctx.deps, deadlineAt: () => at };
-    expect(value(await executeCallSubagent(deps, execution({ background: true, message: "Go", name: "shop" }))))
+    const call = execution({ background: true, message: "Go", name: "shop" });
+    expect(value(await executeCallSubagent(deps, call)))
       .toEqual({ continued: false, kind: "started", name: "shop", state: "running" });
     expect(ctx.store.ensureThread).toHaveBeenCalledWith(expect.objectContaining({ parentRunId: "run", parentThreadId: "thread-parent" }));
     expect(background.turns[0]!.input).toMatchObject({ deadlineAt: at, parentAgent, parentRunId: "run" });
+    expect(background.turns[0]!.input.signal).toBe(call.signal);
     expect(ctx.deps.onChildStarted).toHaveBeenCalledWith("shop");
+  });
+
+  it("leaves a main agent's background sub-agent free of its call's cancellation, since it outlives the answer", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    await executeCallSubagent(setup({ background }).deps, execution({ background: true, message: "Go", name: "shop" }));
+    expect(background.turns[0]!.input.signal).toBeUndefined();
+    expect(background.turns[0]!.input.deadlineAt).toBeUndefined();
   });
 
   it("refuses a third at once and a grandchild with their own codes, and starts nothing", async () => {

@@ -248,7 +248,7 @@ const OUTCOME_LINE = /^\s*\**\s*outcome\s*\**\s*:\s*\**\s*(done|partial|blocked)
 const SETTLE_ATTEMPTS = 3;
 /** How often a wait looks at the clock; a message ends it at once. */
 const MAIL_CHECK_MS = 1_000;
-/** Looks at a child that is gone from the record without its report, which may be on its way, before a turn goes on without it. */
+/** Looks at a child gone from the record with no report coming (a restart, a delivery that failed) before a turn goes on without it. */
 const CHILD_REPORT_LOOKS = 2;
 
 const boundLine = (value: string, max: number) => {
@@ -899,7 +899,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           signal.throwIfAborted();
           const running = await host.children?.store.activeChildren({ chatId: host.chatId, threadId: input.threadId, userId: host.userId })
             .catch(() => 1) ?? 0;
-          gone = running > 0 ? 0 : gone + 1;
+          const coming = host.children?.background?.reportsOnTheirWay(input.threadId) ?? 0;
+          gone = running + coming > 0 ? 0 : gone + 1;
           await nextMail(turn, signal);
         }
       };

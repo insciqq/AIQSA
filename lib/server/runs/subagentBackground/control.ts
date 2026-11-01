@@ -4,7 +4,8 @@ import {
   SUBAGENT_ERROR_CODES,
   isActiveSubagentState,
   subagentCallbackNonce,
-  type EndedSubagentCallResult
+  type EndedSubagentCallResult,
+  type SubagentErrorCode
 } from "../../../contracts/subagents";
 import { randomUUID } from "node:crypto";
 import { decideUsageAdmission } from "../../../domain/usageLimits";
@@ -146,6 +147,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
   const registry = deps.registry ?? activeRunControllerRegistry;
+  /** Reports on their way to a parent's mailbox, by the parent's thread. A child runs in its parent's process, which asks here. */
+  const reports = new Map<string, number>();
   const turnTimeMs = deps.turnTimeMs ?? SUBAGENT_BACKGROUND_TURN_MS;
   const stopWaitMs = deps.stopWaitMs ?? STOP_WAIT_MS;
 
@@ -188,13 +191,29 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   }
 
   /**
+   * A report counts from before its child's row ends until it lands or fails, so a parent that sees the child gone also
+   * sees its report coming, however long the mailbox write takes. Returns what ends the count.
+   */
+  function reportOnItsWay(parentThreadId: string): () => void {
+    reports.set(parentThreadId, (reports.get(parentThreadId) ?? 0) + 1);
+    return () => {
+      const left = (reports.get(parentThreadId) ?? 1) - 1;
+      if (left > 0) reports.set(parentThreadId, left);
+      else reports.delete(parentThreadId);
+    };
+  }
+
+  /**
    * A child that ended reports to its parent's mailbox, where the parent reads it at its next step, like a callback in a
    * running answer. One its parent ended itself has nobody to report to: its result stays on its turn, for `list_agents`
    * and for the parent's next turn, which may continue it.
    */
   function reportToParent(child: SubagentChatScope & Readonly<{ name: string; parentThreadId: string; turnId: string }>,
-    result: EndedSubagentCallResult, runId: string | null): void {
-    if (result.reason === SUBAGENT_END_REASONS.parentStopped) return;
+    result: EndedSubagentCallResult, runId: string | null, reported: () => void): void {
+    if (result.reason === SUBAGENT_END_REASONS.parentStopped) {
+      reported();
+      return;
+    }
     const scope = { chatId: child.chatId, userId: child.userId };
     void deps.store.activeTurns({ ...scope, threadId: child.parentThreadId }).then(async ([parent]) => {
       if (!parent) return;
@@ -203,14 +222,16 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     }).catch((error: unknown) => {
       logEvent("run_recovery", { action: "retry", code: "subagent_callback_failed", error, outcome: "failed",
         ...(runId ? { run_id: runId } : {}), stage: "dispatch", subsystem: "run_recovery" });
-    });
+    }).finally(reported);
   }
 
   /**
-   * The execution of a turn about to be admitted, registered before its
-   * admission is visible, so a Stop that finds the admitted turn finds its
-   * execution too: it marks it stopped and waits for `done`, and the launch
-   * then settles it as stopped without ever running it.
+   * The execution of a turn about to be admitted, registered before anything of
+   * its start can wait, so a Stop or a parent's end that comes while it reads the
+   * usage limits or commits its admission finds it: it marks it stopped and waits
+   * for `done`, and the turn is refused, or settled as stopped, without ever
+   * running. A child also follows its parent's own cancellation (`signal`) from
+   * here on, which a parent's end cannot miss however its calls were cut.
    */
   function pendingExecution(input: SubagentBackgroundStartInput, ids: Readonly<{ runId: string; turnId: string }>) {
     const lease = registry.register(ids.runId);
@@ -220,7 +241,10 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       parentThreadId: input.parentAgent?.threadId ?? null, retired: false, runId: ids.runId,
       scope: { chatId: input.chatId, userId: input.userId }, stopReason: null, threadId: input.threadId, turnId: ids.turnId };
     executions.set(ids.turnId, execution);
+    const parentStopped = () => void stopLocal(ids.turnId, SUBAGENT_END_REASONS.parentStopped);
+    input.signal?.addEventListener("abort", parentStopped, { once: true });
     return { abandon() {
+      input.signal?.removeEventListener("abort", parentStopped);
       lease?.release();
       if (executions.get(ids.turnId) === execution) executions.delete(ids.turnId);
       execution.finish();
@@ -232,7 +256,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const { execution, lease } = pending;
     const signal = lease?.signal ?? new AbortController().signal;
     const scope = execution.scope;
-    // A child ends by its parent's time too, with room for its report before its parent's own.
+    // A child ends by its parent's time too. A parent stops waiting for reports when its tool time ends, so one still
+    // working then ends with it, unreported.
     const ownTimeMs = input.deadlineAt ? Math.min(turnTimeMs, Math.max(0, input.deadlineAt.getTime() - now())) : turnTimeMs;
     const deadlineAt = new Date(now() + ownTimeMs);
     void (async () => {
@@ -296,10 +321,15 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
           .catch((error: unknown) => logEvent("run_execution", { code: "subagent_workspace_detach_failed", error, outcome: "failed",
             run_id: ids.runId, stage: "completion" }));
       }
+      const parentThreadId = input.parentAgent?.threadId ?? null;
+      const reported = parentThreadId ? reportOnItsWay(parentThreadId) : () => undefined;
       const ended = await settle(execution, ids.turnId, result);
       pending.abandon();
-      if (!ended) return;
-      if (input.parentAgent) reportToParent({ ...scope, name: input.name, parentThreadId: input.parentAgent.threadId, turnId: ids.turnId }, ended, ids.runId);
+      if (!ended) {
+        reported();
+        return;
+      }
+      if (parentThreadId) reportToParent({ ...scope, name: input.name, parentThreadId, turnId: ids.turnId }, ended, ids.runId, reported);
       else callBack({ ...scope, name: input.name, parentRunId: input.parentRunId, result: ended, threadId: input.threadId,
         turnId: ids.turnId }, ids.runId);
     })().catch(() => pending.abandon());
@@ -441,14 +471,18 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
 
     async start(input: SubagentBackgroundStartInput): Promise<SubagentBackgroundStartResult> {
       const runner = deps.runner;
-      if (!runner || !(await deps.store.callerAvailable(input))) {
-        return { code: SUBAGENT_ERROR_CODES.backgroundUnavailable, kind: "refused" };
-      }
-      if (!(await usageAllows(input.userId))) return { code: SUBAGENT_ERROR_CODES.usageLimited, kind: "refused" };
       const ids = { runId: newId(), turnId: newId() };
       const pending = pendingExecution(input, ids);
+      const refused = (code: SubagentErrorCode): SubagentBackgroundStartResult => {
+        pending.abandon();
+        return { code, kind: "refused" };
+      };
       let admission: Awaited<ReturnType<SubagentBackgroundStore["admit"]>>;
       try {
+        // A parent cancelled before this start registered: its end has already looked, and only its signal can tell.
+        if (input.signal?.aborted || !runner || !(await deps.store.callerAvailable(input))) return refused(SUBAGENT_ERROR_CODES.backgroundUnavailable);
+        if (!(await usageAllows(input.userId))) return refused(SUBAGENT_ERROR_CODES.usageLimited);
+        if (pending.execution.stopReason) return refused(SUBAGENT_ERROR_CODES.backgroundUnavailable);
         admission = await deps.store.admit({ binding: input.binding, chatId: input.chatId,
           definitionRevisionId: input.type?.revisionId ?? null, ...(input.parentAgent ? { parentAgent: input.parentAgent } : {}),
           parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
@@ -457,10 +491,7 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         pending.abandon();
         throw error;
       }
-      if (admission.kind === "refused") {
-        pending.abandon();
-        return admission;
-      }
+      if (admission.kind === "refused") return refused(admission.code);
       launch(input, ids, runner, pending);
       return { kind: "started", name: input.name, state: "running", turnId: ids.turnId };
     },
@@ -504,6 +535,10 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       const result = await stopTurn(turn, SUBAGENT_END_REASONS.stoppedByAgent);
       return { kind: "stopped", result: result ?? impliedResult({ modelId: turn.model.id, name: turn.name,
         reason: SUBAGENT_END_REASONS.stoppedByAgent, reasoningEffort: turn.model.effort, state: "stopped" }) };
+    },
+
+    reportsOnTheirWay(parentThreadId: string): number {
+      return reports.get(parentThreadId) ?? 0;
     },
 
     async stopChildren(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number> {

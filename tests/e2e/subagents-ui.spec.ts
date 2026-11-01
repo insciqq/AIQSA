@@ -550,6 +550,14 @@ for (const viewport of [
       await expect(view.getByText("Brief from lead")).toBeVisible();
       await expect(view.getByText("Waiting for lead").first()).toBeVisible();
       await expectTouchSafe(view.getByRole("button", { name: "Stop" }));
+      // A short thread: the brief's bar ends with its text, however much room the body has left.
+      const brief = view.locator(".v2-subagent-brief").first();
+      const [briefBox, textBox] = [await brief.boundingBox(), await brief.locator("p").boundingBox()];
+      expect(briefBox!.y + briefBox!.height - (textBox!.y + textBox!.height)).toBeLessThanOrEqual(3);
+      // No "+" here, so no column for one: the resting text starts at the composer's edge, not 44px in.
+      const composer = view.getByTestId("composer-v2-surface");
+      const textStart = await composer.locator("textarea").evaluate((input) => input.getBoundingClientRect().left + parseFloat(getComputedStyle(input).paddingLeft));
+      expect(textStart - (await composer.boundingBox())!.x).toBeLessThanOrEqual(20);
       await captureState(page, testInfo, `subagents-thread-child-${viewport.label}`, { atEachSize: async () => expectNoHorizontalOverflow(page), sizes });
     });
 
