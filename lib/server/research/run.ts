@@ -75,6 +75,10 @@ const TEXT_DRAFT_CALL = "research_text_draft_";
 const SUBMIT_FIRST = `Your message was not shown to the user: while research runs, only a report handed in reaches them. Call ` +
   `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the whole report, its findings and what could not be reached.`;
 
+/** Around what the gates said, in the call's result: an approval continuation reads it back from there (`researchOfTurn`). */
+const SENT_BACK_START = "Not shown to the user yet. ";
+const SENT_BACK_END = ` Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`;
+
 const resultOf = (call: ModelToolCall, value: { [key: string]: string }): ToolExecutionResult =>
   ({ callId: call.id, content: [{ type: "json", value }], name: call.name, status: "complete" });
 
@@ -201,8 +205,7 @@ export function createRunResearch(input: RunResearchInput) {
       }
       if (isAccepted()) return resultOf(call, { message: "The report is shown to the user exactly as you wrote it. Your answer is complete.", status: "accepted" });
       input.rearmReservedCall();
-      return resultOf(call, { message: `Not shown to the user yet. ${lastWord() ?? ""} Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`.trim(),
-        status: "sent_back" });
+      return resultOf(call, { message: `${SENT_BACK_START}${lastWord() ?? ""}${SENT_BACK_END}`.trim(), status: "sent_back" });
     }
   };
 
@@ -362,6 +365,8 @@ export function createRunResearch(input: RunResearchInput) {
     resume(items: readonly TranscriptItem[]): void {
       const found = researchOfTurn(items);
       if (found.plan) plan = found.plan;
+      // Before the draft: what the gates carry for it comes from these.
+      attempts.push(...found.attempts);
       if (found.draft) held = unchecked(found.draft);
     },
 
@@ -369,13 +374,37 @@ export function createRunResearch(input: RunResearchInput) {
   };
 }
 
-/** The plan and latest draft a turn's items hold: its calls since the last message of the user's or the server's own. */
-export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ draft: ResearchDraft | null; plan: ResearchPlan | null }> {
+/** What the gates said of a draft, from its call's stored result; null when they accepted it, and undefined when they never ended on it. */
+function gatesWord(result: Extract<TranscriptItem, { kind: "tool_result" }> | undefined): string | null | undefined {
+  if (result?.outcome !== "complete") return undefined;
+  let parsed: unknown;
+  try {
+    // A repeat note may follow the JSON (`repeatIdenticalNote`).
+    parsed = JSON.parse(result.output.slice(0, result.output.lastIndexOf("}") + 1));
+  } catch {
+    return undefined;
+  }
+  const { message, status } = (parsed ?? {}) as { message?: unknown; status?: unknown };
+  if (status === "accepted") return null;
+  if (status !== "sent_back" || typeof message !== "string") return undefined;
+  const start = message.startsWith(SENT_BACK_START) ? SENT_BACK_START.length : 0;
+  return message.slice(start, message.endsWith(SENT_BACK_END) ? -SENT_BACK_END.length : undefined);
+}
+
+/**
+ * What a turn's items hold of its research: its calls since the last message of the user's or the server's own. `attempts` are
+ * the drafts the gates ended on with what they said, rebuilt with new objects for an approval continuation: what a gate keeps
+ * by object identity is gone, so a gate that must remember reads these (`verifier.ts`).
+ */
+export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ attempts: readonly ResearchAttempt[]; draft: ResearchDraft | null; plan: ResearchPlan | null }> {
+  const attempts: ResearchAttempt[] = [];
+  const results = new Map<string, Extract<TranscriptItem, { kind: "tool_result" }>>();
   let draft: ResearchDraft | null = null;
   let plan: ResearchPlan | null = null;
   for (let index = items.length - 1; index >= 0 && !plan; index -= 1) {
     const item = items[index]!;
     if (item.kind === "user" && item.id.startsWith("msg-")) break;
+    if (item.kind === "tool_result" && item.name === SUBMIT_RESEARCH_DRAFT_TOOL_NAME) results.set(item.callId, item);
     if (item.kind !== "tool_call" || item.name !== START_RESEARCH_TOOL_NAME && item.name !== SUBMIT_RESEARCH_DRAFT_TOOL_NAME) continue;
     let parsed: unknown;
     try {
@@ -386,10 +415,13 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ dra
     if (item.name === START_RESEARCH_TOOL_NAME) {
       const decoded = decodeResearchPlan(parsed);
       if (decoded.ok) plan = decoded.value;
-    } else if (!draft) {
+    } else {
       const decoded = decodeResearchDraft(parsed);
-      if (decoded.ok) draft = decoded.value;
+      if (!decoded.ok) continue;
+      draft ??= decoded.value;
+      const message = gatesWord(results.get(item.callId));
+      if (message !== undefined) attempts.unshift({ draft: decoded.value, message });
     }
   }
-  return { draft, plan };
+  return { attempts, draft, plan };
 }

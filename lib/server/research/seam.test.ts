@@ -17,6 +17,7 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 import { runResearchGates, type ResearchGate, type ResearchGateContext } from "./gates";
 import { researchNote } from "./notes";
 import { researchOfTurn, type ResearchEngineDeps } from "./run";
+import { researchModelIdentity } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
 
 /**
@@ -829,6 +830,29 @@ describe("a draft and its notes stay together", () => {
   });
 });
 
+describe("an approval continuation goes on with what the gates said", () => {
+  const items = (draft: unknown, output: string): TranscriptItem[] => [
+    { id: "msg-q", kind: "user", text: "Проведи исследование." },
+    { arguments: JSON.stringify(PLAN), callId: "s", id: "s1", kind: "tool_call", name: START_RESEARCH_TOOL_NAME },
+    { arguments: JSON.stringify(draft), callId: "d", id: "d1", kind: "tool_call", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },
+    { callId: "d", id: "d2", kind: "tool_result", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME, outcome: "complete", output }
+  ];
+
+  it("rebuilds each attempt with the gates' own words, whatever wrapped them", () => {
+    const sent = JSON.stringify({ message: `Not shown to the user yet. [Independent check] Line one.\nLine two. Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`, status: "sent_back" });
+    expect(researchOfTurn(items(DRAFT, sent)).attempts).toEqual([{ draft: expect.objectContaining({ report: REPORT }), message: "[Independent check] Line one.\nLine two." }]);
+    expect(researchOfTurn(items(DRAFT, `${sent}\n\nYou made this same call before.`)).attempts[0]!.message).toBe("[Independent check] Line one.\nLine two.");
+    expect(researchOfTurn(items(DRAFT, JSON.stringify({ message: "Shown.", status: "accepted" }))).attempts).toEqual([{ draft: expect.anything(), message: null }]);
+  });
+
+  it("takes no attempt from a draft the gates never ended on: refused, or with no result", () => {
+    const refused = items(DRAFT, JSON.stringify({ error: "research_check_running" }));
+    expect(researchOfTurn(refused).attempts).toEqual([]);
+    expect(researchOfTurn(refused).draft).toMatchObject({ report: REPORT });
+    expect(researchOfTurn(refused.slice(0, 3)).attempts).toEqual([]);
+  });
+});
+
 describe("the verifier's own turn is independent", () => {
   it("gets none of the user's words or the chat's instructions, and the gap judge keeps them", async () => {
     const seen: string[] = [];
@@ -888,7 +912,8 @@ describe("the verifier's own turn is independent", () => {
       route: vi.fn(async () => ({ connectionName: "Same", displayName: "Same One", route })) };
   }
 
-  it.each([["the same model row", "fake-qsa", "model-1", "connection-1"], ["the same model over another connection", "fake-qsa", "model-9", "connection-2"]])(
+  it.each([["the same model row", "fake-qsa", "model-1", "connection-1"], ["the same model over another connection", "fake-qsa", "model-9", "connection-2"],
+    ["the same model under a provider's namespace", "vendor/FAKE.qsa", "model-9", "connection-2"]])(
     "does not call %s independent", async (_name, upstream, providerModelId, connectionId) => {
       let model: unknown;
       const reader = gate("verifier", async (_draft, context) => {
@@ -899,6 +924,12 @@ describe("the verifier's own turn is independent", () => {
       await run(main.adapter, engineOf({ gates: [reader], verifier: roleOf(main.adapter, upstream, providerModelId, connectionId) })).text();
       expect(model).toEqual({ kind: "main_model", label: "Same One · Same" });
     });
+
+  it("knows one model under its several names, and no two models as one", () => {
+    const native = researchModelIdentity("gpt-6.1-sol");
+    for (const alias of ["openai/gpt-6.1-sol", "OpenAI/GPT-6.1-Sol", "codex-lb:gpt-6.1-sol", "gpt-6-1-sol", "openai/gpt-6.1-sol:free", "a/b/gpt-6.1-sol"]) expect(researchModelIdentity(alias), alias).toBe(native);
+    for (const other of ["gpt-6.1", "gpt-6.2-sol", "gpt-6.1-sol-mini", "anthropic/claude-opus-5.5"]) expect(researchModelIdentity(other), other).not.toBe(native);
+  });
 
   it("keeps a different model as the role", async () => {
     let model: unknown;
@@ -1026,7 +1057,7 @@ describe("what ends research", () => {
       { arguments: JSON.stringify({ ...DRAFT, report: "Later draft." }), callId: "d2", id: "d2", kind: "tool_call", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME }
     ];
     expect(researchOfTurn(items)).toMatchObject({ draft: { report: "Later draft." }, plan: { goal: "This turn." } });
-    expect(researchOfTurn(items.slice(0, 3))).toEqual({ draft: null, plan: null });
+    expect(researchOfTurn(items.slice(0, 3))).toEqual({ attempts: [], draft: null, plan: null });
   });
 
   it("a follow-up that arrives during a check reopens the answer: the model reads it and hands in again", async () => {

@@ -33,8 +33,14 @@ export type QuoteCheck =
   | Readonly<{ reason: "browser_page" | "other_tool_output" | "partial_source" | "sources_over_limit" | "sources_unreadable"; status: "not_checked" }>
   | Readonly<{ reason: "not_in_opened_text" | "search_snippet_only"; status: "unsupported" }>;
 
+/**
+ * Whose words a passage is: the cited page's, another page's, or a browser page with no recorded address. A quote found
+ * on another page is real, but that page's terms must never read as the cited one's.
+ */
+export type QuoteSource = Readonly<{ kind: "cited" | "unknown" }> | Readonly<{ kind: "other"; url: string }>;
+
 /** One continuous passage of opened text, normalized as below, with the quoted words in `quoted`: a long quote's rest is in `after`. */
-export type QuoteExcerpt = Readonly<{ after: string; before: string; quoted: string }>;
+export type QuoteExcerpt = Readonly<{ after: string; before: string; quoted: string; source: QuoteSource }>;
 
 export const QUOTE_EXCERPT_LIMITS = Object.freeze({ quotedCharacters: 400, sideCharacters: 600 });
 
@@ -112,11 +118,27 @@ function spanOf(text: string, parts: readonly string[]): Readonly<{ end: number;
 
 const holds = (text: string, parts: readonly string[]) => spanOf(text, parts) !== null;
 
-function excerptOf(text: string, span: Readonly<{ end: number; start: number }>): QuoteExcerpt {
+function excerptOf(text: string, span: Readonly<{ end: number; start: number }>, source: QuoteSource): QuoteExcerpt {
   const limits = QUOTE_EXCERPT_LIMITS;
   const quotedEnd = Math.min(span.end, span.start + limits.quotedCharacters);
   return { after: text.slice(quotedEnd, quotedEnd + limits.sideCharacters), before: text.slice(Math.max(0, span.start - limits.sideCharacters), span.start),
-    quoted: text.slice(span.start, quotedEnd) };
+    quoted: text.slice(span.start, quotedEnd), source };
+}
+
+type OpenedPage = Readonly<{ hosts: readonly string[]; link: string | null; text: string }>;
+
+/** A fetched page knows its address. A browser page only shows hosts in its step lines, if it has any, and one on another host is another page. */
+function sourceOf(page: OpenedPage, link: string | null, host: string | null): QuoteSource {
+  if (page.link) return page.link === link ? { kind: "cited" } : { kind: "other", url: page.link };
+  return page.hosts.length > 0 && (host === null || !page.hosts.includes(host)) ? { kind: "other", url: page.hosts[0]! } : { kind: "unknown" };
+}
+
+const SOURCE_ORDER: Readonly<Record<QuoteSource["kind"], number>> = { cited: 0, other: 2, unknown: 1 };
+
+/** Whether a stored whole copy of this very page was read: what lets another page's passage be left aside. */
+export function citedPageRead(opened: readonly ResearchOpenedSource[], url: string): boolean {
+  const link = normalizeFetchUrl(url);
+  return link !== null && opened.some((source) => !source.partial && source.url !== null && normalizeFetchUrl(source.url) === link);
 }
 
 function hostOf(link: string): string | null {
@@ -139,7 +161,7 @@ function browserHosts(text: string): readonly string[] {
 /** Reads the run's opened text once and answers per finding, in order. `opened` null: it could not be read at all. */
 export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "url">[], opened: readonly ResearchOpenedSource[] | null): readonly QuoteCheck[] {
   if (!opened) return findings.map(() => ({ reason: "sources_unreadable", status: "not_checked" }));
-  const pages: Readonly<{ link: string | null; text: string }>[] = [];
+  const pages: OpenedPage[] = [];
   const others: string[] = [];
   const snippets: string[] = [];
   const fetched = new Set<string>();
@@ -157,24 +179,26 @@ export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "
       // A result with no link may be a page from anywhere; a search result's text is no page.
       else if (kind !== "search") unlinkedPartial = true;
     } else if (link) fetched.add(link);
-    for (const host of browserHosts(source.text)) browsed.add(host);
+    const hosts = browserHosts(source.text);
+    for (const host of hosts) browsed.add(host);
     const text = normalizeQuotedText(source.text);
-    if (kind === "page") pages.push({ link, text });
+    if (kind === "page") pages.push({ hosts, link, text });
     else (kind === "search" ? snippets : others).push(text);
   }
   const overLimit = opened.length >= RESEARCH_SOURCE_LIMITS.results || characters >= RESEARCH_SOURCE_LIMITS.totalCharacters;
   return findings.map((finding): QuoteCheck => {
     const parts = quoteParts(finding.quote);
     const link = normalizeFetchUrl(finding.url);
-    // The cited page's own text first, when it holds the quote.
-    for (const page of [...pages.filter((entry) => link !== null && entry.link === link), ...pages]) {
+    const citedHost = hostOf(finding.url);
+    // The cited page's own text first, then a page that may be it, and another page's last.
+    const ranked = pages.map((page) => ({ page, source: sourceOf(page, link, citedHost) })).sort((a, b) => SOURCE_ORDER[a.source.kind] - SOURCE_ORDER[b.source.kind]);
+    for (const { page, source } of ranked) {
       const span = spanOf(page.text, parts);
-      if (span) return { excerpt: excerptOf(page.text, span), status: "found" };
+      if (span) return { excerpt: excerptOf(page.text, span, source), status: "found" };
     }
     if (link && partialLinks.has(link)) return { reason: "partial_source", status: "not_checked" };
     if (link && fetched.has(link)) return { status: "not_verbatim" };
-    const host = hostOf(finding.url);
-    if (host && browsed.has(host)) return { reason: "browser_page", status: "not_checked" };
+    if (citedHost && browsed.has(citedHost)) return { reason: "browser_page", status: "not_checked" };
     if (others.some((text) => holds(text, parts))) return { reason: "other_tool_output", status: "not_checked" };
     if (unlinkedPartial) return { reason: "partial_source", status: "not_checked" };
     if (overLimit) return { reason: "sources_over_limit", status: "not_checked" };

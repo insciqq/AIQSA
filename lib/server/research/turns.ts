@@ -34,6 +34,17 @@ export function researchTurnName(name: string, attempt: number): string {
   return SUBAGENT_NAME_PATTERN.test(full) ? full : `check${suffix}`;
 }
 
+/** What a model id says after the route it came through: OpenRouter's variants, then any provider or alias prefix. */
+const ROUTING_VARIANT = /:(?:beta|exacto|extended|floor|free|nitro|online|thinking)$/u;
+
+/**
+ * One model under its several names: native `gpt-6.1-sol`, OpenRouter's `openai/gpt-6.1-sol` and codex-lb's `codex-lb:gpt-6-1-sol`
+ * are the same model, which is no independent check of itself.
+ */
+export function researchModelIdentity(id: string): string {
+  return (id.trim().toLowerCase().replace(ROUTING_VARIANT, "").split(/[/:]/u).at(-1) ?? "").replaceAll(".", "-");
+}
+
 export type ResearchTurnsInput = Readonly<{
   /** What the run gave its own sub-agents (`execution.ts`). */
   subagentInput: PrepareRunSubagentsInput;
@@ -109,7 +120,7 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const label = modelWithConnectionLabel(route.displayName, route.connectionName);
       // The role names the model that wrote the report, here or over another connection: no one independent checks it.
       const { snapshot: chosen } = route.route;
-      const same = chosen.providerModelId === snapshot.providerModelId || chosen.model.upstreamModelId === snapshot.model.upstreamModelId;
+      const same = chosen.providerModelId === snapshot.providerModelId || researchModelIdentity(chosen.model.upstreamModelId) === researchModelIdentity(snapshot.model.upstreamModelId);
       return { kind: same ? "main_model" : "role", label };
     },
     async run(request: ResearchSubagentRequest, turn: Readonly<{ attempt: number; round: number; signal: AbortSignal }>): Promise<ResearchSubagentOutcome> {
