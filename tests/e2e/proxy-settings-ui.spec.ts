@@ -48,6 +48,7 @@ const API = {
 } as const;
 
 test.beforeAll(async ({ browser, baseURL }) => {
+  test.setTimeout(240_000);
   const administrator = await browser.newContext({ baseURL: baseURL! });
   await authenticateWithLocalToken(administrator.request);
   const member = await browser.newContext({ baseURL: baseURL! });
@@ -55,8 +56,11 @@ test.beforeAll(async ({ browser, baseURL }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill(LOCAL_RESTRICTED_MEMBER.email);
   await page.getByLabel("Password", { exact: true }).fill(LOCAL_RESTRICTED_MEMBER.password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL("/");
+  // A first page on a dev server may take the click before it hydrates: the sign-in is tried until it lands.
+  await expect(async () => {
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL("/", { timeout: 10_000 });
+  }).toPass({ timeout: 120_000 });
   sessions = { administrator: await administrator.storageState(), personal: await member.storageState() };
   await administrator.close();
   await member.close();
