@@ -461,6 +461,23 @@ describe("the verifier's needs", () => {
     expect(seen).toEqual([{ kind: "unavailable" }, { code: "research_verifier_unavailable", kind: "refused" }]);
   });
 
+  it("gives each gate's turn on one draft a call of its own, since a call has one turn in the database", async () => {
+    const turnOf = (name: string) => gate(name, async (_draft, context) => {
+      await context.subagents.run({ brief: `brief ${name}`, instructions: "i", model: "main", name, tools: [] }, context.signal);
+      return { kind: "pass" };
+    });
+    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\nfirst" }, { text: "Outcome: done\nsecond" }]);
+    const memory = engineOf({ gates: [turnOf("judge"), turnOf("verifier")] });
+    await run(main.adapter, memory).text();
+    const parents = memory.threads.admitForeground.mock.calls.map(([input]) => input.parentToolCallId);
+    expect(parents).toHaveLength(2);
+    expect(new Set(parents).size).toBe(2);
+    const gateCalls = memory.toolCalls.begin.mock.calls.map(([input]) => input).filter((input) => input.providerCallId.startsWith("research_gate_"));
+    expect(gateCalls.map((input) => input.arguments.message)).toEqual(["brief judge", "brief verifier"]);
+    expect(new Set(gateCalls.map((input) => input.ordinal)).size).toBe(2);
+    expect(memory.toolCalls.settle).toHaveBeenCalledTimes(memory.toolCalls.begin.mock.calls.length);
+  });
+
   it("keeps what the run froze: a role cleared after the run started does not change it", async () => {
     let policy = "model-2";
     const other = scripted([{ text: "Outcome: done\nok" }]);

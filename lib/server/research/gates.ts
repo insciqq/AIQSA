@@ -38,7 +38,7 @@ export type ResearchSubagentRequest = Readonly<{
   /** The turn's role instructions. */
   instructions: string;
   model: "main" | "verifier";
-  /** Unique within the gate's attempts: the server adds what makes the thread its own to this run and attempt. */
+  /** Unique within the attempt, across gates: the server adds what makes the thread its own to this run and attempt. */
   name: string;
   /** Narrows the turn's tools; a gate's turn starts no children, and a list is required so it is never handed every tool. */
   tools: readonly SubagentToolGroup[];

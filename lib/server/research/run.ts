@@ -145,7 +145,7 @@ export function createRunResearch(input: RunResearchInput) {
       plan,
       signal: execution.signal,
       sources,
-      subagents: { run: (request, signal) => turns.run(request, { attempt, parentToolCallId: execution.persistedToolCallId, signal }) },
+      subagents: { run: (request, signal) => turns.run(request, { attempt, round: execution.round, signal }) },
       time: { remainingMs: () => input.gatesEndAt - input.now(), sendBackAllowed: () => toolsOpen && input.toolTimeLeft() },
       verifierModel: () => turns.verifierModel()
     } });
