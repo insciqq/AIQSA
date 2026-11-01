@@ -56,6 +56,13 @@ function harness(responses: readonly ProviderRunResult[], options: Partial<{
   return { asked, choices, items, order, ports };
 }
 
+function recordingOffers(ports: AgentLoopPorts, offered: boolean[]): AgentLoopPorts["prepareRequest"] {
+  return async (input) => {
+    offered.push(input.reserved === true);
+    return ports.prepareRequest(input);
+  };
+}
+
 describe("native agent loop", () => {
   it("answers directly in one round", async () => {
     const { items, ports } = harness([response("Hi")]);
@@ -332,7 +339,7 @@ describe("the run's reserved report", () => {
       let taken = false;
       const { ports } = harness([response("", [call("c1")]), response("never")], { batch: () => { taken = true; return {}; } });
       const responseEnded = vi.fn(async () => null);
-      await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => taken, responseEnded } })).resolves.toEqual({ kind: "answered", rounds: 1 });
+      await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => taken, responseCompleted: () => undefined, responseEnded } })).resolves.toEqual({ kind: "answered", rounds: 1 });
       expect(ports.callModel).toHaveBeenCalledTimes(1);
       expect(responseEnded).not.toHaveBeenCalled();
     });
@@ -342,7 +349,7 @@ describe("the run's reserved report", () => {
       const followup: TranscriptUserItem = { followup: true, id: "f", kind: "user", text: "More." };
       const { items, ports } = harness([response("Done.")], { closes: [false], followups: [[followup]] });
       const deliverFollowups = vi.fn(async () => { taken = false; return [followup]; });
-      await expect(runAgentLoop({ ...ports, deliverFollowups, draft: { answerTaken: () => taken, responseEnded: async () => null } })).resolves.toMatchObject({ kind: "answered" });
+      await expect(runAgentLoop({ ...ports, deliverFollowups, draft: { answerTaken: () => taken, responseCompleted: () => undefined, responseEnded: async () => null } })).resolves.toMatchObject({ kind: "answered" });
       expect(ports.callModel).toHaveBeenCalledTimes(1);
       expect(items[0]).toBe(followup);
     });
@@ -350,7 +357,7 @@ describe("the run's reserved report", () => {
     it("sends a response without calls back to the model when the draft says so, then lets the turn end", async () => {
       const { choices, items, ports } = harness([response("A message."), response("A message again.")]);
       const responseEnded = vi.fn().mockResolvedValueOnce(sentBack).mockResolvedValue(null);
-      await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => false, responseEnded } })).resolves.toEqual({ kind: "answered", rounds: 2 });
+      await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => false, responseCompleted: () => undefined, responseEnded } })).resolves.toEqual({ kind: "answered", rounds: 2 });
       expect(responseEnded).toHaveBeenNthCalledWith(1, { round: 1, text: "A message.", toolsClosed: false });
       expect(items.map((item) => item.id)).toContain("back");
       expect(choices).toEqual(["auto", "auto"]);
@@ -359,18 +366,44 @@ describe("the run's reserved report", () => {
     it("tells it when tools are closed, and skips a tool-free round when the answer is taken instead", async () => {
       const closed = harness([response("Text.")], { toolTimeLeft: () => false });
       const responseEnded = vi.fn(async () => null);
-      await runAgentLoop({ ...closed.ports, draft: { answerTaken: () => false, responseEnded } });
+      await runAgentLoop({ ...closed.ports, draft: { answerTaken: () => false, responseCompleted: () => undefined, responseEnded } });
       expect(responseEnded).toHaveBeenCalledWith({ round: 1, text: "Text.", toolsClosed: true });
       const skipped = harness([response("never")], { toolTimeLeft: () => false });
-      await expect(runAgentLoop({ ...skipped.ports, draft: { answerTaken: ({ toolChoice }) => toolChoice === "none", responseEnded } }))
+      await expect(runAgentLoop({ ...skipped.ports, draft: { answerTaken: ({ toolChoice }) => toolChoice === "none", responseCompleted: () => undefined, responseEnded } }))
         .resolves.toEqual({ kind: "answered", rounds: 0 });
       expect(skipped.ports.callModel).not.toHaveBeenCalled();
+    });
+
+    it("tells it of a completed response before any record of it is written or any call sent", async () => {
+      const { order, ports } = harness([response("", [call("c1")]), response("Done.")]);
+      const responseCompleted = vi.fn(() => { order.push("responseCompleted"); });
+      await runAgentLoop({ ...ports, draft: { answerTaken: () => false, responseCompleted, responseEnded: async () => null } });
+      expect(responseCompleted).toHaveBeenNthCalledWith(1, { calls: [call("c1")], runnable: [call("c1")] });
+      expect(order.indexOf("responseCompleted")).toBeLessThan(order.indexOf("appendCalls"));
+      expect(order.indexOf("roundEnd")).toBeLessThan(order.indexOf("responseCompleted"));
+    });
+
+    it("offers a reserved call once more after a delivered follow-up, only where a draft is held", async () => {
+      const followup: TranscriptUserItem = { followup: true, id: "f", kind: "user", text: "More." };
+      const reservedRun = (draft: boolean) => {
+        const made = harness([response("", [call("c1", "report")]), response("", [call("c2", "report")]), response("Done.")], { closes: [false], followups: [[followup]], toolTimeLeft: () => false });
+        const offered: boolean[] = [];
+        const prepareRequest = recordingOffers(made.ports, offered);
+        return { made, offered, ports: { ...made.ports, prepareRequest, reservedCall: { name: "report", outstanding: () => true },
+          ...(draft ? { draft: { answerTaken: () => false, responseCompleted: () => undefined, responseEnded: async () => null } } : {}) } };
+      };
+      const held = reservedRun(true);
+      await runAgentLoop(held.ports);
+      expect(held.offered.filter(Boolean).length).toBe(2);
+      const plain = reservedRun(false);
+      await runAgentLoop(plain.ports);
+      expect(plain.offered.filter(Boolean).length).toBe(1);
     });
 
     it("does not fail as empty when the draft takes the answer after a tool-free response of only calls", async () => {
       const { ports } = harness([response("", [call("c1")]), response("", [call("c2")]), response("", [call("c3")])], { toolTimeLeft: () => false });
       let asks = 0;
-      await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => asks++ > 1, responseEnded: async () => null } })).resolves.toMatchObject({ kind: "answered" });
+      await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => asks++ > 1, responseCompleted: () => undefined, responseEnded: async () => null } })).resolves.toMatchObject({ kind: "answered" });
     });
   });
 });
