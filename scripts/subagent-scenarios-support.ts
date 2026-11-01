@@ -59,7 +59,7 @@ const flag = (value: boolean) => value ? 1 : 0;
  * sub-agent that waits. N: a DOCX attached in one turn and answered from in the
  * next, with the Workspace off for the installation.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -73,14 +73,29 @@ export function selectedSubagentScenarios(raw: string | undefined): SubagentScen
 }
 
 /** What a scenario needs beyond the stand: a second model (C2), the restart hook (G), or the live panel driven by Playwright. */
-export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restartHook?: true; search?: true; secondModel?: true }>;
+export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restartHook?: true; search?: true; secondModel?: true; testProxy?: true }>;
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
+/** The operator's proxy for scenario S, from the process environment only: it is never printed, stored or written to a file. */
+export type TestProxy = Readonly<{ host: string; login: string; password: string; port: number; protocol: "http"; url: string }>;
+
+export function parseTestProxy(raw: string | undefined): TestProxy | null {
+  if (!raw?.trim()) return null;
+  try {
+    const url = new URL(raw.trim());
+    const port = Number(url.port);
+    if (url.protocol !== "http:" || !url.username || !url.password || !Number.isSafeInteger(port) || port < 1) return null;
+    return { host: url.hostname, login: decodeURIComponent(url.username), password: decodeURIComponent(url.password), port, protocol: "http", url: raw.trim() };
+  } catch {
+    return null;
+  }
+}
+
 export type SubagentHarnessOptions = Readonly<{
   /** The second chat model's upstream id for C2 (added beside the parent on the same codex-lb route). */
   secondModel: string | null;
@@ -123,6 +138,7 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   if (text !== null && !OPENROUTER_MODEL_PATTERN.test(text)) fail("text_model_invalid");
   if (text !== null && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
   if (needs.some((need) => need.search) && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
+  if (needs.some((need) => need.testProxy) && parseTestProxy(env.AIQSA_SUBAGENTS_TEST_PROXY) === null) fail("test_proxy_required");
   return {
     restart: command === null ? null : { command, timeoutMs: timeoutSeconds * 1_000 },
     runs: boundedInteger(env.AIQSA_SUBAGENTS_RUNS, 1, 1, 3, "runs_invalid"),
@@ -1507,6 +1523,102 @@ export function oracleQ(input: QEvidence): OracleVerdict {
   if (!input.settled) failed.push("callbacks_owed");
   return { counts: { mainCalls: pageReadTotal(input.main), mainReads: pageReadCount(input.main, "read"), readerCalls: pageReadTotal(input.reader),
     readerReads: pageReadCount(input.reader, "read"), ...(input.searches === null ? {} : { searches: input.searches }) }, failed };
+}
+
+export const SCENARIO_S_NAME = "ru-test";
+export const SCENARIO_S_DEAD_NAME = "dead-test";
+export const SCENARIO_S_DEAD_HINT = "icanhazip.com";
+
+/** S's messages. The URL goes only into the first, as a user would paste it. */
+export const SCENARIO_S_PROMPTS = Object.freeze({
+  save: (url: string) => `Сохрани этот прокси для зоны .ru под именем ${SCENARIO_S_NAME}: ${url}. Потом проверь его и одним предложением скажи, сработал ли он.`,
+  browse: () => "Открой в браузере Workspace через aiqsa-browser, без своих настроек прокси, по очереди, каждую страницу отдельной командой и подожди загрузку каталога:\n" +
+    "1. https://2ip.ru/ — выпиши IP-адрес, который показывает страница.\n" +
+    "2. https://market.yandex.ru/search?text=матрас\n" +
+    "3. https://www.wildberries.ru/catalog/0/search.aspx?search=матрас\n" +
+    "4. https://www.ozon.ru/search/?text=матрас — один раз, без повторов.\n" +
+    `5. https://api.ipify.org/?format=text с опцией --proxy ${SCENARIO_S_NAME}\n` +
+    "Для страниц 2-4 ответь строкой: сколько товаров видно, первые два товара с ценой и рейтингом, или какая страница ошибки открылась. Без поиска и без fetch_url.",
+  read: () => `Прочитай инструментом fetch_url, только им, две страницы: https://2ip.ru/ и https://api.ipify.org/?format=text с параметром proxy "${SCENARIO_S_NAME}". Ответь одним предложением.`,
+  dead: () => `Прочитай инструментом fetch_url страницу https://${SCENARIO_S_DEAD_HINT}/ и открой её же в браузере через aiqsa-browser. Без поиска. Не указывай прокси сам и не повторяй. Ответь одним предложением, что вышло.`,
+  off: () => `Прочитай инструментом fetch_url страницу https://api.ipify.org/?format=text с параметром proxy "${SCENARIO_S_NAME}", один раз, и ответь одним предложением, что вышло.`
+});
+
+export type SEvidence = Readonly<{
+  /** Whether stored results hold the proxy's address: matched inside SQL. */
+  browserHintExit: boolean;
+  browserNamedExit: boolean;
+  checkOk: boolean;
+  deadBrowserFailed: boolean;
+  deadFetchCodes: readonly string[];
+  deadWentDirect: boolean;
+  exitIsProxy: boolean;
+  fetchExit: boolean;
+  fetchThroughProxy: number;
+  hintSaved: boolean;
+  offFetchCodes: readonly string[];
+  passwordInAnswer: boolean;
+  saved: boolean;
+  terminals: Readonly<Record<string, string>>;
+}>;
+
+/** S's verdict; marketplaces and Ozon are read by hand from the answers, and are no oracle of this function. */
+export function oracleS(input: SEvidence): OracleVerdict {
+  const failed: string[] = [];
+  if (!input.saved) failed.push("proxy_not_saved");
+  if (!input.hintSaved) failed.push("hint_not_saved");
+  if (!input.checkOk) failed.push("check_not_ok");
+  if (!input.exitIsProxy) failed.push("check_exit_not_proxy");
+  if (input.passwordInAnswer) failed.push("password_in_answer");
+  if (!input.browserHintExit) failed.push("browser_hint_exit_not_proxy");
+  if (!input.browserNamedExit) failed.push("browser_named_exit_not_proxy");
+  if (input.fetchThroughProxy < 2) failed.push("fetch_not_through_proxy");
+  if (!input.fetchExit) failed.push("fetch_exit_not_proxy");
+  if (input.deadWentDirect) failed.push("dead_proxy_went_direct");
+  if (input.deadFetchCodes.length === 0) failed.push("dead_fetch_no_code");
+  if (!input.deadBrowserFailed) failed.push("dead_browser_no_failure");
+  if (!input.offFetchCodes.includes("proxy_inactive")) failed.push("off_proxy_not_refused");
+  for (const [step, status] of Object.entries(input.terminals)) if (status !== "complete") failed.push(`${step}_${status}`);
+  return { counts: { fetchThroughProxy: input.fetchThroughProxy }, failed };
+}
+
+/** T's questions: the purchase of the reviewed chat's shape, then other kinds. They name what a clarifying question would ask. */
+export const SCENARIO_T_QUESTIONS: readonly Readonly<{ kind: string; text: string }>[] = Object.freeze([
+  { kind: "purchase", text: "Проведи исследование: какой матрас средней жёсткости 180×200 лучше купить в России до 60 тысяч рублей? Куплю на маркетплейсе, спать буду на нём лет десять." },
+  { kind: "medical", text: "Проведи исследование: что показывают современные клинические данные о влиянии приёма магния на сон у взрослых без его дефицита?" },
+  { kind: "technical", text: "Глубокий анализ: pgvector или отдельная векторная база для RAG на 10 миллионов векторов и 50 запросов в секунду в 2026 году?" },
+  { kind: "market", text: "Проанализируй рынок складных электровелосипедов в России в 2026 году: кто главные продавцы, цены и что о них говорят владельцы." }
+]);
+
+export type TDraftFinding = Readonly<{ claim: string; quote: string; sourceClass: string; url: string }>;
+
+/** What one research question's run shows per step, in counts. */
+export type TMetrics = Readonly<{
+  /** Opened pages behind the last draft's independent tests and owner reviews. */
+  independentOpened: number;
+  /** Findings in the last draft not in the first: what later rounds added. */
+  addedByLaterRounds: number;
+  attempts: number;
+  findings: number;
+  openedByClass: Readonly<Record<string, number>>;
+  researcherTurns: number;
+  sentBack: number;
+  started: boolean;
+}>;
+
+/** T's counts from the drafts handed in, oldest first, and the page links agents really read. Links and claims stay in memory. */
+export function researchMetrics(input: Readonly<{ drafts: readonly (readonly TDraftFinding[])[]; opened: ReadonlySet<string>;
+  researcherTurns: number; sentBack: number; started: boolean }>): TMetrics {
+  const key = (finding: TDraftFinding) => JSON.stringify([finding.claim.trim().toLowerCase(), finding.url]);
+  const first = new Set((input.drafts[0] ?? []).map(key));
+  const last = input.drafts.at(-1) ?? [];
+  const openedByClass: Record<string, number> = {};
+  for (const finding of last) {
+    if (input.opened.has(finding.url)) openedByClass[finding.sourceClass] = (openedByClass[finding.sourceClass] ?? 0) + 1;
+  }
+  return { addedByLaterRounds: last.filter((finding) => !first.has(key(finding))).length, attempts: input.drafts.length, findings: last.length,
+    independentOpened: (openedByClass.independent_tests ?? 0) + (openedByClass.owner_reviews ?? 0), openedByClass, researcherTurns: input.researcherTurns,
+    sentBack: input.sentBack, started: input.started };
 }
 
 /** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
