@@ -591,7 +591,7 @@ describe("review findings", () => {
     ]);
     const memory = engineOf({});
     const begin = vi.mocked(memory.toolCalls.begin);
-    const original = begin.getMockImplementation()!;
+    const original = begin.getMockImplementation()! as (input: Parameters<typeof memory.toolCalls.begin>[0]) => ReturnType<typeof memory.toolCalls.begin>;
     begin.mockImplementation(async (input) => {
       if (input.toolName === START_RESEARCH_TOOL_NAME) await new Promise((resolve) => setTimeout(resolve, 20));
       return original(input);
