@@ -23,6 +23,7 @@ export function subagentThread(
     model: null,
     name: id.replace(/^thread-/u, ""),
     outcome: state === "done" ? "done" : null,
+    parent: null,
     reason: state === "stopped" ? "user_stop" : state === "failed" ? "provider_error" : null,
     state,
     turnCount: 1,

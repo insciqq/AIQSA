@@ -103,8 +103,10 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
     const [run, user] = await Promise.all([
       db.modelRun.findFirst({ where: { id: input.runId, userId: input.userId },
         select: { normalizedRequest: true, chat: { select: { userId: true } }, skillRunBindings: { select: bindingFields },
-          // A background sub-agent's run has only its own loads: its pinned rows stay its parent's.
-          subagentTurn: { select: { parentRun: { select: { skillRunBindings: { select: bindingFields, where: { mode: "pinned" } } } } } } } }),
+          // A background sub-agent's run has only its own loads: its pinned rows stay on the main-agent run behind it, which
+          // for a child of another background run is one step further.
+          subagentTurn: { select: { parentRun: { select: { skillRunBindings: { select: bindingFields, where: { mode: "pinned" } },
+            subagentTurn: { select: { parentRun: { select: { skillRunBindings: { select: bindingFields, where: { mode: "pinned" } } } } } } } } } } } }),
       db.user.findUnique({ where: { id: input.userId }, select: { status: true } })
     ]);
     if (!run || user?.status !== "active" || run.chat.userId !== input.userId) return invalid();
@@ -115,7 +117,8 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
     const manifest = decodeFrozenSkillManifest(request.skills);
     if (!manifest) return invalid();
     const all = references(manifest);
-    const bindings = [...run.skillRunBindings, ...run.subagentTurn?.parentRun.skillRunBindings ?? []];
+    const parentRun = run.subagentTurn?.parentRun;
+    const bindings = [...run.skillRunBindings, ...parentRun?.skillRunBindings ?? [], ...parentRun?.subagentTurn?.parentRun.skillRunBindings ?? []];
     for (const binding of bindings) {
       const reference = all.find(item => item.skillId === binding.skillId && item.revisionId === binding.revisionId);
       if (!reference || binding.alias && binding.alias !== reference.alias ||

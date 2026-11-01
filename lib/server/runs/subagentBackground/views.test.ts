@@ -22,7 +22,7 @@ function turn(id: string, state: string, overrides: Record<string, unknown> = {}
 }
 
 const thread = (id: string, turns: readonly unknown[]) => ({
-  anchorRun: { assistantMessageId: "answer-1" }, createdAt: at, id, name: id, turns, typeName: null, updatedAt: at
+  anchorRun: { assistantMessageId: "answer-1" }, createdAt: at, id, name: id, parentThread: null, turns, typeName: null, updatedAt: at
 });
 
 const runningCall = (turnId: string, overrides: Record<string, unknown> = {}) => ({

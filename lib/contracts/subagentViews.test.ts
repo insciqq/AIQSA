@@ -20,7 +20,7 @@ const done = {
 };
 const running = { ...done, endedAt: null, id: "thread-2", mode: "background", name: "shop-ebay", outcome: null, state: "running",
   turnCount: 1, type: "browser" };
-const unknownFacts = { currentStep: null, latestAnswerMessageId: null, model: null };
+const unknownFacts = { currentStep: null, latestAnswerMessageId: null, model: null, parent: null };
 const turn = {
   brief: "Find the five best robot vacuums on amazon.es.", endedAt: null, files: [], id: "turn-1",
   messages: [{ createdAt: "2026-10-29T10:01:00.000Z", delivery: "delivered", text: "Also check the warranty." }],
@@ -67,6 +67,17 @@ describe("sub-agent list projections", () => {
     expect(decodeSubagentThreadSummary({ ...done, latestAnswerMessageId: "answer-1" })?.latestAnswerMessageId).toBe("answer-1");
     for (const latestAnswerMessageId of [1, "", "a b", { id: "answer-1" }]) {
       expect(decodeSubagentThreadSummary({ ...done, latestAnswerMessageId })).toBeNull();
+    }
+  });
+
+  it("names a child's parent, reads a row without one as the main agent's and refuses a malformed one", () => {
+    const parent = { id: "thread-parent", name: "researcher" };
+    expect(decodeSubagentThreadSummary({ ...done, parent })?.parent).toEqual(parent);
+    expect(decodeSubagentThreadSummary({ ...done, parent: null })?.parent).toBeNull();
+    expect(decodeSubagentThreadSummary(done)?.parent).toBeNull();
+    for (const value of ["researcher", { id: "thread-parent" }, { id: "a b", name: "researcher" }, { id: "thread-parent", name: "main" },
+      { extra: 1, id: "thread-parent", name: "researcher" }]) {
+      expect(decodeSubagentThreadSummary({ ...done, parent: value })).toBeNull();
     }
   });
 

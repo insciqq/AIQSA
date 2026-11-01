@@ -23,8 +23,9 @@ import { decodeThreadWorkspaceActivity, type ThreadWorkspaceActivity } from "./w
  * under their chat; a thread opens read-only with Stop). A branch shows only
  * its own sub-agents: every projection reads the chat's active branch
  * (`isSubagentTurnOnBranch`).
- * Sub-agents are never chats of their own: they are absent from chat search,
- * Favorites, exports and shares.
+ * A child (operator decision 2026-10-31) is a row like any other that names its
+ * parent, which the tree nests it under. Sub-agents are never chats of their
+ * own: they are absent from chat search, Favorites, exports and shares.
  *
  * Authorization (every route below): the caller's own signed-in session; the
  * chat must be the caller's own and not pending permanent deletion; a thread
@@ -102,6 +103,9 @@ export type SubagentCurrentStep = Readonly<{
 /** The model a turn runs on: its display name and the effort, or null for the model's default. */
 export type SubagentTurnModel = Readonly<{ displayName: string; effort: string | null }>;
 
+/** The sub-agent a child's row nests under. */
+export type SubagentThreadParent = Readonly<{ id: string; name: string }>;
+
 /** One thread as a list row: content-free apart from its name, type, model and current step. */
 export type SubagentThreadSummary = Readonly<{
   createdAt: string;
@@ -121,6 +125,8 @@ export type SubagentThreadSummary = Readonly<{
   model: SubagentTurnModel | null;
   name: string;
   outcome: SubagentOutcome | null;
+  /** The sub-agent that started it; null when the main agent did, and on a row from before children. */
+  parent: SubagentThreadParent | null;
   /** A stable code: a blocked outcome's reason, or why it failed, stopped or was interrupted. */
   reason: string | null;
   state: SubagentThreadState;
@@ -226,11 +232,16 @@ function decodeTurnModel(value: unknown): SubagentTurnModel | null {
   return { displayName: value.displayName, effort: value.effort as string | null };
 }
 
-const SUMMARY_KEYS = ["createdAt", "currentStep", "endedAt", "id", "latestAnswerMessageId", "mode", "model", "name", "outcome", "reason", "state", "turnCount",
-  "type", "updatedAt"];
+const SUMMARY_KEYS = ["createdAt", "currentStep", "endedAt", "id", "latestAnswerMessageId", "mode", "model", "name", "outcome", "parent", "reason", "state",
+  "turnCount", "type", "updatedAt"];
+
+function decodeThreadParent(value: unknown): SubagentThreadParent | null {
+  if (!record(value) || !only(value, ["id", "name"]) || !isSubagentIdentifier(value.id) || normalizeSubagentName(value.name) !== value.name) return null;
+  return { id: value.id, name: value.name as string };
+}
 
 /**
- * `currentStep`, `latestAnswerMessageId` and `model` came later: a row without them still renders, as
+ * `currentStep`, `latestAnswerMessageId`, `model` and `parent` came later: a row without them still renders, as
  * "not known" (null). One that has them malformed, or a step on a thread that
  * ended, is refused like any other broken field.
  */
@@ -251,10 +262,13 @@ export function decodeSubagentThreadSummary(value: unknown): SubagentThreadSumma
   const hasAnswer = value.latestAnswerMessageId !== undefined && value.latestAnswerMessageId !== null;
   const latestAnswerMessageId = isSubagentIdentifier(value.latestAnswerMessageId) ? value.latestAnswerMessageId : null;
   if (hasAnswer && !latestAnswerMessageId) return null;
+  const hasParent = value.parent !== undefined && value.parent !== null;
+  const parent = hasParent ? decodeThreadParent(value.parent) : null;
+  if (hasParent && !parent) return null;
   return {
     createdAt: value.createdAt as string, currentStep, endedAt: value.endedAt as string | null, id: value.id, latestAnswerMessageId,
     mode: value.mode, model,
-    name: value.name as string, outcome: value.outcome as SubagentOutcome | null, reason: value.reason, state: value.state,
+    name: value.name as string, outcome: value.outcome as SubagentOutcome | null, parent, reason: value.reason, state: value.state,
     turnCount: value.turnCount as number, type: value.type as string | null, updatedAt: value.updatedAt as string
   };
 }

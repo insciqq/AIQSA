@@ -6,19 +6,23 @@ import { WORKSPACE_ACTIVITY_PATH_MAX_CHARS } from "./workspace";
  * and TaskStop are the reference): the main agent of a chat starts named
  * sub-agents with `call_subagent`, waits for them or lets them run in the
  * background, messages and stops them, and they keep their own context
- * between its turns.
+ * between its turns. A sub-agent may do the same with children of its own, one
+ * level deep (operator decision 2026-10-31).
  *
  * Model of record (`prisma/schema.prisma`):
  * - A thread (`SubagentThread`) is a named sub-agent of a chat. It belongs to
- *   the branch of its anchor, the main-agent run whose call started it: it is
- *   visible where that run's answer is on the branch, and a name resolves to
- *   the visible thread of that name.
+ *   the branch of its anchor, the main-agent run whose call started it (for a
+ *   child, the one behind its parent's turn): it is visible where that run's
+ *   answer is on the branch, and a name resolves to the visible thread of that
+ *   name. `parentThreadId` names the sub-agent that started a child.
  * - A turn (`SubagentTurn`) is what one `call_subagent` call started or
  *   continued: `foreground` inside the parent run, which waits, or
- *   `background` as a run of its own. A turn is on a branch when its parent
- *   run's answer is, so a thread's state on a branch is its latest turn there
- *   (`projectSubagentThreadState`) and editing an earlier message branches
- *   threads like the conversation.
+ *   `background` as a run of its own. `parentRunId` is the run that holds the
+ *   call: the main agent's, or for a child of a background sub-agent that
+ *   sub-agent's own run, which also hosts a foreground child. A turn is on a
+ *   branch when the answer of its main-agent run is, so a thread's state on a
+ *   branch is its latest turn there (`projectSubagentThreadState`) and editing
+ *   an earlier message branches threads like the conversation.
  * - Transcript items and tool calls of a thread are rows of the run that
  *   executed them, keyed by the thread and the turn; the main agent's have no
  *   thread key and never include a thread's. A thread's sequence and rounds
@@ -35,8 +39,13 @@ import { WORKSPACE_ACTIVITY_PATH_MAX_CHARS } from "./workspace";
  */
 
 export const SUBAGENT_LIMITS = Object.freeze({
-  /** Sub-agents running at once per chat, every branch counted (operator: a symbolic cap). */
+  /** Sub-agents running at once per chat, every branch counted, children included (operator: a symbolic cap). */
   runningPerChat: 20,
+  /**
+   * Children one sub-agent runs at once (operator decision 2026-10-31: 1-2): a sub-agent has one job, so a helper or two
+   * is delegation, and more is a fan-out only the main agent, which keeps the judgment, should decide on.
+   */
+  childrenPerSubagent: 2,
   /** Input slug bound shared with the database and Workspace agent protocol. */
   nameCharacters: 48,
   /** A brief, or a message to a running sub-agent, which rides on the follow-up store. */
@@ -205,7 +214,10 @@ export const LIST_AGENTS_TOOL_NAME = "list_agents";
 export const SEND_AGENT_MESSAGE_TOOL_NAME = "send_agent_message";
 export const ASK_PARENT_TOOL_NAME = "ask_parent";
 
-/** The main agent's tools for sub-agents. None of them is ever offered to a sub-agent (no nesting, no resource changes). */
+/**
+ * The main agent's tools for sub-agents. A sub-agent never has the management tools, and gets `call_subagent` and
+ * `stop_subagent` only for its own children, with texts of their own (`SUBAGENT_CHILD_TOOLS`).
+ */
 export const CALL_SUBAGENT_TOOL_NAME = "call_subagent";
 export const STOP_SUBAGENT_TOOL_NAME = "stop_subagent";
 export const CREATE_SUBAGENT_TOOL_NAME = "create_subagent";
@@ -222,6 +234,12 @@ export const SUBAGENT_TOOL_NAMES = Object.freeze([
 export const SUBAGENT_ERROR_CODES = Object.freeze({
   /** A 21st sub-agent would run at once in the chat. Ended threads do not count. */
   limitReached: "subagent_limit_reached",
+  /** A sub-agent would run more children at once than `SUBAGENT_LIMITS.childrenPerSubagent`. */
+  childLimit: "subagent_child_limit_reached",
+  /** A child tried to start a sub-agent of its own: nesting stops one level down (operator decision 2026-10-31). */
+  depthLimit: "subagent_depth_limit_reached",
+  /** The name belongs to a sub-agent the caller did not start: an agent continues and a sub-agent stops only its own. */
+  notOwnChild: "subagent_not_own_child",
   /** The requested model is not one of the user's tool-calling chat models in the run's frozen catalog. */
   modelUnavailable: "subagent_model_unavailable",
   /** The requested (or the type's) effort is not one the resolved model supports. */
@@ -282,13 +300,13 @@ export const SUBAGENT_WAIT_REASONS = Object.freeze({
 
 /** Why a turn ended as `stopped` or `interrupted` (`SubagentTurn.reasonCode`). */
 export const SUBAGENT_END_REASONS = Object.freeze({
-  /** The main agent called `stop_subagent`. */
+  /** The main agent, or the sub-agent that started a child, called `stop_subagent`. */
   stoppedByAgent: "stop_subagent",
   /** The user pressed Stop on the sub-agent. */
   stoppedByUser: "user_stop",
   /** The user pressed "Stop all" in the chat. */
   stoppedAll: "stop_all",
-  /** The parent run that waited for a foreground turn stopped. */
+  /** The parent run that waited for a foreground turn stopped, or the sub-agent that started a child ended. */
   parentStopped: "parent_stopped",
   /** The turn reached its tool time. */
   deadline: "deadline",
@@ -319,7 +337,9 @@ export function isSubagentCode(value: unknown): value is string {
  * Tool groups a custom sub-agent may be limited to (`SubagentDefinitionRevision.toolGroups`).
  * Always present: `update_plan`, `read_tool_result` and the guide. A group
  * never adds a tool the built-in sub-agent lacks: resource changes, Skill saves,
- * exports and the sub-agent tools themselves stay out whatever the list says.
+ * exports and the sub-agent tools themselves stay out whatever the list says,
+ * so only a sub-agent with every tool starts children: a list keeps narrowing,
+ * and a child must not have what its parent was denied.
  */
 export const SUBAGENT_TOOL_GROUPS = Object.freeze({
   /** Workspace shell and files, the Workspace browser and `browser_handoff`, Workspace image view. */

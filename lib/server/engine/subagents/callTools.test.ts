@@ -26,9 +26,9 @@ const catalog = freezeSubagentModels([{
 }]);
 
 function turn(extra: Partial<SubagentTurnRecord> = {}): SubagentTurnRecord {
-  return { definitionRevisionId: null, effortSource: "parent", id: "turn-0", mode: "foreground", modelId: "gpt-6-sol", modelSource: "parent",
-    parentRunId: "run-earlier", provider: "connection-1", providerModelId: "pm-sol", reasoningEffort: "high", startedAt: new Date(),
-    state: "done", threadId: "thread-1", ...extra };
+  return { branchRunId: extra.parentRunId ?? "run-earlier", definitionRevisionId: null, effortSource: "parent", id: "turn-0", mode: "foreground",
+    modelId: "gpt-6-sol", modelSource: "parent", parentRunId: "run-earlier", provider: "connection-1", providerModelId: "pm-sol", reasoningEffort: "high",
+    startedAt: new Date(), state: "done", threadId: "thread-1", ...extra };
 }
 
 function setup(options: Readonly<{ background?: SubagentBackgroundControl; backgroundAllowed?: boolean; defaultType?: FrozenSubagentDefault;
@@ -46,11 +46,11 @@ function setup(options: Readonly<{ background?: SubagentBackgroundControl; backg
       ? { code: options.refuse, kind: "refused" as const }
       : { continued: Boolean(options.found), kind: "admitted" as const,
         thread: options.found?.thread ?? { anchorRunId: "run", definitionId: input.definitionId, id: "thread-new", name: input.name,
-          typeName: input.typeName },
+          parentThreadId: input.parentAgent?.threadId ?? null, typeName: input.typeName },
         turn: turn({ id: `turn-${input.parentToolCallId}`, parentRunId: "run", state: "running" }) }),
     endOrphanedTurns: vi.fn(async () => options.orphans ?? 0),
     ensureThread: vi.fn(async (input: Parameters<SubagentCallDeps["store"]["ensureThread"]>[0]) => ({ anchorRunId: "run",
-      definitionId: input.definitionId, id: "thread-new", name: input.name, typeName: input.typeName })),
+      definitionId: input.definitionId, id: "thread-new", name: input.name, parentThreadId: input.parentThreadId ?? null, typeName: input.typeName })),
     find: vi.fn(async () => options.found ?? null),
     result: vi.fn(async () => "result" in options ? options.result : endedSubagentResult("shop", { report: "Earlier report" }))
   };
@@ -72,7 +72,7 @@ function execution(args: Record<string, unknown>, id = "c1"): EngineToolExecutio
 const value = (result: ToolExecutionResult) => (result.content[0] as { value: SubagentCallResult & { error?: string } }).value;
 
 const visible = (extra: Partial<SubagentThreadLookup> = {}): SubagentThreadLookup => ({ active: null, latest: turn(),
-  thread: { anchorRunId: "run-earlier", definitionId: null, id: "thread-1", name: "shop", typeName: null }, ...extra });
+  thread: { anchorRunId: "run-earlier", definitionId: null, id: "thread-1", name: "shop", parentThreadId: null, typeName: null }, ...extra });
 
 const BROWSER: SubagentTypeSnapshot = { definitionId: "definition-1", description: "Browses shops", instructions: "Be thorough.",
   name: "browser", providerModelId: "pm-luna", reasoningEffort: null, revisionId: "revision-1", toolGroups: ["workspace"] };
@@ -123,7 +123,7 @@ describe("call_subagent", () => {
     expect(background.turns[0]!.input).toMatchObject({ kind: "start", threadId: "thread-new", userMessage: "Find me a laptop." });
     const running = setup({ background, found: visible({ active: turn({ id: "background-turn-1", mode: "background", parentRunId: "run",
       state: "running", threadId: "thread-new" }), thread: { anchorRunId: "run", definitionId: null, id: "thread-new", name: "shop",
-      typeName: null } }) });
+      parentThreadId: null, typeName: null } }) });
     expect(value(await executeCallSubagent(running.deps, execution({ message: "Also check prices", name: "shop" }, "c3"))))
       .toEqual({ kind: "delivered", name: "shop", state: "running" });
     expect(background.turns[0]!.messages).toEqual([{ nonce: "c3", origin: "main_agent", text: "Also check prices" }]);
@@ -350,7 +350,7 @@ describe("call_subagent with a default that cannot run", () => {
 
 describe("call_subagent continuing a thread", () => {
   const typed = (type: SubagentTypeSnapshot) => visible({ thread: { anchorRunId: "run-earlier", definitionId: type.definitionId, id: "thread-1", name: "shop",
-    typeName: type.name } });
+    parentThreadId: null, typeName: type.name } });
 
   it("keeps a built-in thread built-in after a default was set", async () => {
     const ctx = setup({ defaultType: frozenDefault(GEMINI), found: visible(), types: new FakeSubagentTypeResolver({ user: [GEMINI] }) });
@@ -381,7 +381,7 @@ describe("call_subagent continuing a thread", () => {
   });
 
   it("refuses a thread whose custom sub-agent was deleted, and offers no other in its place", async () => {
-    const deleted = visible({ thread: { anchorRunId: "run-earlier", definitionId: null, id: "thread-1", name: "shop", typeName: "browser" } });
+    const deleted = visible({ thread: { anchorRunId: "run-earlier", definitionId: null, id: "thread-1", name: "shop", parentThreadId: null, typeName: "browser" } });
     const ctx = setup({ defaultType: frozenDefault(GEMINI), found: deleted, types: new FakeSubagentTypeResolver({ user: [GEMINI] }) });
     expect(value(await executeCallSubagent(ctx.deps, execution({ message: "Again", name: "shop" })))).toEqual({ error: SUBAGENT_ERROR_CODES.typeUnavailable,
       message: "The custom sub-agent \"browser\" is no longer available, so this sub-agent cannot continue. " +
@@ -427,7 +427,7 @@ describe("call_subagent with the background port", () => {
     const background = new FakeSubagentBackgroundControl();
     await executeCallSubagent(setup({ background }).deps, execution({ background: true, message: "Go", name: "shop" }));
     const found = visible({ active: turn({ id: "background-turn-1", mode: "background", parentRunId: "run", state: "waiting", threadId: "thread-new" }),
-      thread: { anchorRunId: "run", definitionId: null, id: "thread-new", name: "shop", typeName: null } });
+      thread: { anchorRunId: "run", definitionId: null, id: "thread-new", name: "shop", parentThreadId: null, typeName: null } });
     const telegram = setup({ background, backgroundAllowed: false, found });
     expect(value(await executeCallSubagent(telegram.deps, execution({ message: "Size M.", name: "shop" }, "c3"))))
       .toEqual({ kind: "delivered", name: "shop", state: "running" });
