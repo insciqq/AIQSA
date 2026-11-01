@@ -293,6 +293,47 @@ describe("native tool batch", () => {
     expect(third.budgetExhausted).toBe(false);
   });
 
+  it("runs a serial tool's calls one at a time in the response's order, each recorded at its turn, beside the batch's other calls", async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => { release = resolve; });
+    const ask = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      order.push(`start ${call.id}`);
+      if (call.id === "a1") await first;
+      order.push(`end ${call.id}`);
+      return ok(call);
+    });
+    const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      order.push(`start ${call.id}`);
+      return ok(call);
+    });
+    const { store } = fakeStore();
+    const batch = deps({ ask: tool("ask", "local", ask, { serial: true }), lookup: tool("lookup", "none", lookup) }, store, { maxToolCalls: null });
+    const running = runToolBatch(batch, { calls: 0 }, { round: 1, calls: [{ arguments: { question: 1 }, id: "a1", name: "ask" },
+      { arguments: { question: 2 }, id: "a2", name: "ask" }, { arguments: {}, id: "l1", name: "lookup" }] });
+    // The other tool's call does not wait for them.
+    await vi.waitFor(() => expect([...order].sort()).toEqual(["start a1", "start l1"]));
+    expect(vi.mocked(store.begin).mock.calls.map(([input]) => input.providerCallId).sort()).toEqual(["a1", "l1"]);
+    release();
+    const outcome = await running;
+    expect(order.filter((entry) => !entry.endsWith("l1"))).toEqual(["start a1", "end a1", "start a2", "end a2"]);
+    expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["a1", "complete"], ["a2", "complete"], ["l1", "complete"]]);
+  });
+
+  it("starts no serial call behind one the run's stop cut", async () => {
+    const stop = new AbortController();
+    const ask = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      stop.abort();
+      throw new Error(`cut ${call.id}`);
+    });
+    const { store } = fakeStore();
+    const batch = deps({ ask: tool("ask", "local", ask, { serial: true }) }, store, { maxToolCalls: null, signal: stop.signal });
+    await expect(runToolBatch(batch, { calls: 0 }, { round: 1, calls: [{ arguments: { question: 1 }, id: "a1", name: "ask" },
+      { arguments: { question: 2 }, id: "a2", name: "ask" }] })).rejects.toThrow("cut a1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ask).toHaveBeenCalledOnce();
+  });
+
   it("starts no queued call after the tool time ran out, lets running calls settle and still runs the reserved report", async () => {
     let timeLeft = true;
     let started = 0;

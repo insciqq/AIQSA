@@ -82,7 +82,7 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
   providerModelId: "model-1", reasoningEffort: null };
 
 function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
-  followups?: () => { id: string; text: string }[]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging; request?: ProviderRunRequest;
+  followups?: () => { id: string; text: string }[]; handoff?: EngineTool["execute"]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging; request?: ProviderRunRequest;
   toolTimeLeft?: () => boolean; tools?: EngineTool[]; workspaceImageView?: true }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
   const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
@@ -102,7 +102,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
   } satisfies ToolCallStore;
   const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "[browser #3] click: button \"Add to cart\" @ shop.example\nok"));
   const tools = [
-    engineTool("browser_handoff", "session", vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "done"))),
+    engineTool("browser_handoff", "session", options.handoff ?? vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "done"))),
     engineTool("manage_secret", "session", vi.fn()),
     engineTool("load_skill", "skill", vi.fn()),
     engineTool("mcp_jira_get_issue", "mcp", lookup),
@@ -664,6 +664,79 @@ describe("sub-agent runner", () => {
         toolTimeLeft: () => (asked += 1) <= 1 });
       expect(await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "bg-run", mode: "background" })))).toMatchObject({ outcome: "partial" });
       expect(outputs(ctx)[0]).toContain("no_answer");
+    });
+
+    describe("beside a browser handoff in one response", () => {
+      const handoffCall: ModelToolCall = { arguments: { reason: "sign_in" }, id: "h1", name: "browser_handoff" };
+      const waiting = { reason: "waiting_for_answer", state: "waiting", turnId: "turn-1" };
+
+      function inBackground() {
+        let finish!: () => void;
+        const finished = new Promise<void>((resolve) => { finish = resolve; });
+        const handedOff = vi.fn();
+        const messaging = fakeMessaging();
+        const ctx = setup([{ calls: [ask("Which size?"), handoffCall] }, { text: "Outcome: done\nIn." }], { handoff: async ({ call }) => {
+          handedOff();
+          await finished;
+          return ok(call, "done");
+        }, messaging });
+        const rows = () => vi.mocked(ctx.host.setTurnState!).mock.calls.map(([row]) => row);
+        const both = async () => {
+          const handle = await ctx.runner.start(ctx.input({ hostRunId: "bg-run", mode: "background" }));
+          await vi.waitFor(() => expect(handedOff).toHaveBeenCalled());
+          await vi.waitFor(() => expect(messaging.questionAsked).toHaveBeenCalled());
+          return handle;
+        };
+        return { both, ctx, finish, rows };
+      }
+
+      it("keeps the question's reason and claim: its row stays what the question makes it, whichever started first", async () => {
+        const { both, ctx, finish, rows } = inBackground();
+        const handle = await both();
+        expect(rows().at(-1)).toEqual(waiting);
+        finish();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        // The handoff's end writes nothing: a write would clear the claim and owe the question twice.
+        expect(rows().at(-1)).toEqual(waiting);
+        await ctx.runner.deliver(handle, { nonce: "answer", origin: "main_agent", text: "Size M." });
+        await ctx.runner.wait(handle);
+        expect(rows().at(-1)).toEqual({ state: "running", turnId: "turn-1" });
+        expect(rows().filter((row) => row.reason)).toHaveLength(1);
+      });
+
+      it("goes on waiting for the user once the question is answered, and runs when the handoff ends too", async () => {
+        const { both, ctx, finish, rows } = inBackground();
+        const handle = await both();
+        await ctx.runner.deliver(handle, { nonce: "answer", origin: "main_agent", text: "Size M." });
+        await vi.waitFor(() => expect(rows().at(-1)).toEqual({ state: "waiting", turnId: "turn-1" }));
+        finish();
+        await ctx.runner.wait(handle);
+        expect(rows().at(-1)).toEqual({ state: "running", turnId: "turn-1" });
+      });
+    });
+
+    it("asks two questions of one response one at a time, each a fresh question with an answer of its own", async () => {
+      const messaging = fakeMessaging();
+      const ctx = setup([{ calls: [ask("Which size?", "ask-1"), ask("Which colour?", "ask-2")] }, { text: "Outcome: done\nBoth." }], { messaging });
+      const rows = () => vi.mocked(ctx.host.setTurnState!).mock.calls.map(([row]) => row.state);
+      const handle = await ctx.runner.start(ctx.input({ hostRunId: "bg-run", mode: "background" }));
+      await vi.waitFor(() => expect(messaging.questionAsked).toHaveBeenCalledTimes(1));
+      // Only the first has a record, which is what the main agent is told it asks.
+      expect(ctx.toolCalls.begin).toHaveBeenCalledTimes(1);
+      await ctx.runner.deliver(handle, { nonce: "answer-1", origin: "main_agent", text: "Size M." });
+      await vi.waitFor(() => expect(messaging.questionAsked).toHaveBeenCalledTimes(2));
+      expect(ctx.toolCalls.begin).toHaveBeenCalledTimes(2);
+      // Back to running between them, which clears the first claim: the second is owed like any question.
+      expect(rows()).toEqual(["waiting", "running", "waiting"]);
+      // The answer to the first, unread until the next step, is no answer to the second.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(ctx.requests).toHaveLength(1);
+      await ctx.runner.deliver(handle, { nonce: "answer-2", origin: "main_agent", text: "Blue." });
+      expect(await ctx.runner.wait(handle)).toMatchObject({ report: "Outcome: done\nBoth.", state: "done" });
+      expect(outputs(ctx).filter((output) => output.includes("answered"))).toHaveLength(2);
+      const texts = userTexts(ctx.requests[1]!).join("\n");
+      expect(texts).toContain("Size M.");
+      expect(texts).toContain("Blue.");
     });
 
     it("refuses visibly when it cannot mark itself waiting, and past its questions", async () => {

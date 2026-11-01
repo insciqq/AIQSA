@@ -229,7 +229,8 @@ export function createSubagentThreadStore(client: StoreClient) {
 
     /**
      * Marks an active turn as waiting for the user (a browser handoff) or its parent's answer (`reason`), or running
-     * again, which clears the question's claim: the turn's own end owes a callback of its own.
+     * again. Every write clears the question's claim, so the runner writes only when this row changes (`createTurnWaits`):
+     * the write that takes the reason away is that question's own end, and the turn's end owes a callback of its own.
      */
     async setActiveState(input: Readonly<{ chatId: string; reason?: string; state: "running" | "waiting"; turnId: string; userId: string }>): Promise<boolean> {
       const updated = await client.subagentTurn.updateMany({ data: { callbackRunId: null, reasonCode: input.reason ?? null, state: input.state },
