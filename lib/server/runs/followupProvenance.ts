@@ -18,7 +18,7 @@ export async function verifiedFollowups(db: Client, input: Readonly<{
     select: { id: true, branchSourceModelRunId: true, branchFollowups: true,
       assistantModelRuns: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, userId: true } } } });
   const allowed = new Map(answers.map(answer => [answer.id, answer]));
-  const rows = await db.runFollowup.findMany({ where: { id: { in: input.references.map(ref => ref.id) }, authorUserId: input.userId,
+  const rows = await db.runFollowup.findMany({ where: { id: { in: input.references.map(ref => ref.id) }, authorUserId: input.userId, origin: "user", subagentTurnId: null,
     modelRun: { userId: input.userId, chat: { userId: input.userId, permanentDeletionAt: null } } },
     select: { id: true, text: true, authorUserId: true, modelRunId: true } });
   const originals = new Map(rows.map(row => [row.id, row]));

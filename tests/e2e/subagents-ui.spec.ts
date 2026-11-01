@@ -105,6 +105,13 @@ async function installSubagentRoutes(page: Page, initial: readonly (readonly [st
     if (!threadId) return route.fulfill({ json: chatThreads() });
     const script = threads.get(threadId);
     if (!script) return notFound(route);
+    if (action === "messages" && method === "POST") {
+      if (script.state !== "running" && script.state !== "waiting") return route.fulfill({ json: { error: "subagent_not_active" }, status: 409 });
+      const body = route.request().postDataJSON() as { text: string; turnId: string };
+      expect(body.turnId).toBe(`turn-${threadId}`);
+      script.messages = [...script.messages ?? [], { createdAt: tick(), delivery: "accepted", text: body.text, user: true }];
+      return route.fulfill({ json: { accepted: true }, status: 202 });
+    }
     if (action === "stop" && method === "POST") {
       if (script.state === "running" || script.state === "waiting") Object.assign(script, { state: "stopped", updatedAt: tick() });
       return route.fulfill({ json: { thread: threadSummary(threadId, script) } });
@@ -368,12 +375,12 @@ test.describe("sub-agents · desktop and tablet", () => {
     await expect(chip.getByRole("link", { name: /^Open browser, Waiting for you/u })).toHaveAttribute("data-tone", "warn");
     await expect(answerRows(page).filter({ hasText: "researcher" })).toContainText("Done");
 
-    // A row opens its read-only thread; Stop stops it.
+    // A row opens its thread and composer; Stop stops it.
     await list.getByRole("treeitem", { name: "browser, Waiting for you" }).click();
     const view = page.getByTestId("subagent-thread-view");
     await expect(view.getByRole("heading", { name: "browser" })).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`/c/${chatId}\\?agent=thread-browser$`, "u"));
-    await expect(page.getByRole("textbox", { name: "Message" })).toHaveCount(0);
+    await expect(view.getByRole("textbox", { name: "Message" })).toBeVisible();
     await expect(view.getByText(/Brief for browser/u)).toBeVisible();
     await captureState(page, testInfo, "subagents-thread-waiting", {
       atEachSize: async () => expectNoHorizontalOverflow(page)
@@ -510,6 +517,46 @@ for (const viewport of [
         atEachSize: async () => expectNoHorizontalOverflow(page),
         sizes
       });
+    });
+  });
+}
+
+for (const viewport of [
+  { height: 900, label: "desktop", width: 1440, touch: false },
+  { height: 844, label: "phone", width: 390, touch: true },
+  { height: 390, label: "short-phone", width: 844, touch: true }
+]) {
+  test.describe(`direct sub-agent messages · ${viewport.label}`, () => {
+    test.use({ hasTouch: viewport.touch, isMobile: viewport.touch });
+    test("composer, sent user row and finished hint", async ({ page }, testInfo) => {
+      await page.setViewportSize({ height: viewport.height, width: viewport.width });
+      await installChat(page, { calls: [callSubagent("thread-asker", "asker")], wakeUp: false });
+      const routes = await installSubagentRoutes(page, [asking("asker")]);
+      await signInWithLocalToken(page, `/c/${chatId}?agent=thread-asker`);
+      const view = page.getByTestId("subagent-thread-view");
+      const field = view.getByRole("textbox", { name: "Message" });
+      await expect(field).toBeVisible();
+      await expect(view.getByText(/it does not end this wait/u)).toBeVisible();
+      const sizes = [{ height: viewport.height, width: viewport.width }];
+      await field.fill("Please place the order for the synthetic item.");
+      const send = view.getByRole("button", { name: "Send message" });
+      if (viewport.touch) await expectTouchSafe(send);
+      await captureState(page, testInfo, `subagent-message-composer-${viewport.label}`, { sizes,
+        atEachSize: async () => expectNoHorizontalOverflow(page) });
+      await send.click();
+      await expect(field).toHaveValue("");
+      const row = view.getByRole("article", { name: "Your message" });
+      await expect(row).toContainText("Please place the order for the synthetic item.");
+      await row.scrollIntoViewIfNeeded();
+      await expect(row).toContainText("Queued for the sub-agent’s next step");
+      await captureState(page, testInfo, `subagent-message-sent-${viewport.label}`, { sizes,
+        atEachSize: async () => expectNoHorizontalOverflow(page) });
+      expect(routes.posts).toContain(`/api/chats/${chatId}/subagents/thread-asker/messages`);
+      routes.set("thread-asker", "done");
+      await expect(field).toHaveCount(0, { timeout: 10_000 });
+      await expect(view.getByText(/This sub-agent has finished/u)).toBeVisible();
+      await captureState(page, testInfo, `subagent-message-finished-${viewport.label}`, { sizes,
+        atEachSize: async () => expectNoHorizontalOverflow(page) });
     });
   });
 }

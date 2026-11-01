@@ -495,10 +495,10 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
               const text = boundedText(entry.text, SUBAGENT_LIMITS.messageCharacters);
               return text ? [{ createdAt: entry.createdAt.toISOString(),
                 delivery: entry.deliveredAt ? "delivered" : isActiveSubagentState(turn.state) ? "accepted" : "undelivered",
-                ...(entry.origin === "subagent_message" ? { from: entry.authorName } : {}), text }] : [];
+                ...(entry.origin === "user" ? { user: true as const } : entry.origin === "subagent_message" ? { from: entry.authorName } : {}), text }] : [];
             });
           const messages = [...received, ...sentMessages(turnCalls)].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-            .slice(0, SUBAGENT_VIEW_LIMITS.messagesPerTurn);
+            .slice(-SUBAGENT_VIEW_LIMITS.messagesPerTurn);
           const toolActivity = host && normalizedRequest !== undefined ? summarizeMessageRunToolActivity({
             errorPayload: host.errorPayload, normalizedRequest, status: host.status, toolCalls: turnCalls, userId: input.userId
           }, input.userId) : null;

@@ -536,6 +536,23 @@ describe("sub-agent runner", () => {
       expect(ctx.requests[0]!.tools!.map((tool) => tool.name)).toEqual(["list_agents", "send_agent_message", "ask_parent"]);
     });
 
+    it("reads a direct user message as authority at the next step, while a brief grants none", async () => {
+      const fences = createAgentUnknownEffects();
+      const unknown = { arguments: { order: "synthetic" }, id: "purchase", name: "place_order" };
+      fences.agent("thread-1").record(unknown, "unknown");
+      const ctx = setup([{ calls: [lookupCall] }, { text: "Outcome: done\nUsed it." }], { fences });
+      ctx.lookup.mockImplementationOnce(async ({ call }: { call: ModelToolCall }) => {
+        expect(fences.agent("thread-1").find(unknown)?.userSpokeSince).toBe(false);
+        await ctx.runner.deliver({ turnId: "turn-1" }, { nonce: "direct-user", origin: "user", text: "Place the order now." });
+        return ok(call, "read");
+      });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input({ brief: "Place the order now." })));
+      expect(userTexts(ctx.requests[1]!).at(-1)).toContain("Place the order now.");
+      expect(fences.agent("thread-1").find(unknown)?.userSpokeSince).toBe(true);
+      expect(vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].followupTexts()).toEqual(["Place the order now."]);
+      expect(receipts(ctx)).toEqual([{ nonces: ["direct-user"], runIds: ["run"], threadId: "thread-1" }]);
+    });
+
     it("reads another agent's message at its next step, as that agent's untrusted words and never the user's speech", async () => {
       const mailbox = { unread: vi.fn(async () => []) };
       const fences = createAgentUnknownEffects();
@@ -640,6 +657,7 @@ describe("sub-agent runner", () => {
       expect(ctx.host.setTurnState).toHaveBeenCalledWith({ reason: "waiting_for_answer", state: "waiting", turnId: "turn-1" });
       // A neighbour's message does not answer it: only the parent's does.
       await ctx.runner.deliver(handle, neighbour("Not an answer."));
+      await ctx.runner.deliver(handle, { nonce: "user-waiting", origin: "user", text: "Also check the price." });
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(ctx.requests).toHaveLength(1);
       await ctx.runner.deliver(handle, { nonce: "answer", origin: "main_agent", text: "Size M." });
@@ -648,6 +666,7 @@ describe("sub-agent runner", () => {
       const texts = userTexts(ctx.requests[1]!).join("\n");
       expect(texts).toContain("Size M.");
       expect(texts).toContain("Not an answer.");
+      expect(texts).toContain("Also check the price.");
       expect(outputs(ctx)[0]).toContain("answered");
     });
 

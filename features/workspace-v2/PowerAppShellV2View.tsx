@@ -1756,6 +1756,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ) : null}
             {subagentThread ? (
               <SubagentThreadViewV2
+                sendWithEnter={composer.sendWithEnter}
                 target={subagentThread}
                 onBack={closeSubagentThread}
               />

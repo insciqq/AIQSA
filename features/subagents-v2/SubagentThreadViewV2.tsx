@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useId } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { UiV2Button, UiV2Icon, UiV2Skeleton } from "@/components/ui-v2";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
 import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
 import { BrowserLivePanelV2 } from "@/features/browser-live/BrowserLivePanelV2";
+import { ComposerV2 } from "@/features/composer-v2/ComposerV2";
 import { ConversationTurnV2 } from "@/features/conversation-v2/ConversationV2";
 import { describeToolCallV2, planCallHiddenV2, runWaitingPhraseV2, stepDurationSumV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import { workspaceActiveLabelV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
@@ -12,6 +13,7 @@ import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { isActiveSubagentState } from "@/lib/contracts/subagents";
 import type { SubagentThreadSummary, SubagentTurnView } from "@/lib/contracts/subagentViews";
 import { formatChatRoutePath } from "@/lib/domain/chatRoute";
+import { sendSubagentMessage, SubagentApiError } from "./subagentApi";
 import { subagentMessageLabel, subagentReasonText, subagentStatePresentation } from "./subagentPresentation";
 import {
   SUBAGENT_POLL_INTERVAL_MS,
@@ -80,7 +82,11 @@ function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boo
         <div className="v2-subagent-brief-label">Brief from the main agent</div>
         <p>{turn.brief}</p>
       </div>
-      {turn.messages.map((message, index) => (
+      {turn.messages.map((message, index) => message.user ? (
+        <ConversationTurnV2 ariaLabel="Your message" key={`${message.createdAt}:${index}`} content={message.text} role="user"
+          afterContent={<p className="v2-subagent-thread-note">{message.delivery === "delivered" ? "Read by the sub-agent"
+            : message.delivery === "undelivered" ? "Not read before this turn ended" : "Queued for the sub-agent’s next step"}</p>} />
+      ) : (
         <div className="v2-subagent-brief" data-message="" key={`${message.createdAt}:${index}`}>
           <div className="v2-subagent-brief-label">{subagentMessageLabel(message)}</div>
           <p>{message.text}</p>
@@ -137,22 +143,68 @@ function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boo
   );
 }
 
-/**
- * A sub-agent's thread, read-only (operator decision 2026-10-29): the main
- * agent's briefs, the messages agents wrote it and it wrote them, its steps as
- * an answer's process disclosure shows them, its replies and state, Stop while
- * it is active, and the way back to the chat. It has no composer; writing to a
- * sub-agent comes later.
- */
+function ThreadComposer({ target, turnId, sendWithEnter, onSent }: Readonly<{
+  target: SubagentThreadTarget; turnId: string; sendWithEnter: boolean; onSent(): void;
+}>) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  const submission = useRef<{ nonce: string; text: string } | null>(null);
+  async function send() {
+    const text = draft.trim();
+    if (pending.current || !text) return;
+    pending.current = true;
+    setSending(true);
+    setError(null);
+    const attempt = submission.current?.text === text ? submission.current : { nonce: crypto.randomUUID(), text };
+    submission.current = attempt;
+    try {
+      await sendSubagentMessage(target.chatId, target.threadId, { ...attempt, turnId });
+      setDraft((current) => current.trim() === text ? "" : current);
+      submission.current = null;
+      await refreshSubagentThreadView(target);
+      onSent();
+    } catch (cause) {
+      setError(cause instanceof SubagentApiError && cause.code === "subagent_message_limit_reached"
+        ? "This sub-agent’s mailbox is full. Write in the chat to continue."
+        : cause instanceof SubagentApiError && cause.code === "subagent_not_active"
+          ? "This sub-agent has finished. Write in the chat to continue it by name."
+          : cause instanceof SubagentApiError && cause.notFound ? "This sub-agent is no longer available here."
+            : "Could not confirm your message. Try again to check the same submission.");
+      if (cause instanceof SubagentApiError && (cause.notFound || cause.code === "subagent_not_active")) {
+        await refreshSubagentThreadView(target);
+      }
+    } finally {
+      pending.current = false;
+      setSending(false);
+    }
+  }
+  return <>
+    {error ? <p className="v2-subagent-thread-error" role="alert">{error}</p> : null}
+    <ComposerV2 config={null} draft={draft} followupSending={sending} messageOnly onDraftChange={setDraft}
+      onSend={() => void send()} selectedModelId="" selectedProvider="" sendWithEnter={sendWithEnter} sessionKey={turnId} />
+  </>;
+}
+
 export function SubagentThreadViewV2({
   onBack,
+  sendWithEnter = true,
   target
 }: Readonly<{
   onBack(): void;
+  sendWithEnter?: boolean;
   target: SubagentThreadTarget;
 }>) {
   const key = subagentThreadKey(target);
   const headingId = useId();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [sent, setSent] = useState(0);
+  useEffect(() => {
+    if (!sent) return;
+    const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[aria-label="Your message"]');
+    rows?.[rows.length - 1]?.scrollIntoView?.({ block: "nearest" });
+  }, [sent]);
   const entry = useSubagentStore((state) => state.view?.key === key ? state.view : null);
   const listed = useSubagentStore((state) =>
     state.chats[target.chatId]?.threads.find((thread) => thread.id === target.threadId) ?? null);
@@ -193,7 +245,7 @@ export function SubagentThreadViewV2({
           <p className="v2-subagent-thread-error" role="alert">Could not stop this sub-agent. Try again.</p>
         ) : null}
       </header>
-      <div className="v2-subagent-thread-body">
+      <div className="v2-subagent-thread-body" ref={bodyRef}>
         {unavailable ? (
           <div className="v2-subagent-thread-status" role="status">
             <p>This sub-agent is not available here. It may belong to another branch of this chat, or the chat is gone.</p>
@@ -223,6 +275,15 @@ export function SubagentThreadViewV2({
           </>
         )}
       </div>
+      {view && thread ? <footer className="v2-subagent-thread-footer">
+        {active ? <>
+          {thread.state === "waiting" && thread.reason === "waiting_for_answer" ? <p className="v2-subagent-thread-note">
+            Waiting for the main agent’s answer. Your message will be read at the next step; it does not end this wait.
+          </p> : null}
+          {view.turns.at(-1) ? <ThreadComposer key={view.turns.at(-1)!.id} target={target}
+            turnId={view.turns.at(-1)!.id} sendWithEnter={sendWithEnter} onSent={() => setSent((value) => value + 1)} /> : null}
+        </> : <p className="v2-subagent-thread-note">This sub-agent has finished. Write in the chat and ask the main agent to continue {thread.name} by name.</p>}
+      </footer> : null}
     </section>
   );
 }

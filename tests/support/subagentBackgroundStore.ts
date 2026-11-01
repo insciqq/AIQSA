@@ -34,7 +34,7 @@ export type MemoryTurn = {
   callbackRunId: string | null;
   chatId: string;
   endedAt: number | null;
-  mailbox: Array<{ delivered: boolean; from?: string; nonce: string; origin?: "subagent_message"; text: string }>;
+  mailbox: Array<{ delivered: boolean; from?: string; nonce: string; origin?: "subagent_message" | "user"; text: string }>;
   mode: SubagentTurnMode;
   modelId: string;
   name: string;
@@ -121,7 +121,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
   }
 
   async findTurn(input: SubagentChatScope & Readonly<{ turnId: string }>): Promise<SubagentTurnRecord | null> {
-    const turn = this.turns.find((candidate) => candidate.turnId === input.turnId && candidate.chatId === input.chatId);
+    const turn = this.turns.find((candidate) => candidate.turnId === input.turnId && candidate.chatId === input.chatId && candidate.userId === input.userId);
     return turn ? this.record(turn) : null;
   }
 
@@ -146,7 +146,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     if (!turn?.runActive && turn?.mode !== "foreground") return "closed";
     if (turn.mailbox.some((entry) => entry.nonce === input.nonce)) return "exists";
     const sent = turn.mailbox.filter((entry) => (entry.origin ?? "main_agent") === input.origin).length;
-    if (sent >= (input.origin === "main_agent" ? SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun : SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn)) return "full";
+    if (sent >= (input.origin !== "subagent_message" ? SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun : SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn)) return "full";
     turn.mailbox.push({ delivered: false, nonce: input.nonce, ...(input.origin === "main_agent" ? {} : { from: input.authorName, origin: input.origin }),
       text: input.text });
     return "inserted";

@@ -243,10 +243,10 @@ export function createSubagentThreadStore(client: StoreClient) {
       const rows = await client.runFollowup.findMany({ orderBy: [{ createdAt: "asc" }, { ordinal: "asc" }],
         select: { authorName: true, nonce: true, origin: true, text: true },
         where: { chatId: input.chatId, deliveredAt: null, modelRunId: { in: [...new Set(input.runIds)] }, ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX },
-          origin: { in: ["main_agent", "subagent_message"] }, subagentTurn: { threadId: input.threadId, userId: input.userId } } });
+          origin: { in: ["main_agent", "subagent_message", "user"] }, subagentTurn: { threadId: input.threadId, userId: input.userId } } });
       return rows.flatMap((row): SubagentMessage[] => row.origin === "subagent_message"
         ? [{ from: row.authorName, nonce: row.nonce, origin: "subagent_message", text: row.text }]
-        : row.origin === "main_agent" ? [{ nonce: row.nonce, origin: "main_agent", text: row.text }] : []);
+        : row.origin === "main_agent" || row.origin === "user" ? [{ nonce: row.nonce, origin: row.origin, text: row.text }] : []);
     },
 
     /** Ends an active turn with its result; a turn that already ended keeps how it ended. */

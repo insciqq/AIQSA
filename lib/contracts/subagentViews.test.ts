@@ -103,7 +103,7 @@ describe("sub-agent list projections", () => {
 });
 
 describe("sub-agent thread view", () => {
-  it("decodes a read-only thread view whose state is its latest turn's", () => {
+  it("decodes a thread view whose state is its latest turn's", () => {
     const ended = { ...turn, endedAt: "2026-10-29T09:59:00.000Z", id: "turn-0", messages: [], mode: "foreground", outcome: "done",
       report: "Earlier work.", startedAt: "2026-10-29T09:50:00.000Z", state: "done", toolActivity: null };
     const view = { chatId: "chat-1", thread: { ...running, ...unknownFacts }, truncated: false, turns: [ended, turn] };
@@ -116,9 +116,9 @@ describe("sub-agent thread view", () => {
 
   it("decodes who a message row came from or went to, an older row included", () => {
     const row = turn.messages[0]!;
-    const rows = [row, { ...row, from: "scout" }, { ...row, delivery: "accepted", question: true, to: "main" }, { ...row, to: "scout" }];
+    const rows = [row, { ...row, user: true }, { ...row, from: "scout" }, { ...row, delivery: "accepted", question: true, to: "main" }, { ...row, to: "scout" }];
     expect(decodeSubagentTurnView({ ...turn, messages: rows })?.messages).toEqual(rows);
-    for (const bad of [{ ...row, from: "Two Words" }, { ...row, to: "" }, { ...row, question: false }, { ...row, extra: 1 }]) {
+    for (const bad of [{ ...row, from: "Two Words" }, { ...row, to: "" }, { ...row, question: false }, { ...row, extra: 1 }, { ...row, user: false }, { ...row, user: true, from: "scout" }, { ...row, user: true, to: "main" }]) {
       expect(decodeSubagentTurnView({ ...turn, messages: [bad] })).toBeNull();
     }
   });
