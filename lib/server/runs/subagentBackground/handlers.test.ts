@@ -23,6 +23,7 @@ const thread: SubagentThreadSummary = { createdAt: "2026-10-30T10:00:00.000Z", c
 function setup(owner = "owner") {
   // Every view reads only the owner's own chat: another user's reads as missing.
   const views: SubagentViews = {
+    branchAgents: vi.fn(async () => null),
     chatThreads: vi.fn(async ({ userId }) => userId === owner ? { chatId: "chat-1", running: 1, threads: [thread], truncated: false } : null),
     ownsChat: vi.fn(async ({ userId }) => userId === owner),
     summary: vi.fn(async ({ userId }) => ({ chats: userId === owner ? [{ chatId: "chat-1", running: 1, threads: [thread], truncated: false }] : [] })),

@@ -369,6 +369,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       return current?.result ? { kind: "ended", result: current.result } : { kind: "not_found" };
     }
     const outcome = await deps.runner?.deliver({ turnId: turn.turnId }, message);
+    // No execution of this process holds the turn (it is still attaching, or a restart cut it): the row is the receipt, so
+    // `delivered` stays true, and the turn or the thread's next one reads it from the mailbox on record.
     return outcome && outcome.kind !== "not_found" ? outcome : { kind: "delivered", state: isActiveSubagentState(turn.state) ? turn.state : "running" };
   }
 
