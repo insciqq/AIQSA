@@ -509,6 +509,15 @@ describe("a sub-agent's background children", () => {
     await ctx.control.stopAll({ chatId: "chat-1", userId: "user-1" });
   });
 
+  it("leaves a foreground child that does not stop to its bound, so it never holds its parent's end", async () => {
+    const ctx = withParent();
+    ctx.store.turns.push({ callbackRunId: null, chatId: "chat-1", endedAt: null, mailbox: [], mode: "foreground", modelId: "fake-model", name: "inner",
+      parentAnswerId: "answer-1", parentRunId: "parent-bg-run", parentThreadId: "thread-research", result: null, runActive: true, runId: null, state: "running",
+      threadId: "thread-inner", turnId: "turn-inner", userId: "user-1" });
+    vi.spyOn(ctx.runner!, "stop").mockImplementation(() => new Promise(() => undefined));
+    expect(await ctx.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" })).toBe(0);
+  });
+
   it("stops one still being admitted when its parent ends, so it never runs", async () => {
     const ctx = withParent();
     let release!: () => void;

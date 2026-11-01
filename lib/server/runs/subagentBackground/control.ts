@@ -333,7 +333,9 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   async function stopTurn(turn: SubagentTurnRecord, reason: SubagentStopReason): Promise<EndedSubagentCallResult | null> {
     if (!isActiveSubagentState(turn.state)) return turn.result;
     if (turn.mode === "foreground") {
-      return await deps.runner?.stop({ turnId: turn.turnId }, reason).catch(() => null) ?? null;
+      // Bounded like a background stop: a parent's end waits here for its children, and a stuck call must not hold it.
+      const stopped = deps.runner?.stop({ turnId: turn.turnId }, reason).catch(() => null);
+      return stopped ? await bounded(stopped, stopWaitMs) ?? null : null;
     }
     const local = await stopLocal(turn.turnId, reason);
     const current = await deps.store.findTurn({ chatId: turn.chatId, turnId: turn.turnId, userId: turn.userId });
