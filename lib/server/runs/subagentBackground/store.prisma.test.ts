@@ -6,6 +6,7 @@ import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { createNativeOrphanFinder } from "../../engine/recovery";
 import { createSubagentThreadStore } from "../../engine/subagents/threadStore";
+import { createTranscriptRepository } from "../../engine/transcriptRepository";
 import { ActiveMessageMutationConflictError } from "../../messages/handlers";
 import { createPrismaMessageBranchRepository } from "../../messages/prismaRepository";
 import { prisma } from "../../prisma";
@@ -163,7 +164,7 @@ describe("background sub-agent runs on PostgreSQL", () => {
         .toEqual(["Prefer cheaper ones"]);
       // The claim is once: a wake-up admission for the same callback is refused.
       await expect(prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId,
-        turnIds: [admitted.turnId], userMessageId: f.main.assistantMessageId }))).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
+        turns: [{ kind: "callback", turnId: admitted.turnId }], userMessageId: f.main.assistantMessageId }))).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
     } else {
       // The answer closed first: the callback stays owed for its terminal flush.
       expect(turn.callbackRunId).toBeNull();
@@ -226,8 +227,19 @@ describe("background sub-agent runs on PostgreSQL", () => {
     const threads = createSubagentThreadStore(prisma);
     const scope = { chatId: f.chatId, runIds: [f.main.runId], threadId: thread.threadId, userId: f.userId };
     expect(await threads.unreadMessages(scope)).toEqual([{ from: "scout", nonce: "m-1", origin: "subagent_message", text: "It costs 42" }]);
-    await threads.markMessagesRead({ ...scope, nonces: ["m-1"] });
+    // Read means on record: the write that holds it stamps it, and a write refused leaves it for the next turn.
+    const transcripts = createTranscriptRepository(prisma);
+    const written = { chatId: f.chatId, runId: f.main.runId, thread: { threadId: thread.threadId, turnId: turn.id }, userId: f.userId };
+    const read = { nonces: ["m-1"], runIds: [f.main.runId], threadId: thread.threadId };
+    const message = { id: randomUUID(), kind: "user" as const, text: "It costs 42" };
+    await transcripts.append(written, 0, [{ id: randomUUID(), kind: "user", text: "The brief" }]);
+    await expect(transcripts.append(written, 0, [message], read)).rejects.toThrow();
+    expect(await threads.unreadMessages(scope)).toHaveLength(1);
+    await transcripts.append(written, 1, [message], read);
     expect(await threads.unreadMessages(scope)).toEqual([]);
+    // A repeat of the write that committed, its outcome lost, finds its own rows.
+    await transcripts.append(written, 1, [message], read);
+    expect((await prisma.runFollowup.findFirstOrThrow({ where: { modelRunId: f.main.runId, nonce: "m-1" } })).deliveredAt).not.toBeNull();
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 
@@ -276,6 +288,19 @@ describe("background sub-agent runs on PostgreSQL", () => {
     expect(owed?.mainRun).toBeNull();
   }));
 
+  it("leaves a message of a branch the user left where it is, and owes it again when the user comes back", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, userId: f.userId };
+    expect(await store.messageMainAgent({ ...scope, authorName: "scout", nonce: "m-1", parentRunId: f.main.runId, text: "It costs 42" })).toBe("delivered");
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    expect((await store.owedCallbacks(scope))?.strandedMessageIds).toHaveLength(1);
+    const sibling = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent("Edited question"),
+      parentMessageId: null, role: "user", status: "complete" } });
+    await prisma.chat.update({ data: { activeLeafMessageId: sibling.id }, where: { id: f.chatId } });
+    expect(await store.owedCallbacks(scope)).toEqual({ activeBranch: [], inactiveTurnIds: [], mainRun: null });
+    await prisma.chat.update({ data: { activeLeafMessageId: f.main.assistantMessageId }, where: { id: f.chatId } });
+    expect((await store.owedCallbacks(scope))?.strandedMessageIds).toHaveLength(1);
+  }));
+
   it("owes a waiting turn's question like a callback, and its own end a callback of its own", async () => fixture(async (f) => {
     const scope = { chatId: f.chatId, userId: f.userId };
     const threads = createSubagentThreadStore(prisma);
@@ -285,19 +310,51 @@ describe("background sub-agent runs on PostgreSQL", () => {
     await prisma.modelRunToolCall.create({ data: { arguments: { question: "Which size?" }, modelRunId: admitted.runId, ordinal: 0, providerCallId: "ask-1",
       roundIndex: 1, state: "running", subagentThreadId: thread.threadId, subagentTurnId: admitted.turnId, toolName: "ask_parent" } });
     await threads.setActiveState({ ...scope, reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting", turnId: admitted.turnId });
-    expect((await store.owedCallbacks(scope))?.activeBranch).toEqual([{ name: "asker", question: "Which size?", turnId: admitted.turnId }]);
+    expect((await store.owedCallbacks(scope))?.activeBranch).toMatchObject([{ name: "asker", question: "Which size?", turnId: admitted.turnId }]);
     expect(await store.deliverIntoRun({ ...scope, runId: f.main.runId, turnId: admitted.turnId })).toBe("delivered");
     expect((await store.owedCallbacks(scope))?.activeBranch).toEqual([]);
     expect(await followups.load({ runId: f.main.runId, userId: f.userId })).toMatchObject({ entries: [{ delivery: "accepted", origin: "subagent_question" }] });
     // The answer ended without reading it: owed again, like a callback.
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
-    expect((await store.owedCallbacks(scope))?.activeBranch).toEqual([{ name: "asker", question: "Which size?", turnId: admitted.turnId }]);
-    await prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId, turnIds: [admitted.turnId],
-      userMessageId: f.main.assistantMessageId }));
+    expect((await store.owedCallbacks(scope))?.activeBranch).toMatchObject([{ name: "asker", question: "Which size?", turnId: admitted.turnId }]);
+    const askCall = await prisma.modelRunToolCall.findFirstOrThrow({ select: { id: true }, where: { modelRunId: admitted.runId, toolName: "ask_parent" } });
+    await prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId,
+      turns: [{ callId: askCall.id, kind: "question", turnId: admitted.turnId }], userMessageId: f.main.assistantMessageId }));
     expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: admitted.turnId } })).callbackRunId).toBe(f.main.runId);
     // Stopped while it waits: the claim was the question's, so its end is still owed to the main agent.
     await store.settle({ ...scope, result: endedSubagentResult("asker", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: admitted.turnId });
     expect((await store.owedCallbacks(scope))?.activeBranch).toMatchObject([{ name: "asker", result: { state: "stopped" }, turnId: admitted.turnId }]);
+  }));
+
+  it("refuses a wake-up's claim of a question its turn no longer asks, and of an end its turn has not reached", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, userId: f.userId };
+    const threads = createSubagentThreadStore(prisma);
+    const thread = await f.thread("asker");
+    const admitted = await store.admit(admission(f, thread));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    const ask = (providerCallId: string, question: string, ordinal: number) => prisma.modelRunToolCall.create({ data: { arguments: { question },
+      modelRunId: admitted.runId, ordinal, providerCallId, roundIndex: 1, state: "running", subagentThreadId: thread.threadId, subagentTurnId: admitted.turnId,
+      toolName: "ask_parent" }, select: { id: true } });
+    const first = await ask("ask-1", "Which size?", 0);
+    await threads.setActiveState({ ...scope, reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting", turnId: admitted.turnId });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    const claim = (turns: Parameters<typeof claimSubagentCallbacksForRun>[1]["turns"]) => prisma.$transaction((tx) =>
+      claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId, turns, userMessageId: f.main.assistantMessageId }));
+    const callbackRunId = async () => (await prisma.subagentTurn.findUniqueOrThrow({ where: { id: admitted.turnId } })).callbackRunId;
+    // The end of a turn that still waits.
+    await expect(claim([{ kind: "callback", turnId: admitted.turnId }])).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
+    // Another question than the one it asks now.
+    await prisma.modelRunToolCall.update({ data: { state: "complete" }, where: { id: first.id } });
+    const second = await ask("ask-2", "Which colour?", 1);
+    await expect(claim([{ callId: first.id, kind: "question", turnId: admitted.turnId }])).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
+    expect(await callbackRunId()).toBeNull();
+    // Stopped inside the coalesce window: the wake-up rendered for its question takes nothing, and its end stays owed.
+    await store.settle({ ...scope, result: endedSubagentResult("asker", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: admitted.turnId });
+    await expect(claim([{ callId: second.id, kind: "question", turnId: admitted.turnId }])).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
+    expect(await callbackRunId()).toBeNull();
+    expect((await store.owedCallbacks(scope))?.activeBranch).toMatchObject([{ name: "asker", result: { state: "stopped" }, turnId: admitted.turnId }]);
+    await claim([{ kind: "callback", turnId: admitted.turnId }]);
+    expect(await callbackRunId()).toBe(f.main.runId);
   }));
 
   it("resumes a waiting turn with its claim cleared, and recovery finds a question left owed", async () => fixture(async (f) => {
@@ -384,8 +441,8 @@ describe("background sub-agent runs on PostgreSQL", () => {
     const callbacks = createSubagentCallbacks({ coalesceMs: 20, store, admitWakeUp: async (input) => {
       // The wake-up's own message hangs from the main answer, so its path holds the callbacks' parent answer.
       await prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: f.main.runId,
-        turnIds: input.turnIds, userMessageId: f.main.assistantMessageId }));
-      wakeUps.push([...input.turnIds]);
+        turns: input.turns, userMessageId: f.main.assistantMessageId }));
+      wakeUps.push(input.turns.map((turn) => turn.turnId));
       return "admitted";
     } });
     const recovery = { backoff: new Map(), bootedAt: future, deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [],
@@ -501,8 +558,8 @@ describe("background sub-agent runs on PostgreSQL", () => {
     const wakeUps: string[][] = [];
     const callbacks = createSubagentCallbacks({ coalesceMs: 10, store, admitWakeUp: async (input) => {
       await prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: f.main.runId,
-        turnIds: input.turnIds, userMessageId: f.main.assistantMessageId }));
-      wakeUps.push([...input.turnIds]);
+        turns: input.turns, userMessageId: f.main.assistantMessageId }));
+      wakeUps.push(input.turns.map((turn) => turn.turnId));
       return "admitted";
     } });
     await reconcileSubagentRuns({ backoff: new Map(), bootedAt: new Date(0), deferred: new Map(), flush: callbacks.flush,
@@ -520,7 +577,7 @@ describe("background sub-agent runs on PostgreSQL", () => {
     const sibling = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent("Edited question"),
       parentMessageId: null, role: "user", status: "complete" } });
     await expect(prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId,
-      turnIds: [admitted.turnId], userMessageId: sibling.id }))).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
+      turns: [{ kind: "callback", turnId: admitted.turnId }], userMessageId: sibling.id }))).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
     expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: admitted.turnId } })).callbackRunId).toBeNull();
   }));
 });

@@ -143,6 +143,12 @@ export type EngineTool = Readonly<{
    * earlier equivalent has an unknown outcome is sent again (MCP tools).
    */
   retryApproval?(call: ModelToolCall): McpApprovalRequest | undefined;
+  /**
+   * The tool's calls of one batch run one at a time, in the response's order: each starts, and gets its record, once the
+   * one before it settled. For a tool whose open record is what others read of it (`ask_parent`, whose open call is the
+   * question the main agent is owed), so two never stand open side by side.
+   */
+  serial?: true;
   /** The call's own records after it ran (Search rows and their usage). */
   settled?(execution: EngineToolExecution, result: ToolExecutionResult): Promise<void>;
 }>;

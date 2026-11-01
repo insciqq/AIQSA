@@ -229,7 +229,8 @@ export function createSubagentThreadStore(client: StoreClient) {
 
     /**
      * Marks an active turn as waiting for the user (a browser handoff) or its parent's answer (`reason`), or running
-     * again, which clears the question's claim: the turn's own end owes a callback of its own.
+     * again. Every write clears the question's claim, so the runner writes only when this row changes (`createTurnWaits`):
+     * the write that takes the reason away is that question's own end, and the turn's end owes a callback of its own.
      */
     async setActiveState(input: Readonly<{ chatId: string; reason?: string; state: "running" | "waiting"; turnId: string; userId: string }>): Promise<boolean> {
       const updated = await client.subagentTurn.updateMany({ data: { callbackRunId: null, reasonCode: input.reason ?? null, state: input.state },
@@ -246,13 +247,6 @@ export function createSubagentThreadStore(client: StoreClient) {
       return rows.flatMap((row): SubagentMessage[] => row.origin === "subagent_message"
         ? [{ from: row.authorName, nonce: row.nonce, origin: "subagent_message", text: row.text }]
         : row.origin === "main_agent" ? [{ nonce: row.nonce, origin: "main_agent", text: row.text }] : []);
-    },
-
-    /** The receipt of messages a turn read; a row already stamped keeps its time. */
-    async markMessagesRead(input: Readonly<{ chatId: string; nonces: readonly string[]; runIds: readonly string[]; threadId: string; userId: string }>): Promise<void> {
-      await client.runFollowup.updateMany({ data: { deliveredAt: new Date() },
-        where: { chatId: input.chatId, deliveredAt: null, modelRunId: { in: [...new Set(input.runIds)] }, nonce: { in: [...input.nonces] },
-          ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX }, subagentTurn: { threadId: input.threadId, userId: input.userId } } });
     },
 
     /** Ends an active turn with its result; a turn that already ended keeps how it ended. */

@@ -35,12 +35,12 @@ import type { SubagentThreadStore, SubagentTurnRecord } from "./threadStore";
  * name decides follows `SubagentBackgroundControl`'s rules: a new name
  * starts a thread, a visible thread with no active turn continues, a
  * running background turn of this branch takes the message in its mailbox,
- * and anything else is `subagent_busy`. Without the background port (a
- * Telegram turn, a scheduled occurrence, until integration) `background:
- * true` is refused with `subagent_background_unavailable` and the same call
- * without it still works. Every refusal is a visible stable code; nothing is
- * substituted. The result is the sub-agent's own account: untrusted data for
- * the main agent.
+ * and anything else is `subagent_busy`. A run that may not start a background
+ * turn (`backgroundAllowed`: a Telegram turn, a scheduled occurrence) still
+ * answers and stops those of its branch; `background: true` is refused with
+ * `subagent_background_unavailable` there, and the same call without it still
+ * works. Every refusal is a visible stable code; nothing is substituted. The
+ * result is the sub-agent's own account: untrusted data for the main agent.
  *
  * Which sub-agent a call starts (operator decisions 2026-10-30): a thread keeps
  * the type it started with, whatever the default is now. A new thread takes its

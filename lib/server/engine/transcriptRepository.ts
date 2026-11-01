@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { MCP_APPROVAL_CONTINUATION_KIND } from "../../contracts/mcpApprovals";
+import { RUN_FOLLOWUP_REVISION_MAX } from "../../contracts/subagents";
 import { json } from "../runs/prismaRepositoryShared";
 import { decodeTranscriptItem, encodeTranscriptItem } from "./transcriptCodec";
 import type { TranscriptItem } from "./transcript";
@@ -15,7 +16,10 @@ export type TranscriptRunScope = Readonly<{ chatId: string; runId: string; threa
 /** The thread key of a sub-agent's items: its thread and the turn that wrote them. */
 export type TranscriptThreadKey = Readonly<{ threadId: string; turnId: string }>;
 
-type TranscriptClient = Pick<PrismaClient, "message" | "modelRun" | "modelRunToolCall" | "runTranscriptItem">;
+/** The mailbox messages (`RunFollowup`) a write's items hold, by nonce, on these runs of the reading thread. */
+export type TranscriptMailRead = Readonly<{ nonces: readonly string[]; runIds: readonly string[]; threadId: string }>;
+
+type TranscriptClient = Pick<PrismaClient, "$transaction" | "message" | "modelRun" | "modelRunToolCall" | "runFollowup" | "runTranscriptItem">;
 
 /**
  * One run of the old core on a branch, with the effect records of its tool
@@ -131,8 +135,11 @@ export function createTranscriptRepository(client: TranscriptClient) {
      * Appends items in order from sequence `from`; a taken sequence refuses the
      * whole batch. Repeating a batch that committed already (its outcome was
      * lost) finds exactly its own rows and succeeds without a second copy.
+     * `read` stamps the mailbox messages these items hold in the same
+     * transaction: a message is read exactly when its reader's transcript holds
+     * it, so none is lost to a failed write or a crash, and none is read twice.
      */
-    async append(scope: TranscriptRunScope, from: number, items: readonly TranscriptItem[]): Promise<void> {
+    async append(scope: TranscriptRunScope, from: number, items: readonly TranscriptItem[], read?: TranscriptMailRead): Promise<void> {
       if (items.length === 0) return;
       if (!Number.isSafeInteger(from) || from < 0) throw new Error("transcript_sequence_invalid");
       const rows = items.map((item, index) => {
@@ -151,7 +158,16 @@ export function createTranscriptRepository(client: TranscriptClient) {
         };
       });
       try {
-        await client.runTranscriptItem.createMany({ data: rows });
+        if (read) {
+          await client.$transaction(async (tx) => {
+            await tx.runTranscriptItem.createMany({ data: rows });
+            await tx.runFollowup.updateMany({ data: { deliveredAt: new Date() }, where: { chatId: scope.chatId, deliveredAt: null,
+              modelRunId: { in: [...new Set(read.runIds)] }, nonce: { in: [...read.nonces] }, ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX },
+              subagentTurn: { threadId: read.threadId, userId: scope.userId } } });
+          });
+        } else {
+          await client.runTranscriptItem.createMany({ data: rows });
+        }
       } catch (error) {
         if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
         const written = await client.runTranscriptItem.count({ where: { chatId: scope.chatId, modelRunId: scope.runId,

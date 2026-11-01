@@ -33,6 +33,12 @@ const MODELS_SHOWN = 32;
 const TYPES_SHOWN = 50;
 const TYPE_DESCRIPTION_CHARACTERS = 300;
 
+/**
+ * Text one frame holds, whoever wrote it: it cannot close that frame or open another a reader trusts more, so what an
+ * agent relays stays what it is on every hop.
+ */
+const inFrame = (text: string) => text.replace(/<(\/?)(agent_message|agent_question|main_agent_brief|main_agent_message|user_message)/giu, "‹$1$2");
+
 const oneLine = (value: string, max: number) => {
   const line = value.replace(/\s+/gu, " ").trim();
   return Array.from(line).length > max ? `${Array.from(line).slice(0, max - 1).join("")}…` : line;
@@ -98,7 +104,7 @@ export function subagentTurnText(input: Readonly<{ brief: string; continued: boo
     `You are the sub-agent \`${input.name}\`.`,
     "",
     input.continued ? "<main_agent_message>" : "<main_agent_brief>",
-    input.brief,
+    inFrame(input.brief),
     input.continued ? "</main_agent_message>" : "</main_agent_brief>",
     "",
     "The user's current message in the chat, verbatim. The user wrote it to the main agent, which delegated to you: " +
@@ -118,13 +124,9 @@ function subagentWorkspaceRefusal(code: string): string {
     `cannot be done without it, do not work around that: report \`Outcome: blocked (${code})\` and say what is left to do.`;
 }
 
-/**
- * What one agent's text is framed in, whoever reads it. Its text cannot close the frame or open another a reader trusts
- * more, so a message claiming to be the user's stays what it is.
- */
+/** What one agent's text is framed in, whoever reads it, so a message claiming to be the user's stays what it is. */
 export function agentTextFrame(tag: "agent_message" | "agent_question", from: string, text: string): string {
-  const safe = text.replace(/<(\/?)(agent_message|agent_question|main_agent_brief|main_agent_message|user_message)/giu, "‹$1$2");
-  return `<${tag} from="${from}">\n${safe}\n</${tag}>`;
+  return `<${tag} from="${from}">\n${inFrame(text)}\n</${tag}>`;
 }
 
 /**
@@ -144,6 +146,6 @@ export function subagentFollowupText(text: string): string {
   return [
     "The user wrote this in the chat while you were working. Follow what concerns your task; leave what is meant for the " +
       "main agent, such as calling or briefing sub-agents, to it:",
-    "<user_message>", text, "</user_message>"
+    "<user_message>", inFrame(text), "</user_message>"
   ].join("\n");
 }

@@ -146,7 +146,12 @@ export const SUBAGENT_FOLLOWUP_LIMITS = Object.freeze({
   agentMessagesPerTurn: 16,
   /** Questions one turn asks: each may wake the main agent, a paid turn, so one that keeps asking is told to report. */
   questionsPerTurn: 8,
-  /** The longest `wait_for_reply`: a neighbour replies within a few steps, and past that the agent is better off going on. */
+  /**
+   * The longest `wait_for_reply`: a neighbour replies within a few steps, and past that the agent is better off going on.
+   * A background `ask_parent` has no bound of its own: it waits for as long as the turn has tool time left, and the turn's
+   * own hour ends it. Its answer may have to wake the main agent, wait for usage limits or go through the user, and a
+   * wait spends nothing while the work behind the question is worth keeping.
+   */
   replyWaitMinutes: 5,
   /**
    * Follow-ups from sub-agents one main-agent run takes, callbacks, messages and questions together; later callbacks

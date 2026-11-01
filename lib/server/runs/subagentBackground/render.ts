@@ -1,6 +1,7 @@
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../../contracts/runFollowups";
 import { type EndedSubagentCallResult } from "../../../contracts/subagents";
 import { agentTextFrame } from "../../engine/prompts/subagents";
+import type { SubagentCallbackClaim } from "../../subagents/ports";
 import { READ_TOOL_RESULT_NAME, toolOutputExcerpt } from "../../engine/toolResults";
 import { followupTokenCost } from "../runFollowups";
 
@@ -31,7 +32,7 @@ const SUBAGENT_CALLBACK_MAX_CHARACTERS = RUN_FOLLOWUP_MAX_CHARS - 1_000;
 
 export type RenderableCallback = Readonly<{ name: string; result: EndedSubagentCallResult; turnId: string }>;
 /** A background turn waiting for its parent's answer, for the main agent. */
-export type RenderableQuestion = Readonly<{ name: string; question: string; turnId: string }>;
+export type RenderableQuestion = Readonly<{ callId: string; name: string; question: string; turnId: string }>;
 export type RenderableOwed = RenderableCallback | RenderableQuestion;
 
 function headline(result: EndedSubagentCallResult): string {
@@ -116,7 +117,7 @@ const isQuestion = (entry: RenderableOwed): entry is RenderableQuestion => "ques
  * `SUBAGENT_WAKE_UP_TEXT_CHARACTERS` evenly (at least `SUBAGENT_CALLBACK_MIN_CHARACTERS` each); those that no longer
  * fit stay owed and reach the woken run as follow-ups.
  */
-export function renderWakeUp(owed: readonly RenderableOwed[]): Readonly<{ text: string; turnIds: readonly string[] }> {
+export function renderWakeUp(owed: readonly RenderableOwed[]): Readonly<{ text: string; turns: readonly SubagentCallbackClaim[] }> {
   const questions = owed.filter(isQuestion);
   const head = questions.length > 0
     ? `[Sub-agent ${owed.length === 1 ? "question" : "callbacks and questions"}, written by the server, not by the user] ` +
@@ -136,5 +137,6 @@ export function renderWakeUp(owed: readonly RenderableOwed[]): Readonly<{ text: 
   const parts = [intro, ...taken.map((entry) => isQuestion(entry)
     ? `--- "${entry.name}" asks. ${answerQuestion(entry.name)}\n${agentTextFrame("agent_question", entry.name, entry.question)}`
     : `--- "${entry.name}" (${headline(entry.result)})\n${renderCallbackResult(entry.result, share)}`)];
-  return { text: parts.join("\n"), turnIds: taken.map((entry) => entry.turnId) };
+  return { text: parts.join("\n"), turns: taken.map((entry): SubagentCallbackClaim => isQuestion(entry)
+    ? { callId: entry.callId, kind: "question", turnId: entry.turnId } : { kind: "callback", turnId: entry.turnId }) };
 }

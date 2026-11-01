@@ -1,4 +1,4 @@
-import type { SubagentCallback, SubagentCallbackDisposition, SubagentCallbackSink, SubagentChatScope } from "../../subagents/ports";
+import type { SubagentCallback, SubagentCallbackClaim, SubagentCallbackDisposition, SubagentCallbackSink, SubagentChatScope } from "../../subagents/ports";
 import { logEvent } from "../../observability";
 import { renderWakeUp } from "./render";
 import type { SubagentBackgroundStore } from "./store";
@@ -40,7 +40,7 @@ export type SubagentWakeUpOutcome =
   | "admitted"
   /** A main-agent run started first (409 `active_run_in_progress`): the callbacks go into it. */
   | "busy"
-  /** The active leaf changed, or another delivery claimed a callback: retried with what is still owed. */
+  /** The active leaf changed, another delivery claimed a callback, or a turn is no longer what it rendered: retried with what is still owed. */
   | "stale"
   /** Usage limits refused it (429): the callbacks stay owed. */
   | "usage_limited"
@@ -48,7 +48,7 @@ export type SubagentWakeUpOutcome =
   | "failed";
 
 /** Admits the wake-up turn as the chat's owner (`wakeUp.ts`). */
-export type SubagentWakeUpAdmitter = (input: SubagentChatScope & Readonly<{ text: string; turnIds: readonly string[] }>) =>
+export type SubagentWakeUpAdmitter = (input: SubagentChatScope & Readonly<{ text: string; turns: readonly SubagentCallbackClaim[] }>) =>
   Promise<SubagentWakeUpOutcome>;
 
 export type SubagentFlushReport = Readonly<{
@@ -117,13 +117,13 @@ export function createSubagentCallbacks(deps: Readonly<{
         if (waiting.length === 0) return { chatGone: false, dispositions, retryable };
       }
       const wakeUp = renderWakeUp(waiting);
-      const outcome = await deps.admitWakeUp({ ...scope, text: wakeUp.text, turnIds: wakeUp.turnIds });
+      const outcome = await deps.admitWakeUp({ ...scope, text: wakeUp.text, turns: wakeUp.turns });
       logEvent("job_persistence", { code: `subagent_wake_up_${outcome}`, outcome: outcome === "admitted" ? "confirmed" : "not_applied",
         stage: "dispatch", subsystem: "run_recovery" });
       if (outcome === "admitted") {
-        for (const turnId of wakeUp.turnIds) dispositions.set(turnId, "wake_up");
+        for (const { turnId } of wakeUp.turns) dispositions.set(turnId, "wake_up");
         // What did not fit goes into the woken run next round.
-        if (wakeUp.turnIds.length === waiting.length) return { chatGone: false, dispositions, retryable };
+        if (wakeUp.turns.length === waiting.length) return { chatGone: false, dispositions, retryable };
         continue;
       }
       // Behind a closed answer, a busy wake-up waits for its terminal flush; nothing else changes until it ends.

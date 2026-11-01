@@ -1397,8 +1397,7 @@ export async function admitPreparingRunWithClient(
           userId: input.userId, userMessageId });
       } else if (input.admissionKind === "NORMAL_SEND" && input.subagentCallbackClaim) {
         // A wake-up turn is the server's, never a message of the user's: it takes its callbacks or is not created.
-        await claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: run.id, turnIds: input.subagentCallbackClaim.turnIds,
-          userMessageId });
+        await claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: run.id, turns: input.subagentCallbackClaim.turns, userMessageId });
       } else {
         // Message limits count interactive admissions in a log that outlives the chat.
         await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
