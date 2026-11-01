@@ -22,9 +22,12 @@ import { gapCheckGate } from "./gapCheck";
 import { runResearchGates, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome } from "./gates";
 import { researchAnswerText, researchNote } from "./notes";
 
+const LABELS: Record<ResearchSourceClass, string> = {
+  primary_official: "official sources", independent_tests: "independent tests", owner_reviews: "owner reviews", action_channel: "purchase options and terms"
+};
 const PLAN: ResearchPlan = {
   goal: "Choose a mattress.", questions: RESEARCH_SOURCE_CLASSES.map((sourceClass) => ({
-    question: `What does ${sourceClass} say about durability?`, sites: [], sourceClasses: [sourceClass]
+    question: `What do ${LABELS[sourceClass]} say about durability?`, sites: [], sourceClasses: [sourceClass]
   })), skipped: []
 };
 const FINDINGS: ResearchFinding[] = RESEARCH_SOURCE_CLASSES.map((sourceClass) => ({
@@ -33,14 +36,15 @@ const FINDINGS: ResearchFinding[] = RESEARCH_SOURCE_CLASSES.map((sourceClass) =>
 }));
 const DRAFT: ResearchDraft = { findings: FINDINGS, origin: "reserved_call", report: "# Report\nThe mattress is durable.", unreachable: [] };
 const SOURCES: ResearchOpenedSource[] = FINDINGS.map((finding) => ({ partial: false, text: finding.quote, toolName: "fetch_url", url: finding.url }));
-const CLEAN = { open_questions: [], weak_answers: [], conflicts: [] };
+const CLEAN = { gaps: [], limits: [] };
+const gap = (issue: string, next_step = "Search for long-term owner reports for this mattress model.") => ({ issue, next_step });
 const judged = (report = JSON.stringify(CLEAN)): ResearchSubagentOutcome => ({ kind: "ended", result: {
   approvals: [], files: [], kind: "ended", model: { effort: null, id: "main-model" }, name: "gap-judge", outcome: "done", report, state: "done", steps: []
 } });
 
 function context(overrides: Partial<ResearchGateContext> = {}): ResearchGateContext {
   return {
-    attempt: 1, earlier: [], plan: PLAN, signal: new AbortController().signal,
+    attempt: 1, earlier: [], plan: structuredClone(PLAN), signal: new AbortController().signal,
     sources: { opened: vi.fn(async () => SOURCES) },
     subagents: { run: vi.fn(async (): Promise<ResearchSubagentOutcome> => judged()) },
     time: { remainingMs: vi.fn(() => 120_000), sendBackAllowed: vi.fn(() => true) },
@@ -58,9 +62,9 @@ describe("mechanical research coverage", () => {
     const ctx = context();
     const result = await gapCheckGate.run(without(sourceClass), ctx);
     expect(result.kind).toBe("send_back");
-    expect(messageOf(result)).toContain(`[${sourceClass}] What does ${sourceClass} say about durability?`);
+    expect(messageOf(result)).toContain(`What do ${LABELS[sourceClass]} say about durability?`);
     expect(messageOf(result)).toContain("Send researchers with call_subagent");
-    for (const other of RESEARCH_SOURCE_CLASSES.filter((value) => value !== sourceClass)) expect(messageOf(result)).not.toContain(other);
+    for (const other of RESEARCH_SOURCE_CLASSES.filter((value) => value !== sourceClass)) expect(messageOf(result)).not.toContain(LABELS[other]);
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -68,7 +72,7 @@ describe("mechanical research coverage", () => {
     const ctx = context({ sources: { opened: vi.fn(async () => SOURCES.filter((source) => !source.url?.endsWith(sourceClass))) } });
     const result = await gapCheckGate.run(DRAFT, ctx);
     expect(result.kind).toBe("send_back");
-    expect(messageOf(result)).toContain(sourceClass);
+    expect(messageOf(result)).toContain(LABELS[sourceClass]);
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -97,7 +101,7 @@ describe("mechanical research coverage", () => {
   ])("does not manufacture a page quote from $toolName: $text", async (source) => {
     const ctx = context({ sources: { opened: async () => [...SOURCES.filter((entry) => !entry.url?.endsWith("owner_reviews")),
       { ...source, partial: false, url: null }] } });
-    expect(messageOf(await gapCheckGate.run(DRAFT, ctx))).toContain("owner_reviews");
+    expect(messageOf(await gapCheckGate.run(DRAFT, ctx))).toContain("owner reviews");
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -107,7 +111,7 @@ describe("mechanical research coverage", () => {
     const result = await gapCheckGate.run(DRAFT, ctx);
     expect(result.kind).toBe("pass");
     expect(result.notes?.join()).toContain("Source opening could not be checked:");
-    expect(result.notes?.join()).toContain("owner_reviews");
+    expect(result.notes?.join()).toContain("owner reviews");
   });
 
   it("takes a browser command's output for an opened page, with or without a step line", async () => {
@@ -124,7 +128,7 @@ describe("mechanical research coverage", () => {
     const result = await gapCheckGate.run(DRAFT, ctx);
     expect(result.kind).toBe("pass");
     expect(result.notes?.join()).toContain("Source opening could not be checked:");
-    expect(result.notes?.join()).toContain("owner_reviews");
+    expect(result.notes?.join()).toContain("owner reviews");
     expect(result.notes?.join()).not.toContain("Missing");
   });
 
@@ -142,7 +146,7 @@ describe("mechanical research coverage", () => {
     const result = await gapCheckGate.run({ ...DRAFT, findings: [] }, ctx);
     expect(messageOf(result)).toContain("Does it sag?");
     expect(messageOf(result)).toContain("Does it stay cool?");
-    expect(messageOf(result)).not.toContain("owner_reviews");
+    expect(messageOf(result)).not.toContain("owner reviews");
   });
 });
 
@@ -158,7 +162,7 @@ describe("unreachable sources reach the report", () => {
     const answer = researchAnswerText(draft.report, result.notes);
     expect(answer).toContain(unreachable.target);
     expect(answer).toContain(unreachable.reason);
-    expect(answer).toContain(report === "# Report" ? "Source could not be reached" : "Не удалось обратиться к источнику");
+    expect(answer).toContain(report === "# Report" ? "Sources that could not be reached:" : "Недоступные источники:");
     expect(JSON.parse(vi.mocked(ctx.subagents.run).mock.calls[0]![0].brief).unreachableClasses).toEqual(["owner_reviews"]);
   });
 
@@ -195,23 +199,37 @@ describe("independent gap judgment", () => {
     expect(JSON.parse(request.brief)).toMatchObject({ plan: PLAN, findings: FINDINGS, planShortened: false, findingsShortened: false });
   });
 
-  it("sends the judge's open questions, weak answers and conflicts back for researchers", async () => {
+  it("sends only actionable questions and conflicts back, with their next steps, and reports limits", async () => {
     const ctx = context({ subagents: { run: vi.fn(async () => judged(JSON.stringify({
-      open_questions: ["Are owner_reviews representative?"], weak_answers: ["independent_tests only cover one year."], conflicts: ["primary_official says ten years; owners say two."]
+      gaps: [gap("Delivery to the city is unknown.", "Open the chosen shop's delivery terms for Moscow."),
+        gap("Two shops disagree on the warranty.", "Open the manufacturer's warranty for this exact model.")],
+      limits: ["Independent tests cover only one year; ten-year life cannot be established."]
     }))) } });
     const result = await gapCheckGate.run(DRAFT, ctx);
     expect(result.kind).toBe("send_back");
-    expect(messageOf(result)).toContain("Open question: Are owner_reviews representative?");
-    expect(messageOf(result)).toContain("Weak answer: independent_tests only cover one year.");
-    expect(messageOf(result)).toContain("Conflict: primary_official says ten years; owners say two.");
+    expect(messageOf(result)).toContain("Delivery to the city is unknown.");
+    expect(messageOf(result)).toContain("Open the chosen shop's delivery terms for Moscow.");
+    expect(messageOf(result)).toContain("Open the manufacturer's warranty for this exact model.");
+    expect(messageOf(result)).not.toContain("ten-year life");
+    expect(result.notes?.join()).toContain("ten-year life cannot be established");
   });
 
   it.each([
     "not JSON", "null", "[]", "{}", JSON.stringify({ ...CLEAN, extra: "ignored?" }),
-    JSON.stringify({ ...CLEAN, open_questions: "not an array" }), JSON.stringify({ ...CLEAN, conflicts: [null] }),
-    JSON.stringify({ ...CLEAN, weak_answers: [" "] }), JSON.stringify({ ...CLEAN, conflicts: ["bad\0text"] }),
-    JSON.stringify({ ...CLEAN, conflicts: ["x".repeat(RESEARCH_LIMITS.questionCharacters + 1)] }),
-    JSON.stringify({ ...CLEAN, conflicts: Array.from({ length: RESEARCH_LIMITS.questions + 1 }, () => "gap") }),
+    JSON.stringify({ gaps: [] }), JSON.stringify({ limits: [] }),
+    JSON.stringify({ ...CLEAN, gaps: "not an array" }), JSON.stringify({ ...CLEAN, gaps: [null] }),
+    JSON.stringify({ ...CLEAN, gaps: ["missing a next step"] }), JSON.stringify({ ...CLEAN, gaps: [{ issue: "Question?" }] }),
+    JSON.stringify({ ...CLEAN, gaps: [{ ...gap("Question?"), extra: true }] }),
+    JSON.stringify({ ...CLEAN, gaps: [gap(" ")] }), JSON.stringify({ ...CLEAN, gaps: [gap("Question?", " ")] }),
+    JSON.stringify({ ...CLEAN, gaps: [gap("Question?", "bad\0text")] }),
+    JSON.stringify({ ...CLEAN, gaps: [gap("x".repeat(RESEARCH_LIMITS.questionCharacters + 1))] }),
+    JSON.stringify({ ...CLEAN, gaps: [gap("Question?", "x".repeat(RESEARCH_LIMITS.questionCharacters + 1))] }),
+    JSON.stringify({ ...CLEAN, gaps: Array.from({ length: RESEARCH_LIMITS.questions + 1 }, () => gap("Question?")) }),
+    JSON.stringify({ ...CLEAN, limits: null }), JSON.stringify({ ...CLEAN, limits: [null] }),
+    JSON.stringify({ ...CLEAN, limits: [" "] }), JSON.stringify({ ...CLEAN, limits: ["bad\0text"] }),
+    JSON.stringify({ ...CLEAN, limits: ["x".repeat(RESEARCH_LIMITS.reasonCharacters + 1)] }),
+    JSON.stringify({ ...CLEAN, limits: Array.from({ length: RESEARCH_LIMITS.questions + 1 }, () => "Limit") }),
+    JSON.stringify({ open_questions: [], weak_answers: [], conflicts: [] }),
     `Outcome: done\n${JSON.stringify(CLEAN)}`, "x".repeat(RUN_FOLLOWUP_MAX_CHARS + 1)
   ])("passes an unreadable judgment with a note that says so (%#)", async (report) => {
     const ctx = context({ subagents: { run: async () => judged(report) } });
@@ -230,7 +248,7 @@ describe("independent gap judgment", () => {
   });
 
   it("keeps the issues named before when a later judge fails", async () => {
-    const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, open_questions: ["How durable is it after five years?"] })) } }));
+    const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("How durable is it after five years?")] })) } }));
     const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }], subagents: { run: async () => { throw new Error("unavailable"); } } });
     const result = await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, ctx);
     expect(result.kind).toBe("pass");
@@ -262,7 +280,7 @@ describe("research stops on evidence or time, not a round count", () => {
     const ctx = context({ attempt: 2, earlier: [{ draft: DRAFT, message: "Old feedback" }], sources: { opened: async () => [] } });
     const result = await gapCheckGate.run(draft, ctx);
     expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("independent_tests");
+    expect(result.notes?.join()).toContain("independent tests");
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -273,7 +291,7 @@ describe("research stops on evidence or time, not a round count", () => {
   });
 
   it("keeps the previous judge's named gaps when a round finds nothing new", async () => {
-    const first = context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, open_questions: ["How durable is it after five years?"] })) } });
+    const first = context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("How durable is it after five years?")] })) } });
     const sentBack = await gapCheckGate.run(DRAFT, first);
     const ctx = context({ attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(sentBack) }] });
     const result = await gapCheckGate.run(DRAFT, ctx);
@@ -299,8 +317,8 @@ describe("research stops on evidence or time, not a round count", () => {
     const ctx = context({ time: { remainingMs: () => 60_000, sendBackAllowed: () => false } });
     const result = await gapCheckGate.run({ ...without("owner_reviews"), report: "Отчёт о матрасах." }, ctx);
     expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("Не хватает находок");
-    expect(result.notes?.join()).toContain("owner_reviews");
+    expect(result.notes?.join()).toContain("Не хватает сведений");
+    expect(result.notes?.join()).toContain("отзывы владельцев");
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -308,7 +326,7 @@ describe("research stops on evidence or time, not a round count", () => {
     const allowed = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
     const result = await runResearchGates({ context: context({ time: { remainingMs: () => 60_000, sendBackAllowed: allowed } }),
       draft: without("owner_reviews"), gates: [gapCheckGate], runId: "test" });
-    expect(result).toMatchObject({ kind: "accepted", notes: [expect.stringContaining("owner_reviews")] });
+    expect(result).toMatchObject({ kind: "accepted", notes: [expect.stringContaining("owner reviews")] });
   });
 
   it("does not start a judge without time for a turn", async () => {
@@ -319,7 +337,7 @@ describe("research stops on evidence or time, not a round count", () => {
 
   it("keeps previously named issues when a new finding arrives too late to judge them", async () => {
     const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN,
-      open_questions: ["How durable is it after five years?"] })) } }));
+      gaps: [gap("How durable is it after five years?")] })) } }));
     const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }],
       time: { remainingMs: () => 1, sendBackAllowed: () => true } });
     const result = await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another short-term result." }] }, ctx);
@@ -331,7 +349,7 @@ describe("research stops on evidence or time, not a round count", () => {
     let allowed = true;
     const ctx = context({ time: { remainingMs: () => 60_000, sendBackAllowed: () => allowed }, subagents: { run: async () => {
       allowed = false;
-      return judged(JSON.stringify({ ...CLEAN, conflicts: ["The lab and owners disagree on durability."] }));
+      return judged(JSON.stringify({ ...CLEAN, gaps: [gap("The lab and owners disagree on durability.")] }));
     } } });
     expect(await gapCheckGate.run(DRAFT, ctx)).toMatchObject({ kind: "pass", notes: [expect.stringContaining("lab and owners disagree")] });
   });
@@ -341,11 +359,160 @@ describe("research stops on evidence or time, not a round count", () => {
     const ctx = context();
     const first = await gapCheckGate.run(draft, ctx);
     expect(first.kind).toBe("send_back");
-    expect(messageOf(first)).toContain("findings: claim, link, verbatim quote and source class");
+    expect(messageOf(first)).toContain("findings: claim, link, verbatim quote and source");
     expect(await gapCheckGate.run(draft, { ...ctx, attempt: 2, earlier: [{ draft, message: messageOf(first) }] })).toEqual({ kind: "pass", notes: [] });
     expect(await gapCheckGate.run(draft, { ...ctx, time: { remainingMs: () => 0, sendBackAllowed: () => false } })).toEqual({ kind: "pass", notes: [] });
-    expect(ctx.sources.opened).not.toHaveBeenCalled();
     expect(ctx.subagents.run).not.toHaveBeenCalled();
+  });
+});
+
+describe("actionable gaps and page progress", () => {
+  const issue = "Delivery to the buyer's city is still unknown.";
+  const next = "Open the selected shop's delivery terms for Moscow.";
+  const openGap = { gaps: [gap(issue, next)], limits: ["Ten-year durability cannot be established from these tests."] };
+  const revised = { ...DRAFT, findings: FINDINGS.map((finding) => ({ ...finding, claim: `Rewritten: ${finding.claim}` })) };
+
+  it.each([0, 3])("passes a draft shrunk from 15 to %s findings without new pages, skips the judge and reaches the verifier", async (count) => {
+    const firstDraft = { ...DRAFT, findings: Array.from({ length: 15 }, (_, index) => ({ ...FINDINGS[index % 4]!, claim: `Finding ${index}.` })) };
+    const judge = vi.fn(async () => judged(JSON.stringify(openGap)));
+    const ctx = context({ subagents: { run: judge } });
+    const verifier = vi.fn(async () => ({ kind: "pass" as const }));
+    const gates = [gapCheckGate, { name: "verifier", run: verifier }];
+    const first = await runResearchGates({ context: ctx, draft: firstDraft, gates, runId: "test" });
+    expect(first.kind).toBe("sent_back");
+    expect(verifier).not.toHaveBeenCalled();
+    if (first.kind !== "sent_back") throw new Error("Expected a send-back");
+    const rewritten = { ...revised, findings: revised.findings.slice(0, count) };
+    const result = await runResearchGates({ context: { ...ctx, attempt: 2, earlier: [{ draft: firstDraft, message: first.message }] },
+      draft: rewritten, gates, runId: "test" });
+    expect(result).toMatchObject({ kind: "accepted", notes: expect.arrayContaining([expect.stringContaining(issue)]) });
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(verifier).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(result)).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel/u);
+  });
+
+  it.each(["search_selected_engines", "mcp__notes__read", namespacedWorkspaceToolName("sandbox_exec")])("does not count %s output as a new page", async (toolName) => {
+    let opened = [...SOURCES];
+    const judge = vi.fn(async () => judged(JSON.stringify(openGap)));
+    const ctx = context({ subagents: { run: judge }, sources: { opened: async () => opened } });
+    const first = await gapCheckGate.run(DRAFT, ctx);
+    opened = [...opened, { partial: false, toolName, url: null, text: "Some new search snippets or rewritten text." }];
+    const result = await gapCheckGate.run(revised, { ...ctx, attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(first) }] });
+    expect(result).toMatchObject({ kind: "pass", notes: expect.arrayContaining([expect.stringContaining(issue)]) });
+    expect(judge).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { partial: false, toolName: "fetch_url", url: "https://shop.test/delivery", text: "Delivery terms" },
+    { browser: true as const, partial: false, toolName: namespacedWorkspaceToolName("sandbox_exec"), url: null, text: "Delivery terms" },
+    { partial: false, toolName: namespacedWorkspaceToolName("sandbox_exec"), url: null, text: "[browser #2] open @ shop.test/delivery" }
+  ])("judges again after a page was opened through $toolName", async (page) => {
+    let opened = [...SOURCES];
+    const judge = vi.fn(async () => judged(JSON.stringify(openGap)));
+    const ctx = context({ subagents: { run: judge }, sources: { opened: async () => opened } });
+    const first = await gapCheckGate.run(DRAFT, ctx);
+    opened = [...opened, page];
+    expect((await gapCheckGate.run(revised, { ...ctx, attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(first) }] })).kind).toBe("send_back");
+    expect(judge).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not send back a mechanical gap again for rewritten claims with no new pages", async () => {
+    const ctx = context({ sources: { opened: async () => SOURCES.filter((source) => !source.url?.endsWith("owner_reviews")) } });
+    const first = await gapCheckGate.run(DRAFT, ctx);
+    expect(first.kind).toBe("send_back");
+    const result = await gapCheckGate.run(revised, { ...ctx, attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(first) }] });
+    expect(result).toMatchObject({ kind: "pass", notes: [expect.stringContaining("owner reviews")] });
+    expect(ctx.subagents.run).not.toHaveBeenCalled();
+  });
+
+  it("keeps an attempted source closed when its reason is supplied without a new page", async () => {
+    const ctx = context();
+    const firstDraft = without("owner_reviews");
+    const first = await gapCheckGate.run(firstDraft, ctx);
+    const result = await gapCheckGate.run({ ...firstDraft,
+      unreachable: [{ sourceClass: "owner_reviews", target: "Owner forum", reason: "Sign-in required." }] },
+    { ...ctx, attempt: 2, earlier: [{ draft: firstDraft, message: messageOf(first) }] });
+    expect(result).toMatchObject({ kind: "pass", notes: [expect.stringContaining("Owner forum — Sign-in required.")] });
+    expect(result.notes?.join()).not.toContain("Missing evidence");
+    expect(ctx.subagents.run).not.toHaveBeenCalled();
+  });
+
+  it("tracks page progress when a clean gap check is followed by another gate's send-back", async () => {
+    const ctx = context();
+    expect((await gapCheckGate.run(DRAFT, ctx)).kind).toBe("pass");
+    expect((await gapCheckGate.run(revised, { ...ctx, attempt: 2, earlier: [{ draft: DRAFT, message: "Correct the unsupported claim." }] })).kind).toBe("pass");
+    expect(ctx.subagents.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks the first draft of a different plan independently", async () => {
+    const judge = vi.fn(async () => judged(JSON.stringify(openGap)));
+    const first = context({ subagents: { run: judge } });
+    await gapCheckGate.run(DRAFT, first);
+    const other = context({ subagents: { run: judge } });
+    expect((await gapCheckGate.run(DRAFT, other)).kind).toBe("send_back");
+    expect(judge).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["en", "ru"])("asks for the exact next steps and preservation of findings in the plan's language (%s)", async (language) => {
+    const ctx = context({ plan: { ...structuredClone(PLAN), goal: language === "ru" ? "Выбрать матрас." : PLAN.goal },
+      subagents: { run: async () => judged(JSON.stringify(openGap)) } });
+    const result = await gapCheckGate.run(DRAFT, ctx);
+    expect(messageOf(result)).toContain(next);
+    expect(messageOf(result)).toContain(language === "ru" ? "ровно для следующих шагов" : "exactly these next steps");
+    expect(messageOf(result)).toContain(language === "ru" ? "Сохраните все находки" : "Keep every finding that still holds");
+    expect(messageOf(result)).toContain(language === "ru" ? "Никогда не удаляйте находки и не сокращайте отчёт" : "Never remove findings or shorten the report");
+    expect(messageOf(result)).toContain(language === "ru" ? "укажите ограничение в отчёте и передайте его" : "state the limit in the report and submit it");
+  });
+
+  it("passes irreducible weaknesses as limits and instructs the judge with concrete examples", async () => {
+    const limits = ["Tests concern other models, so they cannot show ten-year life for this mattress.",
+      "No independent evidence for this exact model was found after searching."];
+    const ctx = context({ subagents: { run: vi.fn(async () => judged(JSON.stringify({ gaps: [], limits }))) } });
+    const result = await gapCheckGate.run(DRAFT, ctx);
+    expect(result.kind).toBe("pass");
+    expect(result.notes).toHaveLength(1);
+    for (const limit of limits) expect(result.notes?.[0]).toContain(limit);
+    const instructions = vi.mocked(ctx.subagents.run).mock.calls[0]![0].instructions;
+    expect(instructions).toContain("no independent evidence for the exact model is a limit, not a gap");
+    expect(instructions).toContain("two shops list different warranty terms");
+    expect(instructions).toContain("ten-year lifespan");
+    expect(instructions).toContain("unreachable are closed with a reason");
+  });
+
+  it.each(["# Report", "# Отчёт"])("bounds reader-facing limits to one short note in %s", async (report) => {
+    const text = "primary_official independent_tests owner_reviews action_channel класс источников ";
+    const limits = Array.from({ length: 12 }, (_, index) => `${index}. ${text.repeat(10)}`);
+    const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [], limits })) } });
+    const result = await gapCheckGate.run({ ...DRAFT, report }, ctx);
+    expect(result.kind).toBe("pass");
+    expect(result.notes).toHaveLength(1);
+    const note = result.notes![0]!;
+    expect(note).toContain(report === "# Отчёт" ? "Ограничения, отмеченные проверкой:" : "Limits the check noted:");
+    expect(note.split("\n").length).toBeLessThanOrEqual(3);
+    expect(note.length).toBeLessThanOrEqual(RESEARCH_LIMITS.reasonCharacters);
+    expect(note).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel|класс источников/u);
+  });
+
+  it("maps identifiers that leak into a judge's issue before adding a report note", async () => {
+    const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN,
+      gaps: [gap("action_channel conflicts with primary_official; класс источников owner_reviews.")] })) } });
+    const result = await gapCheckGate.run({ ...DRAFT, report: "# Отчёт" }, ctx);
+    expect(result.kind).toBe("send_back");
+    if (result.kind !== "send_back") throw new Error("Expected send-back");
+    expect(result.unresolvedNote).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel|класс источников/u);
+    expect(result.unresolvedNote).toContain("варианты и условия покупки");
+  });
+
+  it("groups unreachable sources under one bounded heading with a bullet for every source", async () => {
+    const unreachable = Array.from({ length: RESEARCH_LIMITS.unreachable }, (_, index) => ({ sourceClass: null,
+      target: `${index} owner_reviews ` + "t".repeat(450), reason: "action_channel " + "r".repeat(950) }));
+    const result = await gapCheckGate.run({ ...DRAFT, unreachable }, context());
+    expect(result.notes).toHaveLength(1);
+    const note = result.notes![0]!;
+    expect(note).toContain("Sources that could not be reached:");
+    expect(note.split("\n").filter((part) => part.startsWith("- "))).toHaveLength(RESEARCH_LIMITS.unreachable);
+    expect(note.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+    expect(note).not.toMatch(/owner_reviews|action_channel/u);
   });
 });
 
@@ -359,7 +526,7 @@ describe("bounded messages", () => {
     const result = await gapCheckGate.run({ ...DRAFT, findings: [] }, context({ plan: largePlan }));
     expect(messageOf(result).length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
     for (let index = 0; index < RESEARCH_LIMITS.questions; index += 1) expect(messageOf(result)).toContain(`${index}:qq`);
-    for (const sourceClass of RESEARCH_SOURCE_CLASSES) expect(messageOf(result)).toContain(sourceClass);
+    for (const sourceClass of RESEARCH_SOURCE_CLASSES) expect(messageOf(result)).toContain(LABELS[sourceClass]);
   });
 
   it("bounds the judge's complete JSON brief with explicit shortening and omissions", async () => {
@@ -390,7 +557,7 @@ describe("bounded messages", () => {
   it("rejects a judgment exceeding the total message bound", async () => {
     const issues = Array.from({ length: RESEARCH_LIMITS.questions }, (_, index) => `${index}:` + "x".repeat(RESEARCH_LIMITS.questionCharacters - 3));
     // The decoder's total bound is independent of the individual field bounds.
-    const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ open_questions: issues, weak_answers: issues, conflicts: issues })) } });
+    const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ gaps: issues.map((issue) => gap(issue, issue)), limits: issues })) } });
     expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished", DRAFT.report)] });
   });
 });
@@ -557,6 +724,30 @@ const pageItems = (sourceClass: ResearchSourceClass): TranscriptItem[] => {
 };
 
 describe("gap check through the real engine", () => {
+  it("ends after a shrinking rewrite with no new pages and lets the verifier check that draft", async () => {
+    const first = { ...DRAFT, findings: Array.from({ length: 15 }, (_, index) => ({ ...FINDINGS[index % 4]!, claim: `Finding ${index}.` })) };
+    const rewritten = { ...DRAFT, report: "The recommendation with delivery still uncertain.",
+      findings: FINDINGS.slice(0, 3).map((finding) => ({ ...finding, claim: `Rewritten: ${finding.claim}` })) };
+    const issue = "Delivery to the buyer's city is still unknown.";
+    const main = scripted([
+      { calls: [start()] }, { calls: [submit("draft-1", first)] },
+      { text: JSON.stringify({ ...CLEAN, gaps: [gap(issue, "Open the selected shop's delivery terms for Moscow.")] }) },
+      { calls: [submit("draft-2", rewritten)] }
+    ]);
+    const verifier = vi.fn(async () => ({ kind: "pass" as const }));
+    const memory = engineOf({ gates: [gapCheckGate, { name: "verifier", run: verifier }] },
+      { threadEffects: [{ items: RESEARCH_SOURCE_CLASSES.flatMap(pageItems), threadId: "researchers" }] });
+    await run(main.adapter, memory).text();
+    expect(resultsOf(main.requests[3], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("sent_back");
+    expect(main.requests).toHaveLength(4);
+    expect(memory.threads.admitForeground).toHaveBeenCalledTimes(1);
+    expect(verifier).toHaveBeenCalledTimes(1);
+    expect(verifier).toHaveBeenCalledWith(expect.objectContaining({ report: rewritten.report, findings: rewritten.findings }), expect.anything());
+    expect(memory.published()).toContain(rewritten.report);
+    expect(memory.published()).toContain(issue);
+    expect(memory.published()).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel/u);
+  });
+
   it("forces a draft with a missing class back to researchers, then publishes the completed round", async () => {
     const first = without("owner_reviews");
     const second = { ...DRAFT, report: "The final report includes owner reviews." };
@@ -571,7 +762,7 @@ describe("gap check through the real engine", () => {
     ]);
     const memory = engineOf({ gates: [gapCheckGate] }, { threadEffects: [{ items: opened, threadId: "researchers" }] });
     const seen = await events(run(main.adapter, memory));
-    expect(resultsOf(main.requests[2], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("owner_reviews");
+    expect(resultsOf(main.requests[2], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("owner reviews");
     expect(resultsOf(main.requests[2], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("sent_back");
     expect(main.requests).toHaveLength(6);
     expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "owners" }));
@@ -591,7 +782,7 @@ describe("gap check through the real engine", () => {
     const memory = engineOf({ gates: [gapCheckGate] }, { now: () => clock });
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(2);
-    expect(memory.published()).toContain("owner_reviews");
+    expect(memory.published()).toContain("owner reviews");
     expect(memory.published()).toContain("Maker site");
     expect(memory.published()).toContain("The site is unavailable.");
     expect(memory.runs.complete).toHaveBeenCalledTimes(1);
@@ -618,7 +809,7 @@ describe("gap check through the real engine", () => {
     expect(resultsOf(main.requests[2], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("sent_back");
     // Both notes survive when a later response ends the run without
     // checking another draft.
-    expect({ namedGap: memory.published()?.includes("owner_reviews"), unreachableReason: memory.published()?.includes(reason) })
+    expect({ namedGap: memory.published()?.includes("owner reviews"), unreachableReason: memory.published()?.includes(reason) })
       .toEqual({ namedGap: true, unreachableReason: true });
   });
 
@@ -627,7 +818,7 @@ describe("gap check through the real engine", () => {
     const memory = engineOf({ gates: [gapCheckGate] });
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(4);
-    expect(JSON.stringify(main.requests[3]!.history)).toContain("findings: claim, link, verbatim quote and source class");
+    expect(JSON.stringify(main.requests[3]!.history)).toContain("findings: claim, link, verbatim quote and source");
     // run.ts keeps the standing draft after this one correction opportunity.
     expect(memory.published()).toContain("Second report.");
     expect(memory.published()).toContain(researchNote("unresolved", "Second report."));
