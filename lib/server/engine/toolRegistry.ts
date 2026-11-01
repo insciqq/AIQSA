@@ -164,8 +164,8 @@ export type ToolRegistry = Readonly<{
    */
   images?: TranscriptImages;
   /**
-   * The run's page-reader session: its cap and read cache count every page read of the answer, so a sub-agent's
-   * registry reuses its parent's (`ToolRegistryInput.fetchUrlSession`).
+   * The run's page-reader session: its link authority and read cache are the answer's, so a sub-agent's registry
+   * reuses its parent's (`ToolRegistryInput.fetchUrlSession`).
    */
   fetchUrlSession?: FetchUrlSession;
   /**
@@ -249,10 +249,12 @@ export type ToolRegistryInput = Readonly<{
   /** Where the run's `browser_handoff` goes; absent where the run has no Workspace browser. */
   browserHandoff?: BrowserHandoffMode;
   chatId: string;
-  /** Text the user sent into this running answer (`fetch_url` link authority). */
+  /** Text the user sent into this running answer that this agent received (`fetch_url` link authority). */
   followupTexts(): readonly string[];
   /** The answer's page-reader session to share (a sub-agent's registry); absent, the registry starts the run's own. */
   fetchUrlSession?: FetchUrlSession;
+  /** Earlier main-agent runs whose Search evidence also authorizes this answer's page reads; absent, none. */
+  fetchUrlEarlierRunIds?: readonly string[];
   /** The run's accepted MCP runtimes, by server; discovery adds to it. */
   mcpBindings: Map<string, EngineMcpBinding>;
   /**
@@ -541,13 +543,13 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const repository = input.services.repository;
     const session = input.fetchUrlSession ?? createFetchUrlSession({
       browserStep: () => browserStep,
-      followupTexts: input.followupTexts,
       plan: fetchPlan,
       scheduled: fetchPlan.taskUrlDigests !== undefined,
       searchAvailable: request.searchPlan.options.length > 0,
       ...(input.services.fetchPage ? { fetchPage: input.services.fetchPage } : {}),
       ...(input.services.extractPage ? { extractPage: input.services.extractPage } : {}),
-      ...(repository.loadRunSearchSourceUrls ? { loadSearchUrls: () => repository.loadRunSearchSourceUrls!(owner) } : {}),
+      ...(repository.loadRunSearchSourceUrls ? { loadSearchUrls: () => repository.loadRunSearchSourceUrls!({ ...owner,
+        earlierRunIds: input.fetchUrlEarlierRunIds ?? [] }) } : {}),
       ...(repository.loadRunFetchUrlCalls ? { loadCalls: () => repository.loadRunFetchUrlCalls!(owner) } : {})
     });
     fetchUrlSession = session;
@@ -555,8 +557,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       if (definition.name !== FETCH_URL_TOOL_NAME) continue;
       add({ activity: named(definition, "Web", (call) => fetchUrlActivityFacts(call.name, call.arguments)), definition,
         effects: "none", observationSource: "workspace",
-        execute: (execution) => session.execute(execution.call, { persistedToolCallId: execution.persistedToolCallId,
-          signal: execution.signal }) });
+        execute: (execution) => session.execute(execution.call, { followupTexts: input.followupTexts, signal: execution.signal }) });
     }
   }
 

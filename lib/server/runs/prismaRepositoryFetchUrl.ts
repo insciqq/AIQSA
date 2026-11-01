@@ -1,17 +1,20 @@
 import type { PrismaClient } from "@prisma/client";
-import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
+import { turnsOfMainRuns } from "../subagents/nesting";
+import { FETCH_URL_LIMITS, FETCH_URL_TOOL_NAME, hostedSearchEvidenceUrls } from "../tools/fetchUrlPlan";
 import type { RunRepository } from "./runRepositoryContract";
 
 /**
- * The reads `fetch_url` needs beyond its frozen authority: the run's own
- * Search evidence, its earlier page-reader calls and which branch messages
- * are scheduled prompts. Each read is scoped to the run's owner or the chat
- * the caller already authorized, returns no content beyond what the caller
- * decides with, and is bounded.
+ * The reads `fetch_url` needs beyond its frozen authority: the Search evidence
+ * of the answer's agents and the earlier answers on its branch, the pages the
+ * run read and which branch messages are scheduled prompts. Each read is scoped
+ * to the run's owner or the chat the caller already authorized, returns no
+ * content beyond what the caller decides with, and is bounded.
  */
-const SEARCH_RUN_LIMIT = 200;
-const SEARCH_EVENT_LIMIT = 500;
-const SOURCE_URL_LIMIT = 2_000;
+/** Runs whose evidence counts, sub-agents' included. */
+const AUTHORITY_RUN_LIMIT = 200;
+const SEARCH_RUN_LIMIT = 500;
+const SEARCH_EVENT_LIMIT = 1_000;
+const SOURCE_URL_LIMIT = 10_000;
 const PROMPT_MESSAGE_LIMIT = 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -29,43 +32,55 @@ type FetchUrlOperations = Required<Pick<RunRepository,
 
 export function createPrismaFetchUrlOperations(prisma: PrismaClient): FetchUrlOperations {
   return {
-    async loadRunSearchSourceUrls({ runId, userId }) {
-      const run = await prisma.modelRun.findFirst({ select: { id: true }, where: { id: runId, userId } });
+    async loadRunSearchSourceUrls({ earlierRunIds, runId, userId }) {
+      const run = await prisma.modelRun.findFirst({ select: { chatId: true }, where: { id: runId, userId } });
       if (!run) return [];
+      // The answer and the earlier answers its caller names, each with its background sub-agents and their children (a
+      // foreground sub-agent's Search is its host run's). Only this owner's runs of this chat, whatever the caller names.
+      const mainRunIds = [...new Set([runId, ...earlierRunIds.slice(-AUTHORITY_RUN_LIMIT)])];
+      const agentRuns = await prisma.modelRun.findMany({
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }], select: { id: true }, take: AUTHORITY_RUN_LIMIT,
+        where: { chatId: run.chatId, userId, OR: [{ id: { in: mainRunIds } },
+          { subagentTurn: { is: { mode: "background", ...turnsOfMainRuns(mainRunIds) } } }] }
+      });
+      const runIds = [...new Set([runId, ...agentRuns.map((row) => row.id)])];
+      // Newest first at every bound, so what a bound hides is old and a fresh search always authorizes its results.
       const [searchRuns, events] = await Promise.all([
-        // Query-only Search routes: the sources of each executed engine.
+        // Query-only Search routes: the sources of each executed engine. Hosted routes: a sub-agent's evidence rows.
         prisma.searchRun.findMany({
-          orderBy: { createdAt: "asc" }, select: { artifacts: true }, take: SEARCH_RUN_LIMIT, where: { modelRunId: runId }
+          orderBy: { createdAt: "desc" }, select: { artifacts: true, createdAt: true }, take: SEARCH_RUN_LIMIT,
+          where: { modelRunId: { in: runIds } }
         }),
-        // Hosted Search routes: the answer model's own search and citation output.
+        // Hosted Search routes: the main agent's own search and citation output.
         prisma.modelRunEvent.findMany({
-          orderBy: { sequence: "asc" }, select: { payload: true }, take: SEARCH_EVENT_LIMIT,
-          where: { eventType: "artifact", modelRunId: runId, OR: [
+          orderBy: [{ createdAt: "desc" }, { sequence: "asc" }], select: { createdAt: true, payload: true }, take: SEARCH_EVENT_LIMIT,
+          where: { eventType: "artifact", modelRunId: { in: runIds }, OR: [
             { payload: { equals: "search", path: ["artifactType"] } },
             { payload: { equals: "citation", path: ["artifactType"] } }
           ] }
         })
       ]);
-      const urls: string[] = [];
-      for (const row of searchRuns) urls.push(...sourceUrls(isRecord(row.artifacts) ? row.artifacts.sources : null));
+      const found: { at: Date; urls: string[] }[] = searchRuns.map((row) => ({ at: row.createdAt,
+        urls: [...sourceUrls(isRecord(row.artifacts) ? row.artifacts.sources : null), ...hostedSearchEvidenceUrls(row.artifacts)] }));
       for (const row of events) {
         const inner = isRecord(row.payload) && isRecord(row.payload.payload) ? row.payload.payload : null;
         if (!inner) continue;
-        if (typeof inner.url === "string") urls.push(inner.url);
-        if (isRecord(inner.action)) urls.push(...sourceUrls(inner.action.sources));
+        found.push({ at: row.createdAt, urls: [...(typeof inner.url === "string" ? [inner.url] : []),
+          ...(isRecord(inner.action) ? sourceUrls(inner.action.sources) : [])] });
       }
-      return urls.slice(0, SOURCE_URL_LIMIT);
+      return found.sort((a, b) => b.at.getTime() - a.at.getTime()).flatMap((entry) => entry.urls).slice(0, SOURCE_URL_LIMIT);
     },
 
     async loadRunFetchUrlCalls({ runId, userId }) {
-      // Every call of the run, which its accepted tool-call budget bounds. A
-      // smaller bound would hide later sent calls: recovery would then read a
-      // settled page again and rebuild the request cap too low.
-      return prisma.modelRunToolCall.findMany({
-        orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-        select: { id: true, result: true, state: true },
-        where: { modelRun: { userId }, modelRunId: runId, toolName: FETCH_URL_TOOL_NAME }
+      // Only the reads: a bound below the run's calls just means an older page is read again.
+      const rows = await prisma.modelRunToolCall.findMany({
+        orderBy: [{ roundIndex: "desc" }, { ordinal: "desc" }],
+        select: { result: true },
+        take: FETCH_URL_LIMITS.cachedPages,
+        where: { modelRun: { userId }, modelRunId: runId, result: { equals: "read", path: ["rawPreview", "fetchUrl", "outcome"] },
+          toolName: FETCH_URL_TOOL_NAME }
       });
+      return rows.reverse();
     },
 
     async loadScheduledPromptMessageIds({ chatId, messageIds }) {
