@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import type { TranscriptItem } from "../engine/transcript";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import type { ResearchOpenedSource } from "./gates";
-import { checkQuotes, normalizeQuotedText } from "./quoteCheck";
+import { checkQuotes, normalizeQuotedText, QUOTE_EXCERPT_LIMITS } from "./quoteCheck";
 import { createResearchSources, researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 
 const LINK = "https://lab.example/x1";
 const page = (text: string, url: string | null = LINK, extra: Partial<ResearchOpenedSource> = {}): ResearchOpenedSource =>
   ({ partial: false, text, toolName: "fetch_url", url, ...extra });
 const finding = (quote: string, url = LINK) => ({ quote, url });
-const one = (quote: string, opened: readonly ResearchOpenedSource[] | null, url?: string) => checkQuotes([finding(quote, url)], opened)[0];
+/** The verdict alone; what `found` carries is tested below. */
+const one = (quote: string, opened: readonly ResearchOpenedSource[] | null, url?: string) => {
+  const check = checkQuotes([finding(quote, url)], opened)[0]!;
+  return check.status === "found" ? { status: check.status } : check;
+};
 
 const OTHER_PAGE = "https://other.example/a";
 const NEVER_OPENED = "https://never.example/x";
@@ -103,6 +107,32 @@ describe("the quote check", () => {
     expect(one("held up", many, NEVER_OPENED)).toEqual({ reason: "sources_over_limit", status: "not_checked" });
   });
 
+  it("returns the passage around a quote it found, bounded on each side, one continuous text", () => {
+    const text = `${"a".repeat(1_000)} the quoted words ${"b".repeat(1_000)}`;
+    const check = checkQuotes([finding("the quoted words")], [page(text)])[0]!;
+    if (check.status !== "found") throw new Error("expected found");
+    expect(check.excerpt.quoted).toBe("the quoted words");
+    expect(check.excerpt.before.length).toBe(QUOTE_EXCERPT_LIMITS.sideCharacters);
+    expect(check.excerpt.after.length).toBe(QUOTE_EXCERPT_LIMITS.sideCharacters);
+    expect(text).toContain(`${check.excerpt.before}${check.excerpt.quoted}${check.excerpt.after}`);
+  });
+
+  it("keeps a long quote's excerpt bounded and continuous, and spans an ellipsis's parts", () => {
+    const long = "x".repeat(QUOTE_EXCERPT_LIMITS.quotedCharacters + 100);
+    const check = checkQuotes([finding(long)], [page(`before ${long} after`)])[0]!;
+    if (check.status !== "found") throw new Error("expected found");
+    expect(check.excerpt.quoted.length).toBe(QUOTE_EXCERPT_LIMITS.quotedCharacters);
+    expect(check.excerpt.after).toBe(`${"x".repeat(100)} after`);
+    const parts = checkQuotes([finding("first ... third")], [page("first second third fourth")])[0]!;
+    expect(parts).toMatchObject({ excerpt: { after: " fourth", before: "", quoted: "first second third" } });
+  });
+
+  it("takes the excerpt from the cited page when several hold the quote", () => {
+    const opened = [page("elsewhere: the words", OTHER_PAGE), page("cited: the words")];
+    expect(checkQuotes([finding("the words")], opened)[0]).toMatchObject({ excerpt: { before: "cited: " } });
+    expect(checkQuotes([finding("the words", NEVER_OPENED)], opened)[0]).toMatchObject({ excerpt: { before: "elsewhere: " } });
+  });
+
   it("normalizes both sides alike", () => {
     expect(normalizeQuotedText(" A\u00a0\u2014\u00a0B\\n«C» ")).toBe("A - B \"C\"");
     expect(normalizeQuotedText("\\\\\"x\\\\\"")).toBe("\"x\"");
@@ -126,7 +156,7 @@ describe("what the sources read of a run", () => {
       { callId: "b", id: "b2", kind: "tool_result", name: "fetch_url", outcome: "complete", output: "short and whole" }
     ]);
     expect(opened.map((source) => source.partial)).toEqual([true, false]);
-    expect(checkQuotes([finding("held up after 10 years")], opened)).toEqual([{ reason: "partial_source", status: "not_checked" }]);
+    expect(one("held up after 10 years", opened)).toEqual({ reason: "partial_source", status: "not_checked" });
   });
 
   it("marks what a browser command printed, step line or not, and nothing else", async () => {
