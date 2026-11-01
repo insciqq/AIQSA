@@ -34,6 +34,7 @@ import {
 import { MemorySourcesV2 } from "./MemorySourcesV2";
 import { presentMemorySourcesV2 } from "./memorySourcePresentation";
 import { McpCallDetailsV2 } from "./McpCallDetailsV2";
+import { ResearchPlanCardV2, researchPlanCardRowV2 } from "./ResearchPlanCardV2";
 
 type ToolCallV2 = ThreadToolActivity["calls"][number];
 
@@ -317,6 +318,19 @@ export type AnswerProcessV2Props = Readonly<{
   workspaceActivity?: ThreadWorkspaceActivity | null;
 }>;
 
+/** The answer's process, and a research plan that does not stand yet, which shows as its card instead of the fold's plan. */
+export function AnswerProcessV2(props: AnswerProcessV2Props) {
+  const activity = props.workspaceActivity ?? null;
+  const live = Boolean(props.liveLabel);
+  const row = researchPlanCardRowV2(activity, live);
+  return (
+    <>
+      <AnswerProcessFoldV2 {...props} workspaceActivity={row && activity ? { ...activity, entries: activity.entries.filter((entry) => entry !== row) } : activity} />
+      <ResearchPlanCardV2 activity={activity} live={live} />
+    </>
+  );
+}
+
 /**
  * The one disclosure above an answer. While the run works it is the live
  * status ("Thinking…", "Searching the web…") in the same 28px slot; settled
@@ -325,7 +339,7 @@ export type AnswerProcessV2Props = Readonly<{
  * PDF routes and context counts stay in the fold and speak on the line only
  * when there is no work to name. A reached tool limit stays visible outside it.
  */
-export function AnswerProcessV2({
+function AnswerProcessFoldV2({
   connectionLost = false,
   contextCompaction,
   contextCompactionFailures = [],
