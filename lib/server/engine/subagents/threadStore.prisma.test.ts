@@ -265,6 +265,27 @@ describe("sub-agent threads on PostgreSQL", () => {
         .resolves.toEqual({ code: SUBAGENT_ERROR_CODES.notOwnChild, kind: "refused" });
     });
 
+    it("keeps a name to one thread on the branch, when the main agent started it after the sub-agent's host listed that branch", async () => {
+      const { chatId, child, parentAgent, run, userId } = await nested();
+      const later = await turn(userId, chatId, { parentMessageId: run.answerId });
+      await prisma.chat.update({ data: { activeLeafMessageId: later.answerId }, where: { id: chatId } });
+      const taken = await prisma.subagentThread.create({ data: { anchorRunId: later.runId, chatId, name: "shop", userId } });
+      await expect(child("shop")).resolves.toEqual({ code: SUBAGENT_ERROR_CODES.notOwnChild, kind: "refused" });
+      // The background path: the thread comes back as it is, and the admission that runs on it refuses a stranger.
+      await expect(store.ensureThread({ branchRunIds: [run.runId], chatId, definitionId: null, name: "shop", parentRunId: run.runId,
+        parentThreadId: parentAgent.threadId, typeName: null, userId })).resolves.toMatchObject({ id: taken.id, parentThreadId: null });
+      await expect(prisma.subagentThread.count({ where: { chatId, name: "shop" } })).resolves.toBe(1);
+    });
+
+    it("takes a name a sibling branch uses, the user's switch to that branch included", async () => {
+      const { chatId, child, userId } = await nested();
+      const sibling = await turn(userId, chatId);
+      await prisma.chat.update({ data: { activeLeafMessageId: sibling.answerId }, where: { id: chatId } });
+      await prisma.subagentThread.create({ data: { anchorRunId: sibling.runId, chatId, name: "shop", userId } });
+      await expect(child("shop")).resolves.toMatchObject({ continued: false, kind: "admitted" });
+      await expect(prisma.subagentThread.count({ where: { chatId, name: "shop" } })).resolves.toBe(2);
+    });
+
     it("refuses a child of a turn that ended, though the run behind that turn still runs", async () => {
       const { chatId, child, parentAgent, userId } = await nested();
       await store.settle({ chatId, result: endedSubagentCallResult({ approvals: [], binding, files: [], name: "parent", report: "", state: "stopped", steps: [] }),
