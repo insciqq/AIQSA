@@ -1486,8 +1486,8 @@ const pageReadTotal = (reads: PageReads) => Object.values(reads).reduce((total, 
 export type QEvidence = Readonly<{
   main: PageReads;
   reader: PageReads;
-  /** The reader's search calls that returned; the old limit let one agent make 2 on production. */
-  searches: number;
+  /** The reader's search calls that returned, on a client route: the old limit let one agent make 2 on production. A hosted search is no call of ours. */
+  searches: number | null;
   settled: boolean;
   turn: TurnRow | null;
 }>;
@@ -1497,7 +1497,7 @@ export function oracleQ(input: QEvidence): OracleVerdict {
   const failed: string[] = [];
   const reads = pageReadCount(input.reader, "read") + pageReadCount(input.main, "read");
   if (input.turn?.state !== "done") failed.push("reader_did_not_finish");
-  if (input.searches < 3) failed.push("searches_stopped_early");
+  if (input.searches !== null && input.searches < 3) failed.push("searches_stopped_early");
   if (pageReadCount(input.reader, "read") === 0) failed.push("reader_read_nothing");
   if (pageReadCount(input.reader, "fetch_url_not_in_conversation") > 0) failed.push("reader_link_refused");
   if (pageReadCount(input.main, "read") === 0) failed.push("main_read_nothing");
@@ -1506,7 +1506,7 @@ export function oracleQ(input: QEvidence): OracleVerdict {
   if (pageReadCount(input.reader, "fetch_url_limit_reached") + pageReadCount(input.main, "fetch_url_limit_reached") > 0) failed.push("page_limit_still_applies");
   if (!input.settled) failed.push("callbacks_owed");
   return { counts: { mainCalls: pageReadTotal(input.main), mainReads: pageReadCount(input.main, "read"), readerCalls: pageReadTotal(input.reader),
-    readerReads: pageReadCount(input.reader, "read"), searches: input.searches }, failed };
+    readerReads: pageReadCount(input.reader, "read"), ...(input.searches === null ? {} : { searches: input.searches }) }, failed };
 }
 
 /** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
