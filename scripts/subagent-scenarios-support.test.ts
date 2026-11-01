@@ -925,7 +925,7 @@ describe("scenarios S and T", () => {
   it("S names each failure and keeps its URL out of everything but the first message", () => {
     expect(oracleS(good).failed).toEqual([]);
     expect(oracleS({ ...good, deadWentDirect: true, passwordInAnswer: true, terminals: { read: "error" } }).failed).toEqual(["password_in_answer", "dead_proxy_went_direct", "read_error"]);
-    for (const prompt of [SCENARIO_S_PROMPTS.browse(), SCENARIO_S_PROMPTS.read(), SCENARIO_S_PROMPTS.dead(), SCENARIO_S_PROMPTS.off()]) expect(prompt).not.toContain("example-secret");
+    for (const prompt of [SCENARIO_S_PROMPTS.browse(), SCENARIO_S_PROMPTS.exitHint(), SCENARIO_S_PROMPTS.exitNamed(), SCENARIO_S_PROMPTS.read(), SCENARIO_S_PROMPTS.dead(), SCENARIO_S_PROMPTS.off()]) expect(prompt).not.toContain("example-secret");
     expect(SCENARIO_S_PROMPTS.save("http://u:example-secret@example.org:1")).toContain("example-secret");
   });
 
