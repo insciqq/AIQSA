@@ -92,6 +92,12 @@ async function secondsLeft(page: Page): Promise<number> {
   return Number(match![1]) * 60 + Number(match![2]);
 }
 
+/** The line above the card, live and after a reload: plain words, never the tool's name. */
+async function planLineIsPlain(page: Page) {
+  await expect(lastAnswer(page)).toContainText("Finalizing the plan…");
+  await expect(lastAnswer(page)).not.toContainText(/propose|Research:/iu);
+}
+
 async function ordinaryPlanTookOver(page: Page, timeout = 20_000) {
   await expect(card(page)).toHaveCount(0, { timeout });
   await expect(lastActivity(page).locator(":scope > summary")).toContainText(/Plan · \d+ of \d+ complete/u);
@@ -105,6 +111,7 @@ test("the plan is made, keeps its time over a reload, and an edit holds the time
     await capture(page, testInfo, "research-plan-scoping", LIGHT);
 
     await windowOpen(page);
+    await planLineIsPlain(page);
     await expect(card(page)).toContainText("You want the quietest kettle for a home kitchen.");
     await expect(card(page)).toContainText("The budget is open");
     await expect(card(page).getByRole("list").last().getByRole("listitem")).toHaveCount(4);
@@ -117,6 +124,7 @@ test("the plan is made, keeps its time over a reload, and an edit holds the time
     const after = await secondsLeft(page);
     expect(after).toBeLessThan(before);
     expect(after).toBeGreaterThan(0);
+    await planLineIsPlain(page);
     await capture(page, testInfo, "research-plan-window", LIGHT);
 
     await button(page, "Edit").click();
