@@ -442,7 +442,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id) });
         const conversationFor = (mode: "continuation" | "input") => buildRunConversation({ continuationTurns,
-          current: { messageId: input.created.userMessageId, mode }, messages: conversationMessages, nativeAnswers });
+          current: { messageId: input.created.userMessageId, mode }, messages: conversationMessages, nativeAnswers,
+          workspace: Boolean(workspace), attachments: [...input.prepared.providerRequest.attachments,
+            ...(normalizedRequest.fileReferences ?? []).map((file) => ({ id: file.attachmentId, fileName: file.fileName, kind: file.kind })),
+            ...(normalizedRequest.imageReferences ?? []).map((file) => ({ id: file.attachmentId, fileName: file.fileName, kind: "image" }))] });
         let conversation = conversationFor(input.approvalContinuation ? "continuation" : "input");
         // An approval continuation sends the approved call itself, then continues the stopped turn with its result.
         let approvedCall: ModelToolCall | null = null;
