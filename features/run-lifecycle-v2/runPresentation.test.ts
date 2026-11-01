@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { FETCH_URL_PROXY_FAILURE_CODES } from "@/lib/contracts/fetchUrlActivity";
 import type { RunEventView } from "@/lib/contracts/runs";
 import { RUN_INTERRUPTED_FAILURE, RUN_PREPARATION_FAILURE_MESSAGE, RUN_TIME_LIMIT_FAILURE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import { CHAT_PDF_READER_OUTPUT_LIMIT } from "@/lib/contracts/chatPdfPreparation";
@@ -976,6 +977,25 @@ describe("answer process label", () => {
     const unsafe: RunEventView = { type: "artifact", data: { artifactType: "tool_call", payload: { name: "fetch_url",
       origin: "web_fetch", round: 1, status: "requested", fetchTarget: "https://news.example/today" } } };
     expect(presentToolActivityV2([unsafe])?.calls[0]).not.toHaveProperty("fetchTarget");
+  });
+
+  it("retains proxy facts through live settlement and words the proxy failure", () => {
+    const event = (payload: Record<string, unknown>): RunEventView => ({ type: "artifact", data: { artifactType: "tool_call",
+      payload: { name: "fetch_url", origin: "web_fetch", round: 1, ordinal: 0, fetchTarget: "news.example/page", ...payload } } });
+    const activity = presentToolActivityV2([event({ status: "requested" }), event({ status: "error", durationMs: 30,
+      fetchOutcome: "fetch_network_error", fetchProxyName: "Personal route", fetchProxyCode: "proxy_auth_failed" })]);
+    expect(activity?.calls[0]).toMatchObject({ status: "error", fetchProxyName: "Personal route", fetchProxyCode: "proxy_auth_failed" });
+    expect(describeToolCallV2(activity!.calls[0]!, "failed"))
+      .toBe("Couldn't read news.example/page via proxy “Personal route”: proxy sign-in failed");
+    expect(describeToolCallV2({ ...activity!.calls[0]!, fetchOutcome: "read", fetchProxyCode: undefined }, "settled"))
+      .toBe("Read news.example/page via proxy “Personal route”");
+  });
+
+  it.each(FETCH_URL_PROXY_FAILURE_CODES)("words proxy failure %s distinctly from an unreachable site", (fetchProxyCode) => {
+    const text = describeToolCallV2({ origin: "web_fetch", fetchProxyCode, fetchProxyName: "Personal route", fetchOutcome: "fetch_network_error" }, "failed");
+    expect(text).toContain("via proxy “Personal route”:");
+    expect(text).not.toContain("the site is unreachable");
+    expect(text).not.toContain(fetchProxyCode);
   });
 
   it("names a link read as a PDF and each PDF failure", () => {

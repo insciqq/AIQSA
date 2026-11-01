@@ -1,3 +1,4 @@
+import { decodeFetchUrlActivity, type FetchUrlActivityFacts } from "../../contracts/fetchUrlActivity";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadToolActivityOrigin } from "../../contracts/chats";
 import type { RunProviderWait } from "../../contracts/runs";
@@ -12,7 +13,7 @@ import type { ModelToolCall } from "../tools/types";
  */
 export function liveToolCallStatus(
   call: ModelToolCall,
-  activity: Readonly<{
+  activity: FetchUrlActivityFacts & Readonly<{
     origin?: ThreadToolActivityOrigin;
     round?: number;
     serverName?: string;
@@ -20,8 +21,6 @@ export function liveToolCallStatus(
     skillId?: string;
     skillName?: string;
     skillPath?: string;
-    /** A page read's "host/path"; carried only with the `web_fetch` origin. */
-    fetchTarget?: string;
   }> = {},
   progress: Readonly<{
     ordinal?: number;
@@ -44,7 +43,7 @@ export function liveToolCallStatus(
           ...(activity.skillName ? { skillName: activity.skillName } : {}),
           ...(activity.skillPath ? { skillPath: activity.skillPath } : {})
         } : {}),
-        ...(activity.origin === "web_fetch" && activity.fetchTarget ? { fetchTarget: activity.fetchTarget } : {}),
+        ...decodeFetchUrlActivity(activity),
         ...(Number.isSafeInteger(ordinal) && Number(ordinal) >= 0 ? { ordinal } : {}),
         ...(settled
           ? { durationMs: Number.isFinite(settled.durationMs) ? Math.max(0, Math.round(settled.durationMs)) : 0,

@@ -1,3 +1,4 @@
+import { PROXY_BLOCKED_HTTP_STATUSES } from "../../contracts/proxies";
 import type { FetchUrlActivityOutcome, FetchUrlRefusalScope } from "../../contracts/fetchUrlActivity";
 import { isDocumentParserError } from "../parsing/errors";
 import { isPdfExtractionError } from "../uploads/pdf";
@@ -12,6 +13,7 @@ import { extractFetchedPage, type FetchedPageInput } from "../webFetch/pageText"
 import { extractFetchedPdf, FETCHED_PDF_LIMITS, fetchedPdfMaxBytes } from "../webFetch/pdfText";
 import {
   fetchWebPage,
+  fetchThroughProxy,
   WEB_FETCH_LIMITS,
   WebFetchError,
   webFetchUrlRefusal,
@@ -22,6 +24,8 @@ import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl } from "../webFetc
 import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
 import { BROWSER_HANDOFF_TOOL_NAME } from "./browserHandoff";
 import { FETCH_URL_LIMITS, persistedFetchUrlFacts, type FetchUrlPlan } from "./fetchUrlPlan";
+import { createFetchUrlProxySession, fetchUrlCacheKey, fetchUrlProxyChoice, fetchUrlProxyIdentity, isFetchUrlProxyFailure,
+  type FetchUrlProxyDeps, type FetchUrlProxyFailure, type FetchUrlProxyIdentity } from "./fetchUrlProxies";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
 
 export {
@@ -43,7 +47,7 @@ export {
  * delivered follow-ups, or a source/citation URL Search produced for any agent
  * of this answer or an earlier answer on its branch. Model text, fetched pages,
  * MCP, Knowledge and attachments grant nothing. Pages enter context as untrusted
- * tool data. The same URL returns its earlier result. A PDF body is read only by
+ * tool data. The same URL and route return their earlier result. A PDF body is read only by
  * the isolated PDF extractor, under its own byte bound.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,7 +55,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** What this reader settles a call with. `fetch_url_limit_reached` stays only in results stored before the limit went. */
-type FailureCode = Exclude<FetchUrlActivityOutcome, "fetch_url_limit_reached" | "read">;
+type FailureCode = Exclude<FetchUrlActivityOutcome, "fetch_url_limit_reached" | "read"> | FetchUrlProxyFailure;
 
 /**
  * What the model is told for a link its run may not read, by where the user
@@ -89,6 +93,7 @@ export type FetchUrlBrowserStep = "nobody" | "user";
 
 type FailureContext = Readonly<{
   browserStep?: FetchUrlBrowserStep | null;
+  proxiesToTry?: readonly string[];
   pdf: boolean; pdfMaxBytes: number; scope?: FetchUrlRefusalScope; httpStatus?: number; searchAvailable?: boolean;
 }>;
 
@@ -110,6 +115,7 @@ function refusedPageNextStep(step: FetchUrlBrowserStep): string {
 /** What the model is told for each refusal or failure. */
 function failureMessage(code: FailureCode, context: FailureContext): string {
   const { httpStatus, scope } = context;
+  if (isFetchUrlProxyFailure(code)) return `The proxy could not read this page (${code}). No direct request was made.`;
   switch (code) {
     case "fetch_url_not_in_conversation": return notInConversationMessage(scope, context.searchAvailable === true);
     case "fetch_url_invalid": return "This is not a valid http(s) web address.";
@@ -127,7 +133,9 @@ function failureMessage(code: FailureCode, context: FailureContext): string {
       return "This link is not a web page, text or PDF (for example an image or an archive). Ask the user to upload the file instead.";
     case "fetch_http_status":
       return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.` +
-        (context.browserStep && (httpStatus === 401 || httpStatus === 403) ? refusedPageNextStep(context.browserStep) : "");
+        (PROXY_BLOCKED_HTTP_STATUSES.some((status) => status === httpStatus)
+          ? (context.proxiesToTry?.length ? ` Try fetch_url with proxy set to one of: ${context.proxiesToTry.map((name) => JSON.stringify(name)).join(", ")}.` : "") +
+            (context.browserStep ? refusedPageNextStep(context.browserStep) : "") : "");
     case "fetch_network_error": return "The site could not be reached.";
     case "fetch_no_readable_text":
       return context.pdf
@@ -148,6 +156,7 @@ function failureMessage(code: FailureCode, context: FailureContext): string {
 }
 
 type ReadValue = Readonly<{
+  proxy?: FetchUrlProxyIdentity;
   contentType: FetchedContentKind;
   fetchedAt: string;
   finalUrl: string;
@@ -159,9 +168,9 @@ type ReadValue = Readonly<{
 
 type Outcome =
   | Readonly<{ kind: "read"; value: ReadValue }>
-  | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true }>;
+  | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true; proxy?: FetchUrlProxyIdentity }>;
 
-type FailedOptions = Readonly<{ browserStep?: FetchUrlBrowserStep | null; pdfMaxBytes: number;
+type FailedOptions = Readonly<{ proxiesToTry?: readonly string[]; browserStep?: FetchUrlBrowserStep | null; pdfMaxBytes: number;
   refusalScope?: FetchUrlRefusalScope; searchAvailable?: boolean }>;
 
 function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outcome, { kind: "failed" }>, url: string | null,
@@ -172,14 +181,17 @@ function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outco
     callId: call.id,
     content: [{ type: "json", value: {
       error: outcome.code,
+      ...(outcome.proxy ? { proxy: outcome.proxy.name } : {}),
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
-      message: failureMessage(outcome.code, { browserStep: options.browserStep, httpStatus: outcome.httpStatus, pdf,
+      message: failureMessage(outcome.code, { proxiesToTry: options.proxiesToTry, browserStep: options.browserStep, httpStatus: outcome.httpStatus, pdf,
         pdfMaxBytes: options.pdfMaxBytes, scope,
         searchAvailable: options.searchAvailable })
     } }],
     name: call.name,
     rawPreview: { fetchUrl: {
-      version: 1, outcome: outcome.code, dispatched: outcome.dispatched,
+      version: 1, outcome: isFetchUrlProxyFailure(outcome.code) ? "fetch_network_error" : outcome.code, dispatched: outcome.dispatched,
+      ...(isFetchUrlProxyFailure(outcome.code) ? { proxyCode: outcome.code } : {}),
+      ...(outcome.proxy ? { proxy: outcome.proxy } : {}),
       // The body was a PDF: its outcome is the PDF's.
       ...(pdf ? { contentKind: "pdf" } : {}),
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
@@ -196,6 +208,7 @@ function read(call: Pick<ModelToolCall, "id" | "name">, value: ReadValue, cached
     callId: call.id,
     content: [{ type: "json", value: {
       url: value.url,
+      ...(value.proxy ? { proxy: value.proxy.name } : {}),
       finalUrl: value.finalUrl,
       title: value.title,
       fetchedAt: value.fetchedAt,
@@ -208,6 +221,7 @@ function read(call: Pick<ModelToolCall, "id" | "name">, value: ReadValue, cached
     name: call.name,
     rawPreview: { fetchUrl: {
       version: 1, outcome: "read", dispatched: !cached,
+      ...(value.proxy ? { proxy: value.proxy } : {}),
       ...(value.contentType === "pdf" ? { contentKind: "pdf" } : {}),
       url: value.url
     } },
@@ -225,7 +239,9 @@ function persistedReadValue(result: unknown, url: string): ReadValue | null {
     (value.title !== null && typeof value.title !== "string") || !READ_CONTENT_KINDS.has(value.contentType)) {
     return null;
   }
-  return { contentType: value.contentType as FetchedContentKind, fetchedAt: value.fetchedAt, finalUrl: value.finalUrl,
+  const facts = persistedFetchUrlFacts(result);
+  const proxy = fetchUrlProxyIdentity(facts?.proxy);
+  return { ...(proxy ? { proxy } : {}), contentType: value.contentType as FetchedContentKind, fetchedAt: value.fetchedAt, finalUrl: value.finalUrl,
     text: value.text, title: value.title as string | null, truncated: value.truncated, url };
 }
 
@@ -259,7 +275,7 @@ function pdfExtractionFailureCode(error: unknown): FailureCode {
 /** The stored result of one page this run read. */
 export type FetchUrlPersistedCall = Readonly<{ result: unknown }>;
 
-export type FetchUrlSessionDeps = Readonly<{
+export type FetchUrlSessionDeps = FetchUrlProxyDeps & Readonly<{
   plan: FetchUrlPlan;
   /** The run answers a scheduled occurrence: a refused link is allowed by its owner saving the task's instructions. */
   scheduled: boolean;
@@ -272,6 +288,7 @@ export type FetchUrlSessionDeps = Readonly<{
   /** The pages the run read before this session, so a recovered run keeps its cache. */
   loadCalls?: () => Promise<readonly FetchUrlPersistedCall[]>;
   fetchPage?: (url: string, options: WebFetchOptions) => Promise<WebFetchResponse>;
+  fetchProxyPage?: typeof fetchThroughProxy;
   /** Fetched body to page text; production parses it in the disposable parser process. */
   extractPage?: (input: FetchedPageInput) => Promise<ExtractedPage | null>;
   /** Fetched PDF to page text; production extracts it in the isolated PDF worker. */
@@ -293,6 +310,7 @@ export type FetchUrlSession = Readonly<{
  */
 export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSession {
   const fetchPage = deps.fetchPage ?? fetchWebPage;
+  const proxySession = createFetchUrlProxySession(deps);
   const extractPageText = deps.extractPage ?? ((input: FetchedPageInput) => extractFetchedPage(input));
   const extractPdfText = deps.extractPdf ?? ((input: FetchedPageInput) => extractFetchedPdf(input));
   const pdfMaxBytes = deps.pdfMaxBytes ?? fetchedPdfMaxBytes();
@@ -319,9 +337,12 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
   async function seed(): Promise<void> {
     for (const call of await deps.loadCalls?.() ?? []) {
       const facts = persistedFetchUrlFacts(call.result);
-      if (facts?.outcome === "read" && facts.url && !cache.has(facts.url)) {
+      if (facts?.outcome === "read" && facts.url) {
         const value = persistedReadValue(call.result, facts.url);
-        if (value) remember(facts.url, value);
+        if (value) {
+          const key = fetchUrlCacheKey(facts.url, value.proxy);
+          if (!cache.has(key)) remember(key, value);
+        }
       }
     }
   }
@@ -339,10 +360,10 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
     return searchLinks.has(url);
   }
 
-  async function fetchAndExtract(url: string, signal: AbortSignal): Promise<Outcome> {
+  async function fetchAndExtract(url: string, signal: AbortSignal, reader = fetchPage): Promise<Outcome> {
     let response: WebFetchResponse;
     try {
-      response = await fetchPage(url, {
+      response = await reader(url, {
         acceptsContentType: (type) => declaredFetchedContentKind(type) !== null,
         maxBytesFor: (type) => {
           const declared = declaredFetchedContentKind(type);
@@ -386,38 +407,67 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       const refuse = (code: FailureCode, url: string | null) => failed(call, { code, dispatched: false, kind: "failed" },
         url, { pdfMaxBytes, searchAvailable: deps.searchAvailable,
           ...(url && code === "fetch_url_not_in_conversation" ? { refusalScope: refusalScope(url) } : {}) });
-      if (hasInvalidProviderToolArguments(call.arguments) || Object.keys(call.arguments).some((key) => key !== "url")) {
+      if (hasInvalidProviderToolArguments(call.arguments) || Object.keys(call.arguments).some((key) => key !== "url" && key !== "proxy")) {
         return refuse("fetch_url_invalid", null);
       }
+      const explicit = fetchUrlProxyChoice(call.arguments.proxy);
+      if (explicit === null) return refuse("fetch_url_invalid", null);
       const url = normalizeFetchUrl(call.arguments.url);
       if (!url) return refuse("fetch_url_invalid", null);
       if (!await authorized(url, input.followupTexts)) return refuse("fetch_url_not_in_conversation", url);
       const policy = webFetchUrlRefusal(new URL(url));
       if (policy) return refuse(policy, url);
       await (seeded ??= seed());
-      const cached = cache.get(url);
-      if (cached) return read(call, cached, true);
-      for (let pending = inFlight.get(url); pending; pending = inFlight.get(url)) {
-        try {
-          const outcome = await pending;
-          return outcome.kind === "read" ? read(call, outcome.value, true)
-            : failed(call, { ...outcome, dispatched: false }, url, { browserStep: deps.browserStep?.(), pdfMaxBytes });
-        } catch (error) {
-          // The agent that started this read was stopped, which does not stop this one: it reads the page itself.
-          if (input.signal.aborted) throw error;
+      const routes = await proxySession.routes(url, explicit);
+      let dispatched = false;
+      let lastProxy: FetchUrlProxyIdentity | undefined;
+      const failureOptions = () => ({ browserStep: deps.browserStep?.(), pdfMaxBytes, proxiesToTry: proxySession.suggestions(url) });
+      while (true) {
+        input.signal.throwIfAborted();
+        const route = routes.next();
+        if (route.kind === "failed") {
+          const proxy = lastProxy ?? route.proxy;
+          proxySession.observe({ outcome: "failed", code: route.code });
+          return failed(call, { ...route, dispatched, ...(proxy ? { proxy } : {}) }, url, failureOptions());
         }
-      }
-      const work = fetchAndExtract(url, input.signal);
-      inFlight.set(url, work);
-      try {
-        const outcome = await work;
+        const connection = route.kind === "proxy" ? route.connection : undefined;
+        const proxy = connection ? { id: connection.id, name: connection.name } : undefined;
+        const key = fetchUrlCacheKey(url, proxy);
+        const cached = cache.get(key);
+        if (cached) return read(call, cached, true);
+        let outcome: Outcome | undefined;
+        let shared = false;
+        for (let pending = inFlight.get(key); pending; pending = inFlight.get(key)) {
+          try { outcome = await pending; shared = true; break; }
+          catch (error) {
+            // Another agent's Stop does not stop this reader.
+            if (input.signal.aborted) throw error;
+          }
+        }
+        if (!outcome) {
+          if (proxy) proxySession.observe({ outcome: "started" });
+          const reader = connection
+            ? (target: string, options: WebFetchOptions) => (deps.fetchProxyPage ?? fetchThroughProxy)(target, connection, options)
+            : fetchPage;
+          const work = fetchAndExtract(url, input.signal, reader);
+          inFlight.set(key, work);
+          try { outcome = await work; }
+          finally { if (inFlight.get(key) === work) inFlight.delete(key); }
+          if (proxy) proxySession.observe({ outcome: outcome.kind === "read" ? "read" : "failed",
+            ...(outcome.kind === "failed" ? { code: outcome.code } : {}) });
+        }
         if (outcome.kind === "read") {
-          remember(url, outcome.value);
-          return read(call, outcome.value, false);
+          const value = { ...outcome.value, ...(proxy ? { proxy } : {}) };
+          remember(key, value);
+          return read(call, value, shared);
         }
-        return failed(call, outcome, url, { browserStep: deps.browserStep?.(), pdfMaxBytes });
-      } finally {
-        if (inFlight.get(url) === work) inFlight.delete(url);
+        dispatched ||= outcome.dispatched && !shared;
+        if (proxy && isFetchUrlProxyFailure(outcome.code)) {
+          lastProxy = proxy;
+          routes.failed(proxy.id);
+          if (!explicit) continue;
+        }
+        return failed(call, { ...outcome, dispatched, ...(proxy ? { proxy } : {}) }, url, failureOptions());
       }
     }
   };

@@ -12,6 +12,8 @@ describe("a sub-agent's row words", () => {
     expect(subagentDetailText({ ...row, currentStep: { origin: "web_search", toolName: "web_search" } })).toBe("Searching the web…");
     expect(subagentDetailText({ ...row, currentStep: { fetchTarget: "example.com/a", origin: "web_fetch", toolName: "fetch_url" } }))
       .toBe("Reading example.com/a…");
+    expect(subagentDetailText({ ...row, currentStep: { fetchTarget: "example.com/a", fetchProxyName: "Personal route",
+      origin: "web_fetch", toolName: "fetch_url" } })).toBe("Reading example.com/a via proxy “Personal route”…");
     expect(subagentDetailText({ ...row, currentStep: { origin: "mcp", serverName: "Jira", toolName: "find_issue" } })).toBe("Using Jira: find issue…");
     expect(subagentDetailText(row)).toBe("Working…");
   });
