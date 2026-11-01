@@ -1,12 +1,22 @@
-import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
+import {
+  CHANGE_RESEARCH_FRAME_TOOL_NAME,
+  PROPOSE_RESEARCH_PLAN_TOOL_NAME,
+  RECORD_EVIDENCE_TOOL_NAME,
+  START_RESEARCH_TOOL_NAME,
+  SUBMIT_RESEARCH_DRAFT_TOOL_NAME
+} from "../../contracts/research";
 import { ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, SEND_AGENT_MESSAGE_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import { HARNESS_SEARCH_TOOL } from "../engine/prompts/harness";
-import { READ_TOOL_RESULT_NAME, type SavedToolResultReader } from "../engine/toolResults";
+import { READ_TOOL_RESULT_NAME, toolResultOutputText, type SavedToolResultReader } from "../engine/toolResults";
 import type { TranscriptItem } from "../engine/transcript";
+import { parsePersistedToolExecutionResult } from "../runs/toolExecutionPersistence";
+import type { ToolLoopJsonValue } from "../runs/toolLoopPersistence";
 import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
 import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
+import type { ToolExecutionResult } from "../tools/types";
 import { UPDATE_PLAN_TOOL_NAME } from "../tools/updatePlan";
+import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchOpenedSource } from "./gates";
 
 /**
@@ -15,12 +25,19 @@ import type { ResearchOpenedSource } from "./gates";
  * whole where a saved copy can be read. What agents wrote themselves is no
  * evidence, so a report's or a brief's words never count as opened text.
  */
-const AGENT_WRITTEN: ReadonlySet<string> = new Set([ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, READ_SECRET_TOOL_NAME,
-  READ_TOOL_RESULT_NAME, SEND_AGENT_MESSAGE_TOOL_NAME, START_RESEARCH_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
-  UPDATE_PLAN_TOOL_NAME]);
+const AGENT_WRITTEN: ReadonlySet<string> = new Set([ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, CHANGE_RESEARCH_FRAME_TOOL_NAME, LIST_AGENTS_TOOL_NAME,
+  PROPOSE_RESEARCH_PLAN_TOOL_NAME, READ_SECRET_TOOL_NAME, READ_TOOL_RESULT_NAME, RECORD_EVIDENCE_TOOL_NAME, SEND_AGENT_MESSAGE_TOOL_NAME, START_RESEARCH_TOOL_NAME,
+  STOP_SUBAGENT_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, UPDATE_PLAN_TOOL_NAME]);
 
 /** Bounds one read: a run's opened text is checked in memory. */
 export const RESEARCH_SOURCE_LIMITS = Object.freeze({ results: 2_000, totalCharacters: 16_000_000 });
+
+/**
+ * Bounds what one write reads of its writer's own results, because reading a whole run at every write would be quadratic in the run.
+ * `fetchCalls` are the calls a cited link is looked for among and `citedResults` what is read of it per link; `recentResults` and
+ * `characters` are what a quote with no page of its own is looked for in, newest first. An agent records as it goes, so its page is there.
+ */
+export const RESEARCH_WRITE_SOURCE_LIMITS = Object.freeze({ characters: 3_000_000, citedResults: 4, fetchCalls: 500, recentResults: 48 });
 
 /** A command that drives the Workspace browser: the same reading as `drivesBrowser` in `lib/server/engine/toolRegistry.ts`. Reads such as its `text` print no step line. */
 const BROWSER_COMMAND = /aiqsa-browser|from\s+aiqsa\s+import\s+browser|aiqsa\.browser/u;
@@ -47,6 +64,9 @@ export function researchEvidenceKind(source: Pick<ResearchOpenedSource, "browser
  * handle to read the rest by. A page that quotes this wording earns at most "not checked".
  */
 const UNSAVED_EXCERPT = /\[\d+ of \d+ characters omitted here \(characters \d+-\d+\)\. The whole result could not be saved /u;
+
+/** Any excerpt (`toolOutputExcerpt`): a call's row keeps one only for a result too long for the row, whose whole text is its saved copy. */
+const EXCERPT = /\[\d+ of \d+ characters omitted here \(characters \d+-\d+\)\. The whole result /u;
 
 function pageUrl(call: TranscriptItem | undefined): string | null {
   if (call?.kind !== "tool_call" || call.name !== FETCH_URL_TOOL_NAME) return null;
@@ -93,6 +113,108 @@ export function createResearchSources(input: Readonly<{
         }
       }
       return opened;
+    }
+  };
+}
+
+/** Whose results a write reads: one agent's (null: the main agent's), under the runs that can hold them. */
+export type ResearchAgentScope = Readonly<{ runIds: readonly string[]; threadId: string | null }>;
+
+/**
+ * One completed call as its `ModelRunToolCall` row keeps it. The row is settled before the call's batch returns (`toolBatch.ts`), so a
+ * later round's write finds it, and it stays through a compaction. `observationId`: its saved copy, which a result too long for the row has.
+ */
+export type ResearchAgentCall = Readonly<{ arguments: unknown; id: string; observationId: string | null; providerCallId: string; result: unknown; toolName: string }>;
+
+/** An agent's call rows, newest first. */
+export type ResearchAgentCalls = Readonly<{
+  /** These calls whole, in the order asked for. */
+  calls(agent: ResearchAgentScope, ids: readonly string[]): Promise<readonly ResearchAgentCall[]>;
+  /** Its `fetch_url` calls without their results: what finds a link costs no page. */
+  fetchCalls(agent: ResearchAgentScope, limit: number): Promise<readonly Pick<ResearchAgentCall, "arguments" | "id">[]>;
+  /** Its newest calls of any other tool than these. */
+  recentCalls(agent: ResearchAgentScope, input: Readonly<{ excludedTools: readonly string[]; limit: number }>): Promise<readonly ResearchAgentCall[]>;
+}>;
+
+/** What one read found. `callIds` are its calls, so a second read skips them; `moreUnread`: it stopped at a bound. */
+export type ResearchAgentRead = Readonly<{ callIds: readonly string[]; moreUnread: boolean; sources: readonly ResearchOpenedSource[] }>;
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** What a `fetch_url` result says of its page: its own text, without the fields around it. */
+function fetchedPage(result: ToolExecutionResult): Readonly<{ finalUrl: unknown; partial: boolean; text: string }> | null {
+  const first = result.content[0];
+  const value: unknown = first?.type === "json" ? first.value : null;
+  return isObject(value) && typeof value.text === "string" ? { finalUrl: value.finalUrl, partial: value.truncated === true, text: value.text } : null;
+}
+
+/**
+ * What one write reads of its own agent's results, and nothing else: a page reaches the store only from the agent that saw it. Which
+ * reads hold a link is known from the arguments alone, so a record whose page was fetched costs that page's rows. Only a quote not on
+ * it goes on to the agent's latest results, where a browser's pages are, since they have no link of their own.
+ */
+export function createResearchAgentSources(input: Readonly<{
+  calls: ResearchAgentCalls;
+  chatId: string;
+  savedResults: SavedToolResultReader;
+  userId: string;
+}>) {
+  const limits = RESEARCH_WRITE_SOURCE_LIMITS;
+
+  async function wholeText(text: string, observationId: string | null, signal: AbortSignal): Promise<Pick<ResearchOpenedSource, "partial" | "text">> {
+    if (!EXCERPT.test(text)) return { partial: false, text };
+    if (!observationId) return { partial: true, text };
+    const saved = await input.savedResults.read({ chatId: input.chatId, handle: `tor1_${observationId}`, signal, userId: input.userId }).catch(() => null);
+    return saved ? { partial: false, text: saved.text } : { partial: true, text };
+  }
+
+  /** `url`: a cited link when the call read it or was sent on to it, so a redirect's page is that link's own. */
+  async function sourceOf(call: ResearchAgentCall, links: ReadonlySet<string>, signal: AbortSignal): Promise<ResearchOpenedSource | null> {
+    const result = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result as ToolLoopJsonValue);
+    if (!result) return null;
+    const page = call.toolName === FETCH_URL_TOOL_NAME ? fetchedPage(result) : null;
+    const read = page ? { partial: page.partial, text: page.text } : await wholeText(toolResultOutputText(result), call.observationId, signal);
+    const addresses = page ? [isObject(call.arguments) ? call.arguments.url : null, page.finalUrl].flatMap((url) => normalizeFetchUrl(url) ?? []) : [];
+    return { ...BROWSER_COMMAND.test(JSON.stringify(call.arguments ?? {})) ? { browser: true as const } : {}, ...read, toolName: call.toolName,
+      url: addresses.find((url) => links.has(url)) ?? addresses[0] ?? null };
+  }
+
+  async function read(calls: readonly ResearchAgentCall[], links: ReadonlySet<string>, signal: AbortSignal): Promise<ResearchAgentRead> {
+    const sources: ResearchOpenedSource[] = [];
+    const callIds: string[] = [];
+    let characters = 0;
+    for (const call of calls) {
+      signal.throwIfAborted();
+      const source = await sourceOf(call, links, signal);
+      if (!source) continue;
+      characters += source.text.length;
+      if (characters > limits.characters && sources.length > 0) return { callIds, moreUnread: true, sources };
+      callIds.push(call.id);
+      sources.push(source);
+    }
+    return { callIds, moreUnread: false, sources };
+  }
+
+  return {
+    /** The agent's own reads of these links, the newest of each. */
+    async cited(agent: ResearchAgentScope, links: ReadonlySet<string>, signal: AbortSignal): Promise<ResearchAgentRead> {
+      const listed = await input.calls.fetchCalls(agent, limits.fetchCalls);
+      const counts = new Map<string, number>();
+      const ids = listed.flatMap((call) => {
+        const link = normalizeFetchUrl(isObject(call.arguments) ? call.arguments.url : null);
+        if (!link || !links.has(link) || (counts.get(link) ?? 0) >= limits.citedResults) return [];
+        counts.set(link, (counts.get(link) ?? 0) + 1);
+        return [call.id];
+      });
+      const found = ids.length > 0 ? await read(await input.calls.calls(agent, ids), links, signal) : { callIds: [], moreUnread: false, sources: [] };
+      return { ...found, moreUnread: found.moreUnread || listed.length >= limits.fetchCalls };
+    },
+
+    /** The agent's latest results, those a first read took left out. */
+    async recent(agent: ResearchAgentScope, links: ReadonlySet<string>, skip: readonly string[], signal: AbortSignal): Promise<ResearchAgentRead> {
+      const calls = await input.calls.recentCalls(agent, { excludedTools: [...AGENT_WRITTEN], limit: limits.recentResults });
+      const found = await read(calls.filter((call) => !skip.includes(call.id)), links, signal);
+      return { ...found, moreUnread: found.moreUnread || calls.length >= limits.recentResults };
     }
   };
 }
