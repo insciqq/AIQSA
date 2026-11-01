@@ -3,10 +3,10 @@ import {
   type ResearchPlan, type ResearchSourceClass
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
-import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
 import { normalizeFetchUrl } from "../webFetch/urls";
-import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 import type { ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
+import { researchNote } from "./notes";
+import { researchEvidenceKind } from "./sources";
 
 const CYRILLIC = /\p{Script=Cyrillic}/u;
 // An optional, tool-free judging turn needs at least this much of the seam's
@@ -46,10 +46,12 @@ function openedText(text: string): string[] {
 type Coverage = "opened" | "unknown" | "missing";
 
 function sourceCoverage(draft: ResearchDraft, opened: readonly ResearchOpenedSource[]): Map<ResearchSourceClass, Coverage> {
-  // Search snippets and other tool output do not prove that a page was opened.
-  // Browser reads travel through Workspace results, without a page URL.
-  const pages = opened.filter((source) => source.toolName === FETCH_URL_TOOL_NAME || workspaceToolNameFromNamespaced(source.toolName) !== null)
-    .map((source) => ({ ...source, parts: openedText(source.text), url: normalizeFetchUrl(source.url) }));
+  // As the quote check reads them (`researchEvidenceKind`): search snippets prove nothing, and only a page read proves one
+  // was opened. A quote in another tool's output cannot tell, so that stays unknown rather than closed or missing.
+  const pages = opened.flatMap((source) => {
+    const kind = researchEvidenceKind(source);
+    return kind === "page" || kind === "other" ? [{ ...source, kind, parts: openedText(source.text), url: normalizeFetchUrl(source.url) }] : [];
+  });
   const coverage = new Map<ResearchSourceClass, Coverage>();
   for (const sourceClass of RESEARCH_SOURCE_CLASSES) {
     if (draft.unreachable.some((entry) => entry.sourceClass === sourceClass && entry.reason.trim() && entry.target.trim())) {
@@ -62,7 +64,8 @@ function sourceCoverage(draft: ResearchDraft, opened: readonly ResearchOpenedSou
       const quote = space(finding.quote);
       for (const page of pages) {
         const matches = (url !== null && url === page.url) || (quote.length > 0 && page.parts.some((text) => text.includes(quote)));
-        if (!page.partial && matches) { status = "opened"; break; }
+        if (!page.partial && matches && page.kind === "page") { status = "opened"; break; }
+        if (!page.partial && matches) status = "unknown";
         // A lost browser result has no URL to disambiguate it. Its missing text
         // could hold this quote; an unrelated, known URL cannot explain a miss.
         if (page.partial && (matches || page.url === null)) status = "unknown";
@@ -206,7 +209,7 @@ function judgeIssues(report: string, russian: boolean): string[] | null {
   return issues;
 }
 
-/** Mechanical coverage first; an optional independent judgment only after it. */
+/** Mechanical coverage first; a judgment only after it. Answer first: an unfinished judgment costs the check, never the answer, and the answer says so. */
 export const gapCheckGate: ResearchGate = {
   name: "gap_check",
   async run(draft, context) {
@@ -234,20 +237,19 @@ export const gapCheckGate: ResearchGate = {
       // close them even when the finding itself did not change.
       return { kind: "pass", notes: [...notes, ...previousJudgeNotes(context, russian)] };
     }
-    if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) {
-      return { kind: "pass", notes: [...notes, ...previousJudgeNotes(context, russian)] };
-    }
+    const unfinished = (): ResearchGateResult => ({ kind: "pass", notes: [...notes, researchNote("gap_judge_unfinished", draft.report), ...previousJudgeNotes(context, russian)] });
+    if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) return unfinished();
     try {
       const outcome = await context.subagents.run({ brief: judgeBrief(draft, context.plan), instructions: JUDGE_INSTRUCTIONS,
         model: "main", name: "gap-judge", tools: [] }, context.signal);
-      if (outcome.kind !== "ended" || outcome.result.state !== "done" || outcome.result.outcome !== "done" || outcome.result.reportTruncated) return { kind: "pass", notes };
+      if (outcome.kind !== "ended" || outcome.result.state !== "done" || outcome.result.outcome !== "done" || outcome.result.reportTruncated) return unfinished();
       const issues = judgeIssues(outcome.result.report, russian);
-      if (issues?.length) return gapsResult(draft, context, issueText(JUDGE_HEADING[russian ? "ru" : "en"], issues), notes);
+      if (issues === null) return unfinished();
+      return issues.length > 0 ? gapsResult(draft, context, issueText(JUDGE_HEADING[russian ? "ru" : "en"], issues), notes) : { kind: "pass", notes };
     } catch {
-      // Answer first: an unavailable or unreadable judge costs only its check.
       // The mechanical check already ran and the verifier comes next.
       context.signal.throwIfAborted();
+      return unfinished();
     }
-    return { kind: "pass", notes };
   }
 };

@@ -20,7 +20,7 @@ import { planActivityEntry } from "../tools/harnessActivity";
 import { harnessToolError } from "../tools/harnessTool";
 import { researchDraftReservedInstruction, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import { RESEARCH_GATES, runResearchGates, type ResearchAttempt, type ResearchGate } from "./gates";
+import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, type ResearchAttempt, type ResearchGate } from "./gates";
 import { researcherBrief, researchMethodText, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
 import { createResearchSources } from "./sources";
@@ -99,18 +99,18 @@ export type RunResearchInput = Readonly<{
 
 export type RunResearch = ReturnType<typeof createRunResearch>;
 
+/** A report and what the answer says of it, always together: a note belongs to the draft whose gates wrote it. */
+type HeldDraft = Readonly<{ draft: ResearchDraft; notes: readonly string[] }>;
+
 export function createRunResearch(input: RunResearchInput) {
   let plan: ResearchPlan | null = null;
-  let accepted: Readonly<{ draft: ResearchDraft; notes: readonly string[] }> | null = null;
-  /** The report that stands: the latest one handed in since the last delivered follow-up. */
-  let lastDraft: ResearchDraft | null = null;
-  /** The last completed check stays open until a subsequent check replaces it. */
-  let lastDraftNotes: readonly string[] = [];
+  let accepted: HeldDraft | null = null;
+  /** The report that stands: the latest one handed in since the last delivered follow-up, with its gates' notes once they ended. */
+  let held: HeldDraft | null = null;
   /** The report a delivered follow-up superseded: what a run that fails or says nothing more still has to show. */
-  let supersededDraft: ResearchDraft | null = null;
-  let supersededDraftNotes: readonly string[] = [];
+  let superseded: HeldDraft | null = null;
   /** What to give back if the batch refuses the start this response established research with. */
-  let unconfirmedStart: Readonly<{ draft: ResearchDraft | null }> | null = null;
+  let unconfirmedStart: Readonly<{ held: HeldDraft | null }> | null = null;
   let lastHeld = "";
   /** What the provider's current attempt streamed while research runs. */
   let attemptText = "";
@@ -134,10 +134,12 @@ export function createRunResearch(input: RunResearchInput) {
     threads: input.threads, userId: input.userId });
   const gates = input.deps.gates ?? RESEARCH_GATES;
   const note = (key: ResearchNoteKey, draft: Pick<ResearchDraft, "report">) => researchNote(key, draft.report);
+  /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
+  const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: researchCarriedNotes(gates, draft, attempts) });
 
   async function check(draft: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<void> {
     if (!plan) return;
-    lastDraft = draft;
+    held = unchecked(draft);
     const attempt = attempts.length + 1;
     const outcome = await runResearchGates({ draft, gates, runId: input.runId, context: {
       attempt,
@@ -150,7 +152,7 @@ export function createRunResearch(input: RunResearchInput) {
       verifierModel: () => turns.verifierModel()
     } });
     attempts.push({ draft, message: outcome.kind === "sent_back" ? outcome.message : null });
-    lastDraftNotes = outcome.notes ?? [];
+    held = { draft, notes: outcome.notes ?? [] };
     if (outcome.kind === "accepted") {
       accepted = { draft, notes: [...outcome.notes, ...draft.findings.length === 0 ? [note("no_findings", draft)] : []] };
       sentBack = null;
@@ -235,7 +237,7 @@ export function createRunResearch(input: RunResearchInput) {
           if (call.name !== START_RESEARCH_TOOL_NAME) continue;
           const decoded = decodeResearchPlan(call.arguments);
           if (!decoded.ok) continue;
-          unconfirmedStart = { draft: lastDraft };
+          unconfirmedStart = { held };
           plan = decoded.value;
           break;
         }
@@ -244,13 +246,13 @@ export function createRunResearch(input: RunResearchInput) {
       for (const call of response.calls) {
         if (call.name !== SUBMIT_RESEARCH_DRAFT_TOOL_NAME) continue;
         const decoded = decodeResearchDraft(call.arguments);
-        if (decoded.ok) lastDraft = decoded.value;
+        if (decoded.ok) held = unchecked(decoded.value);
       }
     },
     /** The batch ended: a start it refused before running (out of tool time, a spent budget) never started research. */
     batchEnded(): void {
       if (!unconfirmedStart) return;
-      lastDraft = unconfirmedStart.draft;
+      held = unconfirmedStart.held;
       unconfirmedStart = null;
       plan = null;
     },
@@ -279,9 +281,9 @@ export function createRunResearch(input: RunResearchInput) {
     /** The loop asks before each round whether the turn's answer is already taken, so no paid round follows. */
     answerTaken(input_: Readonly<{ toolChoice: LoopToolChoice }>): boolean {
       if (accepted) return true;
-      if (input_.toolChoice !== "none" || !plan || !lastDraft) return false;
+      if (input_.toolChoice !== "none" || !plan || !held) return false;
       // Tools closed with a draft in hand: tool-free text could only repeat it. It goes out as it stands.
-      accepted = { draft: lastDraft, notes: [...lastDraftNotes, note(input.toolTimeLeft() ? "unresolved" : "time_out", lastDraft)] };
+      accepted = { draft: held.draft, notes: [...held.notes, note(input.toolTimeLeft() ? "unresolved" : "time_out", held.draft)] };
       return true;
     },
 
@@ -300,8 +302,8 @@ export function createRunResearch(input: RunResearchInput) {
         return server(SUBMIT_FIRST);
       }
       // A report handed in stays the report: a message never replaces it, whatever it says.
-      if (lastDraft) {
-        accepted = { draft: lastDraft, notes: [...lastDraftNotes, note(toolsOpen ? "unresolved" : "time_out", lastDraft)] };
+      if (held) {
+        accepted = { draft: held.draft, notes: [...held.notes, note(toolsOpen ? "unresolved" : "time_out", held.draft)] };
         return null;
       }
       textDrafts += 1;
@@ -323,11 +325,9 @@ export function createRunResearch(input: RunResearchInput) {
      * again. Each delivery buys one response at most, follow-ups are bounded and the turn's deadline still ends it.
      */
     followupDelivered(): void {
-      if (accepted || lastDraft) supersededDraftNotes = accepted?.notes ?? lastDraftNotes;
-      supersededDraft = accepted?.draft ?? lastDraft ?? supersededDraft;
+      superseded = accepted ?? held ?? superseded;
       accepted = null;
-      lastDraft = null;
-      lastDraftNotes = [];
+      held = null;
       input.rearmReservedCall();
     },
 
@@ -338,19 +338,19 @@ export function createRunResearch(input: RunResearchInput) {
     finish(waiting: boolean): string | null {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
       if (!plan || waiting) return null;
-      if (lastDraft) return researchAnswerText(lastDraft.report, [...lastDraftNotes, note("unresolved", lastDraft)]);
-      if (supersededDraft) return researchAnswerText(supersededDraft.report, [...supersededDraftNotes, note("followup_not_applied", supersededDraft)]);
+      if (held) return researchAnswerText(held.draft.report, [...held.notes, note("unresolved", held.draft)]);
+      if (superseded) return researchAnswerText(superseded.draft.report, [...superseded.notes, note("followup_not_applied", superseded.draft)]);
       return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
     },
 
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */
     afterEnding(reason: "failed" | "stopped" | "timed_out"): string | null {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
-      const report = lastDraft ?? supersededDraft;
+      const report = held ?? superseded;
       if (report) {
-        return researchAnswerText(report.report, [...lastDraft ? lastDraftNotes : supersededDraftNotes,
-          note(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed", report),
-          ...lastDraft ? [] : [note("followup_not_applied", report)]]);
+        return researchAnswerText(report.draft.report, [...report.notes,
+          note(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed", report.draft),
+          ...held ? [] : [note("followup_not_applied", report.draft)]]);
       }
       if (reason === "stopped") return null;
       // The longer text says more: narration after a whole report written as a message must not replace it.
@@ -362,7 +362,7 @@ export function createRunResearch(input: RunResearchInput) {
     resume(items: readonly TranscriptItem[]): void {
       const found = researchOfTurn(items);
       if (found.plan) plan = found.plan;
-      if (found.draft) lastDraft = found.draft;
+      if (found.draft) held = unchecked(found.draft);
     },
 
     stopAll: (reason: SubagentStopReason) => turns.stopAll(reason)

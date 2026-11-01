@@ -84,7 +84,7 @@ describe("mechanical research coverage", () => {
     const draft = { ...DRAFT, findings: FINDINGS.map((finding) => finding.sourceClass === "owner_reviews" ? { ...finding, quote } : finding) };
     const saved = JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ stdout: 'Owners said "still firm".\r\nAfter\u00a0a   year: C:\\notes.' }) }] });
     const ctx = context({ sources: { opened: async () => SOURCES.map((source) => source.url?.endsWith("owner_reviews")
-      ? { partial: false, text: saved, toolName: namespacedWorkspaceToolName("sandbox_exec"), url: null } : source) } });
+      ? { browser: true as const, partial: false, text: saved, toolName: namespacedWorkspaceToolName("sandbox_exec"), url: null } : source) } });
     expect(await gapCheckGate.run(draft, ctx)).toMatchObject({ kind: "pass", notes: [] });
     expect(ctx.subagents.run).toHaveBeenCalledTimes(1);
   });
@@ -99,6 +99,23 @@ describe("mechanical research coverage", () => {
       { ...source, partial: false, url: null }] } });
     expect(messageOf(await gapCheckGate.run(DRAFT, ctx))).toContain("owner_reviews");
     expect(ctx.subagents.run).not.toHaveBeenCalled();
+  });
+
+  it.each([namespacedWorkspaceToolName("sandbox_exec"), "mcp__notes__read"])("does not take a quote in %s output for an opened page: it stays unknown", async (toolName) => {
+    const ctx = context({ sources: { opened: async () => SOURCES.map((source) => source.url?.endsWith("owner_reviews")
+      ? { partial: false, text: `echo ${source.text}`, toolName, url: null } : source) } });
+    const result = await gapCheckGate.run(DRAFT, ctx);
+    expect(result.kind).toBe("pass");
+    expect(result.notes?.join()).toContain("Source opening could not be checked:");
+    expect(result.notes?.join()).toContain("owner_reviews");
+  });
+
+  it("takes a browser command's output for an opened page, with or without a step line", async () => {
+    const steps = { partial: false, text: `[browser #1] open @ example.test/x\n${FINDINGS[2]!.quote}`, toolName: namespacedWorkspaceToolName("sandbox_exec"), url: null };
+    for (const source of [steps, { ...steps, browser: true as const, text: FINDINGS[2]!.quote }]) {
+      const ctx = context({ sources: { opened: async () => SOURCES.map((entry) => entry.url?.endsWith("owner_reviews") ? source : entry) } });
+      expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [] });
+    }
   });
 
   it.each([null, FINDINGS[2]!.url])("treats partial page text as unknown, never missing (URL %s)", async (url) => {
@@ -196,12 +213,32 @@ describe("independent gap judgment", () => {
     JSON.stringify({ ...CLEAN, conflicts: ["x".repeat(RESEARCH_LIMITS.questionCharacters + 1)] }),
     JSON.stringify({ ...CLEAN, conflicts: Array.from({ length: RESEARCH_LIMITS.questions + 1 }, () => "gap") }),
     `Outcome: done\n${JSON.stringify(CLEAN)}`, "x".repeat(RUN_FOLLOWUP_MAX_CHARS + 1)
-  ])("passes an unreadable judgment without a note (%#)", async (report) => {
+  ])("passes an unreadable judgment with a note that says so (%#)", async (report) => {
     const ctx = context({ subagents: { run: async () => judged(report) } });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished", DRAFT.report)] });
+  });
+
+  it("says it in the report's language", async () => {
+    const ctx = context({ subagents: { run: async () => judged("not JSON") } });
+    expect(await gapCheckGate.run({ ...DRAFT, report: "# Отчёт" }, ctx)).toEqual({ kind: "pass", notes: ["Проверку на открытые вопросы завершить не удалось."] });
+  });
+
+  it("adds no note for a judge that found nothing, or one skipped because the draft added nothing new", async () => {
+    expect(await gapCheckGate.run(DRAFT, context())).toEqual({ kind: "pass", notes: [] });
+    const ctx = context({ earlier: [{ draft: DRAFT, message: null }], subagents: { run: async () => { throw new Error("never called"); } } });
     expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [] });
   });
 
-  it.each(["throw", "refused", "failed", "partial", "truncated"])("passes a %s judge silently and still runs the next gate", async (failure) => {
+  it("keeps the issues named before when a later judge fails", async () => {
+    const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, open_questions: ["How durable is it after five years?"] })) } }));
+    const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }], subagents: { run: async () => { throw new Error("unavailable"); } } });
+    const result = await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, ctx);
+    expect(result.kind).toBe("pass");
+    expect(result.notes?.join()).toContain("How durable is it after five years?");
+    expect(result.notes).toContain(researchNote("gap_judge_unfinished", DRAFT.report));
+  });
+
+  it.each(["throw", "refused", "failed", "partial", "truncated"])("passes a %s judge with a note and still runs the next gate", async (failure) => {
     const ctx = context({ subagents: { run: async () => {
       if (failure === "throw") throw new Error("unavailable");
       if (failure === "refused") return { kind: "refused", code: "subagent_limit_reached" };
@@ -214,7 +251,7 @@ describe("independent gap judgment", () => {
     } } });
     const verifier = vi.fn(async () => ({ kind: "pass" as const }));
     expect(await runResearchGates({ context: ctx, draft: DRAFT, gates: [gapCheckGate, { name: "verifier", run: verifier }], runId: "test" }))
-      .toEqual({ kind: "accepted", notes: [] });
+      .toEqual({ kind: "accepted", notes: [researchNote("gap_judge_unfinished", DRAFT.report)] });
     expect(verifier).toHaveBeenCalledOnce();
   });
 });
@@ -276,7 +313,7 @@ describe("research stops on evidence or time, not a round count", () => {
 
   it("does not start a judge without time for a turn", async () => {
     const ctx = context({ time: { remainingMs: () => 1, sendBackAllowed: () => true } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [] });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished", DRAFT.report)] });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -286,7 +323,7 @@ describe("research stops on evidence or time, not a round count", () => {
     const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }],
       time: { remainingMs: () => 1, sendBackAllowed: () => true } });
     const result = await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another short-term result." }] }, ctx);
-    expect(result).toMatchObject({ kind: "pass", notes: [expect.stringContaining("How durable is it after five years?")] });
+    expect(result).toMatchObject({ kind: "pass", notes: [researchNote("gap_judge_unfinished", DRAFT.report), expect.stringContaining("How durable is it after five years?")] });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -354,7 +391,7 @@ describe("bounded messages", () => {
     const issues = Array.from({ length: RESEARCH_LIMITS.questions }, (_, index) => `${index}:` + "x".repeat(RESEARCH_LIMITS.questionCharacters - 3));
     // The decoder's total bound is independent of the individual field bounds.
     const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ open_questions: issues, weak_answers: issues, conflicts: issues })) } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [] });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished", DRAFT.report)] });
   });
 });
 
@@ -538,7 +575,7 @@ describe("gap check through the real engine", () => {
     expect(resultsOf(main.requests[2], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("sent_back");
     expect(main.requests).toHaveLength(6);
     expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "owners" }));
-    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "gap-judge-run1-2" }));
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "gap-judge-2" }));
     expect(main.requests[5]!.tools?.map((tool) => tool.name)).not.toContain("fetch_url");
     expect(main.requests[5]!.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
     expect(tokens(seen).join()).not.toContain("HIDDEN");

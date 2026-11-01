@@ -68,7 +68,7 @@ export type ResearchVerifierRoute = Readonly<{ connectionName: string | null; di
 export type ResearchVerifierRole = Readonly<{
   /** Read when the run starts; a failure reads as `unreadable`, never as not set. */
   frozenChoice(): Promise<FrozenVerifierChoice>;
-  /** The route of what the run froze, recording its binding once; null when it can no longer be admitted. */
+  /** The route of what the run froze, recording its binding once; null when it can no longer be admitted. Any other failure throws: it may pass. */
   route(input: Readonly<{ effort: string | null; providerModelId: string; runId: string; userId: string }>): Promise<ResearchVerifierRoute | null>;
 }>;
 
@@ -132,11 +132,10 @@ export function createResearchVerifierRole(input: Readonly<{ loadRole?: typeof l
         return { connectionName: names?.connection?.displayName ?? null, displayName: names?.displayName ?? model.upstreamModelId, route: { adapter: runtime.adapter, request: { modelCapabilities: model.capabilities,
           modelId: model.upstreamModelId, params, provider: snapshot.providerFamily, reasoningEffort: effort }, snapshot, timeoutMs: runtime.responseTimeoutMs } };
       } catch (error) {
-        if (!(error instanceof ProviderAdmissionError)) {
-          logEvent("service_operation", { action: "degrade", code: "research_verifier_unavailable", error, outcome: "degraded", run_id: runId,
-            stage: "prepare", subsystem: "database" });
-        }
-        return null;
+        if (error instanceof ProviderAdmissionError) return null;
+        logEvent("service_operation", { action: "degrade", code: "research_verifier_unavailable", error, outcome: "degraded", run_id: runId,
+          stage: "prepare", subsystem: "database" });
+        throw error;
       }
     }
   };

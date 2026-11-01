@@ -14,7 +14,7 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
-import type { ResearchGate, ResearchGateContext } from "./gates";
+import { runResearchGates, type ResearchGate, type ResearchGateContext } from "./gates";
 import { researchNote } from "./notes";
 import { researchOfTurn, type ResearchEngineDeps } from "./run";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -438,7 +438,7 @@ describe("the verifier's needs", () => {
     expect(other.requests[0]!.tools?.map((tool) => tool.name)).not.toContain(SUBMIT_RESEARCH_DRAFT_TOOL_NAME);
     expect(reports[0]).toMatchObject({ kind: "ended", result: { model: { id: "other-family-1" }, state: "done" } });
     expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ provider: "connection-2", providerModelId: "model-2" }),
-      name: "verifier-run1-1", parentRunId: "run-1", parentToolCallId: expect.stringMatching(/^row-/u) }));
+      name: "verifier-1", parentRunId: "run-1", parentToolCallId: expect.stringMatching(/^row-/u) }));
     expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*Checked by Other One.*`);
   });
 
@@ -744,6 +744,194 @@ describe("review findings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("a draft and its notes stay together", () => {
+  const firstDraft = gate("counts", async (draft) => ({ kind: "send_back", message: "Correct it.", notes: [`Counts of ${draft.report}.`] }));
+  const counts = (report: string) => `Counts of ${report}.`;
+
+  it("Stop during the next draft's check shows that draft with the generic note, never the last draft's counts", async () => {
+    const runId = "run-stop-second";
+    const hangs = gate("hangs", (_draft, context) => new Promise((_resolve, reject) => {
+      activeRunControllerRegistry.abort(runId);
+      context.signal.addEventListener("abort", () => reject(context.signal.reason as Error));
+    }));
+    const main = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2", { ...DRAFT, report: "second" })] }]);
+    let attempts = 0;
+    const memory = engineOf({ gates: [gate("either", async (draft, context) => {
+      attempts += 1;
+      return attempts === 1 ? firstDraft.run(draft, context) : hangs.run(draft, context);
+    })] });
+    await run(main.adapter, memory, { runId }, repository()).text();
+    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.anything(), `second\n\n---\n\n*${researchNote("stopped", "second")}*`);
+  });
+
+  it("a recording failure on the next draft shows it with the generic note, never the last draft's counts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const main = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2", { ...DRAFT, report: "second" })] }]);
+      const memory = engineOf({ gates: [firstDraft] });
+      vi.mocked(memory.deps.transcripts.append).mockImplementation(async (_scope, _from, items) => {
+        if (items.some((item) => item.kind === "tool_call" && item.callId === "call-2")) throw new Error("database down");
+        memory.appended.push(...items);
+      });
+      const repo = repository();
+      const finished = run(main.adapter, memory, {}, repo).text();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await finished;
+      expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", `second\n\n---\n\n*${researchNote("run_failed", "second")}*`, { runId: "run-1" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the deadline past a replacement draft in the reserved round keeps that draft, without the last draft's counts", async () => {
+    let clock = 0;
+    const main = scripted([
+      { calls: [start()] },
+      { calls: [submit("call-1")] },
+      { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
+      { calls: [submit("call-2", { ...DRAFT, report: "second" })] }
+    ]);
+    const memory = engineOf({ gates: [gate("counts", async (draft, context) => context.attempt === 1 ? firstDraft.run(draft, context)
+      : { kind: "pass", notes: [counts(draft.report)] })] }, { now: () => clock });
+    await run(main.adapter, memory).text();
+    expect(memory.published()).toBe(`second\n\n---\n\n*${counts("second")}*`);
+  });
+
+  it("a draft that stands when tools close keeps its own notes", async () => {
+    let clock = 0;
+    const main = scripted([
+      { calls: [start()] },
+      { calls: [submit("call-1")] },
+      { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
+      { text: "I would still like to look further." }
+    ]);
+    const memory = engineOf({ gates: [firstDraft] }, { now: () => clock });
+    await run(main.adapter, memory).text();
+    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${counts(REPORT)}*\n\n*${researchNote("time_out", REPORT)}*`);
+  });
+
+  it("a gate that did not finish on a draft adds what it carries, and one that did adds only what it said", async () => {
+    const carrying: ResearchGate = { carriedNotes: () => ["Carried."], name: "carrying", run: async () => ({ kind: "pass", notes: ["Its own."] }) };
+    const sendsBack = gate("first", async () => ({ kind: "send_back", message: "Again." }));
+    const context = { attempt: 1, earlier: [], plan: { goal: "g", questions: [], skipped: [] }, signal: new AbortController().signal,
+      sources: { opened: async () => [] }, subagents: { run: async () => ({ code: "x", kind: "refused" as const }) },
+      time: { remainingMs: () => 60_000, sendBackAllowed: () => true }, verifierModel: async () => ({ kind: "unavailable" as const }) };
+    const draft = { findings: [], origin: "reserved_call" as const, report: "r", unreachable: [] };
+    expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ kind: "sent_back", message: "Again.", notes: ["Carried."] });
+    expect(await runResearchGates({ context, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: ["Its own."] });
+    const broken: ResearchGate = { ...carrying, run: async () => { throw new Error("down"); } };
+    expect(await runResearchGates({ context, draft, gates: [broken], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed", "r"), "Carried."] });
+    const late = { ...context, time: { remainingMs: () => 0, sendBackAllowed: () => false } };
+    expect(await runResearchGates({ context: late, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("time_out", "r"), "Carried."] });
+  });
+});
+
+describe("the verifier's own turn is independent", () => {
+  it("gets none of the user's words or the chat's instructions, and the gap judge keeps them", async () => {
+    const seen: string[] = [];
+    const both = gate("both", async (_draft, context) => {
+      for (const [model, name] of [["main", "judge"], ["verifier", "verifier"]] as const) {
+        seen.push(model);
+        await context.subagents.run({ brief: `brief of ${name}`, instructions: "i", model, name, tools: [] }, context.signal);
+      }
+      return { kind: "pass" };
+    });
+    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\njudge" }, { text: "Outcome: done\nverifier" }]);
+    await run(main.adapter, engineOf({ gates: [both] })).text();
+    const [judge, verifier] = [main.requests[2]!, main.requests[3]!];
+    expect(JSON.stringify(judge.history)).toContain("Проведи исследование матрасов.");
+    expect(judge.prompt.system).toContain("Be brief.");
+    expect(JSON.stringify(verifier.history)).toContain("brief of verifier");
+    expect(JSON.stringify(verifier.history)).not.toContain("Проведи исследование матрасов.");
+    expect(verifier.prompt.system).not.toContain("Be brief.");
+  });
+
+  it("does not read what the user writes into the answer meanwhile", async () => {
+    // Waiting only while the gate runs, so the main agent's own rounds never read it and never reopen the answer.
+    let waiting = false;
+    const check = gate("verifier", async (_draft, context) => {
+      waiting = true;
+      await context.subagents.run({ brief: "b", instructions: "i", model: "main", name: "judge", tools: [] }, context.signal);
+      await context.subagents.run({ brief: "b", instructions: "i", model: "verifier", name: "verifier", tools: [] }, context.signal);
+      waiting = false;
+      return { kind: "pass" };
+    });
+    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\njudge" }, { text: "Outcome: done\nverifier" }]);
+    const repo = repository();
+    const followups = { close: vi.fn(async () => true), deliver: vi.fn(async () => true),
+      load: vi.fn(async () => ({ entries: waiting ? [{ delivery: "accepted" as const, id: "f1", origin: "user" as const, text: "USER FOLLOW-UP" }] : [], revision: 1 })) };
+    await run(main.adapter, engineOf({ gates: [check] }), { prepared: { ...prepared(), followupAdmission: {} as never } }, { ...repo, followups } as never).text();
+    expect(main.requests).toHaveLength(4);
+    expect(JSON.stringify(main.requests[2]!.history)).toContain("USER FOLLOW-UP");
+    expect(JSON.stringify(main.requests[3]!.history)).not.toContain("USER FOLLOW-UP");
+  });
+
+  it("starts a new thread under this run's name alone, never continuing an earlier answer's research", async () => {
+    const check = gate("verifier", async (_draft, context) => {
+      await context.subagents.run({ brief: "b", instructions: "i", model: "verifier", name: "verifier", tools: [] }, context.signal);
+      return { kind: "pass" };
+    });
+    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\nok" }]);
+    const memory = engineOf({ gates: [check] });
+    await run(main.adapter, memory).text();
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ branchRunIds: ["run-1"], name: "verifier-1" }));
+  });
+
+  function roleOf(adapter: ProviderAdapter, upstream: string, providerModelId: string, connectionId = "connection-2"): ResearchVerifierRole {
+    const route: SubagentModelRoute = { adapter, request: { modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
+      modelId: upstream, params: {}, provider: "other", reasoningEffort: null },
+    snapshot: { connection: { responseTimeoutMs: 300_000 }, connectionId, model: { adapterKind: "fake", upstreamModelId: upstream }, providerFamily: "other", providerModelId } as never, timeoutMs: 300_000 };
+    return { frozenChoice: vi.fn(async () => ({ effort: null, kind: "set" as const, providerModelId })),
+      route: vi.fn(async () => ({ connectionName: "Same", displayName: "Same One", route })) };
+  }
+
+  it.each([["the same model row", "fake-qsa", "model-1", "connection-1"], ["the same model over another connection", "fake-qsa", "model-9", "connection-2"]])(
+    "does not call %s independent", async (_name, upstream, providerModelId, connectionId) => {
+      let model: unknown;
+      const reader = gate("verifier", async (_draft, context) => {
+        model = await context.verifierModel(context.signal);
+        return { kind: "pass" };
+      });
+      const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+      await run(main.adapter, engineOf({ gates: [reader], verifier: roleOf(main.adapter, upstream, providerModelId, connectionId) })).text();
+      expect(model).toEqual({ kind: "main_model", label: "Same One · Same" });
+    });
+
+  it("keeps a different model as the role", async () => {
+    let model: unknown;
+    const reader = gate("verifier", async (_draft, context) => {
+      model = await context.verifierModel(context.signal);
+      return { kind: "pass" };
+    });
+    const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+    await run(main.adapter, engineOf({ gates: [reader], verifier: roleOf(main.adapter, "other-1", "model-2") })).text();
+    expect(model).toEqual({ kind: "role", label: "Same One · Same" });
+  });
+
+  it("does not hold a failure to resolve the role for the run: the next attempt asks again, and a refusal does hold", async () => {
+    const outcomes: unknown[] = [];
+    const reader = gate("verifier", async (_draft, context) => {
+      await context.verifierModel(context.signal).then((value) => outcomes.push(value), () => outcomes.push("threw"));
+      return context.attempt === 1 ? { kind: "send_back", message: "Again." } : { kind: "pass" };
+    });
+    const main = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }, { calls: [submit("call-3")] }]);
+    const good = roleOf(main.adapter, "other-1", "model-2");
+    const route = vi.mocked(good.route);
+    const answer = await route.getMockImplementation()!({ effort: null, providerModelId: "model-2", runId: "r", userId: "u" });
+    route.mockReset();
+    route.mockRejectedValueOnce(new Error("database down")).mockResolvedValue(answer);
+    await run(main.adapter, engineOf({ gates: [reader], verifier: good })).text();
+    expect(outcomes).toEqual(["threw", { kind: "role", label: "Same One · Same" }]);
+
+    const refusing = vi.fn(async () => null);
+    const main2 = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }]);
+    outcomes.length = 0;
+    await run(main2.adapter, engineOf({ gates: [reader], verifier: { frozenChoice: good.frozenChoice, route: refusing } })).text();
+    expect(outcomes).toEqual([{ kind: "unavailable" }, { kind: "unavailable" }]);
+    expect(refusing).toHaveBeenCalledTimes(1);
   });
 });
 

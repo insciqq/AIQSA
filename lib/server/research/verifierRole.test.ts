@@ -67,6 +67,11 @@ describe("the research verifier role", () => {
     await expect(ended.route(scope)).resolves.toBeNull();
   });
 
+  it("throws a failure that may pass, instead of calling the model unavailable", async () => {
+    const down = createResearchVerifierRole({ loadRole: vi.fn(async () => { throw new Error("database down"); }) as never, prisma: store().prisma as never, runtime: runtime as never });
+    await expect(down.route(scope)).rejects.toThrow("database down");
+  });
+
   it("reports the role's readiness to the administrator", async () => {
     const eligible = createResearchVerifierRoleResolver(store().prisma as never, vi.fn(async () => role()) as never);
     await expect(eligible.resolve()).resolves.toMatchObject({ ok: true, policyVersion: 4, providerModelId: "model-2", reasoningEffort: null });
