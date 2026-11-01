@@ -43,10 +43,10 @@ describe("the change_research_frame schema", () => {
     expect(JSON.stringify(changeResearchFrameTool.inputSchema)).not.toMatch(/"type":\[[^\]]*"(?:array|object)"/u);
   });
 
-  it("is a researcher's tool and never a gate's: a list of tool groups never reaches it", () => {
+  it("reaches every researcher whatever its tool groups, as record_evidence does", () => {
     expect(subagentOffersTool(changeResearchFrameTool, null)).toBe(true);
-    expect(subagentOffersTool(changeResearchFrameTool, [])).toBe(false);
-    expect(subagentOffersTool(changeResearchFrameTool, [SUBAGENT_TOOL_GROUPS.web_fetch])).toBe(false);
+    expect(subagentOffersTool(changeResearchFrameTool, [])).toBe(true);
+    expect(subagentOffersTool(changeResearchFrameTool, [SUBAGENT_TOOL_GROUPS.web_fetch])).toBe(true);
   });
 });
 

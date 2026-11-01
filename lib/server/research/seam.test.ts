@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
-import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES } from "../../contracts/subagents";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
+  type ResearchDraft } from "../../contracts/research";
+import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
 import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunExecutionInput } from "../engine/execution";
@@ -1170,6 +1171,27 @@ describe("researchers on the installation role", () => {
     expect(recorded).toMatchObject({ turn: { providerModelId: "research-model", reasoningEffort: null, definitionRevisionId: "rev" } });
     expect(child.requests[0]).toMatchObject({ modelId: "research-upstream", reasoningEffort: null });
     expect(child.requests[0]!.prompt.system).toContain("Specialist instructions.");
+  });
+
+  it("keeps a researcher's bookkeeping on the role's host, for a custom type that narrows its tools, while a gate on that model has none", async () => {
+    const child = scripted([{ text: "Outcome: done\nFindings." }, { text: "Outcome: done\nHolds." }]);
+    const installed = installedResearchRole(child.adapter);
+    const checks = installedResearchRole(child.adapter, { role: "checks" });
+    const gated: ResearchGate = { name: "turns", run: async (_draft, context) => {
+      await context.subagents.run({ brief: "Check it.", instructions: "Check.", model: "verifier", name: "verifier", tools: [SUBAGENT_TOOL_GROUPS.web_search, SUBAGENT_TOOL_GROUPS.web_fetch] }, context.signal);
+      return { kind: "pass" };
+    } };
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+      arguments: { name: "researcher", type: "web-researcher", message: "Read the sources." } }] }, { calls: [submit()] }]);
+    await run(main.adapter, engineOf({ gates: [gated], researcher: installed.role, verifier: checks.role }), { subagents: { types: {
+      catalog: async () => [], resolve: async () => ({ kind: "found", type: { definitionId: "type", revisionId: "rev", name: "web-researcher",
+        description: "", instructions: "Read the web.", providerModelId: null, reasoningEffort: null, toolGroups: [SUBAGENT_TOOL_GROUPS.web_search, SUBAGENT_TOOL_GROUPS.web_fetch, SUBAGENT_TOOL_GROUPS.workspace] } })
+    } } }).text();
+    const offered = (request: ProviderRunRequest | undefined) => request?.tools?.map((tool) => tool.name) ?? [];
+    expect(child.requests).toHaveLength(2);
+    expect(offered(child.requests[0])).toEqual(expect.arrayContaining([CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME]));
+    expect(offered(child.requests[1])).not.toContain(CHANGE_RESEARCH_FRAME_TOOL_NAME);
+    expect(offered(child.requests[1])).not.toContain(RECORD_EVIDENCE_TOOL_NAME);
   });
 
   it("refuses a disappeared researcher at start and in a sibling call of the same response", async () => {

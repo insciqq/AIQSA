@@ -140,6 +140,10 @@ const PLAN_RESULT_WORDS_END = ',"instructions":';
 const resultOf = (call: ModelToolCall, value: Readonly<Record<string, unknown>>): ToolExecutionResult =>
   ({ callId: call.id, content: [{ type: "json", value }], name: call.name, status: "complete" });
 
+/** A `call_subagent` result of a turn that was admitted and ran, whatever it came to. An admission's refusal and a message left in a running turn's mailbox are neither. */
+const turnRan = ({ content }: ToolExecutionResult) => content.some((part) => part.type === "json" && typeof part.value === "object" && part.value !== null &&
+  "kind" in part.value && part.value.kind === "ended");
+
 /** Beside what a researcher left when its time ended it, so the main agent reads a planned end and goes on, never a failure to retry. */
 export const RESEARCHER_TIME_ENDED = "Its research time ended, so it was stopped. What it recorded stays, and the report above is what it had so far. Go on with what you have.";
 
@@ -359,12 +363,12 @@ export function createRunResearch(input: RunResearchInput) {
   }
 
   /**
-   * A researcher's call as part of its round. One that ran counts for the round, and its result ends with what is still empty, which is where
-   * the main agent reads what to do next.
+   * A researcher's call as part of its round. One whose turn ran counts for the round, and its result ends with what is still empty, which is
+   * where the main agent reads what to do next. That goes for a failed turn too: failures must not restart until time ends, and what one saved counts.
    */
   async function researcherOfRound(tool: EngineTool, execution: EngineToolExecution, call: ModelToolCall): Promise<ToolExecutionResult> {
     const result = await underTime(tool, execution, call);
-    if (result.status !== "complete") return result;
+    if (!turnRan(result)) return result;
     rounds.ran(execution.round);
     const matrix = await researchMatrix(ports.coverage, execution.signal);
     if (!matrix) return result;

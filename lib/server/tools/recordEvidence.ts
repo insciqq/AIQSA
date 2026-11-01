@@ -22,9 +22,8 @@ import type { RunTool, ToolExecutionResult } from "./types";
  * `record_evidence`: a finding becomes a durable record the moment an agent makes it (`lib/server/research/evidenceStore.ts`), for the main
  * agent and every researcher of a run that offers research. Who wrote it comes from the registry that built the tool, never from the model.
  * `strict: false` like the other research tools, though every field is required: `decodeResearchRecord` wants null where a kind has no use for
- * a field, and names the one to correct. A tool of the `session` capability, so a turn whose tool groups narrow its tools, such as a gate's,
- * is never offered it (`lib/server/engine/subagents/registry.ts`). The result stays short: the id, the quote check's word, a small sample's
- * word and what to do.
+ * a field, and names the one to correct. Every researcher has it whatever its tool groups, and a gate's turn never does
+ * (`lib/server/engine/subagents/registry.ts`). The result stays short: the id, the quote check's word, a small sample's word and what to do.
  */
 export { RECORD_EVIDENCE_TOOL_NAME };
 
