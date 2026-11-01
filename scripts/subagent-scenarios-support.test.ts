@@ -201,8 +201,15 @@ describe("a sub-agent's children (O)", () => {
     expect(oracleO(evidence).counts).toMatchObject({ depthRefused: 1, dispatchedAfterAllow: 1, limitRefused: 1 });
   });
 
+  it("reports a step that could not run as that alone, with no verdict on the child it never started", () => {
+    const { [nest.approver]: _approver, ...parents } = evidence.parents;
+    const approval = { ...evidence.approval, approvalsOnMainRun: 0, childTurn: null, dispatchedAfterAllow: 0, parentTurn: null, unavailable: "bulk_mcp_publish_422" };
+    expect(oracleO({ ...evidence, approval, parents } as unknown as OEvidence).failed).toEqual(["approval_step_unavailable"]);
+  });
+
   it("names each line that failed", () => {
     const cases: Array<[Record<string, unknown>, string]> = [
+      [{ parents: { ...evidence.parents, [nest.approver]: null } }, "child_not_under_parent"],
       [{ reports: { ...evidence.reports, leadHoldsBoth: false } }, "children_reports_not_used"],
       [{ reports: { ...evidence.reports, children: [turn(), stopped] } }, "children_did_not_finish"],
       [{ parents: { ...evidence.parents, [nest.left]: null } }, "child_not_under_parent"],
