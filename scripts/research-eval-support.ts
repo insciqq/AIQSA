@@ -55,7 +55,7 @@ export function researchEvalOptions(env: Readonly<Record<string, string | undefi
   };
   const answersFile = env.AIQSA_SUBAGENTS_ANSWERS_FILE?.trim() || null;
   const answersDir = env.AIQSA_SUBAGENTS_ANSWERS_DIR?.trim() || (answersFile ? `${answersFile}.d` : null);
-  if (!answersDir) fail("research_answers_dir_required");
+  if (!answersDir) return fail("research_answers_dir_required");
   const checks = role("CHECKS");
   if (checks.model && env.AIQSA_SUBAGENTS_VERIFIER_FAMILY?.trim()) fail("research_checks_role_ambiguous");
   return { answersDir, answersFile, checks, concurrency: integer(env.AIQSA_SUBAGENTS_T_CONCURRENCY, 3, 8, "research_concurrency_invalid"),
@@ -263,7 +263,7 @@ export async function evaluateResearch<T>(call: ResearchEvalCall | null, instruc
 export async function researchProxySetup(create: () => Promise<unknown>): Promise<string> {
   try {
     const result = await create();
-    if (!record(result) || !record(result.proxy) || !text(result.proxy.id, 128)) fail("research_proxy_setup_failed");
+    if (!record(result) || !record(result.proxy) || !text(result.proxy.id, 128)) return fail("research_proxy_setup_failed");
     return result.proxy.id;
   } catch { return fail("research_proxy_setup_failed"); }
 }

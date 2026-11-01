@@ -1516,7 +1516,7 @@ async function ensureResearchRoles(api: Api, route: { apiRoot: string }, secret:
       if (effort && !(await catalogModel(api, added)).parameterControls.reasoningEffort.options.includes(effort)) {
         const connection = readConnections(await json(api, "/api/admin/providers"))?.find((entry) => entry.id === added.connectionId);
         const stored = connection?.models.find((entry) => entry.id === added.providerModelId);
-        if (!stored?.activeConfig) fail("research_model_configuration_missing");
+        if (!stored?.activeConfig) return fail("research_model_configuration_missing");
         // A requested level outside the shared helper's defaults needs an explicit declaration and Admin's checks.
         await json(api, `/api/admin/providers/${encodeURIComponent(added.connectionId)}/models/${encodeURIComponent(added.providerModelId)}`, {
           body: { action: "update", activate: true, displayName: stored.displayName, expectedDisplayName: stored.displayName,
@@ -1615,12 +1615,12 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           }
         };
         const sent = await trySend(ctx, run, chat.id, question.text, [], { search: route });
-        if (!sent.ok) fail("research_send_failed");
+        const runId = sent.ok ? sent.runId : fail("research_send_failed");
         let quiet = 0;
         const terminal = await poll(Math.max(1, deadline - Date.now()), async () => {
           await capture!();
           const mains = await mainRuns(ctx.db, chat.id);
-          const original = mains.find((entry) => entry.id === sent.runId);
+          const original = mains.find((entry) => entry.id === runId);
           const idle = original && TERMINAL_RUN_STATES.has(original.status) && mains.every((entry) => TERMINAL_RUN_STATES.has(entry.status)) &&
             await owedCallbacks(ctx.db, chat.id) === 0;
           quiet = idle ? quiet + 1 : 0;
@@ -1643,7 +1643,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         const gateThreads = new Set([...names].filter(([name]) => researchThreadRole(name) !== "researchers").flatMap(([, ids]) => ids));
         const sentBack = calls.filter((call) => call.toolName === "submit_research_draft" && JSON.stringify(call.result ?? "").includes("sent_back")).length;
         const frame = (await ctx.db.query<{ windowEndsAt: Date | null; releasedAt: Date | null; releasedBy: unknown }>(`SELECT "windowEndsAt", "releasedAt", "answer"->>'released_by' AS "releasedBy"
-          FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chat.id, sent.runId])).rows[0] ?? null;
+          FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chat.id, runId])).rows[0] ?? null;
         const metrics = researchMetrics({ drafts, opened, researcherTurns: turns.filter((turn) => !gateThreads.has(turn.threadId)).length,
           sentBack, started: count("start_research") > 0, planWindow: researchPlanWindow(frame) });
         const gates = (await ctx.db.query<TGateRow>(`SELECT th."name", t."reasonCode", t."state"::text AS "state", t."result"->>'report' AS "report"
