@@ -1,10 +1,10 @@
-import type { ProxyAddressFailureCode, ProxyConnectionFailureCode } from "../../contracts/proxies";
+import type { ProxyAddressFailureCode, ProxyConnectionFailureCode, ProxySelectionFailureCode, PROXY_UNAVAILABLE_CODE } from "../../contracts/proxies";
 
 export type WebFetchFailureCode =
   | "fetch_url_invalid" | "fetch_url_credentials" | "fetch_port_not_allowed" | "fetch_blocked_address"
   | "fetch_redirect_invalid" | "fetch_redirect_limit" | "fetch_timeout" | "fetch_too_large"
   | "fetch_unsupported_content_type" | "fetch_http_status" | "fetch_network_error"
-  | ProxyAddressFailureCode | ProxyConnectionFailureCode;
+  | ProxyAddressFailureCode | ProxyConnectionFailureCode | ProxySelectionFailureCode | typeof PROXY_UNAVAILABLE_CODE;
 
 /** Never retain a socket error, its message, cause, endpoint or credentials. */
 export class WebFetchError extends Error {
