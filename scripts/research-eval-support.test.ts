@@ -397,9 +397,14 @@ describe("content-free stdout, role accounting and plan window", () => {
 
   it("reports the plan wait and only a known release label, including a missing frame", () => {
     expect(researchPlanWindow(null)).toEqual({ present: false, seconds: null, releasedBy: null });
-    expect(researchPlanWindow({ windowEndsAt: "2026-11-01T00:01:00Z", releasedAt: "2026-11-01T00:01:00Z", releasedBy: "timer" }))
+    expect(researchPlanWindow({ createdAt: "2026-11-01T00:00:00Z", releasedAt: "2026-11-01T00:01:00Z", releasedBy: "timer" }))
       .toEqual({ present: true, seconds: 60, releasedBy: "timer" });
-    expect(researchPlanWindow({ windowEndsAt: "2026-11-01T00:01:00Z", releasedAt: "2026-11-01T00:00:10Z", releasedBy: "start_button" }).seconds).toBe(10);
-    expect(researchPlanWindow({ windowEndsAt: null, releasedAt: null, releasedBy: "PRIVATE_MARKER" }).releasedBy).toBeNull();
+    expect(researchPlanWindow({ createdAt: "2026-11-01T00:00:00Z", releasedAt: "2026-11-01T00:00:10Z", releasedBy: "start_button" }).seconds).toBe(10);
+    expect(researchPlanWindow({ createdAt: null, releasedAt: null, releasedBy: "PRIVATE_MARKER" }).releasedBy).toBeNull();
+  });
+
+  it("includes time spent holding the plan after cancel_hold rewrites the countdown deadline", () => {
+    const held = { createdAt: "2026-11-01T00:00:00Z", windowEndsAt: "2026-11-01T00:03:00Z", releasedAt: "2026-11-01T00:03:00Z", releasedBy: "timer" };
+    expect(researchPlanWindow(held)).toEqual({ present: true, seconds: 180, releasedBy: "timer" });
   });
 });
