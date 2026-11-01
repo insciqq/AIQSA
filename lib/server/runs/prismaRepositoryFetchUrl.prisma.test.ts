@@ -2,10 +2,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import { summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import { prisma } from "../prisma";
+import { createHostedSearchEvidence } from "../engine/subagents/hostedSearchEvidence";
 import { createFetchUrlSession } from "../tools/fetchUrl";
 import { FETCH_URL_LIMITS } from "../tools/fetchUrlPlan";
 import { extractPage } from "../webFetch/extract";
+import { createPrismaRunRepository } from "./prismaRepository";
 import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 
 const users: string[] = [];
@@ -110,6 +113,32 @@ describe("page reader link authority across runs", () => {
       await expect(read(url)).resolves.toBe("read");
     }
     expect(fetchPage).toHaveBeenCalledTimes(4);
+  });
+
+  it("authorizes a hosted-route sub-agent's link through its evidence row, in this answer and a later one, without listing it as a source", async () => {
+    const answer = await turn();
+    const agent = await backgroundAgent(answer, { anchorRunId: answer.runId, name: "hosted", parentRunId: answer.runId });
+    const record = (row: Parameters<ReturnType<typeof createPrismaRunRepository>["createSearchRun"]>[0]) =>
+      createPrismaRunRepository(prisma).createSearchRun(row);
+    const searchPlan = { mode: "all_selected" as const, options: [{ adapterKind: "answer_provider_hosted", modelId: null, optionId: "hosted-option",
+      provider: "openai" }] } as never;
+    for (const [modelRunId, url] of [[agent.runId, "https://hosted-agent.example/page"], [answer.runId, "https://hosted-foreground.example/page"]] as const) {
+      const call = createHostedSearchEvidence({ modelRunId, record, searchPlan }).modelCall();
+      call.add({ data: { artifactType: "citation", payload: { index: 1, title: "Cited", url } }, type: "artifact" });
+      await call.save();
+    }
+    const { read } = pageReader(answer);
+    await expect(read("https://hosted-agent.example/page")).resolves.toBe("read");
+    await expect(read("https://hosted-foreground.example/page")).resolves.toBe("read");
+    const later = await laterTurn(answer.chatId, answer.userId, answer.answerId);
+    const next = pageReader({ runId: later.runId, userId: answer.userId }, [answer.runId]);
+    await expect(next.read("https://hosted-agent.example/page")).resolves.toBe("read");
+    // The foreground row sits under the main run, whose answer must not list it, and it is no executed engine.
+    const rows = await prisma.searchRun.findMany({ select: { artifacts: true, invocationId: true, searchRevisionId: true, status: true, strategyId: true },
+      where: { modelRunId: answer.runId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ invocationId: null, searchRevisionId: null, status: "complete", strategyId: "hosted-option" });
+    expect(summarizeMessageRunArtifacts({ events: [], searchRuns: rows })).toBeNull();
   });
 
   it("reads more than five pages for one answer", async () => {

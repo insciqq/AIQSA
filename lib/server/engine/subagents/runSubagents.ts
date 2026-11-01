@@ -163,6 +163,7 @@ export type PrepareRunSubagentsInput = Readonly<{
   /** Background turns may start (web chats); never from a Telegram turn or a scheduled occurrence, which still reach them. */
   backgroundAllowed: boolean;
   ports?: SubagentRunPorts;
+  recordSearchEvidence: SubagentHost["recordSearchEvidence"];
   runContextItems: readonly TranscriptItem[];
   runId: string;
   saveResult: ToolBatchDeps["saveResult"];
@@ -262,6 +263,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     now: input.now,
     onWorkspaceLifecycle: input.onWorkspaceLifecycle,
     userFollowups: input.userFollowups,
+    recordSearchEvidence: input.recordSearchEvidence,
     recordDetachedCompaction: ({ item, sequence, thread }) =>
       input.engine.runs.recordDetachedCompaction(input.scope, { item, sequence, status: null, thread }),
     request,

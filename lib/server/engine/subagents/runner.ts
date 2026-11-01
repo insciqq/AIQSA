@@ -53,6 +53,7 @@ import { compactionModelCall } from "../compactionCalls";
 import { turnContextItem } from "../conversation";
 import { detachedCompactions } from "../detachedCompactions";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "../faults";
+import { createHostedSearchEvidence, type HostedSearchEvidenceRow } from "./hostedSearchEvidence";
 import { ANSWER_NOW_INSTRUCTION, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type LoopToolChoice } from "../loop";
 import { callModel } from "../modelCall";
 import {
@@ -177,6 +178,8 @@ export type SubagentHost = Readonly<{
   }>;
   maxToolCalls: number | null;
   maxToolRounds: number | null;
+  /** Writes what a turn's hosted Search found as link evidence for its run. */
+  recordSearchEvidence(row: HostedSearchEvidenceRow): Promise<void>;
   /** How the turn's agent sees and reaches the others (`messageTools.ts`); absent, it has no such tools. */
   messaging?: SubagentMessaging;
   now(): number;
@@ -904,12 +907,20 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           await nextMail(turn, signal);
         }
       };
+      // Outputs stay the sub-agent's own, but what its hosted Search found still authorizes page reads (`hostedSearchEvidence.ts`).
+      const searchEvidence = createHostedSearchEvidence({ modelRunId: input.hostRunId, record: host.recordSearchEvidence,
+        searchPlan: request.searchPlan });
       const outcome = await runAgentLoop({
         append,
         appendCalls,
-        callModel: (request) => sendOnceMore(request, (sent) => callModel({ adapter: route.adapter, deadlineAt: host.deadlineAt,
-          faults: host.faults ?? NO_ENGINE_TEST_FAULTS, now: host.now, onDiscard: async () => undefined, onEvent: async () => undefined,
-          onUsage: recordUsage, routing: loopRouting, signal, timeoutMs: route.timeoutMs }, sent)),
+        callModel: (request) => sendOnceMore(request, async (sent) => {
+          const evidence = searchEvidence.modelCall();
+          const result = await callModel({ adapter: route.adapter, deadlineAt: host.deadlineAt,
+            faults: host.faults ?? NO_ENGINE_TEST_FAULTS, now: host.now, onDiscard: async () => evidence.discard(),
+            onEvent: async (event) => evidence.add(event), onUsage: recordUsage, routing: loopRouting, signal, timeoutMs: route.timeoutMs }, sent);
+          await evidence.save();
+          return result;
+        }),
         closeFollowups: async () => {
           await childReports();
           pending.push(...await incoming());
