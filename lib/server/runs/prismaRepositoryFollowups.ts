@@ -48,7 +48,7 @@ export async function insertAdmittedRunFollowups(tx: Prisma.TransactionClient, i
  */
 export const runFollowupSelect = {
   followupMode: true, followupClosedAt: true,
-  followups: { orderBy: { ordinal: "asc" }, where: { origin: "user" }, select: {
+  followups: { orderBy: { ordinal: "asc" }, where: { origin: "user", subagentTurnId: null }, select: {
     id: true, ordinal: true, text: true, authorName: true, createdAt: true, deliveredAt: true, precedingText: true
   } }
 } satisfies Prisma.ModelRunSelect;
@@ -96,9 +96,9 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         if (!actor || !access) return { kind: "not_found" };
         const previous = run.followups.find(entry => entry.nonce === input.nonce);
         // The user's own follow-ups: the count and their position never include a sub-agent's messages or callbacks.
-        const userFollowups = run.followups.filter(entry => entry.origin === "user");
+        const userFollowups = run.followups.filter(entry => entry.origin === "user" && entry.subagentTurnId === null);
         if (previous) {
-          if (previous.origin !== "user" || previous.authorUserId !== input.userId || previous.text !== decoded.text) return { kind: "conflict" };
+          if (previous.origin !== "user" || previous.subagentTurnId !== null || previous.authorUserId !== input.userId || previous.text !== decoded.text) return { kind: "conflict" };
           return { kind: "accepted", entry: projectRunFollowups({ ...run, followups: [previous] },
             userFollowups.findIndex(entry => entry.id === previous.id)).entries[0]! };
         }

@@ -1135,6 +1135,8 @@ button[data-tone="warn"] .v2-subagent-line-name {
 }
 
 .v2-subagent-thread {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   height: 100%;
   min-height: 0;
@@ -1146,13 +1148,15 @@ button[data-tone="warn"] .v2-subagent-line-name {
 }
 
 .v2-subagent-thread-head,
-.v2-subagent-thread-body {
+.v2-subagent-thread-body,
+.v2-subagent-thread-footer {
   width: min(var(--v2-measure), calc(100% - 2rem));
   min-width: 0;
   margin: 0 auto;
 }
 
 .v2-subagent-thread-head {
+  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1352,4 +1356,15 @@ button[data-tone="warn"] .v2-subagent-line-name {
     width: 2.75rem;
     height: 2.75rem;
   }
+}
+
+.v2-subagent-thread-footer {
+  flex-shrink: 0;
+  padding: 0.5rem 0 max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.v2-subagent-thread-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }

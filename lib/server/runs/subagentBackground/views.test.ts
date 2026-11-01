@@ -237,6 +237,7 @@ it("shows what a turn received and wrote as rows of its thread, in order, naming
   ];
   const read = vi.fn(async () => [
     { authorName: "beta", createdAt: at, deliveredAt: at, modelRunId: "run-turn-a", origin: "subagent_message", subagentTurnId: "turn-a", text: "It is 42" },
+    { authorName: "You", createdAt: new Date(at.getTime() + 4_000), deliveredAt: null, modelRunId: "run-turn-a", origin: "user", subagentTurnId: "turn-a", text: "Buy this one." },
     { authorName: "Main agent", createdAt: new Date(at.getTime() + 3_000), deliveredAt: null, modelRunId: "run-turn-a", origin: "main_agent", subagentTurnId: "turn-a", text: "Size M." }
   ]);
   tx.modelRunToolCall.findMany.mockResolvedValue(calls as never);
@@ -246,7 +247,8 @@ it("shows what a turn received and wrote as rows of its thread, in order, naming
     { createdAt: at.toISOString(), delivery: "delivered", from: "beta", text: "It is 42" },
     { createdAt: later.toISOString(), delivery: "accepted", text: "Mine is 7", to: "beta" },
     { createdAt: new Date(at.getTime() + 2_000).toISOString(), delivery: "accepted", question: true, text: "Which size?", to: "main" },
-    { createdAt: new Date(at.getTime() + 3_000).toISOString(), delivery: "accepted", text: "Size M." }
+    { createdAt: new Date(at.getTime() + 3_000).toISOString(), delivery: "accepted", text: "Size M." },
+    { createdAt: new Date(at.getTime() + 4_000).toISOString(), delivery: "accepted", text: "Buy this one.", user: true }
   ]);
   expect(decodeSubagentThreadView(view)?.turns[0]?.messages).toEqual(view!.turns[0]!.messages);
 });
