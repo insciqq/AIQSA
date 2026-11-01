@@ -320,7 +320,7 @@ export function createPrismaRunRepository(
         FROM "RunFollowup" f
         -- The user's own follow-ups only: a sub-agent's callback the answer read is in its native items, an unread one is
         -- owed again, and neither is ever user text (link authority, guard references) on a later turn.
-        WHERE f."origin" = 'user' AND f."modelRunId" = (
+        WHERE f."origin" = 'user' AND f."subagentTurnId" IS NULL AND f."modelRunId" = (
           SELECT r."id" FROM "ModelRun" r WHERE path."role" = 'assistant' AND
             r."assistantMessageId" = path."id"
           ORDER BY r."createdAt" DESC LIMIT 1

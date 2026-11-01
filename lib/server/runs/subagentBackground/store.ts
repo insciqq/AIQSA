@@ -129,7 +129,7 @@ export type MailboxInsertInput = SubagentChatScope & Readonly<{
   authorName: string;
   /** The sending call's id, so a repeat finds its row. */
   nonce: string;
-  origin: "main_agent" | "subagent_callback" | "subagent_message" | "subagent_question";
+  origin: "main_agent" | "subagent_callback" | "subagent_message" | "subagent_question" | "user";
   text: string;
   /** The receiving turn, foreground or background: the row sits on the run hosting it. */
   turnId: string;
@@ -594,25 +594,27 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       return client.$transaction(async (tx): Promise<MailboxInsertOutcome> => {
         const chat = await lockChatScope(tx, { chatId, userId });
         if (!chat || chat.permanentDeletionAt) return "closed";
-        const turn = await tx.subagentTurn.findFirst({ select: { executionRun: { select: { id: true } }, mode: true, parentRunId: true, state: true },
+        const turn = await tx.subagentTurn.findFirst({ select: { executionRun: { select: { id: true } }, mode: true, parentRunId: true, parentRun: { select: { assistantMessageId: true } }, state: true },
           where: { chatId, id: turnId, userId } });
         if (!turn || !isActiveSubagentState(turn.state)) return "closed";
+        if (origin === "user" && (!chat.activeLeafMessageId || !turn.parentRun.assistantMessageId ||
+          !(await branchPathMessageIds(tx, chatId, chat.activeLeafMessageId)).has(turn.parentRun.assistantMessageId))) return "closed";
         const runId = turn.mode === "foreground" ? turn.parentRunId : turn.executionRun?.id;
         if (!runId) return "closed";
         const [run] = await tx.$queryRaw<Array<{ status: ModelRunStatus }>>`
           SELECT "status" FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${chatId} AND "userId" = ${userId} FOR UPDATE`;
         if (!run || !dispatchableModelRunStatuses.includes(run.status)) return "closed";
-        const previous = await tx.runFollowup.findUnique({ select: { origin: true, text: true },
+        const previous = await tx.runFollowup.findUnique({ select: { origin: true, subagentTurnId: true, text: true },
           where: { modelRunId_nonce: { modelRunId: runId, nonce } } });
-        if (previous) return previous.origin === origin && previous.text === text ? "exists" : "closed";
+        if (previous) return previous.origin === origin && previous.subagentTurnId === turnId && previous.text === text ? "exists" : "closed";
         // A child's report and questions are bounded where they come from, and the first is what its parent waits for.
-        const bound = origin === "main_agent" ? SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun
+        const bound = origin === "main_agent" || origin === "user" ? SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun
           : origin === "subagent_message" ? SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn : null;
         if (bound !== null && await tx.runFollowup.count({ where: { modelRunId: runId, origin, subagentTurnId: turnId } }) >= bound) return "full";
         // Above the run's own ordinals, never its revision: that revision is what an answer closes at, and a run whose turn
         // ends with a message it never read must still settle (`ModelRun_followup_completion_guard`).
         const last = await tx.runFollowup.aggregate({ _max: { ordinal: true }, where: { modelRunId: runId } });
-        await tx.runFollowup.create({ data: { authorName, chatId, modelRunId: runId, nonce,
+        await tx.runFollowup.create({ data: { authorName, authorUserId: origin === "user" ? userId : null, chatId, modelRunId: runId, nonce,
           ordinal: Math.max(RUN_FOLLOWUP_REVISION_MAX, last._max.ordinal ?? 0) + 1, origin, subagentTurnId: turnId, text } });
         return "inserted";
       });

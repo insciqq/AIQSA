@@ -19,8 +19,8 @@ import { decodeThreadWorkspaceActivity, type ThreadWorkspaceActivity } from "./w
 /**
  * Owner-only projections of a chat's sub-agents for the chat list tree, the
  * answer's rows, the chip above the composer with its list and "Stop all", and
- * the read-only thread view (operator decision 2026-10-29: sub-agents nest
- * under their chat; a thread opens read-only with Stop). A branch shows only
+ * the thread view (operator decision 2026-10-31: active threads take user
+ * messages; finished threads continue through the main chat). A branch shows only
  * its own sub-agents: every projection reads the chat's active branch
  * (`isSubagentTurnOnBranch`).
  * A child (operator decision 2026-10-31) is a row like any other that names its
@@ -157,6 +157,8 @@ export type SubagentTurnMessage = Readonly<{
   createdAt: string;
   delivery: "accepted" | "delivered" | "undelivered";
   from?: string;
+  /** Direct speech from the owner, never an agent name. */
+  user?: true;
   /** What the turn asked its parent, rather than told an agent. */
   question?: true;
   text: string;
@@ -310,12 +312,14 @@ export function decodeSubagentSummaryQuery(params: URLSearchParams): string[] | 
 const isAgentName = (value: unknown) => value === MAIN_AGENT_NAME || (typeof value === "string" && normalizeSubagentName(value) === value);
 
 function decodeTurnMessage(value: unknown): SubagentTurnMessage | null {
-  if (!record(value) || !only(value, ["createdAt", "delivery", "from", "question", "text", "to"])) return null;
+  if (!record(value) || !only(value, ["createdAt", "delivery", "from", "question", "text", "to", "user"])) return null;
   if (!timestamp(value.createdAt) || !["accepted", "delivered", "undelivered"].includes(value.delivery as string) ||
     !text(value.text, SUBAGENT_LIMITS.messageCharacters)) return null;
   if ((value.from !== undefined && !isAgentName(value.from)) || (value.to !== undefined && !isAgentName(value.to)) ||
-    (value.question !== undefined && value.question !== true)) return null;
+    (value.question !== undefined && value.question !== true) ||
+    (value.user !== undefined && (value.user !== true || value.from !== undefined || value.to !== undefined || value.question !== undefined))) return null;
   return { createdAt: value.createdAt, delivery: value.delivery as SubagentTurnMessage["delivery"],
+    ...(value.user === true ? { user: true as const } : {}),
     ...(typeof value.from === "string" ? { from: value.from } : {}), ...(value.question === true ? { question: true as const } : {}),
     text: value.text, ...(typeof value.to === "string" ? { to: value.to } : {}) };
 }

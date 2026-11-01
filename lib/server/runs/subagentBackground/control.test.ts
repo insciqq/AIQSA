@@ -122,6 +122,38 @@ describe("background sub-agent runs", () => {
       .toMatchObject({ kind: "ended", result: { name: "researcher", state: "done" } });
   });
 
+  it.each(["background", "foreground"] as const)("delivers direct user speech durably to a %s turn", async (mode) => {
+    const { control, runner, store } = setup();
+    const started = await control.start(startInput("researcher"));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    await vi.waitFor(() => expect(runner!.turns.get(turnId)).toBeDefined());
+    if (mode === "foreground") store.turns[0] = { ...store.turns[0]!, mode, runId: null };
+    const input = { chatId: "chat-1", userId: "user-1", threadId: "thread-researcher", turnId, nonce: "direct-1", text: "Buy this one." };
+    expect(await control.deliverUser(input)).toEqual({ kind: "delivered", state: "running" });
+    expect(await control.deliverUser(input)).toEqual({ kind: "delivered", state: "running" });
+    expect(runner!.turns.get(turnId)!.messages).toEqual([{ nonce: "user:direct-1", origin: "user", text: input.text }]);
+    expect(store.turns[0]!.mailbox).toMatchObject([{ delivered: false, origin: "user", nonce: "user:direct-1" }]);
+    expect(await control.deliverUser({ ...input, userId: "other" })).toEqual({ kind: "not_found" });
+    for (let index = 1; index < SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun; index += 1) await control.deliverUser({ ...input, nonce: `n-${index}` });
+    await expect(control.deliverUser({ ...input, nonce: "over-limit" })).rejects.toBeInstanceOf(SubagentMailboxFullError);
+    // Restore the admitted mode so the test's background execution can settle and release its lease.
+    store.turns[0] = { ...store.turns[0]!, mode: "background" };
+    await control.stopAll({ chatId: "chat-1", userId: "user-1" });
+    expect(await control.deliverUser({ ...input, nonce: "late" })).toMatchObject({ kind: "ended" });
+  });
+
+  it("confirms a stored user message even when the turn ends before its notification arrives", async () => {
+    const { control, runner, store } = setup();
+    const started = await control.start(startInput("researcher"));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    await vi.waitFor(() => expect(runner!.turns.get(turnId)).toBeDefined());
+    vi.spyOn(runner!, "deliver").mockResolvedValueOnce({ kind: "ended", result: endedSubagentResult("researcher") });
+    expect(await control.deliverUser({ chatId: "chat-1", userId: "user-1", threadId: "thread-researcher", turnId,
+      nonce: "receipt", text: "A late clarification" })).toEqual({ kind: "delivered", state: "running" });
+    expect(store.turns[0]!.mailbox).toMatchObject([{ delivered: false, origin: "user" }]);
+    await control.stopAll({ chatId: "chat-1", userId: "user-1" });
+  });
+
   it("stops by name with stop_subagent and returns its last state; stopping an ended one returns how it ended", async () => {
     const { control, runner, sink } = setup();
     const started = await control.start(startInput("slow"));

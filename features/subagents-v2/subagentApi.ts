@@ -94,3 +94,9 @@ export function stopSubagentThread(chatId: string, threadId: string): Promise<Su
 export function stopAllChatSubagents(chatId: string): Promise<SubagentStopAllResponse> {
   return request(SUBAGENT_API_PATHS.stopAll(chatId), { method: "POST" }, decodeSubagentStopAllResponse);
 }
+
+export function sendSubagentMessage(chatId: string, threadId: string, input: Readonly<{ nonce: string; text: string; turnId: string }>): Promise<{ accepted: true }> {
+  return request(`${SUBAGENT_API_PATHS.thread(chatId, threadId)}/messages`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input)
+  }, (value) => value && typeof value === "object" && (value as { accepted?: unknown }).accepted === true ? { accepted: true } : null);
+}

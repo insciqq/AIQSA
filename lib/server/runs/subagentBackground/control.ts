@@ -33,7 +33,7 @@ import { MAIN_AGENT_AUTHOR } from "../../subagents/nesting";
 import type { UsageLimitsRepository } from "../../usageLimits/repository";
 import { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "../activeRunControllerRegistry";
 import { renderCallbackFollowup, SUBAGENT_CALLBACK_DEFAULT_RESERVE_TOKENS } from "./render";
-import { impliedResult, type MailboxInsertInput, type SubagentBackgroundStore, type SubagentTurnRecord } from "./store";
+import { impliedResult, type SubagentBackgroundStore, type SubagentTurnRecord } from "./store";
 
 /**
  * Background sub-agent runs (Claude Code's Agent with `run_in_background`,
@@ -97,6 +97,8 @@ const globalExecutions = globalThis as typeof globalThis & { [EXECUTIONS]?: Map<
 const executions = globalExecutions[EXECUTIONS] ??= new Map<string, Execution>();
 
 export type SubagentBackgroundOperations = SubagentBackgroundControl & Pick<SubagentMessaging, "questionAsked" | "send"> & Readonly<{
+  /** A browser submission targets this exact turn; its mailbox rechecks the active branch under the chat lock. */
+  deliverUser(input: SubagentChatScope & Readonly<{ threadId: string; turnId: string; nonce: string; text: string }>): Promise<SubagentDeliveryOutcome>;
   /** The user's Stop on a thread (`user_stop`): its active turn, wherever it runs. Returns the turns that ended. */
   stopThread(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number>;
   /** "Stop all": every active turn of the chat, every branch (`stop_all`). */
@@ -395,9 +397,9 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
    * transcript write stamps it delivered, so one whose turn never gets to read it stays unread for the thread's next turn,
    * and an execution of this process hears of it at once, which is what ends a wait.
    */
-  async function deliverToTurn(turn: SubagentTurnRecord, message: SubagentMessage & Readonly<{ origin: MailboxInsertInput["origin"] }>):
+  async function deliverToTurn(turn: SubagentTurnRecord, message: SubagentMessage):
     Promise<SubagentDeliveryOutcome> {
-    const stored = await deps.store.insertMailbox({ authorName: message.from ?? MAIN_AGENT_AUTHOR, chatId: turn.chatId, nonce: message.nonce,
+    const stored = await deps.store.insertMailbox({ authorName: message.origin === "user" ? "You" : message.from ?? MAIN_AGENT_AUTHOR, chatId: turn.chatId, nonce: message.nonce,
       origin: message.origin, text: message.text, turnId: turn.turnId, userId: turn.userId });
     if (stored === "full") throw new SubagentMailboxFullError();
     if (stored === "closed") {
@@ -407,7 +409,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const outcome = await deps.runner?.deliver({ turnId: turn.turnId }, message);
     // No execution of this process holds the turn (it is still attaching, or a restart cut it): the row is the receipt, so
     // `delivered` stays true, and the turn or the thread's next one reads it from the mailbox on record.
-    return outcome && outcome.kind !== "not_found" ? outcome : { kind: "delivered", state: isActiveSubagentState(turn.state) ? turn.state : "running" };
+    // A user submission is accepted once stored, even if the turn ends before the in-process notification arrives.
+    return message.origin !== "user" && outcome && outcome.kind !== "not_found" ? outcome : { kind: "delivered", state: isActiveSubagentState(turn.state) ? turn.state : "running" };
   }
 
   async function sendToTurn(input: SubagentSendInput): Promise<SubagentSendOutcome> {
@@ -467,6 +470,13 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       if (!isActiveSubagentState(turn.state)) return turn.result ? { kind: "ended", result: turn.result } : { kind: "not_found" };
       if (turn.mode !== "background" || !turn.runId) return { kind: "not_found" };
       return deliverToTurn(turn, input.message);
+    },
+
+    async deliverUser(input: SubagentChatScope & Readonly<{ threadId: string; turnId: string; nonce: string; text: string }>): Promise<SubagentDeliveryOutcome> {
+      const turn = await deps.store.findTurn(input);
+      if (!turn || turn.threadId !== input.threadId) return { kind: "not_found" };
+      if (!isActiveSubagentState(turn.state)) return turn.result ? { kind: "ended", result: turn.result } : { kind: "not_found" };
+      return deliverToTurn(turn, { nonce: `user:${input.nonce}`, origin: "user", text: input.text });
     },
 
     async send(input: SubagentSendInput): Promise<SubagentSendOutcome> {
