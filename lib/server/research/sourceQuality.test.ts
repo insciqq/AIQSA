@@ -1,6 +1,6 @@
 import type { Prisma, ResearchEvidence } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RESEARCH_PAGE_LIMITS, type ResearchEvidenceRecord, type ResearchRecordInput } from "../../contracts/research";
+import { RESEARCH_PAGE_LIMITS, type ResearchEvidenceRecord, type ResearchRecordInput, type ResearchStanding } from "../../contracts/research";
 import { createResearchEvidenceRepository, type ResearchEvidenceAppend } from "./evidenceRepository";
 import { createResearchEvidenceStore } from "./evidenceStore";
 import { researcherMethodFooter } from "./method";
@@ -107,6 +107,21 @@ describe("source identity", () => {
     expect(quality.researchSourceCounts([...records].reverse())).toEqual(quality.researchSourceCounts(records));
   });
 
+  it("counts a copy shared by independent tests and owner reviews once in the independent total", () => {
+    const test = record();
+    const review = record("https://owners.example.net/review", RELEASE, { sourceClass: "owner_reviews" });
+    expect(quality.researchSourceCounts([test, review])).toEqual({ independent: 1,
+      byClass: { action_channel: 0, independent_tests: 1, owner_reviews: 1, primary_official: 0 } });
+  });
+
+  it("does not connect independent groups through a maker's document", () => {
+    const test = record();
+    const review = record("https://owners.example.net/review", ARTICLE, { sourceClass: "owner_reviews" });
+    const maker = record("https://owners.example.net/specification", RELEASE, { sourceClass: "primary_official" });
+    expect(quality.researchSourceCounts([test, review, maker])).toEqual({ independent: 2,
+      byClass: { action_channel: 0, independent_tests: 1, owner_reviews: 1, primary_official: 1 } });
+  });
+
   it("falls back to a domain without page text and never counts missing or unreachable evidence", () => {
     const base = record(URL, null);
     const missing: ResearchEvidenceRecord = { ...base, criterionKey: "durability", kind: "not_found", reason: "No results.", rowKey: "mattress" };
@@ -125,8 +140,9 @@ describe("seller evidence", () => {
     expect(quality.researchSourceClass(supposedlyIndependent, live)).toBe("action_channel");
     expect(quality.researchSourceStanding(supposedlyIndependent, live)).toBe("claimed");
     expect(quality.countIndependentSources(live)).toBe(0);
-    expect(quality.countIndependentSourcesByClass(live).independent_tests).toBe(0);
+    expect(quality.countIndependentSourcesByClass(live)).toEqual({ action_channel: 1, independent_tests: 0, owner_reviews: 0, primary_official: 0 });
     expect(quality.countIndependentSources([supposedlyIndependent], live)).toBe(0);
+    expect(quality.countIndependentSourcesByClass([supposedlyIndependent], live).action_channel).toBe(1);
     expect(supposedlyIndependent.sourceClass).toBe("independent_tests");
     expect(supposedlyIndependent.standing).toBe("confirmed");
   });
@@ -139,8 +155,46 @@ describe("seller evidence", () => {
       expect(quality.researchSourceClass(seller, [seller])).toBe("action_channel");
       expect(quality.researchSourceStanding(seller, [seller])).toBe("claimed");
       expect(quality.countIndependentSources([seller])).toBe(0);
+      expect(quality.countIndependentSourcesByClass([seller])).toEqual({ action_channel: 1, independent_tests: 0, owner_reviews: 0, primary_official: 0 });
     }
   );
+
+  it.each<["finding" | "dataset", ResearchStanding]>([
+    ["finding", "confirmed"], ["finding", "claimed"], ["finding", "not_verified"],
+    ["dataset", "confirmed"], ["dataset", "claimed"], ["dataset", "not_verified"]
+  ])("keeps an owner_reviews %s on a shop page independent with its %s standing", (kind, standing) => {
+    const shop = record("https://market.example.org/product", "$249\nAdd to cart", { sourceClass: "action_channel" });
+    const finding = record("https://market.example.org/product/reviews", "Owners report lasting comfort.\n$249\nAdd to cart", { sourceClass: "owner_reviews", standing });
+    const owner: ResearchEvidenceRecord = kind === "finding" ? finding : { ...finding, kind: "dataset", rowKey: "mattress",
+      dataset: { counts: [{ count: 2, label: "comfortable" }], examples: [{ quote: "Owners report lasting comfort.", url: finding.url }],
+        leftOut: "No long-term reviews.", method: "Read two owners' reviews.", sampleSize: 2 } };
+    const live = [shop, owner];
+    expect(quality.researchSourceClass(owner, live)).toBe("owner_reviews");
+    expect(quality.researchSourceStanding(owner, live)).toBe(standing);
+    expect(quality.countIndependentSources([owner])).toBe(1);
+    expect(quality.countIndependentSources([owner], live)).toBe(1);
+    expect(quality.researchSourceCounts(live)).toEqual({ independent: 1,
+      byClass: { action_channel: 1, independent_tests: 0, owner_reviews: 1, primary_official: 0 } });
+  });
+
+  it.each([false, true])("keeps a maker's documents primary and outside the independent total (shop page: %s)", (selling) => {
+    const maker = record("https://maker.example.org/specification", selling ? `${RELEASE}\n$249\nAdd to cart` : RELEASE, { sourceClass: "primary_official" });
+    const shop = record("https://maker.example.org/product", "$249\nAdd to cart", { sourceClass: "action_channel" });
+    expect(quality.researchSourceClass(maker, [maker, shop])).toBe("primary_official");
+    expect(quality.researchSourceStanding(maker, [maker, shop])).toBe("confirmed");
+    expect(quality.researchSourceCounts([maker])).toEqual({ independent: 0,
+      byClass: { action_channel: 0, independent_tests: 0, owner_reviews: 0, primary_official: 1 } });
+    expect(quality.researchSourceCounts([maker, shop])).toEqual({ independent: 0,
+      byClass: { action_channel: 1, independent_tests: 0, owner_reviews: 0, primary_official: 1 } });
+  });
+
+  it("counts two owner-review pages of one marketplace as one independent source", () => {
+    const first = record("https://market.example.org/product-a/reviews", "Owners report lasting comfort.\n$249\nAdd to cart", { sourceClass: "owner_reviews" });
+    const second = record("https://market.example.org/product-b/reviews", "Owners report broken springs.\n$349\nAdd to cart", { sourceClass: "owner_reviews" });
+    expect(first.textGroupKey).not.toBe(second.textGroupKey);
+    expect(quality.researchSourceCounts([first, second])).toEqual({ independent: 1,
+      byClass: { action_channel: 0, independent_tests: 0, owner_reviews: 1, primary_official: 0 } });
+  });
 
   it.each(["The tested mattress costs $249.", "Add to cart", 'The review says "Add to cart" beside a $249 price.', "Order statistics from 2024"])(
     "does not mistake a price, prose or a control alone for a shop: %s", (text) => {
@@ -298,5 +352,7 @@ describe("source quality in the store", () => {
   it("gives every researcher the primary, measured and seller-source guidance", () => {
     const method = researcherMethodFooter({ goal: "Choose", questions: [], skipped: [] });
     for (const phrase of ["primary documents", "measured results", "seller's", "affiliate rating sites", "publication date"]) expect(method).toContain(phrase);
+    expect(method).toContain("Owners' reviews on a shop page remain owner evidence");
+    expect(method).toContain("maker documents remain primary sources");
   });
 });
