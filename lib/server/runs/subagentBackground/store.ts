@@ -594,11 +594,13 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       return client.$transaction(async (tx): Promise<MailboxInsertOutcome> => {
         const chat = await lockChatScope(tx, { chatId, userId });
         if (!chat || chat.permanentDeletionAt) return "closed";
-        const turn = await tx.subagentTurn.findFirst({ select: { executionRun: { select: { id: true } }, mode: true, parentRunId: true, parentRun: { select: { assistantMessageId: true } }, state: true },
+        const turn = await tx.subagentTurn.findFirst({ select: { executionRun: { select: { id: true } }, mode: true, parentRunId: true, parentRun: { select: TURN_ANSWER_SELECT }, state: true },
           where: { chatId, id: turnId, userId } });
         if (!turn || !isActiveSubagentState(turn.state)) return "closed";
-        if (origin === "user" && (!chat.activeLeafMessageId || !turn.parentRun.assistantMessageId ||
-          !(await branchPathMessageIds(tx, chatId, chat.activeLeafMessageId)).has(turn.parentRun.assistantMessageId))) return "closed";
+        if (origin === "user") {
+          const answer = turnAnswerMessageId(turn.parentRun);
+          if (!chat.activeLeafMessageId || !answer || !(await branchPathMessageIds(tx, chatId, chat.activeLeafMessageId)).has(answer)) return "closed";
+        }
         const runId = turn.mode === "foreground" ? turn.parentRunId : turn.executionRun?.id;
         if (!runId) return "closed";
         const [run] = await tx.$queryRaw<Array<{ status: ModelRunStatus }>>`
