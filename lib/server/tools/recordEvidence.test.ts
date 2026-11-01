@@ -62,10 +62,10 @@ describe("the record_evidence schema", () => {
     expect(properties.supersedes!.type).toEqual(["string", "null"]);
   });
 
-  it("is a researcher's tool and never a gate's: a list of tool groups never reaches it", () => {
+  it("reaches every researcher whatever its tool groups: research would read one that cannot record as exhausted", () => {
     expect(subagentOffersTool(recordEvidenceTool, null)).toBe(true);
-    expect(subagentOffersTool(recordEvidenceTool, [])).toBe(false);
-    expect(subagentOffersTool(recordEvidenceTool, [SUBAGENT_TOOL_GROUPS.web_fetch])).toBe(false);
+    expect(subagentOffersTool(recordEvidenceTool, [])).toBe(true);
+    expect(subagentOffersTool(recordEvidenceTool, [SUBAGENT_TOOL_GROUPS.web_fetch])).toBe(true);
   });
 });
 

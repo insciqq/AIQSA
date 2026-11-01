@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME } from "../../../contracts/research";
 import { SUBAGENT_TOOL_GROUPS } from "../../../contracts/subagents";
 import { callSubagentTool, stopSubagentTool } from "../../subagents/tools";
 import type { RunTool } from "../../tools/types";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
-import { subagentToolRegistry } from "./registry";
+import { subagentToolRegistry, withoutResearchBookkeeping } from "./registry";
 
 function tool(name: string, capability: RunTool["capability"]): EngineTool {
   return { activity: () => ({}), definition: { capability, description: name, inputSchema: { type: "object" }, name }, effects: "none",
@@ -52,5 +53,34 @@ describe("sub-agent tool registry", () => {
     const workspace = subagentToolRegistry(parent, [SUBAGENT_TOOL_GROUPS.workspace]).definitions().map((definition) => definition.name);
     expect(workspace).toEqual(expect.arrayContaining(["mcp_workspace__sandbox_exec", "apply_patch", "browser_handoff"]));
     expect(workspace).not.toContain("checkpoint_outputs");
+  });
+
+  describe("and research", () => {
+    const researchTools = [...tools, tool(RECORD_EVIDENCE_TOOL_NAME, "session"), tool(CHANGE_RESEARCH_FRAME_TOOL_NAME, "session")];
+    const research: ToolRegistry = { definitions: () => researchTools.map((entry) => entry.definition), resolve: (name) => researchTools.find((entry) => entry.definition.name === name) };
+    const narrowed = [SUBAGENT_TOOL_GROUPS.web_search];
+    const bookkeeping = [CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME];
+
+    it("keeps a researcher's bookkeeping whatever its groups, and widens the session capability for nothing else", () => {
+      const registry = subagentToolRegistry(research, narrowed);
+      expect(registry.definitions().map((definition) => definition.name).sort()).toEqual([...bookkeeping, "read_aiqsa_guide", "read_tool_result", "search_selected_engines", "update_plan"].sort());
+      expect(registry.resolve(RECORD_EVIDENCE_TOOL_NAME)).toBeDefined();
+      expect(registry.resolve(CHANGE_RESEARCH_FRAME_TOOL_NAME)).toBeDefined();
+      expect(subagentToolRegistry(research, []).definitions().map((definition) => definition.name)).toEqual(expect.arrayContaining(bookkeeping));
+      expect(registry.resolve("read_secret")).toBeUndefined();
+    });
+
+    it("offers it to no run that does not bind it", () => {
+      expect(subagentToolRegistry(parent, narrowed).definitions().map((definition) => definition.name)).not.toContain(RECORD_EVIDENCE_TOOL_NAME);
+    });
+
+    it("leaves it out of a gate's turn, whatever its groups, as an unknown tool, and takes nothing else", () => {
+      const gate = withoutResearchBookkeeping(research);
+      for (const name of bookkeeping) expect(gate.resolve(name)).toBeUndefined();
+      const offered = subagentToolRegistry(gate, narrowed);
+      expect(offered.definitions().map((definition) => definition.name).sort()).toEqual(["read_aiqsa_guide", "read_tool_result", "search_selected_engines", "update_plan"]);
+      for (const name of bookkeeping) expect(offered.resolve(name)).toBeUndefined();
+      expect(gate.resolve("fetch_url")).toBeDefined();
+    });
   });
 });

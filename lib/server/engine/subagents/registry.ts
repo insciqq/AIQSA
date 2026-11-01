@@ -1,3 +1,4 @@
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME } from "../../../contracts/research";
 import { SUBAGENT_TOOL_GROUPS, type SubagentToolGroup } from "../../../contracts/subagents";
 import { subagentMayUseTool } from "../../subagents/tools";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../../tools/aiqsaGuide";
@@ -15,11 +16,18 @@ import { READ_TOOL_RESULT_NAME } from "../toolResults";
  * a Skill save, an export, the run's reserved report or a sub-agent tool
  * (`SUBAGENT_EXCLUDED_TOOL_NAMES`, so no nesting); `load_skill` stays. A
  * custom sub-agent's tool groups narrow the rest and never add a tool; the
- * plan, saved results and the AIQSA guide are always there. Resolving an
- * excluded name answers as an unknown tool, so a call of one is refused
- * before anything is recorded as sent.
+ * plan, saved results and the AIQSA guide are always there, and so is a
+ * researcher's bookkeeping, where its run offers that. Resolving an excluded
+ * name answers as an unknown tool, so a call of one is refused before anything
+ * is recorded as sent.
  */
 const ALWAYS: ReadonlySet<string> = new Set([UPDATE_PLAN_TOOL_NAME, READ_TOOL_RESULT_NAME, READ_AIQSA_GUIDE_TOOL_NAME]);
+
+/**
+ * What a researcher keeps whatever its tool groups. Research keeps the user's custom researchers, the default among them, and one that could
+ * not record would return findings that fill no cell, which research then reads as exhausted. A gate's turn has none of it (`withoutResearchBookkeeping`).
+ */
+const RESEARCH_BOOKKEEPING: ReadonlySet<string> = new Set([CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME]);
 
 /** The group a tool belongs to, or null when none of the groups covers it (only a sub-agent with every tool has it). */
 export function subagentToolGroup(tool: Pick<RunTool, "capability" | "name">): SubagentToolGroup | null {
@@ -42,9 +50,15 @@ export function subagentToolGroup(tool: Pick<RunTool, "capability" | "name">): S
 /** Whether a sub-agent with these tool groups (null: every default tool) is offered this tool. */
 export function subagentOffersTool(tool: Pick<RunTool, "capability" | "name">, groups: readonly SubagentToolGroup[] | null): boolean {
   if (!subagentMayUseTool(tool.name)) return false;
-  if (ALWAYS.has(tool.name) || groups === null) return true;
+  if (ALWAYS.has(tool.name) || RESEARCH_BOOKKEEPING.has(tool.name) || groups === null) return true;
   const group = subagentToolGroup(tool);
   return group !== null && groups.includes(group);
+}
+
+/** A gate's turn is the server's own check of the research: it reads the records and writes none, whatever groups it runs with. */
+export function withoutResearchBookkeeping(registry: ToolRegistry): ToolRegistry {
+  return { ...registry, definitions: () => registry.definitions().filter(({ name }) => !RESEARCH_BOOKKEEPING.has(name)),
+    resolve: (name) => RESEARCH_BOOKKEEPING.has(name) ? undefined : registry.resolve(name) };
 }
 
 /** The parent's registry as a sub-agent sees it. */

@@ -204,10 +204,10 @@ type ResearchRound = { before: Promise<ReadonlySet<string> | null>; ran: boolean
 export type ResearchRounds = ReturnType<typeof createResearchRounds>;
 
 /**
- * The rounds of one run. A round is the researcher calls of one response, whatever each did, and it filled a new cell if the matrix holds
+ * The rounds of one run. A round is the researcher calls of one response, whatever each came to, and it filled a new cell if the matrix holds
  * one it did not when the round started. A batch runs only a few at once and starts the rest as those end, so no count of running calls
- * says a round is over: it is counted when the next one starts, or when a draft asks. A round with no researcher that ran counts for
- * nothing, and with no matrix to read neither does one that did, so a run with no frame never stops here.
+ * says a round is over: it is counted when the next one starts, or when a draft asks. A round whose turns all failed counts like any other. One
+ * in which no turn ran counts for nothing, and with no matrix to read neither does one that did, so a run with no frame never stops here.
  */
 export function createResearchRounds(read: (signal: AbortSignal) => Promise<ReadonlySet<string> | null>) {
   let round: ResearchRound | null = null;
@@ -228,7 +228,7 @@ export function createResearchRounds(read: (signal: AbortSignal) => Promise<Read
       }
       return round.before;
     },
-    /** A researcher of this response finished. */
+    /** A researcher's turn of this response ran to its end, however that went. */
     ran(response: number): void {
       if (round?.response === response) round.ran = true;
     },
