@@ -25,7 +25,7 @@ import { verifierGate } from "./verifier";
  *   the chat's running sub-agents (`SUBAGENT_LIMITS.runningPerChat`) and a full
  *   chat refuses it (`kind: "refused"`); `model: "verifier"` runs on the
  *   administrator's verifier model as this run froze it (`verifierModel`).
- * - `sources.opened` reads what agents of this run really opened. A browser page
+ * - `sources.opened` reads what agents of this research really opened. A browser page
  *   read but not stored is not in it: that is "not checked", not a failure.
  */
 export type ResearchVerifierModel =
