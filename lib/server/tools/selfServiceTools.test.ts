@@ -18,6 +18,7 @@ function deps(): SelfServiceRunDeps {
     assistantDefinition: { count: vi.fn(async () => 0) },
     attachment: { findFirst: vi.fn(async () => null) },
     skillDefinition: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
+    networkProxy: { findMany: vi.fn(async () => []) },
     user: { findFirst: vi.fn(async ({ where }: { where: { id: string } }) => where.id === USER ? { id: USER } : null) },
     workspaceSecret: { findMany: vi.fn(async ({ where }: { where: { userId: string } }) => where.userId === USER ? [{ id: SECRET_ID,
       value: { description: "", envNames: [], id: VERSION_ID, kind: "text", name: "GitLab" } }] : []) }
@@ -38,7 +39,7 @@ const call = (name: string, args: Record<string, unknown>) => ({ arguments: args
 describe("self-service tools", () => {
   it("are the tools the prompt names, none of which needs approval or the VM", () => {
     expect(SELF_SERVICE_TOOLS.map((tool) => tool.name)).toEqual([SELF_SERVICE_TOOL_NAMES.guide, SELF_SERVICE_TOOL_NAMES.secrets,
-      SELF_SERVICE_TOOL_NAMES.skills, SELF_SERVICE_TOOL_NAMES.assistants]);
+      SELF_SERVICE_TOOL_NAMES.skills, SELF_SERVICE_TOOL_NAMES.assistants, SELF_SERVICE_TOOL_NAMES.proxies]);
     for (const tool of SELF_SERVICE_TOOLS) {
       expect(tool).toMatchObject({ needsApproval: false, requiresVm: false });
       expect(tool.tool.name).toBe(tool.name);
@@ -47,13 +48,14 @@ describe("self-service tools", () => {
     }
     expect(SELF_SERVICE_TOOLS.find((tool) => tool.name === "read_aiqsa_guide")?.effects).toBe("none");
     expect(SELF_SERVICE_TOOLS.filter((tool) => tool.effects === "local").map((tool) => tool.name))
-      .toEqual(["manage_secret", "manage_skill", "manage_assistant"]);
+      .toEqual(["manage_secret", "manage_skill", "manage_assistant", "manage_proxy"]);
   });
 
   it("route a call to its tool with services built for that call, and leave other tools alone", async () => {
     const run = deps();
     expect(executeSelfServiceTool(run, call("save_skill", {}), { callId: "c1", store })).toBeNull();
     expect((await executeSelfServiceTool(run, call("read_aiqsa_guide", { topic: "studio" }), { callId: "c1", store }))?.status).toBe("complete");
+    expect(json(await executeSelfServiceTool(run, call("manage_proxy", { action: "list" }), { callId: "c5", store }))).toEqual({ administrator: [], personal: [] });
     const proposal = await executeSelfServiceTool(run, call("manage_secret", { action: "propose_delete", name: "gitlab" }), { callId: "c2", store });
     expect(json(proposal)).toMatchObject({ deletionProposed: true, secret: { name: "GitLab" } });
     expect(decodeResourceChangeCard((proposal?.artifacts?.[0] as { data: { payload: unknown } }).data.payload))

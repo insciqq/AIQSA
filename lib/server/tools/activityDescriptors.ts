@@ -132,6 +132,7 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   descriptors.set("manage_secret", { origin: "session", serverName: "Secrets", toolName: "manage_secret" });
   descriptors.set("manage_skill", { origin: "session", serverName: "Skills", toolName: "manage_skill" });
   descriptors.set("manage_assistant", { origin: "session", serverName: "Assistants", toolName: "manage_assistant" });
+  descriptors.set("manage_proxy", { origin: "session", serverName: "Proxies", toolName: "manage_proxy" });
   // Custom sub-agent management (`lib/server/subagents/managementTools.ts`), offered beside them.
   for (const name of ["create_subagent", "edit_subagent", "delete_subagent"]) {
     descriptors.set(name, { origin: "session", serverName: "Sub-agents", toolName: name });

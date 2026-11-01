@@ -283,6 +283,8 @@ export type RunPreparationDeps = Readonly<{
   subagentModels?(userId: string): Promise<SubagentModelCatalogSource>;
   /** The user's current default custom sub-agent, frozen with those models (`freezeSubagentDefault`). */
   subagentDefault?(userId: string): Promise<Readonly<{ definitionId: string; name: string }> | null>;
+  /** The proxies the user may use now (`createProxyRunPlanner`); null without any, so such a run has no field. */
+  proxies?: Readonly<{ planForRun(userId: string): Promise<import("../../contracts/proxies").ProxyRunPlan | null> }>;
   workspace?: WorkspaceAdmissionService;
 }>;
 
@@ -1860,6 +1862,9 @@ export async function prepareRun(
   const fetchUrlOffered = body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  // Frozen for every run with tools, whichever path admits it: a matching site must not go direct just because this
+  // is a scheduled or Telegram turn. Those take no `manage_proxy`, as for every self-service tool (`selfServiceToolsFor`).
+  const proxyPlan = fetchUrlOffered && deps.proxies ? await deps.proxies.planForRun(input.userId) : null;
   let fetchUrlPlan: FetchUrlPlan | undefined;
   if (fetchUrlOffered && scheduledOccurrence) {
     fetchUrlPlan = { version: 1, userUrlDigests: [], taskUrlDigests: (scheduledOccurrence.promptUrlDigests ?? [])
@@ -1949,6 +1954,7 @@ export async function prepareRun(
     ...(skillSaveTool ? { skillSaveTool: true as const } : {}),
     ...(mcpApproval ? { mcpApproval } : {}),
     ...(fetchUrlPlan ? { fetchUrl: fetchUrlPlan } : {}),
+    ...(proxyPlan ? { proxies: proxyPlan } : {}),
     attachmentIds,
     chatId: chat.id,
     content,
