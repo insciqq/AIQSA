@@ -1163,7 +1163,7 @@ export function createPrismaAdminProviderRepository(
           where: { connectionId: input.connectionId, id: input.modelId }
         }),
         prisma.systemModelPolicy.findUnique({
-          select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true, mcpGuardProviderModelId: true, researchVerifierProviderModelId: true,
+          select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true, mcpGuardProviderModelId: true, researchVerifierProviderModelId: true, researchResearcherProviderModelId: true,
             chatPdfProviderModelId: true, chatPdfNativeProviderModelId: true },
           where: { id: "installation" }
         }),
@@ -1173,7 +1173,7 @@ export function createPrismaAdminProviderRepository(
       const assignedRoles = ([
         ["memory", memoryPolicy?.providerModelId], ["system_model", systemPolicy?.providerModelId],
         ["chat_titles", systemPolicy?.chatTitleProviderModelId], ["vision", systemPolicy?.visionProviderModelId], ["mcp_guard", systemPolicy?.mcpGuardProviderModelId],
-        ["research_verifier", systemPolicy?.researchVerifierProviderModelId],
+        ["research_researcher", systemPolicy?.researchResearcherProviderModelId], ["research_verifier", systemPolicy?.researchVerifierProviderModelId],
         ["chat_pdf", systemPolicy?.chatPdfProviderModelId], ["chat_pdf_native", systemPolicy?.chatPdfNativeProviderModelId]
       ] as const).flatMap(([role, providerModelId]) => providerModelId === model.id ? [role] : []);
       const credential = connection.defaultCredential;

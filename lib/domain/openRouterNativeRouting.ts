@@ -104,6 +104,7 @@ export function openRouterSelectedProvidersMissingParameters(input: {
  */
 export const OPENROUTER_ROLE_PARAMETER_SETS: Readonly<Record<AdminProviderAssignedRole, readonly (readonly string[])[]>> = {
   mcp_guard: [["response_format", "structured_outputs"]],
+  research_researcher: [["tools"]],
   research_verifier: [["tools"]],
   memory: [["response_format", "structured_outputs"], ["tools"]],
   system_model: [["response_format", "structured_outputs"], ["tools"]],
