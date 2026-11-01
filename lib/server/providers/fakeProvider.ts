@@ -1,3 +1,4 @@
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, START_RESEARCH_TOOL_NAME } from "../../contracts/research";
 import { textFromContentBlocks, type ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { conversationPreview, textConversationForRequest } from "./context";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
@@ -283,6 +284,40 @@ function scriptedSubagentResult(request: ProviderRunRequest, question: string): 
     }
   });
   return done(`Sub-agents ${background ? "started" : "reported"}: ${names.map((name, index) => `${name} ${states[index] ?? "unknown"}`).join("; ")}.`);
+}
+
+/**
+ * Test-only plan window (`AIQSA_TEST_MODE=1` outside production): `[AIQSA_RESEARCH_PLAN_E2E:<ms>]` calls `start_research`, stays `<ms>`
+ * in scoping so a browser can see its line, calls `propose_research_plan`, and once more with the same plan when the user changed it,
+ * as a model rebuilding its questions would. Then it waits, and the run ends by Stop: no researcher or report is under test here.
+ */
+const RESEARCH_PLAN_TEST_DIRECTIVE = /\[AIQSA_RESEARCH_PLAN_E2E:(\d{1,5})\]/u;
+const RESEARCH_PLAN_TEST_PROPOSAL = Object.freeze({
+  assumptions: ["The budget is open", "It is for a home kitchen"],
+  branches: [],
+  criteria: [{ criterion: "Noise", key: "noise", why: "A quiet kettle is what was asked for." }],
+  questions: [{ question: "Which kettles measure quietest?", sites: [], source_classes: ["primary_official", "independent_tests", "owner_reviews", "action_channel"] }],
+  rows: [],
+  skipped_source_classes: [],
+  steps: ["Read how kettle noise is measured", "List the quiet candidates", "Compare measured noise", "Pick one and say why"],
+  understood: "You want the quietest kettle for a home kitchen."
+});
+
+function scriptedResearchPlanResult(request: ProviderRunRequest, question: string): ScriptedSubagentResult | null {
+  const match = subagentScenarioAllowed() && request.history ? RESEARCH_PLAN_TEST_DIRECTIVE.exec(question) : null;
+  if (!match || !request.tools?.some((tool) => tool.name === START_RESEARCH_TOOL_NAME)) return null;
+  const prefix = `fake-research-${callTurn(request)}-`;
+  const results = (request.history ?? []).filter((item): item is Extract<ProviderHistoryItem, { type: "tool_result" }> =>
+    item.type === "tool_result" && item.callId.startsWith(prefix));
+  const call = (name: string, value: Record<string, unknown>, waitMs = 0): ScriptedSubagentResult => ({ result: {
+    finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
+    toolCalls: [{ arguments: value, id: `${prefix}${results.length}`, name }], usage: fakeUsage(question, "") }, waitMs });
+  if (results.length === 0) return call(START_RESEARCH_TOOL_NAME, { goal: "Find the quietest kettle" });
+  if (results.length === 1) return call(PROPOSE_RESEARCH_PLAN_TOOL_NAME, { ...RESEARCH_PLAN_TEST_PROPOSAL }, Number(match[1]));
+  if (results.length === 2 && results[1]!.output.includes('"changed":true')) return call(PROPOSE_RESEARCH_PLAN_TOOL_NAME, { ...RESEARCH_PLAN_TEST_PROPOSAL });
+  const finalText = "The scripted research waits for Stop.";
+  return { result: { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) },
+    waitMs: SUBAGENT_WAIT_MAX_MS };
 }
 
 /** Waits for a scripted sub-agent, cut by the run's signal. */
@@ -788,7 +823,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const question = requestQuestion(request) || "empty question";
       yield* scriptedProviderTrouble(question, options.signal);
-      const subagent = scriptedSubagentResult(request, question);
+      const subagent = scriptedSubagentResult(request, question) ?? scriptedResearchPlanResult(request, question);
       if (subagent) {
         throwIfAborted(options.signal);
         await scriptedWait(subagent.waitMs, options.signal);
