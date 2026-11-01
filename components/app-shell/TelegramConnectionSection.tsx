@@ -129,9 +129,9 @@ export function TelegramConnectionSection() {
         if (controller.signal.aborted || !mountedRef.current) return;
         setLoad({ kind: "ready", status });
         if (status.state === "linked") {
+          focusAfterRender.current = () => headingRef.current?.focus();
           setLinkStep(null);
           setMessage({ text: `${connectedLabel(status)}.`, tone: "ok" });
-          focusAfterRender.current = () => headingRef.current?.focus();
         }
       } catch {
         // A failed read is retried on the next tick; the deadline still bounds the step.
@@ -164,8 +164,9 @@ export function TelegramConnectionSection() {
       if (controller.signal.aborted || !mountedRef.current) return;
       const expiresAt = Date.parse(link.expiresAt);
       const limit = Date.now() + TELEGRAM_LINK_POLL_LIMIT_MS;
-      setLinkStep({ deadline: Number.isFinite(expiresAt) ? Math.min(expiresAt, limit) : limit, kind: "open", link });
+      // Set before the state, so a render that flushes at once still moves the focus.
       focusAfterRender.current = () => linkHeadingRef.current?.focus();
+      setLinkStep({ deadline: Number.isFinite(expiresAt) ? Math.min(expiresAt, limit) : limit, kind: "open", link });
     } catch (error) {
       if (controller.signal.aborted || !mountedRef.current) return;
       setLinkStep({ kind: "failed", text: linkRequestError(error) });
