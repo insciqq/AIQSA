@@ -196,7 +196,7 @@ export type SubagentBackgroundStore = Readonly<{
   findOwedCallbackChats(input: Readonly<{ chatId?: string; endedBefore: Date; limit: number; userId?: string }>):
     Promise<readonly OwedCallbackChat[]>;
   /** Foreground turns still active whose parent run ended (a restart cut both): they end interrupted. */
-  interruptStrandedForegroundTurns(input: Readonly<{ chatId?: string; userId?: string }>): Promise<number>;
+  interruptStrandedForegroundTurns(input: Readonly<{ chatId?: string; liveRunIds: readonly string[]; userId?: string }>): Promise<number>;
 }>;
 
 /** A wake-up's admission found a callback another delivery claimed first; the caller retries with what is still owed. */
@@ -771,7 +771,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       return rows.map((row) => ({ chatId: row.chatId, turnIds: row.turnIds, userId: row.userId }));
     },
 
-    async interruptStrandedForegroundTurns({ chatId, userId }) {
+    async interruptStrandedForegroundTurns({ chatId, liveRunIds, userId }) {
       return client.$executeRaw(Prisma.sql`
         UPDATE "SubagentTurn" turn
         SET "state" = 'interrupted', "reasonCode" = ${SUBAGENT_END_REASONS.restart}, "endedAt" = GREATEST(CURRENT_TIMESTAMP::timestamp(3), turn."startedAt"),
@@ -779,6 +779,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
         FROM "ModelRun" parent
         WHERE parent."id" = turn."parentRunId" AND turn."mode" = 'foreground' AND turn."state" IN ('running', 'waiting')
           AND parent."status" NOT IN ('preparing', 'queued', 'streaming', 'in_progress')
+          ${liveRunIds.length > 0 ? Prisma.sql`AND parent."id" NOT IN (${Prisma.join(liveRunIds)})` : Prisma.empty}
           ${chatId ? Prisma.sql`AND turn."chatId" = ${chatId}` : Prisma.empty}
           ${userId ? Prisma.sql`AND turn."userId" = ${userId}` : Prisma.empty}`);
     }

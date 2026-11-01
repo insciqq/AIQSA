@@ -647,6 +647,18 @@ describe("background sub-agent runs on PostgreSQL", () => {
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 
+  it("leaves a stranded foreground turn to a run still ending here, and ends it once that run is gone", async () => fixture(async (f) => {
+    const thread = await f.thread("holder");
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: f.main.runId,
+      parentToolCallId: thread.callId, provider: "fake", state: "running", threadId: thread.threadId, userId: f.userId } });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    const scope = { chatId: f.chatId, userId: f.userId };
+    expect(await store.interruptStrandedForegroundTurns({ ...scope, liveRunIds: [f.main.runId] })).toBe(0);
+    expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: turn.id } })).state).toBe("running");
+    expect(await store.interruptStrandedForegroundTurns({ ...scope, liveRunIds: [] })).toBe(1);
+    expect(await prisma.subagentTurn.findUniqueOrThrow({ where: { id: turn.id } })).toMatchObject({ reasonCode: "restart", state: "interrupted" });
+  }));
+
   it("re-owes a callback the stopped answer never read, wakes nothing on the Stop, and recovery wakes the idle chat once", async () => fixture(async (f) => {
     const admitted = await store.admit(admission(f, await f.thread("reader")));
     if (admitted.kind !== "admitted") throw new Error("not admitted");

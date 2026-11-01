@@ -73,6 +73,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
   threads = new Map<string, string>();
   orphans: BackgroundOrphan[] = [];
   strandedInterrupts = 0;
+  strandedLiveRunIds: readonly string[] = [];
   admitGate: (() => Promise<void>) | null = null;
   /** Holds an admission before its row exists, as a transaction blocked before its insert would be. */
   admitBeforeGate: (() => Promise<void>) | null = null;
@@ -252,8 +253,9 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     return [...chats.values()];
   }
 
-  async interruptStrandedForegroundTurns(): Promise<number> {
+  async interruptStrandedForegroundTurns(input: Readonly<{ liveRunIds: readonly string[] }>): Promise<number> {
     this.strandedInterrupts += 1;
+    this.strandedLiveRunIds = input.liveRunIds;
     return 0;
   }
 }

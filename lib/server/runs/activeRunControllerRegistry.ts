@@ -4,6 +4,7 @@ import { logEvent } from "../observability";
  * Global identity also spans Next route bundles. HTTP disconnect never aborts it. */
 const globalForRuns = globalThis as unknown as {
   __aiqsaActiveRunControllers?: Map<string, AbortController>;
+  __aiqsaRunLeases?: Set<string>;
   __aiqsaRunSettlements?: Map<string, Promise<void>>;
 };
 export const activeRunControllers = globalForRuns.__aiqsaActiveRunControllers ?? new Map<string, AbortController>();
@@ -11,9 +12,17 @@ globalForRuns.__aiqsaActiveRunControllers = activeRunControllers;
 // Shared with the cancel route's bundle for the same reason as the controllers.
 export const runSettlements = globalForRuns.__aiqsaRunSettlements ?? new Map<string, Promise<void>>();
 globalForRuns.__aiqsaRunSettlements = runSettlements;
+const runLeases = globalForRuns.__aiqsaRunLeases ?? new Set<string>();
+globalForRuns.__aiqsaRunLeases = runLeases;
 
 export type ActiveRunControllerRegistry = Readonly<{
   abort(runId: string): boolean;
+  /**
+   * Every run still executing in this process. `ids()` lists what Stop can still reach and loses a run at its abort, while
+   * the run goes on ending its sub-agents with its status already terminal: recovery asks here, or it takes those turns
+   * for what a restart left behind and overwrites how they really end.
+   */
+  executing(): readonly string[];
   has(runId: string): boolean;
   ids(): readonly string[];
   register(runId: string): Readonly<{
@@ -44,6 +53,9 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
     }
     return true;
   },
+  executing(): readonly string[] {
+    return [...new Set([...activeRunControllers.keys(), ...runLeases, ...runSettlements.keys()])];
+  },
   has(runId: string): boolean {
     return activeRunControllers.has(runId);
   },
@@ -57,8 +69,10 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
     if (activeRunControllers.has(runId)) return null;
     const controller = new AbortController();
     activeRunControllers.set(runId, controller);
+    runLeases.add(runId);
     return Object.freeze({
       release() {
+        runLeases.delete(runId);
         if (activeRunControllers.get(runId) === controller) {
           activeRunControllers.delete(runId);
         }

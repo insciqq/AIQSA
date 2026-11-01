@@ -7,6 +7,7 @@ import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryCo
 import type { SubagentTypeSnapshot } from "../subagents/ports";
 import type { FrozenSubagentDefault } from "../subagents/typeCatalog";
 import { FakeSubagentBackgroundControl, FakeSubagentTypeResolver } from "../../../tests/support/subagentPorts";
+import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import { subagentCatalogItem } from "./conversation";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
 import { interruptNativeRun } from "./runInterruption";
@@ -90,6 +91,8 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
       id: "thread-bg", name: input.name, parentThreadId: null, typeName: null })),
     find: vi.fn(async () => null),
     result: vi.fn(async () => null),
+    activeChildren: vi.fn(async () => 0),
+    childResults: vi.fn(async () => []),
     endOrphanedTurns: vi.fn(async () => 0),
     setActiveState: vi.fn(async () => true),
     threadEffectItems: vi.fn(async () => options.threadEffects ?? []),
@@ -351,6 +354,48 @@ describe("native run with sub-agents", () => {
       telegram: true, userId: "user" }).text();
     expect(background.turns).toEqual([]);
     expect(hasSubagentBackgroundHost("run-telegram")).toBe(false);
+  });
+
+  it("stays executing here after Stop until a sub-agent's slow end is over, so a recovery pass leaves that turn to it", async () => {
+    const runId = "run-stopped-slowly";
+    let held!: () => void;
+    let release!: () => void;
+    const holding = new Promise<void>((resolve) => { held = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const background = new FakeSubagentBackgroundControl();
+    vi.spyOn(background, "stopChildren").mockImplementation(async () => {
+      held();
+      await gate;
+      return 1;
+    });
+    const rounds: NonNullable<Step["calls"]>[] = [
+      [{ arguments: { message: "Hold a helper.", name: "holder" }, id: "call-holder", name: CALL_SUBAGENT_TOOL_NAME }],
+      [{ arguments: { background: true, message: "Watch it.", name: "side" }, id: "call-side", name: CALL_SUBAGENT_TOOL_NAME }]
+    ];
+    let round = 0;
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(_request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        round += 1;
+        if (round > rounds.length) {
+          // Stop: the durable cancellation won, then the run's controller is aborted, in the parent's next model call.
+          activeRunControllerRegistry.abort(runId);
+          options.signal?.throwIfAborted();
+        }
+        return { finalProviderResponsePreview: {}, finalText: "", toolCalls: [...(rounds[round - 1] ?? [])], usage: { inputTokens: 100, outputTokens: 10 } };
+      }
+    };
+    const memory = engine();
+    const finished = createNativeRunExecutionResponse({ adapter, created: { ...created, runId }, engine: memory.deps, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, subagents: { background }, userId: "user" }).text();
+    await holding;
+    expect(activeRunControllerRegistry.ids()).not.toContain(runId);
+    expect(activeRunControllerRegistry.executing()).toContain(runId);
+    expect(memory.settled).toEqual([]);
+    release();
+    await finished;
+    expect(memory.settled).toEqual([expect.objectContaining({ result: expect.objectContaining({ reason: "parent_stopped", state: "stopped" }) })]);
+    expect(activeRunControllerRegistry.executing()).not.toContain(runId);
   });
 
   it("ends a run its shared Workspace stopped under as interrupted, with Continue, never cancelled", async () => {
