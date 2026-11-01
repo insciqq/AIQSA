@@ -1,11 +1,13 @@
 import {
-  RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFinding, type ResearchGateResult,
+  RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFinding, type ResearchGateResult,
   type ResearchPlan, type ResearchSourceClass
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
-import type { ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
+import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
+import { researchEmptyByRow, researchMatrix, type ResearchMatrix } from "./matrix";
 import { researchNote } from "./notes";
+import { researchGatePorts } from "./ports";
 import { researchEvidenceKind } from "./sources";
 
 const CYRILLIC = /\p{Script=Cyrillic}/u;
@@ -118,6 +120,21 @@ function coverageGaps(plan: ResearchPlan, coverage: ReadonlyMap<ResearchSourceCl
   });
 }
 
+/**
+ * The matrix's holes as gaps, one per row: the row and its criteria in words for a note, their keys in the next step for researchers. Where a
+ * frame exists this is the mechanical check: a cell holds evidence or says nothing was found, which says more than a source class opened.
+ */
+function matrixGaps(matrix: ResearchMatrix, planRussian: boolean): Gap[] {
+  const limit = RESEARCH_LIMITS.questionCharacters;
+  return researchEmptyByRow(matrix).map(({ criteria, row }) => {
+    const words = criteria.map(({ criterion }) => space(criterion)).join(", ");
+    const keys = criteria.map(({ key }) => key).join(", ");
+    return { issue: line(row ? `${row.label}: ${words}` : words, limit), next_step: line(planRussian
+      ? `Заполните ячейки${row ? ` строки ${row.key}` : ""}: ${keys}. Если сведений нет, запишите not_found.`
+      : `Fill the cells${row ? ` of row ${row.key}` : ""}: ${keys}. If nothing can be found, record not_found.`, limit) };
+  });
+}
+
 /** Keep every issue represented, even when all sixteen questions are long. */
 function issueText(heading: string, issues: readonly string[], max = RUN_FOLLOWUP_MAX_CHARS): string {
   const perIssue = Math.floor((max - heading.length) / Math.max(1, issues.length)) - 1;
@@ -170,12 +187,21 @@ const SEND_RESEARCHERS = {
   ru: "Отправьте исследователей через call_subagent ровно для следующих шагов. Сохраните все находки, которые остаются верными. Никогда не удаляйте находки и не сокращайте отчёт ради этой проверки. Если исследование не может разрешить вопрос, укажите ограничение в отчёте и передайте его. Для недоступного источника сохраните цель и причину в unreachable."
 };
 
-function gapsResult(draft: ResearchDraft, context: ResearchGateContext, feedback: SentBack, notes: readonly string[]): ResearchGateResult {
+const NO_NEW_CELL_NOTE = {
+  en: "Research ended here: several rounds in a row found nothing new.",
+  ru: "Исследование завершилось здесь: несколько кругов подряд не дали ничего нового."
+};
+
+/** Why what follows stayed open, when that is the rounds running dry: time has its own notes. */
+const closedNote = (closed: ResearchersClosed, russian: boolean) => closed === "no_new_cell" ? [NO_NEW_CELL_NOTE[russian ? "ru" : "en"]] : [];
+
+function gapsResult(draft: ResearchDraft, context: ResearchGateContext, feedback: SentBack, notes: readonly string[], closed: ResearchersClosed): ResearchGateResult {
   const russian = CYRILLIC.test(draft.report);
   const details = gapNote(feedback.gaps, russian, feedback.kind);
   // The seam checks again after the gate returns, so a deadline race still
-  // publishes these exact gaps through unresolvedNote.
-  if (addedNothing(draft, context) || !context.time.sendBackAllowed()) return { kind: "pass", notes: [...notes, details] };
+  // publishes these exact gaps through unresolvedNote. With researchers closed
+  // nobody could act on this, so the model goes on to its report.
+  if (addedNothing(draft, context) || !context.time.sendBackAllowed() || closed) return { kind: "pass", notes: [...notes, ...closedNote(closed, russian), details] };
   const language = CYRILLIC.test(context.plan.goal) ? "ru" : "en";
   const heading = feedback.kind === "judged" ? JUDGE_HEADING : MISSING_HEADING;
   const instruction = SEND_RESEARCHERS[language];
@@ -206,8 +232,29 @@ Reply only with strict JSON, without Markdown or an Outcome line:
 Both arrays may be empty. Each contains at most ${RESEARCH_LIMITS.questions} entries. Each issue and next_step is a nonempty string of at most ${RESEARCH_LIMITS.questionCharacters} characters; each limit is at most ${RESEARCH_LIMITS.reasonCharacters} characters.
 The entire reply must fit ${RUN_FOLLOWUP_MAX_CHARS} characters. Only gaps request more research; limits go to the report's author with them.`;
 
+/**
+ * With a matrix the server counts what is covered, so the judge asks only what counting cannot. A real run's judge scored its report complete
+ * and still sent it back four times, each time for one more detail.
+ */
+const JUDGE_MATRIX_INSTRUCTIONS = `${JUDGE_INSTRUCTIONS}
+The brief's matrix is what the server tracks: which row has evidence for which criterion. It checks the empty cells itself, so an empty cell is never your gap, and neither is one more detail for a filled one, however useful.
+Return gaps only for what the matrix cannot see, where the report would otherwise mislead: findings that contradict each other on something the report rests on; evidence that sits in a cell but does not answer its criterion or is about another model; a criterion or a candidate the goal plainly needs and the matrix lacks, in which case next_step says to add it with change_research_frame and send researchers for it.`;
+
+/** What the judge reads of the matrix, a quarter of the brief at most: the plan keeps its half, and the findings the rest. */
+function matrixBrief({ coverage, frame }: ResearchMatrix) {
+  let limit: number = RESEARCH_FRAME_LIMITS.labelCharacters;
+  const project = () => ({ criteria: frame.criteria.map(({ criterion }) => bounded(criterion, limit)), emptyCells: coverage.empty, filledCells: coverage.filled,
+    rows: frame.rows.map(({ label }) => bounded(label, limit)) });
+  let projected = project();
+  while (limit > 1 && JSON.stringify(projected).length > RUN_FOLLOWUP_MAX_CHARS / 4) {
+    limit = Math.max(1, Math.floor(limit / 2));
+    projected = project();
+  }
+  return projected;
+}
+
 /** A complete JSON brief, with explicit omissions, never a cut JSON document. */
-function judgeBrief(draft: ResearchDraft, plan: ResearchPlan): string {
+function judgeBrief(draft: ResearchDraft, plan: ResearchPlan, matrix: ResearchMatrix | null): string {
   let textLimit: number = RESEARCH_LIMITS.questionCharacters;
   let planShortened = false;
   const planText = (text: string, limit: number) => {
@@ -230,6 +277,7 @@ function judgeBrief(draft: ResearchDraft, plan: ResearchPlan): string {
   }
   const brief = {
     language: CYRILLIC.test(draft.report) ? "Russian" : "English", nextStepLanguage: CYRILLIC.test(plan.goal) ? "Russian" : "English", plan: projected, planShortened,
+    ...matrix ? { matrix: matrixBrief(matrix) } : {},
     unreachableClasses: [...new Set(draft.unreachable.filter((entry) => entry.reason.trim() && entry.target.trim()).map((entry) => entry.sourceClass))],
     findings: [] as ResearchFinding[], findingsShortened: false, omittedFindings: draft.findings.length
   };
@@ -277,12 +325,18 @@ function judgeIssues(report: string): Judgment | null {
   return { gaps, limits: record.limits as string[] };
 }
 
-/** Mechanical coverage first; a judgment only after it. Answer first: an unfinished judgment costs the check, never the answer, and the answer says so. */
+/**
+ * Mechanical coverage first; a judgment only after it. Answer first: an unfinished judgment costs the check, never the answer, and the answer says so.
+ * Where a frame exists its matrix is the mechanical part and the judge keeps to what it cannot see, and once researchers are closed a gap goes
+ * into the answer instead of back for research. With no frame, or one that could not be read, the check is what it always was.
+ */
 export const gapCheckGate: ResearchGate = {
   name: "gap_check",
   async run(draft, context) {
     const notes = unreachableNotes(draft);
     const russian = CYRILLIC.test(draft.report);
+    const matrix = await researchMatrix(researchGatePorts(context).coverage, context.signal);
+    const closed = matrix ? context.researchersClosed?.() ?? null : null;
     const progress = context.earlier.length > 0 ? pageProgress.get(context.plan) : undefined;
     const previous = progress?.feedback;
     const opened = await context.sources.opened(context.signal);
@@ -300,14 +354,19 @@ export const gapCheckGate: ResearchGate = {
         : "Submit the report through submit_research_draft with findings: claim, link, verbatim quote and source. Keep every finding that still holds; do not shorten the report to satisfy this check." };
     }
 
-    const coverage = sourceCoverage(draft, opened);
-    const unknown = coverageGaps(context.plan, coverage, "unknown", russian);
-    if (unknown.length) notes.push(issueText(russian ? "Не удалось проверить открытие источников:" : "Source opening could not be checked:",
-      unknown.map((gap) => gap.issue)));
-    const missing = coverageGaps(context.plan, coverage, "missing", russian);
+    let missing: Gap[];
+    if (matrix) {
+      missing = matrixGaps(matrix, CYRILLIC.test(context.plan.goal));
+    } else {
+      const coverage = sourceCoverage(draft, opened);
+      const unknown = coverageGaps(context.plan, coverage, "unknown", russian);
+      if (unknown.length) notes.push(issueText(russian ? "Не удалось проверить открытие источников:" : "Source opening could not be checked:",
+        unknown.map((gap) => gap.issue)));
+      missing = coverageGaps(context.plan, coverage, "missing", russian);
+    }
     if (noNewPages) return { kind: "pass", notes: [...notes,
-      ...missing.length > 0 ? [gapNote(missing, russian, "mechanical")] : [], ...previousJudgeNotes(context, russian, previous)] };
-    if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, notes);
+      ...missing.length > 0 ? [...closedNote(closed, russian), gapNote(missing, russian, "mechanical")] : [], ...previousJudgeNotes(context, russian, previous)] };
+    if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, notes, closed);
 
     if (addedNothing(draft, context)) {
       // Keep the previous judge's named issues if no new evidence could address
@@ -319,12 +378,12 @@ export const gapCheckGate: ResearchGate = {
       ...previousJudgeNotes(context, russian, previous)] });
     if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) return unfinished();
     try {
-      const outcome = await context.subagents.run({ brief: judgeBrief(draft, context.plan), instructions: JUDGE_INSTRUCTIONS,
+      const outcome = await context.subagents.run({ brief: judgeBrief(draft, context.plan, matrix), instructions: matrix ? JUDGE_MATRIX_INSTRUCTIONS : JUDGE_INSTRUCTIONS,
         model: "verifier", name: "gap-judge", tools: [] }, context.signal);
       if (outcome.kind !== "ended" || outcome.result.state !== "done" || outcome.result.outcome !== "done" || outcome.result.reportTruncated) return unfinished();
       const judgment = judgeIssues(outcome.result.report);
       if (judgment === null) return unfinished();
-      if (judgment.gaps.length > 0) return gapsResult(draft, context, { ...judgment, kind: "judged", pages }, notes);
+      if (judgment.gaps.length > 0) return gapsResult(draft, context, { ...judgment, kind: "judged", pages }, notes, closed);
       pageProgress.set(context.plan, { pages, feedback: { ...judgment, kind: "judged", pages } });
       return { kind: "pass", notes };
     } catch {

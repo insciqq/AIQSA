@@ -1,4 +1,5 @@
 import {
+  CHANGE_RESEARCH_FRAME_TOOL_NAME,
   decodeResearchRecord,
   RECORD_EVIDENCE_TOOL_NAME,
   RESEARCH_RECORD_KINDS,
@@ -6,11 +7,12 @@ import {
   RESEARCH_STANDINGS,
   START_RESEARCH_TOOL_NAME,
   type ResearchAgentRef,
-  type ResearchEvidenceRecord
+  type ResearchEvidenceRecord,
+  type ResearchFrame
 } from "../../contracts/research";
 import type { EngineTool } from "../engine/toolRegistry";
 import { RESEARCH_CHECK_REASONS } from "../research/evidenceStore";
-import type { ResearchEvidencePort } from "../research/ports";
+import type { ResearchCoveragePort, ResearchEvidencePort } from "../research/ports";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { harnessToolError } from "./harnessTool";
 import type { RunTool, ToolExecutionResult } from "./types";
@@ -79,9 +81,10 @@ export const recordEvidenceTool: RunTool = {
 
 /**
  * What a run's `record_evidence` reaches: the one port of its research, and whether research has started (`RunResearch.holding`). That is
- * from `start_research` on, scoping included, and not from the plan's release: what scoping finds is a finding.
+ * from `start_research` on, scoping included, and not from the plan's release: what scoping finds is a finding. `coverage` is read only to tell
+ * the agent at once that a record fills no cell.
  */
-export type RecordEvidenceTarget = Readonly<{ evidence: Pick<ResearchEvidencePort, "record">; researching(): boolean }>;
+export type RecordEvidenceTarget = Readonly<{ coverage: Pick<ResearchCoveragePort, "frame">; evidence: Pick<ResearchEvidencePort, "record">; researching(): boolean }>;
 
 const CORRECT = `call ${RECORD_EVIDENCE_TOOL_NAME} again with supersedes set to this record's id`;
 
@@ -113,9 +116,37 @@ function checkMessage(check: NonNullable<ResearchEvidenceRecord["quoteCheck"]>):
 
 const NOT_STARTED = `Nothing was recorded: research has not started. Call ${START_RESEARCH_TOOL_NAME} first, or answer the user directly if this needs no research.`;
 
-function recordedResult(call: Readonly<{ id: string; name: string }>, record: ResearchEvidenceRecord): ToolExecutionResult {
+/** At most this many keys of each kind in a hint: the result stays short, and the agent's brief lists them all. */
+const HINT_KEYS = 24;
+
+const keyList = (entries: readonly Readonly<{ key: string }>[]) => {
+  const shown = entries.slice(0, HINT_KEYS).map(({ key }) => key).join(", ") || "none yet";
+  return entries.length > HINT_KEYS ? `${shown} and ${entries.length - HINT_KEYS} more` : shown;
+};
+
+/**
+ * Why this record fills no cell of the matrix, while the agent can still do something about it; null when its keys are the matrix's. The
+ * record stands either way: a finding is never lost over a key. A frame with no rows yet counts a record at its criterion, whatever row it names.
+ */
+function cellHint(record: ResearchEvidenceRecord, frame: ResearchFrame): string | null {
+  if (record.kind === "unreachable") return null;
+  const { criterionKey, rowKey } = record;
+  const criterionKnown = frame.criteria.some(({ key }) => key === criterionKey);
+  if (frame.rows.length === 0 && criterionKnown) {
+    return rowKey === null ? null : `This record counts for its criterion, as the matrix has no rows yet. If ${rowKey} is a candidate, study or option, add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}.`;
+  }
+  const unknown = [...rowKey !== null && !frame.rows.some(({ key }) => key === rowKey) ? [`row_key ${rowKey}`] : [],
+    ...criterionKey !== null && !criterionKnown ? [`criterion_key ${criterionKey}`] : []];
+  const missing = [...rowKey === null && frame.rows.length > 0 ? ["row_key"] : [], ...criterionKey === null ? ["criterion_key"] : []];
+  if (unknown.length === 0 && missing.length === 0) return null;
+  const why = unknown.length > 0 ? `the matrix does not know ${unknown.join(" or ")}` : `it gives no ${missing.join(" or ")}`;
+  return `This record stands but fills no cell: ${why}. Rows: ${keyList(frame.rows)}. Criteria: ${keyList(frame.criteria)}. To put it in a cell, ${CORRECT} and known keys, ` +
+    `or add a new key with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} and it counts as it stands.`;
+}
+
+function recordedResult(call: Readonly<{ id: string; name: string }>, record: ResearchEvidenceRecord, hint: string | null): ToolExecutionResult {
   const check = record.quoteCheck;
-  return { callId: call.id, content: [{ type: "json", value: { message: check ? checkMessage(check) : "Recorded.", ...check ? { quote_check: check.status } : {}, record_id: record.id } }],
+  return { callId: call.id, content: [{ type: "json", value: { ...hint ? { matrix: hint } : {}, message: check ? checkMessage(check) : "Recorded.", ...check ? { quote_check: check.status } : {}, record_id: record.id } }],
     name: call.name, status: "complete" };
 }
 
@@ -132,7 +163,10 @@ export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: Wo
       const decoded = decodeResearchRecord(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_record_invalid", decoded.message);
       const written = await target.evidence.record({ author, record: decoded.value }, signal);
-      return written.kind === "recorded" ? recordedResult(call, written.record) : harnessToolError(call, written.code, written.message);
+      if (written.kind !== "recorded") return harnessToolError(call, written.code, written.message);
+      // The record is on file by now, so a matrix that cannot be read costs only the hint.
+      const frame = await target.coverage.frame(signal).catch(() => null);
+      return recordedResult(call, written.record, frame && cellHint(written.record, frame));
     }
   };
 }
