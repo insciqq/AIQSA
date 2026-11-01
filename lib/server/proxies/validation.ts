@@ -45,7 +45,7 @@ export type ProxyFields = Readonly<{
 export type ProxyPatch = Partial<ProxyFields>;
 
 const WRITE_KEYS = ["active", "country", "domainHints", "host", "login", "name", "password", "port", "protocol"] as const;
-const CONTROL = /[\u0000-\u001f\u007f]/u;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
 
 const bytes = (value: string) => Buffer.byteLength(value, "utf8");
 const isRecord = (value: unknown): value is Record<string, unknown> =>

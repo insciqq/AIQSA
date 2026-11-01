@@ -433,7 +433,10 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
         }
         const connection = route.kind === "proxy" ? route.connection : undefined;
         const proxy = connection ? { id: connection.id, name: connection.name } : undefined;
-        const key = fetchUrlCacheKey(url, proxy);
+        const checkRedirects = !connection && !explicit && deps.proxyPlan?.entries.some((entry) => entry.active);
+        // An explicit direct read must never satisfy an automatic read whose redirects need proxy selection.
+        // Recovery seeds only concrete routes, so an automatic short link checks its redirects again.
+        const key = checkRedirects ? JSON.stringify([url, null, "automatic"]) : fetchUrlCacheKey(url, proxy);
         const cached = cache.get(key);
         if (cached) return read(call, cached, true);
         let outcome: Outcome | undefined;
@@ -446,20 +449,47 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           }
         }
         if (!outcome) {
+          let actualProxy = proxy;
           if (proxy) proxySession.observe({ outcome: "started" });
+          const redirectRoute: NonNullable<WebFetchOptions["redirectRoute"]> = async (target, options) => {
+            options.signal?.throwIfAborted();
+            const redirectedRoutes = await proxySession.routes(target);
+            while (true) {
+              options.signal?.throwIfAborted();
+              const next = redirectedRoutes.next();
+              if (next.kind === "direct") return null;
+              if (next.kind === "failed") {
+                actualProxy ??= next.proxy;
+                throw new WebFetchError(next.code, { dispatched: true });
+              }
+              actualProxy = { id: next.connection.id, name: next.connection.name };
+              proxySession.observe({ outcome: "started" });
+              try {
+                return await (deps.fetchProxyPage ?? fetchThroughProxy)(target, next.connection, options);
+              } catch (error) {
+                if (options.signal?.aborted || !(error instanceof WebFetchError) || !isFetchUrlProxyFailure(error.code)) throw error;
+                proxySession.observe({ outcome: "failed", code: error.code });
+                redirectedRoutes.failed(next.connection.id);
+              }
+            }
+          };
           const reader = connection
             ? (target: string, options: WebFetchOptions) => (deps.fetchProxyPage ?? fetchThroughProxy)(target, connection, options)
-            : fetchPage;
-          const work = fetchAndExtract(url, input.signal, reader);
+            : checkRedirects ? (target: string, options: WebFetchOptions) => fetchPage(target, { ...options, redirectRoute }) : fetchPage;
+          const work = fetchAndExtract(url, input.signal, reader).then((result): Outcome => {
+            if (!actualProxy) return result;
+            return result.kind === "read" ? { ...result, value: { ...result.value, proxy: actualProxy } } : { ...result, proxy: actualProxy };
+          });
           inFlight.set(key, work);
           try { outcome = await work; }
           finally { if (inFlight.get(key) === work) inFlight.delete(key); }
-          if (proxy) proxySession.observe({ outcome: outcome.kind === "read" ? "read" : "failed",
+          if (actualProxy) proxySession.observe({ outcome: outcome.kind === "read" ? "read" : "failed",
             ...(outcome.kind === "failed" ? { code: outcome.code } : {}) });
         }
         if (outcome.kind === "read") {
           const value = { ...outcome.value, ...(proxy ? { proxy } : {}) };
           remember(key, value);
+          if (checkRedirects && value.proxy) remember(fetchUrlCacheKey(url, value.proxy), value);
           return read(call, value, shared);
         }
         dispatched ||= outcome.dispatched && !shared;

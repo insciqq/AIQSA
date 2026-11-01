@@ -52,6 +52,16 @@ describe("proxy input", () => {
     expect(codeOf(() => parseProxyCreate(input))).toBe(code);
   });
 
+  it.each([0x80, 0x85, 0x9f])("refuses C1 control U+%s in names and credentials before persistence", (point) => {
+    const control = String.fromCodePoint(point);
+    for (const name of [`before${control}after`, `${control}Almaty${control}`]) {
+      expect(codeOf(() => parseProxyCreate({ ...BASE, name }))).toBe("proxy_name_invalid");
+      expect(codeOf(() => parseProxyUpdate({ expectedVersion: 1, name }))).toBe("proxy_name_invalid");
+    }
+    expect(codeOf(() => parseProxyPatch({ login: `user${control}` }))).toBe("proxy_login_invalid");
+    expect(codeOf(() => parseProxyPatch({ password: `pass${control}` }))).toBe("proxy_password_invalid");
+  });
+
   it("keeps an update to what it names, a null clearing and an absent field keeping", () => {
     expect(parseProxyPatch({ password: null })).toEqual({ password: null });
     expect(parseProxyPatch({ active: false, domainHints: [] })).toEqual({ active: false, domainHints: [] });

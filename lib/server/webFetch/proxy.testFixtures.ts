@@ -10,7 +10,7 @@ export const proxyConnection = (port: number, protocol: ProxyProtocol = "http", 
 export const pageResponse = (body = "Synthetic page content", status = 200, headers = "") =>
   `HTTP/1.1 ${status} Result\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n${headers}\r\n${body}`;
 
-/** Loopback only. Emulates the remote origin within the tunnel; it never forwards to a network destination. */
+/** Loopback only. Emulates the origin behind a tunnel or an absolute-form request; never contacts external targets. */
 export async function localProxy(options: {
   protocol?: "http" | "socks5";
   behavior?: "close" | "garbage" | "silent" | "bad_password";
@@ -18,6 +18,7 @@ export async function localProxy(options: {
 } = {}) {
   const sockets = new Set<Socket>();
   const connects: string[] = [];
+  const proxyRequests: string[] = [];
   const requests: string[] = [];
   const logins: string[] = [];
   const passwords: string[] = [];
@@ -58,8 +59,16 @@ export async function localProxy(options: {
         } else {
           const end = pending.indexOf("\r\n\r\n");
           if (end < 0) return;
-          const request = pending.subarray(0, end + 4).toString();
+          let request = pending.subarray(0, end + 4).toString();
           pending = pending.subarray(end + 4);
+          if (stage === "http" && !request.startsWith("CONNECT ")) {
+            proxyRequests.push(request);
+            if (options.behavior === "bad_password") { socket.end(pageResponse("", 407)); return; }
+            const target = new URL(request.split(" ")[1]!);
+            request = request.replace(/^GET [^ ]+ /u, `GET ${target.pathname}${target.search} `)
+              .replace(/^proxy-authorization:[^\r\n]*\r\n/gimu, "");
+            stage = "page";
+          }
           if (stage === "http") {
             connects.push(request);
             if (options.behavior === "bad_password") { socket.end(pageResponse("", 407)); return; }
@@ -77,7 +86,7 @@ export async function localProxy(options: {
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("synthetic_proxy_address");
-  return { connects, logins, passwords, port: address.port, requests,
+  return { connects, proxyRequests, logins, passwords, port: address.port, requests,
     close: async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));

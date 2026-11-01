@@ -56,7 +56,7 @@ async function httpTunnel(socket: Socket, url: URL, connection: ProxyHopConnecti
   const authority = `${url.hostname}:${url.port || (url.protocol === "https:" ? 443 : 80)}`;
   const auth = connection.login !== null || connection.password !== null
     ? `Proxy-Authorization: Basic ${Buffer.from(`${connection.login ?? ""}:${connection.password ?? ""}`).toString("base64")}\r\n` : "";
-  // CONNECT for plain HTTP too: credentials are confined to the proxy handshake.
+  // HTTPS targets use CONNECT; these credentials never enter the tunnel.
   socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`);
   let head = Buffer.alloc(0);
   while (true) {
@@ -118,7 +118,7 @@ async function socksTunnel(socket: Socket, url: URL, connection: ProxyHopConnect
   await bytes(socket, length + 2, signal);
 }
 
-/** GET through a fresh tunnel. Every hop checks DNS again; there is no shared pool. */
+/** GET through a fresh proxy connection. Every hop checks DNS again; there is no shared pool. */
 export async function fetchProxyHop(url: URL, connection: ProxyHopConnection, headers: Record<string, string>,
   signal: AbortSignal): Promise<Response> {
   const targetHost = url.hostname.replace(/^\[|\]$/gu, "").replace(/\.$/u, "");
@@ -147,8 +147,9 @@ export async function fetchProxyHop(url: URL, connection: ProxyHopConnection, he
       await waitFor(socket, "secureConnect", signal);
     }
     phase = "proxy_connect_failed";
+    const forward = connection.protocol !== "socks5" && url.protocol === "http:";
     if (connection.protocol === "socks5") await socksTunnel(socket, url, connection, signal);
-    else await httpTunnel(socket, url, connection, signal);
+    else if (!forward) await httpTunnel(socket, url, connection, signal);
     if (url.protocol === "https:") {
       phase = "fetch_network_error";
       const host = url.hostname.replace(/^\[|\]$/gu, "");
@@ -160,14 +161,19 @@ export async function fetchProxyHop(url: URL, connection: ProxyHopConnection, he
     phase = "proxy_connect_failed";
     const tunnel = socket;
     agent = new Agent({ keepAlive: false });
-    // The request runs on the tunnel already open: its agent never dials.
+    // The request uses the proxy connection or tunnel already open: its agent never dials.
     (agent as Agent & { createConnection(): Socket }).createConnection = () => tunnel;
     return await new Promise<Response>((resolve, reject) => {
-      const outgoing = request({ agent, headers: { ...headers, connection: "close", host: url.host },
-        hostname: url.hostname, method: "GET", path: `${url.pathname}${url.search}`, signal,
+      const auth = forward && (connection.login !== null || connection.password !== null)
+        ? { "proxy-authorization": `Basic ${Buffer.from(`${connection.login ?? ""}:${connection.password ?? ""}`).toString("base64")}` } : {};
+      // Absolute form addresses the proxy itself. It consumes Proxy-Authorization before forwarding to the target.
+      const outgoing = request({ agent, headers: { ...headers, ...auth, connection: "close", host: url.host },
+        hostname: forward ? checked.host : url.hostname, port: forward ? checked.port : undefined,
+        method: "GET", path: forward ? url.href : `${url.pathname}${url.search}`, signal,
         maxHeaderSize: 16_384 }, (incoming) => {
         const status = incoming.statusCode ?? 0;
         if (status < 200 || status > 599) { cleanup(); reject(fail("proxy_protocol_error")); return; }
+        if (forward && status === 407) { incoming.destroy(); cleanup(); reject(fail("proxy_auth_failed")); return; }
         try {
           const responseHeaders = new Headers();
           for (let i = 0; i < incoming.rawHeaders.length; i += 2) {
