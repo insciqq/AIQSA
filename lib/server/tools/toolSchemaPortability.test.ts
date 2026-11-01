@@ -15,6 +15,7 @@ import { fetchUrlTool } from "./fetchUrlPlan";
 import { HARNESS_TOOLS } from "./harnessTools";
 import { monitoringVerdictTool } from "./monitoringVerdict";
 import { readToolResultTool } from "./readToolResult";
+import { recordEvidenceTool } from "./recordEvidence";
 import { createScheduledTaskTool } from "./scheduledTaskCreation";
 import { manageScheduledTaskTool } from "./scheduledTaskManagement";
 import { SELF_SERVICE_TOOLS } from "./selfServiceTools";
@@ -73,7 +74,8 @@ function firstPartyTools(): RunTool[] {
     manageScheduledTaskTool({ chatTask: { taskId: "task-1", title: "Check mail" }, userUrlDigests: [] }),
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
     loadSkillTool, readSkillFileTool, artifactTool(), readArtifactTool(), checkpointOutputsTool, analyzeImageTool(),
-    analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool
+    analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool,
+    recordEvidenceTool
   ];
 }
 
