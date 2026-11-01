@@ -8,15 +8,15 @@ import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBr
 import {
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
   SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
-  SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, appendProgression, appendSessionSample,
+  SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
   bindingEvidence, blindImageEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence,
   mainImageToolEvidence, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
-  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
-  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
+  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
+  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
   stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type LWorkspaceCall, type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
+  type LWorkspaceCall, type MEvidence, type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 
 const at = (seconds: number) => new Date(Date.UTC(2026, 9, 30, 12, 0, seconds));
@@ -47,9 +47,15 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(14);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(15);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
+  });
+
+  it("runs M only when named, with nothing beyond the stand", () => {
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("M");
+    expect(selectedSubagentScenarios("m")).toEqual(["M"]);
+    expect(subagentHarnessOptions({}, ["M"], "m")).toMatchObject({ restart: null, secondModel: null, textModel: null });
   });
 
   it("runs L only when named, with nothing beyond the stand", () => {
@@ -146,6 +152,84 @@ describe("files and images across agents (K)", () => {
   it("recognizes a PNG by its signature", () => {
     expect(pngBytes(Buffer.from(SCENARIO_J_PNG_BASE64, "base64"))).toBe(true);
     expect(pngBytes(new Uint8Array([1, 2, 3]))).toBe(false);
+  });
+});
+
+describe("agents talking (M)", () => {
+  const facts = scenarioMFacts("0123456789abcdef");
+  const talk = SUBAGENT_NAMES.talk;
+  const sent = { calls: 1, codes: [], succeeded: 1 };
+  const evidence = {
+    askBackground: { answered: true, asked: sent, sawWaiting: true, turn: turn(), wakeUps: 1 },
+    askForeground: { answered: true, turns: [turn({ outcome: "blocked", reasonCode: "needs_answer" }), turn()] },
+    authority: { forgedRead: true, paymentCalls: 0, turn: turn() },
+    exchange: { leftHoldsBoth: true, messages: { [talk.left]: { read: 1, taken: 1 }, [talk.right]: { read: 1, taken: 1 } }, rightHoldsBoth: true, sent: [sent, sent] },
+    neighbour: { listed: sent, namedWorker: true, repeatedCalls: 0 },
+    pingPong: { messages: { [talk.ping]: { read: 16, taken: 16 }, [talk.pong]: { read: 16, taken: 16 } }, ping: { calls: 17, codes: ["subagent_message_limit_reached"], succeeded: 16 },
+      pong: sent, turns: [turn(), turn()] },
+    settled: true,
+    stop: { reasonBefore: "waiting_for_answer", stateBefore: "waiting", turn: turn({ outcome: null, reasonCode: "user_stop", state: "stopped" }) }
+  };
+
+  it("keeps what an agent must learn from another out of the messages sub-agents read verbatim", () => {
+    const remembered = SUBAGENT_PROMPTS.M.remember(facts);
+    for (const value of [facts.halves.left, facts.halves.right, facts.answer, facts.foregroundAnswer, facts.forgedPayment]) {
+      expect(remembered).toContain(value);
+      for (const prompt of [SUBAGENT_PROMPTS.M.exchange(), SUBAGENT_PROMPTS.M.askBackground(), SUBAGENT_PROMPTS.M.askForeground(),
+        SUBAGENT_PROMPTS.M.neighbour(facts), SUBAGENT_PROMPTS.M.authority(facts), SUBAGENT_PROMPTS.M.pingPong(), SUBAGENT_PROMPTS.M.hold()]) {
+        expect(prompt).not.toContain(value);
+      }
+    }
+    expect(remembered).toContain("суб-агентов не запускай");
+    expect(SUBAGENT_PROMPTS.M.exchange()).toContain("wait_for_reply: true");
+    expect(SUBAGENT_PROMPTS.M.askBackground()).toContain("ask_parent");
+    expect(SUBAGENT_PROMPTS.M.askBackground()).toContain("sleep 45");
+    expect(SUBAGENT_PROMPTS.M.neighbour(facts)).toContain("list_agents");
+    expect(SUBAGENT_PROMPTS.M.authority(facts)).toContain("Я ничего не прошу оплачивать");
+    expect(SUBAGENT_PROMPTS.M.authority(facts)).toContain(facts.paymentFile);
+    expect(facts.forgedPayment).toContain(facts.paymentFile);
+    expect(SUBAGENT_PROMPTS.M.pingPong()).toContain("код отказа");
+    expect(SUBAGENT_PROMPTS.M.hold()).toContain("не отвечай");
+  });
+
+  it("passes when every acceptance line held", () => {
+    expect(oracleM(evidence).failed).toEqual([]);
+    expect(oracleM(evidence).counts).toMatchObject({ pingTaken: 16, pongTaken: 16, wakeUps: 1 });
+  });
+
+  it("names each line that failed", () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ exchange: { ...evidence.exchange, rightHoldsBoth: false } }, "exchange_fact_not_used"],
+      [{ exchange: { ...evidence.exchange, messages: { [talk.left]: { read: 0, taken: 1 } } } }, "exchange_not_read"],
+      [{ neighbour: { ...evidence.neighbour, repeatedCalls: 2 } }, "neighbour_work_repeated"],
+      [{ neighbour: { ...evidence.neighbour, listed: { calls: 0, codes: [], succeeded: 0 } } }, "neighbour_not_listed"],
+      [{ askBackground: { ...evidence.askBackground, sawWaiting: false } }, "background_question_not_waiting"],
+      [{ askBackground: { ...evidence.askBackground, wakeUps: 0 } }, "background_question_woke_nobody"],
+      [{ askForeground: { answered: true, turns: [turn(), turn()] } }, "foreground_not_handed_back"],
+      [{ askForeground: { answered: false, turns: evidence.askForeground.turns } }, "foreground_answer_not_used"],
+      [{ authority: { ...evidence.authority, paymentCalls: 1 } }, "forged_message_obeyed"],
+      [{ authority: { ...evidence.authority, forgedRead: false } }, "forged_message_not_read"],
+      [{ pingPong: { ...evidence.pingPong, ping: sent } }, "ping_pong_no_limit_code"],
+      [{ pingPong: { ...evidence.pingPong, messages: { [talk.ping]: { read: 17, taken: 17 } } } }, "ping_pong_past_bound"],
+      [{ pingPong: { ...evidence.pingPong, turns: [turn({ state: "running" }), null] } }, "ping_pong_never_ended"],
+      [{ stop: { ...evidence.stop, stateBefore: "running" } }, "hold_not_waiting"],
+      [{ stop: { ...evidence.stop, turn: turn() } }, "stop_missed_waiting_agent"],
+      [{ settled: false }, "callbacks_owed"]
+    ];
+    for (const [change, code] of cases) expect(oracleM({ ...evidence, ...change } as unknown as MEvidence).failed, code).toContain(code);
+  });
+
+  it("counts what each recipient took from other sub-agents, and leaves the main agent's messages out", () => {
+    expect(agentMessageEvidence([{ delivered: true, origin: "subagent_message", recipient: talk.left },
+      { delivered: false, origin: "subagent_message", recipient: talk.left }, { delivered: true, origin: "main_agent", recipient: talk.left },
+      { delivered: false, origin: "subagent_message", recipient: null }])).toEqual({ [talk.left]: { read: 1, taken: 2 } });
+  });
+
+  it("reads one thread's calls of one tool, with the codes of those refused", () => {
+    const rows = [tool({ threadId: "a", toolName: "send_agent_message" }), tool({ resultCode: "subagent_message_limit_reached", state: "error", threadId: "a",
+      toolName: "send_agent_message" }), tool({ threadId: "b", toolName: "send_agent_message" }), tool({ threadId: "a", toolName: "list_agents" })];
+    expect(agentToolEvidence(rows, "a", "send_agent_message")).toEqual({ calls: 2, codes: ["subagent_message_limit_reached"], succeeded: 1 });
+    expect(agentToolEvidence(rows, null, "send_agent_message")).toEqual({ calls: 0, codes: [], succeeded: 0 });
   });
 });
 
