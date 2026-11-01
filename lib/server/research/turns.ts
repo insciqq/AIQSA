@@ -98,6 +98,8 @@ export function createResearchTurns(input: ResearchTurnsInput) {
         return found ? { ...found, latest: found.latest ? { ...found.latest, modelSource: "parent" as const, effortSource: "parent" as const } : null } : null;
       } } : store;
       runner = prepareRunSubagents({ ...parts,
+        // Read at each use, not frozen by the spread: a research run's turn ends later once its plan is released.
+        get deadlineAt() { return base.deadlineAt; },
         ...(route ? { adapter: route.route.adapter, answerTimeoutMs: route.route.timeoutMs,
           modelConfiguration: route.route.snapshot.model as RunModelConfiguration, snapshot: route.route.snapshot } : {}),
         admittedRequest: { ...route ? roleRequest : admittedRequest, subagentModels: { models: entry ? [entry] : [], version: 1 },
