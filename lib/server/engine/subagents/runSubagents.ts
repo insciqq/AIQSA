@@ -160,7 +160,7 @@ export type PrepareRunSubagentsInput = Readonly<{
   modelConfiguration: RunModelConfiguration;
   now(): number;
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
-  /** Background turns are offered (web chats); never in a Telegram turn or a scheduled occurrence. */
+  /** Background turns may start (web chats); never from a Telegram turn or a scheduled occurrence, which still reach them. */
   backgroundAllowed: boolean;
   ports?: SubagentRunPorts;
   runContextItems: readonly TranscriptItem[];

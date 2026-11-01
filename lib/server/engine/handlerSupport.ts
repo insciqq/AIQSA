@@ -31,9 +31,8 @@ export type NativeEngineHandlerDeps = Readonly<{
   /** Background sub-agent runs' own recovery pass (`lib/server/runs/subagentBackground/recovery.ts`). */
   subagentRecovery?: NativeRecoveryDeps["subagents"];
   /**
-   * The sub-agent ports of the other slices (`lib/server/subagents/ports.ts`): background turns (web and Assistant
-   * chats only, never a Telegram turn or a scheduled occurrence) and the user's custom types. The browser identity
-   * comes from the run's own Workspace coordinator.
+   * The sub-agent ports of the other slices (`lib/server/subagents/ports.ts`): background turns and the user's custom
+   * types. The browser identity comes from the run's own Workspace coordinator.
    */
   subagents?: Readonly<{ background?: () => SubagentBackgroundControl; messaging?: () => SubagentMessaging; types?: SubagentTypeResolver }>;
   /** The owners of the harness and self-service tools (`defaultNativeToolServices`). */
@@ -59,13 +58,13 @@ export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
 }
 
 /**
- * The sub-agent ports one run gets: background turns only in a web or Assistant chat, messaging and the runner's custom
- * types in every run, and the browser identity of its Workspace coordinator, whose release frees an agent's browser slot when
- * its turn ends. Absent ports are unavailable (`callTools.ts`).
+ * The sub-agent ports one run gets. Every run takes background turns, messaging and the runner's custom types: a Telegram
+ * turn or a scheduled occurrence starts no background turn (`backgroundAllowed`, `execution.ts`), but it answers one
+ * waiting on its branch, and stops it, like any other. The browser identity is its Workspace coordinator's, whose release
+ * frees an agent's browser slot when its turn ends. Absent ports are unavailable (`callTools.ts`).
  */
-export function subagentRunPorts(native: NativeEngineHandlerDeps, input: Readonly<{ scheduled: boolean; telegram: boolean;
-  workspace?: WorkspaceCoordinator }>): SubagentRunPorts {
-  const background = native.subagents?.background && !input.scheduled && !input.telegram ? native.subagents.background() : undefined;
+export function subagentRunPorts(native: NativeEngineHandlerDeps, input: Readonly<{ workspace?: WorkspaceCoordinator }>): SubagentRunPorts {
+  const background = native.subagents?.background?.();
   const release = input.workspace?.releaseBrowserAgent;
   const browserIdentity: BrowserAgentIdentity | undefined = release ? {
     environment: workspaceAgentEnvironment,
@@ -176,7 +175,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     repository: input.repository,
     ...(scheduled ? { scheduled: true as const } : {}),
     ...(telegram ? { telegram: true as const } : {}),
-    subagents: subagentRunPorts(native, { scheduled, telegram, ...(input.workspace ? { workspace: input.workspace } : {}) }),
+    subagents: subagentRunPorts(native, input.workspace ? { workspace: input.workspace } : {}),
     services: {
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),

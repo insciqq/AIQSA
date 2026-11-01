@@ -423,6 +423,19 @@ describe("call_subagent with the background port", () => {
     expect(background.turns).toHaveLength(0);
   });
 
+  it("lets a run that may not start one answer and stop what runs on its branch", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    await executeCallSubagent(setup({ background }).deps, execution({ background: true, message: "Go", name: "shop" }));
+    const found = visible({ active: turn({ id: "background-turn-1", mode: "background", parentRunId: "run", state: "waiting", threadId: "thread-new" }),
+      thread: { anchorRunId: "run", definitionId: null, id: "thread-new", name: "shop", typeName: null } });
+    const telegram = setup({ background, backgroundAllowed: false, found });
+    expect(value(await executeCallSubagent(telegram.deps, execution({ message: "Size M.", name: "shop" }, "c3"))))
+      .toEqual({ kind: "delivered", name: "shop", state: "running" });
+    expect(background.turns[0]!.messages).toEqual([{ nonce: "c3", origin: "main_agent", text: "Size M." }]);
+    expect(value(await executeStopSubagent(telegram.deps, { ...execution({ name: "shop" }), call: { arguments: { name: "shop" }, id: "c4",
+      name: "stop_subagent" } }))).toMatchObject({ reason: "stop_subagent", state: "stopped" });
+  });
+
   it("refuses a message to a full mailbox visibly", async () => {
     const background = new FakeSubagentBackgroundControl();
     vi.spyOn(background, "deliver").mockRejectedValue(Object.assign(new Error("mailbox_full"), { code: SUBAGENT_ERROR_CODES.messageLimit }));

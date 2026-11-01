@@ -141,7 +141,7 @@ export type NativeRunExecutionInput = Readonly<{
   services: NativeRunServices;
   /**
    * The sub-agent ports of other slices this run gets (background turns, custom types, the browser identity);
-   * an absent one is unavailable, so a Telegram turn or scheduled occurrence gives no background port.
+   * an absent one is unavailable.
    */
   subagents?: SubagentRunPorts;
   /** A Telegram turn: its chat shows no live browser, so a handoff points to the web chat. */
@@ -623,7 +623,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return (batch?.entries ?? []).filter((entry) => entry.delivery !== "undelivered" && userAuthoredFollowup(entry))
               .map((entry) => ({ id: entry.id, text: entry.text }));
           },
-          // Background turns are web chats' only: a Telegram turn or a scheduled occurrence waits for its sub-agents.
+          // Only a web chat starts background turns: a Telegram turn or a scheduled occurrence waits for the sub-agents it starts.
           backgroundAllowed: !input.telegram && !input.scheduled,
           ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
           runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
