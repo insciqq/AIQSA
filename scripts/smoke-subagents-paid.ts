@@ -1501,6 +1501,9 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
   const kinds = process.env.AIQSA_SUBAGENTS_T_KINDS?.split(",").map((kind) => kind.trim()).filter(Boolean);
   const questions: Record<string, unknown>[] = [];
   let failed = false;
+  // With the operator's proxy the marketplaces are in reach, as for a user who saved one: never printed, removed afterwards.
+  const proxy = parseTestProxy(process.env.AIQSA_SUBAGENTS_TEST_PROXY);
+  if (proxy) await json(ctx.session.api, "/api/me/proxies", { body: { domainHints: [".ru"], host: proxy.host, login: proxy.login, name: SCENARIO_S_NAME, password: proxy.password, port: proxy.port, protocol: proxy.protocol }, method: "POST" });
   for (const question of SCENARIO_T_QUESTIONS.filter((entry) => !kinds || kinds.includes(entry.kind))) {
     const started = Date.now();
     const chat = await createScenarioChat(ctx.session.api, `Research scenario ${question.kind}`);
@@ -1526,6 +1529,27 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
     const researcherTurns = turns.filter((turn) => !gateThreads.has(turn.threadId)).length;
     const sentBack = calls.filter((call) => call.toolName === "submit_research_draft" && JSON.stringify(call.result ?? "").includes("sent_back")).length;
     const metrics = researchMetrics({ drafts, opened, researcherTurns, sentBack, started: count("start_research") > 0 });
+    // Per draft, oldest first: what it held and who sent it back. The messages are the server's words about the plan, so only their kind leaves.
+    const timeline = calls.filter((call) => call.toolName === "submit_research_draft").map((call, index) => {
+      const findings = drafts[index] ?? [];
+      const byClass: Record<string, number> = {};
+      for (const finding of findings) byClass[finding.sourceClass] = (byClass[finding.sourceClass] ?? 0) + 1;
+      const result = JSON.stringify(call.result ?? "");
+      return { accepted: result.includes("accepted"), byClass, findings: findings.length,
+        sentBackBy: !result.includes("sent_back") ? null : result.includes("[Independent check]") ? "verifier"
+          : /Research questions still open|Открытые вопросы исследования/u.test(result) ? "gap_judge" : "gap_mechanical" };
+    });
+    const { rows: gateRows } = await ctx.db.query<{ name: string; reasonCode: string | null; report: string | null; state: string; modelId: string | null }>(`SELECT th."name", t."reasonCode", t."state"::text AS "state", t."modelId", t."result"->>'report' AS "report"
+      FROM "SubagentTurn" t JOIN "SubagentThread" th ON th."id" = t."threadId" WHERE t."chatId" = $1 AND th."name" ~ '^(gap-judge|verifier)-' ORDER BY t."startedAt"`, [chat.id]);
+    const gateTurnFacts = gateRows.map((row) => ({ name: row.name, reason: safeCode(row.reasonCode), reportChars: row.report?.length ?? 0, state: row.state }));
+    const fetchOutcomes: Record<string, number> = {};
+    for (const call of calls.filter((entry) => entry.toolName === "fetch_url")) {
+      const facts = (call.result?.rawPreview as { fetchUrl?: { outcome?: string; proxyCode?: string } } | undefined)?.fetchUrl;
+      const code = safeCode(facts?.proxyCode ?? facts?.outcome) ?? "unknown";
+      fetchOutcomes[code] = (fetchOutcomes[code] ?? 0) + 1;
+    }
+    const answersFile = process.env.AIQSA_SUBAGENTS_ANSWERS_FILE;
+    if (answersFile) appendFileSync(answersFile, `\n\n===== T ${question.kind} gate reports =====\n\n${gateRows.map((row) => `--- ${row.name} (${row.state}) ---\n${row.report ?? ""}`).join("\n\n")}\n`, { mode: 0o600 });
     const { rows: answers } = await ctx.db.query<{ note: string | null; text: string | null }>(`SELECT m."content"::text AS "text", NULL AS "note" FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId"
       WHERE r."id" = $1`, [sent.ok ? sent.runId : ""]);
     const answer = answers[0]?.text ?? "";
@@ -1533,12 +1557,15 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
     const serverNotes = [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт пришёл|This report came|Research ended|Исследование завершилось)[^*]{0,400})\*/gu)].map((match) => match[1]);
     await keepAnswers(ctx, chat.id, `T ${question.kind}`);
     const usage = usageByPurpose(await settledUsage(ctx.db, [chat.id]));
-    questions.push({ gateTurns: turns.length - researcherTurns, kind: question.kind, metrics, searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length,
+    questions.push({ fetchOutcomes, gateTurnFacts, gateTurns: turns.length - researcherTurns, kind: question.kind, metrics, timeline, searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length,
       fetchCalls: count("fetch_url"), serverNotes, terminal: terminal.status, tokens: usage.total, wallSeconds: seconds(started) });
     emit({ stage: "research_question", ...questions.at(-1) });
     if (terminal.status !== "complete" || !metrics.started || (question.kind === "purchase" && metrics.independentOpened === 0)) failed = true;
   }
   Object.assign(run.line, { questions });
+  for (const stored of (await ctx.db.query<{ id: string; version: number }>(`SELECT "id", "version" FROM "NetworkProxy"`)).rows) {
+    await request(ctx.session.api, `/api/me/proxies/${encodeURIComponent(stored.id)}`, { body: { expectedVersion: stored.version }, method: "DELETE" }).catch(() => undefined);
+  }
   return { success: !failed && questions.length > 0, usage: usageByPurpose(await settledUsage(ctx.db, run.chats)) };
 }
 
