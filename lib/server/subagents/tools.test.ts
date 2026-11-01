@@ -5,14 +5,17 @@ import { LOAD_SKILL_TOOL_NAME } from "../tools/skill";
 import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import {
+  AGENT_MESSAGE_TOOLS,
   SUBAGENT_TOOLS,
   callSubagentTool,
   createSubagentTool,
   editSubagentTool,
+  parseAskParentArguments,
   parseCallSubagentArguments,
   parseCreateSubagentArguments,
   parseDeleteSubagentArguments,
   parseEditSubagentArguments,
+  parseSendAgentMessageArguments,
   parseStopSubagentArguments,
   subagentMayUseTool
 } from "./tools";
@@ -38,6 +41,21 @@ describe("sub-agent tool definitions", () => {
     }
     for (const name of [LOAD_SKILL_TOOL_NAME, READ_SECRET_TOOL_NAME, BROWSER_HANDOFF_TOOL_NAME, "update_plan", "apply_patch",
       "fetch_url", "memory_search", "read_tool_result", "workspace__exec"]) expect(subagentMayUseTool(name), name).toBe(true);
+  });
+});
+
+describe("what agents reach each other with", () => {
+  it("only reads, or stays in this chat's mailbox and is never sent again on its own, and tells every refusal", () => {
+    expect(AGENT_MESSAGE_TOOLS.map((tool) => [tool.name, tool.effects])).toEqual([["list_agents", "none"], ["send_agent_message", "local"], ["ask_parent", "local"]]);
+    for (const tool of AGENT_MESSAGE_TOOLS) {
+      expect(tool.tool).toMatchObject({ description: tool.description, inputSchema: tool.inputSchema, name: tool.name });
+      expect(subagentMayUseTool(tool.name), tool.name).toBe(true);
+      expect(tool.description.length).toBeLessThan(4_000);
+    }
+    for (const code of ["subagent_not_active", "subagent_not_found", "subagent_message_limit_reached"]) {
+      expect(AGENT_MESSAGE_TOOLS[1]!.description).toContain(code);
+    }
+    expect(AGENT_MESSAGE_TOOLS[2]!.description).toContain("needs_answer");
   });
 });
 
@@ -129,6 +147,19 @@ describe("custom sub-agent management arguments", () => {
     expect(parseEditSubagentArguments({ default: 1, name: "browser" })).toMatchObject({ code: "subagent_arguments_invalid", ok: false });
     const other = parseEditSubagentArguments({ default: null, description: "d", name: "browser" });
     expect(other.ok && "default" in other.value).toBe(false);
+  });
+
+  it("takes an agent's address as a name or the main agent, and bounds what agents write", () => {
+    expect(parseSendAgentMessageArguments({ message: " Hi ", to: "Main" })).toEqual({ ok: true, value: { message: "Hi", to: "main", waitForReply: false } });
+    expect(parseSendAgentMessageArguments({ message: "Hi", to: "Scout-1", wait_for_reply: true }))
+      .toEqual({ ok: true, value: { message: "Hi", to: "scout-1", waitForReply: true } });
+    expect(parseSendAgentMessageArguments({ message: "Hi", to: "two words" })).toMatchObject({ code: "subagent_name_invalid", ok: false });
+    expect(parseSendAgentMessageArguments({ message: "x".repeat(SUBAGENT_LIMITS.agentMessageCharacters + 1), to: "a" }))
+      .toMatchObject({ code: "subagent_message_invalid", ok: false });
+    expect(parseSendAgentMessageArguments({ message: "Hi", to: "a", wait_for_reply: "yes" })).toMatchObject({ code: "subagent_arguments_invalid", ok: false });
+    expect(parseAskParentArguments({ question: " Which size? " })).toEqual({ ok: true, value: { question: "Which size?" } });
+    expect(parseAskParentArguments({ question: "" })).toMatchObject({ code: "subagent_message_invalid", ok: false });
+    expect(parseAskParentArguments({ question: "x", to: "main" })).toMatchObject({ code: "subagent_arguments_invalid", ok: false });
   });
 
   it("edits only what is given, telling a reset from a change", () => {
