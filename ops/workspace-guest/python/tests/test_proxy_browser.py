@@ -41,7 +41,7 @@ class Commands(unittest.TestCase):
     def deliver(self, *entries: Dict[str, Any]) -> None:
         path = _paths.proxy_plan_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"version": 1, "proxies": list(entries)}), "utf-8")
+        path.write_text(json.dumps({"version": 1, "generation": 1, "proxies": list(entries)}), "utf-8")
 
     def run_cli(self, *argv: str) -> Any:
         out, err = io.StringIO(), io.StringIO()
@@ -76,6 +76,14 @@ class Commands(unittest.TestCase):
         self.assertNotIn(PASSWORD, out)
         self.assertNotIn("synthetic-login", out)
         self.assertFalse(_paths.proxy_run_dir().exists(), "listing starts no process")
+
+    def test_an_explicit_empty_plan_reads_as_no_proxies_and_starts_nothing(self) -> None:
+        self.deliver()
+        self.assertEqual(self.run_cli("proxies"), (0, "This chat has no proxies.\n", ""))
+        with mock.patch("os.execvpe", side_effect=OSError(2, "gone")) as execute:
+            self.run_cli("proxied", "curl", "https://shop.kz/")
+        self.assertNotIn("HTTPS_PROXY", execute.call_args.args[2])
+        self.assertFalse(_paths.proxy_run_dir().exists())
 
     def test_a_damaged_plan_is_a_failure_and_not_no_proxies(self) -> None:
         path = _paths.proxy_plan_path()
@@ -127,7 +135,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(cli.exit_code("proxy_all_failed"), cli.EXIT_PAGE)
         self.assertEqual(cli.exit_code("proxy_target_refused"), cli.EXIT_PAGE)
         self.assertEqual(cli.exit_code(client.UNAVAILABLE), cli.EXIT_UNAVAILABLE)
-        self.assertEqual(cli.exit_code("proxy_browser_restart_required"), cli.EXIT_UNAVAILABLE)
+        self.assertEqual(cli.exit_code("proxy_browser_restart_pending"), cli.EXIT_UNAVAILABLE)
 
 
 class Flags(unittest.TestCase):
@@ -172,8 +180,39 @@ class Presentation(unittest.TestCase):
         self.assertEqual(self.session.sent[0][1]["acceptLanguage"], "ru-RU")
 
 
+class Tab:
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.closed = False
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class Browser:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def remove_listener(self, *_: Any) -> None:
+        pass
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class Context:
+    async def storage_state(self) -> Dict[str, Any]:
+        return {"cookies": [{"name": "untracked-sign-in"}], "origins": [{"origin": "https://shop.example", "localStorage": []}]}
+
+    async def cookies(self) -> List[Any]:
+        return []
+
+
 class WithoutForwarder(unittest.TestCase):
-    """A browser started before the chat had proxies has no forwarder and cannot route: it says so."""
+    """A browser started before the chat had proxies: it restarts through the forwarder, and keeps what the user holds."""
 
     def setUp(self) -> None:
         if _host is None:
@@ -183,32 +222,94 @@ class WithoutForwarder(unittest.TestCase):
         _paths.use_test_root(root, sys.executable)
         self.addCleanup(_paths.use_test_root, None)
         self.host = _host.Host({})
+        self.host.browser, self.host.context = Browser(), Context()
+        self.launched: List[Any] = []
+
+        async def launch(state: Dict[str, Any]) -> None:
+            self.launched.append((state, self.host.proxy_port))
+
+        self.host._launch = launch  # type: ignore[method-assign]
+        self.main = self.host._state_for("main")
+        self.other = self.host._state_for("other")
+        self.main_tab, self.other_tab = Tab("https://shop.example/cart"), Tab("https://user.example/sign-in")
+        self.main.tabs, self.main.current = [self.main_tab], self.main_tab
+        self.other.tabs, self.other.current = [self.other_tab], self.other_tab
+        self.held = {"other"}
+        self.host._agent_held_by_user = lambda agent: agent in self.held  # type: ignore[method-assign]
+        ensure = mock.patch.object(client, "ensure", return_value=4321)
+        ensure.start()
+        self.addCleanup(ensure.stop)
+
+    def test_a_chat_without_proxies_or_with_an_empty_plan_restarts_nothing(self) -> None:
+        asyncio.run(self.host._ensure_proxied())
+        self.deliver()
+        asyncio.run(self.host._ensure_proxied())
+        self.assertEqual(self.launched, [])
+        self.assertFalse(self.main_tab.closed)
+        self.assertIsNone(self.host.proxy_port)
+
+    def test_while_the_user_holds_a_tab_it_stays_every_other_tab_stops_and_commands_say_why(self) -> None:
+        self.deliver(proxy("kz1"))
+        with self.assertRaises(_host.HostError) as caught:
+            asyncio.run(self.host._ensure_proxied())
+        self.assertEqual(caught.exception.code, "proxy_browser_restart_pending")
+        self.assertTrue(self.main_tab.closed, "another agent's page stops at once")
+        self.assertFalse(self.other_tab.closed, "the user's input stays")
+        self.assertEqual(self.launched, [])
+        self.assertIn("shop.example/cart", self.main.notes[-1])
+
+    def test_when_the_user_gives_it_back_it_restarts_through_the_forwarder_keeping_every_sign_in(self) -> None:
+        self.deliver(proxy("kz1"))
+        with self.assertRaises(_host.HostError):
+            asyncio.run(self.host._ensure_proxied())
+        self.held.clear()
+        previous = self.host.browser
+        asyncio.run(self.host._ensure_proxied())
+        self.assertTrue(previous.closed)
+        self.assertTrue(self.other_tab.closed)
+        self.assertEqual(self.launched[0][1], 4321)
+        self.assertEqual(self.launched[0][0]["cookies"], [{"name": "untracked-sign-in"}])
+        self.assertIn("user.example/sign-in", self.other.notes[-1])
+        self.assertEqual((self.other.tabs, self.other.current, self.host._closing), ([], None, False))
+        asyncio.run(self.host._ensure_proxied())
+        self.assertEqual(len(self.launched), 1, "once on the forwarder, nothing more to do")
+        # A plan that turns empty later needs no restart.
+        self.deliver()
+        asyncio.run(self.host._ensure_proxied())
+        self.assertEqual(len(self.launched), 1)
+
+    def test_control_cannot_begin_while_it_restarts_and_commands_wait_for_it(self) -> None:
+        self.deliver(proxy("kz1"))
+        self.held.clear()
+        seen: List[bool] = []
+
+        async def launch(state: Dict[str, Any]) -> None:
+            seen.append(self.host._closing)
+
+        self.host._launch = launch  # type: ignore[method-assign]
+        asyncio.run(self.host._ensure_proxied())
+        self.assertEqual(seen, [True])
 
     def deliver(self, *entries: Dict[str, Any]) -> None:
         path = Path(_paths.proxy_plan_path())
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"version": 1, "proxies": list(entries)}), "utf-8")
+        path.write_text(json.dumps({"version": 1, "generation": 1, "proxies": list(entries)}), "utf-8")
 
-    def code(self, host: str, value: Any) -> Any:
+    def code(self, value: Any) -> Any:
         try:
-            self.host._no_forwarder(host, client.parse_choice(value))
+            self.host._no_forwarder(client.parse_choice(value))
         except _host.HostError as error:
             return error.code
         return None
 
     def test_no_plan_changes_nothing_and_a_named_proxy_has_nothing_to_name(self) -> None:
-        self.assertIsNone(self.code("shop.kz", None))
-        self.assertIsNone(self.code("shop.kz", "direct"))
-        self.assertIsNone(self.code("shop.kz", "auto"))
-        self.assertEqual(self.code("shop.kz", "KZ1"), "proxy_not_found")
+        for value, expected in ((None, None), ("direct", None), ("auto", None), ("KZ1", "proxy_not_found")):
+            self.assertEqual(self.code(value), expected)
 
-    def test_a_later_plan_never_opens_a_hinted_site_directly(self) -> None:
+    def test_a_plan_arriving_between_the_gate_and_the_navigation_opens_nothing_directly(self) -> None:
         self.deliver(proxy("kz1"))
-        self.assertEqual(self.code("shop.kz", None), "proxy_browser_restart_required")
-        self.assertEqual(self.code("other.example", "KZ1"), "proxy_browser_restart_required")
-        self.assertEqual(self.code("other.example", "nobody"), "proxy_not_found")
-        self.assertIsNone(self.code("other.example", None))
-        self.assertIsNone(self.code("shop.kz", "direct"))
+        for value in (None, "direct", "KZ1"):
+            self.assertEqual(self.code(value), "proxy_browser_restart_pending")
 
 
 if __name__ == "__main__":

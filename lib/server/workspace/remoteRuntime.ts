@@ -402,7 +402,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       body: JSON.stringify({ secrets: input.secrets, modelRunId: input.modelRunId,
         ...(input.agent ? { agent: input.agent } : {}),
         ...(input.runEnvironment ? { runEnvironment: input.runEnvironment } : {}),
-        ...(input.proxies?.length ? { proxies: input.proxies } : {}),
+        ...(input.proxyPlan ? { proxyPlan: input.proxyPlan } : {}),
         ...(input.boundUvCache ? { boundUvCache: true } : {}),
         operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST", signal: input.signal

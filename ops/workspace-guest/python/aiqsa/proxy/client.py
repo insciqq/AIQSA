@@ -1,6 +1,7 @@
 """Starting the forwarder and asking it things. Standard library only, so any guest Python can use it.
 
-Only a run with proxies gets here past `has_plan`: without the plan file there is no process and no browser flag.
+Only a VM whose plan has proxies gets here past `has_plan`: with no plan, or an explicitly empty one, there is no
+process and no browser flag.
 """
 
 from __future__ import annotations
@@ -41,15 +42,21 @@ class ProxyError(Exception):
 
 
 def has_plan() -> bool:
-    return os.path.lexists(_paths.proxy_plan_path())
+    """Whether the forwarder is wanted. A file that cannot be read counts: the forwarder then refuses, and nothing goes direct."""
+    try:
+        plan = _plan.load(_paths.proxy_plan_path())
+    except _plan.PlanInvalid:
+        return True
+    return plan is not None and bool(plan.proxies)
 
 
 def load_plan() -> Optional[_plan.Plan]:
-    """The plan for reading names; a file that cannot be read is a visible failure, never "no proxies"."""
+    """The plan for reading names, None without proxies; a file that cannot be read is a visible failure, never "no proxies"."""
     try:
-        return _plan.load(_paths.proxy_plan_path())
+        plan = _plan.load(_paths.proxy_plan_path())
     except _plan.PlanInvalid:
         raise ProxyError("proxy_unavailable", "This chat's proxies could not be read; nothing is sent directly in their place.") from None
+    return plan if plan is not None and plan.proxies else None
 
 
 def _exchange(path: Path, payload: bytes, timeout: float) -> Optional[Dict[str, Any]]:

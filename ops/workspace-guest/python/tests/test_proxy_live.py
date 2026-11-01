@@ -17,6 +17,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any, List, Optional, Set
@@ -113,7 +114,7 @@ class SpikeThroughChromium(unittest.TestCase):
         connect = background.run(FakeProxy("http", site).start())
         socks = background.run(FakeProxy("socks5", site).start())
         plan = Path(directory) / "plan.json"
-        plan.write_text(json.dumps({"version": 1, "proxies": [entry("connect", connect, hints=(".kz",)), entry("socks", socks, hints=(".es",)),
+        plan.write_text(json.dumps({"version": 1, "generation": 1, "proxies": [entry("connect", connect, hints=(".kz",)), entry("socks", socks, hints=(".es",)),
                                                               entry("dead", port=dead_port(), hints=(".ru",))]}), "utf-8")
 
         async def resolver(host: str, port: int) -> List[str]:
@@ -174,7 +175,7 @@ class RealHost(unittest.TestCase):
         cls.http = cls.background.run(FakeProxy("http", cls.site).start())
         path = _paths.proxy_plan_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"version": 1, "proxies": [
+        path.write_text(json.dumps({"version": 1, "generation": 1, "proxies": [
             entry("one", cls.one, hints=(".kz",), country="KZ"), entry("two", cls.two, hints=(".kz",)), entry("es", cls.spanish, hints=(".es",)),
             entry("dead", port=dead_port(), hints=(".ru",)), entry("behind", cls.behind, hints=(".ru",)),
             entry("gone1", port=dead_port(), hints=("gone.test",)), entry("plain", cls.http, hints=("plain.test",)),
@@ -304,14 +305,88 @@ class NoProxies(unittest.TestCase):
             with self.assertRaises(_client.BrowserError) as caught:
                 _client.call("open", {"url": f"http://127.0.0.1:{site.port}/page", "proxy": "KZ1"})
             self.assertEqual(caught.exception.code, "proxy_not_found")
-            # Proxies that arrive later never open a hinted site directly from this browser.
-            path = _paths.proxy_plan_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"version": 1, "proxies": [entry("kz", hints=(".kz",))]}), "utf-8")
-            with self.assertRaises(_client.BrowserError) as caught:
-                _client.call("open", {"url": "http://shop.kz/"})
-            self.assertEqual(caught.exception.code, "proxy_browser_restart_required")
             _client.call("close")
+
+
+@unittest.skipUnless(LIVE, SKIP)
+class ProxiesArriveLater(unittest.TestCase):
+    """A browser with no forwarder when a plan becomes active: its pages stop, and it comes back through the forwarder."""
+
+    def setUp(self) -> None:
+        root = tempfile.mkdtemp(prefix="aiqsa-proxy-late-")
+        self.addCleanup(shutil.rmtree, root, True)
+        _paths.use_test_root(root, sys.executable)
+        self.addCleanup(_paths.use_test_root, None)
+        self.background = Background()
+        self.addCleanup(self.background.stop)
+        self.site = self.background.run(Pages().start())
+        self.upstream = self.background.run(FakeProxy("socks5", self.site).start())
+        environment = mock.patch.dict(os.environ, {"PYTHONPATH": str(Path(__file__).resolve().parents[1])})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.addCleanup(self.stop_forwarder)
+
+    def stop_forwarder(self) -> None:
+        if _paths.proxy_run_dir().exists():
+            try:
+                os.kill(client.call("ping")["pid"], 15)
+            except (client.ProxyError, OSError):
+                pass
+
+    def deliver(self, *entries: Any) -> None:
+        path = _paths.proxy_plan_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"version": 1, "generation": 1, "proxies": list(entries)}), "utf-8")
+        os.replace(temporary, path)
+
+    def test_every_kind_of_traffic_stops_and_a_sign_in_survives_the_restart(self) -> None:
+        # An explicit empty plan is no reason for a forwarder.
+        self.deliver()
+        local = f"http://127.0.0.1:{self.site.port}"
+        _client.call("open", {"url": f"{local}/signin"})
+        host = _client._STARTED[-1].pid
+        self.assertFalse(_paths.proxy_run_dir().exists())
+        self.assertFalse(any("--proxy-server" in line for line in chromium_flags(host)))
+        # A page that keeps loading on its own: what a command could never check.
+        _client.call("js", {"expression": f"window.beat = setInterval(() => fetch('{local}/beat').catch(() => {{}}), 100), 1"})
+        self.deliver(entry("kz", self.upstream, hints=(".kz",)))
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not _paths.proxy_run_dir().joinpath("control.sock").exists():
+            time.sleep(0.05)
+        while time.monotonic() < deadline and not any("--proxy-server" in line for line in chromium_flags(host)):
+            time.sleep(0.05)
+        self.assertTrue(any("--proxy-server" in line for line in chromium_flags(host)), "it restarted with no command asking")
+        beats = sum("/beat" in line for line in self.site.lines)
+        time.sleep(1)
+        self.assertEqual(sum("/beat" in line for line in self.site.lines), beats, "the old page is gone")
+        # The agent is told what closed, and the sign-in it never saved is still there.
+        result = _client.call("open", {"url": f"{local}/whoami"})
+        self.assertIn("closed your open tabs", result["text"])
+        self.assertIn("cookie=session=synthetic", _client.call("text", {})["text"])
+        result = _client.call("open", {"url": "http://shop.kz/"})
+        self.assertEqual(result["step"]["target"], "through proxy KZ")
+        self.assertIn("shop.kz:80", self.upstream.targets)
+        # Proxies turning into an explicit empty plan need no restart: everything is direct through the same forwarder.
+        before = chromium_flags(host)
+        self.deliver()
+        result = _client.call("open", {"url": f"{local}/after"})
+        self.assertEqual(result["step"]["target"], None)
+        self.assertEqual(sorted(line for line in chromium_flags(host) if "--proxy-server" in line and "--type=" not in line),
+                         sorted(line for line in before if "--proxy-server" in line and "--type=" not in line))
+        _client.call("close")
+
+    def test_the_next_command_restarts_it_and_reload_cannot_go_direct(self) -> None:
+        self.deliver()
+        local = f"http://127.0.0.1:{self.site.port}"
+        _client.call("open", {"url": f"{local}/first"})
+        self.deliver(entry("kz", self.upstream, hints=(".kz",)))
+        # Whichever comes first, the watcher or this command: it runs after the restart, on a new tab.
+        _client.call("reload")
+        host = _client._STARTED[-1].pid
+        self.assertTrue(any("--proxy-server" in line for line in chromium_flags(host)))
+        self.assertEqual(sum("/first" in line for line in self.site.lines), 1, "the old page was not reloaded directly")
+        _client.call("close")
 
 
 if __name__ == "__main__":

@@ -56,8 +56,8 @@ def sessions_dir() -> Path:
 
 
 def proxy_plan_path() -> Path:
-    """The run's proxies with their credentials, a managed file every install replaces or removes (`WORKSPACE_PROXY_PLAN_PATH`)."""
-    return _at("/workspace/secrets/files/aiqsa-proxies.json")
+    """The VM's proxies with their credentials, a managed file an install renames into place (`WORKSPACE_PROXY_PLAN_PATH`)."""
+    return _at("/workspace/secrets/.proxy-plan.json")
 
 
 def proxy_state_path() -> Path:
