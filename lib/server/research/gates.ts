@@ -51,6 +51,8 @@ export type ResearchSubagentOutcome =
 
 /** One tool result an agent of this run really got: `url` for a page `fetch_url` read. */
 export type ResearchOpenedSource = Readonly<{
+  /** The call drove the Workspace browser: what it printed is a page's text, step lines or not. */
+  browser?: true;
   /** The stored whole result could not be read, so `text` is only its excerpt: a miss here is not a failure. */
   partial: boolean;
   text: string;
@@ -80,11 +82,21 @@ export type ResearchGateContext = Readonly<{
 }>;
 
 export type ResearchGate = Readonly<{
+  /**
+   * What the gate has already said that holds for any later draft of the run: added whenever it did not finish on one (an
+   * earlier gate sent the draft back, it failed, time or Stop came first), so a claim it rejected stays named.
+   */
+  carriedNotes?(draft: ResearchDraft, earlier: readonly ResearchAttempt[]): readonly string[];
   name: string;
   run(draft: ResearchDraft, context: ResearchGateContext): Promise<ResearchGateResult>;
 }>;
 
 export const RESEARCH_GATES: readonly ResearchGate[] = [gapCheckGate, verifierGate];
+
+/** What the gates carry for a draft they have not finished on. */
+export function researchCarriedNotes(gates: readonly ResearchGate[], draft: ResearchDraft, earlier: readonly ResearchAttempt[]): readonly string[] {
+  return gates.flatMap((gate) => gate.carriedNotes?.(draft, earlier) ?? []);
+}
 
 export type ResearchGatesOutcome =
   | Readonly<{ kind: "accepted"; notes: readonly string[] }>
@@ -112,6 +124,8 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
   gates: readonly ResearchGate[]; runId: string }>): Promise<ResearchGatesOutcome> {
   const { context, draft } = input;
   const notes: string[] = [];
+  const finished = new Set<ResearchGate>();
+  const withCarried = () => [...notes, ...researchCarriedNotes(input.gates.filter((gate) => !finished.has(gate)), draft, context.earlier)];
   for (const gate of input.gates) {
     context.signal.throwIfAborted();
     const remaining = context.time.remainingMs();
@@ -125,11 +139,13 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
     const signal = AbortSignal.any([context.signal, own.signal]);
     try {
       const result = await untilAborted(Promise.resolve().then(() => gate.run(draft, { ...context, signal })), signal);
+      finished.add(gate);
       notes.push(...result.notes ?? []);
       if (result.kind === "send_back") {
         if (context.time.sendBackAllowed()) {
           if (result.unresolvedNote) notes.push(result.unresolvedNote);
-          return { kind: "sent_back", message: result.message, ...notes.length > 0 ? { notes } : {} };
+          const sentBackNotes = withCarried();
+          return { kind: "sent_back", message: result.message, ...sentBackNotes.length > 0 ? { notes: sentBackNotes } : {} };
         }
         notes.push(result.unresolvedNote ?? researchNote("time_out", draft.report));
       }
@@ -144,5 +160,5 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
       own.abort(new GateTimedOut());
     }
   }
-  return { kind: "accepted", notes };
+  return { kind: "accepted", notes: withCarried() };
 }
