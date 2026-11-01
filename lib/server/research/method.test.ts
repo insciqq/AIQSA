@@ -7,7 +7,7 @@ import { runResearchGates, type ResearchGateContext } from "./gates";
 import { researcherBrief, researcherMethodFooter, researchMethodText, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { researchOffered } from "./run";
-import { createResearchSources } from "./sources";
+import { createResearchSources, researchRunsOnBranch } from "./sources";
 import { researchTurnName } from "./turns";
 
 const question = { question: "Which one?", sites: [], source_classes: [...RESEARCH_SOURCE_CLASSES] };
@@ -182,15 +182,24 @@ describe("what was opened", () => {
     const sources = createResearchSources({ chatId: "c", items: () => [
       { arguments: JSON.stringify({ url: "https://a.example" }), callId: "1", id: "i", kind: "tool_call", name: "fetch_url" },
       { callId: "1", handle: `tor1_${"a".repeat(32)}`, id: "r", kind: "tool_result", name: "fetch_url", outcome: "complete", output: "excerpt" }
-    ], runId: "run", savedResults: { read: async () => { throw new Error("down"); } }, threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [] }, userId: "u" });
+    ], run: { branchRunIds: [], researchRunId: "run", runId: "run" }, savedResults: { read: async () => { throw new Error("down"); } },
+    threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [] }, userId: "u" });
     expect(await sources.opened(new AbortController().signal)).toEqual([{ partial: true, text: "excerpt", toolName: "fetch_url", url: "https://a.example" }]);
   });
 
   it("reads background researchers' runs too", async () => {
     const threadEffectItems = vi.fn(async () => []);
-    const sources = createResearchSources({ chatId: "c", items: () => [], runId: "run", savedResults: { read: async () => null },
+    const sources = createResearchSources({ chatId: "c", items: () => [], run: { branchRunIds: [], researchRunId: "run", runId: "run" }, savedResults: { read: async () => null },
       threads: { backgroundRunIds: async () => ["bg-1"], threadEffectItems }, userId: "u" });
     await sources.opened(new AbortController().signal);
     expect(threadEffectItems).toHaveBeenCalledWith({ chatId: "c", runIds: ["run", "bg-1"], userId: "u" });
+  });
+
+  it("reads every run of a research across its approvals, in order, and only those", () => {
+    const place = { branchRunIds: ["answer", "started", "approved"], researchRunId: "started", runId: "continued" };
+    expect(researchRunsOnBranch(place)).toEqual(["started", "approved", "continued"]);
+    expect(researchRunsOnBranch({ ...place, researchRunId: "continued" })).toEqual(["continued"]);
+    expect(researchRunsOnBranch({ ...place, researchRunId: "another-branch" })).toEqual(["continued"]);
+    expect(researchRunsOnBranch({ branchRunIds: [], researchRunId: "run", runId: "run" })).toEqual(["run"]);
   });
 });

@@ -20,9 +20,9 @@ import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchOpenedSource } from "./gates";
 
 /**
- * The text agents of a run really got from outside: the main agent's tool
- * results and those of its sub-agents' threads, foreground and background,
- * whole where a saved copy can be read. What agents wrote themselves is no
+ * The text agents of a research really got from outside, across its runs: the
+ * main agent's tool results and those of its sub-agents' threads, foreground and
+ * background, whole where a saved copy can be read. What agents wrote themselves is no
  * evidence, so a report's or a brief's words never count as opened text.
  */
 const AGENT_WRITTEN: ReadonlySet<string> = new Set([ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, CHANGE_RESEARCH_FRAME_TOOL_NAME, LIST_AGENTS_TOOL_NAME,
@@ -78,11 +78,24 @@ function pageUrl(call: TranscriptItem | undefined): string | null {
   }
 }
 
+/** Which run a research is, among the branch's. */
+export type ResearchRunPlace = Readonly<{ branchRunIds: readonly string[]; researchRunId: string; runId: string }>;
+
+/**
+ * The runs one research ran in, oldest first. An approval continuation is a new run, and what the runs before it read stays under them,
+ * a foreground researcher's items under its parent run, so a check of its report and a write of its record look there too. An ordinary
+ * run is its own alone, and an earlier answer on the branch is no part of it.
+ */
+export function researchRunsOnBranch(run: ResearchRunPlace): readonly string[] {
+  const from = run.branchRunIds.indexOf(run.researchRunId);
+  return [...new Set([...from < 0 ? [] : run.branchRunIds.slice(from), run.runId])];
+}
+
 export function createResearchSources(input: Readonly<{
   chatId: string;
   /** The main agent's items as the run holds them. */
   items(): readonly TranscriptItem[];
-  runId: string;
+  run: ResearchRunPlace;
   savedResults: SavedToolResultReader;
   threads: Pick<SubagentThreadStore, "backgroundRunIds" | "threadEffectItems">;
   userId: string;
@@ -90,8 +103,9 @@ export function createResearchSources(input: Readonly<{
   const scope = { chatId: input.chatId, userId: input.userId };
   return {
     async opened(signal: AbortSignal): Promise<readonly ResearchOpenedSource[]> {
-      const background = await input.threads.backgroundRunIds({ ...scope, parentRunIds: [input.runId] });
-      const threads = await input.threads.threadEffectItems({ ...scope, runIds: [input.runId, ...background] });
+      const runIds = researchRunsOnBranch(input.run);
+      const background = await input.threads.backgroundRunIds({ ...scope, parentRunIds: runIds });
+      const threads = await input.threads.threadEffectItems({ ...scope, runIds: [...runIds, ...background] });
       const opened: ResearchOpenedSource[] = [];
       let characters = 0;
       for (const list of [input.items(), ...threads.map((thread) => thread.items)]) {

@@ -915,7 +915,8 @@ describe("through the engine", () => {
 
   it("keeps a rejected claim named after an approval continuation rebuilds the research from the transcript", async () => {
     const research = (items: () => readonly TranscriptItem[]) => createRunResearch({ chatId: "chat", deps: { gates: [verifierGate] }, gatesEndAt: Date.now() + 30 * 60_000, items, now: () => Date.now(),
-      onPlan: async () => undefined, rearmReservedCall: () => undefined, runId: "run-1", savedResults: { read: async () => null }, subagentInput: { admittedRequest: { modelId: "main-model" }, engine: {}, snapshot: {} } as never,
+      onPlan: async () => undefined, rearmReservedCall: () => undefined, runId: "run-1", savedResults: { read: async () => null },
+      subagentInput: { admittedRequest: { modelId: "main-model" }, branchRunIds: [], engine: {}, snapshot: {} } as never,
       threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [{ items: researcherItems, threadId: "researcher" }] } as never, toolTimeLeft: () => true, userId: "user", userMessage: "q" });
     const signal = new AbortController().signal;
     const execute = (tool: EngineTool, call: { arguments: unknown; id: string; name: string }) =>

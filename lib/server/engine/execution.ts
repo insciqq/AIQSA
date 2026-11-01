@@ -159,8 +159,8 @@ export type NativeRunExecutionInput = Readonly<{
 /** The main agent's key among a run's agent fences; a sub-agent's is its thread id (a UUID, never this). */
 const MAIN_AGENT_FENCE = "main";
 
-/** Where every agent of a run's research writes its evidence: the one port, under the plan that stands. */
-const researchEvidenceTarget = (research: RunResearch): RecordEvidenceTarget => ({ evidence: research.ports.evidence, planStands: research.holding });
+/** Where every agent of a run's research writes its evidence: the one port, once research started. */
+const researchEvidenceTarget = (research: RunResearch): RecordEvidenceTarget => ({ evidence: research.ports.evidence, researching: research.holding });
 
 /** The web chat's address a Telegram turn's handoff points to; the chat id is its only parameter. */
 function webChatUrl(chatId: string): string {

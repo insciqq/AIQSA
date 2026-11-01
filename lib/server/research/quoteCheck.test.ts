@@ -182,7 +182,7 @@ describe("the quote check", () => {
 describe("what the sources read of a run", () => {
   const threads = (items: TranscriptItem[]) => ({ backgroundRunIds: async () => [], threadEffectItems: async () => [{ items, threadId: "t" }] });
   const read = async (items: TranscriptItem[], savedResults: Parameters<typeof createResearchSources>[0]["savedResults"] = { read: async () => null }) =>
-    createResearchSources({ chatId: "c", items: () => [], runId: "r", savedResults, threads: threads(items), userId: "u" }).opened(new AbortController().signal);
+    createResearchSources({ chatId: "c", items: () => [], run: { branchRunIds: [], researchRunId: "r", runId: "r" }, savedResults, threads: threads(items), userId: "u" }).opened(new AbortController().signal);
 
   it("marks a long result whose saved copy failed as partial, so a real quote on it is not called invented", async () => {
     const whole = `start ${"x".repeat(TOOL_RESULT_LIMITS.inlineChars)} held up after 10 years ${"y".repeat(TOOL_RESULT_LIMITS.inlineChars)} end`;

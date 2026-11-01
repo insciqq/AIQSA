@@ -213,9 +213,9 @@ export function createRunResearch(input: RunResearchInput) {
   const turns = createResearchTurns({ subagentInput: input.subagentInput, verifierChoice, ...(input.deps.verifier ? { verifierRole: input.deps.verifier } : {}),
     researcherChoice, ...(input.deps.researcher ? { researcherRole: input.deps.researcher } : {}),
     userMessage: input.userMessage });
-  const sources = createResearchSources({ chatId: input.chatId, items: input.items, runId: input.runId, savedResults: input.savedResults,
-    threads: input.threads, userId: input.userId });
   const researchRunId = input.researchRunId ?? input.runId;
+  const sources = createResearchSources({ chatId: input.chatId, items: input.items, run: { branchRunIds: input.subagentInput.branchRunIds, researchRunId, runId: input.runId },
+    savedResults: input.savedResults, threads: input.threads, userId: input.userId });
   const messaging = input.subagentInput.ports?.messaging;
   /**
    * How the clock finds running researchers: the agents on the branch, narrowed to this run's calls still running. A gate's

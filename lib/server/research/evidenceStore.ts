@@ -8,7 +8,7 @@ import type { ResearchEvidenceRepository, ResearchPageWrite, ResearchRecordedChe
 import type { ResearchOpenedSource } from "./gates";
 import type { ResearchEvidencePort, ResearchEvidenceWrite, ResearchRunScope } from "./ports";
 import { checkQuotes, quoteIsIn, type QuoteCheck, type QuoteSource } from "./quoteCheck";
-import { createResearchAgentSources, researchEvidenceKind, type ResearchAgentScope } from "./sources";
+import { createResearchAgentSources, researchEvidenceKind, researchRunsOnBranch, type ResearchAgentScope } from "./sources";
 
 /**
  * The evidence store (`ResearchEvidencePort`): a finding is a durable record the moment it is made, under the research run whichever
@@ -84,11 +84,10 @@ export function createResearchEvidenceStore(deps: ResearchEvidenceStoreDeps) {
   return (run: ResearchRunScope): ResearchEvidencePort => {
     const scope = { chatId: run.chatId, researchRunId: run.researchRunId, userId: run.userId };
     const sources = createResearchAgentSources({ calls: deps.repository.agentCalls(scope), chatId: run.chatId, savedResults: deps.savedResults, userId: run.userId });
-    const branchFrom = run.branchRunIds.indexOf(run.researchRunId);
 
     /** The runs that hold an agent's own results: the runs this research went through, an approval's included, and its background runs. */
     async function agentScope(threadId: string | null, chain: readonly string[]): Promise<ResearchAgentScope> {
-      const runs = [...new Set([...chain, ...branchFrom < 0 ? [] : run.branchRunIds.slice(branchFrom), run.runId])];
+      const runs = [...new Set([...chain, ...researchRunsOnBranch(run)])];
       const background = threadId === null ? [] : await deps.threads.backgroundRunIds({ chatId: run.chatId, parentRunIds: runs, userId: run.userId });
       return { runIds: [...runs, ...background], threadId };
     }
@@ -122,7 +121,8 @@ export function createResearchEvidenceStore(deps: ResearchEvidenceStoreDeps) {
           return { check: { reason: "sources_unreadable", status: "not_checked" as const }, page: null };
         });
         signal.throwIfAborted();
-        const notKept = held.check?.status === "found" ? { reason: RESEARCH_CHECK_REASONS.pageNotStored, status: "not_checked" as const } : held.check;
+        // Read only when a page was to be kept and found no room: a wrong quote keeps its word, which the agent must hear, and any other word rested on that page.
+        const notKept = held.check?.status === "not_verbatim" ? held.check : { reason: RESEARCH_CHECK_REASONS.pageNotStored, status: "not_checked" as const };
         const written = await deps.repository.append(scope, { author: write.author, chain, page: held.page, quoteCheck: { kept: held.check, notKept }, record: write.record });
         const bound = written.kind === "refused" ? written.code : written.record.quoteCheck?.reason;
         if (bound === "research_records_full" || bound === RESEARCH_CHECK_REASONS.pageNotStored) {
