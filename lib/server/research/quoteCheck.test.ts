@@ -133,6 +133,22 @@ describe("the quote check", () => {
     expect(checkQuotes([finding("the words", NEVER_OPENED)], opened)[0]).toMatchObject({ excerpt: { before: "elsewhere: " } });
   });
 
+  it("says whose words a passage is, and prefers the cited page and then one that may be it", () => {
+    const fromOther = checkQuotes([finding("the words")], [page("shop B: the words", OTHER_PAGE)])[0];
+    expect(fromOther).toMatchObject({ excerpt: { source: { kind: "other", url: OTHER_PAGE } }, status: "found" });
+    expect(checkQuotes([finding("the words")], [page("the words")])[0]).toMatchObject({ excerpt: { source: { kind: "cited" } } });
+    const browser = page("the words", null, { browser: true, toolName: SHELL });
+    expect(checkQuotes([finding("the words")], [browser])[0]).toMatchObject({ excerpt: { source: { kind: "unknown" } } });
+    expect(checkQuotes([finding("the words")], [page("shop B: the words", OTHER_PAGE), browser])[0]).toMatchObject({ excerpt: { before: "", source: { kind: "unknown" } } });
+  });
+
+  it("knows a browser page on another host for another page, and one on the cited host only as unknown", () => {
+    const other = page("[browser #1] open @ shop-b.example/x\nthe words", null, { toolName: SHELL });
+    expect(checkQuotes([finding("the words")], [other])[0]).toMatchObject({ excerpt: { source: { kind: "other", url: "shop-b.example" } } });
+    const same = page("[browser #1] open @ www.lab.example/x\nthe words", null, { toolName: SHELL });
+    expect(checkQuotes([finding("the words")], [same])[0]).toMatchObject({ excerpt: { source: { kind: "unknown" } } });
+  });
+
   it("normalizes both sides alike", () => {
     expect(normalizeQuotedText(" A\u00a0\u2014\u00a0B\\n«C» ")).toBe("A - B \"C\"");
     expect(normalizeQuotedText("\\\\\"x\\\\\"")).toBe("\"x\"");
