@@ -99,7 +99,7 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
   } as unknown as SubagentThreadStore;
   const deps: NativeEngineDeps = {
     approvedCall: vi.fn(async () => null), mcpBindingRows: vi.fn(async () => []),
-    observations: vi.fn(async () => ({ withReservation: vi.fn() }) as never), runs, savedResults: { read: vi.fn(async () => null) },
+    observations: vi.fn(async () => ({ withReservation: vi.fn(async () => ({ handle: `tor1_${"0".repeat(32)}` })) }) as never), runs, savedResults: { read: vi.fn(async () => null) },
     subagentThreads: threads, toolCalls, transcripts
   };
   return { appended, deps, published: () => published, settled, threads, usage, usageByRun };
