@@ -241,11 +241,20 @@ export async function ensureSystemVision(api: Api, providerModelId: string): Pro
   if (!isRecord(vision) || vision.available !== true) fail("system_vision_unavailable");
 }
 
-export async function ensureWorkspaceInternet(api: Api): Promise<void> {
+async function workspacePolicyVersion(api: Api): Promise<unknown> {
   const current = await json(api, "/api/admin/workspace");
   const workspace = isRecord(current) && isRecord(current.workspace) ? current.workspace : fail("workspace_policy_invalid");
-  const version = workspace.version ?? (isRecord(workspace.policy) ? workspace.policy.version : undefined);
-  await json(api, "/api/admin/workspace", { body: { enabled: true, expectedVersion: version, internetEnabled: true }, method: "PATCH" });
+  return workspace.version ?? (isRecord(workspace.policy) ? workspace.policy.version : undefined);
+}
+
+export async function ensureWorkspaceInternet(api: Api): Promise<void> {
+  await json(api, "/api/admin/workspace", { body: { enabled: true, expectedVersion: await workspacePolicyVersion(api), internetEnabled: true }, method: "PATCH" });
+}
+
+/** Turns the Workspace on or off for the installation, leaves its internet setting alone, and requires the server's answer to say so. */
+export async function setWorkspaceEnabled(api: Api, enabled: boolean): Promise<void> {
+  const updated = await json(api, "/api/admin/workspace", { body: { enabled, expectedVersion: await workspacePolicyVersion(api) }, method: "PATCH" });
+  if (!isRecord(updated) || !isRecord(updated.workspace) || updated.workspace.enabled !== enabled) fail("workspace_policy_not_applied");
 }
 
 /** The user's catalog entry of a configured model, once it offers tool calling. */
