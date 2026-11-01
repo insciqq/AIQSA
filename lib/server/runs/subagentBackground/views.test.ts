@@ -316,6 +316,27 @@ it("shows what a turn received and wrote as rows of its thread, in order, naming
   expect(decodeSubagentThreadView(view)?.turns[0]?.messages).toEqual(view!.turns[0]!.messages);
 });
 
+it("shows all 64 main-agent messages, 32 neighbour messages and 16 questions of a turn", async () => {
+  const row = thread("alpha", [turn("turn-a", "running")]);
+  const mailbox = [
+    ...Array.from({ length: 64 }, (_, index) => ({ authorName: "Main agent", origin: "main_agent", text: `Main message ${index}` })),
+    ...Array.from({ length: 32 }, (_, index) => ({ authorName: "beta", origin: "subagent_message", text: `Neighbour message ${index}` }))
+  ].map((message, index) => ({ ...message, createdAt: new Date(at.getTime() + index * 1_000), deliveredAt: at,
+    modelRunId: "run-turn-a", subagentTurnId: "turn-a" }));
+  const calls = Array.from({ length: 16 }, (_, index) => ({ arguments: { question: `Question ${index}?` }, modelRunId: "run-turn-a",
+    startedAt: new Date(at.getTime() + (mailbox.length + index) * 1_000), state: "complete", subagentTurnId: "turn-a", toolName: "ask_parent" }));
+  const { client, tx } = fakeClient({ calls, threads: [row] });
+  Object.assign(tx.subagentThread, { findFirst: vi.fn(async () => row) });
+  Object.assign(tx, { modelRun: { findMany: vi.fn(async () => []) }, runFollowup: { findMany: vi.fn(async () => mailbox) } });
+
+  const view = await createSubagentViews(client).threadView({ chatId: "chat-1", threadId: "alpha", userId: "user-1" });
+  expect(view?.turns[0]?.messages).toHaveLength(112);
+  expect(view?.turns[0]?.messages.map((message) => message.text)).toEqual([
+    ...mailbox.map((message) => message.text), ...calls.map((call) => call.arguments.question)
+  ]);
+  expect(decodeSubagentThreadView(view)).toEqual(view);
+});
+
 it("returns the full report in the thread view", async () => {
   const report = "x".repeat(30_000);
   const row = thread("alpha", [turn("turn-a", "done", { result: { files: [], report } })]);
