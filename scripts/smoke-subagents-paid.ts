@@ -81,6 +81,8 @@
  * - CODEX_LB_API_KEY
  * - AIQSA_SUBAGENTS_SELECT, AIQSA_SUBAGENTS_RUNS (1..3, default 1), AIQSA_SUBAGENTS_LABEL,
  *   AIQSA_SUBAGENTS_MARGIN_SECONDS (60..3600, default 600), AIQSA_SUBAGENTS_KEEP_CHATS=1
+ * - AIQSA_SUBAGENTS_SECOND_NO_VISION=1: add the second model with vision declared off, so K's last step has a model
+ *   the product treats as having no vision when no text-only model is reachable;
  * - AIQSA_SUBAGENTS_SECOND_MODEL (C2): an upstream model id on the same codex-lb route, not the parent's;
  *   the harness adds it as "Sub-agents second model" and requires it in the user's catalog
  * - AIQSA_SUBAGENTS_TEXT_MODEL (K's last step) with OPENROUTER_API_KEY: a text-only OpenRouter chat model, added by
@@ -1211,7 +1213,8 @@ async function main() {
     const { chatProvider, model } = await setUpStand(api, { chat: { route: "codex-lb" }, route, secret });
     let second: CatalogModel | null = null;
     if (options.secondModel !== null) {
-      const added = await ensureModel(api, { apiRoot: route.apiRoot, model: options.secondModel }, secret, SECOND_MODEL_DISPLAY_NAME);
+      const added = await ensureModel(api, { apiRoot: route.apiRoot, model: options.secondModel }, secret, SECOND_MODEL_DISPLAY_NAME,
+        process.env.AIQSA_SUBAGENTS_SECOND_NO_VISION === "1" ? { vision: false } : {});
       second = await catalogModel(api, added);
     }
     let blind: Context["blind"] = null;
