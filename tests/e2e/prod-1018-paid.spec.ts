@@ -73,7 +73,7 @@ import { mcpOversizedResponseMessage, mcpToolFailureMessage } from "../../lib/co
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../lib/contracts/adminSearch";
 import type { ContentBlock } from "../../lib/domain/content";
 import type { ValidatedSearchQuery } from "../../lib/domain/search";
-import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient, DEEPSEEK_SEARCH_API_MAX_RESULTS, DEEPSEEK_SEARCH_API_STRATEGY_ID } from "../../lib/server/providers/deepSeekSearchApi";
+import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient, DEEPSEEK_SEARCH_API_STRATEGY_ID } from "../../lib/server/providers/deepSeekSearchApi";
 import { ProviderSearchExecutionError } from "../../lib/server/providers/types";
 import { providerModelTemplateId } from "../../lib/domain/providerTemplates";
 import {
@@ -682,7 +682,7 @@ function directSearchApiRequest(apiKey: string, query: string) {
   return adapter.search({
     correlationId: "prod-1018-direct",
     query: query as ValidatedSearchQuery,
-    searchPolicy: { maxResults: DEEPSEEK_SEARCH_API_MAX_RESULTS, modelId: DEEPSEEK_SEARCH_API_MODEL, provider: "deepseek", strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID },
+    searchPolicy: { modelId: DEEPSEEK_SEARCH_API_MODEL, provider: "deepseek", strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID },
     strategyId: "prod-1018-direct"
   }, { timeoutMs: 30_000 });
 }

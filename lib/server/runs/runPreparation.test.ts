@@ -302,7 +302,6 @@ function providerNeutralOpenAISearchPlan(
       configuration: {
         adapterKind: "provider_model_client",
         config: {
-          maxResults: 8,
           modelCapabilities: technicalCapabilities,
           modelDefaultParams: {},
           queryMaxCharacters: 500,
@@ -356,7 +355,7 @@ function nativeSearchCoexistencePlans(
       bindingKey: null,
       configuration: {
         adapterKind: "answer_provider_hosted",
-        config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
+        config: { queryMaxCharacters: 500, timeoutMs: 300_000 },
         credentialMode: "answer_provider",
         displayName,
         executionModes: ["model_choice"],
@@ -385,8 +384,6 @@ function nativeSearchCoexistencePlans(
         adapterKind: "provider_model_client",
         config: {
           maxOutputTokens: 4_096,
-          maxResults: 8,
-          maxSearchCallsPerAnswer: 2,
           modelCapabilities: { ...baseCapabilities, nativeSearch: true },
           modelDefaultParams: {},
           queryMaxCharacters: 500,
@@ -2887,7 +2884,7 @@ describe("run preparation", () => {
         bindingKey: null,
         configuration: {
           adapterKind: "answer_provider_hosted",
-          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 15_000 },
+          config: { queryMaxCharacters: 500, timeoutMs: 15_000 },
           credentialMode: "answer_provider",
           displayName: "OpenAI Web Search",
           executionModes: ["model_choice"],
@@ -3041,7 +3038,6 @@ describe("run preparation", () => {
         configuration: {
           adapterKind: "provider_model_client",
           config: {
-            maxResults: 8,
             modelCapabilities: { ...baseCapabilities, toolCalling: true },
             modelDefaultParams: {},
             queryMaxCharacters: 500,
@@ -3194,7 +3190,6 @@ describe("run preparation", () => {
         configuration: {
           adapterKind: "provider_model_client",
           config: {
-            maxResults: 8,
             modelCapabilities: { ...baseCapabilities, toolCalling: true },
             modelDefaultParams: {},
             queryMaxCharacters: 500,
@@ -3280,7 +3275,7 @@ describe("run preparation", () => {
         bindingKey: null,
         configuration: {
           adapterKind: "answer_provider_hosted",
-          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 15_000 },
+          config: { queryMaxCharacters: 500, timeoutMs: 15_000 },
           credentialMode: "answer_provider",
           displayName: "OpenAI Web Search",
           executionModes: ["model_choice"],

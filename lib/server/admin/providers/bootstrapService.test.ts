@@ -251,14 +251,14 @@ describe("provider automatic setup", () => {
         { name: "DeepSeek Search API", status: "ready" }] });
       expect(value.searchCreate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ bootstrap: true, check: true,
         displayName: "DeepSeek Search API", userId: "operator", draft: expect.objectContaining({ adapterKind: "provider_model_client",
-          maxSearchCallsPerAnswer: 8, protocol: "deepseek_search_api", providerModelId: "model-terra", queryMaxCharacters: 128 }) }));
+          protocol: "deepseek_search_api", providerModelId: "model-terra", queryMaxCharacters: 128 }) }));
       expect(value.searchSave).not.toHaveBeenCalled();
     });
 
     it("rechecks a configured, enabled API source with the new key and keeps its settings", async () => {
       const value = deepSeekFixture();
       const configuration: AdminSearchDraft = { ...adminSearchExecutionDefaults, adapterKind: "provider_model_client",
-        credentialMode: "provider_model", maxSearchCallsPerAnswer: 1, protocol: "deepseek_search_api",
+        credentialMode: "provider_model", protocol: "deepseek_search_api",
         providerModelId: "model-luna", queryMaxCharacters: 100 };
       Object.assign(value.api, { configurable: true, configuration, configurationActive: true, draftVersion: 3 });
       expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });

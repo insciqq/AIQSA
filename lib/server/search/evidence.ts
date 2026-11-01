@@ -27,6 +27,7 @@ export const MAX_SEARCH_FINDINGS_BYTES = 1_024 * 1_024;
  * raw results API's explicit empty answer, in these server-owned words. It
  * holds no provider text, so it needs no attribution. */
 export const SEARCH_NO_RESULTS_FINDINGS = "The search returned no results for this query.";
+const MAX_SEARCH_CITATION_NUMBER = 10_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -40,7 +41,8 @@ function text(value: unknown, max: number): string | undefined {
 }
 
 function citationNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 &&
+    value <= MAX_SEARCH_CITATION_NUMBER ? value : undefined;
 }
 
 function safeHttpHref(value: unknown): string | undefined {
@@ -76,12 +78,8 @@ export function normalizeSearchFindings(value: unknown): string {
 }
 
 /** Normalize only an explicit flat list of adapter-selected source candidates.
- * This deliberately does not crawl arbitrary provider payloads or previews.
- * Legacy adapters still pass a source ceiling; it no longer limits results. */
-export function normalizeSearchSources(
-  value: unknown,
-  _legacyMaximum?: number
-): SearchSource[] {
+ * This deliberately does not crawl arbitrary provider payloads or previews. */
+export function normalizeSearchSources(value: unknown): SearchSource[] {
   const sources: SearchSource[] = [];
   const seenUrls = new Set<string>();
   if (!Array.isArray(value)) return sources;

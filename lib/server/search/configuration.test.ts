@@ -39,6 +39,7 @@ describe("Search adapter configuration", () => {
       expect(normalizeSearchDraft(stored)).toEqual(clientDraft);
       expect(decodeAdminSearchDraft(stored)).toEqual(clientDraft);
       expect(searchDraftHash(normalizeSearchDraft(stored))).toBe(searchDraftHash(clientDraft));
+      expect(searchDraftHash(stored)).toBe(searchDraftHash(clientDraft));
     }
   });
 

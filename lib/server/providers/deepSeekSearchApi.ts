@@ -273,7 +273,7 @@ function searchApiEntries(results: readonly unknown[]): SearchApiEntry[] {
       ...(snippet ? { snippet } : {}),
       ...(title ? { title } : {}),
       url: result.url
-    }], 1);
+    }]);
     if (!normalized || seen.has(normalized.url)) continue;
     seen.add(normalized.url);
     const citation = entries.length + 1;

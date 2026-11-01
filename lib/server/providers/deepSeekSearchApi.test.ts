@@ -20,11 +20,11 @@ import {
 
 const KEY = "sk-synthetic-deepseek-key";
 
-function request(query = "bounded query", maxResults = 8): ProviderSearchRequest {
+function request(query = "bounded query"): ProviderSearchRequest {
   return {
     correlationId: "call-1:deepseek-api",
     query: query as ValidatedSearchQuery,
-    searchPolicy: { maxResults, modelId: "deepseek-search-api", provider: "deepseek", strategyId: "deepseek-search-api" },
+    searchPolicy: { modelId: "deepseek-search-api", provider: "deepseek", strategyId: "deepseek-search-api" },
     strategyId: "deepseek-api"
   };
 }
@@ -73,7 +73,7 @@ describe("DeepSeek Search API adapter", () => {
     expect(init?.method).toBe("POST");
     expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${KEY}`);
     // The user's question (`ori_question`) and conversation never leave the server.
-    expect(JSON.parse(String(init?.body))).toEqual({ count: 8, need_content: false, query: "bounded query" });
+    expect(JSON.parse(String(init?.body))).toEqual({ count: 50, need_content: false, query: "bounded query" });
     expect(deepSeekSearchApiEndpoint("https://api.deepseek.com/v1/")).toBe("https://api.deepseek.com/v1/tools/search");
     expect(deepSeekSearchApiEndpoint("https://proxy.example.test/deepseek")).toBe("https://proxy.example.test/deepseek/v1/tools/search");
   });

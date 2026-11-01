@@ -37,7 +37,6 @@ function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {})
   return {
     adapterKind: "provider_model_client",
     config: {
-      maxResults: 8,
       modelCapabilities: {
         nativePdfInput: false,
         nativeSearch: true,
@@ -310,6 +309,15 @@ describe("Search execution diagnostics", () => {
 });
 
 describe("Search plan tool router", () => {
+  it("replays a persisted failure from the retired invocation budget", () => {
+    const result = { callId: "legacy-call", name: "search_selected_engines", status: "error" as const,
+      content: [{ type: "text" as const,
+        text: "Search failed: search_invocation_limit_reached. Continue with the Search evidence already returned." }],
+      rawPreview: { providerCall: false }, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } };
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toMatchObject(result);
+  });
+
   it("uses a stable tool name and friendly source label without exposing its connection id", () => {
     const connectionId = "3ebc98b4-a35d-4c4a-a819-3471f6dcd2ca";
     const selected = option(`custom-web-search:${connectionId}`, {
@@ -889,9 +897,7 @@ describe("Search plan tool router", () => {
   });
 
   it("turns maximum fan-out overflow into attributable settled Search errors", async () => {
-    const options = ["large-first", "large-second", "large-third"].map((id) => option(id, {
-      config: { ...option(id).config, maxResults: 20 }
-    }));
+    const options = ["large-first", "large-second", "large-third"].map((id) => option(id));
     const sources = (prefix: string): SearchSource[] => Array.from({ length: 20 }, (_, index) => ({
       rank: index + 1,
       snippet: "s".repeat(2_000),
@@ -1130,10 +1136,10 @@ describe("Search plan tool router", () => {
       const onSecondRequest = vi.fn();
       // These are persisted bindings accepted before the limits were removed.
       const first = option("first", {
-        config: { ...option("base").config, maxSearchCallsPerAnswer: 1, queryMaxCharacters: 4_000 }
+        config: { ...option("base").config, maxSearchCallsPerAnswer: 1, maxResults: 2, queryMaxCharacters: 4_000 }
       });
       const second = option("second", {
-        config: { ...option("base").config, maxSearchCallsPerAnswer: 3, queryMaxCharacters: 4_000 }
+        config: { ...option("base").config, maxSearchCallsPerAnswer: 3, maxResults: 8, queryMaxCharacters: 4_000 }
       });
       const plan = JSON.parse(JSON.stringify({ mode, options: [first, second] }));
       const router = createSearchPlanToolRouter({
@@ -1437,9 +1443,7 @@ describe("Search plan tool router", () => {
     const reason = new Error("run_cancelled");
     controller.abort(reason);
     const onRequest = vi.fn();
-    const selected = option("selected", {
-      config: { ...option("base").config, maxSearchCallsPerAnswer: 1 }
-    });
+    const selected = option("selected");
     const router = createSearchPlanToolRouter({
       plan: { mode: "all_selected", options: [selected, option("unavailable")] },
       runtimes: { selected: runtime({ onRequest }) }
@@ -1523,7 +1527,7 @@ it("uses the admitted model allowance in Auto without the old Search ceiling and
 
 describe("DeepSeek Search API engine", () => {
   const apiOption = option("deepseek-api", {
-    config: { ...option("deepseek-api").config, maxResults: 8, queryMaxCharacters: 128 },
+    config: { ...option("deepseek-api").config, queryMaxCharacters: 128 },
     displayName: "DeepSeek Search API",
     modelId: "deepseek-search-api",
     protocol: "deepseek_search_api",
@@ -1582,7 +1586,7 @@ describe("DeepSeek Search API engine", () => {
     roundTrips(result);
   });
 
-  it("requests the provider maximum and persists every result despite old settings", async () => {
+  it("requests the provider maximum and persists every returned result", async () => {
     const results = Array.from({ length: 50 }, (_, index) => ({
       summary: `Summary ${index + 1}`, title: `Result ${index + 1}`, url: `https://example.com/result/${index + 1}`
     }));
