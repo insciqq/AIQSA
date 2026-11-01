@@ -3,6 +3,7 @@ import type { EndedSubagentCallResult, SubagentToolGroup } from "../../contracts
 import { logEvent } from "../observability";
 import { gapCheckGate } from "./gapCheck";
 import { researchNote } from "./notes";
+import type { ResearchCoveragePort, ResearchEvidencePort } from "./ports";
 import { verifierGate } from "./verifier";
 
 /**
@@ -66,7 +67,10 @@ export type ResearchAttempt = Readonly<{ draft: ResearchDraft; message: string |
 export type ResearchGateContext = Readonly<{
   /** 1 for the run's first draft. */
   attempt: number;
+  /** The run's matrix. A gate reads this and `evidence` through `researchGatePorts`, so a context built without them reads the no-ops. */
+  coverage?: ResearchCoveragePort;
   earlier: readonly ResearchAttempt[];
+  evidence?: ResearchEvidencePort;
   plan: ResearchPlan;
   signal: AbortSignal;
   sources: Readonly<{ opened(signal: AbortSignal): Promise<readonly ResearchOpenedSource[]> }>;
@@ -106,8 +110,8 @@ class GateTimedOut extends Error {
   override name = "GateTimedOut";
 }
 
-/** A gate's work under its own signal: one that ignores the signal still lets the answer go. */
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+/** Work under its own signal: what ignores the signal still lets the answer go. */
+export function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason as Error);
     if (signal.aborted) abort();

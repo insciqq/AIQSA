@@ -11,7 +11,7 @@ import type {
   ResearchRecordInput,
   ResearchStoredPage
 } from "../../contracts/research";
-import type { PrepareRunSubagentsInput } from "../engine/subagents/runSubagents";
+import type { SubagentMessaging } from "../subagents/ports";
 import type { ResearchGate, ResearchGateContext } from "./gates";
 
 /**
@@ -21,21 +21,32 @@ import type { ResearchGate, ResearchGateContext } from "./gates";
  * A real one reaches production only from `research` in `defaultNativeEngineDeps` (`lib/server/engine/defaultEngine.ts`).
  */
 
-/** What a run hands every port: all of a port's run-bound state comes from here. */
+/**
+ * What a run hands every port, and all of a port's run-bound state comes from here. It names only what the parts need, never the run's
+ * provider adapter, secrets or stores, so a part cannot reach what it has no business with.
+ */
 export type ResearchRunScope = Readonly<{
+  /** The branch's earlier runs: a run id read from a stored result counts only when it is one of these. */
+  branchRunIds: readonly string[];
   chatId: string;
   /** Moves the turn's deadline, once and for this run only; does nothing until the engine passes `extendTurn` to `run.ts`. */
   extendTurn(endsAt: number): void;
+  /** How running researchers are found and told to finish; absent where the run has no messaging. */
+  mailbox?: Pick<SubagentMessaging, "agents" | "send">;
   now(): number;
+  /**
+   * The run whose frame, records and pages this run works on, and what every port keys its rows by: its own id, or on an approval
+   * continuation, which is a new run, the run that started the research (`researchRunOf`).
+   */
+  researchRunId: string;
+  /** The current run. Its rows of research are keyed by `researchRunId`, so an approval continuation reads what its turn wrote. */
   runId: string;
   /** What agents of this run really opened. */
   sources: ResearchGateContext["sources"];
-  /**
-   * What the run gave its own sub-agents: the user's message and what they wrote into this answer (during the plan window that counts
-   * as an edit), the branch's runs a Continue is checked against, and the mailbox that tells running researchers to finish.
-   */
-  subagents: PrepareRunSubagentsInput;
+  /** What the user wrote into this answer, delivered yet or not: during the plan window that counts as an edit. */
+  userFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;
   userId: string;
+  userMessage: string;
 }>;
 
 export type ResearchEvidenceWrite = Readonly<{ author: ResearchAgentRef; record: ResearchRecordInput }>;
@@ -46,46 +57,55 @@ export type ResearchEvidenceWritten =
   | Readonly<{ code: string; kind: "refused"; message: string }>;
 
 /**
- * The evidence store, filled by `research-evidence-store`. Bound to one run: `record` appends under it whichever agent writes,
- * so a background child's own run id never splits the records. Nothing here changes or deletes a row; a correction is a record
- * that supersedes. Page text can hold NUL characters, which PostgreSQL refuses, so the store drops them.
+ * The evidence store, filled by `research-evidence-store`. Records and pages are keyed by `researchRunId`: `record` appends under it
+ * whichever run or agent writes, so neither an approval continuation nor a background child's own run id splits them. Nothing here
+ * changes or deletes a row; a correction is a record that supersedes. Page text can hold NUL characters, which PostgreSQL refuses, so
+ * the store drops them.
  */
 export type ResearchEvidencePort = Readonly<{
-  /** A stored page of this run or of a run it continues; null for any other id, the same as for one that does not exist. */
+  /** A stored page under `researchRunId` or a run it continues; null for any other id, the same as for one that does not exist. */
   page(pageId: string, signal: AbortSignal): Promise<ResearchStoredPage | null>;
   record(write: ResearchEvidenceWrite, signal: AbortSignal): Promise<ResearchEvidenceWritten>;
   /**
-   * The live records in order: those of this run and, walking `ResearchFrame.continuedFromRunId` under
-   * `RESEARCH_EVIDENCE_LIMITS.continuationChain`, of the runs it continues. A run with no frame row reads its own alone.
+   * The live records in order: those under `researchRunId` and, walking `ResearchFrame.continuedFromRunId` under
+   * `RESEARCH_EVIDENCE_LIMITS.continuationChain`, of the runs it continues. With no frame row it reads its own alone.
    */
   records(signal: AbortSignal): Promise<readonly ResearchEvidenceRecord[]>;
 }>;
 
 /**
  * The plan window, filled by `research-plan-window-server`, whose route acts on the same window. `open` keeps the `ResearchFrame`
- * row: it writes the proposal and the window's end, and at the close the answer, the release time and the frame the plan opens with.
+ * row of `researchRunId`: it writes the proposal and the window's end, and at the close the answer, the release time and the frame
+ * the plan opens with.
  */
 export type ResearchPlanWindowPort = Readonly<{
   /** Resolves when the window closes. Stop rejects it through `signal`; a closed tab changes nothing. */
   open(input: Readonly<{ goal: string; proposal: ResearchPlanProposal; signal: AbortSignal }>): Promise<ResearchPlanAnswer>;
 }>;
 
-/** The clock of a run's phases, filled by `research-time-budget`. Each call is synchronous and reads no store: gates and tools ask it often. */
+/**
+ * The clock of a run's phases, filled by `research-time-budget`. Each call is synchronous and reads no store: gates and tools ask it
+ * often. There is one instance per run, unlike the rows of `researchRunId`: an approval continuation gets a new one and starts a fresh
+ * clock at `planReleased` from `resume`, because a long wait for a person is not charged to research.
+ */
 export type ResearchTimePort = Readonly<{
   /** When the gates must have ended, given when the turn alone would have them end. */
   gatesEndAt(turnGatesEndAt: number): number;
   phase(): ResearchPhase;
-  /** The plan stands, so the phases count from now and the turn is extended. Only the first call counts: a model may start twice. */
+  /** The plan stands, so the phases count from now and the turn is extended. Within one instance only the first call counts: a model may start twice. */
   planReleased(): void;
-  /** Why no researcher may start now, for the model to read; null while one may. */
+  /**
+   * Why no researcher may start now, for the model to read; null while one may. Null before `planReleased` too: a researcher in one
+   * batch with today's `start_research` may run first, and must never be refused depending on that order.
+   */
   researcherRefusal(): string | null;
   /** The signal a researcher's turn runs under: its own limit on top of the run's. */
   researcherSignal(signal: AbortSignal): AbortSignal;
 }>;
 
 /**
- * The matrix, filled by `research-frame-and-gaps`, which alone changes `ResearchFrame.frame` once the plan released it: compare and
- * swap on `version`. A cell's state comes from `ResearchEvidencePort.records`, and each round is planned from the empty cells.
+ * The matrix, filled by `research-frame-and-gaps`, which alone changes `ResearchFrame.frame` of `researchRunId` once the plan released
+ * it: compare and swap on `version`. A cell's state comes from `ResearchEvidencePort.records`, and each round is planned from the empty cells.
  */
 export type ResearchCoveragePort = Readonly<{
   /** Adds to the frame with its reason; the refusal names what to correct. */
@@ -103,9 +123,9 @@ export type ResearchReportEnding = "failed" | "no_report" | "timed_out";
 export type ResearchReportPort = Readonly<{
   /**
    * The answer the server builds from the records, in the report's language, with its note. Null when there is nothing to build
-   * from. It runs when the run is ending, so it brings its own time bound.
+   * from. It runs as the run ends, at most once: `signal` ends with Stop and `RESEARCH_TIME_MS.composeReport`, and the run stops waiting then.
    */
-  compose(input: Readonly<{ ended: ResearchReportEnding }>): Promise<string | null>;
+  compose(input: Readonly<{ ended: ResearchReportEnding; signal: AbortSignal }>): Promise<string | null>;
   /** Checks of a draft against the records and the matrix: ordinary gates, run before the others, under the same send-back cap. */
   gates: readonly ResearchGate[];
 }>;
@@ -120,12 +140,14 @@ export type ResearchResumeState = Readonly<{
 }>;
 
 /**
- * Picking research up after a restart, filled by `research-continue-from-store`. This alone writes `continuedFromRunId`: it finds the
- * interrupted run this turn continues on its own branch, and copies the frame and the answer into this run's row beside that link, so
- * `ResearchEvidencePort.records` then reaches the earlier records. Anything else, another branch or another user's run, reads as null.
+ * Picking research up after a restart, filled by `research-continue-from-store`. This alone writes `continuedFromRunId`. `run.ts` finds
+ * the interrupted turn's research run as an approval continuation does, from its start call's stored result (`researchOfTurn`), and
+ * hands it here. It is a stored value, so it counts only in `branchRunIds`: another branch or another user's run reads as null. A run that
+ * counts has its frame, answer, proposal and `windowEndsAt` copied into this run's row beside the link, since
+ * `ResearchFrame_release_check` needs the last two with `releasedAt`, and `ResearchEvidencePort.records` then reaches the earlier records.
  */
 export type ResearchResumePort = Readonly<{
-  load(signal: AbortSignal): Promise<ResearchResumeState | null>;
+  load(researchRunId: string, signal: AbortSignal): Promise<ResearchResumeState | null>;
 }>;
 
 export type ResearchPorts = Readonly<{
@@ -196,11 +218,7 @@ export function researchPorts(factories: ResearchPortFactories | undefined, run:
 /** What a gate reads besides its context's own fields. */
 export type ResearchGatePorts = Pick<ResearchPorts, "coverage" | "evidence">;
 
-/**
- * A gate's way to the ports: `run.ts` passes them beside the context's own fields, and a context built without them, as a gate's
- * own test builds one, reads the no-ops.
- */
-export function researchGatePorts(context: object): ResearchGatePorts {
-  const { coverage, evidence } = context as Partial<ResearchGatePorts>;
-  return { coverage: coverage ?? NOOP_RESEARCH_PORTS.coverage, evidence: evidence ?? NOOP_RESEARCH_PORTS.evidence };
+/** A gate's way to the ports: a context built without them, as a gate's own test builds one, reads the no-ops. */
+export function researchGatePorts(context: Pick<ResearchGateContext, "coverage" | "evidence">): ResearchGatePorts {
+  return { coverage: context.coverage ?? NOOP_RESEARCH_PORTS.coverage, evidence: context.evidence ?? NOOP_RESEARCH_PORTS.evidence };
 }

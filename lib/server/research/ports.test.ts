@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RESEARCH_LIMITS, RESEARCH_PAGE_LIMITS, RESEARCH_QUOTE_CHECKS, RESEARCH_RECORD_KINDS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, START_RESEARCH_TOOL_NAME,
-  SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchPlanProposal } from "../../contracts/research";
+import { RESEARCH_LIMITS, RESEARCH_PAGE_LIMITS, RESEARCH_QUOTE_CHECKS, RESEARCH_RECORD_KINDS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS,
+  START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchPlanProposal } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
@@ -9,6 +9,8 @@ import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRun
 import type { NativeRunStore } from "../engine/runStore";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
+import type { EngineTool } from "../engine/toolRegistry";
+import { toolOutputExcerpt, toolResultOutputText } from "../engine/toolResults";
 import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -16,7 +18,7 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchGate } from "./gates";
 import { NOOP_RESEARCH_PORTS, researchGatePorts, researchPorts, type ResearchPortFactories, type ResearchPorts, type ResearchRunScope } from "./ports";
-import type { ResearchEngineDeps } from "./run";
+import { createRunResearch, researchOfTurn, researchRunOf, type ResearchEngineDeps, type RunResearchInput } from "./run";
 
 /**
  * Every no-op port leaves a run as it was: the same scripted runs through the real engine with no ports, with every no-op named,
@@ -147,9 +149,10 @@ function prepared(): MaterializedPreparedRunData {
   };
 }
 
-async function runOf(steps: readonly Step[], research: ResearchEngineDeps) {
+async function runOf(steps: readonly Step[], research: ResearchEngineDeps, prepare: (memory: ReturnType<typeof engineOf>) => void = () => undefined) {
   const { adapter, requests } = scripted(steps);
   const memory = engineOf(research);
+  prepare(memory);
   const input: NativeRunExecutionInput = { adapter, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" }, engine: memory.deps,
     prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" };
   const text = await createNativeRunExecutionResponse(input).text();
@@ -187,6 +190,51 @@ const RUNS: Readonly<Record<string, readonly Step[]>> = {
   "text instead of a report": [{ calls: [start] }, { text: "Report as text." }, { text: "Report as text, again." }]
 };
 
+/** A turn's stored start call, with what its result held. */
+const started = (output: string): TranscriptItem[] => [
+  { arguments: JSON.stringify(PLAN), callId: "call-start", id: "stored-call", kind: "tool_call", name: START_RESEARCH_TOOL_NAME },
+  { callId: "call-start", id: "stored-result", kind: "tool_result", name: START_RESEARCH_TOOL_NAME, outcome: "complete", output }
+];
+const startResult = (run: string) => JSON.stringify({ research_run: run, method: "How to run it.", status: "started" });
+
+/** A call waiting for the user's approval, as the run that stopped for it left it. */
+const held = (callId: string): TranscriptItem[] => [
+  { arguments: "{}", callId, id: `${callId}-call`, kind: "tool_call", name: "mcp_shop_buy" },
+  { callId, id: `${callId}-result`, kind: "tool_result", name: "mcp_shop_buy", outcome: "error", output: "Waiting for approval." }
+];
+
+/** A run made by hand, for what a scripted engine run does not reach. */
+const direct = (deps: ResearchEngineDeps, extra: Partial<RunResearchInput> = {}) => createRunResearch({ chatId: "chat", deps, gatesEndAt: 2_000_000, items: () => [], now: () => 1_000_000,
+  onPlan: async () => undefined, rearmReservedCall: () => undefined, runId: "run-1", savedResults: { read: async () => null },
+  subagentInput: { admittedRequest: { modelId: "main-model" }, engine: {}, snapshot: {} } as never,
+  threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [] } as never, toolTimeLeft: () => true, userId: "user", userMessage: "q", ...extra });
+
+const execute = (tool: EngineTool, call: typeof start) => tool.execute({ call, persistedToolCallId: `row-${call.id}`, round: 1, signal: new AbortController().signal } as never);
+
+/** The scope a run's ports get as the approval continuation of these stored runs, oldest first, named `run-0` on: the last holds the approved call. */
+async function continuationScope(stored: readonly (readonly TranscriptItem[])[], ports: ResearchPortFactories = {}): Promise<ResearchRunScope> {
+  const scopes: ResearchRunScope[] = [];
+  const { adapter } = scripted([{ calls: [submit] }]);
+  const memory = engineOf({ gates: [], ports: { ...ports, evidence: (run) => { scopes.push(run); return NOOP_RESEARCH_PORTS.evidence; } } });
+  vi.mocked(memory.deps.approvedCall).mockResolvedValue({ providerCallId: "call-held", toolName: "mcp_shop_buy" });
+  vi.mocked(memory.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map(stored.map((_items, index) => [`answer-${index}`, `run-${index}`])));
+  vi.mocked(memory.deps.transcripts.loadRuns).mockResolvedValue(new Map(stored.map((items, index) => [`run-${index}`, [...items]])));
+  vi.mocked(memory.deps.transcripts.approvalContinuationTurns).mockResolvedValue(new Set(stored.slice(1).map((_items, index) => `approved-${index + 1}`)));
+  const content = (text: string) => ({ blocks: [{ text, type: "text" as const }] });
+  const messages = [{ content: content("Проведи исследование."), id: "question", role: "user" as const },
+    ...stored.flatMap((_items, index) => [...index === 0 ? [] : [{ content: content("The user approved it."), id: `approved-${index}`, role: "user" as const }],
+      { content: content(""), id: `answer-${index}`, role: "assistant" as const }]),
+    { content: content("The user approved it."), id: "current-user-message", role: "user" as const }];
+  const base = prepared();
+  const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
+  await createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" },
+    created: { assistantMessageId: "answer-c", runId: "run-c", userMessageId: "current-user-message" }, engine: memory.deps,
+    prepared: { ...base, normalizedRequest: request, providerRequest: request }, repository: repository() as unknown as RunRepository, services: {},
+    subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" }).text();
+  expect(scopes).toHaveLength(1);
+  return scopes[0]!;
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("no-op ports", () => {
@@ -219,9 +267,9 @@ describe("no-op ports", () => {
     await expect(noop.coverage.coverage(signal)).resolves.toBeNull();
     await expect(noop.coverage.frame(signal)).resolves.toBeNull();
     await expect(noop.coverage.change({} as never, { name: null, threadId: null }, signal)).resolves.toMatchObject({ ok: false });
-    await expect(noop.report.compose({ ended: "failed" })).resolves.toBeNull();
+    await expect(noop.report.compose({ ended: "failed", signal })).resolves.toBeNull();
     expect(noop.report.gates).toEqual([]);
-    await expect(noop.resume.load(signal)).resolves.toBeNull();
+    await expect(noop.resume.load("run", signal)).resolves.toBeNull();
   });
 });
 
@@ -296,7 +344,7 @@ describe("the ports a run holds", () => {
     const compose = vi.fn(async () => "Built from the records.");
     const ports = { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) };
     expect((await runOf(RUNS["a provider that fails with nothing in hand"]!, { gates: [], ports })).shown).toContain("Built from the records.");
-    expect(compose).toHaveBeenCalledExactlyOnceWith({ ended: "failed" });
+    expect(compose).toHaveBeenCalledExactlyOnceWith({ ended: "failed", signal: expect.any(AbortSignal) });
     compose.mockClear();
     expect((await runOf(RUNS["a provider that fails with a report in hand"]!, { gates: [], ports })).shown).toContain(REPORT);
     expect(compose).not.toHaveBeenCalled();
@@ -310,6 +358,125 @@ describe("the ports a run holds", () => {
     expect(compose).toHaveBeenCalledOnce();
     expect(failed.published).toBeNull();
     expect(failed).toEqual(await runOf(RUNS["a provider that fails with nothing in hand"]!, { gates: [] }));
+  });
+
+  it("composes once: a publish that fails sends the run to its second end, which gets the first result", async () => {
+    const compose = vi.fn(async () => "Built from the records.");
+    const silent: readonly Step[] = [{ calls: [start] }, {}];
+    const run = await runOf(silent, { gates: [], ports: { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) } }, (memory) => memory.runs.publishAnswer.mockResolvedValue(false));
+    expect(compose).toHaveBeenCalledExactlyOnceWith({ ended: "no_report", signal: expect.any(AbortSignal) });
+    expect(run.published).toBeNull();
+    expect(run.shown).toContain("Built from the records.");
+  });
+
+  it("stops waiting at its own bound for a port that ignores the signal, which the port saw end", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const signals: AbortSignal[] = [];
+      const compose = vi.fn(({ signal }: Readonly<{ signal: AbortSignal }>) => {
+        signals.push(signal);
+        return new Promise<string | null>(() => undefined);
+      });
+      const finished = runOf(RUNS["a provider that fails with nothing in hand"]!, { gates: [], ports: { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) } });
+      await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.composeReport + 1_000);
+      expect((await finished).published).toBeNull();
+      expect(signals).toHaveLength(1);
+      expect(signals[0]!.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting at Stop, and never asks a port once Stop came", async () => {
+    const stop = new AbortController();
+    const signals: AbortSignal[] = [];
+    const compose = vi.fn(({ signal }: Readonly<{ signal: AbortSignal }>) => {
+      signals.push(signal);
+      return new Promise<string | null>(() => undefined);
+    });
+    const research = direct({ gates: [], ports: { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) } });
+    research.resume(started(startResult("run-1")));
+    const composing = research.composed("failed", stop.signal);
+    await vi.waitFor(() => expect(compose).toHaveBeenCalledOnce());
+    stop.abort(new Error("stopped"));
+    await expect(composing).resolves.toBeNull();
+    expect(signals[0]!.aborted).toBe(true);
+    const late = direct({ gates: [], ports: { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) } });
+    late.resume(started(startResult("run-1")));
+    compose.mockClear();
+    await expect(late.composed("failed", stop.signal)).resolves.toBeNull();
+    expect(compose).not.toHaveBeenCalled();
+  });
+
+  it("composes nothing for a run that never researched", async () => {
+    const compose = vi.fn(async () => "Built from the records.");
+    await expect(direct({ gates: [], ports: { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) } }).composed("failed", new AbortController().signal)).resolves.toBeNull();
+    expect(compose).not.toHaveBeenCalled();
+  });
+});
+
+describe("the run research belongs to", () => {
+  it("is named first in the start result, with no ports at all: the one change a model sees", async () => {
+    const result = await execute(direct({ gates: [] }).tools[0]!, start);
+    expect(Object.keys(JSON.parse(toolResultOutputText(result)) as object)).toEqual(["research_run", "method", "status"]);
+    expect(toolResultOutputText(result)).toMatch(/^\{"research_run":"run-1",/u);
+    expect((await runOf(RUNS["a report accepted after a researcher"]!, { gates: [] })).requests).toContain(String.raw`{\"research_run\":\"run-1\",\"method\"`);
+  });
+
+  it("is the run's own on a turn of its own, for the ports and the start result", async () => {
+    const scopes: ResearchRunScope[] = [];
+    const ports: ResearchPortFactories = { evidence: (run) => { scopes.push(run); return NOOP_RESEARCH_PORTS.evidence; } };
+    await runOf(RUNS["a report accepted after a researcher"]!, { gates: [], ports });
+    expect(scopes).toEqual([expect.objectContaining({ branchRunIds: [], researchRunId: "run-1", runId: "run-1", userMessage: "Проведи исследование матрасов." })]);
+  });
+
+  it("is what the engine hands the ports of an approval continuation, a new run that works on the rows of the run that started", async () => {
+    const scope = await continuationScope([[...started(startResult("run-0")), ...held("call-held")]]);
+    expect(scope).toMatchObject({ branchRunIds: ["run-0"], researchRunId: "run-0", runId: "run-c" });
+  });
+
+  it("reaches the same run through a chain of approvals, each finding the same start call", async () => {
+    const scope = await continuationScope([[...started(startResult("run-0")), ...held("call-first")], held("call-held")]);
+    expect(scope).toMatchObject({ branchRunIds: ["run-0", "run-1"], researchRunId: "run-0", runId: "run-c" });
+    const first = direct({ gates: [] }, { runId: "run-a" });
+    const stored = [...started(toolResultOutputText(await execute(first.tools[0]!, start))), ...held("call-first")];
+    expect(researchRunOf(stored, { branchRunIds: ["run-a"], runId: "run-b" })).toBe("run-a");
+    expect(researchRunOf([...stored, ...held("call-second")], { branchRunIds: ["run-a", "run-b"], runId: "run-c" })).toBe("run-a");
+    // A start made again in a continuation keeps naming the research, not the run that made the call.
+    const second = direct({ gates: [] }, { researchRunId: "run-a", runId: "run-b" });
+    const again = [...stored, ...started(toolResultOutputText(await execute(second.tools[0]!, start)))];
+    expect(researchRunOf(again, { branchRunIds: ["run-a", "run-b"], runId: "run-c" })).toBe("run-a");
+  });
+
+  it("ignores a stored value that names no run of this branch: a stored value grants nothing", async () => {
+    const foreign = started(startResult("run-of-another-branch"));
+    expect(researchOfTurn(foreign).researchRun).toBe("run-of-another-branch");
+    expect(researchRunOf(foreign, { branchRunIds: ["run-0"], runId: "run-c" })).toBe("run-c");
+    await expect(continuationScope([[...foreign, ...held("call-held")]])).resolves.toMatchObject({ researchRunId: "run-c", runId: "run-c" });
+  });
+
+  it("keeps the run's own id for an older stored start, one that was refused, and one of an earlier turn", () => {
+    const branch = { branchRunIds: ["run-0"], runId: "run-c" };
+    expect(researchRunOf(started("started"), branch)).toBe("run-c");
+    expect(researchOfTurn(started("started"))).not.toHaveProperty("researchRun");
+    const refused: TranscriptItem = { callId: "call-start", id: "stored-result", kind: "tool_result", name: START_RESEARCH_TOOL_NAME, outcome: "error", output: startResult("run-0") };
+    expect(researchRunOf([started("started")[0]!, refused], branch)).toBe("run-c");
+    expect(researchRunOf([...started(startResult("run-0")), { id: "msg-later", kind: "user", text: "Something else." }], branch)).toBe("run-c");
+  });
+
+  it("is read from a stored result whatever follows it: an excerpt of a long method, or a repeat note", () => {
+    const branch = { branchRunIds: ["run-0"], runId: "run-c" };
+    const long = JSON.stringify({ research_run: "run-0", method: "x".repeat(40_000), status: "started" });
+    const excerpt = toolOutputExcerpt(long, { handle: "tor1_saved" });
+    expect(excerpt.truncated).toBe(true);
+    expect(researchRunOf(started(excerpt.output), branch)).toBe("run-0");
+    expect(researchRunOf(started(`${startResult("run-0")}\n\nYou made this same call before.`), branch)).toBe("run-0");
+  });
+
+  it("gives an approval continuation a fresh clock: the port is the run's own, and its plan is released again", async () => {
+    const planReleased = vi.fn();
+    await continuationScope([[...started(startResult("run-0")), ...held("call-held")]], { time: () => ({ ...NOOP_RESEARCH_PORTS.time, planReleased }) });
+    expect(planReleased).toHaveBeenCalledOnce();
   });
 });
 

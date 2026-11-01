@@ -101,6 +101,11 @@ const MINUTE_MS = 60_000;
 export const RESEARCH_TIME_MS = Object.freeze({
   /** How long an edit in progress holds the window before the last saved plan is released. */
   abandonedEdit: 5 * MINUTE_MS,
+  /**
+   * How long a run's end waits for the answer built from its records: a read of at most a run's records on one host and no model call,
+   * so seconds at worst, and well inside the minute a turn keeps for its handoff (`TURN_HANDOFF_RESERVE_MS`).
+   */
+  composeReport: 15_000,
   /** How long a research handoff waits for the user before the site goes to the unreachable list. */
   handoffWait: 3 * MINUTE_MS,
   /** From the plan's release: the hard end. */
