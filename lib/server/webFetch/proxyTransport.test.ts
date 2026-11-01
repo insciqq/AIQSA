@@ -197,7 +197,7 @@ describe("GET through a checked proxy", () => {
     expect(result.status).toBe("complete");
     expect(fetchUrlActivityFacts(call.name, call.arguments, result)).toMatchObject({ fetchProxyName: connection.name });
     expect(observeProxy.mock.calls).toEqual([
-      [{ proxyName: connection.name, outcome: "started" }], [{ proxyName: connection.name, outcome: "read" }]
+      [{ outcome: "started" }], [{ outcome: "read" }]
     ]);
     expect(JSON.stringify([result.rawPreview, records, observeProxy.mock.calls])).not.toMatch(/synthetic-password|synthetic-user|Synthetic page content|proxy\.example\.net/u);
     expect(server.requests).toHaveLength(1);

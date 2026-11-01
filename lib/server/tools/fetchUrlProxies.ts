@@ -1,29 +1,21 @@
-import {
-  PROXY_ADDRESS_FAILURE_CODES, PROXY_CONNECTION_FAILURE_CODES, PROXY_LIMITS,
-  type ProxyAddressFailureCode, type ProxyConnectionFailureCode, type ProxyRunPlan, type ProxySelectionFailureCode
-} from "../../contracts/proxies";
+import { PROXY_LIMITS, type ProxyRunPlan } from "../../contracts/proxies";
+import { decodeFetchUrlProxyName, isFetchUrlProxyCode, type FetchUrlProxyCode } from "../../contracts/fetchUrlActivity";
+import { logEvent, type EventFields } from "../observability";
 import { EMPTY_PROXY_ROTATION_STATE, proxiesToTry, recordProxyFailure, selectProxy, type ProxyExplicitChoice } from "../../domain/proxySelection";
 import type { RunProxies, RunProxyConnection, RunProxyConnections } from "../proxies/runProxies";
 
-export type FetchUrlProxyFailure = ProxyAddressFailureCode | ProxyConnectionFailureCode | ProxySelectionFailureCode | "proxy_unavailable";
+export type FetchUrlProxyFailure = FetchUrlProxyCode;
 export type FetchUrlProxyIdentity = Readonly<{ id: string; name: string }>;
-export type FetchUrlProxyObservation = Readonly<{
-  proxyName: string;
-  outcome: "started" | "read" | "failed";
-  code?: string;
-}>;
+export type FetchUrlProxyObservation = EventFields["fetch_proxy"];
 export type FetchUrlProxyDeps = Readonly<{
   proxyPlan?: ProxyRunPlan;
   runProxies?: RunProxies;
   userId?: string;
-  /** Content-free activity/telemetry hook. Never receives a connection, URL, socket error or body. */
+  /** Content-free activity/telemetry hook. Never receives a name, connection, URL, socket error or body. */
   observeProxy?: (event: FetchUrlProxyObservation) => void;
 }>;
 
-export function isFetchUrlProxyFailure(code: string): code is FetchUrlProxyFailure {
-  return [...PROXY_ADDRESS_FAILURE_CODES, ...PROXY_CONNECTION_FAILURE_CODES,
-    "proxy_all_failed", "proxy_inactive", "proxy_not_found", "proxy_unavailable"].includes(code);
-}
+export const isFetchUrlProxyFailure = isFetchUrlProxyCode;
 
 export function fetchUrlProxyChoice(value: unknown): ProxyExplicitChoice | undefined | null {
   if (value === undefined) return undefined;
@@ -34,9 +26,8 @@ export function fetchUrlProxyChoice(value: unknown): ProxyExplicitChoice | undef
 export function fetchUrlProxyIdentity(value: unknown): FetchUrlProxyIdentity | undefined {
   if (typeof value !== "object" || value === null || !("id" in value) || !("name" in value)) return undefined;
   if (typeof value.id !== "string" || !value.id || value.id.length > 256 ||
-    typeof value.name !== "string" || !value.name.trim() || value.name.length > PROXY_LIMITS.nameMaxLength ||
-    /[\u0000-\u001f\u007f]/u.test(value.name)) return undefined;
-  return { id: value.id, name: value.name };
+    !decodeFetchUrlProxyName(value.name)) return undefined;
+  return { id: value.id, name: decodeFetchUrlProxyName(value.name)! };
 }
 
 export type FetchUrlRoute = Readonly<
@@ -49,8 +40,9 @@ export type FetchUrlRoute = Readonly<
 export function createFetchUrlProxySession(deps: FetchUrlProxyDeps) {
   let state = EMPTY_PROXY_ROTATION_STATE;
   const entries = deps.proxyPlan?.entries ?? [];
+  const observer = deps.observeProxy ?? ((event: FetchUrlProxyObservation) => logEvent("fetch_proxy", event));
   const observe = (event: FetchUrlProxyObservation) => {
-    try { deps.observeProxy?.(event); } catch { /* Bookkeeping never gates a read. */ }
+    try { observer(event); } catch { /* Bookkeeping never gates a read. */ }
   };
   return {
     observe,

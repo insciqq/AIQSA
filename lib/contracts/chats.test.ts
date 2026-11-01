@@ -234,6 +234,11 @@ describe("chat wire contracts", () => {
       chat: detailChat({ messages: [{ ...message, toolActivity: { calls: [row] } }], usageStats })
     })?.messages[0]?.toolActivity?.calls[0];
     expect(decode(call)).toEqual(call);
+    const proxy = { ...call, fetchProxyName: "Personal route", fetchProxyCode: "proxy_auth_failed" };
+    expect(decode(proxy)).toEqual(proxy);
+    expect(decode({ ...proxy, origin: "mcp" })).not.toHaveProperty("fetchProxyName");
+    expect(decode({ ...proxy, fetchProxyCode: "PRIVATE_FAILURE", fetchProxyName: { login: "PRIVATE_LOGIN" } }))
+      .toEqual(call);
     // Unknown outcomes, a scheme in the target and facts on another origin are dropped.
     expect(decode({ ...call, fetchOutcome: "fetch_secret", fetchTarget: "https://news.example/today" }))
       .toEqual({ origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });

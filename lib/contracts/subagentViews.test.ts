@@ -56,6 +56,10 @@ describe("sub-agent list projections", () => {
     expect(decodeSubagentThreadSummary({ ...running, currentStep: step, model })).toEqual({ ...running, ...unknownFacts, currentStep: step, model });
     expect(decodeSubagentThreadSummary({ ...done, currentStep: null, model })).toEqual({ ...done, ...unknownFacts, model });
     expect(decodeSubagentThreadSummary(running)).toEqual({ ...running, ...unknownFacts });
+    const proxied = { ...step, fetchProxyName: "Personal route", fetchProxyCode: "proxy_connect_failed" };
+    expect(decodeSubagentThreadSummary({ ...running, currentStep: proxied })?.currentStep).toEqual(proxied);
+    expect(decodeSubagentThreadSummary({ ...running, currentStep: { ...proxied, origin: "mcp" } })).toBeNull();
+    expect(decodeSubagentThreadSummary({ ...running, currentStep: { ...proxied, fetchProxyCode: "PRIVATE_FAILURE" } })).toBeNull();
     expect(decodeSubagentThreadSummary({ ...running, ...unknownFacts })).toEqual({ ...running, ...unknownFacts });
     const mcp = { origin: "mcp", serverName: "Jira", toolName: "search" };
     expect(decodeSubagentThreadSummary({ ...running, currentStep: mcp })?.currentStep).toEqual(mcp);

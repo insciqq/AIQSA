@@ -165,6 +165,8 @@ export type EventFields = {
     /** An MCP result over its byte limit, delivered cut to it: JSON snapshot sizes only. */
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;
+  /** Page-reader proxy attempts: never a user-authored name, endpoint, credentials or page content. */
+  fetch_proxy: Readonly<{ outcome: "started" | "read" | "failed"; code?: string }>;
   /** One terminal record per settled model tool call; never its name, arguments or result. */
   tool_call: CaughtError & Readonly<{
     /** `awaiting_approval`: an MCP call paused for its initiator's approval. */

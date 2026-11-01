@@ -427,7 +427,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
         const route = routes.next();
         if (route.kind === "failed") {
           const proxy = lastProxy ?? route.proxy;
-          if (proxy) proxySession.observe({ proxyName: proxy.name, outcome: "failed", code: route.code });
+          proxySession.observe({ outcome: "failed", code: route.code });
           return failed(call, { ...route, dispatched, ...(proxy ? { proxy } : {}) }, url, failureOptions());
         }
         const connection = route.kind === "proxy" ? route.connection : undefined;
@@ -445,7 +445,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           }
         }
         if (!outcome) {
-          if (proxy) proxySession.observe({ proxyName: proxy.name, outcome: "started" });
+          if (proxy) proxySession.observe({ outcome: "started" });
           const reader = connection
             ? (target: string, options: WebFetchOptions) => (deps.fetchProxyPage ?? fetchThroughProxy)(target, connection, options)
             : fetchPage;
@@ -453,7 +453,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           inFlight.set(key, work);
           try { outcome = await work; }
           finally { if (inFlight.get(key) === work) inFlight.delete(key); }
-          if (proxy) proxySession.observe({ proxyName: proxy.name, outcome: outcome.kind === "read" ? "read" : "failed",
+          if (proxy) proxySession.observe({ outcome: outcome.kind === "read" ? "read" : "failed",
             ...(outcome.kind === "failed" ? { code: outcome.code } : {}) });
         }
         if (outcome.kind === "read") {
