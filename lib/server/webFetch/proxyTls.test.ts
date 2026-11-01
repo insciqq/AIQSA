@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer as httpServer } from "node:http";
+import { createServer as httpServer, request as httpRequest } from "node:http";
 import { createServer as httpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,10 +47,33 @@ async function proxy(secureProxy: boolean, secureTarget: boolean) {
   const sockets = new Set<import("node:stream").Duplex>();
   const connects: string[] = [];
   const pages: string[] = [];
+  const proxyRequests: { url: string; authorization: string | undefined }[] = [];
+  const origin = httpServer((request, response) => {
+    pages.push(`${request.method} ${request.url} ${request.rawHeaders.join(" ")}`);
+    response.writeHead(200, { "content-type": "text/plain" }).end("Synthetic page content");
+  });
+  origin.on("connection", (socket) => { sockets.add(socket); socket.on("error", () => undefined); });
+  await new Promise<void>((resolve) => origin.listen(0, "127.0.0.1", resolve));
+  const originAddress = origin.address();
+  if (!originAddress || typeof originAddress === "string") throw new Error("synthetic_proxy_address");
+  server.on("request", (request, response) => {
+    proxyRequests.push({ url: request.url ?? "", authorization: request.headers["proxy-authorization"] });
+    const target = new URL(request.url!);
+    const headers = { ...request.headers };
+    delete headers["proxy-authorization"];
+    // This local test proxy consumes its credentials and forwards only to its loopback origin.
+    const outgoing = httpRequest({ host: "127.0.0.1", port: originAddress.port, path: target.pathname, headers }, (incoming) => {
+      response.writeHead(incoming.statusCode!, incoming.headers);
+      incoming.pipe(response);
+    });
+    outgoing.on("error", () => response.destroy());
+    outgoing.end();
+  });
   server.on("connection", (socket) => { sockets.add(socket); socket.on("error", () => undefined); });
   server.on("tlsClientError", () => undefined);
   server.on("connect", (request, socket) => {
     connects.push(request.url ?? "");
+    if (request.url?.endsWith(":80")) { socket.end("HTTP/1.1 403 CONNECT forbidden\r\n\r\n"); return; }
     socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
     const target = secureTarget ? new TLSSocket(socket, { isServer: true, secureContext: createSecureContext({ cert, key }) }) : socket;
     sockets.add(target);
@@ -67,8 +90,9 @@ async function proxy(secureProxy: boolean, secureTarget: boolean) {
   cleanups.push(async () => {
     for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => origin.close(() => resolve()));
   });
-  return { connects, pages, port: location.port };
+  return { connects, proxyRequests, pages, port: location.port };
 }
 
 describe("proxy TLS", () => {
@@ -77,10 +101,23 @@ describe("proxy TLS", () => {
     const response = await fetchThroughProxy(`${secureTarget ? "https" : "http"}://example.com/page`,
       proxyConnection(server.port, secureProxy ? "https" : "http"), { acceptsContentType: () => true, limits: { deadlineMs: 1000 } });
     expect(Buffer.from(response.body).toString()).toBe("Synthetic page content");
-    expect(server.connects).toEqual([`example.com:${secureTarget ? 443 : 80}`]);
+    expect(server.connects).toEqual(secureTarget ? ["example.com:443"] : []);
     expect(server.pages).toHaveLength(1);
     expect(server.pages[0]).not.toMatch(/synthetic-password|authorization/iu);
     for (const [options] of vi.mocked(tlsConnect).mock.calls) expect(options).toMatchObject({ rejectUnauthorized: true });
+  });
+
+  it.each([false, true])("serves HTTP through a proxy refusing CONNECT to port 80 (TLS proxy=%s)", async (secureProxy) => {
+    const server = await proxy(secureProxy, false);
+    const connection = proxyConnection(server.port, secureProxy ? "https" : "http");
+    const result = await fetchThroughProxy("http://example.com/page", connection, { acceptsContentType: () => true });
+    expect(Buffer.from(result.body).toString()).toBe("Synthetic page content");
+    expect(server.connects).toEqual([]);
+    expect(server.proxyRequests).toEqual([{ url: "http://example.com/page",
+      authorization: `Basic ${Buffer.from(`${connection.login}:${connection.password}`).toString("base64")}` }]);
+    expect(server.pages).toHaveLength(1);
+    expect(server.pages[0]).toContain("GET /page");
+    expect(server.pages[0]).not.toMatch(/authorization|synthetic-user|synthetic-password/iu);
   });
 
   it("refuses a proxy certificate for the wrong name before sending credentials", async () => {
