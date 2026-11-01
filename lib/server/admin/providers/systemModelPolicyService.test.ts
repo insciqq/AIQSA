@@ -120,6 +120,27 @@ describe("administrator system model policy service", () => {
       .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
     expect(update).toHaveBeenCalledTimes(2);
   });
+  it("assigns and clears the research verifier alone, and refuses a model that cannot call tools", async () => {
+    const update = vi.fn();
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin" }) } };
+    const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) => operation(tx) } as unknown as PrismaClient;
+    const loadRole = vi.fn().mockResolvedValue({ modelConfiguration: { capabilities: { toolCalling: true } },
+      snapshot: { model: { capabilities: { reasoning: false } } } });
+    const service = createAdminSystemModelPolicyService(prisma, { loadRole });
+    for (const researchVerifierProviderModelId of ["other", null]) {
+      await service.update({ expectedVersion: 3, userId: "admin", researchVerifierProviderModelId, researchVerifierReasoningEffort: null });
+      expect(update).toHaveBeenLastCalledWith({ where: { id: "installation" }, data: {
+        researchVerifierProviderModelId, researchVerifierReasoningEffort: null, updatedByUserId: "admin", version: { increment: 1 }
+      } });
+    }
+    expect(loadRole).toHaveBeenCalledExactlyOnceWith(tx, { providerModelId: "other" });
+    loadRole.mockResolvedValue({ modelConfiguration: { capabilities: { toolCalling: false } }, snapshot: { model: { capabilities: { reasoning: false } } } });
+    await expect(service.update({ expectedVersion: 3, userId: "admin", researchVerifierProviderModelId: "text", researchVerifierReasoningEffort: null }))
+      .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    expect(update).toHaveBeenCalledTimes(2);
+    await expect(service.update({ expectedVersion: 3, userId: "admin", researchVerifierProviderModelId: "other" })).rejects.toThrow("system_model_policy_update_invalid");
+  });
   it("assigns and clears Vision alone, preserving PDF and utility roles", async () => {
     const update = vi.fn();
     const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },

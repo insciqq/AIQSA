@@ -126,6 +126,9 @@ export type AdminSystemModelPolicyCatalog = {
     chatPdfNativeReasoningEffort?: string | null;
     mcpGuardModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
     mcpGuardReasoningEffort?: string | null;
+    /** Null: the research method's main model checks, and the answer says so. */
+    researchVerifierModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
+    researchVerifierReasoningEffort?: string | null;
     visionModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
     visionReasoningEffort?: string | null;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
@@ -286,6 +289,11 @@ export function decodeAdminSystemModelPolicyResponse(
       (!record(policy.mcpGuardModel) || typeof policy.mcpGuardModel.available !== "boolean" || !candidate(policy.mcpGuardModel))) ||
     (policy.mcpGuardReasoningEffort !== undefined && policy.mcpGuardReasoningEffort !== null && !boundedText(policy.mcpGuardReasoningEffort, 32)) ||
     (!policy.mcpGuardModel && policy.mcpGuardReasoningEffort != null)) return null;
+  if (Object.hasOwn(policy, "researchVerifierModel") !== Object.hasOwn(policy, "researchVerifierReasoningEffort") ||
+    (policy.researchVerifierModel !== undefined && policy.researchVerifierModel !== null &&
+      (!record(policy.researchVerifierModel) || typeof policy.researchVerifierModel.available !== "boolean" || !candidate(policy.researchVerifierModel))) ||
+    (policy.researchVerifierReasoningEffort !== undefined && policy.researchVerifierReasoningEffort !== null && !boundedText(policy.researchVerifierReasoningEffort, 32)) ||
+    (!policy.researchVerifierModel && policy.researchVerifierReasoningEffort != null)) return null;
   if (catalog.visionAnalysisAvailable !== undefined && typeof catalog.visionAnalysisAvailable !== "boolean" ||
     Object.hasOwn(policy, "visionModel") !== Object.hasOwn(policy, "visionReasoningEffort") ||
     (policy.visionModel !== undefined && policy.visionModel !== null &&
@@ -377,6 +385,10 @@ export function decodeAdminSystemModelPolicyResponse(
         ...(Object.hasOwn(policy, "mcpGuardModel") ? {
           mcpGuardModel: policy.mcpGuardModel as AdminSystemModelPolicyCatalog["policy"]["mcpGuardModel"],
           mcpGuardReasoningEffort: policy.mcpGuardReasoningEffort as string | null
+        } : {}),
+        ...(Object.hasOwn(policy, "researchVerifierModel") ? {
+          researchVerifierModel: policy.researchVerifierModel as AdminSystemModelPolicyCatalog["policy"]["researchVerifierModel"],
+          researchVerifierReasoningEffort: policy.researchVerifierReasoningEffort as string | null
         } : {}),
         ...(Object.hasOwn(policy, "visionModel") ? {
           visionModel: policy.visionModel as AdminSystemModelPolicyCatalog["policy"]["visionModel"],

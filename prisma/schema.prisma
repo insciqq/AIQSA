@@ -1661,6 +1661,9 @@ model SystemModelPolicy {
   chatPdfNativeReasoningEffort String? @db.VarChar(32)
   mcpGuardProviderModelId String?
   mcpGuardReasoningEffort String?        @db.VarChar(32)
+  /// The research method's independent checker. Null: the main model checks and the answer says so.
+  researchVerifierProviderModelId String?
+  researchVerifierReasoningEffort String? @db.VarChar(32)
   visionProviderModelId   String?
   visionReasoningEffort   String?        @db.VarChar(32)
   chatPdfProviderModelId   String?
@@ -1697,6 +1700,7 @@ model SystemModelPolicy {
   chatTitleProviderModel  ProviderModel? @relation("ChatTitleProviderModel", fields: [chatTitleProviderModelId], references: [id], onDelete: Restrict)
   chatPdfNativeProviderModel ProviderModel? @relation("ChatPdfNativeProviderModel", fields: [chatPdfNativeProviderModelId], references: [id], onDelete: Restrict)
   mcpGuardProviderModel   ProviderModel? @relation("McpGuardProviderModel", fields: [mcpGuardProviderModelId], references: [id], onDelete: Restrict)
+  researchVerifierProviderModel ProviderModel? @relation("ResearchVerifierProviderModel", fields: [researchVerifierProviderModelId], references: [id], onDelete: Restrict)
   visionProviderModel     ProviderModel? @relation("VisionProviderModel", fields: [visionProviderModelId], references: [id], onDelete: Restrict)
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
@@ -1710,6 +1714,7 @@ model SystemModelPolicy {
   @@index([decisionProviderModelId])
   @@index([chatTitleProviderModelId])
   @@index([mcpGuardProviderModelId])
+  @@index([researchVerifierProviderModelId])
   @@index([visionProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
@@ -2153,6 +2158,7 @@ model ProviderModel {
   chatTitleRoles              SystemModelPolicy[]             @relation("ChatTitleProviderModel")
   chatPdfNativeRoles          SystemModelPolicy[]             @relation("ChatPdfNativeProviderModel")
   mcpGuardRoles               SystemModelPolicy[]             @relation("McpGuardProviderModel")
+  researchVerifierRoles       SystemModelPolicy[]             @relation("ResearchVerifierProviderModel")
   visionRoles                 SystemModelPolicy[]             @relation("VisionProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")

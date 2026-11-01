@@ -35,6 +35,8 @@ export type AdminRolePatch = Readonly<{
   chatPdfNativeReasoningEffort?: string | null;
   mcpGuardProviderModelId?: string | null;
   mcpGuardReasoningEffort?: string | null;
+  researchVerifierProviderModelId?: string | null;
+  researchVerifierReasoningEffort?: string | null;
   visionProviderModelId?: string | null;
   visionReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;

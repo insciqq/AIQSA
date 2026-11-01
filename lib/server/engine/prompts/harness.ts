@@ -1,4 +1,5 @@
 import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
+import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "@/lib/contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_NO_REPLAY_SAFETY } from "@/lib/server/workspace/promptContract";
 import { subagentsPromptSection, type SubagentPromptFacts } from "./subagents";
@@ -71,6 +72,21 @@ function savedSecret(secret: SavedSecretFact): string {
     ? `: ${variables.join(", ")}${more > 0 ? ` and ${more} more` : ""}` : ""})`;
 }
 
+/**
+ * When to start research (operator decision 2026-11-01): no chip or control, the model decides from the user's words,
+ * so the rule and its examples in both directions are the whole trigger.
+ */
+function researchPromptSection(): string {
+  return [
+    "# Research",
+    `\`${START_RESEARCH_TOOL_NAME}\` starts the research method: parallel researchers, source classes assigned up front and a report the server checks before the user sees it. It takes much longer and costs much more than an ordinary answer, and the user sees it as a plan.`,
+    "- Start it when the user's goal is a thorough result: they ask to research, analyze or search carefully, or they will base a serious decision on the answer. Examples: \"поищи хорошо\", \"проведи исследование\", \"глубокий анализ\", \"проанализируй рынок роботов-пылесосов\", \"сравни эти ноутбуки, хочу купить один надолго\", \"do a deep dive on this\". The topic may be small; the wish for thoroughness decides.",
+    "- Do not start it for a simple question or a quick lookup, however it is phrased, even when it needs a search. Examples: \"поищи, какие матрасы есть современные\", \"какой сейчас курс доллара\", \"найди сайт этого магазина\", \"what is the latest version of Node\". Answer those directly.",
+    "- When unsure, answer directly and offer to research it. If the user asks for research again in a later message, start it again; earlier findings in this conversation still count.",
+    `- Once it started, follow what it returns and finish with \`${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}\`: nothing else you write reaches the user.`
+  ].join("\n");
+}
+
 export function harnessPromptSection(input: HarnessPromptInput): string {
   const has = new Set(input.tools);
   const tool = (name: string, line: string) => has.has(name) ? [line] : [];
@@ -108,6 +124,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are available there too: every command has an env secret's variables and a text secret named like a variable (capitals, digits and underscores) under that name, SSH keys and files are files, and /workspace/SECRETS.md lists what each secret provides but holds no values; read any other text secret with read_secret."
     ]] : []),
     ...(has.has(CALL_SUBAGENT_TOOL_NAME) ? [[subagentsPromptSection(input.subagents)]] : []),
+    ...(has.has(START_RESEARCH_TOOL_NAME) ? [[researchPromptSection()]] : []),
     [
       "# When to stop and ask",
       "- Ask only when you cannot proceed sensibly: the request has materially different readings that the context does not settle, a required input or access is missing, or the next step is irreversible or affects other people (sending messages, deleting or overwriting the user's data, publishing, payments) and the user has not clearly asked for it.",
