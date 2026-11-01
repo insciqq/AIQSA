@@ -10,6 +10,7 @@ import {
   generativeRoleItems,
   rerankerFallbacksLine,
   rerankerItems,
+  researchVerifierItems,
   roleStatus
 } from "@/components/admin/roles/rolesView";
 import type { AdminRolesController } from "@/components/admin/roles/useAdminRolesController";
@@ -150,6 +151,7 @@ export function AdminSystemRolesTable({
     chatTitleReasoningEffort: policy.chatTitleReasoningEffort
   };
   const mcpGuardUndo = { mcpGuardProviderModelId: policy.mcpGuardModel?.id ?? null, mcpGuardReasoningEffort: policy.mcpGuardReasoningEffort ?? null };
+  const researchVerifierUndo = { researchVerifierProviderModelId: policy.researchVerifierModel?.id ?? null, researchVerifierReasoningEffort: policy.researchVerifierReasoningEffort ?? null };
   const visionUndo = { visionProviderModelId: policy.visionModel?.id ?? null, visionReasoningEffort: policy.visionReasoningEffort ?? null };
   const pdfMode = policy.chatPdfProcessingMode ?? "prefer_chat_model";
   const pdfFallback = policy.chatPdfFallbackMethod ?? "page_images";
@@ -365,6 +367,39 @@ export function AdminSystemRolesTable({
           model={policy.mcpGuardModel ?? null}
           onChange={(effort) => void controller.assign({ mcpGuardProviderModelId: policy.mcpGuardModel?.id ?? null, mcpGuardReasoningEffort: effort }, mcpGuardUndo)}
           value={policy.mcpGuardReasoningEffort ?? null}
+        />
+      </RoleRow>
+
+      <RoleRow
+        title="Research verifier"
+        testId="admin-role-research-verifier"
+        menu={[{
+          disabled: !policy.researchVerifierModel || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign({ researchVerifierProviderModelId: null, researchVerifierReasoningEffort: null }, researchVerifierUndo)
+        }]}
+        status={roleStatus(policy.researchVerifierModel ?? null)}
+        statusLabel={policy.researchVerifierModel ? policy.researchVerifierModel.available ? "Model ready" : "Model unavailable" : "Not assigned"}
+        description="Independently checks research reports before the user sees them, best with a model of another family than your chat models. Claims and their sources reach this model's provider. Changes apply to future messages."
+      >
+        <AdminRolePicker
+          busy={busy}
+          checkingId={checkingId}
+          items={researchVerifierItems(catalog)}
+          label="Research verifier deployment"
+          onSelect={(id) => void controller.assign({ researchVerifierProviderModelId: id, researchVerifierReasoningEffort: null }, researchVerifierUndo)}
+          roleName="Research verifier"
+          selectedId={policy.researchVerifierModel?.id ?? null}
+          selectedLabel={policy.researchVerifierModel ? label(policy.researchVerifierModel) : null}
+          testId="admin-research-verifier-picker"
+        />
+        <p className="text-xs leading-5 text-ink-muted">Requires verified tool calling. When unassigned, the model of the chat checks and the answer says so. An unavailable assigned model checks nothing, and the answer says that too.</p>
+        <ReasoningSelect
+          disabled={busy}
+          label="Research verifier reasoning"
+          model={policy.researchVerifierModel ?? null}
+          onChange={(effort) => void controller.assign({ researchVerifierProviderModelId: policy.researchVerifierModel?.id ?? null, researchVerifierReasoningEffort: effort }, researchVerifierUndo)}
+          value={policy.researchVerifierReasoningEffort ?? null}
         />
       </RoleRow>
 
