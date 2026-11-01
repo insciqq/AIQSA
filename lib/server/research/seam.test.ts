@@ -18,7 +18,8 @@ import { runResearchGates, type ResearchGate, type ResearchGateContext } from ".
 import { researchNote } from "./notes";
 import { researchOfTurn, type ResearchEngineDeps } from "./run";
 import { researchModelIdentity } from "./turns";
-import type { ResearchVerifierRole } from "./verifierRole";
+import { createResearchVerifierRole, RESEARCH_RESEARCHER_BINDING_KEY, type ResearchVerifierRole } from "./verifierRole";
+import { ProviderAdmissionError } from "../providerRuntime/admission";
 
 /**
  * The gate seam, end to end over the real engine with scripted models and test gates: what `research-gap-rounds` and
@@ -97,7 +98,7 @@ function engineOf(research: ResearchEngineDeps | undefined, options: Readonly<{ 
       turns += 1;
       return { continued: false, kind: "admitted" as const,
         thread: { anchorRunId: input.parentRunId, definitionId: null, id: `thread-${turns}`, name: input.name, parentThreadId: null, typeName: null },
-        turn: { branchRunId: input.parentRunId, definitionRevisionId: null, effortSource: input.binding.effortSource, id: `turn-${turns}`, mode: "foreground" as const,
+        turn: { branchRunId: input.parentRunId, definitionRevisionId: input.definitionRevisionId, effortSource: input.binding.effortSource, id: `turn-${turns}`, mode: "foreground" as const,
           modelId: input.binding.modelId, modelSource: input.binding.modelSource, parentRunId: input.parentRunId, provider: input.binding.provider,
           providerModelId: input.binding.providerModelId, reasoningEffort: input.binding.reasoningEffort, startedAt: new Date(), state: "running" as const, threadId: `thread-${turns}` } };
     }),
@@ -456,10 +457,11 @@ describe("the verifier's needs", () => {
     expect(seen[1]).toMatchObject({ kind: "ended", result: { model: { id: "fake-qsa" } } });
 
     seen.length = 0;
-    const second = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+    const second = scripted([{ calls: [start()] }, { text: "Research is unavailable." }]);
     const gone: ResearchVerifierRole = { frozenChoice: async () => ({ effort: null, kind: "set", providerModelId: "gone" }), route: async () => null };
     await run(second.adapter, engineOf({ gates: [reader], verifier: gone })).text();
-    expect(seen).toEqual([{ kind: "unavailable" }, { code: "research_verifier_unavailable", kind: "refused" }]);
+    expect(seen).toEqual([]);
+    expect(resultsOf(second.requests[1], START_RESEARCH_TOOL_NAME).join()).toContain("research_verifier_unavailable");
   });
 
   it("gives each gate's turn on one draft a call of its own, since a call has one turn in the database", async () => {
@@ -857,7 +859,7 @@ describe("the verifier's own turn is independent", () => {
   it("gets none of the user's words or the chat's instructions, and the gap judge keeps them", async () => {
     const seen: string[] = [];
     const both = gate("both", async (_draft, context) => {
-      for (const [model, name] of [["main", "judge"], ["verifier", "verifier"]] as const) {
+      for (const [model, name] of [["verifier", "gap-judge"], ["verifier", "verifier"]] as const) {
         seen.push(model);
         await context.subagents.run({ brief: `brief of ${name}`, instructions: "i", model, name, tools: [] }, context.signal);
       }
@@ -878,7 +880,7 @@ describe("the verifier's own turn is independent", () => {
     let waiting = false;
     const check = gate("verifier", async (_draft, context) => {
       waiting = true;
-      await context.subagents.run({ brief: "b", instructions: "i", model: "main", name: "judge", tools: [] }, context.signal);
+      await context.subagents.run({ brief: "b", instructions: "i", model: "verifier", name: "gap-judge", tools: [] }, context.signal);
       await context.subagents.run({ brief: "b", instructions: "i", model: "verifier", name: "verifier", tools: [] }, context.signal);
       waiting = false;
       return { kind: "pass" };
@@ -948,20 +950,22 @@ describe("the verifier's own turn is independent", () => {
       await context.verifierModel(context.signal).then((value) => outcomes.push(value), () => outcomes.push("threw"));
       return context.attempt === 1 ? { kind: "send_back", message: "Again." } : { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }, { calls: [submit("call-3")] }]);
+    const main = scripted([{ calls: [start()] }, { calls: [start("retry-start")] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }]);
     const good = roleOf(main.adapter, "other-1", "model-2");
     const route = vi.mocked(good.route);
     const answer = await route.getMockImplementation()!({ effort: null, providerModelId: "model-2", runId: "r", userId: "u" });
     route.mockReset();
     route.mockRejectedValueOnce(new Error("database down")).mockResolvedValue(answer);
     await run(main.adapter, engineOf({ gates: [reader], verifier: good })).text();
-    expect(outcomes).toEqual(["threw", { kind: "role", label: "Same One · Same" }]);
+    expect(resultsOf(main.requests[1], START_RESEARCH_TOOL_NAME).join()).toContain("research_verifier_unavailable");
+    expect(outcomes).toEqual([{ kind: "role", label: "Same One · Same" }, { kind: "role", label: "Same One · Same" }]);
 
     const refusing = vi.fn(async () => null);
-    const main2 = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }]);
+    const main2 = scripted([{ calls: [start()] }, { calls: [start("retry-start")] }, { text: "Research is unavailable." }]);
     outcomes.length = 0;
     await run(main2.adapter, engineOf({ gates: [reader], verifier: { frozenChoice: good.frozenChoice, route: refusing } })).text();
-    expect(outcomes).toEqual([{ kind: "unavailable" }, { kind: "unavailable" }]);
+    expect(outcomes).toEqual([]);
+    expect(resultsOf(main2.requests[2], START_RESEARCH_TOOL_NAME).join()).toContain("research_verifier_unavailable");
     expect(refusing).toHaveBeenCalledTimes(1);
   });
 });
@@ -1086,4 +1090,133 @@ describe("what ends research", () => {
     expect(JSON.stringify(main.requests[2]!.history)).toContain("Also check prices.");
     expect(memory.published()).toBe("With the follow-up.");
   });
+});
+
+/** The real role over fake database and provider ports; its request still passes the stored-snapshot decoder. */
+function installedResearchRole(adapter: ProviderAdapter, options: { effort?: string | null; missing?: boolean; sameModel?: boolean; role?: "checks" | "researcher" } = {}) {
+  const snapshot = { connection: { allowPrivateNetwork: false, apiRoot: "https://research.example/v1", authenticationMode: "bearer", responseTimeoutMs: 120_000 }, connectionDisplayName: "Research provider",
+    connectionId: options.sameModel ? "connection-1" : "research-connection", credentialId: "installation-key", credentialVersionId: "installation-key-version",
+    model: { adapterKind: "openai_responses_compatible", answerSelectable: true, modelClass: "answer", defaultParams: {}, upstreamModelId: "research-upstream",
+      capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, reasoningEfforts: ["low", "high"],
+        defaultReasoningEffort: "low", toolCalling: true, vision: false } },
+    modelDisplayName: "Research model", providerFamily: "openai_compatible", providerModelId: options.sameModel ? "model-1" : "research-model", version: 1 };
+  const policy = { researchResearcherProviderModelId: snapshot.providerModelId, researchResearcherReasoningEffort: options.effort === undefined ? "high" : options.effort,
+    researchVerifierProviderModelId: snapshot.providerModelId, researchVerifierReasoningEffort: options.effort === undefined ? "high" : options.effort };
+  const bindings = new Map<string, { executionSnapshot: unknown }>();
+  const tx = { modelRun: { findFirst: vi.fn(async () => ({ id: "run-1" })) }, providerRunBinding: {
+    createMany: vi.fn(async ({ data }: { data: { bindingKey: string; executionSnapshot: unknown }[] }) => {
+      for (const row of data) if (!bindings.has(row.bindingKey)) bindings.set(row.bindingKey, { executionSnapshot: row.executionSnapshot });
+    }) } };
+  const db = { $transaction: async (body: (client: typeof tx) => Promise<unknown>) => body(tx),
+    systemModelPolicy: { findUnique: vi.fn(async () => ({ ...policy })) },
+    providerModel: { findUnique: vi.fn(async () => ({ connection: { displayName: "Research provider" }, displayName: "Research model" })) },
+    providerRunBinding: { findUnique: vi.fn(async ({ where }: { where: { modelRunId_bindingKey: { bindingKey: string } } }) =>
+      bindings.get(where.modelRunId_bindingKey.bindingKey) ?? null) } };
+  const loadRole = vi.fn(async () => {
+    if (options.missing) throw new ProviderAdmissionError("model_not_available");
+    return { credentialSource: "default", modelConfiguration: snapshot.model, snapshot };
+  });
+  const runtime = { resolve: vi.fn(async () => ({ adapter, responseTimeoutMs: 120_000 })) };
+  return { bindings, loadRole, policy, runtime, role: createResearchVerifierRole({ loadRole: loadRole as never, prisma: db as never,
+    role: options.role ?? "researcher", runtime: runtime as never }) };
+}
+
+describe("researchers on the installation role", () => {
+  it.each([false, true])("records the selected model and effort on the actual sub-agent turn (same catalog row: %s)", async (sameModel) => {
+    const child = scripted([{ text: "Outcome: done\nFindings." }]);
+    const installed = installedResearchRole(child.adapter, { sameModel });
+    const main = scripted([{ calls: [start()] }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+      arguments: { name: "researcher", message: "Read the sources.", model: "agent-choice", effort: "low", background: true } }],
+      onCall: () => { installed.policy.researchResearcherProviderModelId = "replacement"; installed.policy.researchResearcherReasoningEffort = "low"; } },
+    { calls: [submit()] }]);
+    const memory = engineOf({ gates: [], researcher: installed.role });
+    await run(main.adapter, memory).text();
+    const recorded = await vi.mocked(memory.threads.admitForeground).mock.results[0]!.value;
+    expect(recorded).toMatchObject({ kind: "admitted", turn: { modelId: "research-upstream", provider: sameModel ? "connection-1" : "research-connection",
+      providerModelId: sameModel ? "model-1" : "research-model", reasoningEffort: "high", mode: "foreground" } });
+    expect(child.requests).toHaveLength(1);
+    expect(child.requests[0]).toMatchObject({ modelId: "research-upstream", reasoningEffort: "high", params: { reasoning: { effort: "high" } } });
+    expect(JSON.stringify(child.requests[0]!.history)).toContain("# Research method (from the server)");
+    expect(JSON.stringify(child.requests[0]!.history)).toContain("Проведи исследование матрасов.");
+    expect(child.requests[0]!.prompt.system).toContain("Be brief.");
+    expect(installed.bindings.get(RESEARCH_RESEARCHER_BINDING_KEY)).toMatchObject({ executionSnapshot: { credentialId: "installation-key" } });
+    expect(installed.loadRole).toHaveBeenCalledTimes(1);
+    expect(installed.runtime.resolve).toHaveBeenCalledExactlyOnceWith("run-1", "answer", RESEARCH_RESEARCHER_BINDING_KEY);
+    expect(main.requests).toHaveLength(3);
+    expect(main.requests.every((request) => request.modelId === "fake-qsa")).toBe(true);
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("keeps the role's model default when a call or custom type supplies an effort", async () => {
+    const child = scripted([{ text: "Outcome: done\nFindings." }]);
+    const installed = installedResearchRole(child.adapter, { effort: null });
+    const main = scripted([{ calls: [start()] }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+      arguments: { name: "researcher", type: "specialist", message: "Read the sources.", model: "agent-choice", effort: "high" } }] }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [], researcher: installed.role });
+    await run(main.adapter, memory, { subagents: { types: {
+      catalog: async () => [], resolve: async () => ({ kind: "found", type: { definitionId: "type", revisionId: "rev", name: "specialist",
+        description: "", instructions: "Specialist instructions.", providerModelId: "type-model", reasoningEffort: "high", toolGroups: [] } })
+    } } }).text();
+    const recorded = await vi.mocked(memory.threads.admitForeground).mock.results[0]!.value;
+    expect(recorded).toMatchObject({ turn: { providerModelId: "research-model", reasoningEffort: null, definitionRevisionId: "rev" } });
+    expect(child.requests[0]).toMatchObject({ modelId: "research-upstream", reasoningEffort: null });
+    expect(child.requests[0]!.prompt.system).toContain("Specialist instructions.");
+  });
+
+  it("refuses a disappeared researcher at start and in a sibling call of the same response", async () => {
+    const child = scripted([{ text: "Must not run." }]);
+    const installed = installedResearchRole(child.adapter, { missing: true });
+    const main = scripted([{ calls: [start(), { id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+      arguments: { name: "researcher", message: "Read the sources." } }] }, { text: "Research could not start." }]);
+    const memory = engineOf({ gates: [], researcher: installed.role });
+    await run(main.adapter, memory).text();
+    expect(resultsOf(main.requests[1], START_RESEARCH_TOOL_NAME).join()).toContain("research_researcher_unavailable");
+    expect(resultsOf(main.requests[1], CALL_SUBAGENT_TOOL_NAME).join()).toContain("research_researcher_unavailable");
+    expect(memory.threads.admitForeground).not.toHaveBeenCalled();
+    expect(child.requests).toHaveLength(0);
+    expect(memory.published()).toBe("Research could not start.");
+  });
+});
+
+it("runs the gap judge on the checks binding with the user's request and its requested tools", async () => {
+  const child = scripted([{ text: "Outcome: done\nNo gaps." }]);
+  const installed = installedResearchRole(child.adapter, { role: "checks" });
+  const judge = gate("gap_check", async (_draft, context) => {
+    const outcome = await context.subagents.run({ brief: "Plan and findings.", instructions: "Check the plan.", model: "verifier", name: "gap-judge", tools: ["web_fetch"] }, context.signal);
+    expect(outcome.kind).toBe("ended");
+    return { kind: "pass" };
+  });
+  const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+  const memory = engineOf({ gates: [judge], verifier: installed.role });
+  const base = prepared();
+  const request = { ...base.providerRequest, fetchUrl: { version: 1 as const, userUrlDigests: [] } };
+  await run(main.adapter, memory, { prepared: { ...base, normalizedRequest: request, providerRequest: request } }).text();
+  const recorded = await vi.mocked(memory.threads.admitForeground).mock.results[0]!.value;
+  expect(recorded).toMatchObject({ turn: { providerModelId: "research-model", reasoningEffort: "high" } });
+  expect(child.requests).toHaveLength(1);
+  expect(JSON.stringify(child.requests[0]!.history)).toContain("Проведи исследование матрасов.");
+  expect(child.requests[0]!.prompt.system).toContain("Be brief.");
+  expect(child.requests[0]!.tools?.map((tool) => tool.name)).toContain("fetch_url");
+  expect(memory.published()).toBe(REPORT);
+});
+
+it("keeps ordinary caller model and effort selection when researchers are unassigned", async () => {
+  const child = scripted([{ text: "Outcome: done\nFindings." }]);
+  const main = scripted([{ calls: [start()] }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+    arguments: { name: "researcher", message: "Read the sources.", model: "personal-model", effort: "low" } }] }, { calls: [submit()] }]);
+  const memory = engineOf({ gates: [], researcher: { frozenChoice: async () => ({ kind: "not_set" }), route: vi.fn() } });
+  const base = prepared();
+  const request = { ...base.providerRequest, subagentModels: { version: 1 as const, models: [{ connectionId: "personal-provider", contextWindow: null,
+    defaultEffort: "high", displayName: "Personal model", imageInput: false, providerFamily: "fake", providerModelId: "personal-model",
+    reasoningEfforts: ["low", "high"], upstreamModelId: "personal-upstream" }] } };
+  const subagentModels: NonNullable<NativeEngineDeps["subagentModels"]> = { route: async () => ({ ok: true, route: { adapter: child.adapter,
+    request: { modelCapabilities: request.modelCapabilities, modelId: "personal-upstream", params: {}, provider: "fake", reasoningEffort: "low" },
+    snapshot: { connectionId: "personal-provider", providerFamily: "fake", providerModelId: "personal-model",
+      model: { adapterKind: "fake", upstreamModelId: "personal-upstream" } } as never, timeoutMs: 120_000 } }) };
+  await run(main.adapter, { ...memory, deps: { ...memory.deps, subagentModels } }, { prepared: { ...base, normalizedRequest: request, providerRequest: request } }).text();
+  const recorded = await vi.mocked(memory.threads.admitForeground).mock.results[0]!.value;
+  expect(recorded).toMatchObject({ turn: { providerModelId: "personal-model", reasoningEffort: "low" } });
+  expect(child.requests).toHaveLength(1);
+  expect(memory.deps.research?.researcher?.route).not.toHaveBeenCalled();
+  expect(memory.published()).toBe(REPORT);
 });

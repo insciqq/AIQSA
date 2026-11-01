@@ -320,7 +320,7 @@ export const gapCheckGate: ResearchGate = {
     if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) return unfinished();
     try {
       const outcome = await context.subagents.run({ brief: judgeBrief(draft, context.plan), instructions: JUDGE_INSTRUCTIONS,
-        model: "main", name: "gap-judge", tools: [] }, context.signal);
+        model: "verifier", name: "gap-judge", tools: [] }, context.signal);
       if (outcome.kind !== "ended" || outcome.result.state !== "done" || outcome.result.outcome !== "done" || outcome.result.reportTruncated) return unfinished();
       const judgment = judgeIssues(outcome.result.report);
       if (judgment === null) return unfinished();

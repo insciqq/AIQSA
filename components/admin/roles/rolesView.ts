@@ -129,8 +129,8 @@ export function generativeRoleItems(
   ];
 }
 
-/** Picker items for the research verifier: any active answer deployment; the server refuses one that cannot call tools. */
-export function researchVerifierItems(catalog: AdminSystemModelPolicyCatalog): AdminRolePickerItem[] {
+/** Picker items for researchers and checks: any active answer deployment; the server refuses one that cannot call tools. */
+export function researchRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminRolePickerItem[] {
   const label = deploymentLabeller(catalog);
   return catalog.verificationCandidates.map((item) => ({ group: "ready", id: item.id, label: label(item) }));
 }

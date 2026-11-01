@@ -1,9 +1,12 @@
 import { modelWithConnectionLabel } from "../../contracts/providerConnectionLabels";
-import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, SUBAGENT_NAME_PATTERN } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, SUBAGENT_NAME_PATTERN } from "../../contracts/subagents";
 import type { SubagentRouteResult } from "../engine/subagents/modelRoutes";
 import type { HostedSubagentRunner } from "../engine/subagents/runner";
 import { prepareRunSubagents, type PrepareRunSubagentsInput, type RunSubagents } from "../engine/subagents/runSubagents";
 import type { SubagentModelEntry } from "../engine/subagents/modelCatalog";
+import type { EngineTool, EngineToolExecution } from "../engine/toolRegistry";
+import type { RunModelConfiguration } from "../runs/runRepositoryContract";
+import { harnessToolError } from "../tools/harnessTool";
 import type { SubagentBinding, SubagentStopReason, SubagentTypeSnapshot } from "../subagents/ports";
 import type { ResearchSubagentOutcome, ResearchSubagentRequest, ResearchVerifierModel } from "./gates";
 import type { FrozenVerifierChoice, ResearchVerifierRole, ResearchVerifierRoute } from "./verifierRole";
@@ -19,6 +22,7 @@ import type { FrozenVerifierChoice, ResearchVerifierRole, ResearchVerifierRoute 
  * the chat's running sub-agents like any other.
  */
 export const RESEARCH_VERIFIER_UNAVAILABLE = "research_verifier_unavailable";
+export const RESEARCH_RESEARCHER_UNAVAILABLE = "research_researcher_unavailable";
 
 const GATE_TYPE_ID = "research-gate";
 
@@ -38,8 +42,7 @@ export function researchTurnName(name: string, attempt: number): string {
 const ROUTING_VARIANT = /:(?:beta|exacto|extended|floor|free|nitro|online|thinking)$/u;
 
 /**
- * One model under its several names: native `gpt-6.1-sol`, OpenRouter's `openai/gpt-6.1-sol` and codex-lb's `codex-lb:gpt-6-1-sol`
- * are the same model, which is no independent check of itself.
+ * One model under provider prefixes and routing aliases is no independent check of itself.
  */
 export function researchModelIdentity(id: string): string {
   return (id.trim().toLowerCase().replace(ROUTING_VARIANT, "").split(/[/:]/u).at(-1) ?? "").replaceAll(".", "-");
@@ -51,6 +54,8 @@ export type ResearchTurnsInput = Readonly<{
   /** The policy as the run froze it when it started. */
   verifierChoice: Promise<FrozenVerifierChoice>;
   verifierRole?: ResearchVerifierRole;
+  researcherChoice: Promise<FrozenVerifierChoice>;
+  researcherRole?: ResearchVerifierRole;
   userMessage: string;
 }>;
 
@@ -58,61 +63,115 @@ export function createResearchTurns(input: ResearchTurnsInput) {
   const base = input.subagentInput;
   const { snapshot, admittedRequest } = base;
   const store = base.engine.subagentThreads;
-  const runners = new Map<"main" | "verifier", Promise<RunSubagents | null>>();
+  const runners = new Map<"main" | "verifier" | "gap_judge" | "researcher", Promise<RunSubagents | null>>();
   let gateCalls = 0;
+  const researcherNames = new Set<string>();
 
   /**
    * One host per kind of turn: the same parts as the run's own sub-agents, without what a gate's turn has no use for. The
    * verifier's is independent whatever model it runs on: none of the chat's or an Assistant's instructions, and none of what
    * the user wrote, which the main agent read too. Link authority stays the answer's (`followupTexts`, the page-reader session).
    */
-  const hosted = (kind: "main" | "verifier", route: ResearchVerifierRoute | null) => {
+  const hosted = (kind: "main" | "verifier" | "gap_judge" | "researcher", route: ResearchVerifierRoute | null) => {
     let runner = runners.get(kind);
     if (!runner) {
       const { backgroundParts: _background, ports, ...parts } = base;
       void _background;
+      // Image viewing needs the role model's own proof, never the chat model's.
+      const { workspaceImageView: _parentView, ...roleRequest } = admittedRequest;
+      void _parentView;
       const entry: SubagentModelEntry | null = route ? { connectionId: route.route.snapshot.connectionId,
         ...(route.connectionName ? { connectionName: route.connectionName } : {}), contextWindow: route.route.request.modelCapabilities.contextWindow ?? null,
-        defaultEffort: null, displayName: route.displayName, imageInput: false, providerFamily: route.route.snapshot.providerFamily,
-        providerModelId: route.route.snapshot.providerModelId, reasoningEfforts: [], upstreamModelId: route.route.snapshot.model.upstreamModelId } : null;
+        defaultEffort: route.route.request.reasoningEffort, displayName: route.displayName, imageInput: false, providerFamily: route.route.snapshot.providerFamily,
+        providerModelId: route.route.snapshot.providerModelId, reasoningEfforts: route.route.request.reasoningEffort ? [route.route.request.reasoningEffort] : [],
+        upstreamModelId: route.route.snapshot.model.upstreamModelId } : null;
       const independent = kind === "verifier";
+      const researcher = kind === "researcher";
+      const types = ports?.types;
+      // The installation role owns model and effort, including when a custom type or an earlier turn chose its own.
+      const researcherStore = researcher && store ? { ...store, admitForeground: async (scope: Parameters<typeof store.admitForeground>[0]) => {
+        const admitted = await store.admitForeground(scope);
+        if (admitted.kind === "admitted") researcherNames.add(scope.name);
+        return admitted;
+      }, find: async (scope: Parameters<typeof store.find>[0]) => {
+        const found = await store.find(scope);
+        return found ? { ...found, latest: found.latest ? { ...found.latest, modelSource: "parent" as const, effortSource: "parent" as const } : null } : null;
+      } } : store;
       runner = prepareRunSubagents({ ...parts,
-        admittedRequest: { ...admittedRequest, subagentModels: { models: entry ? [entry] : [], version: 1 },
+        ...(route ? { adapter: route.route.adapter, answerTimeoutMs: route.route.timeoutMs,
+          modelConfiguration: route.route.snapshot.model as RunModelConfiguration, snapshot: route.route.snapshot } : {}),
+        admittedRequest: { ...route ? roleRequest : admittedRequest, subagentModels: { models: entry ? [entry] : [], version: 1 },
+          ...(route ? route.route.request : {}),
           ...independent ? { prompt: { ...admittedRequest.prompt.baseline ? { baseline: admittedRequest.prompt.baseline } : {}, developer: null, system: null } } : {} },
         ...independent ? { userFollowups: async () => [] } : {},
         backgroundAllowed: false,
-        engine: { ...base.engine, subagentModels: { route: async (): Promise<SubagentRouteResult> => route ? { ok: true, route: route.route }
+        engine: { ...base.engine, ...(researcherStore ? { subagentThreads: researcherStore } : {}),
+          subagentModels: { route: async (): Promise<SubagentRouteResult> => route ? { ok: true, route: route.route }
           : { code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false } } },
-        ...(ports?.browserIdentity ? { ports: { browserIdentity: ports.browserIdentity } } : {}),
-        runContextItems: [],
+        ...(researcher ? { ports: { ...ports, ...(types ? { types: { ...types, resolve: async (scope: Parameters<typeof types.resolve>[0]) => {
+          const resolved = await types.resolve(scope);
+          return resolved.kind === "found" ? { ...resolved, type: { ...resolved.type, providerModelId: null, reasoningEffort: null } } : resolved;
+        } } } : {}) } } : ports?.browserIdentity ? { ports: { browserIdentity: ports.browserIdentity } } : {}),
+        runContextItems: researcher ? base.runContextItems : [],
         // A gate is the server's check and its calls are not the model's budget to spend.
-        toolState: { calls: 0 } });
+        toolState: researcher ? base.toolState : { calls: 0 } });
       runners.set(kind, runner);
     }
     return runner;
   };
 
   /** A route or a refusal holds for the run; a failure to resolve one holds for no one, so the next attempt asks again. */
-  let resolved: Promise<ResearchVerifierRoute | "main" | null> | null = null;
-  const verifierRoute = async () => {
-    resolved ??= (async () => {
-      const choice = await input.verifierChoice;
-      if (choice.kind === "not_set") return "main" as const;
-      if (choice.kind !== "set" || !input.verifierRole) return null;
-      return input.verifierRole.route({ effort: choice.effort, providerModelId: choice.providerModelId, runId: base.runId, userId: base.scope.userId });
-    })();
-    try {
-      return await resolved;
-    } catch (error) {
-      resolved = null;
-      throw error;
-    }
+  const frozenRoute = (frozen: Promise<FrozenVerifierChoice>, role: ResearchVerifierRole | undefined) => {
+    let resolved: Promise<ResearchVerifierRoute | "main" | null> | null = null;
+    return async () => {
+      resolved ??= (async () => {
+        const choice = await frozen;
+        if (choice.kind === "not_set") return "main" as const;
+        if (choice.kind !== "set" || !role) return null;
+        return role.route({ effort: choice.effort, providerModelId: choice.providerModelId, runId: base.runId, userId: base.scope.userId });
+      })();
+      try {
+        return await resolved;
+      } catch (error) {
+        resolved = null;
+        throw error;
+      }
+    };
   };
+  const verifierRoute = frozenRoute(input.verifierChoice, input.verifierRole);
+  const researcherRoute = frozenRoute(input.researcherChoice, input.researcherRole);
 
   const mainBinding = (): SubagentBinding => ({ effortSource: "parent", modelId: snapshot.model.upstreamModelId, modelSource: "parent",
     provider: snapshot.connectionId, providerModelId: snapshot.providerModelId, reasoningEffort: admittedRequest.reasoningEffort ?? null });
 
+  const startRefusal = async (): Promise<Readonly<{ code: string; message: string }> | null> => {
+    for (const [route, code, label] of [[researcherRoute, RESEARCH_RESEARCHER_UNAVAILABLE, "researchers"],
+      [verifierRoute, RESEARCH_VERIFIER_UNAVAILABLE, "research checks"]] as const) {
+      if (await route().catch(() => null) === null) return { code, message: `Research could not start: the model assigned to ${label} is unavailable. ` +
+        "Tell the user. An administrator must check its model, connection, default key and reasoning effort in Defaults & roles." };
+    }
+    return null;
+  };
+
   return {
+    startRefusal,
+    async researcherCall(tool: EngineTool, execution: EngineToolExecution) {
+      if (execution.call.name !== CALL_SUBAGENT_TOOL_NAME && !researcherNames.has(normalizeSubagentName(execution.call.arguments.name) ?? "")) return tool.execute(execution);
+      const refused = await startRefusal();
+      if (refused) return harnessToolError(execution.call, refused.code, refused.message);
+      const route = await researcherRoute();
+      if (route === "main") return tool.execute(execution);
+      if (!route) return harnessToolError(execution.call, RESEARCH_RESEARCHER_UNAVAILABLE, "The assigned researcher model is unavailable; nothing started. Tell the user.");
+      const prepared = await hosted("researcher", route);
+      const call = prepared?.tools.find((entry) => entry.definition.name === execution.call.name);
+      if (!call) return harnessToolError(execution.call, "subagent_unavailable", "Research sub-agents are unavailable; nothing started.");
+      if (execution.call.name !== CALL_SUBAGENT_TOOL_NAME) return call.execute(execution);
+      const { model: _model, effort: _effort, ...args } = execution.call.arguments;
+      void _model;
+      void _effort;
+      return call.execute({ ...execution, call: { ...execution.call, arguments: { ...args,
+        model: route.route.snapshot.providerModelId, ...(route.route.request.reasoningEffort ? { effort: route.route.request.reasoningEffort } : {}) } } });
+    },
     async verifierModel(): Promise<ResearchVerifierModel> {
       const route = await verifierRoute();
       if (route === null) return { kind: "unavailable" };
@@ -130,7 +189,9 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const onRole = route !== "main";
       const binding: SubagentBinding = onRole ? { effortSource: "call", modelId: route.route.snapshot.model.upstreamModelId, modelSource: "call",
         provider: route.route.snapshot.connectionId, providerModelId: route.route.snapshot.providerModelId, reasoningEffort: route.route.request.reasoningEffort } : mainBinding();
-      const prepared = await hosted(request.model, onRole ? route : null);
+      // The gap judge needs the user's constraints and follow-ups; choosing the checks model does not make it a blind verifier.
+      const kind = request.name === "gap-judge" ? "gap_judge" : request.model;
+      const prepared = await hosted(kind, onRole ? route : null);
       if (!prepared) return { code: "subagent_unavailable", kind: "refused" };
       const name = researchTurnName(request.name, turn.attempt);
       // A call has one turn (`SubagentTurn`'s unique parent call), and one draft may go through several gates' turns, so each
@@ -157,7 +218,7 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const runner: HostedSubagentRunner = prepared.runner;
       const started = { binding, brief: request.brief, chatId: base.chatId, deadlineAt: new Date(base.deadlineAt), hostRunId: base.runId, mode: "foreground" as const,
         name, parentRunId: base.runId, parentToolCallId, signal: turn.signal, threadId: admitted.thread.id, turnId: admitted.turn.id,
-        type, userId: base.scope.userId, userMessage: request.model === "verifier" ? "" : input.userMessage };
+        type, userId: base.scope.userId, userMessage: kind === "verifier" ? "" : input.userMessage };
       try {
         const handle = admitted.continued ? await runner.continue(started) : await runner.start(started);
         const result = await runner.wait(handle, turn.signal);
