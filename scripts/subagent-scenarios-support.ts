@@ -15,6 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import { RESEARCH_SOURCE_CLASSES } from "../lib/contracts/research";
+import { isFetchUrlActivityOutcome, isFetchUrlProxyCode } from "../lib/contracts/fetchUrlActivity";
 import { utils, write } from "xlsx";
 import { writeZip } from "../lib/server/artifacts/zip";
 import type { researchPlanWindow } from "./research-eval-support";
@@ -1623,6 +1624,44 @@ export function researchMetrics(input: Readonly<{ drafts: readonly (readonly TDr
   return { addedByLaterRounds: last.filter((finding) => !first.has(key(finding))).length, attempts: input.drafts.length, findings: last.length,
     independentOpened: (openedByClass.independent_tests ?? 0) + (openedByClass.owner_reviews ?? 0), openedByClass, researcherTurns: input.researcherTurns,
     sentBack: input.sentBack, started: input.started, ...(input.planWindow ? { planWindow: input.planWindow } : {}) };
+}
+
+export type TGateRow = Readonly<{ name: string; reasonCode: string | null; report: string | null; state: string }>;
+
+/** Draft decisions and fetch outcomes stay as labels and counts; gate reports remain private. */
+export function researchProcessFacts(input: Readonly<{ drafts: readonly (readonly TDraftFinding[])[];
+  calls: readonly Readonly<{ toolName: string; result: unknown }>[]; gates: readonly TGateRow[] }>) {
+  const timeline = input.calls.filter((call) => call.toolName === "submit_research_draft").map((call, index) => {
+    const findings = input.drafts[index] ?? [];
+    const byClass: Record<string, number> = {};
+    for (const finding of findings) {
+      const sourceClass = (RESEARCH_SOURCE_CLASSES as readonly string[]).includes(finding.sourceClass) ? finding.sourceClass : "other";
+      byClass[sourceClass] = (byClass[sourceClass] ?? 0) + 1;
+    }
+    const result = JSON.stringify(call.result ?? "");
+    return { accepted: result.includes("accepted"), byClass, findings: findings.length,
+      sentBackBy: !result.includes("sent_back") ? null : result.includes("[Skeptic]") ? "skeptic" : result.includes("[Independent check]") ? "verifier"
+        : /Research questions still open|Открытые вопросы исследования/u.test(result) ? "gap_judge" : "gap_mechanical" };
+  });
+  const gateTurnFacts = input.gates.map((row) => ({ name: /^(?:gap-judge|verifier|skeptic)-[0-9]+$/u.test(row.name) ? row.name : "other",
+    reason: row.reasonCode !== null && CODE_PATTERN.test(row.reasonCode) ? row.reasonCode : null,
+    reportChars: row.report?.length ?? 0, state: stableCode(row.state) }));
+  const fetchOutcomes: Record<string, number> = {};
+  let fetchProxyReads = 0;
+  for (const call of input.calls.filter((entry) => entry.toolName === "fetch_url")) {
+    const preview = record(call.result) && record(call.result.rawPreview) ? call.result.rawPreview : null;
+    const facts = preview && record(preview.fetchUrl) ? preview.fetchUrl : null;
+    const proxyCode = facts?.proxyCode, outcome = facts?.outcome;
+    const code = isFetchUrlProxyCode(proxyCode) ? proxyCode : isFetchUrlActivityOutcome(outcome) ? outcome : "unknown";
+    fetchOutcomes[code] = (fetchOutcomes[code] ?? 0) + 1;
+    if (facts?.outcome === "read" && record(facts.proxy)) fetchProxyReads += 1;
+  }
+  return { timeline, gateTurnFacts, gateTurns: input.gates.length, fetchOutcomes, fetchProxyReads };
+}
+
+/** The existing server check-note pattern is the deliberate text exception in T's summary. */
+export function researchServerNotes(answer: string): string[] {
+  return [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт пришёл|This report came|Research ended|Исследование завершилось)[^*]{0,400})\*/gu)].map((match) => match[1]);
 }
 
 /** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
