@@ -598,8 +598,6 @@ async function publishProviderSearchRoute(
         draft = {
           ...draft,
           maxOutputTokens: current.maxOutputTokens,
-          maxResults: current.maxResults,
-          maxSearchCallsPerAnswer: current.maxSearchCallsPerAnswer,
           queryMaxCharacters: current.queryMaxCharacters,
           timeoutMs: current.timeoutMs,
           ...(draft.adapterKind === "provider_model_client"
@@ -737,8 +735,6 @@ async function synchronizeProviderSearch(
 
   const baseDraft = {
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: adminSearchExecutionDefaults.maxResults,
-    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: policy.protocol,
     queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,
     timeoutMs: adminSearchExecutionDefaults.timeoutMs

@@ -78,7 +78,6 @@ export function adminSearchProviderPolicy(input: Readonly<{
     // One search call; the model only resolved the connection key.
     if (input.provider !== "deepseek") throw new Error("search_protocol_not_supported");
     return {
-      maxResults: input.draft.maxResults,
       modelId: DEEPSEEK_SEARCH_API_MODEL_ID,
       provider: "deepseek",
       strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID
@@ -229,7 +228,7 @@ export function createAdminSearchTester(prisma: PrismaClient, options: Readonly<
           timeoutMs
         });
         deadline.signal.throwIfAborted();
-        const normalizedSourceCount = Math.min(result.sources.length, draft.maxResults);
+        const normalizedSourceCount = result.sources.length;
         const providerSourcesUnavailable = draft.protocol === "deepseek_responses_web_search" &&
           result.sourceAttribution === "provider_unavailable";
 

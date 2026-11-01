@@ -46,6 +46,8 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 
 ## Search
 
+Search has no application limit on calls per answer or results per engine (operator decision 2026-11-01). The repeat guard and turn deadline still bound a run. Retired limits in stored settings and accepted snapshots are ignored without an operator action; provider-required result counts request the provider’s maximum.
+
 - A Search engine receives only a bounded generated query and server-owned controls, never the conversation, prompts, attachment identity, file names or extracted text. Raw result bodies and recursively discovered URLs are not kept, and no unselected engine runs as a fallback.
 - Search is on for everyone (operator decision 2026-10-24). An organization default without a source resolves to the first usable source in the priority of `automaticSearchOptionId` (`lib/domain/search.ts`); there is no organization Off, and a chosen source that becomes unusable is never replaced. Every search goes to all selected sources.
 - Every chat model calls tools, and only OpenAI hosted Search runs inside such an answer; every other source searches through its client route, a separate request to the source's technical model. Catalog, admission and administrator readiness share this rule (`hostedSearchProtocolUsable`).

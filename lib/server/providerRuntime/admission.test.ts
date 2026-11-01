@@ -157,8 +157,6 @@ function physicalRoute(spec: RouteSpec) {
     adapterKind: spec.adapterKind,
     credentialMode,
     maxOutputTokens: 4_096,
-    maxResults: 8,
-    maxSearchCallsPerAnswer: 2,
     protocol: spec.protocol,
     providerModelId,
     // The DeepSeek Search API takes at most 128 query characters.
@@ -964,7 +962,6 @@ describe("provider admission", () => {
       adapterKind: "provider_model_client",
       config: {
         maxOutputTokens: 4_096,
-        maxSearchCallsPerAnswer: 2,
         reasoningPolicy: "lowest_supported"
       },
       modelId: "gpt-5.6-search",

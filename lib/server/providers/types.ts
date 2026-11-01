@@ -351,8 +351,6 @@ export type ProviderSearchPolicy =
   | Readonly<{
       /** The raw results API generates no model output. */
       maxOutputTokens?: never;
-      /** Results requested (`count`); the per-request price ignores it. */
-      maxResults: number;
       /** The API's usage label, never the model that carries the key. */
       modelId: string;
       provider: "deepseek";

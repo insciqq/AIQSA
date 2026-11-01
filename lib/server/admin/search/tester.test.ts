@@ -28,8 +28,6 @@ function draft(protocol: AdminSearchDraft["protocol"]): AdminSearchDraft {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
     maxOutputTokens: 4_096,
-    maxResults: 8,
-    maxSearchCallsPerAnswer: 2,
     protocol,
     providerModelId: "technical-model",
     queryMaxCharacters: 500,
@@ -109,7 +107,7 @@ describe("admin Search diagnostic policies", () => {
     const input = { capabilities, defaultParams: {}, draft: { ...draft("deepseek_search_api"), queryMaxCharacters: 128 },
       modelId: "deepseek-flash", provider: "deepseek" };
     expect(adminSearchProviderPolicy(input)).toEqual({
-      maxResults: 8, modelId: "deepseek-search-api", provider: "deepseek", strategyId: "deepseek-search-api"
+      modelId: "deepseek-search-api", provider: "deepseek", strategyId: "deepseek-search-api"
     });
     expect(() => adminSearchProviderPolicy({ ...input, provider: "openrouter" })).toThrow("search_protocol_not_supported");
   });
@@ -182,6 +180,14 @@ describe("admin Search diagnostic execution", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("reports every returned source without a configured result count", async () => {
+    search.mockResolvedValueOnce({ ...sourceResult(), sources: Array.from({ length: 50 }, (_, index) => ({
+      rank: index + 1, title: `Source ${index}`, url: `https://example.test/source/${index}`
+    })) });
+    await expect(tester().test({ draft: draft("openai_responses_web_search"), userId: "admin" }))
+      .resolves.toMatchObject({ normalizedSourceCount: 50, status: "available" });
   });
 
   it("checks the smallest admitted query limit and clears the settled deadline", async () => {

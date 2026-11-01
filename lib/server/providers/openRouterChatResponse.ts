@@ -99,7 +99,7 @@ function citationFromValue(
     }
   }
   if (!candidate) return null;
-  const source = normalizeSearchSources([candidate], 1)[0];
+  const source = normalizeSearchSources([candidate])[0];
   return source
     ? {
         index: index + 1,

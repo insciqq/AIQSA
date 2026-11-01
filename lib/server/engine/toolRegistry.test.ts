@@ -245,7 +245,7 @@ describe("native tool registry", () => {
     expect(Buffer.byteLength(findings)).toBeGreaterThan(300_000);
     const searchOption = {
       adapterKind: "provider_model_client" as const,
-      config: { maxResults: 8, queryMaxCharacters: 100, timeoutMs: 5_000 },
+      config: { queryMaxCharacters: 100, timeoutMs: 5_000 },
       credentialMode: "provider_model" as const, displayName: "Engine", executionModes: ["all_selected" as const],
       modelId: "engine-model", optionId: "engine", protocol: "openai_responses_web_search" as const, provider: "openai",
       providerModelId: "provider-model", revisionId: "revision", searchStrategyRowId: "integration"
