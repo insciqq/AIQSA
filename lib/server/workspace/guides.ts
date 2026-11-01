@@ -1,3 +1,4 @@
+import { RESEARCH_REVIEWS_GUIDANCE } from "../research/dataCollection";
 import { workspaceBrowserGuidance, WORKSPACE_BROWSER_GUIDANCE } from "./browserGuidance";
 import { WORKSPACE_OFFICE_GUIDANCE } from "./officeGuidance";
 import { WORKSPACE_PSD_GUIDANCE } from "./psdGuidance";
@@ -33,7 +34,7 @@ export const WORKSPACE_PROXY_GUIDANCE = [
   "If `aiqsa-browser proxies` is refused as an invalid choice, this chat's Workspace still runs an older image, which it keeps until the Workspace is recreated: sites open without a proxy here, whatever the hints say, and a new chat starts on the current image. Say so in your answer when the address a site sees matters."
 ].join("\n");
 
-const browserGuide = (guide: string) => `${guide}\n${WORKSPACE_PROXY_GUIDANCE}`;
+const browserGuide = (guide: string) => `${guide}\n${WORKSPACE_PROXY_GUIDANCE}\n${RESEARCH_REVIEWS_GUIDANCE}`;
 
 /** Release-owned files outside user projects and automatic export roots. */
 export const WORKSPACE_GUIDE_FILES = [
