@@ -50,6 +50,8 @@ export function deploymentLabeller(
         ...(catalog.policy.systemModel ? [catalog.policy.systemModel] : []),
         ...(catalog.memoryPolicy.model ? [catalog.memoryPolicy.model] : []),
         ...(catalog.policy.chatTitleModel ? [catalog.policy.chatTitleModel] : []),
+        ...(catalog.policy.researchResearcherModel ? [catalog.policy.researchResearcherModel] : []),
+        ...(catalog.policy.researchVerifierModel ? [catalog.policy.researchVerifierModel] : []),
         ...(catalog.policy.chatPdfNativeModel ? [catalog.policy.chatPdfNativeModel] : []),
         ...(catalog.policy.visionModel ? [catalog.policy.visionModel] : []),
         ...(catalog.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),

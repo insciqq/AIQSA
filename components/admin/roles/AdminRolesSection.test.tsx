@@ -358,7 +358,8 @@ describe("AdminRolesSection", () => {
       expectedMemoryVersion: 8, memoryProviderModelId: "luna", memoryReasoningEffort: null
     });
   });
-  it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"], ["system", "system"], ["memory", "memory"], ["decisions", "decisions"]])("focuses the %s system role from an Overview target", async (resource, row) => {
+  it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"], ["system", "system"], ["memory", "memory"], ["decisions", "decisions"],
+    ["research_researcher", "research-researcher"], ["research_verifier", "research-verifier"]])("focuses the %s system role from an Overview target", async (resource, row) => {
     server();
     renderSection(groups, resource);
     await waitFor(() => expect(screen.getByTestId(`admin-role-${row}`)).toHaveFocus());
