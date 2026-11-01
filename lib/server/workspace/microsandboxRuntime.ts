@@ -57,7 +57,8 @@ import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
-import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
+import { parseAcceptedWorkspaceSecrets, parseWorkspaceRunProxies, workspaceProxyPlanEntry, workspaceSecretEnvironment, workspaceSecretsGuide,
+  WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES, type WorkspaceRunProxy } from "./secrets/manifest";
 import { workspaceAgentEnvironment, workspaceAgentId } from "../subagents/guestProtocol";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
@@ -1193,7 +1194,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     }
   }
 
-  async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0]): Promise<void> {
+  async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0] & Readonly<{ proxies?: readonly WorkspaceRunProxy[] }>): Promise<void> {
     const session = await this.runningSession(input);
     session.secretEnvironments?.delete(input.modelRunId);
     try {
@@ -1201,7 +1202,11 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       // Server-owned run values win over a saved variable of the same name.
       const environment = { ...workspaceSecretEnvironment(secrets),
         ...parseWorkspaceRunEnvironment(input.runEnvironment, RUNNER_GATEWAY_ORIGIN) };
-      const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
+      // The newest install's proxies are the VM's, as its SSH identities and files are: the install replaces that directory,
+      // the forwarder rereads the file, and a run without proxies leaves none behind.
+      const proxies = parseWorkspaceRunProxies(input.proxies);
+      const bundle = Buffer.from(JSON.stringify({ secrets: proxies.length > 0 ? [...secrets, workspaceProxyPlanEntry(proxies)] : secrets,
+        environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
       const deadline = AbortSignal.timeout(90_000);
       const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
