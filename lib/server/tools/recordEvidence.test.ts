@@ -149,7 +149,7 @@ describe("a record_evidence call", () => {
     const result = await recordEvidenceEngineTool(refused.target, { kind: "main" }).execute(call(FINDING));
     expect(result.status).toBe("error");
     expect(value(result)).toEqual({ code: "research_records_full", message: "Nothing was recorded." });
-    const failing = { evidence: { record: vi.fn(async () => { throw new Error("down"); }) }, researching: () => true };
+    const failing = { coverage: { frame: async () => null }, evidence: { record: vi.fn(async () => { throw new Error("down"); }) }, researching: () => true };
     await expect(recordEvidenceEngineTool(failing, { kind: "main" }).execute(call(FINDING))).rejects.toThrow("down");
   });
 
