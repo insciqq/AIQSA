@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { FETCH_URL_PROXY_FAILURE_CODES } from "../../contracts/fetchUrlActivity";
 import { PROXY_BLOCKED_HTTP_STATUSES, toProxyRunPlan } from "../../contracts/proxies";
 import { runProxiesFromRows } from "../proxies/runProxies";
 import { proxyConnection } from "../webFetch/proxy.testFixtures";
@@ -114,6 +115,22 @@ describe("fetch_url proxy selection in one answer", () => {
     expect(json(result).error).toBe("proxy_all_failed");
     expect(JSON.stringify(result)).not.toContain("synthetic-password");
     expect(reader.fetchPage).not.toHaveBeenCalled();
+  });
+
+  it.each(FETCH_URL_PROXY_FAILURE_CODES)("keeps address and login out of failure text for %s", async (code) => {
+    const reader = session(code === "proxy_inactive" ? { proxyPlan: toProxyRunPlan([{ ...one, active: false }])! }
+      : code === "proxy_unavailable" ? { runProxies: runProxiesFromRows([]) } : {});
+    if (code === "proxy_all_failed") reader.fetchProxyPage.mockRejectedValue(new WebFetchError("proxy_connect_failed", { dispatched: true }));
+    else if (code !== "proxy_inactive" && code !== "proxy_unavailable" && code !== "proxy_not_found") {
+      reader.fetchProxyPage.mockRejectedValue(new WebFetchError(code, { dispatched: true }));
+    }
+    const result = json(await reader.execute(call(url, code === "proxy_all_failed" ? undefined : code === "proxy_not_found" ? "missing" : one.name), { signal }));
+    expect(result.error).toBe(code);
+    expect(String(result.message)).toContain(code);
+    for (const secret of [one.host, one.login!, one.password!, `${one.login}:${one.password}@${one.host}`]) {
+      expect(String(result.message)).not.toContain(secret);
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
   });
 
   it("never widens link authority and validates explicit choices before credentials load", async () => {

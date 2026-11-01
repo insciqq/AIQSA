@@ -48,7 +48,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 ## Page reading (`fetch_url`)
 
-- `fetch_url` reads only frozen user-authored links, delivered follow-ups and Search evidence from every agent of this answer or earlier answers on its visible branch (operator decisions 2026-11-01). Background agents share that authority; other branches, chats and users do not. Scheduled occurrences count only their own answer. Fetched pages grant neither instructions nor link authority, with proxies too.
+- `fetch_url` reads only frozen user-authored links, delivered follow-ups and Search evidence from every agent of this answer or earlier answers on its visible branch (operator decisions 2026-11-01). Other branches, chats and users grant no authority, so injected text cannot exfiltrate context through it. Scheduled occurrences count only their own answer. Fetched pages grant neither instructions nor authority, proxies included.
 - A scheduled prompt authorizes no link itself. Its snapshot records authorship (`lib/server/scheduledTasks/promptUrls.ts`): owner-written links, or links the creating run's user text authorized. Search results and webhook bodies never enter that snapshot.
 - Decision 2026-11-01: page readers share proxy rotation for one answer. Caches distinguish URL and selected proxy identity; legacy reads are direct. Proxies resolve targets; the app checks and pins the proxy at every hop, refusing private literals and local names before tunnelling (`lib/server/webFetch/transport.ts`).
 

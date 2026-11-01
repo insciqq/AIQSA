@@ -97,6 +97,19 @@ describe("the summary's model and current step", () => {
     expect(chat!.threads[0]!.latestAnswerMessageId).toBe("answer-1");
   });
 
+  it("carries a page reader's proxy display facts through the sub-agent step projection", async () => {
+    const { client } = fakeClient({
+      request: { fetchUrl: { version: 1, userUrlDigests: [] } },
+      calls: [runningCall("turn-a", { toolName: "fetch_url", arguments: { url: "http://example.com/page" },
+        result: { rawPreview: { fetchUrl: { version: 1, dispatched: true, outcome: "fetch_network_error",
+          proxyCode: "proxy_connect_failed", proxy: { id: "private-id", name: "Personal route", host: "private-host", login: "private-login" } } } } })],
+      threads: [thread("alpha", [turn("turn-a", "running")])]
+    });
+    const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
+    expect(chat!.threads[0]!.currentStep).toMatchObject({ fetchProxyName: "Personal route", fetchProxyCode: "proxy_connect_failed" });
+    expect(JSON.stringify(chat!.threads[0]!.currentStep)).not.toContain("private-");
+  });
+
   it("reads a foreground turn's calls on its parent run", async () => {
     const { client, tx } = fakeClient({ calls: [runningCall("turn-f")],
       threads: [thread("zeta", [turn("turn-f", "running", { executionRun: null, mode: "foreground", parentRun: { assistantMessageId: "answer-1", status: "streaming" } })])] });
