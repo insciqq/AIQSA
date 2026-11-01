@@ -62,7 +62,7 @@ export async function readGuardAuthority(db: PrismaClient, input: Readonly<{
   if (!scope) return { ok: false, code: "unavailable" };
   // The user's own live corrections only: a sub-agent's callback or the main agent's message to a sub-agent is the
   // server's, neither authority nor a reason to doubt it. A user row without its author still makes it unavailable.
-  const live = await db.runFollowup.findMany({ where: { modelRunId: input.runId, deliveredAt: { not: null }, origin: "user" },
+  const live = await db.runFollowup.findMany({ where: { modelRunId: input.runId, deliveredAt: { not: null }, origin: "user", subagentTurnId: null },
     orderBy: { ordinal: "desc" }, take: MCP_GUARD_LIMITS.messages, select: { text: true, authorUserId: true } });
   const newest = live.map(row => row.authorUserId === input.userId ? row.text : null);
   const admission = input.admission;

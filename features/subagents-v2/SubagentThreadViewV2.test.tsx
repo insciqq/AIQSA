@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 describe("sub-agent thread view", () => {
-  it("shows the briefs, messages, steps and reply read-only, with Stop while it runs", async () => {
+  it("shows the briefs, messages, steps and reply with a composer and Stop while it runs", async () => {
     const running = subagentThread("thread-researcher");
     const stopped = subagentThread("thread-researcher", "stopped", { updatedAt: "2026-10-30T09:06:00.000Z" });
     const first = subagentTurn("turn-1", "done", { mode: "foreground", report: "First **report**." });
@@ -54,12 +54,13 @@ describe("sub-agent thread view", () => {
     expect(screen.getByText("Skip refurbished ones.")).toBeInTheDocument();
     expect(screen.getByText(/Message from the main agent · Read by the sub-agent/u)).toBeInTheDocument();
     expect(screen.getByText("report")).toBeInTheDocument();
-    // No composer: writing to a sub-agent comes later.
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
     expect(calls.some((call) => call.method === "POST" && call.url.pathname === `${threadPath}/stop`)).toBe(true);
     expect(screen.getAllByText("Stopped").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByText(/This sub-agent has finished/u)).toBeInTheDocument();
   });
 
   it("shows what agents wrote as rows of the thread, and a wait for the main agent in plain words that ask nothing of the user", async () => {
@@ -77,6 +78,7 @@ describe("sub-agent thread view", () => {
     expect(screen.getByText("Question to the main agent")).toBeInTheDocument();
     expect(screen.getAllByText("Waiting for the main agent").length).toBeGreaterThan(0);
     expect(screen.queryByText("Waiting for you")).toBeNull();
+    expect(screen.getByText(/Your message will be read at the next step; it does not end this wait/u)).toBeInTheDocument();
     // Stop reaches it while it waits.
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
@@ -154,4 +156,58 @@ describe("sub-agent thread view", () => {
     renderView();
     expect(await screen.findByText("Worked in Workspace for 3m 20s")).toBeInTheDocument();
   });
+});
+
+for (const sendWithEnter of [true, false]) {
+  it(`sends user speech with the product keyboard preference (${sendWithEnter}), preserving IME and newline input`, async () => {
+    let sent = false;
+    const received: Array<{ nonce: string; text: string; turnId: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        received.push(JSON.parse(String(init.body)) as { nonce: string; text: string; turnId: string });
+        sent = true;
+        return jsonResponse({ accepted: true }, 202);
+      }
+      return jsonResponse(subagentView("chat-a", subagentThread(target.threadId), [subagentTurn("turn-1", "running", {
+        messages: sent ? [{ createdAt: "2026-10-30T09:04:00.000Z", delivery: "accepted", text: "Please place the order.", user: true }] : []
+      })]));
+    }));
+    act(() => setOpenSubagentThread(target));
+    render(<SubagentThreadViewV2 target={target} onBack={vi.fn()} sendWithEnter={sendWithEnter} />);
+    const field = await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "Please place the order." } });
+    fireEvent.keyDown(field, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(field, { key: "Enter", shiftKey: true });
+    expect(received).toHaveLength(0);
+    fireEvent.keyDown(field, { key: "Enter", ctrlKey: !sendWithEnter });
+    expect(await screen.findByRole("article", { name: "Your message" })).toHaveTextContent("Please place the order.");
+    expect(received).toEqual([{ nonce: expect.any(String), text: "Please place the order.", turnId: "turn-1" }]);
+    expect(field).toHaveValue("");
+    expect(screen.getByText("Queued for the sub-agent’s next step")).toBeInTheDocument();
+  });
+}
+
+it("keeps the draft on a visible mailbox refusal and prevents duplicate submissions", async () => {
+  let finish!: (response: Response) => void;
+  const posted: Array<{ nonce: string }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      posted.push(JSON.parse(String(init.body)) as { nonce: string });
+      return new Promise<Response>((resolve) => { finish = resolve; });
+    }
+    return jsonResponse(subagentView("chat-a", subagentThread(target.threadId)));
+  }));
+  renderView();
+  const field = await screen.findByRole("textbox", { name: "Message" });
+  fireEvent.change(field, { target: { value: "Keep this draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  fireEvent.keyDown(field, { key: "Enter" });
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  expect(posted).toHaveLength(1);
+  await act(async () => finish(jsonResponse({ error: "subagent_message_limit_reached" }, 409)));
+  expect(screen.getByRole("alert")).toHaveTextContent("mailbox is full");
+  expect(field).toHaveValue("Keep this draft");
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect(posted[1]!.nonce).toBe(posted[0]!.nonce);
+  await act(async () => finish(jsonResponse({ accepted: true }, 202)));
 });

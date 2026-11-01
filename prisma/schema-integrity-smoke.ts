@@ -977,8 +977,8 @@ async function assertSubagentRelations(): Promise<void> {
     } });
   });
 
-  // Only what agents send names a turn: the user's own follow-ups never do.
-  await expectDatabaseRejection("user follow-up naming a turn", "RunFollowup_subagent_turn_check", async (tx) => {
+  // A user message naming a turn belongs above the run's revision, in that turn's mailbox.
+  await expectDatabaseRejection("user mailbox row inside the run revision", "RunFollowup_subagent_turn_check", async (tx) => {
     const fixture = await createSubagentFixture(tx);
     await tx.runFollowup.create({ data: {
       authorName: "Owner", chatId: fixture.chat.id, modelRunId: fixture.run.id, nonce: randomUUID(), ordinal: 1,
