@@ -4,7 +4,8 @@ import {
   SUBAGENT_ERROR_CODES,
   isActiveSubagentState,
   subagentCallbackNonce,
-  type EndedSubagentCallResult
+  type EndedSubagentCallResult,
+  type SubagentErrorCode
 } from "../../../contracts/subagents";
 import { randomUUID } from "node:crypto";
 import { decideUsageAdmission } from "../../../domain/usageLimits";
@@ -207,10 +208,12 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   }
 
   /**
-   * The execution of a turn about to be admitted, registered before its
-   * admission is visible, so a Stop that finds the admitted turn finds its
-   * execution too: it marks it stopped and waits for `done`, and the launch
-   * then settles it as stopped without ever running it.
+   * The execution of a turn about to be admitted, registered before anything of
+   * its start can wait, so a Stop or a parent's end that comes while it reads the
+   * usage limits or commits its admission finds it: it marks it stopped and waits
+   * for `done`, and the turn is refused, or settled as stopped, without ever
+   * running. A child also follows its parent's own cancellation (`signal`) from
+   * here on, which a parent's end cannot miss however its calls were cut.
    */
   function pendingExecution(input: SubagentBackgroundStartInput, ids: Readonly<{ runId: string; turnId: string }>) {
     const lease = registry.register(ids.runId);
@@ -220,7 +223,10 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       parentThreadId: input.parentAgent?.threadId ?? null, retired: false, runId: ids.runId,
       scope: { chatId: input.chatId, userId: input.userId }, stopReason: null, threadId: input.threadId, turnId: ids.turnId };
     executions.set(ids.turnId, execution);
+    const parentStopped = () => void stopLocal(ids.turnId, SUBAGENT_END_REASONS.parentStopped);
+    input.signal?.addEventListener("abort", parentStopped, { once: true });
     return { abandon() {
+      input.signal?.removeEventListener("abort", parentStopped);
       lease?.release();
       if (executions.get(ids.turnId) === execution) executions.delete(ids.turnId);
       execution.finish();
@@ -441,14 +447,18 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
 
     async start(input: SubagentBackgroundStartInput): Promise<SubagentBackgroundStartResult> {
       const runner = deps.runner;
-      if (!runner || !(await deps.store.callerAvailable(input))) {
-        return { code: SUBAGENT_ERROR_CODES.backgroundUnavailable, kind: "refused" };
-      }
-      if (!(await usageAllows(input.userId))) return { code: SUBAGENT_ERROR_CODES.usageLimited, kind: "refused" };
       const ids = { runId: newId(), turnId: newId() };
       const pending = pendingExecution(input, ids);
+      const refused = (code: SubagentErrorCode): SubagentBackgroundStartResult => {
+        pending.abandon();
+        return { code, kind: "refused" };
+      };
       let admission: Awaited<ReturnType<SubagentBackgroundStore["admit"]>>;
       try {
+        // A parent cancelled before this start registered: its end has already looked, and only its signal can tell.
+        if (input.signal?.aborted || !runner || !(await deps.store.callerAvailable(input))) return refused(SUBAGENT_ERROR_CODES.backgroundUnavailable);
+        if (!(await usageAllows(input.userId))) return refused(SUBAGENT_ERROR_CODES.usageLimited);
+        if (pending.execution.stopReason) return refused(SUBAGENT_ERROR_CODES.backgroundUnavailable);
         admission = await deps.store.admit({ binding: input.binding, chatId: input.chatId,
           definitionRevisionId: input.type?.revisionId ?? null, ...(input.parentAgent ? { parentAgent: input.parentAgent } : {}),
           parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
@@ -457,10 +467,7 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         pending.abandon();
         throw error;
       }
-      if (admission.kind === "refused") {
-        pending.abandon();
-        return admission;
-      }
+      if (admission.kind === "refused") return refused(admission.code);
       launch(input, ids, runner, pending);
       return { kind: "started", name: input.name, state: "running", turnId: ids.turnId };
     },

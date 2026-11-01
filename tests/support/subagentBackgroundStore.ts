@@ -103,6 +103,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     const active = this.turns.filter((turn) => turn.chatId === input.chatId && isActiveSubagentState(turn.state));
     if (active.some((turn) => turn.threadId === input.threadId)) return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" };
     if (active.length >= SUBAGENT_LIMITS.runningPerChat) return { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" };
+    if (input.parentAgent && !active.some((turn) => turn.turnId === input.parentAgent?.turnId)) return { code: SUBAGENT_ERROR_CODES.notActive, kind: "refused" };
     if (input.parentAgent && active.filter((turn) => turn.parentThreadId === input.parentAgent?.threadId).length >= SUBAGENT_LIMITS.childrenPerSubagent) {
       return { code: SUBAGENT_ERROR_CODES.childLimit, kind: "refused" };
     }

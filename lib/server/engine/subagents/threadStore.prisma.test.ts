@@ -265,6 +265,14 @@ describe("sub-agent threads on PostgreSQL", () => {
         .resolves.toEqual({ code: SUBAGENT_ERROR_CODES.notOwnChild, kind: "refused" });
     });
 
+    it("refuses a child of a turn that ended, though the run behind that turn still runs", async () => {
+      const { chatId, child, parentAgent, userId } = await nested();
+      await store.settle({ chatId, result: endedSubagentCallResult({ approvals: [], binding, files: [], name: "parent", report: "", state: "stopped", steps: [] }),
+        turnId: parentAgent.turnId, userId });
+      await expect(child("late")).resolves.toEqual({ code: SUBAGENT_ERROR_CODES.notActive, kind: "refused" });
+      await expect(prisma.subagentThread.count({ where: { chatId, name: "late" } })).resolves.toBe(0);
+    });
+
     it("ends a foreground child orphaned by its background parent's run, keeps its result for the parent, and goes with it", async () => {
       const { chatId, child, parentAgent, userId } = await nested();
       const admitted = await child("one");

@@ -739,6 +739,14 @@ describe("a sub-agent's children on PostgreSQL", () => {
     expect(running[0]).toMatchObject({ parentAnswerId: f.main.assistantMessageId, parentThreadId: parent.threadId });
   }));
 
+  it("refuses a child of a turn that ended, though the run behind that turn still runs", async () => fixture(async (f) => {
+    const parent = await backgroundParent(f);
+    const thread = await childThread(f, parent, "late");
+    await store.settle({ chatId: f.chatId, result: endedSubagentResult("parent", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: parent.turnId, userId: f.userId });
+    expect(await store.admit(childAdmission(f, parent, thread))).toEqual({ code: "subagent_not_active", kind: "refused" });
+    expect(await prisma.subagentTurn.count({ where: { threadId: thread.threadId } })).toBe(0);
+  }));
+
   it("refuses a parent's call on another agent's thread, under the lock", async () => fixture(async (f) => {
     const parent = await backgroundParent(f);
     const strangers = await f.thread("strangers");

@@ -180,6 +180,8 @@ export type SubagentBackgroundStartInput = SubagentCallerScope & Readonly<{
   brief: string;
   /** A child's: the turn ends by its parent's own time, since it never outlives its parent. */
   deadlineAt?: Date;
+  /** A child's: its parent's own cancellation, which ends it at whatever stage its start has reached. */
+  signal?: AbortSignal;
   /** `start` for the first turn of a thread, `continue` for a later one (`SubagentRunner`). */
   kind: "continue" | "start";
   name: string;
@@ -195,8 +197,8 @@ export type SubagentBackgroundStartResult =
    * Nothing ran. `subagent_usage_limited` (usage limits refused the run),
    * `subagent_limit_reached` (20 running in the chat), `subagent_busy` (the
    * thread got an active run meanwhile), `subagent_background_unavailable`,
-   * and for a child `subagent_child_limit_reached`, `subagent_depth_limit_reached`
-   * or `subagent_not_own_child`.
+   * and for a child `subagent_child_limit_reached`, `subagent_depth_limit_reached`,
+   * `subagent_not_active` (its parent turn ended) or `subagent_not_own_child`.
    */
   | Readonly<{ code: SubagentErrorCode; kind: "refused" }>;
 

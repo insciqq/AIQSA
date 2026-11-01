@@ -44,7 +44,9 @@ export function turnMainRunId(parentRunId: string, parentRun: Readonly<{ subagen
 /**
  * Why an agent may not run a turn of this thread, under the chat's admission lock; null when it may. A name is one
  * thread on a branch, so another agent's thread is refused rather than taken over, and a thread stays with the agent that
- * started it: only a sub-agent's own children count toward its limit, and a child never starts one of its own.
+ * started it: only a sub-agent's own children count toward its limit, and a child never starts one of its own. A child
+ * needs its parent's very turn active: the run behind that turn may long outlive it, and nobody would read the child's
+ * report or stop it.
  */
 export async function childAdmissionRefusal(tx: Pick<Prisma.TransactionClient, "subagentThread" | "subagentTurn">, input: Readonly<{
   chatId: string;
@@ -59,6 +61,9 @@ export async function childAdmissionRefusal(tx: Pick<Prisma.TransactionClient, "
     where: { chatId: input.chatId, id: parent.threadId, userId: input.userId } });
   if (!starter) return SUBAGENT_ERROR_CODES.notFound;
   if (starter.parentThreadId !== null) return SUBAGENT_ERROR_CODES.depthLimit;
+  const turn = await tx.subagentTurn.findFirst({ select: { id: true }, where: { chatId: input.chatId, id: parent.turnId, state: { in: ["running", "waiting"] },
+    threadId: parent.threadId, userId: input.userId } });
+  if (!turn) return SUBAGENT_ERROR_CODES.notActive;
   const running = await tx.subagentTurn.count({ where: { chatId: input.chatId, state: { in: ["running", "waiting"] },
     thread: { parentThreadId: parent.threadId }, userId: input.userId } });
   return running >= SUBAGENT_LIMITS.childrenPerSubagent ? SUBAGENT_ERROR_CODES.childLimit : null;
