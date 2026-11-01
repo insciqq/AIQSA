@@ -29,7 +29,6 @@ Answering the user is the top priority (operator decision 2026-10-22).
 - A run reaches exactly one terminal state. An interrupted run (restart, crash) keeps its transcript, files and outputs and offers Continue, which starts an ordinary follow-up turn. Recovery touches only the engine's own runs.
 - Completion requires the provider's terminal proof. Failure keeps accepted partial text and reported usage without claiming success. Cancellation stops later work and writes; stale reconciliation never sweeps newer runs.
 - An unknown command exit, a confirmed environment stop and durable cleanup are different facts. A local bookkeeping failure never re-sends a side-effecting call or counts as a provider failure. Never infer a cause from exception text.
-- Optional work such as chat titles never delays an answer.
 
 ## Admission and context
 
@@ -110,7 +109,7 @@ Operator decisions 2026-11-01. The model starts it when the user wants a thoroug
 ## Tools and MCP
 
 - Auto, Load all and Off are user choices, and Auto stays as it works today (operator decision 2026-10-23): it freezes the authorized catalog, `find_tools` is local, model-free search, and Skills arrive through their index and `load_skill`, so not every schema enters the context. An unusable server records a stable reason and the answer continues.
-- Per-answer tool call and round limits are off by default, existing installations included; administrators may turn them on (operator decision 2026-10-26: agent tasks outgrow any count, and Workspace turns get an hour). An answer then ends at its tool time (`lib/server/runs/turnDeadline.ts`), Stop or a repeated call. When calls or tool time run out, one tool-free round names what could not be verified.
+- Per-answer tool call and round limits are off by default, existing installations included; administrators may turn them on (operator decision 2026-10-26: agent tasks outgrow any count). An answer then ends at its tool time (`lib/server/runs/turnDeadline.ts`), Stop or a repeated call. When calls or tool time run out, one tool-free round names what could not be verified.
 - Results too large for the context arrive as an excerpt with a reference the agent can read later, never silently truncated. Every result longer than a short excerpt is saved with that reference, so a compaction can leave it out and name where it lives (decision 2026-10-23).
 - Reading a tool result by reference checks only that the reader may read its chat, and never reruns the call.
 
