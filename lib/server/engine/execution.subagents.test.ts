@@ -143,6 +143,23 @@ function prepared(extra: Readonly<{ earlier?: boolean }> = {}): MaterializedPrep
 const created = { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" };
 
 describe("native run with sub-agents", () => {
+  it("gives the page reader the branch's earlier answers as link authority, except in a scheduled run's flat context", async () => {
+    const read = async (extra: Readonly<{ scheduled?: true }>) => {
+      const { adapter } = scriptedAdapter([{ calls: [{ arguments: { url: "https://elsewhere.example/" }, id: "call-1", name: "fetch_url" }] },
+        { text: "Done." }]);
+      const memory = engine({ earlierRun: true });
+      const base = prepared({ earlier: true });
+      const fetchUrl = { userUrlDigests: [], version: 1 as const };
+      const loadRunSearchSourceUrls = vi.fn(async () => []);
+      await createNativeRunExecutionResponse({ adapter, created, engine: memory.deps,
+        prepared: { ...base, normalizedRequest: { ...base.normalizedRequest, fetchUrl }, providerRequest: { ...base.providerRequest, fetchUrl } } as never,
+        repository: { ...repository(), loadRunSearchSourceUrls } as unknown as RunRepository, services: {}, userId: "user", ...extra }).text();
+      return loadRunSearchSourceUrls;
+    };
+    expect(await read({})).toHaveBeenCalledWith({ earlierRunIds: ["run-0"], runId: "run-1", userId: "user" });
+    expect(await read({ scheduled: true })).toHaveBeenCalledWith({ earlierRunIds: [], runId: "run-1", userId: "user" });
+  });
+
   it("runs a default sub-agent on the parent's admitted binding and hands its report back as the call's result", async () => {
     const { adapter, requests } = scriptedAdapter([
       { calls: [{ arguments: { message: "Compare laptop prices on shop.example.", name: "shop" }, id: "call-1",
