@@ -129,6 +129,8 @@ export type AdminSystemModelPolicyCatalog = {
     /** Null: the research method's main model checks, and the answer says so. */
     researchVerifierModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
     researchVerifierReasoningEffort?: string | null;
+    researchResearcherModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
+    researchResearcherReasoningEffort?: string | null;
     visionModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
     visionReasoningEffort?: string | null;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
@@ -294,6 +296,11 @@ export function decodeAdminSystemModelPolicyResponse(
       (!record(policy.researchVerifierModel) || typeof policy.researchVerifierModel.available !== "boolean" || !candidate(policy.researchVerifierModel))) ||
     (policy.researchVerifierReasoningEffort !== undefined && policy.researchVerifierReasoningEffort !== null && !boundedText(policy.researchVerifierReasoningEffort, 32)) ||
     (!policy.researchVerifierModel && policy.researchVerifierReasoningEffort != null)) return null;
+  if (Object.hasOwn(policy, "researchResearcherModel") !== Object.hasOwn(policy, "researchResearcherReasoningEffort") ||
+    (policy.researchResearcherModel !== undefined && policy.researchResearcherModel !== null &&
+      (!record(policy.researchResearcherModel) || typeof policy.researchResearcherModel.available !== "boolean" || !candidate(policy.researchResearcherModel))) ||
+    (policy.researchResearcherReasoningEffort !== undefined && policy.researchResearcherReasoningEffort !== null && !boundedText(policy.researchResearcherReasoningEffort, 32)) ||
+    (!policy.researchResearcherModel && policy.researchResearcherReasoningEffort != null)) return null;
   if (catalog.visionAnalysisAvailable !== undefined && typeof catalog.visionAnalysisAvailable !== "boolean" ||
     Object.hasOwn(policy, "visionModel") !== Object.hasOwn(policy, "visionReasoningEffort") ||
     (policy.visionModel !== undefined && policy.visionModel !== null &&
@@ -389,6 +396,10 @@ export function decodeAdminSystemModelPolicyResponse(
         ...(Object.hasOwn(policy, "researchVerifierModel") ? {
           researchVerifierModel: policy.researchVerifierModel as AdminSystemModelPolicyCatalog["policy"]["researchVerifierModel"],
           researchVerifierReasoningEffort: policy.researchVerifierReasoningEffort as string | null
+        } : {}),
+        ...(Object.hasOwn(policy, "researchResearcherModel") ? {
+          researchResearcherModel: policy.researchResearcherModel as AdminSystemModelPolicyCatalog["policy"]["researchResearcherModel"],
+          researchResearcherReasoningEffort: policy.researchResearcherReasoningEffort as string | null
         } : {}),
         ...(Object.hasOwn(policy, "visionModel") ? {
           visionModel: policy.visionModel as AdminSystemModelPolicyCatalog["policy"]["visionModel"],

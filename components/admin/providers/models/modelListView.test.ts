@@ -191,6 +191,26 @@ describe("deriveModelUsage and successors", () => {
     expect(turnOffConsequence({ model: { displayName: "Image reader" }, successor: null, tags })?.body)
       .toContain("the Vision Model");
   });
+  it.each([true, false])("shows both research assignment labels even when their shared model is unavailable (available: %s)", (available) => {
+    const state = sources();
+    const policy = state.systemModelPolicy!.policy;
+    const researchModel = { ...policy.chatPdfModel!, id: "research-model", displayName: "Research model", available };
+    policy.researchResearcherModel = researchModel;
+    policy.researchVerifierModel = researchModel;
+    const usage = deriveModelUsage(state);
+    const tags = usage.get(researchModel.id)!;
+    expect(tags).toEqual(["Researchers", "Research checks"]);
+    expect(modelAssignedRoles(researchModel.id, state)).toEqual(["research_researcher", "research_verifier"]);
+    expect(modelAssignedRoles("unassigned", state)).toEqual([]);
+    const row = fixtureModel({ connectionId: researchModel.connectionId, displayName: researchModel.displayName, id: researchModel.id });
+    expect(modelFolded({ ...row, enabled: false }, { checkRun: null }, usage)).toBe(false);
+    const consequence = turnOffConsequence({ model: row, successor: null, tags });
+    expect(consequence?.body).toContain("the model for research gathering and the model for research checks");
+    expect(consequence?.body).toContain("Research does not start until its assigned model is available.");
+    expect(consequence?.body).not.toContain("“Researchers” Search");
+    expect(consequence?.body).not.toContain("“Research checks” Search");
+  });
+
   it("tags only the PDF reader the PDF mode routes to", () => {
     const state = sources();
     const policy = state.systemModelPolicy!.policy;

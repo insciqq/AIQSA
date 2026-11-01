@@ -474,6 +474,36 @@ describe("deriveAdminAttentionItems", () => {
     });
   });
 
+  it.each([
+    ["research_researcher", "researchResearcherModel", "Researchers"],
+    ["research_verifier", "researchVerifierModel", "Research checks"]
+  ] as const)("reports the start refusal for an unavailable %s assignment, but stays quiet when unset or ready", (role, field, label) => {
+    expect(items({ systemRoles: roles({ [field]: null }) })).toEqual([]);
+    const catalog = roles({ [field]: { ...roleCandidate, available: true } });
+    catalog.verificationCandidates = [roleCandidate];
+    expect(items({ systemRoles: catalog })).toEqual([]);
+    catalog.policy[field] = { ...roleCandidate, available: false };
+    expect(items({ systemRoles: catalog })).toEqual([expect.objectContaining({
+      id: `system_role_unavailable:${role}`, code: "system_role_unavailable", severity: "bad",
+      action: "Open roles", target: { section: "roles", resource: role },
+      detail: `${label}: ${roleCandidate.displayName} on ${roleCandidate.connectionDisplayName} is not available. ` +
+        "Research does not start until the assigned model is available. Check the assignment or choose another model."
+    })]);
+  });
+
+  it("keeps researcher attention when its assigned model is removed from the provider and candidate catalogs", () => {
+    const catalog = roles({ researchResearcherModel: { ...roleCandidate, available: false }, researchResearcherReasoningEffort: "high" });
+    // The saved assignment remains in the policy even when discovery no longer lists the model.
+    expect(catalog.verificationCandidates).toEqual([]);
+    expect(catalog.candidates).toEqual([]);
+    const result = items({ providers: [], systemRoles: catalog });
+    expect(result).toEqual([expect.objectContaining({ id: "system_role_unavailable:research_researcher",
+      target: { section: "roles", resource: "research_researcher" }, severity: "bad" })]);
+    expect(result[0]!.detail).toContain(roleCandidate.displayName);
+    expect(result[0]!.detail).toContain("Research does not start");
+    expect(result[0]!.detail).not.toContain("unchecked");
+  });
+
   it("does not ask for a reranker, but still names a broken one", () => {
     expect(items({ systemRoles: roles({ rerankerModel: null }) })).toEqual([]);
     // Memory ranks with an assigned reranker, so an unavailable one still needs a fix.

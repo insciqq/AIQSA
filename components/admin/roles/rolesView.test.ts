@@ -1,6 +1,7 @@
 import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import { describe, expect, it } from "vitest";
 import {
+  deploymentLabeller,
   generativeRoleItems,
   rerankerFallbacksLine,
   roleStatus
@@ -55,6 +56,20 @@ function catalog(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {
 }
 
 describe("rolesView", () => {
+  it("disambiguates the selected research models' connections when neither model remains in the candidates", () => {
+    const researcher = { ...base, available: false, connectionDisplayName: "Shared provider", connectionId: "researcher-connection",
+      displayName: "Research model", id: "researcher-model" };
+    const checks = { ...researcher, connectionId: "checks-connection", id: "checks-model" };
+    const value = catalog({ researchResearcherModel: researcher, researchVerifierModel: checks });
+    const label = deploymentLabeller(value);
+    expect(label(researcher)).toMatch(/^Shared provider · ref [A-Z0-9-]+ \/ Research model$/u);
+    expect(label(checks)).toMatch(/^Shared provider · ref [A-Z0-9-]+ \/ Research model$/u);
+    expect(label(researcher)).not.toBe(label(checks));
+    const swapped = deploymentLabeller(catalog({ researchResearcherModel: checks, researchVerifierModel: researcher }));
+    expect(swapped(researcher)).toBe(label(researcher));
+    expect(swapped(checks)).toBe(label(checks));
+  });
+
   it("groups Memory candidates from the server's eligibility lists without client guesses", () => {
     expect(generativeRoleItems(catalog(), "memory")).toMatchObject([
       { group: "ready", id: "luna", label: "OpenAI / GPT Luna" },

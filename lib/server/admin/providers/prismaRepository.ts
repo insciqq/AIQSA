@@ -1163,7 +1163,7 @@ export function createPrismaAdminProviderRepository(
           where: { connectionId: input.connectionId, id: input.modelId }
         }),
         prisma.systemModelPolicy.findUnique({
-          select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true, mcpGuardProviderModelId: true, researchVerifierProviderModelId: true,
+          select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true, mcpGuardProviderModelId: true, researchVerifierProviderModelId: true, researchResearcherProviderModelId: true,
             chatPdfProviderModelId: true, chatPdfNativeProviderModelId: true },
           where: { id: "installation" }
         }),
@@ -1173,7 +1173,7 @@ export function createPrismaAdminProviderRepository(
       const assignedRoles = ([
         ["memory", memoryPolicy?.providerModelId], ["system_model", systemPolicy?.providerModelId],
         ["chat_titles", systemPolicy?.chatTitleProviderModelId], ["vision", systemPolicy?.visionProviderModelId], ["mcp_guard", systemPolicy?.mcpGuardProviderModelId],
-        ["research_verifier", systemPolicy?.researchVerifierProviderModelId],
+        ["research_researcher", systemPolicy?.researchResearcherProviderModelId], ["research_verifier", systemPolicy?.researchVerifierProviderModelId],
         ["chat_pdf", systemPolicy?.chatPdfProviderModelId], ["chat_pdf_native", systemPolicy?.chatPdfNativeProviderModelId]
       ] as const).flatMap(([role, providerModelId]) => providerModelId === model.id ? [role] : []);
       const credential = connection.defaultCredential;
@@ -2427,6 +2427,7 @@ export function createPrismaAdminProviderRepository(
                 { visionProviderModelId: modelId },
                 { mcpGuardProviderModelId: modelId },
                 { researchVerifierProviderModelId: modelId },
+                { researchResearcherProviderModelId: modelId },
                 { chatPdfNativeProviderModelId: modelId }
               ]
             }
@@ -2603,7 +2604,7 @@ export function createPrismaAdminProviderRepository(
           });
           // Clear only the deleted deployment's roles; other assignments
           // remain valid, including their explicit configuration timestamps.
-          for (const field of ["providerModelId", "rerankerProviderModelId", "mcpGuardProviderModelId", "researchVerifierProviderModelId", "visionProviderModelId", "chatPdfProviderModelId", "chatPdfNativeProviderModelId", "chatTitleProviderModelId"] as const) {
+          for (const field of ["providerModelId", "rerankerProviderModelId", "mcpGuardProviderModelId", "researchVerifierProviderModelId", "researchResearcherProviderModelId", "visionProviderModelId", "chatPdfProviderModelId", "chatPdfNativeProviderModelId", "chatTitleProviderModelId"] as const) {
             await tx.systemModelPolicy.updateMany({
               data: {
                 [field]: null,
@@ -2611,6 +2612,7 @@ export function createPrismaAdminProviderRepository(
                 ...(field === "chatTitleProviderModelId" ? { chatTitleReasoningEffort: null } : {}),
                 ...(field === "mcpGuardProviderModelId" ? { mcpGuardReasoningEffort: null } : {}),
                 ...(field === "researchVerifierProviderModelId" ? { researchVerifierReasoningEffort: null } : {}),
+                ...(field === "researchResearcherProviderModelId" ? { researchResearcherReasoningEffort: null } : {}),
                 ...(field === "visionProviderModelId" ? { visionReasoningEffort: null } : {}),
                 ...(field === "chatPdfProviderModelId" ? { chatPdfReasoningEffort: null } : {}),
                 ...(field === "chatPdfNativeProviderModelId" ? { chatPdfNativeReasoningEffort: null } : {}),

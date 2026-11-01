@@ -58,6 +58,8 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   mcpGuardReasoningEffort?: string | null;
   researchVerifierProviderModelId?: string | null;
   researchVerifierReasoningEffort?: string | null;
+  researchResearcherProviderModelId?: string | null;
+  researchResearcherReasoningEffort?: string | null;
   visionProviderModelId?: string | null;
   visionReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;

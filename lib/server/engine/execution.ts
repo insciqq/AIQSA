@@ -93,7 +93,7 @@ import { createRunResearch, researchOffered, researchRunOf, type ResearchEngineD
  */
 export const NATIVE_TURN_LIMITS = Object.freeze({
   /** A run without a Workspace answers within this long; before it, the turn stops calling tools and answers
-   * (`turnSoftDeadlineMs`). */
+   * (`turnSoftDeadlineMs`). A research plan's release moves the end of its own run alone (`extendTurn`). */
   turnMs: 60 * 60_000
 });
 
@@ -721,7 +721,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           maxToolCalls: budgets.maxToolCalls,
           onEvent: (event) => sink.publish(event),
           onLiveEvent: sink.send,
-          registry,
+          registry: runResearch?.withScopingLimit(registry) ?? registry,
           ...(reserved ? { reservedToolName: reserved.name } : {}),
           runId,
           saveResult,

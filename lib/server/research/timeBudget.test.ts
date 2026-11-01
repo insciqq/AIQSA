@@ -23,7 +23,10 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { createResearchClock, RESEARCHERS_CLOSED, RESEARCHERS_FINISH } from "./clock";
 import type { ResearchGate, ResearchSubagentOutcome } from "./gates";
 import { researchNote } from "./notes";
+import { proposeCall } from "./planWindow.testFixtures";
+import type { ResearchPlanWindowPort } from "./ports";
 import { RESEARCHER_TIME_ENDED, type ResearchEngineDeps } from "./run";
+import type { ResearchVerifierRole } from "./verifierRole";
 
 /**
  * The time budget end to end: the real engine, runner and clock on a fake clock and a scripted model. Everything here is what a
@@ -67,7 +70,9 @@ const PLAN = { goal: "Choose a mattress.", questions: [
 const REPORT = "# Report\n\nConfirmed: the X1 holds up.";
 const DRAFT = { findings: [{ claim: "The X1 holds up.", quote: "held up after 10 years", source_class: "independent_tests", standing: "confirmed", url: "https://lab.example/x1" }],
   report: REPORT, unreachable: [] };
-const start = () => ({ arguments: PLAN, id: "call-start", name: START_RESEARCH_TOOL_NAME });
+const start = () => ({ arguments: { goal: PLAN.goal }, id: "call-start", name: START_RESEARCH_TOOL_NAME });
+/** A start and its plan in one response: scoping has no floor, and with no window port the plan stands at once. */
+const begin = () => [start(), proposeCall(PLAN)];
 const submit = (id = "call-draft") => ({ arguments: DRAFT, id, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
 const researcher = (name: string, message = "Cover it.") => ({ arguments: { message, name }, id: `call-${name}-${message.length}`, name: CALL_SUBAGENT_TOOL_NAME });
 
@@ -76,9 +81,20 @@ const slowGate = (ended: { at?: number }): ResearchGate => ({ name: "slow", run:
   context.signal.addEventListener("abort", () => { ended.at = Date.now(); reject(context.signal.reason as Error); }, { once: true });
 }) });
 
+/** The administrator's model for researchers: its turns run on the host `turns.ts` builds from a copy of the run's input, not on the run's own. */
+function researcherRole(adapter: ProviderAdapter): ResearchVerifierRole {
+  const capabilities = { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true, vision: false };
+  return {
+    frozenChoice: async () => ({ effort: null, kind: "set", providerModelId: "research-model" }),
+    route: async () => ({ connectionName: null, displayName: "Research model", route: { adapter, request: { modelCapabilities: capabilities, modelId: "research", params: {}, provider: "fake",
+      reasoningEffort: null }, snapshot: { connection: { responseTimeoutMs: 120_000 }, connectionId: "research-connection", model: { adapterKind: "fake", capabilities, defaultParams: {},
+      upstreamModelId: "research" }, providerFamily: "fake", providerModelId: "research-model" } as never, timeoutMs: 120_000 } })
+  };
+}
+
 let runs = 0;
 
-function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<{ turnTimeoutSeconds?: number; workspace: boolean }>) {
+function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<{ turnTimeoutSeconds?: number; window?: ResearchPlanWindowPort; workspace: boolean }>) {
   runs += 1;
   const runId = `run-time-${runs}`;
   const rows = new Map<string, ToolCallRow>();
@@ -176,7 +192,7 @@ function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<
   const deps: NativeEngineDeps = {
     approvedCall: vi.fn(async () => null), mcpBindingRows: vi.fn(async () => []),
     observations: vi.fn(async () => ({ withReservation: vi.fn(async () => ({ handle: `tor1_${"0".repeat(32)}` })) }) as never),
-    research: { ...research, ports: { time: createResearchClock } },
+    research: { ...research, ports: { ...options.window ? { planWindow: () => options.window! } : {}, time: createResearchClock } },
     runs: runStore, savedResults: { read: vi.fn(async () => null) }, subagentThreads: threads, toolCalls, transcripts
   };
   const text = "Choose a mattress.";
@@ -223,7 +239,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
   it("fires each phase at its minute from the plan's release, far past the turn it started in", async () => {
     const released = minutes(10);
     const { adapter, seen } = scripted([
-      { calls: [start()], sleepMs: released },
+      { calls: begin(), sleepMs: released },
       { calls: [researcher("alpha")] },
       { calls: [researcher("beta")] },
       { calls: [researcher("gamma")] },
@@ -250,7 +266,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
 
   it("refuses a new researcher from minute 60, with a reason, and the running one's report still arrives", async () => {
     const { adapter, seen } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [researcher("alpha")], sleepMs: minutes(40) },
       { calls: [researcher("beta")] },
       { calls: [submit()] }
@@ -269,7 +285,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
 
   it("tells only a researcher of this run to finish, and it reads the message at its next step", async () => {
     const { adapter, seen } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [researcher("alpha")], sleepMs: minutes(50) },
       { calls: [submit()] }
     ], [{ calls: [{ arguments: {}, id: "call-nope", name: "no_such_tool" }], sleepMs: minutes(11) }, { text: "Outcome: done\nFinished." }]);
@@ -283,7 +299,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
 
   it("gets a usable result from a researcher its time ended, with its steps, and can continue it by name", async () => {
     const { adapter, seen } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [researcher("alpha")] },
       { calls: [researcher("alpha", "Cover the rest of it.")] },
       { calls: [submit()] }
@@ -305,7 +321,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
 
   it("gives what a stopped researcher left as the main agent's result at minute 70, and the report it hands in then is published", async () => {
     const { adapter, seen } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [researcher("alpha")], sleepMs: minutes(50) },
       { calls: [submit()] }
     ], [{ hang: true }]);
@@ -323,7 +339,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
 
   it("ends at the hard end, counted from the release, even for a plan released late in the turn", async () => {
     const released = minutes(45);
-    const { adapter, seen } = scripted([{ calls: [start()], sleepMs: released }, { hang: true }]);
+    const { adapter, seen } = scripted([{ calls: begin(), sleepMs: released }, { hang: true }]);
     const run = harness({ gates: [] }, { workspace });
     const startedAt = Date.now();
     const answer = run.go(adapter);
@@ -336,7 +352,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
   });
 
   it("keeps the report in hand with a note at the hard end, when nothing answered it", async () => {
-    const { adapter } = scripted([{ calls: [start()] }, { calls: [submit()] }, { hang: true }], []);
+    const { adapter } = scripted([{ calls: begin() }, { calls: [submit()] }, { hang: true }], []);
     const refusing: ResearchGate = { name: "refusing", run: async () => ({ kind: "send_back", message: "Add the sources." }) };
     const run = harness({ gates: [refusing] }, { workspace });
     const answer = run.go(adapter);
@@ -344,6 +360,23 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
     await answer;
     expect(run.repository.failRun).toHaveBeenCalledOnce();
     expect(run.repository.appendAssistantText.mock.calls.flat().join("")).toContain(REPORT);
+  });
+
+  it("counts its phases from the window's close, however long the plan stayed on the screen", async () => {
+    const scoped = minutes(2);
+    const open = time.planWindow + minutes(4);
+    const window: ResearchPlanWindowPort = { open: async ({ proposal, signal }) => {
+      await sleep(open, signal);
+      return { changed: false, plan: proposal, releasedBy: "timer" };
+    } };
+    const { adapter } = scripted([{ calls: [start()] }, { calls: [proposeCall(PLAN)], sleepMs: scoped }, { hang: true }]);
+    const run = harness({ gates: [] }, { window, workspace });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(scoped + open + time.hardEnd - 1);
+    expect(run.repository.failRun).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await answer;
+    expect(run.repository.failRun).toHaveBeenCalledOnce();
   });
 
   it("keeps an ordinary run to its turn exactly, with research on offer", async () => {
@@ -358,7 +391,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
   });
 
   it("is never taken for an orphan however long it stays silent: recovery asks what runs here", async () => {
-    const { adapter } = scripted([{ calls: [start()] }, { hang: true }]);
+    const { adapter } = scripted([{ calls: begin() }, { hang: true }]);
     const run = harness({ gates: [] }, { workspace });
     const answer = run.go(adapter);
     await vi.advanceTimersByTimeAsync(time.hardEnd - 60_000);
@@ -388,17 +421,25 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
     };
 
     it("ends the run while it scopes, before any plan", async () => {
-      const { adapter } = scripted([{ hang: true }]);
+      const { adapter } = scripted([{ calls: [start()] }, { hang: true }]);
       const run = harness({ gates: [] }, { workspace });
       const startedAt = Date.now();
       await stopped(run, run.go(adapter), time.scoping - 1, startedAt);
+    });
+
+    it("ends the run while its plan waits in the window", async () => {
+      const window: ResearchPlanWindowPort = { open: ({ signal }) => aborted(signal) };
+      const { adapter } = scripted([{ calls: begin() }]);
+      const run = harness({ gates: [] }, { window, workspace });
+      const startedAt = Date.now();
+      await stopped(run, run.go(adapter), time.planWindow - 1, startedAt);
     });
 
     it.each([
       { at: minutes(20), phase: "researching", startsAt: 0 },
       { at: time.stopStartingResearchers + minutes(5), phase: "winding down", startsAt: minutes(50) }
     ])("ends the run and its researcher while $phase", async ({ at, startsAt }) => {
-      const { adapter } = scripted([{ calls: [start()] }, { calls: [researcher("alpha")], sleepMs: startsAt }], [{ hang: true }]);
+      const { adapter } = scripted([{ calls: begin() }, { calls: [researcher("alpha")], sleepMs: startsAt }], [{ hang: true }]);
       const run = harness({ gates: [] }, { workspace });
       const startedAt = Date.now();
       await stopped(run, run.go(adapter), at, startedAt);
@@ -410,7 +451,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
         await context.subagents.run({ brief: "b", instructions: "i", model: "main", name: "check", tools: ["web_fetch"] }, context.signal);
         return { kind: "pass" };
       } };
-      const { adapter } = scripted([{ calls: [start()] }, { calls: [submit()], sleepMs: time.stopRunningResearchers + 60_000 }], [{ hang: true }]);
+      const { adapter } = scripted([{ calls: begin() }, { calls: [submit()], sleepMs: time.stopRunningResearchers + 60_000 }], [{ hang: true }]);
       const run = harness({ gates: [checking] }, { workspace });
       const startedAt = Date.now();
       await stopped(run, run.go(adapter), time.stopRunningResearchers + minutes(5), startedAt);
@@ -418,7 +459,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
     });
 
     it("ends the run after the notes, before the hard end", async () => {
-      const { adapter } = scripted([{ calls: [start()] }, { hang: true }]);
+      const { adapter } = scripted([{ calls: begin() }, { hang: true }]);
       const run = harness({ gates: [] }, { workspace });
       const startedAt = Date.now();
       await stopped(run, run.go(adapter), time.notes + 60_000, startedAt);
@@ -433,7 +474,7 @@ describe("everything derived from the turn sees its new end", () => {
 
   it("lets a researcher started after the release retry its model past the turn's old end", async () => {
     const { adapter, seen } = scripted([
-      { calls: [start()], sleepMs: released },
+      { calls: begin(), sleepMs: released },
       { calls: [researcher("alpha")], sleepMs: minutes(35) },
       { calls: [submit()] }
     ], [{ fail: true, sleepMs: pastTheOldEnd - released - minutes(35) }, { text: "Outcome: done\nFound it." }]);
@@ -445,6 +486,37 @@ describe("everything derived from the turn sees its new end", () => {
     expect(resultsOf(seen.main.at(-1), CALL_SUBAGENT_TOOL_NAME)[0]).toContain("Found it.");
   });
 
+  it("gives a researcher on the administrator's model the same end, on the host `turns.ts` builds from a copy of the run's input", async () => {
+    const { adapter, seen } = scripted([
+      { calls: begin(), sleepMs: released },
+      { calls: [researcher("alpha")], sleepMs: minutes(35) },
+      { calls: [submit()] }
+    ], [{ fail: true, sleepMs: pastTheOldEnd - released - minutes(35) }, { text: "Outcome: done\nFound it." }]);
+    const run = harness({ gates: [], researcher: researcherRole(adapter) }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(released + time.hardEnd);
+    await answer;
+    expect(seen.agents).toHaveLength(2);
+    expect(seen.agents[0]?.request.modelId).toBe("research");
+    expect(resultsOf(seen.main.at(-1), CALL_SUBAGENT_TOOL_NAME)[0]).toContain("Found it.");
+  });
+
+  it("stops a researcher on the administrator's model at its limit with the same usable result", async () => {
+    const { adapter, seen } = scripted([
+      { calls: begin() },
+      { calls: [researcher("alpha")] },
+      { calls: [submit()] }
+    ], [{ hang: true }]);
+    const run = harness({ gates: [], researcher: researcherRole(adapter) }, { workspace: false });
+    const startedAt = Date.now();
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(seen.main.at(-1)!.at - startedAt).toBe(time.researcherTurn);
+    expect(resultsOf(seen.main.at(-1), CALL_SUBAGENT_TOOL_NAME)[0]).toContain(RESEARCHER_TIME_ENDED);
+    expect(run.published()?.text).toContain(REPORT);
+  });
+
   it("lets a gate's turn started after the release retry its model past the turn's old end", async () => {
     let outcome: ResearchSubagentOutcome | null = null;
     const checking: ResearchGate = { name: "checking", run: async (_draft, context) => {
@@ -452,7 +524,7 @@ describe("everything derived from the turn sees its new end", () => {
       return { kind: "pass" };
     } };
     const { adapter, seen } = scripted([
-      { calls: [start()], sleepMs: released },
+      { calls: begin(), sleepMs: released },
       { calls: [submit()], sleepMs: pastTheOldEnd - released }
     ], [{ fail: true }, { text: "Outcome: done\nChecked." }]);
     const run = harness({ gates: [checking] }, { workspace: false });
@@ -466,7 +538,7 @@ describe("everything derived from the turn sees its new end", () => {
   it("gives a researcher's child the new end, so it is not stopped on arrival past the old one", async () => {
     const child = { arguments: { background: true, message: "Help.", name: "helper" }, id: "call-helper", name: CALL_SUBAGENT_TOOL_NAME };
     const { adapter } = scripted([
-      { calls: [start()], sleepMs: released },
+      { calls: begin(), sleepMs: released },
       { calls: [researcher("alpha")], sleepMs: minutes(35) },
       { calls: [submit()] }
     ], [{ calls: [child], sleepMs: pastTheOldEnd - released - minutes(35) }, { text: "Outcome: done\nFound it." }]);
@@ -485,7 +557,7 @@ describe("everything derived from the turn sees its new end", () => {
       outcome = await context.subagents.run({ brief: "b", instructions: "i", model: "main", name: "check", tools: ["web_fetch"] }, context.signal);
       return { kind: "pass" };
     } };
-    const { adapter, seen } = scripted([{ calls: [start()] }, { calls: [submit()], sleepMs: time.stopRunningResearchers + 60_000 }],
+    const { adapter, seen } = scripted([{ calls: begin() }, { calls: [submit()], sleepMs: time.stopRunningResearchers + 60_000 }],
       [{ calls: [page] }, { text: "Outcome: done\nChecked." }]);
     const run = harness({ gates: [checking] }, { workspace: false });
     const answer = run.go(adapter);
@@ -497,7 +569,7 @@ describe("everything derived from the turn sees its new end", () => {
   });
 
   it("moves the end to the hard end of a turn configured longer than the research", async () => {
-    const { adapter } = scripted([{ calls: [start()] }, { hang: true }]);
+    const { adapter } = scripted([{ calls: begin() }, { hang: true }]);
     const run = harness({ gates: [] }, { turnTimeoutSeconds: (time.hardEnd + minutes(30)) / 1_000, workspace: true });
     const answer = run.go(adapter);
     await vi.advanceTimersByTimeAsync(time.hardEnd - 1);
