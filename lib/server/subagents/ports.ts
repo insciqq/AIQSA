@@ -254,6 +254,8 @@ export interface SubagentBackgroundControl {
    * returns its last state; one that already ended returns how it ended.
    */
   stop(input: SubagentCallerScope & Readonly<{ name: string }>): Promise<SubagentBackgroundStopResult>;
+  /** How many of a sub-agent's children have ended, or are ending, with their report not yet in its mailbox. */
+  reportsOnTheirWay(parentThreadId: string): number;
   /** A sub-agent's turn ends: its children still active end with it (`parent_stopped`), in any mode. Returns those that ended. */
   stopChildren(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number>;
 }

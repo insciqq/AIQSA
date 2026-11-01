@@ -231,7 +231,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     deliver: port.deliver.bind(port), start: (start) => {
       host.use();
       return port.start(start);
-    }, stop: port.stop.bind(port), stopChildren: port.stopChildren.bind(port) } : port;
+    }, reportsOnTheirWay: port.reportsOnTheirWay.bind(port), stop: port.stop.bind(port), stopChildren: port.stopChildren.bind(port) } : port;
   const children: SubagentChildHost = {
     ...(background ? { background } : {}),
     backgroundAllowed: input.backgroundAllowed,

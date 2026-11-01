@@ -589,6 +589,54 @@ describe("a sub-agent's background children", () => {
     expect(ctx.runner!.turns.size).toBe(0);
   });
 
+  it("counts a child's report as on its way from before its end is on record until it lands, however slow its parent's mailbox", async () => {
+    const ctx = withParent();
+    const turnId = await child(ctx, "helper");
+    let settle!: () => void;
+    let land!: () => void;
+    const settling = new Promise<void>((resolve) => { settle = resolve; });
+    const landing = new Promise<void>((resolve) => { land = resolve; });
+    const settleTurn = ctx.store.settle.bind(ctx.store), insert = ctx.store.insertMailbox.bind(ctx.store);
+    vi.spyOn(ctx.store, "settle").mockImplementation(async (input) => {
+      await settling;
+      return settleTurn(input);
+    });
+    vi.spyOn(ctx.store, "insertMailbox").mockImplementation(async (input) => {
+      await landing;
+      return insert(input);
+    });
+    expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(0);
+    ctx.runner!.finish(turnId, endedSubagentResult("helper", { report: "Done" }));
+    await vi.waitFor(() => expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(1));
+    expect(ctx.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ state: "running" });
+    settle();
+    await vi.waitFor(() => expect(ctx.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ state: "done" }));
+    expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(1);
+    expect(ctx.control.reportsOnTheirWay("thread-other")).toBe(0);
+    land();
+    await vi.waitFor(() => expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(0));
+    expect(ctx.store.turns.find((entry) => entry.turnId === "turn-research")!.mailbox).toHaveLength(1);
+  });
+
+  it("counts no report that failed, that no parent takes or that a stopped parent is not owed", async () => {
+    const failed = withParent();
+    const insert = vi.spyOn(failed.store, "insertMailbox").mockRejectedValue(new Error("mailbox_down"));
+    failed.runner!.finish(await child(failed, "helper"), endedSubagentResult("helper", { report: "Done" }));
+    await vi.waitFor(() => expect(insert).toHaveBeenCalled());
+    await vi.waitFor(() => expect(failed.control.reportsOnTheirWay("thread-research")).toBe(0));
+    const orphan = withParent();
+    const turnId = await child(orphan, "helper");
+    orphan.store.turns.find((entry) => entry.turnId === "turn-research")!.state = "stopped";
+    orphan.runner!.finish(turnId, endedSubagentResult("helper", { report: "Done" }));
+    await vi.waitFor(() => expect(orphan.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ state: "done" }));
+    await vi.waitFor(() => expect(orphan.control.reportsOnTheirWay("thread-research")).toBe(0));
+    const stopped = withParent();
+    await child(stopped, "helper");
+    await stopped.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" });
+    expect(stopped.control.reportsOnTheirWay("thread-research")).toBe(0);
+    expect(stopped.store.turns.find((entry) => entry.turnId === "turn-research")!.mailbox).toEqual([]);
+  });
+
   it("stops one still being admitted when its parent ends, so it never runs", async () => {
     const ctx = withParent();
     let release!: () => void;

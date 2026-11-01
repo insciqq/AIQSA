@@ -147,6 +147,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
   const registry = deps.registry ?? activeRunControllerRegistry;
+  /** Reports on their way to a parent's mailbox, by the parent's thread. A child runs in its parent's process, which asks here. */
+  const reports = new Map<string, number>();
   const turnTimeMs = deps.turnTimeMs ?? SUBAGENT_BACKGROUND_TURN_MS;
   const stopWaitMs = deps.stopWaitMs ?? STOP_WAIT_MS;
 
@@ -193,9 +195,25 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
    * running answer. One its parent ended itself has nobody to report to: its result stays on its turn, for `list_agents`
    * and for the parent's next turn, which may continue it.
    */
+  /**
+   * A report counts from before its child's row ends until it lands or fails, so a parent that sees the child gone also
+   * sees its report coming, however long the mailbox write takes. Returns what ends the count.
+   */
+  function reportOnItsWay(parentThreadId: string): () => void {
+    reports.set(parentThreadId, (reports.get(parentThreadId) ?? 0) + 1);
+    return () => {
+      const left = (reports.get(parentThreadId) ?? 1) - 1;
+      if (left > 0) reports.set(parentThreadId, left);
+      else reports.delete(parentThreadId);
+    };
+  }
+
   function reportToParent(child: SubagentChatScope & Readonly<{ name: string; parentThreadId: string; turnId: string }>,
-    result: EndedSubagentCallResult, runId: string | null): void {
-    if (result.reason === SUBAGENT_END_REASONS.parentStopped) return;
+    result: EndedSubagentCallResult, runId: string | null, reported: () => void): void {
+    if (result.reason === SUBAGENT_END_REASONS.parentStopped) {
+      reported();
+      return;
+    }
     const scope = { chatId: child.chatId, userId: child.userId };
     void deps.store.activeTurns({ ...scope, threadId: child.parentThreadId }).then(async ([parent]) => {
       if (!parent) return;
@@ -204,7 +222,7 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     }).catch((error: unknown) => {
       logEvent("run_recovery", { action: "retry", code: "subagent_callback_failed", error, outcome: "failed",
         ...(runId ? { run_id: runId } : {}), stage: "dispatch", subsystem: "run_recovery" });
-    });
+    }).finally(reported);
   }
 
   /**
@@ -302,10 +320,15 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
           .catch((error: unknown) => logEvent("run_execution", { code: "subagent_workspace_detach_failed", error, outcome: "failed",
             run_id: ids.runId, stage: "completion" }));
       }
+      const parentThreadId = input.parentAgent?.threadId ?? null;
+      const reported = parentThreadId ? reportOnItsWay(parentThreadId) : () => undefined;
       const ended = await settle(execution, ids.turnId, result);
       pending.abandon();
-      if (!ended) return;
-      if (input.parentAgent) reportToParent({ ...scope, name: input.name, parentThreadId: input.parentAgent.threadId, turnId: ids.turnId }, ended, ids.runId);
+      if (!ended) {
+        reported();
+        return;
+      }
+      if (parentThreadId) reportToParent({ ...scope, name: input.name, parentThreadId, turnId: ids.turnId }, ended, ids.runId, reported);
       else callBack({ ...scope, name: input.name, parentRunId: input.parentRunId, result: ended, threadId: input.threadId,
         turnId: ids.turnId }, ids.runId);
     })().catch(() => pending.abandon());
@@ -511,6 +534,10 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       const result = await stopTurn(turn, SUBAGENT_END_REASONS.stoppedByAgent);
       return { kind: "stopped", result: result ?? impliedResult({ modelId: turn.model.id, name: turn.name,
         reason: SUBAGENT_END_REASONS.stoppedByAgent, reasoningEffort: turn.model.effort, state: "stopped" }) };
+    },
+
+    reportsOnTheirWay(parentThreadId: string): number {
+      return reports.get(parentThreadId) ?? 0;
     },
 
     async stopChildren(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number> {
