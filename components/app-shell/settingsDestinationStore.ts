@@ -5,7 +5,8 @@ export type SettingsSection =
   | "connections"
   | "connected_apps"
   | "data"
-  | "general";
+  | "general"
+  | "proxies";
 
 export type SettingsDestinationSnapshot = {
   memoryOpen: boolean;
