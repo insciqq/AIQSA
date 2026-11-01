@@ -142,6 +142,10 @@ function server(initialRoles = rolesCatalog(), initialModel = modelCatalog()) {
             mcpGuardModel: body.mcpGuardProviderModelId ? { ...pick(body.mcpGuardProviderModelId)!, available: true } : null,
             mcpGuardReasoningEffort: body.mcpGuardReasoningEffort as string | null
           } : {}),
+          ...(Object.hasOwn(body, "researchVerifierProviderModelId") ? {
+            researchVerifierModel: body.researchVerifierProviderModelId ? { ...pick(body.researchVerifierProviderModelId)!, available: true } : null,
+            researchVerifierReasoningEffort: body.researchVerifierReasoningEffort as string | null
+          } : {}),
           ...(Object.hasOwn(body, "visionProviderModelId") ? {
             visionModel: body.visionProviderModelId ? { ...pick(body.visionProviderModelId)!, available: true } : null,
             visionReasoningEffort: body.visionReasoningEffort as string | null
@@ -1086,6 +1090,23 @@ describe("Image generation role", () => {
     await waitFor(() => expect(within(row).getByTestId("admin-role-speech-to-text-status")).toHaveTextContent("Not assigned"));
     expect(calls.at(-1)?.body).toEqual({ action: "clear", expectedConfiguredAt: "2026-10-08T10:00:00.000Z" });
   });
+});
+
+it("shows an unavailable research verifier and clears only that role, and an unset one says the chat's own model checks", async () => {
+  const catalog = rolesCatalog();
+  catalog.policy.researchVerifierModel = { ...titleModel, available: false };
+  catalog.policy.researchVerifierReasoningEffort = null;
+  const calls = server(catalog);
+  renderSection();
+  const row = await screen.findByTestId("admin-role-research-verifier");
+  expect(within(row).getByTestId("admin-role-research-verifier-status")).toHaveTextContent("Model unavailable");
+  expect(within(row).getByText(/the model of the chat checks and the answer says so/)).toBeVisible();
+  fireEvent.click(within(row).getByRole("button", { name: "Research verifier actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
+  await waitFor(() => expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+    { expectedVersion: 1, researchVerifierProviderModelId: null, researchVerifierReasoningEffort: null }
+  ]));
+  await waitFor(() => expect(within(row).getByTestId("admin-role-research-verifier-status")).toHaveTextContent("Not assigned"));
 });
 
 it("shows an unavailable assigned MCP guard and clears only that independent role", async () => {
