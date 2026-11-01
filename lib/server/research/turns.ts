@@ -1,6 +1,7 @@
 import { modelWithConnectionLabel } from "../../contracts/providerConnectionLabels";
 import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, SUBAGENT_NAME_PATTERN } from "../../contracts/subagents";
 import type { SubagentRouteResult } from "../engine/subagents/modelRoutes";
+import { withoutResearchBookkeeping } from "../engine/subagents/registry";
 import type { HostedSubagentRunner } from "../engine/subagents/runner";
 import { prepareRunSubagents, type PrepareRunSubagentsInput, type RunSubagents } from "../engine/subagents/runSubagents";
 import type { SubagentModelEntry } from "../engine/subagents/modelCatalog";
@@ -66,6 +67,7 @@ export function createResearchTurns(input: ResearchTurnsInput) {
   const runners = new Map<"main" | "verifier" | "gap_judge" | "researcher", Promise<RunSubagents | null>>();
   let gateCalls = 0;
   const researcherNames = new Set<string>();
+  const gateRegistry: PrepareRunSubagentsInput["buildRegistry"] = async (agentInput) => withoutResearchBookkeeping(await base.buildRegistry(agentInput));
 
   /**
    * One host per kind of turn: the same parts as the run's own sub-agents, without what a gate's turn has no use for. The
@@ -98,6 +100,8 @@ export function createResearchTurns(input: ResearchTurnsInput) {
         return found ? { ...found, latest: found.latest ? { ...found.latest, modelSource: "parent" as const, effortSource: "parent" as const } : null } : null;
       } } : store;
       runner = prepareRunSubagents({ ...parts,
+        // Every kind but a researcher is a gate's turn, whatever groups its request names.
+        ...researcher ? {} : { buildRegistry: gateRegistry },
         // Read at each use, not frozen by the spread: a research run's turn ends later once its plan is released.
         get deadlineAt() { return base.deadlineAt; },
         ...(route ? { adapter: route.route.adapter, answerTimeoutMs: route.route.timeoutMs,
