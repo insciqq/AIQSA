@@ -134,7 +134,7 @@ export type OwedCallbacks = Readonly<{
   inactiveTurnIds: readonly string[];
   /** The chat's active main-agent run, if any. */
   mainRun: Readonly<{ id: string; status: ModelRunStatus }> | null;
-  /** Messages to the main agent an answer ended without reading, for its next answer: they wake nothing. */
+  /** Messages to the main agent an answer of this branch ended without reading, for its next answer: they wake nothing. */
   strandedMessageIds?: readonly string[];
 }>;
 
@@ -372,6 +372,25 @@ async function askedQuestions(tx: Prisma.TransactionClient, turns: readonly Read
   return questions;
 }
 
+/**
+ * Messages to the main agent that an answer ended without reading. Only their own branch can take them
+ * (`moveMessageIntoRun`), so with `path` a branch the user left keeps its messages for when the user comes back, and no
+ * flush meets them meanwhile.
+ */
+function strandedMessages(scope: SubagentChatScope, path?: ReadonlySet<string>): Prisma.RunFollowupWhereInput {
+  return { chatId: scope.chatId, deliveredAt: null, modelRun: { ...(path ? { assistantMessageId: { in: [...path] } } : {}),
+    status: { in: ENDED_RUN_STATUSES }, subagentTurnId: null, userId: scope.userId }, ordinal: { lte: RUN_FOLLOWUP_REVISION_MAX }, origin: "subagent_message" };
+}
+
+/** Whether the chat's active branch holds one: nearly every chat has none at all, so only one that does walks its branch. */
+async function hasStrandedMessage(client: PrismaClient, scope: SubagentChatScope): Promise<boolean> {
+  if (!await client.runFollowup.findFirst({ select: { id: true }, where: strandedMessages(scope) })) return false;
+  const chat = await client.chat.findFirst({ select: { activeLeafMessageId: true }, where: { id: scope.chatId, userId: scope.userId } });
+  if (!chat?.activeLeafMessageId) return false;
+  const path = await branchPathMessageIds(client, scope.chatId, chat.activeLeafMessageId);
+  return await client.runFollowup.findFirst({ select: { id: true }, where: strandedMessages(scope, path) }) !== null;
+}
+
 export function createPrismaSubagentBackgroundStore(client: PrismaClient): SubagentBackgroundStore {
   return Object.freeze({
     async callerAvailable({ chatId, parentRunId, userId }) {
@@ -586,14 +605,13 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
 
     async owedCallbacks(scope) {
       // Every send and every main run's end flushes: a chat with no background turn that ended unclaimed or waits for an
-      // answer, and none whose callback, question or message sits unread in an answer that ended, takes no lock.
+      // answer, none whose callback or question sits unread in an answer that ended, and no such message on its active
+      // branch, takes no lock.
       const unread = { deliveredAt: null, ordinal: { lte: RUN_FOLLOWUP_REVISION_MAX } };
       const candidate = await client.subagentTurn.findFirst({ select: { id: true }, where: { chatId: scope.chatId,
         mode: "background", userId: scope.userId, OR: [{ endedAt: { not: null }, OR: [{ callbackRunId: null },
           { callbackRun: { status: { in: ENDED_RUN_STATUSES } }, followups: { some: unread } }] },
-        { reasonCode: SUBAGENT_WAIT_REASONS.answer, state: "waiting" }] } }) ??
-        await client.runFollowup.findFirst({ select: { id: true }, where: { ...unread, chatId: scope.chatId,
-          modelRun: { status: { in: ENDED_RUN_STATUSES }, subagentTurnId: null, userId: scope.userId }, origin: "subagent_message" } });
+        { reasonCode: SUBAGENT_WAIT_REASONS.answer, state: "waiting" }] } }) ?? await hasStrandedMessage(client, scope);
       if (!candidate) return { activeBranch: [], inactiveTurnIds: [], mainRun: null };
       return client.$transaction(async (tx): Promise<OwedCallbacks | null> => {
         const chat = await lockChatScope(tx, scope);
@@ -638,7 +656,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
         const mainRun = await tx.modelRun.findFirst({ orderBy: { createdAt: "desc" }, select: { id: true, status: true },
           where: { chatId: scope.chatId, status: { in: activeModelRunStatuses }, subagentTurnId: null } });
         const messages = await tx.runFollowup.findMany({ orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
-          where: { ...unread, chatId: scope.chatId, modelRun: { status: { in: ENDED_RUN_STATUSES }, subagentTurnId: null }, origin: "subagent_message" } });
+          where: strandedMessages(scope, path) });
         return { activeBranch, inactiveTurnIds, mainRun, strandedMessageIds: messages.map((message) => message.id) };
       });
     },

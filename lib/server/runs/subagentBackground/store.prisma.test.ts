@@ -276,6 +276,19 @@ describe("background sub-agent runs on PostgreSQL", () => {
     expect(owed?.mainRun).toBeNull();
   }));
 
+  it("leaves a message of a branch the user left where it is, and owes it again when the user comes back", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, userId: f.userId };
+    expect(await store.messageMainAgent({ ...scope, authorName: "scout", nonce: "m-1", parentRunId: f.main.runId, text: "It costs 42" })).toBe("delivered");
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    expect((await store.owedCallbacks(scope))?.strandedMessageIds).toHaveLength(1);
+    const sibling = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent("Edited question"),
+      parentMessageId: null, role: "user", status: "complete" } });
+    await prisma.chat.update({ data: { activeLeafMessageId: sibling.id }, where: { id: f.chatId } });
+    expect(await store.owedCallbacks(scope)).toEqual({ activeBranch: [], inactiveTurnIds: [], mainRun: null });
+    await prisma.chat.update({ data: { activeLeafMessageId: f.main.assistantMessageId }, where: { id: f.chatId } });
+    expect((await store.owedCallbacks(scope))?.strandedMessageIds).toHaveLength(1);
+  }));
+
   it("owes a waiting turn's question like a callback, and its own end a callback of its own", async () => fixture(async (f) => {
     const scope = { chatId: f.chatId, userId: f.userId };
     const threads = createSubagentThreadStore(prisma);
