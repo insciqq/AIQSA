@@ -40,17 +40,18 @@ export {
  * model. A URL is read only when the server finds it in the run's authority:
  * user-authored text on the chat's visible branch (frozen at admission as
  * digests), a scheduled run's task snapshot (frozen at admission), the run's
- * delivered follow-ups, or a source/citation URL the run's own Search
- * produced. Model text, fetched pages, MCP, Knowledge and attachments grant
- * nothing. Pages enter context as untrusted tool data. At most five page
- * requests per run; the same URL returns its earlier result. A PDF body is
- * read only by the isolated PDF extractor, under its own byte bound.
+ * delivered follow-ups, or a source/citation URL Search produced for any agent
+ * of this answer or an earlier answer on its branch. Model text, fetched pages,
+ * MCP, Knowledge and attachments grant nothing. Pages enter context as untrusted
+ * tool data. The same URL returns its earlier result. A PDF body is read only by
+ * the isolated PDF extractor, under its own byte bound.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-type FailureCode = Exclude<FetchUrlActivityOutcome, "read">;
+/** What this reader settles a call with. `fetch_url_limit_reached` stays only in results stored before the limit went. */
+type FailureCode = Exclude<FetchUrlActivityOutcome, "fetch_url_limit_reached" | "read">;
 
 /**
  * What the model is told for a link its run may not read, by where the user
@@ -68,7 +69,7 @@ function notInConversationMessage(scope: FetchUrlRefusalScope | undefined, searc
         "answer cannot, so it was not read. Do not try variations of it. If the page is needed now, ask the user to send " +
         "the link in the chat.";
     default:
-      return "fetch_url reads only links the user wrote in this chat or that web search returned in this answer; this one is " +
+      return "fetch_url reads only links the user wrote in this chat or that web search returned in it; this one is " +
         "neither, so it was not read. Do not try variations of it. " + (searchAvailable
         ? "If the page is needed, find it with web search and read a link from its results; ask the user to send the " +
           "link only if search does not find it."
@@ -141,8 +142,6 @@ function failureMessage(code: FailureCode, context: FailureContext): string {
         "upload the file instead if it is needed.";
     case "fetch_reader_unavailable":
       return "Page reading is unavailable on this server right now, so the page was not read. Do not retry it in this answer.";
-    case "fetch_url_limit_reached":
-      return `This answer already read ${FETCH_URL_LIMITS.callsPerRun} pages; answer with what was read so far.`;
     case "fetch_url_interrupted":
       return "Reading this page was interrupted and was not repeated; its outcome is unknown. Ask the user before reading it again.";
   }
@@ -257,8 +256,8 @@ function pdfExtractionFailureCode(error: unknown): FailureCode {
   }
 }
 
-/** One persisted call of this run's page reader. */
-export type FetchUrlPersistedCall = Readonly<{ id: string; state: string; result: unknown }>;
+/** The stored result of one page this run read. */
+export type FetchUrlPersistedCall = Readonly<{ result: unknown }>;
 
 export type FetchUrlSessionDeps = Readonly<{
   plan: FetchUrlPlan;
@@ -268,11 +267,9 @@ export type FetchUrlSessionDeps = Readonly<{
   searchAvailable?: boolean;
   /** Read when a page is refused: the run's Workspace tools are known only after the session is created. */
   browserStep?: () => FetchUrlBrowserStep | null;
-  /** Delivered follow-ups of this run: user-authored text received mid-run. */
-  followupTexts?: () => readonly string[];
-  /** Source and citation URLs the run's own Search persisted so far. */
+  /** Source and citation URLs Search persisted so far for the agents of this answer and the earlier answers on its branch. */
   loadSearchUrls?: () => Promise<readonly string[]>;
-  /** The run's persisted page-reader calls, so a recovered run keeps its cap and cache. */
+  /** The pages the run read before this session, so a recovered run keeps its cache. */
   loadCalls?: () => Promise<readonly FetchUrlPersistedCall[]>;
   fetchPage?: (url: string, options: WebFetchOptions) => Promise<WebFetchResponse>;
   /** Fetched body to page text; production parses it in the disposable parser process. */
@@ -285,13 +282,14 @@ export type FetchUrlSessionDeps = Readonly<{
 }>;
 
 export type FetchUrlSession = Readonly<{
-  execute(call: ModelToolCall, input: Readonly<{ persistedToolCallId: string; signal: AbortSignal }>): Promise<ToolExecutionResult>;
+  /** `followupTexts`: the user-authored text this calling agent has received mid-run, which agents do not all share. */
+  execute(call: ModelToolCall, input: Readonly<{ followupTexts?: () => readonly string[]; signal: AbortSignal }>): Promise<ToolExecutionResult>;
 }>;
 
 /**
- * The page reader of one run execution. Provenance is decided only from
- * server-held authority; the cap and cache count persisted calls too, so a
- * recovered run neither exceeds the cap nor reads a page again.
+ * The page reader of one answer, shared by its agents. Provenance is decided
+ * only from server-held authority; the cache holds persisted reads too, so a
+ * recovered run does not read a page again.
  */
 export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSession {
   const fetchPage = deps.fetchPage ?? fetchWebPage;
@@ -307,32 +305,38 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
   /** Where the owner allows a refused link, when not by sending it in the chat. */
   const refusalScope = (url: string): FetchUrlRefusalScope | undefined =>
     deps.scheduled ? "scheduled_run" : instructionLinks.has(fetchUrlDigest(url)) ? "task_instructions" : undefined;
-  /** Persisted call ids whose page request may have left: settled sends and unsettled calls. */
-  const sent = new Set<string>();
-  /** Calls this session settled without a request; a concurrent seed may still see them running. */
-  const notSent = new Set<string>();
+  /** Links Search gave this answer so far: evidence only grows, so only a link not found yet asks the database again. */
+  const searchLinks = new Set<string>();
   const cache = new Map<string, ReadValue>();
+  /** The session outlives the main run while background turns read, so the oldest page leaves; reading it again is harmless. */
+  const remember = (url: string, value: ReadValue) => {
+    cache.set(url, value);
+    if (cache.size > FETCH_URL_LIMITS.cachedPages) cache.delete(cache.keys().next().value!);
+  };
   const inFlight = new Map<string, Promise<Outcome>>();
   let seeded: Promise<void> | null = null;
 
   async function seed(): Promise<void> {
     for (const call of await deps.loadCalls?.() ?? []) {
       const facts = persistedFetchUrlFacts(call.result);
-      if (!notSent.has(call.id) && (call.state === "running" || facts?.dispatched)) sent.add(call.id);
       if (facts?.outcome === "read" && facts.url && !cache.has(facts.url)) {
         const value = persistedReadValue(call.result, facts.url);
-        if (value) cache.set(facts.url, value);
+        if (value) remember(facts.url, value);
       }
     }
   }
 
-  async function authorized(url: string): Promise<boolean> {
+  async function authorized(url: string, followupTexts: (() => readonly string[]) | undefined): Promise<boolean> {
     const digest = fetchUrlDigest(url);
     if (frozen.has(digest)) return true;
-    const followups = deps.followupTexts?.() ?? [];
+    const followups = followupTexts?.() ?? [];
     if (followups.length > 0 && fetchUrlDigestsOf(followups, FETCH_URL_LIMITS.authorizedUrls).includes(digest)) return true;
-    const searchUrls = await deps.loadSearchUrls?.() ?? [];
-    return searchUrls.some((candidate) => normalizeFetchUrl(candidate) === url);
+    if (searchLinks.has(url)) return true;
+    for (const candidate of await deps.loadSearchUrls?.() ?? []) {
+      const link = normalizeFetchUrl(candidate);
+      if (link) searchLinks.add(link);
+    }
+    return searchLinks.has(url);
   }
 
   async function fetchAndExtract(url: string, signal: AbortSignal): Promise<Outcome> {
@@ -379,48 +383,41 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
 
   return {
     async execute(call, input) {
-      const id = input.persistedToolCallId;
-      /** Settles this call as one that sent no request, freeing any cap slot a seed gave it. */
-      const unsent = (result: ToolExecutionResult) => {
-        notSent.add(id);
-        sent.delete(id);
-        return result;
-      };
-      const refuse = (code: FailureCode, url: string | null) => unsent(failed(call, { code, dispatched: false, kind: "failed" },
+      const refuse = (code: FailureCode, url: string | null) => failed(call, { code, dispatched: false, kind: "failed" },
         url, { pdfMaxBytes, searchAvailable: deps.searchAvailable,
-          ...(url && code === "fetch_url_not_in_conversation" ? { refusalScope: refusalScope(url) } : {}) }));
+          ...(url && code === "fetch_url_not_in_conversation" ? { refusalScope: refusalScope(url) } : {}) });
       if (hasInvalidProviderToolArguments(call.arguments) || Object.keys(call.arguments).some((key) => key !== "url")) {
         return refuse("fetch_url_invalid", null);
       }
       const url = normalizeFetchUrl(call.arguments.url);
       if (!url) return refuse("fetch_url_invalid", null);
-      if (!await authorized(url)) return refuse("fetch_url_not_in_conversation", url);
+      if (!await authorized(url, input.followupTexts)) return refuse("fetch_url_not_in_conversation", url);
       const policy = webFetchUrlRefusal(new URL(url));
       if (policy) return refuse(policy, url);
       await (seeded ??= seed());
       const cached = cache.get(url);
-      if (cached) return unsent(read(call, cached, true));
-      const pending = inFlight.get(url);
-      if (pending) {
-        const outcome = await pending;
-        return unsent(outcome.kind === "read" ? read(call, outcome.value, true)
-          : failed(call, { ...outcome, dispatched: false }, url, { browserStep: deps.browserStep?.(), pdfMaxBytes }));
+      if (cached) return read(call, cached, true);
+      for (let pending = inFlight.get(url); pending; pending = inFlight.get(url)) {
+        try {
+          const outcome = await pending;
+          return outcome.kind === "read" ? read(call, outcome.value, true)
+            : failed(call, { ...outcome, dispatched: false }, url, { browserStep: deps.browserStep?.(), pdfMaxBytes });
+        } catch (error) {
+          // The agent that started this read was stopped, which does not stop this one: it reads the page itself.
+          if (input.signal.aborted) throw error;
+        }
       }
-      const others = [...sent].filter((entry) => entry !== id).length;
-      if (others >= FETCH_URL_LIMITS.callsPerRun) return refuse("fetch_url_limit_reached", url);
-      sent.add(id);
       const work = fetchAndExtract(url, input.signal);
       inFlight.set(url, work);
       try {
         const outcome = await work;
         if (outcome.kind === "read") {
-          cache.set(url, outcome.value);
+          remember(url, outcome.value);
           return read(call, outcome.value, false);
         }
-        const result = failed(call, outcome, url, { browserStep: deps.browserStep?.(), pdfMaxBytes });
-        return outcome.dispatched ? result : unsent(result);
+        return failed(call, outcome, url, { browserStep: deps.browserStep?.(), pdfMaxBytes });
       } finally {
-        inFlight.delete(url);
+        if (inFlight.get(url) === work) inFlight.delete(url);
       }
     }
   };

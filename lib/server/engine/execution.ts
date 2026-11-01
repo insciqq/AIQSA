@@ -557,7 +557,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           return { browserHandoff: { ...browserHandoff, agent: { id: agent.threadId, name: agent.name },
             ...(host ? { live: host.live, toolTimeLeftMs: host.toolTimeLeftMs } : {}) } };
         };
-        const mainRegistry = await buildToolRegistry({ ...registryInput, agent: { kind: "main" }, followupTexts: () => delivered,
+        const mainRegistry = await buildToolRegistry({ ...registryInput, agent: { kind: "main" },
+          // A scheduled run's context is flat: an earlier occurrence's search is none of its evidence.
+          fetchUrlEarlierRunIds: input.scheduled ? [] : branchRunIds,
+          followupTexts: () => delivered,
           onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base });
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
         const toolState: ToolBatchState = { calls: 0 };
@@ -600,7 +603,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...(backgroundParts ? { backgroundParts } : {}),
           admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
           branchRunIds,
-          // One page-reader session for the answer: its cap and cache count every agent's reads (integrator decision).
+          // One page-reader session for the answer: its link authority and cache cover every agent, and it stays bound to
+          // the main run, however long a background turn outlives it.
           // A background turn's registry acts as its own run (its Workspace attachment, calls and usage), over the
           // parent's MCP bindings by reference; each sub-agent's handoff names it, from its own run's live membership.
           buildRegistry: (agentInput) => buildToolRegistry({ ...registryInput,
@@ -625,7 +629,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           },
           // Only a web chat starts background turns: a Telegram turn or a scheduled occurrence waits for the sub-agents it starts.
           backgroundAllowed: !input.telegram && !input.scheduled,
-          ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
+          ports: input.subagents, recordSearchEvidence: (row) => input.repository.createSearchRun(row), runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
           runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
           unknownEffects: (threadId) => agentFences.agent(threadId), usage,
           userMessage: currentUserMessageText(contextMessages, subagentServerTurns)

@@ -51,7 +51,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 ## Page reading (`fetch_url`)
 
-- `fetch_url` sends only URLs found in the run's frozen link authority (user-authored branch text and delivered follow-ups) or in that run's own Search evidence, so injected text cannot exfiltrate context through it. Fetched pages are data, never instructions or link authority.
+- `fetch_url` sends only URLs found in the run's frozen link authority (user-authored branch text and delivered follow-ups) or in Search evidence (operator decisions 2026-11-01): that of every agent of the answer, a background sub-agent that outlives the main run included, and of earlier answers on the visible branch, since that is the same class of authority. Another branch, chat or user never counts, and a scheduled occurrence counts only its own answer. Injected text therefore cannot exfiltrate context through it. Fetched pages are data, never instructions or link authority.
 - A scheduled prompt authorizes no link by itself. Its task keeps a link snapshot with explicit authorship (`lib/server/scheduledTasks/promptUrls.ts`): links the owner writes, and for prompts a chat tool writes, only links that run's user text authorized. Search results never enter it, and neither does a webhook event's body.
 - Parsing happens only in the disposable parser process, never in the application.
 

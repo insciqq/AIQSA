@@ -858,19 +858,15 @@ export type RunRepository = {
     result(card: import("../../contracts/skillSaves").SkillSaveCard, version: number): import("../tools/types").ToolExecutionResult;
   }>): Promise<import("../tools/skillSave").SkillSaveCommitOutcome>;
   /**
-   * `fetch_url` provenance: the source and citation URLs the run's own Search
-   * persisted so far (its Search executions and its hosted Search output
-   * events), unnormalized, bounded. Another run's Search never counts.
+   * `fetch_url` provenance: the source and citation URLs Search persisted so
+   * far (its executions and hosted output events) for the main-agent run
+   * `runId`, `earlierRunIds` (main-agent runs on its branch) and their
+   * background sub-agents; unnormalized, newest first, bounded. A run of
+   * another chat or owner never counts, whatever the input names.
    */
-  loadRunSearchSourceUrls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly string[]>;
-  /**
-   * Every persisted `fetch_url` call of the run, in round and call order, so a
-   * recovered run keeps its page cap and cache. No bound below the run's
-   * accepted tool-call budget: a hidden sent call could be sent again.
-   */
-  loadRunFetchUrlCalls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly Readonly<{
-    id: string; result: unknown; state: string;
-  }>[]>;
+  loadRunSearchSourceUrls?(input: Readonly<{ earlierRunIds: readonly string[]; runId: string; userId: string }>): Promise<readonly string[]>;
+  /** The newest settled reads of the run's `fetch_url`, oldest of them first and bounded: a recovered run's read cache. */
+  loadRunFetchUrlCalls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly Readonly<{ result: unknown }>[]>;
   /**
    * Which of these messages of the chat are scheduled task prompts
    * (`Message.scheduledTaskPrompt`): their text authorizes no `fetch_url` link.
