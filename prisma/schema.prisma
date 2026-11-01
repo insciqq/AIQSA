@@ -3278,8 +3278,9 @@ model RunTranscriptItem {
 }
 
 /// One research run's frame (`lib/contracts/research.ts`, `agent_docs/RUN_CONTRACTS.md`): the goal, the plan proposal and
-/// its window, the user's answer, the matrix with its change log. Keyed by the run, so a run has one. It is what a Continue
-/// reloads after a restart. Goes with its run, and so with the branch, the chat and the account.
+/// its window, the user's answer, the matrix with its change log. Keyed by the run that started the research, so a run has
+/// one, and an approval continuation, a new run, works on that same row, as it does on that run's evidence and pages. It is
+/// what a Continue reloads after a restart. Goes with its run, and so with the branch, the chat and the account.
 model ResearchFrame {
   modelRunId         String          @id
   userId             String

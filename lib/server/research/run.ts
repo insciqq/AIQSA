@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   decodeResearchDraft,
   decodeResearchPlan,
+  RESEARCH_TIME_MS,
   START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   type DecodedResearch,
@@ -21,10 +22,10 @@ import { planActivityEntry } from "../tools/harnessActivity";
 import { harnessToolError } from "../tools/harnessTool";
 import { researchDraftReservedInstruction, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, type ResearchAttempt, type ResearchGate } from "./gates";
+import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { researcherBrief, researchMethodText, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
-import { researchPorts, type ResearchGatePorts, type ResearchPortFactories, type ResearchReportEnding } from "./ports";
+import { researchPorts, type ResearchPortFactories, type ResearchReportEnding } from "./ports";
 import { createResearchSources } from "./sources";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -38,7 +39,9 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * of one batch run at once, so a researcher beside it never starts outside the
  * method. A start the batch then refused gives that back. The call is the record:
  * an approval continuation finds it in the turn's items, and any other later turn
- * is an ordinary one, so nothing is ever replayed after a restart.
+ * is an ordinary one, so nothing is ever replayed after a restart. Its result names
+ * the research run, since an approval continuation is a new run that must work on
+ * the rows of the run that started the research (`researchRunOf`).
  *
  * How the server sees a draft, and how it reaches the user. The model hands the
  * report in through a reserved call, whose arguments are never streamed, so the
@@ -86,6 +89,9 @@ const SUBMIT_FIRST = `Your message was not shown to the user: while research run
 const SENT_BACK_START = "Not shown to the user yet. ";
 const SENT_BACK_END = ` Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`;
 
+/** The research run a start call's result names. It is the result's first field, read by its place: a long result is stored as an excerpt, which no JSON parser reads. */
+const STARTED_RESEARCH_RUN = /^\{"research_run":"([^"\\]{1,64})"/u;
+
 const resultOf = (call: ModelToolCall, value: { [key: string]: string }): ToolExecutionResult =>
   ({ callId: call.id, content: [{ type: "json", value }], name: call.name, status: "complete" });
 
@@ -101,6 +107,8 @@ export type RunResearchInput = Readonly<{
   onPlan(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   /** Gives the reserved call back after a draft was not accepted (`ToolBatchState.reservedCalled`). */
   rearmReservedCall(): void;
+  /** The run this one works on (`researchRunOf`), fixed before the ports are made; absent, its own. */
+  researchRunId?: string;
   runId: string;
   savedResults: SavedToolResultReader;
   subagentInput: PrepareRunSubagentsInput;
@@ -145,10 +153,14 @@ export function createRunResearch(input: RunResearchInput) {
     userMessage: input.userMessage });
   const sources = createResearchSources({ chatId: input.chatId, items: input.items, runId: input.runId, savedResults: input.savedResults,
     threads: input.threads, userId: input.userId });
-  const ports = researchPorts(input.deps.ports, { chatId: input.chatId, extendTurn: (endsAt) => input.extendTurn?.(endsAt), now: input.now, runId: input.runId,
-    sources, subagents: input.subagentInput, userId: input.userId });
-  const gatePorts: ResearchGatePorts = { coverage: ports.coverage, evidence: ports.evidence };
+  const researchRunId = input.researchRunId ?? input.runId;
+  const ports = researchPorts(input.deps.ports, { branchRunIds: input.subagentInput.branchRunIds, chatId: input.chatId,
+    extendTurn: (endsAt) => input.extendTurn?.(endsAt), mailbox: input.subagentInput.ports?.messaging,
+    now: input.now, researchRunId, runId: input.runId, sources, userFollowups: () => input.subagentInput.userFollowups(), userId: input.userId,
+    userMessage: input.userMessage });
   const gates = [...ports.report.gates, ...input.deps.gates ?? RESEARCH_GATES];
+  /** What building the answer from the records came to: a run composes once, however many of its ends ask. */
+  let composing: Promise<string | null> | null = null;
   const note = (key: ResearchNoteKey, draft: Pick<ResearchDraft, "report">) => researchNote(key, draft.report);
   /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
   const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: researchCarriedNotes(gates, draft, attempts) });
@@ -158,15 +170,39 @@ export function createRunResearch(input: RunResearchInput) {
     ports.time.planReleased();
   };
 
+  /**
+   * Answer first: the port gets `RESEARCH_TIME_MS.composeReport` and Stop, and the run stops waiting at either, so a port that ignores its
+   * signal cannot hold the run's end. Its failure costs what it would have built, never that end.
+   */
+  async function compose(ended: ResearchReportEnding, stop: AbortSignal): Promise<string | null> {
+    const own = new AbortController();
+    const timer = setTimeout(() => own.abort(new Error("research_report_timed_out")), RESEARCH_TIME_MS.composeReport);
+    (timer as { unref?: () => void }).unref?.();
+    const signal = AbortSignal.any([stop, own.signal]);
+    try {
+      return await untilAborted(Promise.resolve().then(() => {
+        signal.throwIfAborted();
+        return ports.report.compose({ ended, signal });
+      }), signal);
+    } catch (error) {
+      if (!stop.aborted) logEvent("run_execution", { code: "research_report_failed", error, outcome: "failed", run_id: input.runId, stage: "execution" });
+      return null;
+    } finally {
+      clearTimeout(timer);
+      // A port given up on stops what it started; one that finished has nothing left to stop.
+      own.abort();
+    }
+  }
+
   async function check(draft: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<void> {
     if (!plan) return;
     held = unchecked(draft);
     const attempt = attempts.length + 1;
-    // The ports ride beside the context's own fields; a gate reads them through `researchGatePorts`.
     const outcome = await runResearchGates({ draft, gates, runId: input.runId, context: {
-      ...gatePorts,
       attempt,
+      coverage: ports.coverage,
       earlier: [...attempts],
+      evidence: ports.evidence,
       plan,
       signal: execution.signal,
       sources,
@@ -197,7 +233,8 @@ export function createRunResearch(input: RunResearchInput) {
       unconfirmedStart = null;
       const entry = planActivityEntry({ callId: persistedToolCallId, runId: input.runId, update: researchPlanUpdate(started) });
       if (entry) await input.onPlan(entry);
-      return resultOf(call, { method: researchMethodText(started), status: "started" });
+      // The server's field, first so a long method's excerpt keeps it: an approval continuation reads it back (`researchRunOf`).
+      return resultOf(call, { research_run: researchRunId, method: researchMethodText(started), status: "started" });
     }
   };
 
@@ -388,17 +425,13 @@ export function createRunResearch(input: RunResearchInput) {
 
     /**
      * The answer the server builds from the records when `finish` or `afterEnding` had none, never for a stopped run or one
-     * waiting for the user. Apart from them because it reads a store, and they answer at once. Answer first: its failure costs
-     * what it would have built, never the run's end.
+     * waiting for the user. Apart from them because it reads a store, and they answer at once. `stop` is what ends the run's Stop,
+     * not its deadline: the deadline may be what ended it. A second end, such as a failure to publish, gets the first one's result.
      */
-    async composed(ended: ResearchReportEnding): Promise<string | null> {
-      if (!plan) return null;
-      try {
-        return await ports.report.compose({ ended });
-      } catch (error) {
-        logEvent("run_execution", { code: "research_report_failed", error, outcome: "failed", run_id: input.runId, stage: "execution" });
-        return null;
-      }
+    composed(ended: ResearchReportEnding, stop: AbortSignal): Promise<string | null> {
+      if (!plan) return Promise.resolve(null);
+      composing ??= compose(ended, stop);
+      return composing;
     },
 
     /** An approval continuation goes on with the research its turn started; every other later turn is an ordinary one. */
@@ -434,17 +467,21 @@ function gatesWord(result: Extract<TranscriptItem, { kind: "tool_result" }> | un
 /**
  * What a turn's items hold of its research: its calls since the last message of the user's or the server's own. `attempts` are
  * the drafts the gates ended on with what they said, rebuilt with new objects for an approval continuation: what a gate keeps
- * by object identity is gone, so a gate that must remember reads these (`verifier.ts`).
+ * by object identity is gone, so a gate that must remember reads these (`verifier.ts`). `researchRun` is what the start call's
+ * stored result names, there only when it names one, as no older result does; a stored value, so it means nothing until
+ * `researchRunOf` has checked it.
  */
-export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ attempts: readonly ResearchAttempt[]; draft: ResearchDraft | null; plan: ResearchPlan | null }> {
+export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ attempts: readonly ResearchAttempt[]; draft: ResearchDraft | null; plan: ResearchPlan | null;
+  researchRun?: string }> {
   const attempts: ResearchAttempt[] = [];
   const results = new Map<string, Extract<TranscriptItem, { kind: "tool_result" }>>();
   let draft: ResearchDraft | null = null;
   let plan: ResearchPlan | null = null;
+  let researchRun: string | undefined;
   for (let index = items.length - 1; index >= 0 && !plan; index -= 1) {
     const item = items[index]!;
     if (item.kind === "user" && item.id.startsWith("msg-")) break;
-    if (item.kind === "tool_result" && item.name === SUBMIT_RESEARCH_DRAFT_TOOL_NAME) results.set(item.callId, item);
+    if (item.kind === "tool_result" && (item.name === START_RESEARCH_TOOL_NAME || item.name === SUBMIT_RESEARCH_DRAFT_TOOL_NAME)) results.set(item.callId, item);
     if (item.kind !== "tool_call" || item.name !== START_RESEARCH_TOOL_NAME && item.name !== SUBMIT_RESEARCH_DRAFT_TOOL_NAME) continue;
     let parsed: unknown;
     try {
@@ -454,7 +491,10 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
     }
     if (item.name === START_RESEARCH_TOOL_NAME) {
       const decoded = decodeResearchPlan(parsed);
-      if (decoded.ok) plan = decoded.value;
+      if (!decoded.ok) continue;
+      plan = decoded.value;
+      const started = results.get(item.callId);
+      researchRun = started?.outcome === "complete" ? STARTED_RESEARCH_RUN.exec(started.output)?.[1] : undefined;
     } else {
       const decoded = decodeResearchDraft(parsed);
       if (!decoded.ok) continue;
@@ -463,5 +503,15 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
       if (message !== undefined) attempts.unshift({ draft: decoded.value, message });
     }
   }
-  return { attempts, draft, plan };
+  return { attempts, draft, plan, ...researchRun === undefined ? {} : { researchRun } };
+}
+
+/**
+ * The run whose frame, records and pages an approval continuation works on, from the turn's items: the run that started the research,
+ * however many approvals ago, because each one finds the same start call. A stored value grants nothing (root rule "The server decides"):
+ * it counts only when it names a run of this branch, and otherwise, as with no value, the run keeps its own id.
+ */
+export function researchRunOf(items: readonly TranscriptItem[], run: Readonly<{ branchRunIds: readonly string[]; runId: string }>): string {
+  const { researchRun } = researchOfTurn(items);
+  return researchRun !== undefined && run.branchRunIds.includes(researchRun) ? researchRun : run.runId;
 }

@@ -82,7 +82,7 @@ import {
 import { renderSubagentTypeCatalog } from "../subagents/typeCatalog";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
-import { createRunResearch, researchOffered, type ResearchEngineDeps, type RunResearch } from "../research/run";
+import { createRunResearch, researchOffered, researchRunOf, type ResearchEngineDeps, type RunResearch } from "../research/run";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -648,7 +648,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const runResearch = subagents && engine.research && engine.subagentThreads && researchOffered({ monitoring: normalizedRequest.monitoringVerdictTool === true,
           scheduled: input.scheduled === true, searchOptions: normalizedRequest.searchPlan.options.length, subagents: true, telegram: input.telegram === true })
           ? createRunResearch({ chatId: scope.chatId, deps: engine.research, gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
-            items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; }, runId,
+            items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; },
+            // An approval continuation is a new run of the research its turn started, and works on that run's rows.
+            researchRunId: input.approvalContinuation ? researchRunOf(conversation.items, { branchRunIds, runId }) : runId, runId,
             savedResults: engine.savedResults, subagentInput, threads: engine.subagentThreads, toolTimeLeft, userId: input.userId,
             userMessage: subagentInput.userMessage }) : null;
         research = runResearch;
@@ -933,7 +935,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
         let researched = runResearch?.finish(outcome.kind === "approval") ?? null;
-        if (researched === null && runResearch && outcome.kind !== "approval") researched = await runResearch.composed("no_report");
+        if (researched === null && runResearch && outcome.kind !== "approval") researched = await runResearch.composed("no_report", stop.signal);
         if (researched !== null) await showResearchAnswer(researched);
         // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
         if (researched === null && (outcome.kind === "empty" || outcome.kind === "answered" && runResearch?.holding() === true && !answer.text.trim())) {
@@ -995,7 +997,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspaceRun: Boolean(workspace) }) });
         // Answer first: a report research held reaches the answer whatever ended the run, with a note saying so.
         let heldReport = answerPublished ? null : research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
-        if (heldReport === null && research && !answerPublished && !cancelled) heldReport = await research.composed(deadline.signal.aborted ? "timed_out" : "failed");
+        if (heldReport === null && research && !answerPublished && !cancelled) heldReport = await research.composed(deadline.signal.aborted ? "timed_out" : "failed", stop.signal);
         if (heldReport !== null) await showResearchAnswer?.(heldReport);
         answer.stop();
         // Its sub-agents end with it and keep what they recorded; their turns settle before the run's records do.
