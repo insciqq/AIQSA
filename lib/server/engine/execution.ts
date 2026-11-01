@@ -802,6 +802,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             if (!retry) throw error;
             pending = [];
             answer.discardAttempt();
+            runResearch?.discardAttempt();
             return send(retry);
           }
         };
@@ -816,12 +817,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             onDiscard: async () => {
               pending = [];
               answer.discardAttempt();
+              runResearch?.discardAttempt();
             },
             onEvent: async (event) => {
               const pinned = withPinnedHostedSearchIdentity(event, normalizedRequest);
               if (pinned.type === "token") {
-                // While research runs nothing streams into the answer: the round's text is known whole when it ends.
-                if (!runResearch?.holding()) answer.push(pinned.data.delta);
+                // While research runs nothing streams into the answer: it is kept per attempt, for a provider that fails mid-report.
+                if (runResearch?.holding()) runResearch.heldToken(pinned.data.delta);
+                else answer.push(pinned.data.delta);
               }
               // Kept outputs of an attempt are saved once it completed; the rest are live only.
               else if (projectRunOutputArtifactEvent(pinned)) pending.push(pinned);
@@ -867,6 +870,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           },
           ...(runResearch ? { draft: {
             answerTaken: (taken: Readonly<{ toolChoice: LoopToolChoice }>) => runResearch.answerTaken(taken),
+            responseCompleted: (response: Readonly<{ calls: readonly ModelToolCall[]; runnable: readonly ModelToolCall[] }>) => runResearch.responseCompleted(response),
             // A draft written as a message has no call of its own: the server records one, in no conversation, so its gates run like any other's.
             responseEnded: (ended: Readonly<{ round: number; text: string; toolsClosed: boolean }>) => runResearch.responseEnded({ ...ended,
               runDraftCall: (call, round) => runToolBatch(batchDeps, { calls: 0 }, { calls: [call], round }) })
@@ -915,6 +919,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           runTools: async (calls, round) => {
             await answer.flush();
             const batch = await runToolBatch(batchDeps, toolState, { calls, round });
+            runResearch?.batchEnded();
             // A value the user had saved as a secret is not repeated in the answer, whatever the model writes (issue #52).
             answer.mask(calls.flatMap((call) => call.name === MANAGE_SECRET_TOOL_NAME ? manageSecretValues(call.arguments) : []));
             if (batch.approvals.length > 0 || normalizedRequest.mcpApproval?.guard) await emitApprovalCards();

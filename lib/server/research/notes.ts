@@ -3,11 +3,15 @@
  * writes these, in the language of the report, and they are never left to the
  * model: "the answer still arrives, with a visible note" (`agent_docs/RUN_CONTRACTS.md`, Answer first).
  */
-export type ResearchNoteKey = "gate_failed" | "no_findings" | "not_submitted" | "run_failed" | "stopped" | "time_out" | "unresolved";
+export type ResearchNoteKey = "followup_not_applied" | "gate_failed" | "incomplete" | "no_findings" | "not_submitted" | "run_failed" | "stopped" | "time_out" | "unresolved";
 
 const NOTES: Readonly<Record<ResearchNoteKey, Readonly<{ en: string; ru: string }>>> = {
+  followup_not_applied: { en: "What you wrote last arrived after this report was written and could not be taken into it.",
+    ru: "Ваше последнее сообщение пришло уже после этого отчёта, и учесть его не удалось." },
   gate_failed: { en: "A check of this report could not be completed, so it is not fully checked.",
     ru: "Одну из проверок этого отчёта не удалось завершить, поэтому он проверен не полностью." },
+  incomplete: { en: "The answer failed while this report was being written, so it is incomplete and not checked.",
+    ru: "Ответ прервался, пока писался этот отчёт, поэтому он неполный и не проверен." },
   no_findings: { en: "This report came without a list of findings, so its claims could not be checked against their sources.",
     ru: "Отчёт пришёл без списка находок, поэтому его утверждения не удалось сверить с источниками." },
   not_submitted: { en: "Research ended before the report was handed in for checking, so this is its last text and it is not checked.",
