@@ -25,10 +25,9 @@ const GATE_TYPE_ID = "research-gate";
 /** Far past any round's own calls: a gate's turn records its own call in the round of the draft it checks. */
 const GATE_CALL_FIRST_ORDINAL = 10_000;
 
-/** A thread name of this run and attempt, so no earlier research's thread is continued and no later reader is anchored on it. */
-export function researchTurnName(name: string, runId: string, attempt: number): string {
-  const run = runId.replace(/[^a-z0-9]/giu, "").toLowerCase().slice(0, 8) || "run";
-  const suffix = `-${run}-${attempt}`;
+/** A thread name of this attempt. Admission looks only among this run's threads, so no earlier research's thread is continued. */
+export function researchTurnName(name: string, attempt: number): string {
+  const suffix = `-${attempt}`;
   const stem = name.toLowerCase().replace(/[^a-z0-9_-]+/gu, "-").replace(/^[^a-z0-9]+/u, "").slice(0, SUBAGENT_LIMITS.nameCharacters - suffix.length)
     .replace(/[^a-z0-9]+$/u, "");
   const full = `${stem || "check"}${suffix}`;
@@ -51,7 +50,11 @@ export function createResearchTurns(input: ResearchTurnsInput) {
   const runners = new Map<"main" | "verifier", Promise<RunSubagents | null>>();
   let gateCalls = 0;
 
-  /** One host per model: the same parts as the run's own sub-agents, without what a gate's turn has no use for. */
+  /**
+   * One host per kind of turn: the same parts as the run's own sub-agents, without what a gate's turn has no use for. The
+   * verifier's is independent whatever model it runs on: none of the chat's or an Assistant's instructions, and none of what
+   * the user wrote, which the main agent read too. Link authority stays the answer's (`followupTexts`, the page-reader session).
+   */
   const hosted = (kind: "main" | "verifier", route: ResearchVerifierRoute | null) => {
     let runner = runners.get(kind);
     if (!runner) {
@@ -61,8 +64,11 @@ export function createResearchTurns(input: ResearchTurnsInput) {
         ...(route.connectionName ? { connectionName: route.connectionName } : {}), contextWindow: route.route.request.modelCapabilities.contextWindow ?? null,
         defaultEffort: null, displayName: route.displayName, imageInput: false, providerFamily: route.route.snapshot.providerFamily,
         providerModelId: route.route.snapshot.providerModelId, reasoningEfforts: [], upstreamModelId: route.route.snapshot.model.upstreamModelId } : null;
+      const independent = kind === "verifier";
       runner = prepareRunSubagents({ ...parts,
-        admittedRequest: { ...admittedRequest, subagentModels: { models: entry ? [entry] : [], version: 1 } },
+        admittedRequest: { ...admittedRequest, subagentModels: { models: entry ? [entry] : [], version: 1 },
+          ...independent ? { prompt: { ...admittedRequest.prompt.baseline ? { baseline: admittedRequest.prompt.baseline } : {}, developer: null, system: null } } : {} },
+        ...independent ? { userFollowups: async () => [] } : {},
         backgroundAllowed: false,
         engine: { ...base.engine, subagentModels: { route: async (): Promise<SubagentRouteResult> => route ? { ok: true, route: route.route }
           : { code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false } } },
@@ -75,13 +81,22 @@ export function createResearchTurns(input: ResearchTurnsInput) {
     return runner;
   };
 
+  /** A route or a refusal holds for the run; a failure to resolve one holds for no one, so the next attempt asks again. */
   let resolved: Promise<ResearchVerifierRoute | "main" | null> | null = null;
-  const verifierRoute = () => resolved ??= (async () => {
-    const choice = await input.verifierChoice;
-    if (choice.kind === "not_set") return "main" as const;
-    if (choice.kind !== "set" || !input.verifierRole) return null;
-    return input.verifierRole.route({ effort: choice.effort, providerModelId: choice.providerModelId, runId: base.runId, userId: base.scope.userId });
-  })();
+  const verifierRoute = async () => {
+    resolved ??= (async () => {
+      const choice = await input.verifierChoice;
+      if (choice.kind === "not_set") return "main" as const;
+      if (choice.kind !== "set" || !input.verifierRole) return null;
+      return input.verifierRole.route({ effort: choice.effort, providerModelId: choice.providerModelId, runId: base.runId, userId: base.scope.userId });
+    })();
+    try {
+      return await resolved;
+    } catch (error) {
+      resolved = null;
+      throw error;
+    }
+  };
 
   const mainBinding = (): SubagentBinding => ({ effortSource: "parent", modelId: snapshot.model.upstreamModelId, modelSource: "parent",
     provider: snapshot.connectionId, providerModelId: snapshot.providerModelId, reasoningEffort: admittedRequest.reasoningEffort ?? null });
@@ -91,7 +106,11 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const route = await verifierRoute();
       if (route === null) return { kind: "unavailable" };
       if (route === "main") return { kind: "main_model", label: admittedRequest.modelId };
-      return { kind: "role", label: modelWithConnectionLabel(route.displayName, route.connectionName) };
+      const label = modelWithConnectionLabel(route.displayName, route.connectionName);
+      // The role names the model that wrote the report, here or over another connection: no one independent checks it.
+      const { snapshot: chosen } = route.route;
+      const same = chosen.providerModelId === snapshot.providerModelId || chosen.model.upstreamModelId === snapshot.model.upstreamModelId;
+      return { kind: same ? "main_model" : "role", label };
     },
     async run(request: ResearchSubagentRequest, turn: Readonly<{ attempt: number; round: number; signal: AbortSignal }>): Promise<ResearchSubagentOutcome> {
       if (!store) return { code: "subagent_unavailable", kind: "refused" };
@@ -100,10 +119,9 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const onRole = route !== "main";
       const binding: SubagentBinding = onRole ? { effortSource: "call", modelId: route.route.snapshot.model.upstreamModelId, modelSource: "call",
         provider: route.route.snapshot.connectionId, providerModelId: route.route.snapshot.providerModelId, reasoningEffort: route.route.request.reasoningEffort } : mainBinding();
-      const prepared = await hosted(onRole ? "verifier" : "main", onRole ? route : null);
+      const prepared = await hosted(request.model, onRole ? route : null);
       if (!prepared) return { code: "subagent_unavailable", kind: "refused" };
-      const name = researchTurnName(request.name, base.runId, turn.attempt);
-      const branchRunIds = [...base.branchRunIds, base.runId];
+      const name = researchTurnName(request.name, turn.attempt);
       // A call has one turn (`SubagentTurn`'s unique parent call), and one draft may go through several gates' turns, so each
       // records its own call: the answer's steps and the thread's brief read it as any sub-agent's. It enters no conversation.
       const ordinal = GATE_CALL_FIRST_ORDINAL + gateCalls;
@@ -115,7 +133,8 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const settle = async (state: "complete" | "error") => {
         await base.engine.toolCalls.settle({ callId: parentToolCallId, result: { name: CALL_SUBAGENT_TOOL_NAME, status: state }, runId: base.runId, state }).catch(() => false);
       };
-      const admitted = await store.admitForeground({ binding, branchRunIds, chatId: base.chatId, definitionId: null, definitionRevisionId: null, name,
+      // Only this run's threads: an earlier answer's research has threads of these names, and continuing one would hand it that context.
+      const admitted = await store.admitForeground({ binding, branchRunIds: [base.runId], chatId: base.chatId, definitionId: null, definitionRevisionId: null, name,
         parentRunId: base.runId, parentToolCallId, typeName: null, userId: base.scope.userId });
       if (admitted.kind === "refused") {
         await settle("error");
@@ -127,7 +146,7 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const runner: HostedSubagentRunner = prepared.runner;
       const started = { binding, brief: request.brief, chatId: base.chatId, deadlineAt: new Date(base.deadlineAt), hostRunId: base.runId, mode: "foreground" as const,
         name, parentRunId: base.runId, parentToolCallId, signal: turn.signal, threadId: admitted.thread.id, turnId: admitted.turn.id,
-        type, userId: base.scope.userId, userMessage: input.userMessage };
+        type, userId: base.scope.userId, userMessage: request.model === "verifier" ? "" : input.userMessage };
       try {
         const handle = admitted.continued ? await runner.continue(started) : await runner.start(started);
         const result = await runner.wait(handle, turn.signal);

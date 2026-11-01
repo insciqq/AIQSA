@@ -1,6 +1,7 @@
 import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import { ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, SEND_AGENT_MESSAGE_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
+import { HARNESS_SEARCH_TOOL } from "../engine/prompts/harness";
 import { READ_TOOL_RESULT_NAME, type SavedToolResultReader } from "../engine/toolResults";
 import type { TranscriptItem } from "../engine/transcript";
 import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
@@ -20,6 +21,32 @@ const AGENT_WRITTEN: ReadonlySet<string> = new Set([ASK_PARENT_TOOL_NAME, CALL_S
 
 /** Bounds one read: a run's opened text is checked in memory. */
 export const RESEARCH_SOURCE_LIMITS = Object.freeze({ results: 2_000, totalCharacters: 16_000_000 });
+
+/** A command that drives the Workspace browser: the same reading as `drivesBrowser` in `lib/server/engine/toolRegistry.ts`. Reads such as its `text` print no step line. */
+const BROWSER_COMMAND = /aiqsa-browser|from\s+aiqsa\s+import\s+browser|aiqsa\.browser/u;
+
+/** A browser action's step line (`ops/workspace-guest/python/aiqsa/browser/_format.py`), at a line's start in a result stringified or not. */
+const BROWSER_STEP_START = /(?:^|"|\\n)\[browser #\d/mu;
+
+/**
+ * What a stored result proves. `page`: `fetch_url`, or what a browser command printed. `search`: results a page was found
+ * by, not opened. `other`: any other command, file read or MCP result, which holds what anyone put there, so it can only
+ * say a page could not be checked. `agent_written`: no evidence at all. The quote check and the gap check both read this.
+ */
+export type ResearchEvidenceKind = "agent_written" | "other" | "page" | "search";
+
+export function researchEvidenceKind(source: Pick<ResearchOpenedSource, "browser" | "text" | "toolName">): ResearchEvidenceKind {
+  if (source.toolName === FETCH_URL_TOOL_NAME) return "page";
+  if (HARNESS_SEARCH_TOOL.test(source.toolName)) return "search";
+  if (AGENT_WRITTEN.has(source.toolName)) return "agent_written";
+  return source.browser === true || BROWSER_STEP_START.test(source.text) ? "page" : "other";
+}
+
+/**
+ * An excerpt whose whole text could not be saved names itself (`toolOutputExcerpt`, `lib/server/engine/toolResults.ts`), with no
+ * handle to read the rest by. A page that quotes this wording earns at most "not checked".
+ */
+const UNSAVED_EXCERPT = /\[\d+ of \d+ characters omitted here \(characters \d+-\d+\)\. The whole result could not be saved /u;
 
 function pageUrl(call: TranscriptItem | undefined): string | null {
   if (call?.kind !== "tool_call" || call.name !== FETCH_URL_TOOL_NAME) return null;
@@ -59,9 +86,10 @@ export function createResearchSources(input: Readonly<{
             const saved = await input.savedResults.read({ ...scope, handle: item.handle, signal }).catch(() => null);
             if (saved) text = saved.text;
             else partial = true;
-          }
+          } else if (UNSAVED_EXCERPT.test(text)) partial = true;
           characters += text.length;
-          opened.push({ partial, text, toolName: item.name, url: pageUrl(calls.get(item.callId)) });
+          const call = calls.get(item.callId);
+          opened.push({ ...call?.kind === "tool_call" && BROWSER_COMMAND.test(call.arguments) ? { browser: true as const } : {}, partial, text, toolName: item.name, url: pageUrl(call) });
         }
       }
       return opened;

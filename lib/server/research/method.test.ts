@@ -99,10 +99,10 @@ describe("the method", () => {
     expect(harnessPromptSection({ tools: [], workspace: false })).not.toContain("# Research");
   });
 
-  it("names a gate's thread for its run and attempt, within the sub-agent name rule", () => {
-    expect(researchTurnName("Verifier!", "1f2e3d4c-aaaa", 2)).toBe("verifier-1f2e3d4c-2");
-    expect(researchTurnName("!!!", "run", 1)).toBe("check-run-1");
-    expect(researchTurnName("v".repeat(80), "run", 1).length).toBeLessThanOrEqual(48);
+  it("names a gate's thread for its attempt alone, with no piece of an internal id, within the sub-agent name rule", () => {
+    expect(researchTurnName("Verifier!", 2)).toBe("verifier-2");
+    expect(researchTurnName("!!!", 1)).toBe("check-1");
+    expect(researchTurnName("v".repeat(80), 1).length).toBeLessThanOrEqual(48);
   });
 
   it("notes in the report's language and keeps the report as written", () => {

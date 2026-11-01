@@ -25,7 +25,8 @@ const finding = (claim: string, quote: string, extra: Partial<ResearchFinding> =
   ({ claim, quote, sourceClass: "independent_tests", standing: "confirmed", url: LAB, ...extra });
 const HOLDS = finding("The X1 holds up.", "held up after 10 years");
 const WRONG = finding("The X2 lasts for decades.", "The X2 sagged within a year");
-const INVENTED = finding("The X3 never wears out.", "never wears out, ever");
+/** On a page nobody opened: a miss on one that was fetched is only `not_verbatim`. */
+const INVENTED = finding("The X3 never wears out.", "never wears out, ever", { url: "https://never.example/x3" });
 const draftOf = (findings: readonly ResearchFinding[], report = "# Report"): ResearchDraft => ({ findings, origin: "reserved_call", report, unreachable: [] });
 
 const fetched: ResearchOpenedSource = { partial: false, text: PAGE, toolName: "fetch_url", url: LAB };
@@ -112,6 +113,7 @@ describe("what the verifier gets and what comes back of it", () => {
     const result = sentBack(await verifierGate.run(draftOf([HOLDS, INVENTED]), context));
     expect(run.mock.calls[0]![0].brief).not.toContain("The X3");
     expect(result.message).toContain("Finding 2 \"The X3 never wears out.\": its quote is in no text any agent of this answer opened");
+    expect(result.message).toContain("whatever the findings list says");
     expect(notesOf(result)).toContain("not found: 1");
   });
 
@@ -164,7 +166,27 @@ describe("what the verifier gets and what comes back of it", () => {
     expect(result.kind).toBe("pass");
     expect(run).toHaveBeenCalledTimes(1);
     expect(notesOf(result)).toContain("could not be checked: 1");
-    expect(notesOf(result)).toContain("not checked (page read in a browser or not saved): 1");
+    expect(notesOf(result)).toContain("not checked (no saved page text to compare with): 1");
+  });
+
+  it("sends a quote missing from a fetched page to the verifier instead of calling it invented, and counts it apart", async () => {
+    const reworded = finding("The X1 holds up.", "It held up for ten whole years");
+    const { context, run } = contextOf({ turn: async () => ended("Outcome: done\nC1 | supported | the page says so") });
+    const result = await verifierGate.run(draftOf([reworded]), context);
+    expect(result.kind).toBe("pass");
+    expect(run.mock.calls[0]![0].brief).toContain("The X1 holds up.");
+    expect(notesOf(result)).toContain("Quotes: found in opened pages: 0; not word for word on the opened page: 1.");
+    expect(notesOf(result)).toContain("supported: 1");
+    expect(notesOf(result)).not.toContain("not found");
+  });
+
+  it("does not take a quote echoed into a command's output for a page: only the model can support that claim", async () => {
+    const echoed: ResearchOpenedSource = { partial: false, text: "echo never wears out, ever", toolName: "mcp__workspace__sandbox_shell", url: null };
+    const { context, run } = contextOf({ opened: async () => [echoed], turn: async () => ended("Outcome: done\nC1 | could_not_check | the link was refused") });
+    const result = await verifierGate.run(draftOf([INVENTED]), context);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(notesOf(result)).toContain("Quotes: found in opened pages: 0; not checked (no saved page text to compare with): 1.");
+    expect(notesOf(result)).toContain("could not be checked: 1");
   });
 });
 
@@ -175,6 +197,7 @@ describe("what runs the check", () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect(notesOf(result)).toContain("Checked by the main model (fake-qsa)");
     expect(notesOf(result)).toContain("not independent");
+    expect(notesOf(result)).not.toContain("Independently");
   });
 
   it("runs nothing on another model when the chosen one is unusable, and the quote check still counts", async () => {
@@ -190,6 +213,13 @@ describe("what runs the check", () => {
   it("treats the role refusing at the turn the same way", async () => {
     const { context } = contextOf({ turn: async () => ({ code: "research_verifier_unavailable", kind: "refused" }) });
     expect(notesOf(await verifierGate.run(draftOf([HOLDS]), context))).toContain("The independent check did not run");
+  });
+
+  it("calls only a full chat busy: any other refusal is a failed check", async () => {
+    const { context } = contextOf({ turn: async () => ({ code: "subagent_unavailable", kind: "refused" }) });
+    const result = await verifierGate.run(draftOf([HOLDS]), context);
+    expect(notesOf(result)).toContain("The independent check failed.");
+    expect(notesOf(result)).not.toContain("sub-agents");
   });
 
   it("turns a full chat into a visible note, not a failure", async () => {
@@ -218,6 +248,61 @@ describe("the one correction", () => {
     return { draft, message: result.message };
   }
 
+  it("does not let a change to the findings list certify an unchanged report: the claim stays named however it was changed", async () => {
+    const first = await firstRound([HOLDS, WRONG, INVENTED], "Outcome: done\nC1 | supported | y\nC2 | unsupported | n");
+    const earlier = [{ draft: first.draft, message: first.message }];
+    for (const findings of [[HOLDS], [HOLDS, { ...WRONG, standing: "not_verified" as const }, { ...INVENTED, standing: "not_verified" as const }]]) {
+      const { context } = contextOf({ earlier });
+      const result = await verifierGate.run(draftOf(findings, "DRAFT WITH THE SAME PROBLEMS"), context);
+      expect(result.kind).toBe("pass");
+      expect(notesOf(result)).toContain("The check did not support these claims; if they appear above, do not rely on them: «The X2 lasts for decades.»; «The X3 never wears out.»");
+      expect(notesOf(result)).not.toMatch(/withdrawn|removed/iu);
+    }
+  });
+
+  it("names a rejected claim on a draft with no findings at all", async () => {
+    const first = await firstRound([WRONG], "Outcome: done\nC1 | unsupported | n");
+    const { context } = contextOf({ earlier: [{ draft: first.draft, message: first.message }] });
+    expect(notesOf(await verifierGate.run(draftOf([]), context))).toContain("«The X2 lasts for decades.»");
+  });
+
+  it("stops naming a claim only when that same claim later passes: its page was read and the model supported it", async () => {
+    const first = await firstRound([INVENTED], "Outcome: done");
+    const page: ResearchOpenedSource = { partial: false, text: "never wears out, ever", toolName: "fetch_url", url: INVENTED.url };
+    const passed = contextOf({ earlier: [{ draft: first.draft, message: first.message }], opened: async () => [page], turn: async () => ended("Outcome: done\nC1 | supported | y") });
+    const result = await verifierGate.run(draftOf([INVENTED]), passed.context);
+    expect(notesOf(result)).not.toContain("do not rely");
+    const notAsked = contextOf({ earlier: [{ draft: first.draft, message: first.message }], opened: async () => [page], remainingMs: 10_000 });
+    expect(notesOf(await verifierGate.run(draftOf([INVENTED]), notAsked.context))).toContain("«The X3 never wears out.»");
+  });
+
+  it("does not reuse a verdict for a claim that differs only in case or symbols", async () => {
+    const low = finding("The laser draws 1 mW.", "held up");
+    const first = await firstRound([low, WRONG], "Outcome: done\nC1 | supported | y\nC2 | unsupported | n");
+    const high = finding("The laser draws 1 MW.", "held up");
+    const again = contextOf({ earlier: [{ draft: first.draft, message: first.message }], turn: async () => ended("Outcome: done\nC1 | unsupported | no such power") });
+    const result = await verifierGate.run(draftOf([high]), again.context);
+    expect(again.run).toHaveBeenCalledTimes(1);
+    expect(again.run.mock.calls[0]![0].brief).toContain("1 MW");
+    expect(notesOf(result)).toContain("«The laser draws 1 MW.»");
+  });
+
+  it("does reuse a verdict across whitespace and Unicode composition, the same claim being read twice for nothing", async () => {
+    const composed = finding("Caf\u00e9 holds up.", "held up");
+    const first = await firstRound([composed, WRONG], "Outcome: done\nC1 | supported | y\nC2 | unsupported | n");
+    const decomposed = finding("Cafe\u0301   holds\nup.", "held up");
+    const again = contextOf({ earlier: [{ draft: first.draft, message: first.message }] });
+    await verifierGate.run(draftOf([decomposed]), again.context);
+    expect(again.run).not.toHaveBeenCalled();
+  });
+
+  it("carries the rejected claims for a draft it did not finish on", async () => {
+    const first = await firstRound([WRONG], "Outcome: done\nC1 | unsupported | n");
+    expect(verifierGate.carriedNotes!(draftOf([HOLDS], "# Отчёт"), [{ draft: first.draft, message: first.message }]))
+      .toEqual(["Проверка не подтвердила эти утверждения; если они есть выше, полагаться на них нельзя: «The X2 lasts for decades.»."]);
+    expect(verifierGate.carriedNotes!(draftOf([HOLDS]), [])).toEqual([]);
+  });
+
   it("does not send back again: what stays unsupported is named by a server note", async () => {
     const first = await firstRound([HOLDS, WRONG], "Outcome: done\nC1 | supported | y\nC2 | unsupported | n");
     const { context, run } = contextOf({ earlier: [{ draft: first.draft, message: first.message }] });
@@ -230,14 +315,12 @@ describe("the one correction", () => {
     expect(notesOf(result)).toContain("«The X2 lasts for decades.»");
   });
 
-  it("takes a claim removed or marked as corrected, and says what became of it", async () => {
+  it("counts a marked claim as listed, not as checked", async () => {
     const first = await firstRound([HOLDS, WRONG, INVENTED], "Outcome: done\nC1 | supported | y\nC2 | unsupported | n");
     const { context } = contextOf({ earlier: [{ draft: first.draft, message: first.message }] });
     const result = await verifierGate.run(draftOf([HOLDS, { ...WRONG, standing: "not_verified" }]), context);
     expect(result.kind).toBe("pass");
-    expect(notesOf(result)).toContain("Claims: 2; supported: 1; marked as not verified: 1.");
-    expect(notesOf(result)).toContain("Withdrawn after the check: 1.");
-    expect(notesOf(result)).not.toContain("do not rely");
+    expect(notesOf(result)).toContain("Claims: 2; supported: 1; listed as not verified: 1.");
   });
 
   it("checks a new claim on the corrected draft: its quote first, then the model if time allows", async () => {
@@ -284,11 +367,21 @@ describe("the one correction", () => {
     const result = await verifierGate.run(draftOf([{ ...INVENTED, standing: "not_verified" }]), context);
     expect(result.kind).toBe("pass");
     expect(run).not.toHaveBeenCalled();
-    expect(notesOf(result)).toContain("marked as not verified: 1");
+    expect(notesOf(result)).toContain("listed as not verified: 1");
+    expect(notesOf(result)).toContain("«The X3 never wears out.»");
   });
 });
 
 describe("answer first", () => {
+  it("reports a failure to resolve the role as a failed check, runs nothing and keeps the quote check", async () => {
+    const { context, run } = contextOf();
+    const result = await verifierGate.run(draftOf([HOLDS]), { ...context, verifierModel: async () => { throw new Error("database down"); } });
+    expect(run).not.toHaveBeenCalled();
+    expect(result.kind).toBe("pass");
+    expect(notesOf(result)).toContain("The independent check failed.");
+    expect(notesOf(result)).toContain("Quotes: found in opened pages: 1.");
+  });
+
   it("keeps the quote check when the verifier turn throws", async () => {
     const { context } = contextOf({ turn: async () => { throw new Error("database down"); } });
     const result = await verifierGate.run(draftOf([HOLDS, INVENTED]), context);
@@ -317,7 +410,7 @@ describe("answer first", () => {
     const result = await verifierGate.run(draftOf([INVENTED]), context);
     expect(run).toHaveBeenCalledTimes(1);
     expect(result.kind).toBe("pass");
-    expect(notesOf(result)).toContain("Quotes: found in opened pages: 0; not checked (page read in a browser or not saved): 1.");
+    expect(notesOf(result)).toContain("Quotes: found in opened pages: 0; not checked (no saved page text to compare with): 1.");
   });
 
   it("does not wait past its time for opened text that never comes", async () => {
@@ -329,7 +422,7 @@ describe("answer first", () => {
     const result = await pending;
     expect(result.kind).toBe("pass");
     expect(run).toHaveBeenCalledTimes(1);
-    expect(notesOf(result)).toContain("not checked (page read in a browser or not saved): 1");
+    expect(notesOf(result)).toContain("not checked (no saved page text to compare with): 1");
   });
 
   it("skips the turn when the time left cannot fit one, and says so", async () => {
@@ -536,13 +629,13 @@ describe("through the engine", () => {
     expect(correction).toContain("Finding 3");
     // One turn per attempt: `SubagentTurn` is unique on its parent call.
     expect(memory.threads.admitForeground).toHaveBeenCalledTimes(1);
-    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "verifier-run1-1" }));
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "verifier-1" }));
     const answer = memory.published()!;
     expect(answer.startsWith("# Corrected")).toBe(true);
     expect(answer).toContain("Independently checked by Other One · Other.");
-    expect(answer).toContain("Claims: 2; supported: 1; marked as not verified: 1.");
-    expect(answer).toContain("Withdrawn after the check: 1.");
-    expect(answer).not.toContain("do not rely");
+    expect(answer).toContain("Claims: 2; supported: 1; listed as not verified: 1.");
+    // The report's prose is not read, so the rejected claims stay named however the list changed.
+    expect(answer).toContain("if they appear above, do not rely on them: «The X2 lasts for decades.»; «The X3 never wears out.»");
     expect(stream).not.toContain("DRAFT WITH PROBLEMS");
   });
 
@@ -554,7 +647,7 @@ describe("through the engine", () => {
     expect(main.requests).toHaveLength(3);
     expect(other.requests).toHaveLength(1);
     expect(memory.published()).toContain("# Unchanged");
-    expect(memory.published()).toContain("The check did not support these claims, so do not rely on them: «The X2 lasts for decades.»");
+    expect(memory.published()).toContain("The check did not support these claims; if they appear above, do not rely on them: «The X2 lasts for decades.»");
   });
 
   it("falls back to the main model visibly when the role is not set", async () => {
@@ -595,6 +688,43 @@ describe("through the engine", () => {
     expect(main.requests).toHaveLength(2);
     expect(memory.published()).toContain("too little time was left");
     expect(memory.published()).toContain("«The X3 never wears out.»");
+  });
+
+  it("keeps a rejected claim named when the gap check sends the next draft back and time then ends the run", async () => {
+    let clock = 0;
+    const other = scripted([{ text: "Outcome: done\nC1 | unsupported | no" }]);
+    let attempts = 0;
+    const gapGate = { name: "gap_check", run: async () => {
+      attempts += 1;
+      return attempts === 2 ? { kind: "send_back" as const, message: "Owner reviews are missing.", unresolvedNote: "Owner reviews stayed open." } : { kind: "pass" as const };
+    } };
+    const main = scripted([
+      { calls: [start] },
+      { calls: [submit("call-1", [WRONG])] },
+      { calls: [submit("call-2", [WRONG], "# Second")] },
+      { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
+      { text: "I would still like to look further." }
+    ]);
+    const memory = engineOf({ gates: [gapGate, verifierGate], verifier: role(other.adapter) }, { now: () => clock });
+    await run(main.adapter, memory);
+    expect(other.requests).toHaveLength(1);
+    const answer = memory.published()!;
+    expect(answer.startsWith("# Second")).toBe(true);
+    expect(answer).toContain("Owner reviews stayed open.");
+    expect(answer).toContain("«The X2 lasts for decades.»");
+    // That was the first draft's check, and no one read this one.
+    expect(answer).not.toContain("Independently checked");
+    expect(answer).toContain("Time ran out");
+  });
+
+  it("gets neither the user's words nor the chat's instructions, and its thread is named by the attempt", async () => {
+    const other = scripted([{ text: "Outcome: done\nC1 | supported | y" }]);
+    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [HOLDS])] }]);
+    const memory = engineOf({ verifier: role(other.adapter) });
+    await run(main.adapter, memory);
+    expect(JSON.stringify(other.requests[0]!.history)).not.toContain("Проведи исследование");
+    expect(other.requests[0]!.prompt.system).not.toContain("Be brief.");
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ branchRunIds: ["run-1"], name: "verifier-1" }));
   });
 
   it("publishes a plain-text draft with only the note the run already adds", async () => {
