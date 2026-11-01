@@ -265,7 +265,7 @@ describe("a draft reaches the user", () => {
     // What streamed before research started is replaced; narration while it ran never streams.
     expect(tokens(seen).join("")).not.toContain("DRAFT NARRATION");
     expect(tokens(seen).at(-1)).toBe(REPORT);
-    const resetAt = seen.findLastIndex((event) => event.type === "message_reset");
+    const resetAt = seen.map((event) => event.type).lastIndexOf("message_reset");
     const reportAt = seen.findIndex((event) => event.type === "token" && event.data.delta === REPORT);
     expect(resetAt).toBeLessThan(reportAt);
     // The next turn reads what was said as the answer's text, not only as a call's arguments.
