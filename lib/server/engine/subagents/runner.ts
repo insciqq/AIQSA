@@ -236,6 +236,21 @@ export class SubagentTurnFailure extends Error {
 }
 
 /**
+ * Why a turn's own signal aborted when its time ended it rather than anyone's decision (`lib/server/research/clock.ts`). Its
+ * parent planned on that end and reads the report, so what it was writing stays. Every other end has another reason, and a turn
+ * ended by one keeps only what it completed.
+ */
+export class SubagentTimeEnded extends Error {
+  constructor() {
+    super("subagent_time_ended");
+    this.name = "SubagentTimeEnded";
+  }
+}
+
+/** Leads a report time cut off, so a reader of any excerpt of it sees that: a new turn's report is never cut (`SubagentCallResult`). */
+export const SUBAGENT_REPORT_CUT_OFF = "[Incomplete: time ended this turn while it was writing this report, so the text below stops part way.]";
+
+/**
  * How the turn part of the Workspace prompt contract begins (`workspacePromptContract().turn`, its test keeps them
  * equal): the only turn guidance a sub-agent keeps.
  */
@@ -660,6 +675,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     let context: RunContext | null = null;
     let report = "";
     let roundText = "";
+    /** What the current attempt has streamed: no response holds it yet, so it counts only if time cuts that attempt off. */
+    let streamed = "";
     /** A foreground turn's question: its parent can read nothing until it ends, so the turn ends with it. */
     const handBack: { question: string | null } = { question: null };
     let questions = 0;
@@ -915,9 +932,18 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         appendCalls,
         callModel: (request) => sendOnceMore(request, async (sent) => {
           const evidence = searchEvidence.modelCall();
+          // A request sent once more after a size refusal is a new attempt, as a retry inside `callModel` is.
+          streamed = "";
           const result = await callModel({ adapter: route.adapter, deadlineAt: host.deadlineAt,
-            faults: host.faults ?? NO_ENGINE_TEST_FAULTS, now: host.now, onDiscard: async () => evidence.discard(),
-            onEvent: async (event) => evidence.add(event), onUsage: recordUsage, routing: loopRouting, signal, timeoutMs: route.timeoutMs }, sent);
+            faults: host.faults ?? NO_ENGINE_TEST_FAULTS, now: host.now,
+            onDiscard: async () => {
+              streamed = "";
+              evidence.discard();
+            },
+            onEvent: async (event) => {
+              if (event.type === "token") streamed += event.data.delta;
+              evidence.add(event);
+            }, onUsage: recordUsage, routing: loopRouting, signal, timeoutMs: route.timeoutMs }, sent);
           await evidence.save();
           return result;
         }),
@@ -945,6 +971,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           nextId: randomUUID, origin: target, requestAnchor: activeContext.requestAnchor(result.usage), usage: result.usage }),
         roundEnd: async (result) => {
           activeContext.observe(result.usage);
+          streamed = "";
           roundText = result.finalText;
           if (result.finalText.trim()) report = report ? `${report}\n\n${result.finalText}` : result.finalText;
         },
@@ -986,6 +1013,9 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const ending = endingOf(error, turn, host);
       if (ending.state === "failed") {
         logEvent("run_execution", { code: ending.reason, error, outcome: "failed", run_id: input.hostRunId, stage: "execution" });
+      }
+      if (input.signal.reason instanceof SubagentTimeEnded && streamed.trim()) {
+        report = [SUBAGENT_REPORT_CUT_OFF, report, streamed].filter(Boolean).join("\n\n");
       }
       await context?.close().catch(() => undefined);
       await writer?.flush();

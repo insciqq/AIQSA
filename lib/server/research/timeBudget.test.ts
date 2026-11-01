@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
-import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_END_REASONS } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, SUBAGENT_END_REASONS } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
 import { createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "../engine/execution";
 import { createNativeOrphanFinder, reconcileNativeRuns } from "../engine/recovery";
 import type { NativeRunStore } from "../engine/runStore";
 import { backgroundSubagentRunner } from "../engine/subagents/backgroundRunner";
+import { SUBAGENT_REPORT_CUT_OFF } from "../engine/subagents/runner";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
+import { TOOL_RESULT_LIMITS } from "../engine/toolResults";
 import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -35,7 +37,8 @@ import type { ResearchVerifierRole } from "./verifierRole";
 const time = RESEARCH_TIME_MS;
 const minutes = (count: number) => count * 60_000;
 
-type Step = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: boolean; hang?: boolean; sleepMs?: number; text?: string }>;
+/** `partial` streams before anything else the step does, so a step with `hang` or `fail` is a response that never completes. */
+type Step = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: boolean; hang?: boolean; partial?: string; sleepMs?: number; text?: string }>;
 type Seen = Readonly<{ at: number; request: ProviderRunRequest }>;
 
 const aborted = (signal: AbortSignal | undefined) => new Promise<never>((_resolve, reject) =>
@@ -52,6 +55,7 @@ function scripted(main: readonly Step[], agents: readonly Step[] = []) {
       const own = request.tools?.some((tool) => tool.name === START_RESEARCH_TOOL_NAME) ? { lane: seen.main, script: main } : { lane: seen.agents, script: agents };
       own.lane.push({ at: Date.now(), request });
       const step = own.script[Math.min(own.lane.length - 1, own.script.length - 1)]!;
+      if (step.partial) yield { data: { delta: step.partial }, type: "token" };
       if (step.sleepMs) await sleep(step.sleepMs, options.signal);
       if (step.hang) await aborted(options.signal);
       options.signal?.throwIfAborted();
@@ -94,7 +98,8 @@ function researcherRole(adapter: ProviderAdapter): ResearchVerifierRole {
 
 let runs = 0;
 
-function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<{ turnTimeoutSeconds?: number; window?: ResearchPlanWindowPort; workspace: boolean }>) {
+function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<{ listingMs?: number; onRelease?: () => void; turnTimeoutSeconds?: number; window?: ResearchPlanWindowPort;
+  workspace: boolean }>) {
   runs += 1;
   const runId = `run-time-${runs}`;
   const rows = new Map<string, ToolCallRow>();
@@ -139,7 +144,7 @@ function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<
   } satisfies NativeRunStore;
   /** The turn of each name, latest last, and how each ended: a name is one thread, and a researcher may be continued. */
   const turns = new Map<string, string>();
-  const settled: Array<Readonly<{ reason?: string; state: string; turnId: string }>> = [];
+  const settled: Array<Readonly<{ reason?: string; report: string; state: string; turnId: string }>> = [];
   let turnCount = 0;
   const threads = {
     admitForeground: vi.fn(async (input: Parameters<SubagentThreadStore["admitForeground"]>[0]) => {
@@ -164,8 +169,8 @@ function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<
     backgroundRunIds: vi.fn(async () => []),
     threadRunIds: vi.fn(async (input: { parentRunIds: readonly string[] }) => [...input.parentRunIds]),
     unreadMessages: vi.fn(async () => []),
-    settle: vi.fn(async (input: { result: { reason?: string; state: string }; turnId: string }) => {
-      settled.push({ ...input.result.reason ? { reason: input.result.reason } : {}, state: input.result.state, turnId: input.turnId });
+    settle: vi.fn(async (input: { result: { reason?: string; report: string; state: string }; turnId: string }) => {
+      settled.push({ ...input.result.reason ? { reason: input.result.reason } : {}, report: input.result.report, state: input.result.state, turnId: input.turnId });
       return true;
     })
   } as unknown as SubagentThreadStore;
@@ -181,7 +186,10 @@ function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<
   const sent: Array<Readonly<{ at: number; message: SubagentSendInput }>> = [];
   const messaging: SubagentMessaging = {
     // The branch's agents as the store lists them: every thread name it knows, a gate's and another run's included.
-    agents: vi.fn(async () => ({ agents: [...turns.keys(), "elsewhere"].map((name) => ({ mode: "foreground" as const, name, parent: "main", state: "running" as const, steps: [] })) })),
+    agents: vi.fn(async () => {
+      if (options.listingMs) await new Promise((resolve) => { setTimeout(resolve, options.listingMs); });
+      return { agents: [...turns.keys(), "elsewhere"].map((name) => ({ mode: "foreground" as const, name, parent: "main", state: "running" as const, steps: [] })) };
+    }),
     questionAsked: vi.fn(),
     send: vi.fn(async (message: SubagentSendInput) => {
       sent.push({ at: Date.now(), message });
@@ -192,7 +200,13 @@ function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<
   const deps: NativeEngineDeps = {
     approvedCall: vi.fn(async () => null), mcpBindingRows: vi.fn(async () => []),
     observations: vi.fn(async () => ({ withReservation: vi.fn(async () => ({ handle: `tor1_${"0".repeat(32)}` })) }) as never),
-    research: { ...research, ports: { ...options.window ? { planWindow: () => options.window! } : {}, time: createResearchClock } },
+    research: { ...research, ports: { ...options.window ? { planWindow: () => options.window! } : {}, time: (scope) => {
+      const clock = createResearchClock(scope);
+      return { ...clock, planReleased: () => {
+        options.onRelease?.();
+        clock.planReleased();
+      } };
+    } } },
     runs: runStore, savedResults: { read: vi.fn(async () => null) }, subagentThreads: threads, toolCalls, transcripts
   };
   const text = "Choose a mattress.";
@@ -427,6 +441,23 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
       await stopped(run, run.go(adapter), time.scoping - 1, startedAt);
     });
 
+    it("releases no plan when it comes during the window's closing write, which still answers", async () => {
+      const onRelease = vi.fn();
+      // As `close()` in `planWindow.ts`: its abort listener has gone, so the save finishes and `open` resolves.
+      const window: ResearchPlanWindowPort = { open: async ({ proposal }) => {
+        await new Promise((resolve) => { setTimeout(resolve, 2_000); });
+        return { changed: false, plan: proposal, releasedBy: "timer" };
+      } };
+      const { adapter } = scripted([{ calls: begin() }]);
+      const run = harness({ gates: [] }, { onRelease, window, workspace });
+      const answer = run.go(adapter);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(activeRunControllerRegistry.abort(run.runId)).toBe(true);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await answer).toContain("\"status\":\"cancelled\"");
+      expect(onRelease).not.toHaveBeenCalled();
+    });
+
     it("ends the run while its plan waits in the window", async () => {
       const window: ResearchPlanWindowPort = { open: ({ signal }) => aborted(signal) };
       const { adapter } = scripted([{ calls: begin() }]);
@@ -464,6 +495,154 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
       const startedAt = Date.now();
       await stopped(run, run.go(adapter), time.notes + 60_000, startedAt);
     });
+  });
+});
+
+describe("a researcher named with capitals, whose thread holds the name in lower case", () => {
+  const capitalised = async () => {
+    const { adapter, seen } = scripted([
+      { calls: begin() },
+      { calls: [researcher("Researcher-A")], sleepMs: minutes(50) },
+      { calls: [submit()] }
+    ], [{ calls: [{ arguments: {}, id: "call-nope", name: "no_such_tool" }] }, { hang: true }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    return { run, seen };
+  };
+
+  it("is told to finish at minute 60", async () => {
+    const { run } = await capitalised();
+    expect(run.sent.map(({ message }) => message.to)).toEqual(["researcher-a"]);
+  });
+
+  it("leaves what it did at minute 70", async () => {
+    const { seen } = await capitalised();
+    const [ended] = resultsOf(seen.main.at(-1), CALL_SUBAGENT_TOOL_NAME);
+    expect(JSON.parse(ended!.split("\n\n")[0]!)).toMatchObject({ name: "researcher-a", state: "stopped", steps: [expect.anything()] });
+  });
+
+  it("gets the method once, however its name is written", async () => {
+    const { adapter, seen } = scripted([
+      { calls: begin() },
+      { calls: [researcher("Researcher-A")] },
+      { calls: [researcher("researcher-a", "Go on with the rest.")] },
+      { calls: [submit()] }
+    ], [{ text: "Outcome: done\nFirst." }, { text: "Outcome: done\nSecond." }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(minutes(1));
+    await answer;
+    const briefs = seen.agents.map((entry) => JSON.stringify(entry.request.history).includes("# Research method (from the server)"));
+    expect(briefs).toEqual([true, false]);
+  });
+});
+
+describe("what a researcher was writing when its time ended", () => {
+  const written = "So far the X1 holds up best, because";
+  const marked = `${SUBAGENT_REPORT_CUT_OFF}\n\n${written}`;
+  const cutOffResult = (seen: Seen | undefined) => JSON.parse(resultsOf(seen, CALL_SUBAGENT_TOOL_NAME)[0]!.split("\n\n").slice(0, -1).join("\n\n")) as Record<string, unknown>;
+
+  it("stays as a report marked incomplete at the researcher's own limit", async () => {
+    const { adapter, seen } = scripted([{ calls: begin() }, { calls: [researcher("alpha")] }, { calls: [submit()] }], [{ hang: true, partial: written }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const startedAt = Date.now();
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(seen.main.at(-1)!.at - startedAt).toBe(time.researcherTurn);
+    expect(cutOffResult(seen.main.at(-1))).toMatchObject({ reason: SUBAGENT_END_REASONS.deadline, report: marked, state: "stopped" });
+    expect(run.settled).toEqual([expect.objectContaining({ report: marked, state: "stopped" })]);
+  });
+
+  it("stays as a report marked incomplete at minute 70", async () => {
+    const { adapter, seen } = scripted([{ calls: begin() }, { calls: [researcher("alpha")], sleepMs: minutes(50) }, { calls: [submit()] }], [{ hang: true, partial: written }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const startedAt = Date.now();
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(seen.main.at(-1)!.at - startedAt).toBe(time.stopRunningResearchers);
+    expect(cutOffResult(seen.main.at(-1))).toMatchObject({ reason: SUBAGENT_END_REASONS.deadline, report: marked, state: "stopped" });
+  });
+
+  it("counts no text of an attempt that was retried, when the retry says nothing before time ends", async () => {
+    const { adapter, seen } = scripted([{ calls: begin() }, { calls: [researcher("alpha")] }, { calls: [submit()] }], [{ fail: true, partial: "From the failed attempt." }, { hang: true }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(seen.agents).toHaveLength(2);
+    expect(run.settled).toEqual([expect.objectContaining({ report: "", state: "stopped" })]);
+  });
+
+  it("keeps only the retry's text, when it wrote some", async () => {
+    const { adapter } = scripted([{ calls: begin() }, { calls: [researcher("alpha")] }, { calls: [submit()] }],
+      [{ fail: true, partial: "From the failed attempt." }, { hang: true, partial: written }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(run.settled).toEqual([expect.objectContaining({ report: marked })]);
+  });
+
+  it("keeps a report whole however long, since a new turn's report is never cut, and the mark survives the excerpt the main agent reads", async () => {
+    const long = "A long finding. ".repeat(Math.ceil(2 * TOOL_RESULT_LIMITS.inlineChars / 16));
+    const { adapter, seen } = scripted([{ calls: begin() }, { calls: [researcher("alpha")] }, { calls: [submit()] }], [{ hang: true, partial: long }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(run.settled).toEqual([expect.objectContaining({ report: `${SUBAGENT_REPORT_CUT_OFF}\n\n${long}` })]);
+    const read = resultsOf(seen.main.at(-1), CALL_SUBAGENT_TOOL_NAME)[0]!;
+    expect(read.length).toBeLessThan(long.length);
+    expect(read).toContain(SUBAGENT_REPORT_CUT_OFF);
+    expect(read).toContain(RESEARCHER_TIME_ENDED);
+  });
+
+  it("is not what a completed response said before a call time then ended: that stays as it always was, unmarked", async () => {
+    const listing = { arguments: {}, id: "call-list", name: LIST_AGENTS_TOOL_NAME };
+    const { adapter } = scripted([{ calls: begin() }, { calls: [researcher("alpha")] }, { calls: [submit()] }], [{ calls: [listing], text: "Looking at who else is working." }]);
+    const run = harness({ gates: [] }, { listingMs: time.researcherTurn + minutes(1), workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(run.settled).toEqual([expect.objectContaining({ report: "Looking at who else is working.", state: "stopped" })]);
+  });
+
+  it("is left out when the user stops the run, as for any turn a person ended", async () => {
+    const { adapter } = scripted([{ calls: begin() }, { calls: [researcher("alpha")] }], [{ hang: true, partial: written }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(minutes(10));
+    expect(activeRunControllerRegistry.abort(run.runId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await answer;
+    expect(run.settled).toEqual([expect.objectContaining({ reason: SUBAGENT_END_REASONS.parentStopped, report: "", state: "stopped" })]);
+  });
+
+  it("is left out of an ordinary run, where the deadline ends a sub-agent", async () => {
+    const { adapter } = scripted([{ calls: [researcher("alpha")] }], [{ hang: true, partial: written }]);
+    const run = harness({ gates: [] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(NATIVE_TURN_LIMITS.turnMs);
+    await answer;
+    expect(run.settled).toEqual([expect.objectContaining({ reason: SUBAGENT_END_REASONS.deadline, report: "", state: "stopped" })]);
+  });
+
+  it("is left out of a check whose time ended: its gate gives it up with a note, and no report is read from it", async () => {
+    const checking: ResearchGate = { name: "checking", run: async (_draft, context) => {
+      await context.subagents.run({ brief: "b", instructions: "i", model: "main", name: "check", tools: ["web_fetch"] }, context.signal);
+      return { kind: "pass" };
+    } };
+    const { adapter } = scripted([{ calls: begin() }, { calls: [submit()] }], [{ hang: true, partial: written }]);
+    const run = harness({ gates: [checking] }, { workspace: false });
+    const answer = run.go(adapter);
+    await vi.advanceTimersByTimeAsync(time.hardEnd);
+    await answer;
+    expect(run.settled).toEqual([expect.objectContaining({ report: "", state: "stopped" })]);
+    expect(run.published()?.text).toContain(researchNote("time_out", REPORT));
   });
 });
 
