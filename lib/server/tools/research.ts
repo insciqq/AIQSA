@@ -19,7 +19,8 @@ const sourceClass = { description: "primary_official: the maker, the regulator, 
 
 export const startResearchTool: RunTool = {
   capability: "session",
-  description: "Start the research method for a user whose goal is a thorough result: it takes longer, costs more, runs parallel " +
+  description: "Call this first, before any search, when the user asks to research, analyze, compare for a decision or search carefully " +
+    "(for example \"проанализируй\", \"глубокий анализ\", \"проведи исследование\", \"поищи хорошо\"). It starts the research method: it takes longer, costs more, runs parallel " +
     "researchers and the server checks the report before the user sees it. Give the goal, split it into questions and assign each " +
     "question its source classes up front; every class goes to a question or into skipped_source_classes with the reason it does not " +
     "apply. The user sees the questions as the plan. Result: how to run the research. Not for simple questions or quick lookups.",
