@@ -88,7 +88,7 @@ export const RESEARCH_GATES: readonly ResearchGate[] = [gapCheckGate, verifierGa
 
 export type ResearchGatesOutcome =
   | Readonly<{ kind: "accepted"; notes: readonly string[] }>
-  | Readonly<{ kind: "sent_back"; message: string }>;
+  | Readonly<{ kind: "sent_back"; message: string; notes?: readonly string[] }>;
 
 class GateTimedOut extends Error {
   override name = "GateTimedOut";
@@ -127,7 +127,10 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
       const result = await untilAborted(Promise.resolve().then(() => gate.run(draft, { ...context, signal })), signal);
       notes.push(...result.notes ?? []);
       if (result.kind === "send_back") {
-        if (context.time.sendBackAllowed()) return { kind: "sent_back", message: result.message };
+        if (context.time.sendBackAllowed()) {
+          if (result.unresolvedNote) notes.push(result.unresolvedNote);
+          return { kind: "sent_back", message: result.message, ...notes.length > 0 ? { notes } : {} };
+        }
         notes.push(result.unresolvedNote ?? researchNote("time_out", draft.report));
       }
     } catch (error) {

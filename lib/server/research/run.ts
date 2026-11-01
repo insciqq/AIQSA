@@ -104,8 +104,11 @@ export function createRunResearch(input: RunResearchInput) {
   let accepted: Readonly<{ draft: ResearchDraft; notes: readonly string[] }> | null = null;
   /** The report that stands: the latest one handed in since the last delivered follow-up. */
   let lastDraft: ResearchDraft | null = null;
+  /** The last completed check stays open until a subsequent check replaces it. */
+  let lastDraftNotes: readonly string[] = [];
   /** The report a delivered follow-up superseded: what a run that fails or says nothing more still has to show. */
   let supersededDraft: ResearchDraft | null = null;
+  let supersededDraftNotes: readonly string[] = [];
   /** What to give back if the batch refuses the start this response established research with. */
   let unconfirmedStart: Readonly<{ draft: ResearchDraft | null }> | null = null;
   let lastHeld = "";
@@ -147,6 +150,7 @@ export function createRunResearch(input: RunResearchInput) {
       verifierModel: () => turns.verifierModel()
     } });
     attempts.push({ draft, message: outcome.kind === "sent_back" ? outcome.message : null });
+    lastDraftNotes = outcome.notes ?? [];
     if (outcome.kind === "accepted") {
       accepted = { draft, notes: [...outcome.notes, ...draft.findings.length === 0 ? [note("no_findings", draft)] : []] };
       sentBack = null;
@@ -277,7 +281,7 @@ export function createRunResearch(input: RunResearchInput) {
       if (accepted) return true;
       if (input_.toolChoice !== "none" || !plan || !lastDraft) return false;
       // Tools closed with a draft in hand: tool-free text could only repeat it. It goes out as it stands.
-      accepted = { draft: lastDraft, notes: [note(input.toolTimeLeft() ? "unresolved" : "time_out", lastDraft)] };
+      accepted = { draft: lastDraft, notes: [...lastDraftNotes, note(input.toolTimeLeft() ? "unresolved" : "time_out", lastDraft)] };
       return true;
     },
 
@@ -297,7 +301,7 @@ export function createRunResearch(input: RunResearchInput) {
       }
       // A report handed in stays the report: a message never replaces it, whatever it says.
       if (lastDraft) {
-        accepted = { draft: lastDraft, notes: [note(toolsOpen ? "unresolved" : "time_out", lastDraft)] };
+        accepted = { draft: lastDraft, notes: [...lastDraftNotes, note(toolsOpen ? "unresolved" : "time_out", lastDraft)] };
         return null;
       }
       textDrafts += 1;
@@ -319,9 +323,11 @@ export function createRunResearch(input: RunResearchInput) {
      * again. Each delivery buys one response at most, follow-ups are bounded and the turn's deadline still ends it.
      */
     followupDelivered(): void {
+      if (accepted || lastDraft) supersededDraftNotes = accepted?.notes ?? lastDraftNotes;
       supersededDraft = accepted?.draft ?? lastDraft ?? supersededDraft;
       accepted = null;
       lastDraft = null;
+      lastDraftNotes = [];
       input.rearmReservedCall();
     },
 
@@ -332,8 +338,8 @@ export function createRunResearch(input: RunResearchInput) {
     finish(waiting: boolean): string | null {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
       if (!plan || waiting) return null;
-      if (lastDraft) return researchAnswerText(lastDraft.report, [note("unresolved", lastDraft)]);
-      if (supersededDraft) return researchAnswerText(supersededDraft.report, [note("followup_not_applied", supersededDraft)]);
+      if (lastDraft) return researchAnswerText(lastDraft.report, [...lastDraftNotes, note("unresolved", lastDraft)]);
+      if (supersededDraft) return researchAnswerText(supersededDraft.report, [...supersededDraftNotes, note("followup_not_applied", supersededDraft)]);
       return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
     },
 
@@ -342,7 +348,8 @@ export function createRunResearch(input: RunResearchInput) {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
       const report = lastDraft ?? supersededDraft;
       if (report) {
-        return researchAnswerText(report.report, [note(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed", report),
+        return researchAnswerText(report.report, [...lastDraft ? lastDraftNotes : supersededDraftNotes,
+          note(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed", report),
           ...lastDraft ? [] : [note("followup_not_applied", report)]]);
       }
       if (reason === "stopped") return null;

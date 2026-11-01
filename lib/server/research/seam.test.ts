@@ -211,7 +211,7 @@ describe("starting research", () => {
       { calls: [start()] },
       { calls: [submit()] }
     ]);
-    const memory = engineOf({});
+    const memory = engineOf({ gates: [] });
     const seen = await events(run(adapter, memory));
     expect(resultsOf(requests[1], START_RESEARCH_TOOL_NAME)[0]).toContain("owner_reviews");
     const plans = seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity" ? [event.data.payload] : []) as unknown as { items?: { text: string }[]; kind: string }[];
@@ -226,7 +226,7 @@ describe("starting research", () => {
       { text: "Outcome: done\nclaim; link; quote; independent_tests; confirmed" },
       { calls: [submit()] }
     ]);
-    const memory = engineOf({});
+    const memory = engineOf({ gates: [] });
     await run(adapter, memory).text();
     const brief = JSON.stringify(requests[2]!.history);
     expect(brief).toContain("Cover the first question.");
@@ -259,7 +259,7 @@ describe("a draft reaches the user", () => {
       { calls: [start()], text: "Starting the research." },
       { calls: [submit()], text: "DRAFT NARRATION beside the call." }
     ]);
-    const memory = engineOf({});
+    const memory = engineOf({ gates: [] });
     const seen = await events(run(adapter, memory));
     expect(requests).toHaveLength(2);
     expect(memory.published()).toBe(REPORT);
@@ -285,7 +285,7 @@ describe("a draft reaches the user", () => {
 
   it("asks once for the call when the model writes its report as a message, and never shows that text meanwhile", async () => {
     const { adapter, requests } = scripted([{ calls: [start()] }, { text: "SECRET REPORT AS TEXT" }, { calls: [submit()] }]);
-    const memory = engineOf({});
+    const memory = engineOf({ gates: [] });
     const seen = await events(run(adapter, memory));
     expect(requests).toHaveLength(3);
     expect(JSON.stringify(requests[2]!.history)).toContain(`Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}`);
@@ -589,7 +589,7 @@ describe("review findings", () => {
       { text: "Outcome: done\nreport" },
       { calls: [submit()] }
     ]);
-    const memory = engineOf({});
+    const memory = engineOf({ gates: [] });
     const begin = vi.mocked(memory.toolCalls.begin);
     const original = begin.getMockImplementation()! as (input: Parameters<typeof memory.toolCalls.begin>[0]) => ReturnType<typeof memory.toolCalls.begin>;
     begin.mockImplementation(async (input) => {
