@@ -55,7 +55,7 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
       select: { id: true, runtimeGenerationFingerprint: true, runtimeGenerationId: true }, where: { modelRunId: runId }
     }),
     observations: () => observations ??= defaultToolObservations(),
-    // The research method (`lib/server/research/run.ts`), with the verifier role as a run freezes it.
+    // The research method (`lib/server/research/run.ts`), with the researcher and checks roles as a run freezes them.
     research: { researcher: createResearchVerifierRole({ prisma: client, role: "researcher", runtime: providerRuntimeResolver }), verifier: createResearchVerifierRole({ prisma: client, runtime: providerRuntimeResolver }) },
     runs: createNativeRunStore(client),
     savedResults: createSavedToolResultReader({ prisma: client, storage }),

@@ -347,6 +347,14 @@ describe("list copy", () => {
       .toContain("Image generation");
     expect(providerSubtitle(openai, new Map([[openai.id, ["Default chat", "Memory"]]]))).toBe("Default chat provider");
     expect(providerSubtitle(openrouter, usage)).toBe("Qwen3 Embedding 8B, Voyage Rerank");
+
+    systemModelPolicy.policy.researchResearcherModel = { ...candidate, available: false };
+    systemModelPolicy.policy.researchVerifierModel = { ...candidate, available: true };
+    const researchUsage = deriveProviderUsage([openai, openrouter], { modelPolicy, search, systemModelPolicy });
+    expect(researchUsage.get(openai.id)).toEqual(expect.arrayContaining(["Researchers", "Research checks"]));
+    expect(providerSubtitle(openai, researchUsage)).toBe("Default chat provider · 1 Search source");
+    expect(providerSubtitle(openai, deriveProviderUsage([openai], { modelPolicy, search: null, systemModelPolicy })))
+      .toBe("Default chat provider");
   });
 
   it("tags Chat PDF on the connection of the reader the PDF mode routes to", () => {
