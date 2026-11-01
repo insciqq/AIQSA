@@ -195,6 +195,15 @@ describe("progressive Skill run persistence", () => {
       expect(parent.initial).toEqual([expect.objectContaining({ alias: f.alias, revisionId: f.revisionId })]);
       await expect(service.archive({ alias: f.alias, runId: background.id, userId: f.userId }))
         .resolves.toMatchObject({ bundle: { alias: f.alias, revisionId: f.revisionId } });
+      // Its background child's pinned rows are on the same main-agent run, one step further.
+      const childCall = await prisma.modelRunToolCall.create({ data: { arguments: { background: true }, modelRunId: background.id, ordinal: 101,
+        providerCallId: "fixture-child-call", roundIndex: 0, state: "running", toolName: "call_subagent" } });
+      const childThread = await prisma.subagentThread.create({ data: { anchorRunId: f.runId, chatId: f.chatId, name: "child", parentThreadId: thread.id, userId: f.userId } });
+      const childTurn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "background", modelId: "fixture-model", parentRunId: background.id,
+        parentToolCallId: childCall.id, provider: "fake", threadId: childThread.id, userId: f.userId } });
+      const child = await prisma.modelRun.create({ data: { chatId: f.chatId, engine: "native", modelId: "fixture-model", normalizedRequest, provider: "fake",
+        status: "streaming", subagentThreadId: childThread.id, subagentTurnId: childTurn.id, userId: f.userId, userMessageId: f.questionId } });
+      expect(await service.plan({ runId: child.id, userId: f.userId })).toEqual(parent);
     });
   });
 

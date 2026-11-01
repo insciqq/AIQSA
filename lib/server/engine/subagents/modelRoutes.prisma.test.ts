@@ -71,6 +71,16 @@ describe("sub-agent model routes on PostgreSQL", () => {
     await expect(catalog.route({ ...routed, userId: "someone-else" })).resolves.toEqual({ code: "subagent_model_unavailable", ok: false });
     await expect(catalog.route({ ...routed, hostRunId: run.runId, runId: background.id }))
       .resolves.toEqual({ code: "subagent_model_unavailable", ok: false });
+    // A child of that turn, in a run of its own, reads the same binding.
+    const childCall = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: background.id, ordinal: 0, providerCallId: "child-0",
+      roundIndex: 1, state: "complete", toolName: "call_subagent" } });
+    const childThread = await prisma.subagentThread.create({ data: { anchorRunId: run.runId, chatId: run.chatId, name: "child", parentThreadId: thread.id, userId: run.userId } });
+    const childTurn = await prisma.subagentTurn.create({ data: { chatId: run.chatId, mode: "background", modelId: "fake-qsa", parentRunId: background.id,
+      parentToolCallId: childCall.id, provider: entry.connectionId, providerModelId: entry.providerModelId, threadId: childThread.id, userId: run.userId } });
+    const child = await prisma.modelRun.create({ data: { chatId: run.chatId, engine: "native", modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "streaming",
+      subagentThreadId: childThread.id, subagentTurnId: childTurn.id, userId: run.userId, userMessageId: parent.userMessageId } });
+    await expect(catalog.route({ ...routed, hostRunId: child.id })).resolves.toMatchObject({ ok: true });
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: child.id } });
     // A model the parent's call never admitted is not admitted by the background run.
     await expect(catalog.route({ ...routed, entry: { ...entry, providerModelId: `${entry.providerModelId}-other` } }))
       .resolves.toEqual({ code: "subagent_model_unavailable", ok: false });

@@ -11,7 +11,7 @@ import { subagentCatalogItem } from "./conversation";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
 import { interruptNativeRun } from "./runInterruption";
 import { backgroundSubagentRunner, hasSubagentBackgroundHost } from "./subagents/backgroundRunner";
-import { SUBAGENT_ROLE_SECTION } from "./prompts";
+import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "./prompts";
 import type { NativeRunStore } from "./runStore";
 import type { SubagentThreadStore } from "./subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
@@ -81,13 +81,13 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
   const settled: unknown[] = [];
   const threads = {
     admitForeground: vi.fn(async (input: Parameters<SubagentThreadStore["admitForeground"]>[0]) => ({ continued: false, kind: "admitted" as const,
-      thread: { anchorRunId: input.parentRunId, definitionId: null, id: "thread-1", name: input.name, typeName: null },
-      turn: { definitionRevisionId: null, effortSource: input.binding.effortSource, id: "turn-1", mode: "foreground" as const,
+      thread: { anchorRunId: input.parentRunId, definitionId: null, id: "thread-1", name: input.name, parentThreadId: input.parentAgent?.threadId ?? null, typeName: null },
+      turn: { branchRunId: input.parentRunId, definitionRevisionId: null, effortSource: input.binding.effortSource, id: "turn-1", mode: "foreground" as const,
         modelId: input.binding.modelId, modelSource: input.binding.modelSource, parentRunId: input.parentRunId,
         provider: input.binding.provider, providerModelId: input.binding.providerModelId, reasoningEffort: input.binding.reasoningEffort,
         startedAt: new Date(), state: "running" as const, threadId: "thread-1" } })),
     ensureThread: vi.fn(async (input: { name: string; parentRunId: string }) => ({ anchorRunId: input.parentRunId, definitionId: null,
-      id: "thread-bg", name: input.name, typeName: null })),
+      id: "thread-bg", name: input.name, parentThreadId: null, typeName: null })),
     find: vi.fn(async () => null),
     result: vi.fn(async () => null),
     endOrphanedTurns: vi.fn(async () => 0),
@@ -155,11 +155,11 @@ describe("native run with sub-agents", () => {
     const [main, sub, after] = requests;
     expect(main!.tools?.map((tool) => tool.name)).toContain(CALL_SUBAGENT_TOOL_NAME);
     expect(main!.prompt.system).toContain("# Sub-agents");
-    // The default sub-agent: the parent's exact model and params, no nesting, its own role.
+    // The default sub-agent: the parent's exact model and params, its own role, which may start children.
     expect(sub!.modelId).toBe("fake-qsa");
     expect(sub!.params).toEqual(main!.params);
-    expect(sub!.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
-    expect(sub!.prompt.system).toContain(SUBAGENT_ROLE_SECTION);
+    expect(sub!.tools?.map((tool) => tool.name)).toContain(CALL_SUBAGENT_TOOL_NAME);
+    expect(sub!.prompt.system).toContain(SUBAGENT_STARTER_ROLE_SECTION);
     expect(JSON.stringify(sub!.history)).toContain("<user_message>\\nFind the cheapest laptop.\\n</user_message>");
     expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ binding: { effortSource: "parent",
       modelId: "fake-qsa", modelSource: "parent", provider: "connection-1", providerModelId: "model-1", reasoningEffort: null },
@@ -176,6 +176,42 @@ describe("native run with sub-agents", () => {
     // Usage of both, recorded after the answer: the sub-agent's under its own purpose.
     expect(memory.usage.map((entry) => entry.purpose)).toEqual(["chat_answer", "subagent", "chat_answer"]);
     expect(memory.settled).toEqual([expect.objectContaining({ turnId: "turn-1" })]);
+  });
+
+  it("lets a sub-agent start a child inside the answer: the child's report reaches its parent, the parent's the main agent, and one level is all there is", async () => {
+    const { adapter, requests } = scriptedAdapter([
+      { calls: [{ arguments: { message: "Research the shops.", name: "research" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { calls: [{ arguments: { message: "Check shop.example.", name: "left" }, id: "call-2", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { calls: [{ arguments: { message: "One more.", name: "grandchild" }, id: "call-3", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { text: "Outcome: done\nLeft: the X1 at 899 EUR." },
+      { text: "Outcome: done\nThe X1 is the cheapest." },
+      { text: "The cheapest is the X1." }
+    ]);
+    const memory = engine();
+    vi.mocked(memory.threads.admitForeground).mockImplementation(async (input) => ({ continued: false, kind: "admitted",
+      thread: { anchorRunId: input.parentRunId, definitionId: null, id: `thread-${input.name}`, name: input.name, parentThreadId: input.parentAgent?.threadId ?? null, typeName: null },
+      turn: { branchRunId: input.parentRunId, definitionRevisionId: null, effortSource: input.binding.effortSource, id: `turn-${input.name}`, mode: "foreground",
+        modelId: input.binding.modelId, modelSource: input.binding.modelSource, parentRunId: input.parentAgent?.runId ?? input.parentRunId,
+        provider: input.binding.provider, providerModelId: input.binding.providerModelId, reasoningEffort: input.binding.reasoningEffort, startedAt: new Date(),
+        state: "running", threadId: `thread-${input.name}` } }));
+    await createNativeRunExecutionResponse({ adapter, created, engine: memory.deps, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }).text();
+    expect(memory.published()).toBe("The cheapest is the X1.");
+    expect(memory.threads.admitForeground).toHaveBeenLastCalledWith(expect.objectContaining({ name: "left", parentAgent: expect.objectContaining({ name: "research",
+      runId: "run-1", threadId: "thread-research", turnId: "turn-research" }), parentRunId: "run-1" }));
+    const child = requests[2]!;
+    expect(child.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+    expect(child.prompt.system).toContain(SUBAGENT_CHILD_ROLE_SECTION);
+    expect(JSON.stringify(child.history)).toContain("parent_agent_brief");
+    // A grandchild is refused with its code, and the child goes on.
+    expect(JSON.stringify(requests[3]!.history)).toContain("subagent_depth_limit_reached");
+    expect(memory.threads.admitForeground).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(requests[4]!.history)).toContain("Left: the X1 at 899 EUR.");
+    const main = JSON.stringify(requests[5]!.history);
+    expect(main).toContain("The X1 is the cheapest.");
+    expect(main).not.toContain("parent_agent_brief");
+    expect(memory.settled.map((entry) => (entry as { turnId: string }).turnId)).toEqual(["turn-left", "turn-research"]);
+    expect(memory.usage.map((entry) => entry.purpose)).toEqual(["chat_answer", "subagent", "subagent", "subagent", "subagent", "chat_answer"]);
   });
 
   it("never hands a sub-agent a wake-up turn, which quotes sub-agents' reports, as the user's message", async () => {
@@ -247,7 +283,7 @@ describe("native run with sub-agents", () => {
     const handle = await backgroundSubagentRunner.start(turn);
     const result = await backgroundSubagentRunner.wait(handle);
     expect(result).toMatchObject({ kind: "ended", name: "watcher", outcome: "done", state: "done" });
-    expect(requests[2]!.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+    expect(requests[2]!.tools?.map((tool) => tool.name)).toContain(CALL_SUBAGENT_TOOL_NAME);
     // Its records are its own run's, under its thread; its usage is its own run's; the control settles the turn.
     const writes = memory.appended.filter((write) => write.scope.runId === "run-bg");
     expect(writes.length).toBeGreaterThan(0);
@@ -456,7 +492,6 @@ describe("native run with the user's custom sub-agents and default", () => {
       const main = wide.requests[0]!.tools!.map((tool) => tool.name);
       const sub = wide.requests[1]!.tools!.map((tool) => tool.name);
       expect(main).toContain(CALL_SUBAGENT_TOOL_NAME);
-      expect(sub).not.toContain(CALL_SUBAGENT_TOOL_NAME);
       expect(sub.filter((name) => !main.includes(name))).toEqual([]);
       const narrow = await run({ calls: [{ arguments: { message: "Go.", name: "narrow-one", type: "narrow" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], extra: ASSISTANT });
       const narrowed = narrow.requests[1]!.tools!.map((tool) => tool.name);

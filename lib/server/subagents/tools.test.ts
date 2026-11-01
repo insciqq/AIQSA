@@ -6,7 +6,9 @@ import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import {
   AGENT_MESSAGE_TOOLS,
+  SUBAGENT_CHILD_TOOLS,
   SUBAGENT_TOOLS,
+  callChildSubagentTool,
   callSubagentTool,
   createSubagentTool,
   editSubagentTool,
@@ -41,6 +43,26 @@ describe("sub-agent tool definitions", () => {
     }
     for (const name of [LOAD_SKILL_TOOL_NAME, READ_SECRET_TOOL_NAME, BROWSER_HANDOFF_TOOL_NAME, "update_plan", "apply_patch",
       "fetch_url", "memory_search", "read_tool_result", "workspace__exec"]) expect(subagentMayUseTool(name), name).toBe(true);
+  });
+});
+
+describe("what a sub-agent starts its own children with", () => {
+  it("is the same two calls under their own texts, and they never come from the run's registry", () => {
+    expect(SUBAGENT_CHILD_TOOLS.map((tool) => [tool.name, tool.effects])).toEqual([["call_subagent", "external"], ["stop_subagent", "local"]]);
+    for (const tool of SUBAGENT_CHILD_TOOLS) {
+      expect(tool.tool).toMatchObject({ description: tool.description, inputSchema: tool.inputSchema, name: tool.name });
+      expect(tool.description.length).toBeLessThan(4_000);
+      expect(subagentMayUseTool(tool.name), tool.name).toBe(false);
+    }
+    expect(callChildSubagentTool.inputSchema).toBe(callSubagentTool.inputSchema);
+    for (const code of ["subagent_child_limit_reached", "subagent_not_own_child"]) expect(callChildSubagentTool.description).toContain(code);
+    expect(callChildSubagentTool.description).toContain(`At most ${SUBAGENT_LIMITS.childrenPerSubagent} helpers`);
+    expect(SUBAGENT_CHILD_TOOLS[1]!.description).toContain("subagent_not_own_child");
+  });
+
+  it("tells the main agent a sub-agent may have helpers, how many, and that they are not its to continue", () => {
+    expect(callSubagentTool.description).toContain(`up to ${SUBAGENT_LIMITS.childrenPerSubagent} helpers of its own`);
+    expect(callSubagentTool.description).toContain("only its parent continues it");
   });
 });
 

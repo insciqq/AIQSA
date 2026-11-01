@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { subagentCountsPhrase, subagentDetailText, subagentMessageLabel, subagentModelText, subagentStatePresentation, subagentWaitingKeyV2,
-  subagentWorkingPhrase } from "./subagentPresentation";
+import { SUBAGENT_BLOCKED_REASONS, SUBAGENT_END_REASONS, SUBAGENT_WAIT_REASONS } from "@/lib/contracts/subagents";
+import type { SubagentThreadSummary } from "@/lib/contracts/subagentViews";
+import { subagentChat, subagentThread } from "@/tests/support/subagentViewFixtures";
+import { subagentCountsPhrase, subagentDetailText, subagentMessageLabel, subagentModelText, subagentReasonText, subagentStatePresentation, subagentTreeRows,
+  subagentWaitingKeyV2, subagentWorkingPhrase } from "./subagentPresentation";
 
 describe("a sub-agent's row words", () => {
   const row = { currentStep: null, outcome: null, reason: null, state: "running" } as const;
@@ -74,5 +77,38 @@ describe("a message row of a thread", () => {
     expect(subagentMessageLabel({ createdAt: at, delivery: "undelivered", from: "scout", text: "x" })).toBe("Message from scout · Not delivered");
     expect(subagentMessageLabel({ createdAt: at, delivery: "accepted", text: "x", to: "scout" })).toBe("Message to scout");
     expect(subagentMessageLabel({ createdAt: at, delivery: "accepted", question: true, text: "x", to: "main" })).toBe("Question to the main agent");
+    expect(subagentMessageLabel({ createdAt: at, delivery: "accepted", question: true, text: "x", to: "research" })).toBe("Question to research");
+    expect(subagentMessageLabel({ createdAt: at, delivery: "accepted", from: "left", question: true, text: "x" })).toBe("Question from left · Sent");
   });
 });
+
+describe("a child in the tree", () => {
+  const parent = { id: "thread-parent", name: "parent" };
+  const chat = (threads: readonly SubagentThreadSummary[]) => subagentChat("chat-1", threads);
+  const rows = (threads: readonly SubagentThreadSummary[]) => subagentTreeRows(chat(threads)).map(({ depth, thread }) => [thread.name, depth]);
+
+  it("sits right under its parent, active rows first as ever", () => {
+    expect(rows([
+      subagentThread("thread-other", "done"),
+      subagentThread("thread-left", "done", { parent }),
+      subagentThread("thread-parent", "running"),
+      subagentThread("thread-right", "running", { parent })
+    ])).toEqual([["parent", 0], ["right", 1], ["left", 1], ["other", 0]]);
+  });
+
+  it("stands on its own when the list left its parent out, so no row is lost", () => {
+    expect(rows([subagentThread("thread-left", "done", { parent })])).toEqual([["left", 0]]);
+  });
+
+  it("says what it waits for and how it stopped by its parent's name", () => {
+    expect(subagentStatePresentation("waiting", null, SUBAGENT_WAIT_REASONS.answer, "research").label).toBe("Waiting for research");
+    expect(subagentStatePresentation("waiting", null, SUBAGENT_WAIT_REASONS.answer).label).toBe("Waiting for the main agent");
+    expect(subagentReasonText(SUBAGENT_END_REASONS.parentStopped, "research")).toBe("Stopped with research");
+    expect(subagentReasonText(SUBAGENT_END_REASONS.stoppedByAgent, "research")).toBe("Stopped by research");
+    expect(subagentReasonText(SUBAGENT_BLOCKED_REASONS.needsAnswer, "research")).toBe("Asked research a question");
+    expect(subagentReasonText(SUBAGENT_END_REASONS.stoppedByUser, "research")).toBe("Stopped by you");
+    expect(subagentReasonText(SUBAGENT_END_REASONS.parentStopped)).toBe("Stopped with its answer");
+    expect(subagentDetailText(subagentThread("thread-left", "stopped", { parent, reason: SUBAGENT_END_REASONS.parentStopped }))).toBe("Stopped with parent");
+  });
+});
+

@@ -69,6 +69,26 @@ async function fixture() {
 }
 
 describe("durable tool observation ownership", () => {
+  it("keeps a child of a background sub-agent under the answer of the main-agent run behind them", async () => {
+    const f = await fixture();
+    const background = async (parentRunId: string, name: string, parentThreadId?: string) => {
+      const parentCall = await f.call({ runId: parentRunId, userId: f.user.id });
+      const thread = await prisma.subagentThread.create({ data: { anchorRunId: f.run.id, chatId: f.chat.id, name, ...(parentThreadId ? { parentThreadId } : {}),
+        userId: f.user.id } });
+      const turn = await prisma.subagentTurn.create({ data: { chatId: f.chat.id, mode: "background", modelId: "fake-qsa", parentRunId, parentToolCallId: parentCall.toolCallId,
+        provider: "fake", threadId: thread.id, userId: f.user.id } });
+      const run = await prisma.modelRun.create({ data: { chatId: f.chat.id, engine: "native", modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "streaming",
+        subagentThreadId: thread.id, subagentTurnId: turn.id, userId: f.user.id, userMessageId: f.run.userMessageId } });
+      return { runId: run.id, threadId: thread.id };
+    };
+    const parent = await background(f.run.id, "parent");
+    const child = await background(parent.runId, "child", parent.threadId);
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
+    const producer = await f.call({ runId: child.runId, userId: f.user.id });
+    const saved = await saveToolResultText({ outcome: "complete", producer, service: f.service, source: "workspace", text: "c".repeat(30_000) });
+    expect(saved).toHaveProperty("handle");
+  });
+
   it("keeps a background report readable by its handle after settlement and in a later turn", async () => {
     const f = await fixture();
     const parentCall = await f.call();

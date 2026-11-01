@@ -36,6 +36,40 @@ describe("the engine's background runner", () => {
     expect(hasSubagentBackgroundHost("parent-run")).toBe(true);
   });
 
+  it("keeps a run's host past its grace for as long as one of its turns runs, because that turn may start a child on it", async () => {
+    vi.useFakeTimers();
+    const runner = new FakeSubagentRunner();
+    const host = registerSubagentBackgroundHost("parent-long", () => runner, 1_000);
+    const input = turn({ parentRunId: "parent-long" });
+    await backgroundSubagentRunner.start(input);
+    host.release();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(hasSubagentBackgroundHost("parent-long")).toBe(true);
+    // Its child, started long after the run's own end, finds the host.
+    const child = turn({ parentRunId: "parent-long" });
+    await backgroundSubagentRunner.start(child);
+    runner.finish(child.turnId, endedSubagentResult("watcher"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hasSubagentBackgroundHost("parent-long")).toBe(true);
+    runner.finish(input.turnId, endedSubagentResult("watcher"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hasSubagentBackgroundHost("parent-long")).toBe(false);
+  });
+
+  it("leaves a host that holds no turn to its grace", async () => {
+    vi.useFakeTimers();
+    const runner = new FakeSubagentRunner();
+    const host = registerSubagentBackgroundHost("parent-short", () => runner, 1_000);
+    const input = turn({ parentRunId: "parent-short" });
+    await backgroundSubagentRunner.start(input);
+    runner.finish(input.turnId, endedSubagentResult("watcher"));
+    await vi.advanceTimersByTimeAsync(0);
+    host.release();
+    expect(hasSubagentBackgroundHost("parent-short")).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(hasSubagentBackgroundHost("parent-short")).toBe(false);
+  });
+
   it("refuses a turn without its parent's host, and a foreground turn", async () => {
     await expect(backgroundSubagentRunner.start(turn({ parentRunId: "elsewhere" }))).rejects.toThrow("subagent_parent_unavailable");
     registerSubagentBackgroundHost("parent-fg", () => new FakeSubagentRunner());

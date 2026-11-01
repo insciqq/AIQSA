@@ -16,6 +16,7 @@ import {
   joinWorkspaceRunOperation,
   WORKSPACE_STOP_UNPROVEN_CODE,
   workspaceActiveRunsWhere,
+  workspaceRunAgentIds,
   workspaceRunHoldsOperation,
   workspaceSubagentRunsAttached
 } from "./attachments";
@@ -327,5 +328,23 @@ describe("Workspace attachments on PostgreSQL", () => {
       userMessageId: f.main.userMessageId } satisfies WorkspaceRunAdmissionPlan;
     await expect(prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan))).rejects
       .toMatchObject({ code: "workspace_busy", reason: "workspace_busy_join_session_state" });
+  });
+
+  it("counts a foreground child's processes among its background parent's run, and leaves a background child's to its own run", async () => {
+    const f = await chatFixture(1);
+    const parent = f.background[0]!;
+    const parentTurn = await prisma.subagentTurn.findFirstOrThrow({ where: { threadId: parent.threadId } });
+    const child = async (name: string, mode: "background" | "foreground", ordinal: number) => {
+      const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: parent.runId, ordinal, providerCallId: `child-${ordinal}`, roundIndex: 1,
+        state: "running", subagentThreadId: parent.threadId, subagentTurnId: parentTurn.id, toolName: "call_subagent" } });
+      const thread = await prisma.subagentThread.create({ data: { anchorRunId: f.main.id, chatId: f.chatId, name, parentThreadId: parent.threadId, userId: f.userId } });
+      await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode, modelId: "fake-qsa", parentRunId: parent.runId, parentToolCallId: call.id, provider: "fake",
+        threadId: thread.id, userId: f.userId } });
+      return thread.id;
+    };
+    const foreground = await child("inside", "foreground", 1);
+    await child("beside", "background", 2);
+    expect(await workspaceRunAgentIds(prisma, parent.runId)).toEqual([parent.threadId, foreground]);
+    expect(await workspaceRunAgentIds(prisma, f.main.id)).toEqual(["main"]);
   });
 });
