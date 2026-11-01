@@ -753,9 +753,13 @@ describe("a sub-agent's children on PostgreSQL", () => {
   }));
 
   it("refuses a child of a turn that ended, though the run behind that turn still runs", async () => fixture(async (f) => {
-    const parent = await backgroundParent(f);
+    // A foreground parent on the main run: settling a background parent would also end the run this test keeps active.
+    const held = await f.thread("parent");
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: f.main.runId,
+      parentToolCallId: held.callId, provider: "fake", state: "running", threadId: held.threadId, userId: f.userId } });
+    const parent = { name: "parent", runId: f.main.runId, threadId: held.threadId, toolState: { calls: 0 }, turnId: turn.id };
     const thread = await childThread(f, parent, "late");
-    await store.settle({ chatId: f.chatId, result: endedSubagentResult("parent", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: parent.turnId, userId: f.userId });
+    await prisma.subagentTurn.update({ data: { endedAt: new Date(), reasonCode: "user_stop", state: "stopped" }, where: { id: turn.id } });
     expect(await store.admit(childAdmission(f, parent, thread))).toEqual({ code: "subagent_not_active", kind: "refused" });
     expect(await prisma.subagentTurn.count({ where: { threadId: thread.threadId } })).toBe(0);
   }));

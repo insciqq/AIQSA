@@ -379,15 +379,24 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         .catch(() => undefined);
     }
     const result = impliedResult({ modelId: turn.model.id, name: turn.name, reason, reasoningEffort: turn.model.effort, state: "stopped" });
-    const settlement = await deps.store.settle({ chatId: turn.chatId, result, turnId: turn.turnId, userId: turn.userId });
+    // Counted from before the settle, as in the ordinary end, so a parent waiting on this child sees its report coming.
+    const reported = turn.parentThreadId ? reportOnItsWay(turn.parentThreadId) : () => undefined;
+    let settlement: Awaited<ReturnType<typeof deps.store.settle>>;
+    try {
+      settlement = await deps.store.settle({ chatId: turn.chatId, result, turnId: turn.turnId, userId: turn.userId });
+    } catch (error) {
+      reported();
+      throw error;
+    }
+    if (settlement.settled && settlement.result && turn.parentThreadId) {
+      reportToParent({ chatId: turn.chatId, name: turn.name, parentThreadId: turn.parentThreadId, turnId: turn.turnId, userId: turn.userId },
+        settlement.result, turn.runId, reported);
+      return settlement.result;
+    }
+    reported();
     if (settlement.settled && settlement.result) {
-      if (turn.parentThreadId) {
-        reportToParent({ chatId: turn.chatId, name: turn.name, parentThreadId: turn.parentThreadId, turnId: turn.turnId, userId: turn.userId },
-          settlement.result, turn.runId);
-      } else {
-        callBack({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
-          threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }, turn.runId);
-      }
+      callBack({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
+        threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }, turn.runId);
     }
     return settlement.result;
   }
