@@ -908,13 +908,14 @@ describe("scenarios Q and R", () => {
     expect(oracleQ({ ...good, searches: null }).failed).toEqual([]);
   });
 
-  it("R compares each phrase with its direction, by index only", () => {
+  it("R compares each phrase with its direction, by index only, and answers no question", () => {
     expect(SCENARIO_R_PHRASES.filter((phrase) => phrase.start)).toHaveLength(5);
+    expect(SCENARIO_R_PHRASES.every((phrase) => !("reply" in phrase))).toBe(true);
     expect(SCENARIO_R_PHRASES).toHaveLength(10);
     const verdict = oracleR([{ expected: true, index: 0, started: false, status: "complete" }, { expected: false, index: 5, started: true, status: "cancelled" },
       { expected: true, index: 1, started: true, status: "cancelled" }]);
     expect(verdict.failed).toEqual(["phrase_0_not_started", "phrase_5_started"]);
-    expect(verdict.counts).toEqual({ asked: 3, askedFirst: 0, correct: 1, started: 2 });
+    expect(verdict.counts).toEqual({ asked: 3, correct: 1, started: 2 });
   });
 });
 

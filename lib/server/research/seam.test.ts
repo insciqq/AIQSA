@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
@@ -7,6 +7,7 @@ import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRun
 import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
+import { toolOutputExcerpt } from "../engine/toolResults";
 import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
 import type { NativeRunStore } from "../engine/runStore";
@@ -16,6 +17,9 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { runResearchGates, type ResearchGate, type ResearchGateContext } from "./gates";
 import { researchNote } from "./notes";
+import { createResearchPlanHandlers } from "./planHandlers";
+import { createResearchPlanWindow, ResearchPlanWindows, type ResearchPlanStore } from "./planWindow";
+import { proposeCall, proposalArguments } from "./planWindow.testFixtures";
 import { researchOfTurn, type ResearchEngineDeps } from "./run";
 import { researchModelIdentity } from "./turns";
 import { createResearchVerifierRole, RESEARCH_RESEARCHER_BINDING_KEY, type ResearchVerifierRole } from "./verifierRole";
@@ -55,7 +59,10 @@ const PLAN = { goal: "Choose a mattress.", questions: [
 const REPORT = "# Report\n\nConfirmed: the X1 holds up.";
 const DRAFT = { findings: [{ claim: "The X1 holds up.", quote: "held up after 10 years", source_class: "independent_tests", standing: "confirmed",
   url: "https://lab.example/x1" }], report: REPORT, unreachable: [] };
-const start = (id = "call-start") => ({ arguments: PLAN, id, name: START_RESEARCH_TOOL_NAME });
+const start = (id = "call-start") => ({ arguments: { goal: PLAN.goal }, id, name: START_RESEARCH_TOOL_NAME });
+const propose = (id = "call-plan") => proposeCall(PLAN, id);
+/** A start and its plan in one response: scoping has no floor, and with no window port the plan stands at once. */
+const begin = () => [start(), propose()];
 const submit = (id = "call-draft", draft: unknown = DRAFT) => ({ arguments: draft as Record<string, unknown>, id, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
 
 function engineOf(research: ResearchEngineDeps | undefined, options: Readonly<{ now?: () => number; threadEffects?: Readonly<{ items: TranscriptItem[]; threadId: string }>[] }> = {}) {
@@ -135,7 +142,7 @@ function repository() {
   };
 }
 
-function prepared(options: Readonly<{ noSearch?: boolean }> = {}): MaterializedPreparedRunData {
+function prepared(options: Readonly<{ noLimits?: boolean; noSearch?: boolean }> = {}): MaterializedPreparedRunData {
   const text = "Проведи исследование матрасов.";
   const request = {
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
@@ -145,7 +152,9 @@ function prepared(options: Readonly<{ noSearch?: boolean }> = {}): MaterializedP
     // A hosted source: Search is available and no client route is built.
     searchPlan: { mode: "all_selected" as const, options: options.noSearch ? [] : [{ adapterKind: "openai_hosted", config: {}, credentialMode: "answer", executionModes: ["all_selected"],
       modelId: "fake-qsa", optionId: "hosted", protocol: "hosted", provider: "fake", providerModelId: "model-1", revisionId: "rev", searchStrategyRowId: "strategy" }] },
-    toolMode: "auto" as const
+    toolMode: "auto" as const,
+    // What a new installation has; left out, a request reads as an old one, whose tool rounds run out at 3.
+    ...options.noLimits ? { toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null } } : {}
   } as unknown as ProviderRunRequest;
   return {
     contextTruncation: null, defaults: null, expectedActiveLeafId: null, mcpBindings: [], normalizedRequest: request,
@@ -199,7 +208,7 @@ describe("starting research", () => {
   });
 
   it("refuses a call of the tool where it is not offered, as any unknown tool, and the answer still arrives", async () => {
-    const { adapter, requests } = scripted([{ calls: [start()] }, { text: "Answered directly." }]);
+    const { adapter, requests } = scripted([{ calls: begin() }, { text: "Answered directly." }]);
     const memory = engineOf({});
     await run(adapter, memory, { telegram: true }).text();
     expect(memory.published()).toBe("Answered directly.");
@@ -209,21 +218,21 @@ describe("starting research", () => {
 
   it("names the plan as the answer's progress, and refuses a plan that drops a source class without a reason", async () => {
     const { adapter, requests } = scripted([
-      { calls: [{ arguments: { ...PLAN, questions: [PLAN.questions[0]] }, id: "call-bad", name: START_RESEARCH_TOOL_NAME }] },
-      { calls: [start()] },
+      { calls: [start(), proposeCall({ questions: [PLAN.questions[0]] }, "call-bad")] },
+      { calls: [propose()] },
       { calls: [submit()] }
     ]);
     const memory = engineOf({ gates: [] });
     const seen = await events(run(adapter, memory));
-    expect(resultsOf(requests[1], START_RESEARCH_TOOL_NAME)[0]).toContain("owner_reviews");
+    expect(resultsOf(requests[1], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]).toContain("owner_reviews");
     const plans = seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity" ? [event.data.payload] : []) as unknown as { items?: { text: string }[]; kind: string }[];
-    expect(plans.find((entry) => entry.kind === "plan")?.items?.map((item) => item.text)).toEqual(["Which mattress holds up?", "What do owners and shops say?"]);
+    expect(plans.filter((entry) => entry.kind === "plan").at(-1)?.items?.map((item) => item.text)).toEqual(["Which mattress holds up?", "What do owners and shops say?"]);
     expect(memory.published()).toBe(REPORT);
   });
 
   it("gives every researcher the method and its source classes, whatever the main agent's brief says", async () => {
     const { adapter, requests } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [{ arguments: { message: "Cover the first question.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME }] },
       { text: "Outcome: done\nclaim; link; quote; independent_tests; confirmed" },
       { calls: [submit()] }
@@ -243,7 +252,7 @@ describe("starting research", () => {
 describe("Stop ends all research", () => {
   it("runs a researcher in the foreground even when the model asks for the background, since Stop spares background sub-agents", async () => {
     const { adapter } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [{ arguments: { background: true, message: "Cover it.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME }] },
       { text: "Outcome: done\nreport" },
       { calls: [submit()] }
@@ -258,7 +267,7 @@ describe("Stop ends all research", () => {
 describe("a draft reaches the user", () => {
   it("publishes an accepted report verbatim with no further model call, and holds back all text until then", async () => {
     const { adapter, requests } = scripted([
-      { calls: [start()], text: "Starting the research." },
+      { calls: begin(), text: "Starting the research." },
       { calls: [submit()], text: "DRAFT NARRATION beside the call." }
     ]);
     const memory = engineOf({ gates: [] });
@@ -286,7 +295,7 @@ describe("a draft reaches the user", () => {
   });
 
   it("asks once for the call when the model writes its report as a message, and never shows that text meanwhile", async () => {
-    const { adapter, requests } = scripted([{ calls: [start()] }, { text: "SECRET REPORT AS TEXT" }, { calls: [submit()] }]);
+    const { adapter, requests } = scripted([{ calls: begin() }, { text: "SECRET REPORT AS TEXT" }, { calls: [submit()] }]);
     const memory = engineOf({ gates: [] });
     const seen = await events(run(adapter, memory));
     expect(requests).toHaveLength(3);
@@ -297,7 +306,7 @@ describe("a draft reaches the user", () => {
 
   it("takes the text itself through the gates when the model writes a message again, and the answer says it has no findings", async () => {
     const drafts: ResearchDraft[] = [];
-    const { adapter, requests } = scripted([{ calls: [start()] }, { text: "Отчёт текстом." }, { text: "Отчёт текстом, ещё раз." }]);
+    const { adapter, requests } = scripted([{ calls: begin() }, { text: "Отчёт текстом." }, { text: "Отчёт текстом, ещё раз." }]);
     const memory = engineOf({ gates: [gate("spy", async (draft) => { drafts.push(draft); return { kind: "pass" }; })] });
     await run(adapter, memory).text();
     expect(requests).toHaveLength(3);
@@ -319,7 +328,7 @@ describe("the gap check's needs", () => {
       return context.attempt === 1 ? { kind: "send_back", message: "No owner reviews were opened: send a researcher to them." } : { kind: "pass" };
     });
     const { adapter, requests } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit("call-1")] },
       { calls: [{ arguments: { message: "Owner reviews.", name: "owners" }, id: "call-owners", name: CALL_SUBAGENT_TOOL_NAME }] },
       { text: "Outcome: done\nowners say" },
@@ -337,7 +346,7 @@ describe("the gap check's needs", () => {
     let clock = 0;
     const sentBack = gate("gap", async () => ({ kind: "send_back", message: "Keep looking.", unresolvedNote: "Owner reviews stayed open." }));
     const { adapter, requests } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit()], onCall: () => { clock = 55 * 60_000; } }
     ]);
     const memory = engineOf({ gates: [sentBack] }, { now: () => clock });
@@ -350,7 +359,7 @@ describe("the gap check's needs", () => {
     let clock = 0;
     const passes = gate("gap", async (_draft, context) => context.attempt === 1 ? { kind: "send_back", message: "One more round." } : { kind: "pass" });
     const { adapter, requests } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit()] },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
       { calls: [submit("call-2", { ...DRAFT, report: "Final." })] }
@@ -366,7 +375,7 @@ describe("the gap check's needs", () => {
     let clock = 0;
     const passes = gate("gap", async (_draft, context) => context.attempt === 1 ? { kind: "send_back", message: "One more round." } : { kind: "pass" });
     const { adapter, requests } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit()] },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
       { text: "I would still like to look further." }
@@ -380,7 +389,7 @@ describe("the gap check's needs", () => {
   it("past the tool time with no draft at all, the reserved round's message is the draft, and a round that is not asked for is not paid", async () => {
     let clock = 0;
     const { adapter, requests } = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-late", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
       { text: "Whatever I have." }
     ]);
@@ -394,7 +403,7 @@ describe("the gap check's needs", () => {
 
   it("does not spend a round on a draft that the repeat guard blocks: the standing draft goes out with a note", async () => {
     const stubborn = gate("gap", async () => ({ kind: "send_back", message: "Still open." }));
-    const { adapter, requests } = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }, { calls: [submit("call-3")] }, { calls: [submit("call-4")] }]);
+    const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }, { calls: [submit("call-3")] }, { calls: [submit("call-4")] }]);
     const memory = engineOf({ gates: [stubborn] });
     await run(adapter, memory).text();
     expect(requests.length).toBeLessThanOrEqual(5);
@@ -424,7 +433,7 @@ describe("the verifier's needs", () => {
       return { kind: "pass", notes: ["Checked by Other One."] };
     });
     const main = scripted([
-      { calls: [start()], text: "MAIN AGENT REASONING" },
+      { calls: begin(), text: "MAIN AGENT REASONING" },
       { calls: [submit()] }
     ]);
     const memory = engineOf({ gates: [verifier], verifier: verifierRole(other.adapter) });
@@ -451,7 +460,7 @@ describe("the verifier's needs", () => {
       seen.push(await context.subagents.run({ brief: "b", instructions: "i", model: "verifier", name: "v", tools: ["web_fetch"] }, context.signal));
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\nchecked" }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }, { text: "Outcome: done\nchecked" }]);
     await run(main.adapter, engineOf({ gates: [reader] })).text();
     expect(seen[0]).toEqual({ kind: "main_model", label: "fake-qsa" });
     expect(seen[1]).toMatchObject({ kind: "ended", result: { model: { id: "fake-qsa" } } });
@@ -469,7 +478,7 @@ describe("the verifier's needs", () => {
       await context.subagents.run({ brief: `brief ${name}`, instructions: "i", model: "main", name, tools: [] }, context.signal);
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\nfirst" }, { text: "Outcome: done\nsecond" }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }, { text: "Outcome: done\nfirst" }, { text: "Outcome: done\nsecond" }]);
     const memory = engineOf({ gates: [turnOf("judge"), turnOf("verifier")] });
     await run(main.adapter, memory).text();
     const parents = vi.mocked(memory.threads.admitForeground).mock.calls.map(([input]) => input.parentToolCallId);
@@ -491,7 +500,7 @@ describe("the verifier's needs", () => {
       await context.subagents.run({ brief: "b", instructions: "i", model: "verifier", name: "v", tools: ["web_fetch"] }, context.signal);
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
     await run(main.adapter, engineOf({ gates: [reader], verifier: { frozenChoice: frozen, route: role.route } })).text();
     expect(frozen).toHaveBeenCalledTimes(1);
     expect(role.route).toHaveBeenCalledWith(expect.objectContaining({ providerModelId: "model-2" }));
@@ -512,7 +521,7 @@ describe("the verifier's needs", () => {
       opened.push(...await context.sources.opened(context.signal));
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
     await run(main.adapter, engineOf({ gates: [quoteCheck] }, { threadEffects: [{ items: threadItems, threadId: "thread-1" }] })).text();
     expect(opened).toEqual([{ partial: false, text: "whole page: held up after 10 years", toolName: "fetch_url", url: "https://lab.example/x1" }]);
   });
@@ -521,7 +530,7 @@ describe("the verifier's needs", () => {
     const correctOnce = gate("verifier", async (draft, context) => context.attempt === 1
       ? { kind: "send_back", message: "Claim 1 is unsupported: remove or mark it." } : { kind: "pass", notes: [`Checked ${draft.findings.length} claim.`] });
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit("call-1")] },
       { calls: [submit("call-2", { ...DRAFT, report: "Corrected." })] }
     ]);
@@ -533,7 +542,7 @@ describe("the verifier's needs", () => {
 
   it("delivers the answer with a visible note when a gate fails, and the next gate still runs", async () => {
     const after = vi.fn(async () => ({ kind: "pass" as const }));
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
     const memory = engineOf({ gates: [gate("broken", async () => { throw new Error("verifier down"); }), gate("after", after)] });
     await run(main.adapter, memory).text();
     expect(after).toHaveBeenCalledTimes(1);
@@ -547,7 +556,7 @@ describe("the verifier's needs", () => {
       const hung = gate("hung", (_draft, context) => new Promise(() => {
         context.signal.addEventListener("abort", () => { aborted = true; });
       }));
-      const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+      const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
       const memory = engineOf({ gates: [hung] });
       const finished = run(main.adapter, memory).text();
       await vi.advanceTimersByTimeAsync(60 * 60_000 - 60_000 + 1_000);
@@ -565,7 +574,7 @@ describe("the verifier's needs", () => {
       outcome = await context.subagents.run({ brief: "b", instructions: "i", model: "main", name: "v", tools: ["web_fetch"] }, context.signal);
       return { kind: "pass", notes: ["Not checked: the chat is busy."] };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
     const memory = engineOf({ gates: [reader] });
     vi.mocked(memory.threads.admitForeground).mockResolvedValue({ code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" });
     await run(main.adapter, memory).text();
@@ -581,7 +590,7 @@ describe("review findings", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
     try {
       const spy = vi.fn(async () => ({ kind: "pass" as const }));
-      const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+      const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
       const memory = engineOf({ gates: [gate("spy", spy)] });
       vi.mocked(memory.deps.transcripts.append).mockImplementation(async (_scope, _from, items) => {
         if (items.some((item) => item.kind === "tool_call" && item.name === SUBMIT_RESEARCH_DRAFT_TOOL_NAME)) throw new Error("database down");
@@ -602,11 +611,11 @@ describe("review findings", () => {
     }
   });
 
-  it("keeps a researcher beside a slow start_research in the method: foreground, with the brief, whatever order they record in", async () => {
+  it("refuses a researcher beside a slow start_research, whatever order they record in: researchers start after the plan", async () => {
     const background = new FakeSubagentBackgroundControl();
     const main = scripted([
       { calls: [start(), { arguments: { background: true, message: "Cover it.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME }] },
-      { text: "Outcome: done\nreport" },
+      { calls: [propose()] },
       { calls: [submit()] }
     ]);
     const memory = engineOf({ gates: [] });
@@ -618,14 +627,14 @@ describe("review findings", () => {
     });
     await run(main.adapter, memory, { subagents: { background } }).text();
     expect(background.turns).toEqual([]);
-    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "lab" }));
-    expect(JSON.stringify(main.requests[1]!.history)).toContain("# Research method (from the server)");
+    expect(memory.threads.admitForeground).not.toHaveBeenCalled();
+    expect(resultsOf(main.requests[1], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("researchers start after the plan");
     expect(memory.published()).toBe(REPORT);
   });
 
   it("does not start research for a start the batch refused, and what follows is an ordinary answer", async () => {
     let clock = 0;
-    const main = scripted([{ calls: [start()], onCall: () => { clock = 55 * 60_000; } }, { text: "Answered without research." }]);
+    const main = scripted([{ calls: begin(), onCall: () => { clock = 55 * 60_000; } }, { text: "Answered without research." }]);
     const memory = engineOf({}, { now: () => clock });
     const seen = await events(run(main.adapter, memory));
     expect(tokens(seen)).toEqual(["Answered without research."]);
@@ -633,7 +642,7 @@ describe("review findings", () => {
   });
 
   it("keeps the last attempt's withheld text with a note when the provider fails for good", async () => {
-    const main = scripted([{ calls: [start()] }, { fail: true, text: "# Partial report" }]);
+    const main = scripted([{ calls: begin() }, { fail: true, text: "# Partial report" }]);
     const memory = engineOf({});
     const repo = repository();
     const seen = await events(run(main.adapter, memory, {}, repo));
@@ -647,7 +656,7 @@ describe("review findings", () => {
   it("keeps the last attempt's withheld text with a note at the turn's deadline", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
     try {
-      const main = scripted([{ calls: [start()] }, { hang: true, text: "# Hanging report" }]);
+      const main = scripted([{ calls: begin() }, { hang: true, text: "# Hanging report" }]);
       const repo = repository();
       const finished = run(main.adapter, engineOf({}), {}, repo).text();
       await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
@@ -661,7 +670,7 @@ describe("review findings", () => {
   it("drops what a retried attempt streamed, so only the last attempt's text is kept", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
     try {
-      const main = scripted([{ calls: [start()] }, { text: "DROPPED ATTEMPT" }, { fail: true, text: "Kept attempt" }]);
+      const main = scripted([{ calls: begin() }, { text: "DROPPED ATTEMPT" }, { fail: true, text: "Kept attempt" }]);
       const memory = engineOf({});
       let opened = 0;
       memory.deps = { ...memory.deps, faults: () => ({ take: (fault) => fault === "stream_drop_once" && ++opened === 2 }) };
@@ -677,7 +686,7 @@ describe("review findings", () => {
   });
 
   it("keeps a submitted report over later narration when the provider fails", async () => {
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { fail: true, text: "Let me look at one more thing and also go on writing for a good long while." }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }, { fail: true, text: "Let me look at one more thing and also go on writing for a good long while." }]);
     const memory = engineOf({ gates: [gate("gap", async () => ({ kind: "send_back", message: "Again." }))] });
     const repo = repository();
     await run(main.adapter, memory, {}, repo).text();
@@ -688,7 +697,7 @@ describe("review findings", () => {
   function lateFollowup(after: readonly Step[]) {
     let clock = 0;
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-late", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
       { calls: [submit("call-1")] },
       ...after
@@ -760,7 +769,7 @@ describe("a draft and its notes stay together", () => {
       activeRunControllerRegistry.abort(runId);
       context.signal.addEventListener("abort", () => reject(context.signal.reason as Error));
     }));
-    const main = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2", { ...DRAFT, report: "second" })] }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit("call-1")] }, { calls: [submit("call-2", { ...DRAFT, report: "second" })] }]);
     let attempts = 0;
     const memory = engineOf({ gates: [gate("either", async (draft, context) => {
       attempts += 1;
@@ -773,7 +782,7 @@ describe("a draft and its notes stay together", () => {
   it("a recording failure on the next draft shows it with the generic note, never the last draft's counts", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
     try {
-      const main = scripted([{ calls: [start()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2", { ...DRAFT, report: "second" })] }]);
+      const main = scripted([{ calls: begin() }, { calls: [submit("call-1")] }, { calls: [submit("call-2", { ...DRAFT, report: "second" })] }]);
       const memory = engineOf({ gates: [firstDraft] });
       vi.mocked(memory.deps.transcripts.append).mockImplementation(async (_scope, _from, items) => {
         if (items.some((item) => item.kind === "tool_call" && item.callId === "call-2")) throw new Error("database down");
@@ -792,7 +801,7 @@ describe("a draft and its notes stay together", () => {
   it("the deadline past a replacement draft in the reserved round keeps that draft, without the last draft's counts", async () => {
     let clock = 0;
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit("call-1")] },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
       { calls: [submit("call-2", { ...DRAFT, report: "second" })] }
@@ -806,7 +815,7 @@ describe("a draft and its notes stay together", () => {
   it("a draft that stands when tools close keeps its own notes", async () => {
     let clock = 0;
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit("call-1")] },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
       { text: "I would still like to look further." }
@@ -865,7 +874,7 @@ describe("the verifier's own turn is independent", () => {
       }
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\njudge" }, { text: "Outcome: done\nverifier" }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }, { text: "Outcome: done\njudge" }, { text: "Outcome: done\nverifier" }]);
     await run(main.adapter, engineOf({ gates: [both] })).text();
     const [judge, verifier] = [main.requests[2]!, main.requests[3]!];
     expect(JSON.stringify(judge.history)).toContain("Проведи исследование матрасов.");
@@ -885,7 +894,7 @@ describe("the verifier's own turn is independent", () => {
       waiting = false;
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\njudge" }, { text: "Outcome: done\nverifier" }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }, { text: "Outcome: done\njudge" }, { text: "Outcome: done\nverifier" }]);
     const repo = repository();
     const followups = { close: vi.fn(async () => true), deliver: vi.fn(async () => true),
       load: vi.fn(async () => ({ entries: waiting ? [{ delivery: "accepted" as const, id: "f1", origin: "user" as const, text: "USER FOLLOW-UP" }] : [], revision: 1 })) };
@@ -900,7 +909,7 @@ describe("the verifier's own turn is independent", () => {
       await context.subagents.run({ brief: "b", instructions: "i", model: "verifier", name: "verifier", tools: [] }, context.signal);
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\nok" }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }, { text: "Outcome: done\nok" }]);
     const memory = engineOf({ gates: [check] });
     await run(main.adapter, memory).text();
     expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ branchRunIds: ["run-1"], name: "verifier-1" }));
@@ -922,7 +931,7 @@ describe("the verifier's own turn is independent", () => {
         model = await context.verifierModel(context.signal);
         return { kind: "pass" };
       });
-      const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+      const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
       await run(main.adapter, engineOf({ gates: [reader], verifier: roleOf(main.adapter, upstream, providerModelId, connectionId) })).text();
       expect(model).toEqual({ kind: "main_model", label: "Same One · Same" });
     });
@@ -939,7 +948,7 @@ describe("the verifier's own turn is independent", () => {
       model = await context.verifierModel(context.signal);
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
     await run(main.adapter, engineOf({ gates: [reader], verifier: roleOf(main.adapter, "other-1", "model-2") })).text();
     expect(model).toEqual({ kind: "role", label: "Same One · Same" });
   });
@@ -950,7 +959,7 @@ describe("the verifier's own turn is independent", () => {
       await context.verifierModel(context.signal).then((value) => outcomes.push(value), () => outcomes.push("threw"));
       return context.attempt === 1 ? { kind: "send_back", message: "Again." } : { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [start("retry-start")] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }]);
+    const main = scripted([{ calls: [start()] }, { calls: [start("retry-start"), propose()] }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }]);
     const good = roleOf(main.adapter, "other-1", "model-2");
     const route = vi.mocked(good.route);
     const answer = await route.getMockImplementation()!({ effort: null, providerModelId: "model-2", runId: "r", userId: "u" });
@@ -977,7 +986,7 @@ describe("what ends research", () => {
       await context.subagents.run({ brief: "b", instructions: "i", model: "main", name: "v", tools: ["web_fetch"] }, context.signal);
       return { kind: "pass" };
     });
-    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { onCall: () => activeRunControllerRegistry.abort(runId) }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit()] }, { onCall: () => activeRunControllerRegistry.abort(runId) }]);
     const memory = engineOf({ gates: [reader] });
     const repo = repository();
     const seen = await events(run(main.adapter, memory, { runId }, repo));
@@ -992,7 +1001,7 @@ describe("what ends research", () => {
 
   it("Stop before any draft shows nothing it held", async () => {
     const runId = "run-stop-early";
-    const main = scripted([{ calls: [start()], text: "Starting." }, { onCall: () => activeRunControllerRegistry.abort(runId), text: "HELD NARRATION" }]);
+    const main = scripted([{ calls: begin(), text: "Starting." }, { onCall: () => activeRunControllerRegistry.abort(runId), text: "HELD NARRATION" }]);
     const memory = engineOf({});
     const seen = await events(run(main.adapter, memory, { runId }));
     expect(seen.at(-1)).toMatchObject({ data: { status: "cancelled" }, type: "done" });
@@ -1001,7 +1010,7 @@ describe("what ends research", () => {
 
   it("a run that fails with a report in hand keeps it with a note", async () => {
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit()] },
       { fail: true }
     ]);
@@ -1016,7 +1025,7 @@ describe("what ends research", () => {
   it("the turn's hard deadline with a report in hand keeps it with a note", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
     try {
-      const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { hang: true }]);
+      const main = scripted([{ calls: begin() }, { calls: [submit()] }, { hang: true }]);
       const memory = engineOf({ gates: [gate("gap", async (_draft, context) => context.attempt === 1 ? { kind: "send_back", message: "Again." } : { kind: "pass" })] });
       const repo = repository();
       const finished = run(main.adapter, memory, {}, repo).text();
@@ -1068,7 +1077,7 @@ describe("what ends research", () => {
     const seenAttempts: number[] = [];
     const passes = gate("gap", async (_draft, context) => { seenAttempts.push(context.attempt); return { kind: "pass" }; });
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit("call-1")] },
       { calls: [submit("call-2", { ...DRAFT, report: "With the follow-up." })] }
     ]);
@@ -1125,7 +1134,7 @@ describe("researchers on the installation role", () => {
   it.each([false, true])("records the selected model and effort on the actual sub-agent turn (same catalog row: %s)", async (sameModel) => {
     const child = scripted([{ text: "Outcome: done\nFindings." }]);
     const installed = installedResearchRole(child.adapter, { sameModel });
-    const main = scripted([{ calls: [start()] }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
       arguments: { name: "researcher", message: "Read the sources.", model: "agent-choice", effort: "low", background: true } }],
       onCall: () => { installed.policy.researchResearcherProviderModelId = "replacement"; installed.policy.researchResearcherReasoningEffort = "low"; } },
     { calls: [submit()] }]);
@@ -1150,7 +1159,7 @@ describe("researchers on the installation role", () => {
   it("keeps the role's model default when a call or custom type supplies an effort", async () => {
     const child = scripted([{ text: "Outcome: done\nFindings." }]);
     const installed = installedResearchRole(child.adapter, { effort: null });
-    const main = scripted([{ calls: [start()] }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
       arguments: { name: "researcher", type: "specialist", message: "Read the sources.", model: "agent-choice", effort: "high" } }] }, { calls: [submit()] }]);
     const memory = engineOf({ gates: [], researcher: installed.role });
     await run(main.adapter, memory, { subagents: { types: {
@@ -1171,7 +1180,7 @@ describe("researchers on the installation role", () => {
     const memory = engineOf({ gates: [], researcher: installed.role });
     await run(main.adapter, memory).text();
     expect(resultsOf(main.requests[1], START_RESEARCH_TOOL_NAME).join()).toContain("research_researcher_unavailable");
-    expect(resultsOf(main.requests[1], CALL_SUBAGENT_TOOL_NAME).join()).toContain("research_researcher_unavailable");
+    expect(resultsOf(main.requests[1], CALL_SUBAGENT_TOOL_NAME).join()).toContain("research_plan_first");
     expect(memory.threads.admitForeground).not.toHaveBeenCalled();
     expect(child.requests).toHaveLength(0);
     expect(memory.published()).toBe("Research could not start.");
@@ -1186,7 +1195,7 @@ it("runs the gap judge on the checks binding with the user's request and its req
     expect(outcome.kind).toBe("ended");
     return { kind: "pass" };
   });
-  const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+  const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
   const memory = engineOf({ gates: [judge], verifier: installed.role });
   const base = prepared();
   const request = { ...base.providerRequest, fetchUrl: { version: 1 as const, userUrlDigests: [] } };
@@ -1202,7 +1211,7 @@ it("runs the gap judge on the checks binding with the user's request and its req
 
 it("keeps ordinary caller model and effort selection when researchers are unassigned", async () => {
   const child = scripted([{ text: "Outcome: done\nFindings." }]);
-  const main = scripted([{ calls: [start()] }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
+  const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
     arguments: { name: "researcher", message: "Read the sources.", model: "personal-model", effort: "low" } }] }, { calls: [submit()] }]);
   const memory = engineOf({ gates: [], researcher: { frozenChoice: async () => ({ kind: "not_set" }), route: vi.fn() } });
   const base = prepared();
@@ -1219,4 +1228,327 @@ it("keeps ordinary caller model and effort selection when researchers are unassi
   expect(child.requests).toHaveLength(1);
   expect(memory.deps.research?.researcher?.route).not.toHaveBeenCalled();
   expect(memory.published()).toBe(REPORT);
+});
+
+/** A turn of a new installation: scoping and the plan take rounds of their own. */
+const FREE: Partial<NativeRunExecutionInput> = { prepared: prepared({ noLimits: true }) };
+
+describe("the plan window through the real engine", () => {
+  const research = { arguments: { message: "Cover the first question.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME };
+  const researcherDone = { text: "Outcome: done\nclaim; link; quote; independent_tests; confirmed" };
+  const planActivity = (seen: readonly ModelRunSseEvent[]) => seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity" ?
+    [event.data.payload as unknown as { items?: { text: string }[]; kind: string; researchPlan?: { runId: string; state: string } }] : []).filter((entry) => entry.kind === "plan");
+  const store = (): ResearchPlanStore => ({ chatOpen: vi.fn(async () => true), closed: vi.fn(async () => undefined), held: vi.fn(async () => undefined), opened: vi.fn(async () => null),
+    read: vi.fn(async () => null), rebuilt: vi.fn(async () => undefined) });
+
+  /** The real window, with a store that keeps nothing, and the route over the same windows. */
+  function windowed() {
+    const windows = new ResearchPlanWindows();
+    const rows = store();
+    const deps: ResearchEngineDeps = { gates: [], ports: { planWindow: (run) => createResearchPlanWindow(run, { store: rows, windows }) } };
+    const handlers = createResearchPlanHandlers({ resolveAuth: (async () => ({ id: "s", user: { status: "active" }, userId: "user" })) as never, store: rows, windows });
+    const post = (body: unknown) => handlers.act(new Request("http://app/api/chats/chat/research/plan", { body: JSON.stringify({ runId: "run-1", ...body as object }), method: "POST" }), { params: { chatId: "chat" } });
+    return { deps, handlers, post, rows, windows };
+  }
+
+  /** Runs under a fake clock until the window is open, and hands the test the turn to finish. */
+  async function inWindow(steps: readonly Step[], extra: Partial<NativeRunExecutionInput> = FREE, repo = repository()) {
+    const main = scripted(steps);
+    const real = windowed();
+    const memory = engineOf(real.deps);
+    const finished = events(run(main.adapter, memory, extra, repo));
+    await vi.waitFor(() => expect(real.windows.find({ chatId: "chat", runId: "run-1", userId: "user" })).not.toBeNull());
+    return { ...real, finished, main, memory, repo };
+  }
+
+  const standing = [{ calls: [start()] }, { calls: [propose()] }, { calls: [research] }, researcherDone, { calls: [submit()] }] satisfies readonly Step[];
+
+  it("with nobody present research starts at 60 seconds: start, propose, the window, then researchers", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const open = await inWindow(standing);
+      expect(open.main.requests).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.planWindow - 1_000);
+      expect(open.main.requests).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1_500);
+      const seen = await open.finished;
+      expect(open.memory.published()).toBe(REPORT);
+      expect(open.main.requests).toHaveLength(5);
+      const result = JSON.parse(resultsOf(open.main.requests[2], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]!) as Record<string, unknown>;
+      expect(result).toMatchObject({ changed: false, released_by: "timer", status: "released" });
+      expect(result.method).toContain("call_subagent");
+      expect(open.rows.closed).toHaveBeenCalledOnce();
+      // The line at once, the card as the window opens, and the ordinary plan after it.
+      const plans = planActivity(seen);
+      expect(plans[0]).toMatchObject({ items: [{ text: "Составляю план перед началом исследования" }], researchPlan: { runId: "run-1", state: "scoping" } });
+      expect(plans[1]).toMatchObject({ researchPlan: { runId: "run-1", state: "window" } });
+      expect(plans[1]!.items?.map((item) => item.text)).toEqual(proposalArguments(PLAN).steps);
+      expect(plans.at(-1)!.researchPlan).toBeUndefined();
+      expect(plans.at(-1)!.items?.[0]?.text).toBe("Which mattress holds up?");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows nothing the model writes while it scopes, refuses researchers before the plan, and owes no draft", async () => {
+    const main = scripted([{ calls: [start()], text: "Starting." }, { calls: [research], text: "SCOPING NARRATION" }, { calls: [submit()] }, { calls: [propose()] }, { calls: [submit("call-2", { ...DRAFT, report: "Second." })] }]);
+    const memory = engineOf({ gates: [] });
+    const seen = await events(run(main.adapter, memory, FREE));
+    expect(tokens(seen).join("")).not.toContain("SCOPING NARRATION");
+    expect(resultsOf(main.requests[2], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("researchers start after the plan");
+    expect(resultsOf(main.requests[3], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("the plan comes first");
+    expect(memory.threads.admitForeground).not.toHaveBeenCalled();
+    expect(memory.published()).toBe("Second.");
+  });
+
+  it("starts at once on the button", async () => {
+    const open = await inWindow(standing);
+    const response = await open.post({ action: "start" });
+    expect(await response.json()).toMatchObject({ outcome: "applied", view: { answer: { changed: false, releasedBy: "start_button" } } });
+    await open.finished;
+    expect(open.memory.published()).toBe(REPORT);
+    expect(open.main.requests).toHaveLength(5);
+  });
+
+  it("makes researchers wait for questions rebuilt from a saved edit, with the user's words kept whatever the model sends", async () => {
+    const saved = { assumptions: [], steps: ["Только тесты"], understood: "Матрас на дачу." };
+    const rebuilt = proposeCall({ questions: [{ question: "Что говорят тесты?", sites: [], source_classes: ["primary_official", "independent_tests", "owner_reviews", "action_channel"] }] }, "call-rebuilt");
+    const open = await inWindow([{ calls: [start()] }, { calls: [propose()] }, { calls: [{ ...research, id: "call-early" }] },
+      { calls: [{ ...rebuilt, arguments: { ...rebuilt.arguments, steps: ["The model's own steps"], understood: "The model's own words." } }] },
+      { calls: [research] }, researcherDone, { calls: [submit()] }]);
+    const response = await open.post({ action: "save", plan: saved });
+    expect(await response.json()).toMatchObject({ outcome: "applied", view: { answer: { changed: true, releasedBy: "saved_edit" } } });
+    const seen = await open.finished;
+    const result = JSON.parse(resultsOf(open.main.requests[2], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]!) as Record<string, unknown>;
+    expect(result).toMatchObject({ changed: true, released_by: "saved_edit", status: "released", user_plan: saved });
+    expect(result.instructions).toContain("user's own words");
+    expect(result).not.toHaveProperty("method");
+    expect(resultsOf(open.main.requests[3], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("your questions must follow");
+    expect(JSON.parse(resultsOf(open.main.requests[4], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[1]!)).toMatchObject({ status: "rebuilt", user_plan: saved });
+    // The brief the researcher got names the rebuilt question, and the row keeps the user's words with it.
+    const brief = JSON.stringify(open.main.requests[5]!.history?.at(-1));
+    expect(brief).toContain("Что говорят тесты?");
+    expect(brief).not.toContain("Which mattress holds up?");
+    expect(open.rows.rebuilt).toHaveBeenCalledOnce();
+    expect(vi.mocked(open.rows.rebuilt).mock.calls[0]![1].answer.plan).toMatchObject({ steps: saved.steps, understood: saved.understood });
+    expect(planActivity(seen).at(-1)!.items?.[0]?.text).toBe("Что говорят тесты?");
+    expect(open.memory.published()).toBe(REPORT);
+  });
+
+  it("takes a chat message as an edit: the window closes and the words still reach the model as a follow-up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      let written: "accepted" | "delivered" | null = null;
+      const followups = { close: vi.fn(async () => true), deliver: vi.fn(async () => { written = "delivered"; return true; }),
+        load: vi.fn(async () => ({ entries: written ? [{ delivery: written, id: "f1", origin: "user" as const, text: "Бюджет до 40 тысяч." }] : [], revision: 1 })) };
+      const open = await inWindow(standing, { prepared: { ...prepared({ noLimits: true }), followupAdmission: {} as never } }, { ...repository(), followups } as never);
+      await vi.advanceTimersByTimeAsync(2_500);
+      written = "accepted";
+      await vi.advanceTimersByTimeAsync(2_500);
+      await open.finished;
+      const result = JSON.parse(resultsOf(open.main.requests[2], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]!) as Record<string, unknown>;
+      expect(result).toMatchObject({ changed: false, released_by: "chat_message", status: "released" });
+      expect(result.instructions).toContain("counts as their edit");
+      expect(JSON.stringify(open.main.requests[2]!.history)).toContain("Бюджет до 40 тысяч.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Stop in the window ends the run with nothing released: the row keeps no answer", async () => {
+    const runId = "run-1";
+    const open = await inWindow(standing);
+    activeRunControllerRegistry.abort(runId);
+    const seen = await open.finished;
+    expect(seen.at(-1)).toMatchObject({ data: { status: "cancelled" }, type: "done" });
+    expect(open.rows.closed).not.toHaveBeenCalled();
+    expect(open.windows.find({ chatId: "chat", runId, userId: "user" })).toBeNull();
+    expect(open.main.requests).toHaveLength(2);
+  });
+
+  it("refuses a proposal naming the field, and the model's corrected one opens the window", async () => {
+    const { steps: _steps, ...bad } = proposalArguments(PLAN);
+    void _steps;
+    const main = scripted([{ calls: [start()] }, { calls: [{ arguments: bad, id: "call-bad", name: PROPOSE_RESEARCH_PLAN_TOOL_NAME }] }, { calls: [propose()] }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] });
+    await run(main.adapter, memory, FREE).text();
+    expect(resultsOf(main.requests[2], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]).toContain("steps must list");
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("refuses a plan before research started, and an ordinary answer goes on", async () => {
+    const main = scripted([{ calls: [propose()] }, { text: "Plain answer." }]);
+    const memory = engineOf({});
+    await run(main.adapter, memory, FREE).text();
+    expect(resultsOf(main.requests[1], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]).toContain("research_not_started");
+    expect(memory.published()).toBe("Plain answer.");
+  });
+
+  it("rides on every request of a run that offers research, and not where research is off", async () => {
+    const offered = async (extra: Partial<NativeRunExecutionInput>) => {
+      const { adapter, requests } = scripted([{ text: "Answer." }]);
+      await run(adapter, engineOf({}), extra).text();
+      return requests[0]!.tools?.map((tool) => tool.name).includes(PROPOSE_RESEARCH_PLAN_TOOL_NAME);
+    };
+    expect(await offered({})).toBe(true);
+    expect(await offered({ telegram: true })).toBe(false);
+    expect(await offered({ scheduled: true })).toBe(false);
+  });
+});
+
+describe("a model that never proposes", () => {
+  const fetchCall = (id: string) => ({ arguments: { plan: [{ status: "pending", step: id }] }, id, name: "update_plan" });
+  const unknownNote = (text: string) => researchNote("not_submitted", text);
+
+  it("is sent back once for a final message, and its plan then goes on as usual", async () => {
+    const main = scripted([{ calls: [start()] }, { text: "A question for you?" }, { calls: [propose()] }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] });
+    const seen = await events(run(main.adapter, memory, FREE));
+    expect(JSON.stringify(main.requests[2]!.history)).toContain(`Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}`);
+    expect(tokens(seen).join("")).not.toContain("A question for you?");
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("ends with its text and a note on a second final message, so the answer is not lost and nothing hangs", async () => {
+    const main = scripted([{ calls: [start()] }, { text: "Первый ответ." }, { text: "Ответ без плана." }]);
+    const memory = engineOf({ gates: [] });
+    await run(main.adapter, memory, FREE).text();
+    expect(main.requests).toHaveLength(3);
+    expect(memory.published()).toBe(`Ответ без плана.\n\n---\n\n*${unknownNote("Ответ")}*`);
+    expect(memory.runs.complete).toHaveBeenCalledOnce();
+  });
+
+  it("past scoping's limit gets only the plan's call: every other new call is refused with what to do, and the plan still works", async () => {
+    let clock = 1_000_000;
+    const main = scripted([
+      { calls: [start()] },
+      { calls: [fetchCall("call-in-time")], onCall: () => { clock += RESEARCH_TIME_MS.scoping + 1; } },
+      { calls: [fetchCall("call-late")] },
+      { calls: [propose()] },
+      { calls: [{ arguments: { plan: [{ status: "pending", step: "after" }] }, id: "call-after", name: "update_plan" }] },
+      { calls: [submit()] }
+    ]);
+    const memory = engineOf({ gates: [] }, { now: () => clock });
+    await run(main.adapter, memory, FREE).text();
+    const updates = resultsOf(main.requests[3], "update_plan");
+    expect(updates[0]).toContain("time for scoping is up");
+    expect(updates[0]).toContain(`Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} now with what you have`);
+    // The tool list stays what it was: nothing is taken off the request.
+    expect(main.requests[3]!.tools?.map((tool) => tool.name)).toEqual(main.requests[0]!.tools?.map((tool) => tool.name));
+    expect(resultsOf(main.requests[5], "update_plan").at(-1)).not.toContain("time for scoping is up");
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("past scoping's limit lets a call already running finish", async () => {
+    let clock = 1_000_000;
+    const main = scripted([{ calls: [start()] }, { calls: [fetchCall("call-running")] }, { calls: [propose()] }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] }, { now: () => clock });
+    const recording = vi.mocked(memory.toolCalls.begin);
+    const original = recording.getMockImplementation()! as (input: Parameters<typeof memory.toolCalls.begin>[0]) => ReturnType<typeof memory.toolCalls.begin>;
+    // The limit passes after the call was let through, while it is being sent.
+    recording.mockImplementation(async (input) => {
+      if (input.toolName === "update_plan") clock += RESEARCH_TIME_MS.scoping + 1;
+      return original(input);
+    });
+    await run(main.adapter, memory, FREE).text();
+    expect(resultsOf(main.requests[2], "update_plan")[0]).not.toContain("time for scoping is up");
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("past scoping's limit ends in its text with the note when it keeps ignoring the refusal: no hang, the answer is not lost", async () => {
+    let clock = 1_000_000;
+    const ignores = (id: string): Step => ({ calls: [fetchCall(id)], onCall: () => { clock += RESEARCH_TIME_MS.scoping + 1; } });
+    const main = scripted([{ calls: [start()] }, ignores("call-0"), ignores("call-1"), ignores("call-2"), { text: "Что удалось найти." }]);
+    const memory = engineOf({ gates: [] }, { now: () => clock });
+    await run(main.adapter, memory, FREE).text();
+    expect(main.requests.length).toBeLessThanOrEqual(6);
+    expect(memory.published()).toBe(`Что удалось найти.\n\n---\n\n*${unknownNote("Что")}*`);
+    expect(memory.runs.complete).toHaveBeenCalledOnce();
+  });
+
+  it("past scoping's limit fails visibly, never hanging, when it wrote nothing at all", async () => {
+    let clock = 1_000_000;
+    const main = scripted([{ calls: [start()] }, { calls: [fetchCall("call-0")], onCall: () => { clock += RESEARCH_TIME_MS.scoping + 1; } }, { calls: [fetchCall("call-1")] },
+      { calls: [fetchCall("call-2")] }, { calls: [fetchCall("call-3")] }, { calls: [fetchCall("call-4")] }, { calls: [fetchCall("call-5")] }]);
+    const memory = engineOf({ gates: [] }, { now: () => clock });
+    const repo = repository();
+    await run(main.adapter, memory, FREE, repo).text();
+    expect(main.requests.length).toBeLessThanOrEqual(8);
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "model_answer_empty" }), expect.anything());
+  });
+
+  it("keeps a run with no research, and a run past its plan, on the registry's own answers", async () => {
+    let clock = 1_000_000;
+    const plain = scripted([{ calls: [fetchCall("call-a")], onCall: () => { clock += RESEARCH_TIME_MS.scoping + 1; } }, { calls: [fetchCall("call-b")] }, { text: "Plain answer." }]);
+    const memory = engineOf({}, { now: () => clock });
+    await run(plain.adapter, memory, FREE).text();
+    expect(resultsOf(plain.requests[2], "update_plan").join()).not.toContain("scoping");
+    expect(memory.published()).toBe("Plain answer.");
+
+    clock = 1_000_000;
+    const past = scripted([{ calls: begin() }, { calls: [fetchCall("call-a")], onCall: () => { clock += RESEARCH_TIME_MS.scoping + 1; } }, { calls: [submit()] }]);
+    const after = engineOf({ gates: [] }, { now: () => clock });
+    await run(past.adapter, after, FREE).text();
+    expect(resultsOf(past.requests[2], "update_plan").join()).not.toContain("scoping");
+    expect(after.published()).toBe(REPORT);
+  });
+});
+
+describe("an approval continuation finds its plan", () => {
+  const started = (runId: string, callId = "s"): TranscriptItem[] => [
+    { arguments: JSON.stringify({ goal: PLAN.goal }), callId, id: `${callId}-call`, kind: "tool_call", name: START_RESEARCH_TOOL_NAME },
+    { callId, id: `${callId}-result`, kind: "tool_result", name: START_RESEARCH_TOOL_NAME, outcome: "complete", output: JSON.stringify({ research_run: runId, status: "scoping", instructions: "Scope." }) }
+  ];
+  const planned = (output: string, callId = "p", args: unknown = proposalArguments(PLAN)): TranscriptItem[] => [
+    { arguments: JSON.stringify(args), callId, id: `${callId}-call`, kind: "tool_call", name: PROPOSE_RESEARCH_PLAN_TOOL_NAME },
+    { callId, id: `${callId}-result`, kind: "tool_result", name: PROPOSE_RESEARCH_PLAN_TOOL_NAME, outcome: "complete", output }
+  ];
+  const answerOf = (fields: Readonly<Record<string, unknown>>) => JSON.stringify({ status: "released", changed: false, released_by: "timer",
+    user_plan: { assumptions: [], steps: ["One step"], understood: "Understood." }, instructions: "Go on.", method: "How.", ...fields });
+
+  it("reads the final plan from the plan call its window answered", () => {
+    expect(researchOfTurn([...started("run-0"), ...planned(answerOf({}))])).toMatchObject({ goal: PLAN.goal, plan: { goal: PLAN.goal, questions: [{ question: "Which mattress holds up?" }, expect.anything()] }, researchRun: "run-0" });
+  });
+
+  it("recovers it from a stored excerpt: the result of a long plan is cut in its middle", () => {
+    const output = answerOf({ method: "x".repeat(60_000) });
+    const excerpt = toolOutputExcerpt(output, { handle: "tor1_saved" });
+    expect(excerpt.truncated).toBe(true);
+    const found = researchOfTurn([...started("run-0"), ...planned(excerpt.output)]);
+    expect(found.plan?.questions).toHaveLength(2);
+    expect(found.owedRebuild).toBeUndefined();
+    const changed = researchOfTurn([...started("run-0"), ...planned(toolOutputExcerpt(answerOf({ changed: true, method: "x".repeat(60_000), released_by: "saved_edit" }), { handle: "tor1_saved" }).output)]);
+    expect(changed.owedRebuild).toEqual({ changed: true, releasedBy: "saved_edit", words: { assumptions: [], steps: ["One step"], understood: "Understood." } });
+  });
+
+  it("keeps the questions even when the excerpt cut the user's words themselves", () => {
+    const cut = answerOf({ changed: true, user_plan: { assumptions: [], steps: ["One step"], understood: "\\".repeat(30_000) } });
+    const found = researchOfTurn([...started("run-0"), ...planned(toolOutputExcerpt(cut, { handle: "tor1_saved" }).output)]);
+    expect(found.plan?.questions).toHaveLength(2);
+    expect(found.owedRebuild).toMatchObject({ changed: true, words: null });
+  });
+
+  it("takes the rebuilt questions over the first ones, and owes nothing then", () => {
+    const rebuiltArgs = proposalArguments({ questions: [{ question: "Rebuilt?", sites: [], source_classes: ["primary_official", "independent_tests", "owner_reviews", "action_channel"] }] });
+    const found = researchOfTurn([...started("run-0"), ...planned(answerOf({ changed: true })), ...planned(answerOf({ changed: true, status: "rebuilt" }), "p2", rebuiltArgs)]);
+    expect(found.plan?.questions.map((entry) => entry.question)).toEqual(["Rebuilt?"]);
+    expect(found.owedRebuild).toBeUndefined();
+  });
+
+  it("takes no plan from a call the window never answered, and a run still scoping keeps its goal", () => {
+    const refused: TranscriptItem[] = [...planned("{}")];
+    expect(researchOfTurn([...started("run-0"), ...refused])).toMatchObject({ goal: PLAN.goal, plan: null, researchRun: "run-0" });
+    expect(researchOfTurn(started("run-0"))).toMatchObject({ goal: PLAN.goal, plan: null });
+  });
+
+  it("does not read a plan out of a start that scoped, whatever arguments the model sent it", () => {
+    const whole: TranscriptItem[] = [{ arguments: JSON.stringify(PLAN), callId: "s", id: "c", kind: "tool_call", name: START_RESEARCH_TOOL_NAME }, started("run-0")[1]!];
+    expect(researchOfTurn(whole)).toMatchObject({ goal: PLAN.goal, plan: null });
+  });
+
+  it("keeps reading an older stored start that holds the whole plan", () => {
+    const older: TranscriptItem[] = [{ arguments: JSON.stringify(PLAN), callId: "s", id: "c", kind: "tool_call", name: START_RESEARCH_TOOL_NAME },
+      { callId: "s", id: "r", kind: "tool_result", name: START_RESEARCH_TOOL_NAME, outcome: "complete", output: JSON.stringify({ research_run: "run-0", method: "How.", status: "started" }) }];
+    expect(researchOfTurn(older)).toMatchObject({ goal: PLAN.goal, plan: { questions: [expect.anything(), expect.anything()] }, researchRun: "run-0" });
+  });
 });

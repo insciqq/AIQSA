@@ -104,7 +104,8 @@
  *   more searches than the old limit of 2, no refusal of a link any agent's search found, and more than 5 pages in one answer.
  *   Paid calls: about 8-12 codex-lb requests and 3 searches per route, in about 2-5 minutes.
  * - R: when research starts, only when named: 10 Russian phrases, each in a new chat with Search on. A run that calls `start_research`
- *   is stopped at once to save money. Oracle: each phrase went in its direction, reported by index. Paid calls: about 10-25 codex-lb
+ *   is stopped at once to save money. No phrase names what a question would ask, and nothing answers one: the model asks nothing first.
+ *   Oracle: each phrase went in its direction, reported by index. Paid calls: about 10-25 codex-lb
  *   requests and a few searches, in about 5-10 minutes. This needs DEEPSEEK_API_KEY for the Search source, as Q does.
  * - S: proxies end to end, one chat per step, only when named, with the operator's proxy in AIQSA_SUBAGENTS_TEST_PROXY (process only, never printed, never written).
  *   A proxy pasted in chat is saved for `.ru` and tested; the browser opens a hinted page, Yandex Market, Wildberries and Ozon, and an address echo through the named
@@ -1421,17 +1422,8 @@ async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
     };
     const sent = await trySend(ctx, run, chat.id, phrase.text, [], { search: route });
     if (!sent.ok) fail(`send_${sent.code}`);
-    let reached = await outcome(sent.ok ? sent.runId : "");
-    let askedFirst = false;
-    // A request this open may get a question first: what counts then is that the user's answer starts research.
-    if (reached.reached === "no_tools" && phrase.reply) {
-      await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
-      const replied = await trySend(ctx, run, chat.id, phrase.reply, [], { search: route });
-      if (!replied.ok) fail(`send_${replied.code}`);
-      reached = await outcome(replied.ok ? replied.runId : "");
-      askedFirst = reached.reached === "started";
-    }
-    results.push({ ...(askedFirst ? { askedFirst } : {}), expected: phrase.start, index, started: reached.reached === "started", status: reached.terminal.status });
+    const reached = await outcome(sent.ok ? sent.runId : "");
+    results.push({ expected: phrase.start, index, started: reached.reached === "started", status: reached.terminal.status });
     await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
   }
   const verdict = oracleR(results);

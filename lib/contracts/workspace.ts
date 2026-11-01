@@ -394,6 +394,12 @@ export type ThreadWorkspaceActivityEntry = Readonly<{
   kind: WorkspaceActivityKind;
   mcp?: Readonly<{ discovery?: boolean; serverName?: string; toolName: string }>;
   phase: WorkspaceActivityPhase;
+  /**
+   * `plan` only: this plan is research's, before it stands. `scoping`: `items` is the one line saying a plan is being made. `window`:
+   * `items` are the proposed steps, and `runId` names the plan window at `app/api/chats/[chatId]/research/plan/route.ts`. The plan
+   * that stands replaces the row without this field.
+   */
+  researchPlan?: Readonly<{ runId: string; state: "scoping" | "window" }>;
   /** Run-outcome projection of an unfinished entry; does not assert a process exit. */
   runOutcome?: "cancelled" | "failed";
   search?: Readonly<{ query: string; source: string }>;
@@ -438,6 +444,7 @@ const ACTIVITY_ENTRY_KEYS = new Set([
   "kind",
   "mcp",
   "phase",
+  "researchPlan",
   "runOutcome",
   "search",
   "sequence",
@@ -662,6 +669,13 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     }
     items = decoded;
   } else if (value.items !== undefined) return null;
+  let researchPlan: ThreadWorkspaceActivityEntry["researchPlan"];
+  if (kind === "plan" && value.researchPlan !== undefined) {
+    const entry = value.researchPlan;
+    if (!isRecord(entry) || !hasOnlyKeys(entry, new Set(["runId", "state"])) || typeof entry.runId !== "string" || !ACTIVITY_ID_PATTERN.test(entry.runId) ||
+      entry.state !== "scoping" && entry.state !== "window") return null;
+    researchPlan = { runId: entry.runId, state: entry.state };
+  } else if (value.researchPlan !== undefined) return null;
   let mcp: ThreadWorkspaceActivityEntry["mcp"];
   if (kind === "mcp_call") {
     if (!isRecord(value.mcp) || !hasOnlyKeys(value.mcp, new Set(["discovery", "serverName", "toolName"]))) return null;
@@ -717,6 +731,7 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     kind,
     ...(mcp ? { mcp } : {}),
     phase,
+    ...(researchPlan ? { researchPlan } : {}),
     ...(runOutcome ? { runOutcome } : {}),
     ...(search ? { search } : {}),
     ...(sequence !== undefined ? { sequence } : {}),

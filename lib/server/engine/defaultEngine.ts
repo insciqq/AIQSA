@@ -15,6 +15,7 @@ import type { NativeEngineHandlerDeps } from "./handlerSupport";
 import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } from "./recovery";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createPrismaRunProxies } from "../proxies/store";
+import { createResearchPlanStore, createResearchPlanWindow, researchPlanWindows } from "../research/planWindow";
 import { createResearchVerifierRole } from "../research/verifierRole";
 import { createNativeRunStore } from "./runStore";
 import { createPrismaSubagentModelCatalog } from "./subagents/modelRoutes";
@@ -55,8 +56,10 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
       select: { id: true, runtimeGenerationFingerprint: true, runtimeGenerationId: true }, where: { modelRunId: runId }
     }),
     observations: () => observations ??= defaultToolObservations(),
-    // The research method (`lib/server/research/run.ts`), with the researcher and checks roles as a run freezes them.
-    research: { researcher: createResearchVerifierRole({ prisma: client, role: "researcher", runtime: providerRuntimeResolver }), verifier: createResearchVerifierRole({ prisma: client, runtime: providerRuntimeResolver }) },
+    // The research method (`lib/server/research/run.ts`): its ports, and the researcher and checks roles as a run freezes them.
+    research: { ports: { planWindow: (run) => createResearchPlanWindow(run, { store: createResearchPlanStore(client), windows: researchPlanWindows() }) },
+      researcher: createResearchVerifierRole({ prisma: client, role: "researcher", runtime: providerRuntimeResolver }),
+      verifier: createResearchVerifierRole({ prisma: client, runtime: providerRuntimeResolver }) },
     runs: createNativeRunStore(client),
     savedResults: createSavedToolResultReader({ prisma: client, storage }),
     // A frozen model other than the parent's is admitted at its first use through the answer model's resolver.
