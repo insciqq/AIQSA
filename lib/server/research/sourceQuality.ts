@@ -40,7 +40,7 @@ const KEY_PATTERN = /^([12])([01])([0-9a-f]{16})$/u;
 /**
  * Hex keys hold a mode (1: SimHash, 2: exact short text), a shop bit and a 64-bit fingerprint. The shop bit preserves the page's
  * server-observed purchase controls without changing the submitted class or storing more text. Only matching shop bits group:
- * removing purchase controls changes whether a page can count as independent, even when its remaining prose is a copy.
+ * removing purchase controls changes whether a purported independent test can count, even when its remaining prose is a copy.
  */
 export function researchTextFingerprint(text: string): string | null {
   const bounded = text.slice(0, RESEARCH_PAGE_LIMITS.bytesPerPage);
@@ -167,26 +167,23 @@ function sellerDomains(records: readonly ResearchEvidenceRecord[]): ReadonlySet<
 }
 
 const sellerSource = (record: ResearchEvidenceRecord, domains: ReadonlySet<string>) => ownSellerSignal(record) || domains.has(domainOf(record) ?? "");
+const sellerTest = (record: ResearchEvidenceRecord, domains: ReadonlySet<string>) => record.sourceClass === "independent_tests" && sellerSource(record, domains);
 
-/** The effective class leaves the submitted record intact and keeps a seller's purported independent test in the action channel. */
+/** Only a seller's purported independent test changes class; owners' reviews and makers' documents retain their authorship on a shop page. */
 export function researchSourceClass(record: ResearchEvidenceRecord, liveRecords: readonly ResearchEvidenceRecord[]): ResearchSourceClass | null {
-  return sellerSource(record, sellerDomains(liveRecords)) ? "action_channel" : record.sourceClass;
+  return sellerTest(record, sellerDomains(liveRecords)) ? "action_channel" : record.sourceClass;
 }
 
-/** Seller evidence remains a party's claim even when the submitted standing says confirmed. */
+/** A seller's purported independent test is a party's claim; other classes keep their submitted standing, including marketplace owner reviews. */
 export function researchSourceStanding(record: ResearchEvidenceRecord, liveRecords: readonly ResearchEvidenceRecord[]): ResearchStanding | null {
   if (record.kind !== "finding" && record.kind !== "dataset") return null;
-  return sellerSource(record, sellerDomains(liveRecords)) ? "claimed" : record.standing;
+  return sellerTest(record, sellerDomains(liveRecords)) ? "claimed" : record.standing;
 }
 
-/**
- * Live findings and datasets only. Domains join pages of one site; text keys join copies across sites. Their connected components
- * prevent a site with several texts from counting twice. For a cell's subset, pass all live records as researchRecords so a seller
- * recorded in another cell cannot become independent. Unreachable and not-found records are coverage outcomes, not sources.
- */
-export function researchSourceCounts(records: readonly ResearchEvidenceRecord[], researchRecords: readonly ResearchEvidenceRecord[] = records):
-  Readonly<{ independent: number; byClass: Readonly<Record<ResearchSourceClass, number>> }> {
-  const sellers = sellerDomains(researchRecords);
+type CountedSource = Readonly<{ domain: string | null; sourceClass: ResearchSourceClass; textGroupKey: string | null }>;
+
+/** Domains join pages of one site; text keys join copies across sites, so a site with several texts still counts once. */
+function groupedSources(records: readonly CountedSource[]) {
   const parents = new Map<string, string>();
   const root = (key: string): string => {
     let head = key;
@@ -202,8 +199,7 @@ export function researchSourceCounts(records: readonly ResearchEvidenceRecord[],
   };
   const sources: Array<Readonly<{ key: string; sourceClass: ResearchSourceClass }>> = [];
   for (const record of records) {
-    if ((record.kind !== "finding" && record.kind !== "dataset") || sellerSource(record, sellers)) continue;
-    const domain = domainOf(record);
+    const domain = record.domain;
     const domainKey = domain === null ? null : `domain:${domain}`;
     const textKey = record.textGroupKey === null ? null : `text:${record.textGroupKey}`;
     const key = textKey ?? domainKey;
@@ -212,13 +208,24 @@ export function researchSourceCounts(records: readonly ResearchEvidenceRecord[],
     if (domainKey !== null) parents.set(root(domainKey), root(key));
     sources.push({ key, sourceClass: record.sourceClass });
   }
-  const groups = new Set<string>();
+  return sources.map((source) => ({ key: root(source.key), sourceClass: source.sourceClass }));
+}
+
+/**
+ * Live findings and datasets count under their effective classes. Only independent tests and owner reviews form the independent
+ * groups; maker and action-channel records neither add to nor connect those groups. For a cell's subset, pass all live records as
+ * researchRecords so a seller recorded in another cell cannot pass as an independent test. Unreachable and not-found records are
+ * coverage outcomes, not sources.
+ */
+export function researchSourceCounts(records: readonly ResearchEvidenceRecord[], researchRecords: readonly ResearchEvidenceRecord[] = records):
+  Readonly<{ independent: number; byClass: Readonly<Record<ResearchSourceClass, number>> }> {
+  const sellers = sellerDomains(researchRecords);
+  const sources = records.flatMap((record): CountedSource[] => record.kind === "finding" || record.kind === "dataset"
+    ? [{ domain: domainOf(record), sourceClass: sellerTest(record, sellers) ? "action_channel" : record.sourceClass, textGroupKey: record.textGroupKey }] : []);
   const classes: Record<ResearchSourceClass, Set<string>> = { action_channel: new Set(), independent_tests: new Set(), owner_reviews: new Set(), primary_official: new Set() };
-  for (const source of sources) {
-    const key = root(source.key);
-    groups.add(key);
-    classes[source.sourceClass].add(key);
-  }
+  for (const source of groupedSources(sources)) classes[source.sourceClass].add(source.key);
+  const independent = sources.filter((source) => source.sourceClass === "independent_tests" || source.sourceClass === "owner_reviews");
+  const groups = new Set(groupedSources(independent).map((source) => source.key));
   return { independent: groups.size, byClass: { action_channel: classes.action_channel.size, independent_tests: classes.independent_tests.size,
     owner_reviews: classes.owner_reviews.size, primary_official: classes.primary_official.size } };
 }
@@ -226,5 +233,6 @@ export function researchSourceCounts(records: readonly ResearchEvidenceRecord[],
 export const countIndependentSources = (records: readonly ResearchEvidenceRecord[], researchRecords: readonly ResearchEvidenceRecord[] = records): number =>
   researchSourceCounts(records, researchRecords).independent;
 
+/** Coverage counts include every effective class; only the separate independent total excludes primary and action-channel sources. */
 export const countIndependentSourcesByClass = (records: readonly ResearchEvidenceRecord[], researchRecords: readonly ResearchEvidenceRecord[] = records): Readonly<Record<ResearchSourceClass, number>> =>
   researchSourceCounts(records, researchRecords).byClass;
