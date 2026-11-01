@@ -141,6 +141,32 @@ describe("administrator system model policy service", () => {
     expect(update).toHaveBeenCalledTimes(2);
     await expect(service.update({ expectedVersion: 3, userId: "admin", researchVerifierProviderModelId: "other" })).rejects.toThrow("system_model_policy_update_invalid");
   });
+  it("assigns and clears the researcher alone, and refuses a model that cannot call tools", async () => {
+    const update = vi.fn();
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin" }) } };
+    const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) => operation(tx) } as unknown as PrismaClient;
+    const loadRole = vi.fn().mockResolvedValue({ modelConfiguration: { capabilities: { toolCalling: true } },
+      snapshot: { model: activeConfiguration, providerFamily: "openai_compatible" } });
+    const service = createAdminSystemModelPolicyService(prisma, { loadRole });
+    for (const researchResearcherProviderModelId of ["other", null]) {
+      await service.update({ expectedVersion: 3, userId: "admin", researchResearcherProviderModelId, researchResearcherReasoningEffort: null });
+      expect(update).toHaveBeenLastCalledWith({ where: { id: "installation" }, data: {
+        researchResearcherProviderModelId, researchResearcherReasoningEffort: null, updatedByUserId: "admin", version: { increment: 1 }
+      } });
+    }
+    expect(loadRole).toHaveBeenCalledExactlyOnceWith(tx, { providerModelId: "other" });
+    await service.update({ expectedVersion: 3, userId: "admin", researchResearcherProviderModelId: "other", researchResearcherReasoningEffort: "high" });
+    expect(update).toHaveBeenLastCalledWith({ where: { id: "installation" }, data: { researchResearcherProviderModelId: "other",
+      researchResearcherReasoningEffort: "high", updatedByUserId: "admin", version: { increment: 1 } } });
+    await expect(service.update({ expectedVersion: 3, userId: "admin", researchResearcherProviderModelId: "other", researchResearcherReasoningEffort: "unsupported" }))
+      .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    loadRole.mockResolvedValue({ modelConfiguration: { capabilities: { toolCalling: false } }, snapshot: { model: { capabilities: { reasoning: false } } } });
+    await expect(service.update({ expectedVersion: 3, userId: "admin", researchResearcherProviderModelId: "text", researchResearcherReasoningEffort: null }))
+      .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    expect(update).toHaveBeenCalledTimes(3);
+    await expect(service.update({ expectedVersion: 3, userId: "admin", researchResearcherProviderModelId: "other" })).rejects.toThrow("system_model_policy_update_invalid");
+  });
   it("assigns and clears Vision alone, preserving PDF and utility roles", async () => {
     const update = vi.fn();
     const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },
@@ -1349,4 +1375,22 @@ describe("published image models", () => {
     expect(catalog.policy.imageModel).toBeNull();
     expect(catalog.policy.imageModels?.map(({ id }) => id)).toEqual(["image-default", "image-keyless"]);
   });
+});
+
+it("keeps an unavailable researcher assignment visible when it leaves the candidate catalog", async () => {
+  const selected = activeModel({ enabled: false });
+  const prisma = {
+    memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModelId: null, providerModel: null,
+      reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED" }) },
+    providerModel: { findMany: vi.fn().mockResolvedValue([]) },
+    systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ researchResearcherProviderModel: selected,
+      researchResearcherProviderModelId: selected.id, researchResearcherReasoningEffort: "high", updatedAt: NOW, updatedBy: null, version: 1 }) }
+  };
+  const absent = vi.fn().mockResolvedValue({ ok: false, code: "system_model_absent" });
+  const catalog = await createAdminSystemModelPolicyService(prisma as never, {
+    loadRole: vi.fn().mockRejectedValue(new ProviderAdmissionError("model_not_available")),
+    resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent
+  }).list();
+  expect(catalog.verificationCandidates).toEqual([]);
+  expect(catalog.policy).toMatchObject({ researchResearcherModel: { id: "model-1", available: false }, researchResearcherReasoningEffort: "high" });
 });

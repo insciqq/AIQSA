@@ -298,6 +298,8 @@ const ROLE_TAGS = new Set([
   "Chat titles",
   "Chat PDF",
   "Vision Model",
+  "Researchers",
+  "Research checks",
   IMAGE_GENERATION_TAG,
   IMAGE_GENERATION_OFF_TAG,
   "Reranker"
@@ -339,6 +341,8 @@ export function deriveProviderUsage(
   add(roles?.chatTitleModel?.connectionId, "Chat titles");
   add(roles && activeChatPdfReader(roles)?.connectionId, "Chat PDF");
   add(roles?.visionModel?.connectionId, "Vision Model");
+  add(roles?.researchResearcherModel?.connectionId, "Researchers");
+  add(roles?.researchVerifierModel?.connectionId, "Research checks");
   add(roles?.rerankerModel?.connectionId, "Reranker");
   for (const model of roles?.imageModels ?? []) add(model.connectionId, imageGenerationTag(sources));
   for (const entry of roles?.rerankerRoute?.entries ?? []) add(entry.connectionId, "Reranker");

@@ -321,6 +321,7 @@ export function createAdminSystemModelPolicyService(
     resolveRerankerRole?: ReturnType<typeof createRerankerModelRoleResolver>["resolve"];
     resolveChatTitleRole?: ReturnType<typeof createChatTitleModelRoleResolver>["resolve"];
     resolveMcpGuardRole?: ReturnType<typeof createMcpGuardModelRoleResolver>["resolve"];
+    resolveResearchResearcherRole?: ReturnType<typeof createResearchVerifierRoleResolver>["resolve"];
     resolveResearchVerifierRole?: ReturnType<typeof createResearchVerifierRoleResolver>["resolve"];
     resolveVisionRole?: ReturnType<typeof createVisionModelRoleResolver>["resolve"];
     resolveChatPdfRole?: ReturnType<typeof createChatPdfModelRoleResolver>["resolve"];
@@ -337,6 +338,7 @@ export function createAdminSystemModelPolicyService(
     createChatTitleModelRoleResolver(prisma, loadRole).resolve;
   const resolveMcpGuardRole = dependencies.resolveMcpGuardRole ?? createMcpGuardModelRoleResolver(prisma, loadRole).resolve;
   const resolveResearchVerifierRole = dependencies.resolveResearchVerifierRole ?? createResearchVerifierRoleResolver(prisma, loadRole).resolve;
+  const resolveResearchResearcherRole = dependencies.resolveResearchResearcherRole ?? createResearchVerifierRoleResolver(prisma, loadRole, "researcher").resolve;
   const resolveVisionRole = dependencies.resolveVisionRole ?? createVisionModelRoleResolver(prisma, loadRole).resolve;
   const resolveChatPdfRole = dependencies.resolveChatPdfRole ??
     createChatPdfModelRoleResolver(prisma, loadRole).resolve;
@@ -354,7 +356,7 @@ export function createAdminSystemModelPolicyService(
   const service = {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
       const rerankerResolution = await resolveRerankerRole();
-      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution, visionResolution, mcpGuardResolution, researchVerifierResolution] =
+      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution, visionResolution, mcpGuardResolution, researchVerifierResolution, researchResearcherResolution] =
         await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
@@ -401,6 +403,27 @@ export function createAdminSystemModelPolicyService(
               }
             },
             researchVerifierProviderModel: {
+              include: {
+                activeCredentialChecks: {
+                  select: {
+                    connectionVersion: true,
+                    credentialId: true,
+                    credentialVersionId: true,
+                    evidence: true,
+                    modelVersion: true,
+                    status: true
+                  }
+                },
+                connection: {
+                  include: {
+                    defaultCredential: {
+                      include: { activeVersion: { select: { id: true, revokedAt: true } } }
+                    }
+                  }
+                }
+              }
+            },
+            researchResearcherProviderModel: {
               include: {
                 activeCredentialChecks: {
                   select: {
@@ -554,7 +577,8 @@ export function createAdminSystemModelPolicyService(
         resolveChatPdfRole("pdf_reader"),
         resolveVisionRole(),
         resolveMcpGuardRole(),
-        resolveResearchVerifierRole()
+        resolveResearchVerifierRole(),
+        resolveResearchResearcherRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const decisionRows = await prisma.providerModel.findMany({ where: { modelClass: "decision" },
@@ -696,6 +720,12 @@ export function createAdminSystemModelPolicyService(
             ...serializeSystemModel(policy.researchVerifierProviderModel as SystemModelRow),
             available: researchVerifierResolution.ok && researchVerifierResolution.providerModelId === policy.researchVerifierProviderModelId &&
               researchVerifierResolution.policyVersion === policy.version
+          } : null,
+          researchResearcherReasoningEffort: policy.researchResearcherReasoningEffort ?? null,
+          researchResearcherModel: policy.researchResearcherProviderModel ? {
+            ...serializeSystemModel(policy.researchResearcherProviderModel as SystemModelRow),
+            available: researchResearcherResolution.ok && researchResearcherResolution.providerModelId === policy.researchResearcherProviderModelId &&
+              researchResearcherResolution.policyVersion === policy.version
           } : null,
           visionReasoningEffort: policy.visionReasoningEffort ?? null,
           visionModel: policy.visionProviderModel ? {
@@ -909,6 +939,8 @@ export function createAdminSystemModelPolicyService(
       mcpGuardReasoningEffort?: string | null;
       researchVerifierProviderModelId?: string | null;
       researchVerifierReasoningEffort?: string | null;
+      researchResearcherProviderModelId?: string | null;
+      researchResearcherReasoningEffort?: string | null;
       visionProviderModelId?: string | null;
       visionReasoningEffort?: string | null;
       chatPdfProviderModelId?: string | null;
@@ -958,6 +990,10 @@ export function createAdminSystemModelPolicyService(
       if (hasResearchVerifierUpdate !== (input.researchVerifierReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
       }
+      const hasResearchResearcherUpdate = input.researchResearcherProviderModelId !== undefined;
+      if (hasResearchResearcherUpdate !== (input.researchResearcherReasoningEffort !== undefined)) {
+        throw new Error("system_model_policy_update_invalid");
+      }
       const hasVisionUpdate = input.visionProviderModelId !== undefined;
       if (hasVisionUpdate !== (input.visionReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
@@ -978,7 +1014,7 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasTitleUpdate && !hasMcpGuardUpdate && !hasResearchVerifierUpdate && !hasVisionUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && !hasTitleUpdate && !hasMcpGuardUpdate && !hasResearchVerifierUpdate && !hasResearchResearcherUpdate && !hasVisionUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -1084,6 +1120,21 @@ export function createAdminSystemModelPolicyService(
               const role = await loadRole(tx, { providerModelId: input.researchVerifierProviderModelId });
               if (!researchVerifierEligible(role) || input.researchVerifierReasoningEffort &&
                 !supportsReasoningEffort(role, input.researchVerifierReasoningEffort)) {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              }
+            } catch (error) {
+              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              throw error;
+            }
+          }
+          if (input.researchResearcherProviderModelId === null && input.researchResearcherReasoningEffort !== null) {
+            throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+          }
+          if (input.researchResearcherProviderModelId) {
+            try {
+              const role = await loadRole(tx, { providerModelId: input.researchResearcherProviderModelId });
+              if (!researchVerifierEligible(role) || input.researchResearcherReasoningEffort &&
+                !supportsReasoningEffort(role, input.researchResearcherReasoningEffort)) {
                 throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
               }
             } catch (error) {
@@ -1225,6 +1276,10 @@ export function createAdminSystemModelPolicyService(
               ...(hasResearchVerifierUpdate ? {
                 researchVerifierProviderModelId: input.researchVerifierProviderModelId,
                 researchVerifierReasoningEffort: input.researchVerifierReasoningEffort
+              } : {}),
+              ...(hasResearchResearcherUpdate ? {
+                researchResearcherProviderModelId: input.researchResearcherProviderModelId,
+                researchResearcherReasoningEffort: input.researchResearcherReasoningEffort
               } : {}),
               ...(hasVisionUpdate ? {
                 visionProviderModelId: input.visionProviderModelId,

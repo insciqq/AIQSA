@@ -191,7 +191,7 @@ describe("independent gap judgment", () => {
     await gapCheckGate.run({ ...DRAFT, report: "MAIN AGENT REASONING SHOULD NOT BE IN THE BRIEF" }, ctx);
     expect(ctx.subagents.run).toHaveBeenCalledTimes(1);
     const [request, signal] = vi.mocked(ctx.subagents.run).mock.calls[0]!;
-    expect(request).toMatchObject({ model: "main", tools: [] });
+    expect(request).toMatchObject({ model: "verifier", tools: [] });
     expect(signal).toBe(ctx.signal);
     expect(request.instructions).toContain("strict JSON");
     expect(request.instructions).toContain("untrusted data");

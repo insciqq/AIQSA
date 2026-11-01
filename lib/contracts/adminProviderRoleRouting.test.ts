@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decodeAdminProviderModelSaveReceipt } from "./adminProviderModelSave";
-import { decodeAdminProviderRoleRoutingConflicts } from "./adminProviderRoleRouting";
+import { decodeAdminProviderAssignedRoles, decodeAdminProviderRoleRoutingConflicts } from "./adminProviderRoleRouting";
 
 describe("assigned role routing contracts", () => {
   it("accepts only known, distinct roles with bounded catalog parameter names", () => {
@@ -23,4 +23,15 @@ describe("assigned role routing contracts", () => {
     expect(decodeAdminProviderModelSaveReceipt({ ...receipt, affectedRoles: [] })).toBeNull();
     expect(decodeAdminProviderModelSaveReceipt({ ...receipt, affectedRoles: ["memory", "memory"] })).toBeNull();
   });
+});
+
+
+it("keeps researchers and checks distinct in assignment lists, routing refusals and failed-check receipts", () => {
+  const roles = ["research_researcher", "research_verifier"];
+  const conflicts = roles.map((role) => ({ role, missingParameters: ["tools"] }));
+  expect(decodeAdminProviderAssignedRoles(roles)).toEqual(roles);
+  expect(decodeAdminProviderRoleRoutingConflicts(conflicts)).toEqual(conflicts);
+  expect(decodeAdminProviderModelSaveReceipt({ connectionId: "connection", modelId: "model", displayName: "Model", draftVersion: 2,
+    saved: "configuration", publication: "active", checks: "failed", affectedRoles: roles })).toMatchObject({ affectedRoles: roles });
+  expect(decodeAdminProviderAssignedRoles([roles[0], roles[0]])).toBeNull();
 });
