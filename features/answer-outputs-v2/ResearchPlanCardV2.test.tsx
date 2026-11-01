@@ -52,8 +52,9 @@ function planRoute() {
     }
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     route.posts.push(body);
-    if (route.failNext?.action === body.action) {
-      const { status } = route.failNext;
+    const failing = route.failNext;
+    if (failing?.action === body.action) {
+      const { status } = failing;
       route.failNext = null;
       return Response.json({ code: status === 400 ? "research_plan_request_invalid" : "unavailable" }, { status });
     }

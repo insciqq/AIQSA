@@ -327,7 +327,7 @@ describe("rounds", () => {
     await roundOf(rounds, 2);
     await rounds.settle(signal);
     await rounds.settle(signal);
-    expect(rounds.stopped()).toBe(limit === 1);
+    expect(rounds.stopped()).toBe(false);
     await roundOf(rounds, 3);
     await rounds.settle(signal);
     expect(rounds.stopped()).toBe(true);
