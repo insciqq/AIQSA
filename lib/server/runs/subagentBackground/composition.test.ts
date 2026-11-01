@@ -33,7 +33,7 @@ function compose(parentRunId: string) {
   const wakeUps: Array<readonly string[]> = [];
   const admitWakeUp: SubagentWakeUpAdmitter = vi.fn(async (input) => {
     if (!store.claim(`wake-${wakeUps.length + 1}`, input.turns)) return "stale";
-    wakeUps.push(input.turns.map((turn) => turn.turnId));
+    wakeUps.push(input.turns.map((turn: Readonly<{ turnId: string }>) => turn.turnId));
     return "admitted";
   });
   const callbacks = createSubagentCallbacks({ admitWakeUp, coalesceMs: 5, recheckMs: [], store });
