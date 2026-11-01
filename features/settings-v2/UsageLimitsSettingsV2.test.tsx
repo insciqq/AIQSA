@@ -9,7 +9,8 @@ function status(rest: Partial<UserUsageLimitStatus> = {}, messages: Partial<User
     monthlyBudgetMicros: null,
     monthSpentMicros: 0,
     periodStart: "2026-10-01T00:00:00.000Z",
-    resetsAt: "2026-11-01T00:00:00.000Z",
+    // A date that is never today: on the day itself the copy names the hour instead.
+    resetsAt: "2099-11-01T00:00:00.000Z",
     ...rest,
     messages: { dayFreesAt: null, hourFreesAt: null, lastDay: 0, lastHour: 0, perDay: null, perHour: null, ...messages }
   };
