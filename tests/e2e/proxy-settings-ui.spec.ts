@@ -250,7 +250,7 @@ test("an administrator adds, checks, edits and deletes a proxy", async ({ browse
     await form.getByRole("button", { name: "Save proxy" }).click();
     const heading = panel.getByRole("heading", { name, exact: true });
     await expect(heading).toBeFocused();
-    const row = panel.getByRole("listitem").filter({ has: heading });
+    const row = panel.getByRole("listitem").filter({ has: page.getByRole("heading", { name, exact: true }) });
     await expect(row).toContainText("Password stored");
     await expect(row).toContainText("Hints: .kz, ozon.ru");
     expect(await page.content()).not.toContain(password);
