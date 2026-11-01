@@ -1622,12 +1622,12 @@ export function researchMetrics(input: Readonly<{ drafts: readonly (readonly TDr
 }
 
 /** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
-export const SCENARIO_R_PHRASES: readonly Readonly<{ reply?: string; start: boolean; text: string }>[] = Object.freeze([
-  { reply: "Квартира 60 метров, с влажной уборкой, до 50 тысяч рублей, покупаю в России.", start: true, text: "поищи хорошо, какой робот-пылесос лучше" },
-  { reply: "Рынок России, за последние два года, для покупки городскому жителю.", start: true, text: "проведи исследование рынка электросамокатов" },
-  { reply: "Россия, Москва, 30 ГБ, бюджет до 800 рублей в месяц.", start: true, text: "глубокий анализ тарифов мобильной связи" },
-  { reply: "Офис и программирование, до 120 тысяч рублей, покупаю в России, 14 дюймов.", start: true, text: "проанализируй, какой ноутбук взять для работы" },
-  { reply: "Средней жёсткости, 180 на 200, бюджет до 60 тысяч рублей, покупаю в России.", start: true, text: "сравни эти матрасы, хочу купить надолго: Askona и Ormatek" },
+export const SCENARIO_R_PHRASES: readonly Readonly<{ start: boolean; text: string }>[] = Object.freeze([
+  { start: true, text: "поищи хорошо, какой робот-пылесос лучше" },
+  { start: true, text: "проведи исследование рынка электросамокатов" },
+  { start: true, text: "глубокий анализ тарифов мобильной связи" },
+  { start: true, text: "проанализируй, какой ноутбук взять для работы" },
+  { start: true, text: "сравни эти матрасы, хочу купить надолго: Askona и Ormatek" },
   { start: false, text: "поищи, какие матрасы есть современные" },
   { start: false, text: "какой сейчас курс доллара" },
   { start: false, text: "найди сайт магазина DNS" },
@@ -1635,13 +1635,13 @@ export const SCENARIO_R_PHRASES: readonly Readonly<{ reply?: string; start: bool
   { start: false, text: "когда вышел последний iPhone" }
 ]);
 
-/** `askedFirst`: the model asked what it needs before starting, and started on the user's answer. */
-export type RPhraseResult = Readonly<{ askedFirst?: boolean; expected: boolean; index: number; started: boolean; status: string }>;
+/** A phrase that should start research and got a question instead fails: the model asks nothing first (operator decision 2026-11-01). */
+export type RPhraseResult = Readonly<{ expected: boolean; index: number; started: boolean; status: string }>;
 
 /** R's verdict by phrase index: the words stay in this file, and each wrong direction has a name of its own. */
 export function oracleR(results: readonly RPhraseResult[]): OracleVerdict {
   const failed = results.flatMap((result) => result.started === result.expected ? [] : [`phrase_${result.index}_${result.expected ? "not_started" : "started"}`]);
-  return { counts: { asked: results.length, askedFirst: results.filter((result) => result.askedFirst === true).length, correct: results.filter((result) => result.started === result.expected).length,
+  return { counts: { asked: results.length, correct: results.filter((result) => result.started === result.expected).length,
     started: results.filter((result) => result.started).length }, failed };
 }
 

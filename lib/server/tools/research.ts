@@ -1,17 +1,16 @@
-import { RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
+  SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import type { RunTool } from "./types";
 
 /**
- * The research method's two tools (operator decisions 2026-11-01): the model
- * starts research when the user's goal is a thorough result, and hands in its
- * report as a draft. Both ride on every request of a run that offers research,
- * so the tool list stays the same across a chat's turns (provider prompt
- * caches); the draft call is refused until research started. They are the main
- * agent's only, added beside the sub-agent tools (`lib/server/engine/execution.ts`),
- * and a run reserves the draft call outside its budgets once research started
- * (`lib/server/tools/reservedToolCall.ts` is the pattern; `lib/server/research/run.ts` the owner).
+ * The research method's tools (operator decisions 2026-11-01): the model starts research when the user's goal is a thorough
+ * result, proposes its plan after scoping, and hands in its report as a draft. All ride on every request of a run that offers
+ * research, so the tool list stays the same across a chat's turns (provider prompt caches); the plan and the draft are refused
+ * until research started. They are the main agent's only, added beside the sub-agent tools (`lib/server/engine/execution.ts`),
+ * and a run reserves the draft call outside its budgets once the plan stands (`lib/server/tools/reservedToolCall.ts` is the
+ * pattern; `lib/server/research/run.ts` the owner).
  */
-export { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME };
+export { PROPOSE_RESEARCH_PLAN_TOOL_NAME, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME };
 
 const sourceClass = { description: "primary_official: the maker, the regulator, official documents. independent_tests: labs, independent " +
   "reviews and measurements. owner_reviews: what owners and users report, complaints included. action_channel: where the user will " +
@@ -21,15 +20,52 @@ export const startResearchTool: RunTool = {
   capability: "session",
   description: "Call this first, before any search, when the user asks to research, analyze, compare for a decision or search carefully " +
     "(for example \"проанализируй\", \"глубокий анализ\", \"проведи исследование\", \"поищи хорошо\"). It starts the research method: it takes longer, costs more, runs parallel " +
-    "researchers and the server checks the report before the user sees it. Give the goal, split it into questions and assign each " +
-    "question its source classes up front; every class goes to a question or into skipped_source_classes with the reason it does not " +
-    "apply. The user sees the questions as the plan. Result: how to run the research. Not for simple questions or quick lookups.",
+    "researchers and the server checks the report before the user sees it. Give only the goal: the user sees at once that a plan is " +
+    `being made, you find out how such a thing is chosen, and ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} comes next. Result: how to scope. Not for simple questions or quick lookups.`,
   inputSchema: {
     additionalProperties: false,
     properties: {
-      goal: { description: "What the user wants to decide or know, in one or two sentences.", type: "string" },
+      goal: { description: "What the user wants to decide or know, in one or two sentences.", type: "string" }
+    },
+    required: ["goal"],
+    type: "object"
+  },
+  name: START_RESEARCH_TOOL_NAME,
+  strict: false
+};
+
+const keyed = (properties: Readonly<Record<string, unknown>>) => ({
+  additionalProperties: false,
+  properties: { key: { description: "Stable for the whole research: lowercase letters, digits, - or _.", type: "string" }, ...properties },
+  required: ["key", ...Object.keys(properties)],
+  type: "object"
+});
+
+const label = { type: "string" };
+
+export const proposeResearchPlanTool: RunTool = {
+  capability: "session",
+  description: "Show the user your plan after scoping, before any researcher starts. The user sees how you understood the task, your " +
+    "assumptions and the steps, and may change them for a moment; with no action research starts by itself, so never wait for an " +
+    "answer and never ask a question. This call returns when the plan stands, with the final plan and whether the user changed it. " +
+    "Refused until start_research ran. When the result says the user changed the plan, call this once more with the user's words " +
+    "and your questions rebuilt from them: no window opens then.",
+  inputSchema: {
+    additionalProperties: false,
+    properties: {
+      assumptions: { description: "What you assume in place of asking the user, each named plainly; empty when nothing is assumed.", items: { type: "string" }, type: "array" },
+      branches: {
+        description: "What is unknown about the user and changes the result, each with the cases the report will split by; empty when none.",
+        items: keyed({ cases: { items: keyed({ label }), type: "array" }, unknown: { description: "What is unknown about the user.", type: "string" } }),
+        type: "array"
+      },
+      criteria: {
+        description: "What the answer is judged by, found while scoping, each with why it matters in plain words. For a knowledge question: its outcomes or sub-questions.",
+        items: keyed({ criterion: { type: "string" }, why: { type: "string" } }),
+        type: "array"
+      },
       questions: {
-        description: "The questions that together answer the goal, each small enough for one researcher.",
+        description: "The questions that together answer the goal, each small enough for one researcher. Every source class goes to a question or into skipped_source_classes.",
         items: {
           additionalProperties: false,
           properties: {
@@ -42,6 +78,7 @@ export const startResearchTool: RunTool = {
         },
         type: "array"
       },
+      rows: { description: "The candidates, studies or options known so far; empty when researchers will find them.", items: keyed({ label }), type: "array" },
       skipped_source_classes: {
         description: "Source classes that do not apply to this goal, each with its reason; empty when all apply.",
         items: {
@@ -51,12 +88,14 @@ export const startResearchTool: RunTool = {
           type: "object"
         },
         type: "array"
-      }
+      },
+      steps: { description: `The plan as the user reads it: ${RESEARCH_PLAN_LIMITS.stepsMin} to ${RESEARCH_PLAN_LIMITS.stepsMax} short steps, in the user's language.`, items: { type: "string" }, type: "array" },
+      understood: { description: "How you understood the task, in the user's language.", type: "string" }
     },
-    required: ["goal", "questions", "skipped_source_classes"],
+    required: ["understood", "assumptions", "steps", "criteria", "rows", "branches", "questions", "skipped_source_classes"],
     type: "object"
   },
-  name: START_RESEARCH_TOOL_NAME,
+  name: PROPOSE_RESEARCH_PLAN_TOOL_NAME,
   strict: false
 };
 
@@ -64,7 +103,7 @@ export const submitResearchDraftTool: RunTool = {
   capability: "session",
   description: "Hand in the research report once the researchers finished. Nothing you write while research runs reaches the user " +
     "except this report: the server checks it and either shows it to the user exactly as written, so do not write it again, or " +
-    "tells you what to do before you submit again. Pass the whole report each time. Refused until start_research ran.",
+    "tells you what to do before you submit again. Pass the whole report each time. Refused until the plan stands.",
   inputSchema: {
     additionalProperties: false,
     properties: {
@@ -113,4 +152,22 @@ export const submitResearchDraftTool: RunTool = {
 export function researchDraftReservedInstruction(): string {
   return `The time for research is up. Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} now with the whole report from what you have, taking in ` +
     "anything the user just wrote and naming what could not be checked, and call no other tool.";
+}
+
+const SCOPING_MINUTES = RESEARCH_TIME_MS.scoping / 60_000;
+
+/** What `start_research` returns: how the model gets to its plan. The user sees that a plan is being made while this runs. */
+export function researchScopingInstructions(): string {
+  return [
+    `Research started with scoping: you have up to ${SCOPING_MINUTES} minutes before the plan. Read a few guides or standards on how such a thing ` +
+      "is chosen and find the criteria yourself: the user may not know what matters.",
+    `Then call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}. Do not wait until the time is up, and do not start researchers: they start after the plan.`,
+    "Ask the user nothing, here or in the plan: what you lack becomes a named assumption, or a branch when it changes the result.",
+    "Nothing you write now reaches the user."
+  ].join("\n");
+}
+
+/** What a tool past scoping's limit returns instead of running. */
+export function researchScopingOverMessage(): string {
+  return `Nothing was run: the time for scoping is up. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} now with what you have, naming what you could not find out as assumptions.`;
 }

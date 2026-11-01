@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { decodeResearchDraft, decodeResearchPlan, RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchPlan } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { harnessPromptSection } from "../engine/prompts/harness";
-import { startResearchTool, submitResearchDraftTool } from "../tools/research";
+import { proposeResearchPlanTool, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import { runResearchGates, type ResearchGateContext } from "./gates";
 import { researcherBrief, researcherMethodFooter, researchMethodText, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
@@ -53,9 +53,17 @@ describe("the plan and the draft", () => {
   });
 
   it("writes its schemas so every provider takes them: no type list naming a container", () => {
-    const schemas = JSON.stringify([startResearchTool.inputSchema, submitResearchDraftTool.inputSchema]);
+    const schemas = JSON.stringify([startResearchTool.inputSchema, proposeResearchPlanTool.inputSchema, submitResearchDraftTool.inputSchema]);
     expect(schemas).not.toMatch(/"type":\[/u);
     expect(startResearchTool.capability).toBe("session");
+    expect(proposeResearchPlanTool.capability).toBe("session");
+  });
+
+  it("requires every field of a proposal, which stays out of strict mode like its neighbours", () => {
+    const schema = proposeResearchPlanTool.inputSchema as { properties: Record<string, unknown>; required: readonly string[] };
+    expect([...schema.required].sort()).toEqual(Object.keys(schema.properties).sort());
+    expect(proposeResearchPlanTool.strict).toBe(false);
+    expect(startResearchTool.inputSchema).toMatchObject({ required: ["goal"] });
   });
 });
 
@@ -97,6 +105,15 @@ describe("the method", () => {
       expect(prompt).toContain(phrase);
     }
     expect(harnessPromptSection({ tools: [], workspace: false })).not.toContain("# Research");
+  });
+
+  it("never asks the model to question the user before research: a missing fact is a named assumption or a branch", () => {
+    const section = harnessPromptSection({ tools: ["start_research"], workspace: false }).split("# Research")[1]!.split("\n# ")[0]!;
+    expect(section).toContain("Never ask the user a clarifying question");
+    expect(section).toContain("named assumption");
+    expect(section).toContain("branch");
+    expect(section).not.toMatch(/you may ask|ask for it once/iu);
+    expect(section).toContain("propose_research_plan");
   });
 
   it("names a gate's thread for its attempt alone, with no piece of an internal id, within the sub-agent name rule", () => {

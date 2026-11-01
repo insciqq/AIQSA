@@ -18,6 +18,7 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchGate } from "./gates";
 import { NOOP_RESEARCH_PORTS, researchGatePorts, researchPorts, type ResearchPortFactories, type ResearchPorts, type ResearchRunScope } from "./ports";
+import { proposeCall } from "./planWindow.testFixtures";
 import { createRunResearch, researchOfTurn, researchRunOf, type ResearchEngineDeps, type RunResearchInput } from "./run";
 
 /**
@@ -48,7 +49,9 @@ const PLAN = { goal: "Choose a mattress.", questions: [
 const REPORT = "# Report\n\nConfirmed: the X1 holds up.";
 const DRAFT = { findings: [{ claim: "The X1 holds up.", quote: "held up after 10 years", source_class: "independent_tests", standing: "confirmed",
   url: "https://lab.example/x1" }], report: REPORT, unreachable: [] };
-const start = { arguments: PLAN, id: "call-start", name: START_RESEARCH_TOOL_NAME };
+const start = { arguments: { goal: PLAN.goal }, id: "call-start", name: START_RESEARCH_TOOL_NAME };
+/** A start and its plan in one response: with no window port the plan stands at once. */
+const begin = [start, proposeCall(PLAN)];
 const submit = { arguments: DRAFT as Record<string, unknown>, id: "call-draft", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME };
 const researcher = { arguments: { message: "Cover the question.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME };
 
@@ -183,11 +186,11 @@ const named: ResearchPortFactories = { coverage: () => NOOP_RESEARCH_PORTS.cover
   report: () => NOOP_RESEARCH_PORTS.report, resume: () => NOOP_RESEARCH_PORTS.resume, time: () => NOOP_RESEARCH_PORTS.time };
 
 const RUNS: Readonly<Record<string, readonly Step[]>> = {
-  "a report accepted after a researcher": [{ calls: [start] }, { calls: [researcher] }, { text: "Outcome: done\nreport" }, { calls: [submit] }],
-  "a provider that fails with a report in hand": [{ calls: [start] }, { calls: [submit] }, { fail: true }],
-  "a provider that fails with nothing in hand": [{ calls: [start] }, { fail: true }],
+  "a report accepted after a researcher": [{ calls: begin }, { calls: [researcher] }, { text: "Outcome: done\nreport" }, { calls: [submit] }],
+  "a provider that fails with a report in hand": [{ calls: begin }, { calls: [submit] }, { fail: true }],
+  "a provider that fails with nothing in hand": [{ calls: begin }, { fail: true }],
   "a run that never researches": [{ text: "Answered directly." }],
-  "text instead of a report": [{ calls: [start] }, { text: "Report as text." }, { text: "Report as text, again." }]
+  "text instead of a report": [{ calls: begin }, { text: "Report as text." }, { text: "Report as text, again." }]
 };
 
 /** A turn's stored start call, with what its result held. */
@@ -246,10 +249,10 @@ describe("no-op ports", () => {
     expect(await runOf(steps, { gates, ports: spied().ports })).toEqual(today);
   });
 
-  it("are called only where the run hands over: nothing reads or writes a store, opens a window or composes while a report stands", async () => {
+  it("are called only where the run hands over: nothing reads or writes a store or composes while a report stands, and the plan goes through its window", async () => {
     const { calls, ports } = spied();
     await runOf(RUNS["a report accepted after a researcher"]!, { gates: [], ports });
-    expect([...new Set(calls)].sort()).toEqual(["time.planReleased", "time.researcherRefusal", "time.researcherSignal"]);
+    expect([...new Set(calls)].sort()).toEqual(["planWindow.open", "time.planReleased", "time.researcherRefusal", "time.researcherSignal"]);
   });
 
   it("each answer as a true identity", async () => {
@@ -324,7 +327,7 @@ describe("the ports a run holds", () => {
   });
 
   it("refuses a researcher the clock closed, visibly, and runs an open one under the clock's signal", async () => {
-    const steps: readonly Step[] = [{ calls: [start] }, { calls: [researcher] }, { calls: [submit] }];
+    const steps: readonly Step[] = [{ calls: begin }, { calls: [researcher] }, { calls: [submit] }];
     const closed = await runOf(steps, { gates: [], ports: { time: () => ({ ...NOOP_RESEARCH_PORTS.time, researcherRefusal: () => "Time for new researchers is over." }) } });
     expect(closed.requests).toContain("research_researchers_closed");
     expect(closed.requests).toContain("Time for new researchers is over.");
@@ -362,7 +365,7 @@ describe("the ports a run holds", () => {
 
   it("composes once: a publish that fails sends the run to its second end, which gets the first result", async () => {
     const compose = vi.fn(async () => "Built from the records.");
-    const silent: readonly Step[] = [{ calls: [start] }, {}];
+    const silent: readonly Step[] = [{ calls: begin }, {}];
     const run = await runOf(silent, { gates: [], ports: { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) } }, (memory) => memory.runs.publishAnswer.mockResolvedValue(false));
     expect(compose).toHaveBeenCalledExactlyOnceWith({ ended: "no_report", signal: expect.any(AbortSignal) });
     expect(run.published).toBeNull();
@@ -418,9 +421,9 @@ describe("the ports a run holds", () => {
 describe("the run research belongs to", () => {
   it("is named first in the start result, with no ports at all: the one change a model sees", async () => {
     const result = await execute(direct({ gates: [] }).tools[0]!, start);
-    expect(Object.keys(JSON.parse(toolResultOutputText(result)) as object)).toEqual(["research_run", "method", "status"]);
+    expect(Object.keys(JSON.parse(toolResultOutputText(result)) as object)).toEqual(["research_run", "status", "instructions"]);
     expect(toolResultOutputText(result)).toMatch(/^\{"research_run":"run-1",/u);
-    expect((await runOf(RUNS["a report accepted after a researcher"]!, { gates: [] })).requests).toContain(String.raw`{\"research_run\":\"run-1\",\"method\"`);
+    expect((await runOf(RUNS["a report accepted after a researcher"]!, { gates: [] })).requests).toContain(String.raw`{\"research_run\":\"run-1\",\"status\":\"scoping\"`);
   });
 
   it("is the run's own on a turn of its own, for the ports and the start result", async () => {
