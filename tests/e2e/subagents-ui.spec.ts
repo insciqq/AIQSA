@@ -27,8 +27,10 @@ const longName = `long-${"x".repeat(38)}-name`;
 type ThreadScript = {
   /** The answer that started its latest turn; the static chat's answer unless the script says otherwise. */
   answer?: string;
+  messages?: SubagentTurnView["messages"];
   mode?: "background" | "foreground";
   name: string;
+  reason?: string;
   state: SubagentThreadState;
   step?: SubagentCurrentStep;
   updatedAt: string;
@@ -46,7 +48,7 @@ function threadSummary(id: string, script: ThreadScript): SubagentThreadSummary 
   return {
     createdAt: timestamp, currentStep: active ? script.step ?? null : null, endedAt: active ? null : script.updatedAt, id,
     latestAnswerMessageId: script.answer ?? "answer-1", mode: script.mode ?? "background", model: fakeModel, name: script.name,
-    outcome: script.state === "done" ? "done" : null, reason: script.state === "stopped" ? "user_stop" : null,
+    outcome: script.state === "done" ? "done" : null, reason: script.state === "stopped" ? "user_stop" : script.reason ?? null,
     state: script.state, turnCount: 1, type: null, updatedAt: script.updatedAt
   };
 }
@@ -55,10 +57,10 @@ function turnView(id: string, script: ThreadScript): SubagentTurnView {
   const active = script.state === "running" || script.state === "waiting";
   return {
     brief: `Brief for ${script.name}: compare the three cheapest laptops and write the table to laptops.md.`,
-    endedAt: active ? null : script.updatedAt, files: active ? [] : ["research/laptops.md"], id: `turn-${id}`, messages: [],
+    endedAt: active ? null : script.updatedAt, files: active ? [] : ["research/laptops.md"], id: `turn-${id}`, messages: script.messages ?? [],
     mode: script.mode ?? "background", model: fakeModel,
     outcome: script.state === "done" ? "done" : null, parentMessageId: "answer-1",
-    reason: script.state === "stopped" ? "user_stop" : null,
+    reason: script.state === "stopped" ? "user_stop" : script.reason ?? null,
     report: active ? null : `Report of ${script.name}: three laptops compared.`,
     startedAt: timestamp, state: script.state,
     toolActivity: { calls: [{ origin: "tool", round: 1, status: active ? "running" : "complete", toolName: "web_search" }] },
@@ -191,6 +193,14 @@ const foreground = (name: string, state: SubagentThreadState, step?: SubagentCur
 const background = (name: string, state: SubagentThreadState, step?: SubagentCurrentStep) =>
   [`thread-${name}`, script(name, state, step ? { step } : {})] as const;
 
+/** What a thread shows of agents talking: a neighbour's fact, the reply, and a question for the main agent. */
+const agentMessages: SubagentTurnView["messages"] = [
+  { createdAt: "2026-10-30T10:00:10.000Z", delivery: "delivered", from: "scout", text: "The outlet on Main Street closes at nine, so its prices end today." },
+  { createdAt: "2026-10-30T10:00:20.000Z", delivery: "accepted", text: "Thanks. Mine lists the same model for 42 euros less.", to: "scout" },
+  { createdAt: "2026-10-30T10:00:30.000Z", delivery: "accepted", question: true, text: `Should I count refurbished laptops? ${"The brief does not say. ".repeat(6)}`.trim(), to: "main" }
+];
+const asking = (name: string) => [`thread-${name}`, script(name, "waiting", { messages: agentMessages, reason: "waiting_for_answer" })] as const;
+
 test.describe("each sub-agent state has one place · all sizes and themes", () => {
   // Every state is captured at five sizes in both themes.
   test.setTimeout(240_000);
@@ -249,6 +259,37 @@ test.describe("each sub-agent state has one place · all sizes and themes", () =
     await expect(page.getByTestId("subagent-chat-chip").getByRole("link", { name: "Open signer, Waiting for you, GPT-6 Luna · high" }))
       .toHaveAttribute("data-tone", "warn");
     await captureState(page, testInfo, "subagents-chip-waiting", { atEachSize: async () => expectNoHorizontalOverflow(page) });
+  });
+
+  test("a sub-agent waiting for the main agent asks nothing of the user, and its thread shows what agents wrote", async ({ page }, testInfo) => {
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await installChat(page, { calls: [callSubagent("thread-asker", "asker")], wakeUp: false });
+    const routes = await installSubagentRoutes(page, [asking("asker")]);
+    await signInWithLocalToken(page, `/c/${chatId}`);
+    const chip = page.getByTestId("subagent-chat-chip").getByRole("link", { name: "Open asker, Waiting for the main agent, GPT-6 Luna · high" });
+    await expect(chip).toHaveAttribute("data-tone", "neutral");
+    await expect(page.getByText("Waiting for you")).toHaveCount(0);
+    await captureState(page, testInfo, "subagents-chip-asking", { atEachSize: async () => expectNoHorizontalOverflow(page) });
+    await chip.click();
+    const view = page.getByTestId("subagent-thread-view");
+    await expect(view.getByText("Message from scout · Read by the sub-agent")).toBeVisible();
+    await expect(view.getByText("Message to scout")).toBeVisible();
+    await expect(view.getByText("Question to the main agent")).toBeVisible();
+    await captureState(page, testInfo, "subagents-thread-asking", { atEachSize: async () => expectNoHorizontalOverflow(page) });
+    // Stop reaches it while it waits.
+    await view.getByRole("button", { name: "Stop" }).click();
+    await expect(view.getByRole("button", { name: "Stop" })).toHaveCount(0);
+    expect(routes.posts).toContain(`/api/chats/${chatId}/subagents/thread-asker/stop`);
+  });
+
+  test("the list counts a wait for the main agent apart from a wait for the user", async ({ page }) => {
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await installChat(page, { calls: [callSubagent("thread-alpha", "alpha")], wakeUp: false });
+    await installSubagentRoutes(page, [background("alpha", "running", searching), background("signer", "waiting"), asking("asker")]);
+    await signInWithLocalToken(page, `/c/${chatId}`);
+    await page.getByTestId("subagent-chat-chip").getByRole("button", { name: "1 sub-agent working · 1 waiting for you · 1 waiting for the main agent" }).click();
+    await expect(page.getByRole("menuitem", { name: /^Open asker, Waiting for the main agent/u })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /^Open signer, Waiting for you/u })).toBeVisible();
   });
 
   test("several background sub-agents: a chip with a list, a stop per row and Stop all", async ({ page }, testInfo) => {
@@ -412,6 +453,21 @@ for (const viewport of [
       await captureState(page, testInfo, `subagents-sheet-${viewport.label}`, { atEachSize: async () => expectNoHorizontalOverflow(page), sizes });
       await sheet.getByRole("menuitem", { name: new RegExp(`^Open ${longNames[0]}`, "u") }).tap();
       await expect(page.getByTestId("subagent-thread-view").getByRole("heading", { name: longNames[0]! })).toBeVisible();
+    });
+
+    test(`a wait for the main agent and a thread of agent messages hold on a phone (${viewport.label})`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ height: viewport.height, width: viewport.width });
+      await installChat(page, { calls: [callSubagent("thread-asker", "asker")], wakeUp: false });
+      await installSubagentRoutes(page, [asking("asker")]);
+      await signInWithLocalToken(page, `/c/${chatId}`);
+      const chip = page.getByTestId("subagent-chat-chip").getByRole("link", { name: /^Open asker, Waiting for the main agent/u });
+      await expectTouchSafe(chip);
+      await captureState(page, testInfo, `subagents-chip-asking-${viewport.label}`, { atEachSize: async () => expectNoHorizontalOverflow(page), sizes });
+      await chip.tap();
+      const view = page.getByTestId("subagent-thread-view");
+      await expect(view.getByText("Question to the main agent")).toBeVisible();
+      await expectTouchSafe(view.getByRole("button", { name: "Stop" }));
+      await captureState(page, testInfo, `subagents-thread-asking-${viewport.label}`, { atEachSize: async () => expectNoHorizontalOverflow(page), sizes });
     });
 
     test(`a foreground row is touch-safe and opens its thread (${viewport.label})`, async ({ page }, testInfo) => {

@@ -11,6 +11,7 @@ import {
   subagentDetailText,
   subagentModelText,
   subagentStatePresentation,
+  subagentWaitsForUser,
   subagentWorkingPhrase,
   type SubagentStatePresentation
 } from "@/features/subagents-v2/subagentPresentation";
@@ -59,7 +60,7 @@ function SubagentAnswerRow({ chatId, name, onOpen, thread, threadId }: Readonly<
   thread: SubagentThreadSummary | null;
   threadId: string;
 }>) {
-  const state = thread ? subagentStatePresentation(thread.state, thread.outcome) : null;
+  const state = thread ? subagentStatePresentation(thread.state, thread.outcome, thread.reason) : null;
   const detail = thread ? subagentDetailText(thread) : null;
   const model = thread ? subagentModelText(thread.model) : null;
   const target = { chatId, threadId };
@@ -131,7 +132,7 @@ export function SubagentAnswerRowsV2({
         <button
           aria-expanded={unfolded}
           className="v2-subagent-answer-row v2-focusable"
-          data-tone={known.some((thread) => thread.state === "waiting") ? "warn" : undefined}
+          data-tone={known.some(subagentWaitsForUser) ? "warn" : undefined}
           type="button"
           onClick={() => setUnfolded((open) => !open)}
         >
@@ -164,7 +165,7 @@ function SubagentListRow({ chatId, onOpen, thread }: Readonly<{
   const key = subagentThreadKey(target);
   const stopping = useSubagentStore((state) => Boolean(state.stopping[key]));
   const failed = useSubagentStore((state) => Boolean(state.stopErrors[key]));
-  const state = subagentStatePresentation(thread.state, thread.outcome);
+  const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason);
   const detail = subagentDetailText(thread);
   const model = subagentModelText(thread.model);
   return (
@@ -243,7 +244,7 @@ export function SubagentBackgroundChipV2({
   if (active.length === 1 && !open) {
     const thread = active[0]!;
     const target = { chatId, threadId: thread.id };
-    const state = subagentStatePresentation(thread.state, thread.outcome);
+    const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason);
     const detail = subagentDetailText(thread);
     const model = subagentModelText(thread.model);
     return (
@@ -280,7 +281,7 @@ export function SubagentBackgroundChipV2({
         aria-expanded={open}
         aria-haspopup="menu"
         className="v2-subagent-chip v2-focusable"
-        data-tone={active.some((thread) => thread.state === "waiting") ? "warn" : undefined}
+        data-tone={active.some(subagentWaitsForUser) ? "warn" : undefined}
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((value) => !value)}

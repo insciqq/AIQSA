@@ -62,6 +62,25 @@ describe("sub-agent thread view", () => {
     expect(screen.getAllByText("Stopped").length).toBeGreaterThan(0);
   });
 
+  it("shows what agents wrote as rows of the thread, and a wait for the main agent in plain words that ask nothing of the user", async () => {
+    const asking = subagentThread("thread-researcher", "waiting", { reason: "waiting_for_answer" });
+    const turn = subagentTurn("turn-1", "waiting", { messages: [
+      { createdAt: "2026-10-30T09:01:00.000Z", delivery: "delivered", from: "scout", text: "The outlet closes at nine." },
+      { createdAt: "2026-10-30T09:02:00.000Z", delivery: "accepted", text: "Thanks, mine is seven.", to: "scout" },
+      { createdAt: "2026-10-30T09:03:00.000Z", delivery: "accepted", question: true, text: "Which size should I take?", to: "main" }
+    ], reason: "waiting_for_answer" });
+    vi.stubGlobal("fetch", subagentFetch([{ path: threadPath, respond: () => jsonResponse(subagentView("chat-a", asking, [turn])) }]).fetch);
+    renderView();
+    expect(await screen.findByText("The outlet closes at nine.")).toBeInTheDocument();
+    expect(screen.getByText("Message from scout · Read by the sub-agent")).toBeInTheDocument();
+    expect(screen.getByText("Message to scout")).toBeInTheDocument();
+    expect(screen.getByText("Question to the main agent")).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting for the main agent").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Waiting for you")).toBeNull();
+    // Stop reaches it while it waits.
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+  });
+
   it("goes back to the chat from its back link", async () => {
     vi.stubGlobal("fetch", subagentFetch([{ path: threadPath, respond: () =>
       jsonResponse(subagentView("chat-a", subagentThread("thread-researcher", "done"))) }]).fetch);

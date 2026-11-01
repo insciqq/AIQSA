@@ -977,6 +977,21 @@ async function assertSubagentRelations(): Promise<void> {
     } });
   });
 
+  // Only what agents send names a turn: the user's own follow-ups never do.
+  await expectDatabaseRejection("user follow-up naming a turn", "RunFollowup_subagent_turn_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await tx.runFollowup.create({ data: {
+      authorName: "Owner", chatId: fixture.chat.id, modelRunId: fixture.run.id, nonce: randomUUID(), ordinal: 1,
+      subagentTurnId: fixture.turn.id, text: "mine"
+    } });
+  });
+
+  // Only a turn that ended, or one waiting for an answer, can be claimed.
+  await expectDatabaseRejection("claim of a running turn", "SubagentTurn_state_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await tx.subagentTurn.update({ data: { callbackRunId: fixture.run.id }, where: { id: fixture.turn.id } });
+  });
+
   // NULLS NOT DISTINCT keeps the main agent's keys unique per run (and per chat for active runs).
   await expectUniqueIndexRejection("duplicate main-agent transcript sequence", "RunTranscriptItem_thread_sequence_key", async (tx) => {
     const fixture = await createModelRunFixture(tx);

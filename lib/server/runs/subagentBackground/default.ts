@@ -2,7 +2,7 @@ import { backgroundSubagentRunner } from "../../engine/subagents/backgroundRunne
 import { prisma } from "../../prisma";
 import { logEvent } from "../../observability";
 import { registerSubagentCallbackFlushListener } from "../../push/runTerminalSignal";
-import type { SubagentChatScope, SubagentRunner, WorkspaceAttachments, WorkspaceDetachInput, WorkspaceDetachResult } from "../../subagents/ports";
+import type { SubagentChatScope, SubagentMessaging, SubagentRunner, WorkspaceAttachments, WorkspaceDetachInput, WorkspaceDetachResult } from "../../subagents/ports";
 import { createPrismaWorkspaceAttachments } from "../../workspace/attachments";
 import type { WorkspaceCoordinator } from "../../workspace/coordinator";
 import { usageLimitsRepository } from "../../usageLimits/defaultRepository";
@@ -33,6 +33,8 @@ const STALE_MS = 10 * 60_000;
 type Composition = Readonly<{
   callbacks: SubagentCallbacks;
   control: SubagentBackgroundOperations;
+  /** What every run's agents use to see and reach each other, foreground ones of a Telegram turn or an occurrence included. */
+  messaging: SubagentMessaging;
   /** Ends this scope's orphaned background runs interrupted (`reconcileSubagentRuns`). */
   reconcile(input?: Readonly<{ chatId?: string; userId?: string }>): Promise<number>;
   /** Stops the background sub-agents under a message the caller owns, before its subtree is deleted. */
@@ -112,6 +114,13 @@ function compose(): Composition {
   return Object.freeze({
     callbacks,
     control,
+    messaging: Object.freeze({
+      // The views read the chat's projections, which this module does not load unless an agent asks.
+      agents: async (input: Parameters<SubagentMessaging["agents"]>[0]) =>
+        (await import("./views")).createSubagentViews(prisma).branchAgents(input),
+      questionAsked: control.questionAsked,
+      send: control.send
+    }),
     reconcile: (input: Readonly<{ chatId?: string; userId?: string }> = {}) => reconcileSubagentRuns({ backoff: state.backoff,
       bootedAt: processBootedAt(), deferred: state.deferred, flush: callbacks.flush, retireFailures: state.retireFailures ??= new Map(),
       liveRunIds: () => activeRunControllerRegistry.ids(), staleMs: STALE_MS, store,

@@ -73,7 +73,7 @@ export type TranscriptRequestAnchor = Readonly<{
 export type TranscriptUserItem = Readonly<{
   /** File marks rebuilt from the branch; kept outside summaries, which must not contain attachment identifiers. */
   attachmentNotice?: string;
-  /** With `followup`: a background sub-agent's callback the server delivered into the turn, never the user's speech. */
+  /** With `followup`: what a sub-agent sent the main agent (a callback, message or question), delivered by the server, never the user's speech. */
   callback?: true;
   /** A follow-up delivered into a running turn; it does not start a turn. */
   followup?: true;

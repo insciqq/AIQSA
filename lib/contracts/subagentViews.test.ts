@@ -114,6 +114,15 @@ describe("sub-agent thread view", () => {
     expect(decodeSubagentThreadView({ ...view, turns: [{ ...turn, model: { displayName: "", effort: null } }] })).toBeNull();
   });
 
+  it("decodes who a message row came from or went to, an older row included", () => {
+    const row = turn.messages[0]!;
+    const rows = [row, { ...row, from: "scout" }, { ...row, delivery: "accepted", question: true, to: "main" }, { ...row, to: "scout" }];
+    expect(decodeSubagentTurnView({ ...turn, messages: rows })?.messages).toEqual(rows);
+    for (const bad of [{ ...row, from: "Two Words" }, { ...row, to: "" }, { ...row, question: false }, { ...row, extra: 1 }]) {
+      expect(decodeSubagentTurnView({ ...turn, messages: [bad] })).toBeNull();
+    }
+  });
+
   it("decodes stop responses", () => {
     expect(decodeSubagentStopResponse({ thread: done })).toEqual({ thread: { ...done, ...unknownFacts } });
     expect(decodeSubagentStopAllResponse({ stopped: 3 })).toEqual({ stopped: 3 });
