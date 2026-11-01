@@ -229,10 +229,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     deadlineSignal: input.deadline,
     ...(input.faults ? { faults: input.faults } : {}),
     followupTexts: input.followupTexts,
-    ...(messaging ? { mailbox: {
-      markRead: (read) => store.markMessagesRead({ ...scopeOf, ...read }),
-      unread: (thread) => store.unreadMessages({ ...scopeOf, ...thread })
-    }, messaging } : {}),
+    ...(messaging ? { mailbox: { unread: (thread) => store.unreadMessages({ ...scopeOf, ...thread }) }, messaging } : {}),
     maxToolCalls: input.budgets.maxToolCalls,
     maxToolRounds: input.budgets.maxToolRounds,
     now: input.now,

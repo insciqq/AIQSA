@@ -128,11 +128,11 @@ export type SubagentHost = Readonly<{
   /** User text delivered into the parent run: `fetch_url` link authority. */
   followupTexts(): readonly string[];
   /**
-   * The thread's mailbox on record (`RunFollowup`): what its turns of these runs have not read, oldest first, and the
-   * receipt once a turn read it. Only reading stamps a message, so one a turn never got to is read by the next.
+   * The thread's mailbox on record (`RunFollowup`): what its turns of these runs have not read, oldest first. Only the
+   * transcript write that holds a message stamps it (`TranscriptRepository.append`), so one a turn never got on record is
+   * read by the next.
    */
   mailbox?: Readonly<{
-    markRead(input: Readonly<{ nonces: readonly string[]; runIds: readonly string[]; threadId: string }>): Promise<void>;
     unread(input: Readonly<{ runIds: readonly string[]; threadId: string }>): Promise<readonly SubagentMessage[]>;
   }>;
   maxToolCalls: number | null;
@@ -492,6 +492,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     /** A foreground turn's question: its parent can read nothing until it ends, so the turn ends with it. */
     const handBack: { question: string | null } = { question: null };
     let questions = 0;
+    /** Mailbox messages this turn took and has not yet on record, by the transcript item that holds each: item id, nonce. */
+    const unrecorded = new Map<string, string>();
     const ended = (state: EndedSubagentState, extra: Readonly<{ outcome?: SubagentOutcome; reason?: string }> = {}) =>
       endedSubagentCallResult({ approvals, binding: input.binding, files: [...files], name: input.name, report: report || roundText,
         state, steps, ...(handBack.question ? { question: handBack.question } : {}), ...extra });
@@ -575,26 +577,24 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           deliveredTexts.push(followup.text);
           unknownEffects.userSpoke();
         }
-        const read: string[] = [];
         for (const message of turn.mailbox.splice(0)) {
           if (threadState.readMessages.has(message.nonce)) continue;
           threadState.readMessages.add(message.nonce);
-          read.push(message.nonce);
+          const id = randomUUID();
+          unrecorded.set(id, message.nonce);
           if (message.origin === "user") {
-            added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(message.text) });
+            added.push({ followup: true, id, kind: "user", text: subagentFollowupText(message.text) });
             deliveredTexts.push(message.text);
             unknownEffects.userSpoke();
           } else if (message.origin === "subagent_message") {
             // Another agent's message is no user speech and no brief: it releases nothing, authorizes nothing and changes no task.
-            added.push({ id: randomUUID(), kind: "user", text: subagentAgentMessageText({ from: message.from ?? "unknown", text: message.text }) });
+            added.push({ id, kind: "user", text: subagentAgentMessageText({ from: message.from ?? "unknown", text: message.text }) });
           } else {
             // The main agent's message is no user speech: it never releases an unknown effect or authorizes a link.
-            added.push({ id: randomUUID(), kind: "user", text: subagentTurnText({ brief: message.text, continued: true, name: input.name,
+            added.push({ id, kind: "user", text: subagentTurnText({ brief: message.text, continued: true, name: input.name,
               userMessage: input.userMessage }) });
           }
         }
-        // Bookkeeping behind the turn: a receipt that fails leaves the message unread, and the thread's next turn reads it again.
-        if (read.length > 0) await host.mailbox?.markRead({ nonces: read, runIds, threadId: input.threadId }).catch(() => undefined);
         return added;
       };
       // What the user already wrote into this answer (a correction the main agent read before it called) comes with the brief.
@@ -602,7 +602,14 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const items: TranscriptItem[] = [...host.runContextItems, ...history, turnContextItem(native.turnContext), inputItem, ...earlier];
       // One sequence per thread for the life of the run: a later turn continues where the last one stopped, and a compaction
       // that finished after its turn reserves from the thread's current writer.
-      const activeWriter = createTranscriptWriter({ append: (from, added) => host.transcripts.append(scope, from, added),
+      const activeWriter = createTranscriptWriter({
+        // A message is read when the write that holds it commits, which stamps it: never before, so none is lost, and in one
+        // transaction, so none is read twice.
+        append: async (from, added) => {
+          const nonces = added.flatMap((item) => unrecorded.get(item.id) ?? []);
+          await host.transcripts.append(scope, from, added, nonces.length > 0 ? { nonces, runIds, threadId: input.threadId } : undefined);
+          for (const item of added) unrecorded.delete(item.id);
+        },
         firstSequence: threadState.writer ? threadState.writer.reserve(0) : await host.transcripts.nextSequence(scope),
         runId: input.hostRunId });
       threadState.writer = activeWriter;
@@ -764,6 +771,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       await writer?.flush();
       return ended(ending.state, { reason: ending.reason });
     } finally {
+      // What it took but never got on record stays unread, and the thread's next turn in this run reads it instead of skipping it.
+      for (const nonce of unrecorded.values()) threadState.readMessages.delete(nonce);
       if (host.browserIdentity) {
         await host.browserIdentity.release({ agent, chatId: host.chatId, modelRunId: input.hostRunId, userId: host.userId })
           .catch(() => undefined);

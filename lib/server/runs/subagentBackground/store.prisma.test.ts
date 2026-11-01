@@ -6,6 +6,7 @@ import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { createNativeOrphanFinder } from "../../engine/recovery";
 import { createSubagentThreadStore } from "../../engine/subagents/threadStore";
+import { createTranscriptRepository } from "../../engine/transcriptRepository";
 import { ActiveMessageMutationConflictError } from "../../messages/handlers";
 import { createPrismaMessageBranchRepository } from "../../messages/prismaRepository";
 import { prisma } from "../../prisma";
@@ -226,8 +227,19 @@ describe("background sub-agent runs on PostgreSQL", () => {
     const threads = createSubagentThreadStore(prisma);
     const scope = { chatId: f.chatId, runIds: [f.main.runId], threadId: thread.threadId, userId: f.userId };
     expect(await threads.unreadMessages(scope)).toEqual([{ from: "scout", nonce: "m-1", origin: "subagent_message", text: "It costs 42" }]);
-    await threads.markMessagesRead({ ...scope, nonces: ["m-1"] });
+    // Read means on record: the write that holds it stamps it, and a write refused leaves it for the next turn.
+    const transcripts = createTranscriptRepository(prisma);
+    const written = { chatId: f.chatId, runId: f.main.runId, thread: { threadId: thread.threadId, turnId: turn.id }, userId: f.userId };
+    const read = { nonces: ["m-1"], runIds: [f.main.runId], threadId: thread.threadId };
+    const message = { id: randomUUID(), kind: "user" as const, text: "It costs 42" };
+    await transcripts.append(written, 0, [{ id: randomUUID(), kind: "user", text: "The brief" }]);
+    await expect(transcripts.append(written, 0, [message], read)).rejects.toThrow();
+    expect(await threads.unreadMessages(scope)).toHaveLength(1);
+    await transcripts.append(written, 1, [message], read);
     expect(await threads.unreadMessages(scope)).toEqual([]);
+    // A repeat of the write that committed, its outcome lost, finds its own rows.
+    await transcripts.append(written, 1, [message], read);
+    expect((await prisma.runFollowup.findFirstOrThrow({ where: { nonce: "m-1" } })).deliveredAt).not.toBeNull();
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 
