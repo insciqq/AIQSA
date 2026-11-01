@@ -296,18 +296,18 @@ describe("background sub-agent runs on PostgreSQL", () => {
     expect(JSON.stringify(await loadChatExportSource(prisma, chat))).not.toContain(text);
     expect(await verifiedFollowups(prisma, { chatId: f.chatId, userId: f.userId,
       references: [{ answerId: f.main.assistantMessageId, id: receipt.id }] })).toEqual(new Map());
-    await prisma.runFollowup.update({ where: { id: receipt.id }, data: { deliveredAt: new Date() } });
-    expect(await readGuardAuthority(prisma, { runId: f.main.runId, userId: f.userId,
-      admission: { version: 2, plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, messages: [] } }))
-      .toEqual({ ok: true, messages: [] });
     // The transaction rechecks the active branch, after the route's view may have been read.
     await prisma.chat.update({ where: { id: f.chatId }, data: { activeLeafMessageId: f.main.userMessageId } });
     expect(await store.insertMailbox({ authorName: "You", chatId: f.chatId, nonce: "off-branch", origin: "user", text, turnId, userId: f.userId })).toBe("closed");
     await prisma.chat.update({ where: { id: f.chatId }, data: { activeLeafMessageId: f.main.assistantMessageId } });
-    await prisma.runFollowup.update({ where: { id: receipt.id }, data: { deliveredAt: null } });
     expect(await prisma.$transaction((tx) => runFollowupsAllowCompletion(tx, runId))).toBe(true);
     await expect(prisma.runFollowup.create({ data: { authorName: "You", chatId: f.chatId, modelRunId: runId, nonce: "bad-position",
       ordinal: 1, origin: "user", subagentTurnId: turnId, text } })).rejects.toThrow();
+    // Once delivered a row stays delivered (`run_followup_history_immutable`), so this comes after the unread checks.
+    await prisma.runFollowup.update({ where: { id: receipt.id }, data: { deliveredAt: new Date() } });
+    expect(await readGuardAuthority(prisma, { runId: f.main.runId, userId: f.userId,
+      admission: { version: 2, plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, messages: [] } }))
+      .toEqual({ ok: true, messages: [] });
     await prisma.modelRun.update({ data: { followupClosedAt: new Date(), followupRevision: 1 }, where: { id: runId } });
     await expect(prisma.modelRun.update({ data: { status: "complete" }, where: { id: runId } })).resolves.toMatchObject({ status: "complete" });
   }));
