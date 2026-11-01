@@ -1345,6 +1345,11 @@ html[data-motion="off"] .v2-sidebar-floats {
   min-width: 0;
 }
 
+/* A sub-agent's child: half a nesting step, since the row column is narrow. */
+.v2-subagent-row-wrap[data-depth] {
+  margin-left: 0.75rem;
+}
+
 .v2-subagent-row,
 .v2-subagent-more {
   display: grid;
