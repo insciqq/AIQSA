@@ -7,7 +7,7 @@ import * as addressPolicy from "../proxies/address";
 import { runProxiesFromRows } from "../proxies/runProxies";
 import { createFetchUrlSession, fetchUrlActivityFacts } from "../tools/fetchUrl";
 import { setRecordObserver } from "../observability";
-import { fetchThroughProxy } from "./index";
+import { fetchThroughProxy, fetchWebPage } from "./index";
 import { localProxy, pageResponse, proxyConnection } from "./proxy.testFixtures";
 import { fetchUrlDigest } from "./urls";
 
@@ -47,7 +47,7 @@ async function proxy(input: Parameters<typeof localProxy>[0] = {}) {
 }
 
 describe("GET through a checked proxy", () => {
-  it.each(["http", "socks5"] as const)("reads via %s with authentication only in the handshake", async (protocol) => {
+  it.each(["http", "socks5"] as const)("reads via %s with authentication only to the proxy", async (protocol) => {
     const server = await proxy({ protocol });
     const connection = proxyConnection(server.port, protocol);
     const response = await fetchThroughProxy(url, connection, options);
@@ -55,7 +55,7 @@ describe("GET through a checked proxy", () => {
     expect(server.requests).toHaveLength(1);
     expect(server.requests[0]).toContain("GET /page HTTP/1.1");
     expect(server.requests[0]).not.toMatch(/authorization|synthetic-user|synthetic-password/iu);
-    if (protocol === "http") expect(server.connects[0]).toContain(`Proxy-Authorization: Basic ${Buffer.from(`${connection.login}:${connection.password}`).toString("base64")}`);
+    if (protocol === "http") expect(server.proxyRequests[0]).toContain(`proxy-authorization: Basic ${Buffer.from(`${connection.login}:${connection.password}`).toString("base64")}`);
     else {
       expect(server.logins).toEqual([connection.login]);
       expect(server.passwords).toEqual([connection.password]);
@@ -66,7 +66,7 @@ describe("GET through a checked proxy", () => {
   it.each(["http", "socks5"] as const)("supports unauthenticated %s proxies without inventing credentials", async (protocol) => {
     const server = await proxy({ protocol });
     await fetchThroughProxy(url, { ...proxyConnection(server.port, protocol), login: null, password: null }, options);
-    expect(server.connects.join(" ")).not.toContain("Proxy-Authorization");
+    expect([...server.connects, ...server.proxyRequests].join(" ")).not.toMatch(/proxy-authorization/iu);
     expect(server.logins).toEqual([]);
     expect(server.requests).toHaveLength(1);
   });
@@ -78,10 +78,10 @@ describe("GET through a checked proxy", () => {
     const b = { ...proxyConnection(second.port, "http", "another"), password: "second-synthetic-password" };
     await fetchThroughProxy(url, a, options);
     await fetchThroughProxy(url, b, options);
-    expect(first.connects).toHaveLength(1);
-    expect(second.connects).toHaveLength(1);
-    expect(second.connects[0]).toContain(Buffer.from(`${b.login}:${b.password}`).toString("base64"));
-    expect(second.connects[0]).not.toContain(Buffer.from(`${a.login}:${a.password}`).toString("base64"));
+    expect(first.proxyRequests).toHaveLength(1);
+    expect(second.proxyRequests).toHaveLength(1);
+    expect(second.proxyRequests[0]).toContain(Buffer.from(`${b.login}:${b.password}`).toString("base64"));
+    expect(second.proxyRequests[0]).not.toContain(Buffer.from(`${a.login}:${a.password}`).toString("base64"));
   });
 
   it("keeps the caller's cancellation and closes a stalled handshake", async () => {
@@ -143,25 +143,27 @@ describe("GET through a checked proxy", () => {
   it("keeps cross-site redirects on the same proxy and checks each connection", async () => {
     const server = await proxy({ response: (request) => request.includes("GET /page ")
       ? pageResponse("", 302, "Location: http://other.example.org/final\r\n") : pageResponse("Finished") });
-    const result = await fetchThroughProxy(url, proxyConnection(server.port), options);
+    const redirectRoute = vi.fn(async () => null);
+    const result = await fetchThroughProxy(url, proxyConnection(server.port), { ...options, redirectRoute });
     expect(result.finalUrl).toBe("http://other.example.org/final");
-    expect(server.connects).toHaveLength(2);
-    expect(server.connects[0]).toContain("CONNECT example.com:80");
-    expect(server.connects[1]).toContain("CONNECT other.example.org:80");
+    expect(server.proxyRequests).toHaveLength(2);
+    expect(server.proxyRequests[0]).toContain("GET http://example.com/page HTTP/1.1");
+    expect(server.proxyRequests[1]).toContain("GET http://other.example.org/final HTTP/1.1");
     expect(lookup).toHaveBeenCalledTimes(2);
+    expect(redirectRoute).not.toHaveBeenCalled();
   });
 
   it("refuses a redirect to a private literal without asking the proxy", async () => {
     const server = await proxy({ response: () => pageResponse("", 302, "Location: http://10.0.0.1/secret\r\n") });
     await expect(fetchThroughProxy(url, proxyConnection(server.port), options)).rejects.toMatchObject({ code: "fetch_blocked_address", dispatched: true });
-    expect(server.connects).toHaveLength(1);
+    expect(server.proxyRequests).toHaveLength(1);
   });
 
   it("catches DNS rebinding of the proxy at a redirect hop", async () => {
     const server = await proxy({ response: () => pageResponse("", 302, "Location: /next\r\n") });
     lookup.mockResolvedValueOnce([PUBLIC]).mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
     await expect(fetchThroughProxy(url, proxyConnection(server.port), options)).rejects.toMatchObject({ code: "proxy_address_forbidden", dispatched: true });
-    expect(server.connects).toHaveLength(1);
+    expect(server.proxyRequests).toHaveLength(1);
     expect(lookup).toHaveBeenCalledTimes(2);
   });
 
@@ -178,7 +180,7 @@ describe("GET through a checked proxy", () => {
     const loop = await proxy({ response: () => pageResponse("", 302, "Location: /again\r\n") });
     await expect(fetchThroughProxy(url, proxyConnection(loop.port), { ...options, limits: { maxRedirects: 1 } }))
       .rejects.toMatchObject({ code: "fetch_redirect_limit" });
-    expect(loop.connects).toHaveLength(2);
+    expect(loop.proxyRequests).toHaveLength(2);
   });
 
   it("reads end to end through the answer's session with credential-free observations and activity", async () => {
@@ -202,6 +204,29 @@ describe("GET through a checked proxy", () => {
     expect(JSON.stringify([result.rawPreview, records, observeProxy.mock.calls])).not.toMatch(/synthetic-password|synthetic-user|Synthetic page content|proxy\.example\.net/u);
     expect(server.requests).toHaveLength(1);
   });
+  it("switches an automatic direct redirect to a proxy and keeps later hops on it", async () => {
+    const start = "https://short.example/link";
+    const end = "http://other.example.org/last";
+    const server = await proxy({ response: (request) => request.includes("GET /page ")
+      ? pageResponse("", 302, `Location: ${end}\r\n`) : pageResponse() });
+    const connection = proxyConnection(server.port);
+    const direct: string[] = [];
+    const session = createFetchUrlSession({
+      plan: { userUrlDigests: [fetchUrlDigest(start)], version: 1 }, scheduled: false,
+      proxyPlan: { entries: [connection] }, runProxies: runProxiesFromRows([connection]), userId: "owner",
+      fetchPage: (target, options) => fetchWebPage(target, { ...options,
+        lookupHostname: async () => [PUBLIC], dispatch: async ({ url: requested }) => {
+          direct.push(requested.href);
+          return new Response(null, { status: 302, headers: { location: url } });
+        } }),
+      extractPage: async ({ body }) => ({ kind: "text", text: Buffer.from(body).toString(), title: null, truncated: false })
+    });
+    const result = await session.execute({ arguments: { url: start }, id: "call", name: "fetch_url" }, { signal: new AbortController().signal });
+    expect(result).toMatchObject({ status: "complete", rawPreview: { fetchUrl: { proxy: { id: connection.id } } } });
+    expect(direct).toEqual([start]);
+    expect(server.proxyRequests.map((request) => request.split(" ")[1])).toEqual([url, end]);
+  });
+
   it("a dead proxy fails the session visibly without calling the direct transport", async () => {
     const server = await proxy({ behavior: "close" });
     const connection = proxyConnection(server.port);
