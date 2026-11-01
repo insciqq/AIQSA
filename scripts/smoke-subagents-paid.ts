@@ -121,8 +121,9 @@
  *   Effort without a model is refused; omitted roles keep the stand's settings. VERIFIER_FAMILY remains available without CHECKS_MODEL.
  *   CHECKS_MODEL also grades and separately extracts structured comparisons from each saved answer; absent, evaluation says not_configured.
  *   The judge uses the rubric and extraction prompt in research-eval-support.ts. Scores require human reading: source pages are not independently fetched.
- *   Role tokens sum provider figures from transcript responses, including foreground threads; missing figures are counted, never filled in. UsageEvent
- *   supplies the grand total and model split. Transcript totals omit retried attempts, compaction, Search and the harness judge/extraction calls;
+ *   Role tokens sum provider figures from transcript responses, including foreground threads; missing figures are counted, never filled in.
+ *   Role input tokens exclude responses without a request anchor, counted in `missing`; acceptance must read `missing` beside the sums.
+ *   UsageEvent supplies the grand total and model split. Transcript totals omit retried attempts, compaction, Search and the harness judge/extraction calls;
  *   judge/extraction usage is reported separately and is outside the chat ledger too. Minutes sum turn intervals, including waits and overlapping roles.
  *   Private comparison files retain candidates, criteria, picks, ties and conflicting fact pairs. Stdout keeps comparison counts and the existing server check notes.
  *   No baseline is required. Proxy values are redacted before private storage or evaluation. Paid calls: hundreds per question plus two evaluation calls.
@@ -1642,7 +1643,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         const names = await threadIdsByName(ctx.db, chat.id);
         const gateThreads = new Set([...names].filter(([name]) => researchThreadRole(name) !== "researchers").flatMap(([, ids]) => ids));
         const sentBack = calls.filter((call) => call.toolName === "submit_research_draft" && JSON.stringify(call.result ?? "").includes("sent_back")).length;
-        const frame = (await ctx.db.query<{ windowEndsAt: Date | null; releasedAt: Date | null; releasedBy: unknown }>(`SELECT "windowEndsAt", "releasedAt", "answer"->>'released_by' AS "releasedBy"
+        const frame = (await ctx.db.query<{ createdAt: Date; releasedAt: Date | null; releasedBy: unknown }>(`SELECT "createdAt", "releasedAt", "answer"->>'released_by' AS "releasedBy"
           FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chat.id, runId])).rows[0] ?? null;
         const metrics = researchMetrics({ drafts, opened, researcherTurns: turns.filter((turn) => !gateThreads.has(turn.threadId)).length,
           sentBack, started: count("start_research") > 0, planWindow: researchPlanWindow(frame) });

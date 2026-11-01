@@ -382,9 +382,10 @@ export function researchUsageByModel(rows: readonly ResearchUsageRow[]) {
   });
 }
 
-export function researchPlanWindow(frame: Readonly<{ windowEndsAt: Date | string | null; releasedAt: Date | string | null; releasedBy: unknown }> | null) {
-  const end = instant(frame?.windowEndsAt ?? null), released = instant(frame?.releasedAt ?? null);
-  const duration = end !== null && released !== null ? (released - end + RESEARCH_TIME_MS.planWindow) / 1_000 : null;
+/** Holds move the countdown deadline; elapsed time uses the row's original creation time. */
+export function researchPlanWindow(frame: Readonly<{ createdAt: Date | string | null; releasedAt: Date | string | null; releasedBy: unknown }> | null) {
+  const created = instant(frame?.createdAt ?? null), released = instant(frame?.releasedAt ?? null);
+  const duration = created !== null && released !== null ? (released - created) / 1_000 : null;
   return { present: frame !== null, seconds: duration !== null && duration >= 0 ? duration : null,
     releasedBy: typeof frame?.releasedBy === "string" && (RESEARCH_PLAN_RELEASES as readonly string[]).includes(frame.releasedBy) ? frame.releasedBy : null };
 }
