@@ -1,5 +1,6 @@
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import type { ProviderConversationMessage } from "../providers/types";
+import { chatFileMarks } from "../tools/chatFileContext";
+import type { ProviderAttachment, ProviderConversationMessage } from "../providers/types";
 import type { TranscriptItem } from "./transcript";
 
 /**
@@ -24,6 +25,8 @@ import type { TranscriptItem } from "./transcript";
 export type ConversationSource = Readonly<{
   /** Approval continuation turns among the branch's user messages. */
   continuationTurns: ReadonlySet<string>;
+  workspace?: boolean;
+  attachments?: readonly Pick<ProviderAttachment, "id" | "fileName" | "kind">[];
   /**
    * The run's own message, last in `messages`: `input` enters it as the
    * current user input (with the run's attachments), `continuation` (an
@@ -45,6 +48,7 @@ export type RunConversation = Readonly<{
 export function buildRunConversation(source: ConversationSource): RunConversation {
   const items: TranscriptItem[] = [];
   const messages = source.messages;
+  const marks = (message: ProviderConversationMessage) => source.workspace ? undefined : chatFileMarks(message.content.blocks, source.attachments);
   const last = messages.at(-1);
   if (!last || last.role !== "user" || last.purpose !== undefined) throw new Error("conversation_current_message_missing");
   const earlier = messages.slice(0, -1);
@@ -66,7 +70,9 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
       const next = messages.slice(index + 1).find((candidate) => candidate.followupOf === undefined);
       const continued = next?.role === "assistant" && source.nativeAnswers.has(next.id);
       if (source.continuationTurns.has(message.id) && continued) continue;
-      if (text.trim()) items.push({ id: `msg-${message.id}`, kind: "user", text });
+      const attachmentNotice = marks(message);
+      if (text.trim() || attachmentNotice) items.push({ id: `msg-${message.id}`, kind: "user", text,
+        ...(attachmentNotice ? { attachmentNotice } : {}) });
       continue;
     }
     const native = source.nativeAnswers.get(message.id);
@@ -78,7 +84,9 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
   }
   if (source.current.mode === "continuation") return { currentInputId: null, items };
   const currentInputId = `msg-${source.current.messageId}`;
-  items.push({ id: currentInputId, kind: "user", text: textFromContentBlocks(last.content) });
+  const attachmentNotice = marks(last);
+  items.push({ id: currentInputId, kind: "user", text: textFromContentBlocks(last.content),
+    ...(attachmentNotice ? { attachmentNotice } : {}) });
   return { currentInputId, items };
 }
 

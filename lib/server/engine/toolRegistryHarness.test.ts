@@ -77,9 +77,9 @@ describe("native harness and self-service tools", () => {
     const unsupported = await names(input(request(), { selfService: selfService().services }));
     expect(unsupported).not.toContain("read_secret");
     expect(unsupported.filter((name) => selfServiceNames.includes(name))).toEqual([]);
-    // Tools off: nothing beyond the saved-result reader.
+    // Tools off still reads this chat's own context.
     expect(await names(input(request({ toolMode: "none" }), { secrets: secrets(), selfService: selfService().services })))
-      .toEqual(["read_tool_result"]);
+      .toEqual(["read_chat_file", "read_tool_result"]);
   });
 
   it("never offers the old Workspace folder save beside manage_skill, and names manage_skill to a call of it", async () => {
