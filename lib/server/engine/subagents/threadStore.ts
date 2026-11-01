@@ -8,6 +8,7 @@ import {
   type SubagentErrorCode
 } from "../../../contracts/subagents";
 import { dispatchableModelRunStatuses, json } from "../../runs/prismaRepositoryShared";
+import { threadOnBranch } from "../../subagents/branchPath";
 import { childAdmissionRefusal, mailboxWriter, turnMainRunId, turnsOfMainRuns } from "../../subagents/nesting";
 import type { SubagentBinding, SubagentMessage, SubagentParentAgent } from "../../subagents/ports";
 import type { TranscriptItem } from "../transcript";
@@ -164,6 +165,19 @@ async function visibleThread(tx: Pick<Prisma.TransactionClient, "subagentThread"
   });
 }
 
+/**
+ * The thread a name means to the agent about to start it. A sub-agent's host lists the branch as its main run found it,
+ * so a thread the main agent started since is not on its list: a child asks the branch itself, which keeps a name to one
+ * thread there. Runs under the chat's admission lock, where every thread is created.
+ */
+async function threadToStart(tx: Prisma.TransactionClient, input: Readonly<{ branchRunIds: readonly string[]; chatId: string; child: boolean;
+  name: string; parentRunId: string; userId: string }>): Promise<SubagentThreadRecord | null> {
+  const listed = await visibleThread(tx, { ...input, branchRunIds: [...input.branchRunIds, input.parentRunId] });
+  if (listed || !input.child) return listed;
+  const found = await threadOnBranch(tx, input);
+  return found && tx.subagentThread.findFirst({ select: threadSelect, where: { chatId: input.chatId, id: found.threadId, userId: input.userId } });
+}
+
 export function createSubagentThreadStore(client: StoreClient) {
   return {
     /** The thread of this name visible on the branch, with its latest turn there and its active turn anywhere. */
@@ -195,8 +209,8 @@ export function createSubagentThreadStore(client: StoreClient) {
       return client.$transaction(async (tx) => {
         await lockChatSubagentAdmission(tx, input.chatId);
         await endOrphanedForegroundTurns(tx, input.chatId, input.userId);
-        let thread = await visibleThread(tx, { branchRunIds: [...input.branchRunIds, input.parentRunId], chatId: input.chatId,
-          name: input.name, userId: input.userId });
+        let thread = await threadToStart(tx, { branchRunIds: input.branchRunIds, chatId: input.chatId, child: input.parentAgent !== undefined,
+          name: input.name, parentRunId: input.parentRunId, userId: input.userId });
         const continued = thread !== null;
         const stranger = thread && thread.parentThreadId !== (input.parentAgent?.threadId ?? null);
         if (thread && !stranger) {
@@ -226,20 +240,18 @@ export function createSubagentThreadStore(client: StoreClient) {
 
     /**
      * The branch's visible thread of the name, or a new one anchored to the
-     * parent run: what a background turn's admission runs on. Two calls of one
-     * round that start one name meet one row (`(chatId, anchorRunId, name)`), so
-     * a thread another agent started comes back as it is and its admission refuses.
+     * parent run: what a background turn's admission runs on. Under the chat's
+     * admission lock, so two agents that start one name meet one row, and a
+     * thread another agent started comes back as it is and its admission refuses.
      */
     async ensureThread(input: Readonly<{ branchRunIds: readonly string[]; chatId: string; definitionId: string | null; name: string;
       parentRunId: string; parentThreadId?: string; typeName: string | null; userId: string }>): Promise<SubagentThreadRecord> {
-      const visible = await visibleThread(client, { ...input, branchRunIds: [...input.branchRunIds, input.parentRunId] });
-      if (visible) return visible;
-      return client.subagentThread.upsert({
-        create: { anchorRunId: input.parentRunId, chatId: input.chatId, definitionId: input.definitionId, name: input.name,
-          parentThreadId: input.parentThreadId ?? null, typeName: input.typeName, userId: input.userId },
-        select: threadSelect,
-        update: {},
-        where: { chatId_anchorRunId_name: { anchorRunId: input.parentRunId, chatId: input.chatId, name: input.name } }
+      return client.$transaction(async (tx) => {
+        await lockChatSubagentAdmission(tx, input.chatId);
+        const existing = await threadToStart(tx, { branchRunIds: input.branchRunIds, chatId: input.chatId, child: input.parentThreadId !== undefined,
+          name: input.name, parentRunId: input.parentRunId, userId: input.userId });
+        return existing ?? tx.subagentThread.create({ data: { anchorRunId: input.parentRunId, chatId: input.chatId, definitionId: input.definitionId,
+          name: input.name, parentThreadId: input.parentThreadId ?? null, typeName: input.typeName, userId: input.userId }, select: threadSelect });
       });
     },
 

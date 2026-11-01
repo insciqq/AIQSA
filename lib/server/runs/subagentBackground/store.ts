@@ -18,6 +18,7 @@ import {
   type SubagentThreadState,
   type SubagentTurnMode
 } from "../../../contracts/subagents";
+import { threadOnBranch } from "../../subagents/branchPath";
 import { childAdmissionRefusal, TURN_ANSWER_SELECT, turnAnswerMessageId } from "../../subagents/nesting";
 import type { SubagentBinding, SubagentCallbackClaim, SubagentChatScope, SubagentParentAgent } from "../../subagents/ports";
 import { branchPathMessageIds } from "../../toolObservations/repository";
@@ -336,19 +337,6 @@ async function subtreeMessageIds(client: Pick<PrismaClient, "$queryRaw">, chatId
   return rows.map((row) => row.id);
 }
 
-/**
- * The message ids of the branch an agent works on: the chat's active branch while its parent run's answer is on it, so
- * it reaches agents the main agent started after it, otherwise that answer's own path. Null when it has no answer.
- */
-export async function agentBranchPath(tx: Prisma.TransactionClient,
-  input: SubagentChatScope & Readonly<{ activeLeafMessageId: string | null; parentRunId: string }>): Promise<ReadonlySet<string> | null> {
-  const parent = await tx.modelRun.findFirst({ select: { assistantMessageId: true },
-    where: { chatId: input.chatId, id: input.parentRunId, subagentTurnId: null, userId: input.userId } });
-  if (!parent?.assistantMessageId) return null;
-  const active = input.activeLeafMessageId ? await branchPathMessageIds(tx, input.chatId, input.activeLeafMessageId) : null;
-  return active?.has(parent.assistantMessageId) ? active : branchPathMessageIds(tx, input.chatId, parent.assistantMessageId);
-}
-
 /** What a main-agent run must be to take a follow-up from a sub-agent. */
 type ReceivingRun = Readonly<{ assistantMessageId: string; followupRevision: number; id: string; reserveTokens: unknown }>;
 
@@ -550,20 +538,13 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
 
     async findThreadTurnOnBranch({ chatId, name, parentRunId, userId }) {
       return client.$transaction(async (tx) => {
-        const chat = await tx.chat.findFirst({ select: { activeLeafMessageId: true }, where: { id: chatId, userId } });
-        if (!chat) return null;
-        const path = await agentBranchPath(tx, { activeLeafMessageId: chat.activeLeafMessageId, chatId, parentRunId, userId });
-        if (!path) return null;
-        const threads = await tx.subagentThread.findMany({ select: { anchorRun: { select: { assistantMessageId: true } }, id: true },
-          where: { chatId, name, userId } });
-        const thread = threads.find((candidate) => candidate.anchorRun.assistantMessageId !== null &&
-          path.has(candidate.anchorRun.assistantMessageId));
-        if (!thread) return null;
+        const found = await threadOnBranch(tx, { chatId, name, parentRunId, userId });
+        if (!found) return null;
         const turns = await tx.subagentTurn.findMany({ orderBy: [{ startedAt: "desc" }, { id: "desc" }], select: turnSelect,
-          where: { threadId: thread.id } });
+          where: { threadId: found.threadId } });
         const onBranch = turns.find((turn) => {
           const answer = turnAnswerMessageId(turn.parentRun);
-          return answer !== null && path.has(answer);
+          return answer !== null && found.path.has(answer);
         });
         return onBranch ? turnRecord(onBranch) : null;
       });
