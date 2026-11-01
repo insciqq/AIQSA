@@ -55,6 +55,7 @@ describe("sub-agent thread view", () => {
     expect(screen.getByText(/Message from the main agent · Read by the sub-agent/u)).toBeInTheDocument();
     expect(screen.getByText("report")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    expect(screen.getByTestId("composer-v2-surface")).toHaveAttribute("data-message-only");
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
     expect(calls.some((call) => call.method === "POST" && call.url.pathname === `${threadPath}/stop`)).toBe(true);
