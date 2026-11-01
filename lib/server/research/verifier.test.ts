@@ -18,6 +18,7 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchAttempt, ResearchGateContext, ResearchOpenedSource, ResearchSubagentOutcome, ResearchSubagentRequest, ResearchVerifierModel } from "./gates";
 import { createRunResearch, type ResearchEngineDeps } from "./run";
 import { checkQuotes, QUOTE_EXCERPT_LIMITS, type QuoteCheck } from "./quoteCheck";
+import { proposeCall } from "./planWindow.testFixtures";
 import { decodeVerifierReport, VERIFIER_INSTRUCTIONS, verifierBrief, verifierGate, VERIFIER_LIMITS, VERIFIER_MARKER } from "./verifier";
 import type { ResearchVerifierRole } from "./verifierRole";
 
@@ -664,7 +665,8 @@ describe("through the engine", () => {
   const PLAN = { goal: "Choose a mattress.", questions: [{ question: "Which holds up?", sites: [], source_classes: ["primary_official", "independent_tests", "owner_reviews", "action_channel"] }],
     skipped_source_classes: [] };
   const wire = (entry: ResearchFinding) => ({ claim: entry.claim, quote: entry.quote, source_class: entry.sourceClass, standing: entry.standing, url: entry.url });
-  const start = { arguments: PLAN, id: "call-start", name: START_RESEARCH_TOOL_NAME };
+  const start = { arguments: { goal: PLAN.goal }, id: "call-start", name: START_RESEARCH_TOOL_NAME };
+  const begin = [start, proposeCall({ questions: PLAN.questions })];
   const submit = (id: string, findings: readonly ResearchFinding[], report = "# Report") =>
     ({ arguments: { findings: findings.map(wire), report, unreachable: [] }, id, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
 
@@ -770,7 +772,7 @@ describe("through the engine", () => {
   it("catches both planted problems, corrects once on the main agent, and the user reads only the corrected report with what was checked", async () => {
     const other = scripted([{ text: "Outcome: done\nC1 | supported | it says so\nC2 | unsupported | the page says it sagged" }]);
     const main = scripted([
-      { calls: [start], text: "MAIN AGENT REASONING" },
+      { calls: begin, text: "MAIN AGENT REASONING" },
       { calls: [submit("call-1", [HOLDS, WRONG, INVENTED], "DRAFT WITH PROBLEMS")] },
       { calls: [submit("call-2", [HOLDS, { ...WRONG, standing: "not_verified" }], "# Corrected")] }
     ]);
@@ -806,7 +808,7 @@ describe("through the engine", () => {
 
   it("names what stays unsupported when the main agent changes nothing, and does not send it back twice", async () => {
     const other = scripted([{ text: "Outcome: done\nC1 | unsupported | no" }]);
-    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [WRONG])] }, { calls: [submit("call-2", [WRONG], "# Unchanged")] }]);
+    const main = scripted([{ calls: begin }, { calls: [submit("call-1", [WRONG])] }, { calls: [submit("call-2", [WRONG], "# Unchanged")] }]);
     const memory = engineOf({ verifier: role(other.adapter) });
     await run(main.adapter, memory);
     expect(main.requests).toHaveLength(3);
@@ -816,7 +818,7 @@ describe("through the engine", () => {
   });
 
   it("falls back to the main model visibly when the role is not set", async () => {
-    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [HOLDS])] }, { text: "Outcome: done\nC1 | supported | it says so" }]);
+    const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS])] }, { text: "Outcome: done\nC1 | supported | it says so" }]);
     const memory = engineOf({});
     await run(main.adapter, memory);
     expect(main.requests).toHaveLength(3);
@@ -836,7 +838,7 @@ describe("through the engine", () => {
 
   it("does not lose the answer when the verifier's provider fails", async () => {
     const other = scripted([{ fail: true }]);
-    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [HOLDS])] }]);
+    const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS])] }]);
     const memory = engineOf({ verifier: role(other.adapter) });
     await run(main.adapter, memory);
     expect(memory.published()).toContain("# Report");
@@ -846,7 +848,7 @@ describe("through the engine", () => {
   it("past the tool time runs no verifier, pays for no correction, and still names the invented quote", async () => {
     let clock = 0;
     const other = scripted([{ text: "unused" }]);
-    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [HOLDS, INVENTED])], onCall: () => { clock = 55 * 60_000; } }]);
+    const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS, INVENTED])], onCall: () => { clock = 55 * 60_000; } }]);
     const memory = engineOf({ verifier: role(other.adapter) }, { now: () => clock });
     await run(main.adapter, memory);
     expect(other.requests).toHaveLength(0);
@@ -864,7 +866,7 @@ describe("through the engine", () => {
       return attempts === 2 ? { kind: "send_back" as const, message: "Owner reviews are missing.", unresolvedNote: "Owner reviews stayed open." } : { kind: "pass" as const };
     } };
     const main = scripted([
-      { calls: [start] },
+      { calls: begin },
       { calls: [submit("call-1", [WRONG])] },
       { calls: [submit("call-2", [WRONG], "# Second")] },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
@@ -884,7 +886,7 @@ describe("through the engine", () => {
 
   it("gets neither the user's words nor the chat's instructions, and its thread is named by the attempt", async () => {
     const other = scripted([{ text: "Outcome: done\nC1 | supported | y" }]);
-    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [HOLDS])] }]);
+    const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS])] }]);
     const memory = engineOf({ verifier: role(other.adapter) });
     await run(main.adapter, memory);
     expect(JSON.stringify(other.requests[0]!.history)).not.toContain("Проведи исследование");
@@ -901,7 +903,7 @@ describe("through the engine", () => {
     ];
     // Its fetch_url call is refused; here by the engine as an unknown tool, in production by the link authority.
     const other = scripted([{ calls: [{ arguments: { url: shop }, id: "f1", name: "fetch_url" }] }, { text: "Outcome: done\nC1 | supported | the excerpt says it" }]);
-    const main = scripted([{ calls: [start] }, { calls: [submit("call-1", [claim])] }]);
+    const main = scripted([{ calls: begin }, { calls: [submit("call-1", [claim])] }]);
     const memory = engineOf({ verifier: role(other.adapter) });
     vi.mocked(memory.threads.threadEffectItems).mockResolvedValue([{ items, threadId: "researcher" }]);
     await run(main.adapter, memory);
@@ -920,12 +922,16 @@ describe("through the engine", () => {
       tool.execute({ call, persistedToolCallId: `row-${call.id}`, round: 1, signal } as never);
     const first = research(() => []);
     await execute(first.tools[0]!, start);
+    const planned = begin[1]!;
+    const stood = await execute(first.tools[2]!, planned);
     const sent = submit("call-1", [HOLDS, INVENTED], "# First");
     const result = await execute(first.tools[1]!, sent);
     expect(result).toMatchObject({ status: "complete" });
     const transcript: TranscriptItem[] = [
       { id: "msg-q", kind: "user", text: "q" },
       { arguments: JSON.stringify(start.arguments), callId: start.id, id: "i1", kind: "tool_call", name: start.name },
+      { arguments: JSON.stringify(planned.arguments), callId: planned.id, id: "i1b", kind: "tool_call", name: planned.name },
+      { callId: planned.id, id: "i1c", kind: "tool_result", name: planned.name, outcome: "complete", output: toolResultOutputText(stood) },
       { arguments: JSON.stringify(sent.arguments), callId: sent.id, id: "i2", kind: "tool_call", name: sent.name },
       { callId: sent.id, id: "i3", kind: "tool_result", name: sent.name, outcome: "complete", output: toolResultOutputText(result) },
       { arguments: "{}", callId: "held", id: "i4", kind: "tool_call", name: "mcp__shop__buy" }
@@ -944,7 +950,7 @@ describe("through the engine", () => {
   });
 
   it("publishes a plain-text draft with only the note the run already adds", async () => {
-    const main = scripted([{ calls: [start] }, { text: "Отчёт текстом." }, { text: "Отчёт текстом, ещё раз." }]);
+    const main = scripted([{ calls: begin }, { text: "Отчёт текстом." }, { text: "Отчёт текстом, ещё раз." }]);
     const memory = engineOf({});
     await run(main.adapter, memory);
     expect(memory.threads.admitForeground).not.toHaveBeenCalled();

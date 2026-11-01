@@ -18,6 +18,7 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchEngineDeps } from "./run";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { proposeCall } from "./planWindow.testFixtures";
 import { gapCheckGate } from "./gapCheck";
 import { runResearchGates, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome } from "./gates";
 import { researchAnswerText, researchNote } from "./notes";
@@ -728,9 +729,8 @@ function resultsOf(request: ProviderRunRequest | undefined, name: string): strin
   return (request?.history ?? []).flatMap((item) => item.type === "tool_result" && item.name === name ? [item.output] : []);
 }
 
-const start = () => ({ arguments: { goal: PLAN.goal,
-  questions: PLAN.questions.map((question) => ({ question: question.question, sites: question.sites, source_classes: question.sourceClasses })),
-  skipped_source_classes: [] }, id: "start", name: START_RESEARCH_TOOL_NAME });
+const begin = () => [{ arguments: { goal: PLAN.goal }, id: "start", name: START_RESEARCH_TOOL_NAME },
+  proposeCall({ questions: PLAN.questions.map((question) => ({ question: question.question, sites: question.sites, source_classes: question.sourceClasses })) })];
 const submit = (id: string, draft: ResearchDraft) => ({ id, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME, arguments: {
   report: draft.report, findings: draft.findings.map(({ sourceClass, ...finding }) => ({ ...finding, source_class: sourceClass })),
   unreachable: draft.unreachable.map(({ sourceClass, ...entry }) => ({ ...entry, source_class: sourceClass }))
@@ -750,7 +750,7 @@ describe("gap check through the real engine", () => {
       findings: FINDINGS.slice(0, 3).map((finding) => ({ ...finding, claim: `Rewritten: ${finding.claim}` })) };
     const issue = "Delivery to the buyer's city is still unknown.";
     const main = scripted([
-      { calls: [start()] }, { calls: [submit("draft-1", first)] },
+      { calls: begin() }, { calls: [submit("draft-1", first)] },
       { text: JSON.stringify({ ...CLEAN, gaps: [gap(issue, "Open the selected shop's delivery terms for Moscow.")] }) },
       { calls: [submit("draft-2", rewritten)] }
     ]);
@@ -773,7 +773,7 @@ describe("gap check through the real engine", () => {
     const second = { ...DRAFT, report: "The final report includes owner reviews." };
     const opened = RESEARCH_SOURCE_CLASSES.filter((value) => value !== "owner_reviews").flatMap(pageItems);
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit("draft-1", first)], text: "HIDDEN premature report." },
       { calls: [{ arguments: { name: "owners", message: "Open owner reviews and report findings." }, id: "owners", name: CALL_SUBAGENT_TOOL_NAME }] },
       { text: "Outcome: done\nOwners report durability.", onCall: () => opened.push(...pageItems("owner_reviews")) },
@@ -798,7 +798,7 @@ describe("gap check through the real engine", () => {
     let clock = 0;
     const draft: ResearchDraft = { ...without("owner_reviews"), findings: [],
       unreachable: [{ sourceClass: "primary_official", target: "Maker site", reason: "The site is unavailable." }] };
-    const main = scripted([{ calls: [start()] }, { calls: [submit("draft-1", draft)], onCall: () => { clock = 55 * 60_000; } }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit("draft-1", draft)], onCall: () => { clock = 55 * 60_000; } }]);
     const memory = engineOf({ gates: [gapCheckGate] }, { now: () => clock });
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(2);
@@ -815,7 +815,7 @@ describe("gap check through the real engine", () => {
       finding.sourceClass !== "owner_reviews" && finding.sourceClass !== "primary_official"),
       unreachable: [{ sourceClass: "primary_official", target: "Maker site", reason }] };
     const main = scripted([
-      { calls: [start()] },
+      { calls: begin() },
       { calls: [submit("draft-1", draft)] },
       { calls: [{ arguments: { plan: [{ status: "pending", step: "Read owners" }] }, id: "slow", name: "update_plan" }],
         onCall: () => { clock = 55 * 60_000; } },
@@ -834,7 +834,7 @@ describe("gap check through the real engine", () => {
   });
 
   it("keeps responseEnded's plain-text recovery finite when the model never supplies findings", async () => {
-    const main = scripted([{ calls: [start()] }, { text: "First report." }, { text: "Second report." }, { text: "Still no findings." }]);
+    const main = scripted([{ calls: begin() }, { text: "First report." }, { text: "Second report." }, { text: "Still no findings." }]);
     const memory = engineOf({ gates: [gapCheckGate] });
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(4);
@@ -866,7 +866,7 @@ describe("gate notes survive draft recovery", () => {
         empty_ended: [{}], failed: [{ fail: true }],
         stopped: [{ onCall: () => { activeRunControllerRegistry.abort(runId); } }], timed_out: [{ hang: true }]
       };
-      const main = scripted([{ calls: [start()] }, { calls: [submit("draft-1", DRAFT)] }, ...endings[ending]]);
+      const main = scripted([{ calls: begin() }, { calls: [submit("draft-1", DRAFT)] }, ...endings[ending]]);
       const memory = engineOf({ gates: [before, { name: "back", run: async () => sendBack }] },
         ending === "tools_closed" ? { now: () => clock } : {});
       const repo = repository();
@@ -887,7 +887,7 @@ describe("gate notes survive draft recovery", () => {
 
   it("replaces old remarks with the later accepted draft's own notes", async () => {
     const corrected = { ...DRAFT, report: "The corrected report." };
-    const main = scripted([{ calls: [start()] }, { calls: [submit("draft-1", DRAFT)] }, { calls: [submit("draft-2", corrected)] }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit("draft-1", DRAFT)] }, { calls: [submit("draft-2", corrected)] }]);
     const memory = engineOf({ gates: [before, { name: "back", run: async (_draft, ctx) => ctx.attempt === 1 ? sendBack
       : { kind: "pass", notes: ["Owner reviews were checked."] } }] });
     await run(main.adapter, memory).text();
@@ -898,7 +898,7 @@ describe("gate notes survive draft recovery", () => {
   it.each([false, true])("keeps a superseded draft's notes when the follow-up has no replacement (failure: %s)", async (failed) => {
     let checked = false;
     let handed = false;
-    const main = scripted([{ calls: [start()] }, { calls: [submit("draft-1", DRAFT)] }, { fail: failed }]);
+    const main = scripted([{ calls: begin() }, { calls: [submit("draft-1", DRAFT)] }, { fail: failed }]);
     const memory = engineOf({ gates: [before, { name: "back", run: async () => { checked = true; return sendBack; } }] });
     const repo = repository();
     const followups = {
