@@ -19,7 +19,7 @@ import {
   type ResearchPlanProposal,
   type ResearchPlanRelease
 } from "../../contracts/research";
-import { CALL_SUBAGENT_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME, SUBAGENT_END_REASONS } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, STOP_SUBAGENT_TOOL_NAME, SUBAGENT_END_REASONS } from "../../contracts/subagents";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { LoopToolChoice } from "../engine/loop";
 import type { PrepareRunSubagentsInput } from "../engine/subagents/runSubagents";
@@ -202,9 +202,12 @@ export function createRunResearch(input: RunResearchInput) {
   /** A text draft's gates cannot send it back when its tools are closed: nothing could act on that. */
   let closedForText = false;
   const isAccepted = () => accepted !== null;
-  /** Researchers whose brief already holds the method. */
+  /** Researchers whose brief already holds the method, by the name their thread has (`normalizeSubagentName`). */
   const briefed = new Set<string>();
-  /** The researcher calls running now, one entry each: a second call of a name in one batch is refused, and must not take the first off. */
+  /**
+   * The researcher calls running now, by the name their thread has, which is what the store lists and stops, one entry each: a
+   * second call of a name in one batch is refused, and must not take the first off.
+   */
   const running = new Set<Readonly<{ name: string }>>();
   const attempts: ResearchAttempt[] = [];
   // Frozen now, read at no cost to a run that never researches: the promise settles whatever happens and nothing waits for it.
@@ -325,7 +328,7 @@ export function createRunResearch(input: RunResearchInput) {
    */
   async function underTime(tool: EngineTool, execution: EngineToolExecution, call: ModelToolCall): Promise<ToolExecutionResult> {
     const signal = ports.time.researcherSignal(execution.signal);
-    const researcher = { name: typeof call.arguments.name === "string" ? call.arguments.name : "" };
+    const researcher = { name: normalizeSubagentName(call.arguments.name) ?? "" };
     running.add(researcher);
     try {
       return await turns.researcherCall(tool, { ...execution, call, signal });
@@ -416,6 +419,8 @@ export function createRunResearch(input: RunResearchInput) {
       } finally {
         windowOpen = false;
       }
+      // A Stop during the window's closing write still gets its answer, and a stopped run has no plan to release.
+      signal.throwIfAborted();
       const stands = researchPlanFromProposal(researched, answer.plan);
       planStands(stands);
       const fromChat = answer.releasedBy === "chat_message";
@@ -546,8 +551,9 @@ export function createRunResearch(input: RunResearchInput) {
         if (closed !== null) return harnessToolError(call, "research_researchers_closed", closed);
         const { background: _background, ...foreground } = call.arguments;
         void _background;
-        const { message, name } = foreground;
-        if (typeof message !== "string" || typeof name !== "string" || briefed.has(name)) {
+        const { message } = foreground;
+        const name = normalizeSubagentName(foreground.name);
+        if (typeof message !== "string" || name === null || briefed.has(name)) {
           return underTime(tool, execution, { ...call, arguments: foreground });
         }
         const brief = researcherBrief(message, plan);
