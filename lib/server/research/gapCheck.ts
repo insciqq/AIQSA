@@ -124,14 +124,6 @@ function issueText(heading: string, issues: readonly string[], max = RUN_FOLLOWU
   return `${heading}\n${issues.map((issue) => bounded(issue, perIssue)).join("\n")}`;
 }
 
-function limitsNotes(limits: readonly string[], russian: boolean): string[] {
-  if (limits.length === 0) return [];
-  const heading = russian ? "Ограничения, отмеченные проверкой:" : "Limits the check noted:";
-  const text = [...new Set(limits.map((limit) => readerText(limit, russian)))].join("; ");
-  // One short note, two lines at most, regardless of how many limits were returned.
-  return [`${heading}\n${bounded(text, RESEARCH_LIMITS.reasonCharacters - heading.length - 1)}`];
-}
-
 function unreachableNotes(draft: ResearchDraft): string[] {
   const report = space(draft.report);
   const russian = CYRILLIC.test(draft.report);
@@ -166,7 +158,7 @@ function gapNote(gaps: readonly Gap[], russian: boolean, kind: SentBack["kind"])
 }
 
 function previousJudgeNotes(context: ResearchGateContext, russian: boolean, previous: SentBack | undefined): string[] {
-  if (previous) return [...previous.kind === "judged" && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, "judged")] : [], ...limitsNotes(previous.limits, russian)];
+  if (previous) return previous.kind === "judged" && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, "judged")] : [];
   const message = context.earlier.at(-1)?.message ?? "";
   if (!Object.values(JUDGE_HEADING).some((heading) => message.startsWith(heading))) return [];
   const issues = message.split("\n\n")[0]!.split("\n").slice(1).map((issue) => readerText(issue, russian));
@@ -187,12 +179,15 @@ function gapsResult(draft: ResearchDraft, context: ResearchGateContext, feedback
   const language = CYRILLIC.test(context.plan.goal) ? "ru" : "en";
   const heading = feedback.kind === "judged" ? JUDGE_HEADING : MISSING_HEADING;
   const instruction = SEND_RESEARCHERS[language];
-  const budget = Math.floor((RUN_FOLLOWUP_MAX_CHARS - instruction.length - 4) / 2);
+  const limits = [...new Set(feedback.limits.map((limit) => readerText(limit, language === "ru")))];
+  const budget = Math.floor((RUN_FOLLOWUP_MAX_CHARS - instruction.length - 6) / (limits.length > 0 ? 3 : 2));
   const issues = issueText(heading[language], feedback.gaps.map((gap) => readerText(gap.issue, language === "ru")), budget);
   const steps = issueText(language === "ru" ? "Следующие шаги:" : "Next steps:", feedback.gaps.map((gap, index) =>
     `${index + 1}. ${readerText(gap.next_step, language === "ru")}`), budget);
   pageProgress.set(context.plan, { pages: feedback.pages, feedback });
-  return { kind: "send_back", message: `${issues}\n\n${instruction}\n\n${steps}`, notes, unresolvedNote: details };
+  // Limits reach only the report's author, who states them in the report: a note of them repeated the report.
+  const stated = limits.length > 0 ? `\n\n${issueText(language === "ru" ? "Ограничения, которые нужно указать в отчёте, если их там ещё нет:" : "Limits to state in the report, if it does not yet:", limits, budget)}` : "";
+  return { kind: "send_back", message: `${issues}\n\n${instruction}\n\n${steps}${stated}`, notes, unresolvedNote: details };
 }
 
 const JUDGE_INSTRUCTIONS = `Check the research plan against the supplied findings, using only this brief. Do not open pages or call tools.
@@ -209,7 +204,7 @@ Write issue and limits for the reader in language, in plain words without intern
 Reply only with strict JSON, without Markdown or an Outcome line:
 {"gaps":[{"issue":"What remains unanswered or conflicting","next_step":"What to search for or open"}],"limits":["A limit of the available evidence"]}
 Both arrays may be empty. Each contains at most ${RESEARCH_LIMITS.questions} entries. Each issue and next_step is a nonempty string of at most ${RESEARCH_LIMITS.questionCharacters} characters; each limit is at most ${RESEARCH_LIMITS.reasonCharacters} characters.
-The entire reply must fit ${RUN_FOLLOWUP_MAX_CHARS} characters. Only gaps request more research; limits will be appended to the report.`;
+The entire reply must fit ${RUN_FOLLOWUP_MAX_CHARS} characters. Only gaps request more research; limits go to the report's author with them.`;
 
 /** A complete JSON brief, with explicit omissions, never a cut JSON document. */
 function judgeBrief(draft: ResearchDraft, plan: ResearchPlan): string {
@@ -298,7 +293,7 @@ export const gapCheckGate: ResearchGate = {
       // responseEnded already asked for the reserved call once; run.ts owns
       // the final no-findings note. Rewriting after a send-back buys no round.
       if (noNewPages) return { kind: "pass", notes: [...notes,
-        ...previous && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, previous.kind)] : [], ...limitsNotes(previous?.limits ?? [], russian)] };
+        ...previous && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, previous.kind)] : []] };
       if (!context.time.sendBackAllowed() || context.earlier.some((attempt) => attempt.draft.origin === "plain_text")) return { kind: "pass", notes };
       return { kind: "send_back", notes, message: CYRILLIC.test(context.plan.goal)
         ? "Передайте отчёт через submit_research_draft со списком находок: утверждение, ссылка, точная цитата и источник. Сохраните все находки, которые остаются верными; не сокращайте отчёт ради проверки."
@@ -312,8 +307,7 @@ export const gapCheckGate: ResearchGate = {
     const missing = coverageGaps(context.plan, coverage, "missing", russian);
     if (noNewPages) return { kind: "pass", notes: [...notes,
       ...missing.length > 0 ? [gapNote(missing, russian, "mechanical")] : [], ...previousJudgeNotes(context, russian, previous)] };
-    if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages },
-      [...notes, ...limitsNotes(previous?.limits ?? [], russian)]);
+    if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, notes);
 
     if (addedNothing(draft, context)) {
       // Keep the previous judge's named issues if no new evidence could address
@@ -330,10 +324,9 @@ export const gapCheckGate: ResearchGate = {
       if (outcome.kind !== "ended" || outcome.result.state !== "done" || outcome.result.outcome !== "done" || outcome.result.reportTruncated) return unfinished();
       const judgment = judgeIssues(outcome.result.report);
       if (judgment === null) return unfinished();
-      const checkedNotes = [...notes, ...limitsNotes(judgment.limits, russian)];
-      if (judgment.gaps.length > 0) return gapsResult(draft, context, { ...judgment, kind: "judged", pages }, checkedNotes);
+      if (judgment.gaps.length > 0) return gapsResult(draft, context, { ...judgment, kind: "judged", pages }, notes);
       pageProgress.set(context.plan, { pages, feedback: { ...judgment, kind: "judged", pages } });
-      return { kind: "pass", notes: checkedNotes };
+      return { kind: "pass", notes };
     } catch {
       // The mechanical check already ran and the verifier comes next.
       context.signal.throwIfAborted();
