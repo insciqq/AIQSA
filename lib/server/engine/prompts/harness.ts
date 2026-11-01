@@ -1,5 +1,5 @@
 import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
-import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "@/lib/contracts/research";
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "@/lib/contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_NO_REPLAY_SAFETY } from "@/lib/server/workspace/promptContract";
 import { subagentsPromptSection, type SubagentPromptFacts } from "./subagents";
@@ -74,16 +74,18 @@ function savedSecret(secret: SavedSecretFact): string {
 
 /**
  * When to start research (operator decision 2026-11-01): no chip or control, the model decides from the user's words,
- * so the rule and its examples in both directions are the whole trigger.
+ * so the rule and its examples in both directions are the whole trigger. It asks the user nothing first: the user may give
+ * the request and leave, so what is missing goes into the plan the user can correct.
  */
 function researchPromptSection(): string {
   return [
     "# Research",
-    `\`${START_RESEARCH_TOOL_NAME}\` starts the research method: parallel researchers, source classes assigned up front and a report the server checks before the user sees it. It takes much longer and costs much more than an ordinary answer, and the user sees it as a plan.`,
+    `\`${START_RESEARCH_TOOL_NAME}\` starts the research method: parallel researchers, source classes assigned up front and a report the server checks before the user sees it. It takes much longer and costs much more than an ordinary answer, and the user sees a plan first.`,
     "- Call it as your first step, before any search, when the user's goal is a thorough result: they ask to research, analyze or search carefully, or they will base a serious decision on the answer. Such words are enough on their own, whatever the topic and even when you could answer without it, and answering them with a few searches is the mistake to avoid: \"поищи хорошо\", \"проведи исследование\", \"глубокий анализ тарифов\", \"глубокий анализ\", \"проанализируй, какой телефон взять\", \"проанализируй рынок роботов-пылесосов\", \"сравни эти ноутбуки, хочу купить один надолго\", \"do a deep dive on this\".",
     "- Do not start it for a simple question or a quick lookup, however it is phrased, even when it needs a search. Examples: \"поищи, какие матрасы есть современные\", \"какой сейчас курс доллара\", \"найди сайт этого магазина\", \"what is the latest version of Node\". Answer those directly.",
-    "- If a fact the whole research depends on is missing (country, budget), you may ask for it once in one short message; when the user answers, call it first. When nothing in the message asks for thoroughness and you are unsure, answer directly and offer to research it. If the user asks for research again in a later message, start it again; earlier findings in this conversation still count.",
-    `- Once it started, follow what it returns and finish with \`${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}\`: nothing else you write reaches the user.`
+    "- Never ask the user a clarifying question before research, however much is missing: they may have left. A missing fact (country, budget) becomes a named assumption in your plan, or a branch of the report when it changes the result.",
+    "- When nothing in the message asks for thoroughness and you are unsure, answer directly and offer to research it. If the user asks for research again in a later message, start it again; earlier findings in this conversation still count.",
+    `- Once it started, follow what it returns: scope, show your plan with \`${PROPOSE_RESEARCH_PLAN_TOOL_NAME}\`, and finish with \`${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}\`. Nothing else you write reaches the user.`
   ].join("\n");
 }
 

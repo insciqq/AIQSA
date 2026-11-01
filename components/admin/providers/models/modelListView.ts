@@ -164,6 +164,8 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(roles?.chatTitleModel?.id, "Chat titles");
   add(roles && activeChatPdfReader(roles)?.id, "Chat PDF");
   add(roles?.visionModel?.id, "Vision Model");
+  add(roles?.researchResearcherModel?.id, "Researchers");
+  add(roles?.researchVerifierModel?.id, "Research checks");
   for (const model of roles?.imageModels ?? []) add(model.id, imageGenerationTag(sources));
   add(roles?.decisionModel?.id, "Relevance checks");
   const route = roles?.rerankerRoute?.entries ?? [];
@@ -185,7 +187,8 @@ export function modelAssignedRoles(modelId: string, sources: ProviderUsageSource
   const pinned: ReadonlyArray<readonly [AdminProviderAssignedRole, string | undefined]> = [
     ["memory", sources.systemModelPolicy?.memoryPolicy.model?.id], ["system_model", policy?.systemModel?.id],
     ["chat_titles", policy?.chatTitleModel?.id], ["vision", policy?.visionModel?.id],
-    ["mcp_guard", policy?.mcpGuardModel?.id], ["research_verifier", policy?.researchVerifierModel?.id], ["chat_pdf", policy?.chatPdfModel?.id], ["chat_pdf_native", policy?.chatPdfNativeModel?.id]
+    ["mcp_guard", policy?.mcpGuardModel?.id], ["research_researcher", policy?.researchResearcherModel?.id],
+    ["research_verifier", policy?.researchVerifierModel?.id], ["chat_pdf", policy?.chatPdfModel?.id], ["chat_pdf_native", policy?.chatPdfNativeModel?.id]
   ];
   return pinned.flatMap(([role, id]) => id === modelId ? [role] : []);
 }
@@ -235,6 +238,8 @@ export function turnOffConsequence(input: Readonly<{
   if (input.tags.includes("Memory")) uses.push("Memory processing");
   if (input.tags.includes("Chat titles")) uses.push("the chat title model");
   if (input.tags.includes("Vision Model")) uses.push("the Vision Model");
+  if (input.tags.includes("Researchers")) uses.push("the model for research gathering");
+  if (input.tags.includes("Research checks")) uses.push("the model for research checks");
   if (input.tags.includes("Chat PDF")) uses.push("the chat PDF model");
   if (input.tags.includes(IMAGE_GENERATION_TAG)) uses.push("a published image model for image generation");
   if (input.tags.includes("Relevance checks")) uses.push("the optional relevance-check model");
@@ -244,7 +249,7 @@ export function turnOffConsequence(input: Readonly<{
       : "a fallback reranker for Memory");
   }
   const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Vision Model",
-    "Relevance checks", IMAGE_GENERATION_TAG, IMAGE_GENERATION_OFF_TAG]);
+    "Researchers", "Research checks", "Relevance checks", IMAGE_GENERATION_TAG, IMAGE_GENERATION_OFF_TAG]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {
     uses.push(`the model behind ${joinNames(searchSources.map((name) => `“${name}”`))} Search`);
@@ -253,8 +258,10 @@ export function turnOffConsequence(input: Readonly<{
   const takeover = input.successor
     ? `${input.successor} takes over automatically, and chats in progress keep using the current model until they finish.`
     : "Nothing takes over automatically — reassign it under Defaults & roles or Search. Chats in progress keep using the current model until they finish.";
+  const research = input.tags.includes("Researchers") || input.tags.includes("Research checks")
+    ? " Research does not start until its assigned model is available." : "";
   return {
-    body: `${first} ${takeover}\n\nNothing is deleted. You can turn it back on at any time.`,
+    body: `${first} ${takeover}${research}\n\nNothing is deleted. You can turn it back on at any time.`,
     title: `Turn off ${input.model.displayName}?`
   };
 }

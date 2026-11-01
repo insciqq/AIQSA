@@ -81,3 +81,34 @@ describe("the research verifier role", () => {
     await expect(unset.resolve()).resolves.toMatchObject({ code: "system_model_absent", ok: false });
   });
 });
+
+describe("researcher and checks assignments", () => {
+  it("keeps independent choices and bindings on the same run, even when both roles choose one model", async () => {
+    const { prisma, bindings } = store({ policy: { researchResearcherProviderModelId: "model-2", researchResearcherReasoningEffort: null,
+      researchVerifierProviderModelId: "model-2", researchVerifierReasoningEffort: null } });
+    for (const researchRole of ["researcher", "checks"] as const) {
+      const chosen = createResearchVerifierRole({ loadRole: vi.fn(async () => role()) as never, prisma: prisma as never,
+        role: researchRole, runtime: runtime as never });
+      await expect(chosen.frozenChoice()).resolves.toEqual({ effort: null, kind: "set", providerModelId: "model-2" });
+      await expect(chosen.route(scope)).resolves.not.toBeNull();
+    }
+    expect([...bindings.keys()]).toEqual(["research_researcher", RESEARCH_VERIFIER_BINDING_KEY]);
+  });
+
+  it("refuses an unsupported researcher effort before recording a binding", async () => {
+    const { prisma, bindings } = store();
+    const researcher = createResearchVerifierRole({ loadRole: vi.fn(async () => role()) as never, prisma: prisma as never,
+      role: "researcher", runtime: runtime as never });
+    await expect(researcher.route({ ...scope, effort: "high" })).resolves.toBeNull();
+    expect(bindings.size).toBe(0);
+  });
+
+  it("reports an assigned researcher that disappeared as unavailable, while not set stays absent", async () => {
+    const { prisma } = store({ policy: { researchResearcherProviderModelId: "gone", researchResearcherReasoningEffort: null, version: 5 } });
+    const loadRole = vi.fn(async () => { throw new ProviderAdmissionError("model_not_available"); });
+    await expect(createResearchVerifierRoleResolver(prisma as never, loadRole, "researcher").resolve())
+      .resolves.toEqual({ ok: false, code: "system_model_unavailable" });
+    await expect(createResearchVerifierRoleResolver(store({ policy: null }).prisma as never, loadRole, "researcher").resolve())
+      .resolves.toEqual({ ok: false, code: "system_model_absent" });
+  });
+});

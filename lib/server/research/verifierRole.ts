@@ -1,4 +1,5 @@
 import type { ModelRunStatus, Prisma, PrismaClient } from "@prisma/client";
+import type { ResearchRole } from "../../contracts/research";
 import { parameterControlsForModel, type CatalogAdapterKind } from "../../domain/catalog";
 import { canonicalizeMaxOutputTokenParams } from "../../domain/providerParams";
 import { logEvent } from "../observability";
@@ -11,16 +12,24 @@ import { json } from "../runs/prismaRepositoryShared";
 import { paramsForEffort, subagentParameterDialect, type ModelFacts, type SubagentModelRoute } from "../engine/subagents/modelRoutes";
 
 /**
- * The verifier role (`SystemModelPolicy.researchVerifierProviderModelId`,
- * operator decision 2026-11-01): an administrator's answer model, usually of
- * another family, on installation credentials. Not set, the main model checks
- * and the answer says so; set but unusable, nothing runs in its place. A run
- * freezes the choice when it starts (`frozenVerifierChoice`), and its first use
+ * Research roles are administrator choices on installation credentials. The
+ * existing verifier columns hold the checks role so upgrades keep its choice.
+ * Not set, the run keeps its ordinary models; set but unusable, nothing runs in
+ * its place. A run freezes the choice when it starts, and its first use
  * records the binding on the run, so the run keeps it whatever changes after.
  */
 export const RESEARCH_VERIFIER_BINDING_KEY = "research_verifier";
+export const RESEARCH_RESEARCHER_BINDING_KEY = "research_researcher";
 
-/** The verifier is a sub-agent turn, so its model must call tools like any chat model. */
+const ROLE_FIELDS = {
+  checks: { bindingKey: RESEARCH_VERIFIER_BINDING_KEY, effort: "researchVerifierReasoningEffort", model: "researchVerifierProviderModelId" },
+  researcher: { bindingKey: RESEARCH_RESEARCHER_BINDING_KEY, effort: "researchResearcherReasoningEffort", model: "researchResearcherProviderModelId" }
+} as const;
+
+const ROLE_SELECT = { researchResearcherProviderModelId: true, researchResearcherReasoningEffort: true,
+  researchVerifierProviderModelId: true, researchVerifierReasoningEffort: true, version: true } as const;
+
+/** Research roles run sub-agent turns, so their models must call tools like any chat model. */
 export function researchVerifierEligible(role: Pick<ProviderAdmissionRole, "modelConfiguration">): boolean {
   return role.modelConfiguration.capabilities.toolCalling === true;
 }
@@ -28,19 +37,21 @@ export function researchVerifierEligible(role: Pick<ProviderAdmissionRole, "mode
 /** The role's readiness, for the administrator's form (`systemModelPolicyService.ts`). */
 export function createResearchVerifierRoleResolver(
   db: AdmissionPrisma & Pick<Prisma.TransactionClient, "systemModelPolicy">,
-  loadRole = loadInstallationAnswerProviderRole
+  loadRole = loadInstallationAnswerProviderRole,
+  researchRole: ResearchRole = "checks"
 ) {
+  const fields = ROLE_FIELDS[researchRole];
   return {
     async resolve(): Promise<SystemModelRoleResolution> {
       const policy = await db.systemModelPolicy.findUnique({
-        select: { researchVerifierProviderModelId: true, researchVerifierReasoningEffort: true, version: true },
+        select: ROLE_SELECT,
         where: { id: "installation" }
       });
-      const providerModelId = policy?.researchVerifierProviderModelId;
+      const providerModelId = policy?.[fields.model];
       if (!policy || !providerModelId) return { ok: false, code: SYSTEM_MODEL_ABSENT };
       try {
         const role = await loadRole(db, { providerModelId });
-        const effort = policy.researchVerifierReasoningEffort ?? null;
+        const effort = policy[fields.effort] ?? null;
         if (!researchVerifierEligible(role) || effort !== null &&
           !supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, effort)) {
           return { ok: false, code: SYSTEM_MODEL_UNAVAILABLE };
@@ -61,10 +72,10 @@ export type FrozenVerifierChoice =
   /** The policy could not be read, so no one knows what the administrator chose: nothing runs in its place. */
   | Readonly<{ kind: "unreadable" }>;
 
-/** The verifier model's route on a run, with the facts a sub-agent turn binds. */
+/** A research model's route on a run, with the facts a sub-agent turn binds. */
 export type ResearchVerifierRoute = Readonly<{ connectionName: string | null; displayName: string; route: SubagentModelRoute }>;
 
-/** The role's port on the engine (`NativeEngineDeps.research.verifier`). */
+/** A research role's port on the engine. */
 export type ResearchVerifierRole = Readonly<{
   /** Read when the run starts; a failure reads as `unreadable`, never as not set. */
   frozenChoice(): Promise<FrozenVerifierChoice>;
@@ -77,18 +88,20 @@ type RolePrisma = AdmissionPrisma & Pick<PrismaClient, "$transaction" | "modelRu
 const ACTIVE = { in: ["queued", "streaming", "in_progress"] as ModelRunStatus[] };
 
 export function createResearchVerifierRole(input: Readonly<{ loadRole?: typeof loadInstallationAnswerProviderRole; prisma: RolePrisma;
-  runtime: ProviderRuntimeResolver }>): ResearchVerifierRole {
+  role?: ResearchRole; runtime: ProviderRuntimeResolver }>): ResearchVerifierRole {
   const loadRole = input.loadRole ?? loadInstallationAnswerProviderRole;
+  const fields = ROLE_FIELDS[input.role ?? "checks"];
   return {
     async frozenChoice() {
       try {
         const policy = await input.prisma.systemModelPolicy.findUnique({
-          select: { researchVerifierProviderModelId: true, researchVerifierReasoningEffort: true }, where: { id: "installation" } });
-        return policy?.researchVerifierProviderModelId
-          ? { effort: policy.researchVerifierReasoningEffort ?? null, kind: "set", providerModelId: policy.researchVerifierProviderModelId }
+          select: ROLE_SELECT, where: { id: "installation" } });
+        const providerModelId = policy?.[fields.model];
+        return providerModelId
+          ? { effort: policy?.[fields.effort] ?? null, kind: "set", providerModelId }
           : { kind: "not_set" };
       } catch (error) {
-        logEvent("service_operation", { action: "degrade", code: "research_verifier_unreadable", error, outcome: "degraded", stage: "read",
+        logEvent("service_operation", { action: "degrade", code: `${fields.bindingKey}_unreadable`, error, outcome: "degraded", stage: "read",
           subsystem: "database" });
         return { kind: "unreadable" };
       }
@@ -96,12 +109,13 @@ export function createResearchVerifierRole(input: Readonly<{ loadRole?: typeof l
     async route({ effort, providerModelId, runId, userId }) {
       try {
         const stored = () => input.prisma.providerRunBinding.findUnique({ select: { executionSnapshot: true },
-          where: { modelRunId_bindingKey: { bindingKey: RESEARCH_VERIFIER_BINDING_KEY, modelRunId: runId } } });
+          where: { modelRunId_bindingKey: { bindingKey: fields.bindingKey, modelRunId: runId } } });
         let binding = await stored();
         if (!binding) {
           const role = await loadRole(input.prisma, { providerModelId });
-          if (!researchVerifierEligible(role)) return null;
-          const data = { bindingKey: RESEARCH_VERIFIER_BINDING_KEY, connectionId: role.snapshot.connectionId, credentialId: role.snapshot.credentialId,
+          if (!researchVerifierEligible(role) || effort !== null &&
+            !supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, effort)) return null;
+          const data = { bindingKey: fields.bindingKey, connectionId: role.snapshot.connectionId, credentialId: role.snapshot.credentialId,
             credentialSource: role.credentialSource, credentialVersionId: role.snapshot.credentialVersionId, executionSnapshot: json(role.snapshot),
             modelRunId: runId, providerModelId: role.snapshot.providerModelId, role: "answer" as const };
           const recorded = await input.prisma.$transaction(async (tx) => {
@@ -128,12 +142,12 @@ export function createResearchVerifierRole(input: Readonly<{ loadRole?: typeof l
           maxOutputTokens: controls.maxOutputTokens.defaultValue,
           ...(controls.temperature.supported ? { temperature: controls.temperature.defaultValue } : {}) }, effort);
         if (!params) return null;
-        const runtime = await input.runtime.resolve(runId, "answer", RESEARCH_VERIFIER_BINDING_KEY);
+        const runtime = await input.runtime.resolve(runId, "answer", fields.bindingKey);
         return { connectionName: names?.connection?.displayName ?? null, displayName: names?.displayName ?? model.upstreamModelId, route: { adapter: runtime.adapter, request: { modelCapabilities: model.capabilities,
           modelId: model.upstreamModelId, params, provider: snapshot.providerFamily, reasoningEffort: effort }, snapshot, timeoutMs: runtime.responseTimeoutMs } };
       } catch (error) {
         if (error instanceof ProviderAdmissionError) return null;
-        logEvent("service_operation", { action: "degrade", code: "research_verifier_unavailable", error, outcome: "degraded", run_id: runId,
+        logEvent("service_operation", { action: "degrade", code: `${fields.bindingKey}_unavailable`, error, outcome: "degraded", run_id: runId,
           stage: "prepare", subsystem: "database" });
         throw error;
       }

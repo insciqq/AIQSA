@@ -104,15 +104,28 @@
  *   more searches than the old limit of 2, no refusal of a link any agent's search found, and more than 5 pages in one answer.
  *   Paid calls: about 8-12 codex-lb requests and 3 searches per route, in about 2-5 minutes.
  * - R: when research starts, only when named: 10 Russian phrases, each in a new chat with Search on. A run that calls `start_research`
- *   is stopped at once to save money. Oracle: each phrase went in its direction, reported by index. Paid calls: about 10-25 codex-lb
+ *   is stopped at once to save money. No phrase names what a question would ask, and nothing answers one: the model asks nothing first.
+ *   Oracle: each phrase went in its direction, reported by index. Paid calls: about 10-25 codex-lb
  *   requests and a few searches, in about 5-10 minutes. This needs DEEPSEEK_API_KEY for the Search source, as Q does.
  * - S: proxies end to end, one chat per step, only when named, with the operator's proxy in AIQSA_SUBAGENTS_TEST_PROXY (process only, never printed, never written).
  *   A proxy pasted in chat is saved for `.ru` and tested; the browser opens a hinted page, Yandex Market, Wildberries and Ozon, and an address echo through the named
  *   proxy; `fetch_url` reads through it; a dead proxy fails visibly; a switched-off one is refused by name. Oracles compare exit addresses inside SQL and print booleans. The
  *   answers go to AIQSA_SUBAGENTS_ANSWERS_FILE when set (0600), for reading by hand. Paid calls: about 15-30 codex-lb requests, in about 5-10 minutes.
- * - T: research metrics, one chat per question of `SCENARIO_T_QUESTIONS` (AIQSA_SUBAGENTS_T_KINDS narrows them), only when named. Per question: researchers, drafts, send-backs,
- *   what later rounds added, opened pages per source class, the check's note as the server wrote it. With AIQSA_SUBAGENTS_VERIFIER_FAMILY the verifier role goes to that
- *   connection's first model. Paid calls: hundreds of codex-lb requests and tens of searches per question, in about 10-40 minutes each.
+ * - T: repeatable synthetic research, only when named. AIQSA_SUBAGENTS_T_KINDS selects questions; AIQSA_SUBAGENTS_T_REPEATS is
+ *   1 by default, an integer (1..20), or purchase=5,medical=3,technical=3,market=3 (omitted kinds keep 1). AIQSA_SUBAGENTS_T_CONCURRENCY
+ *   is 3 by default (1..8). Each question has at least 110 minutes, including scoping, the plan window and the harness margin.
+ *   AIQSA_SUBAGENTS_ANSWERS_DIR is required unless AIQSA_SUBAGENTS_ANSWERS_FILE supplies its adjacent .d directory. The directory
+ *   is 0700 and files are 0600: finalized answers and gate reports are saved as they appear, separately by kind/repeat/chat/invocation.
+ *   Files survive cleanup and are kept until the operator removes them; a resumed harness uses new names. ANSWERS_FILE still receives an append-only copy.
+ *   AIQSA_SUBAGENTS_RESEARCHER_MODEL/EFFORT and AIQSA_SUBAGENTS_CHECKS_MODEL/EFFORT bind the roles through Admin on the codex-lb route.
+ *   Effort without a model is refused; omitted roles keep the stand's settings. VERIFIER_FAMILY remains available without CHECKS_MODEL.
+ *   CHECKS_MODEL also grades and separately extracts structured comparisons from each saved answer; absent, evaluation says not_configured.
+ *   The judge uses the rubric and extraction prompt in research-eval-support.ts. Scores require human reading: source pages are not independently fetched.
+ *   Role tokens sum provider figures from transcript responses, including foreground threads; missing figures are counted, never filled in. UsageEvent
+ *   supplies the grand total and model split. Transcript totals omit retried attempts, compaction, Search and the harness judge/extraction calls;
+ *   judge/extraction usage is reported separately and is outside the chat ledger too. Minutes sum turn intervals, including waits and overlapping roles.
+ *   Private comparison files retain candidates, criteria, picks, ties and conflicting fact pairs. Stdout keeps comparison counts and the existing server check notes.
+ *   No baseline is required. Proxy values are redacted before private storage or evaluation. Paid calls: hundreds per question plus two evaluation calls.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -173,21 +186,29 @@ import {
   type OracleVerdict, type ScenarioInteraction, type StandTarget
 } from "./browser-scenarios-support";
 import {
-  TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureResearchVerifier, ensureSearchSource, ensureTextModel, errorCode,
+  SETUP_TIMEOUT_MS, TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureResearchVerifier, ensureSearchSource, ensureTextModel, errorCode,
   handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setWorkspaceEnabled, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
   browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, SCENARIO_R_PHRASES, SUBAGENT_SCENARIO_NEEDS,
-  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchMetrics,
-  type PageReads, type RPhraseResult, type TDraftFinding,
+  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchMetrics, researchProcessFacts, researchServerNotes,
+  type PageReads, type RPhraseResult, type TDraftFinding, type TGateRow,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
   type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
+import { readConnections } from "./context-compaction-journey-support";
+import { createFetchOpenAIResponsesClient } from "../lib/server/providers/openaiResponsesTransport";
+import {
+  RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, configureResearchEvalRoles, createResearchArchive, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval,
+  evaluateResearch, redactResearchSecrets, researchEvalOptions, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout,
+  researchComparisonDetails, researchRepeatability, researchRoleUsage, researchThreadRole, researchUsageByModel, researchEffortConfiguration, type ResearchEvalCall, type ResearchGrade, type ResearchJob, type ResearchTiming,
+  type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
+} from "./research-eval-support";
 
 const SECOND_MODEL_DISPLAY_NAME = "Sub-agents second model";
 /** A main-agent run's wait: the shipped 3600 s turn plus the margin. */
@@ -210,6 +231,7 @@ type Context = Readonly<{
   /** The Search routes Q and R run on: the client route, and the hosted one when the stand's model offers it. */
   search: readonly SearchRoute[];
   second: CatalogModel | null;
+  research: Readonly<{ options: ReturnType<typeof researchEvalOptions>; judge: ResearchEvalCall | null }> | null;
   session: Session;
   target: StandTarget;
 }>;
@@ -1400,17 +1422,8 @@ async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
     };
     const sent = await trySend(ctx, run, chat.id, phrase.text, [], { search: route });
     if (!sent.ok) fail(`send_${sent.code}`);
-    let reached = await outcome(sent.ok ? sent.runId : "");
-    let askedFirst = false;
-    // A request this open may get a question first: what counts then is that the user's answer starts research.
-    if (reached.reached === "no_tools" && phrase.reply) {
-      await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
-      const replied = await trySend(ctx, run, chat.id, phrase.reply, [], { search: route });
-      if (!replied.ok) fail(`send_${replied.code}`);
-      reached = await outcome(replied.ok ? replied.runId : "");
-      askedFirst = reached.reached === "started";
-    }
-    results.push({ ...(askedFirst ? { askedFirst } : {}), expected: phrase.start, index, started: reached.reached === "started", status: reached.terminal.status });
+    const reached = await outcome(sent.ok ? sent.runId : "");
+    results.push({ expected: phrase.start, index, started: reached.reached === "started", status: reached.terminal.status });
     await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
   }
   const verdict = oracleR(results);
@@ -1494,79 +1507,211 @@ async function scenarioS(ctx: Context, run: Run): Promise<Outcome> {
   return { success: verdict.failed.length === 0, usage };
 }
 
-const T_QUESTION_MS = 75 * 60_000;
+/** Research role bindings share the existing codex-lb setup and the policy's optimistic version. */
+async function ensureResearchRoles(api: Api, route: { apiRoot: string }, secret: string, options: ReturnType<typeof researchEvalOptions>) {
+  await configureResearchEvalRoles(options, {
+    ensureModel: async (model, role) => {
+      const added = await ensureModel(api, { apiRoot: route.apiRoot, model }, secret, `Research ${role} model`);
+      const effort = options[role].effort;
+      if (effort && !(await catalogModel(api, added)).parameterControls.reasoningEffort.options.includes(effort)) {
+        const connection = readConnections(await json(api, "/api/admin/providers"))?.find((entry) => entry.id === added.connectionId);
+        const stored = connection?.models.find((entry) => entry.id === added.providerModelId);
+        if (!stored?.activeConfig) fail("research_model_configuration_missing");
+        // A requested level outside the shared helper's defaults needs an explicit declaration and Admin's checks.
+        await json(api, `/api/admin/providers/${encodeURIComponent(added.connectionId)}/models/${encodeURIComponent(added.providerModelId)}`, {
+          body: { action: "update", activate: true, displayName: stored.displayName, expectedDisplayName: stored.displayName,
+            expectedActiveVersion: stored.activeVersion, expectedDraftVersion: stored.draftVersion, expectedUpdatedAt: stored.updatedAt,
+            configuration: researchEffortConfiguration(stored.activeConfig, effort) }, method: "PATCH", timeoutMs: SETUP_TIMEOUT_MS
+        });
+        if (!(await catalogModel(api, added)).parameterControls.reasoningEffort.options.includes(effort)) fail("research_effort_unavailable");
+      }
+      return added.providerModelId;
+    },
+    policyVersion: async () => {
+      const current = await json(api, "/api/admin/providers/system-model-policy");
+      const policy = isRecord(current) && isRecord(current.systemModelPolicy) && isRecord(current.systemModelPolicy.policy) ? current.systemModelPolicy.policy : fail("system_policy_invalid");
+      return typeof policy.version === "number" ? policy.version : fail("system_policy_invalid");
+    },
+    patch: async (body) => { await json(api, "/api/admin/providers/system-model-policy", { body, method: "PATCH" }); }
+  });
+}
+
+/** Thread-scoped transcript figures cover foreground agents; the paid-call ledger supplies the wider total and model split. */
+async function researchUsage(ctx: Context, chatId: string, turns: readonly TurnRow[], names: ReadonlyMap<string, readonly string[]>) {
+  await settledUsage(ctx.db, [chatId]);
+  const { rows } = await ctx.db.query<ResearchUsageRow>(`SELECT u."purpose"::text AS "purpose", u."inputTokens", u."outputTokens", u."cachedInputTokens", u."modelId"
+    FROM "UsageEvent" u JOIN "ModelRun" r ON r."id" = u."modelRunId" WHERE r."chatId" = $1`, [chatId]);
+  const transcript = (await ctx.db.query<ResearchTranscriptRow>(`SELECT "id", "modelRunId" AS "runId", "subagentThreadId" AS "threadId", "subagentTurnId" AS "turnId",
+      "sequence", "createdAt", "kind"::text AS "kind", jsonb_build_object(
+        'origin', CASE WHEN jsonb_typeof("body"->'origin') = 'object' THEN '{}'::jsonb ELSE NULL END,
+        'outputTokens', "body"->'outputTokens', 'requestAnchor', CASE WHEN "body" ? 'requestAnchor'
+          THEN jsonb_build_object('inputTokens', "body"->'requestAnchor'->'inputTokens') ELSE NULL END) AS "body"
+    FROM "RunTranscriptItem" WHERE "chatId" = $1 ORDER BY "modelRunId", "subagentThreadId", "sequence"`, [chatId])).rows;
+  const main = (await ctx.db.query<ResearchTiming>(`SELECT NULL AS "threadId", "answerStartedAt" AS "startedAt", "answerCompletedAt" AS "endedAt"
+    FROM "ModelRun" WHERE "chatId" = $1 AND "subagentTurnId" IS NULL`, [chatId])).rows;
+  return { roles: researchRoleUsage(transcript, [...main, ...turns.map((turn) => ({ threadId: turn.threadId,
+    startedAt: turn.startedAt, endedAt: turn.endedAt }))], names), byModel: researchUsageByModel(rows), total: usageByPurpose(rows) };
+}
 
 async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
   const route = ctx.search[0] ?? fail("search_route_missing");
-  const kinds = process.env.AIQSA_SUBAGENTS_T_KINDS?.split(",").map((kind) => kind.trim()).filter(Boolean);
-  const questions: Record<string, unknown>[] = [];
-  let failed = false;
-  // With the operator's proxy the marketplaces are in reach, as for a user who saved one: never printed, removed afterwards.
+  const research = ctx.research ?? fail("research_setup_missing");
+  const { options, judge } = research;
   const proxy = parseTestProxy(process.env.AIQSA_SUBAGENTS_TEST_PROXY);
-  if (proxy) await json(ctx.session.api, "/api/me/proxies", { body: { domainHints: [".ru"], host: proxy.host, login: proxy.login, name: SCENARIO_S_NAME, password: proxy.password, port: proxy.port, protocol: proxy.protocol }, method: "POST" });
-  for (const question of SCENARIO_T_QUESTIONS.filter((entry) => !kinds || kinds.includes(entry.kind))) {
-    const started = Date.now();
-    const chat = await createScenarioChat(ctx.session.api, `Research scenario ${question.kind}`);
-    run.chats.push(chat.id);
-    const sent = await trySend(ctx, run, chat.id, question.text, [], { search: route });
-    if (!sent.ok) fail(`send_${sent.code}`);
-    const terminal = await waitRun(ctx, sent.ok ? sent.runId : "", T_QUESTION_MS);
-    await waitMainIdle(ctx, chat.id, T_QUESTION_MS);
-    const { rows: calls } = await ctx.db.query<{ arguments: Record<string, unknown> | null; result: Record<string, unknown> | null; threadId: string | null; toolName: string }>(`SELECT c."arguments", c."result",
-        c."subagentThreadId" AS "threadId", c."toolName" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1 ORDER BY c."startedAt"`, [chat.id]);
-    const count = (name: string) => calls.filter((call) => call.toolName === name).length;
-    const drafts: TDraftFinding[][] = calls.filter((call) => call.toolName === "submit_research_draft" && call.arguments).map((call) => ((call.arguments!.findings ?? []) as Record<string, unknown>[]).map((finding) => ({
-      claim: String(finding.claim ?? ""), quote: String(finding.quote ?? ""), sourceClass: String(finding.source_class ?? ""), url: String(finding.url ?? "") })));
-    const opened = new Set(calls.filter((call) => call.toolName === "fetch_url" && (call.result?.rawPreview as { fetchUrl?: { outcome?: string } } | undefined)?.fetchUrl?.outcome === "read")
-      .flatMap((call) => typeof call.arguments?.url === "string" ? [call.arguments.url] : []));
-    for (const call of calls) {
-      if (!call.toolName.startsWith("mcp_workspace") || !call.arguments || !JSON.stringify(call.arguments).includes("aiqsa-browser")) continue;
-      for (const match of JSON.stringify(call.arguments).matchAll(/https?:\/\/[^\s"'\\]+/gu)) opened.add(match[0]);
-    }
-    const turns = await turnRows(ctx.db, chat.id);
-    const names = await threadIdsByName(ctx.db, chat.id);
-    const gateThreads = new Set([...names.entries()].filter(([name]) => /^(?:gap-judge|verifier)-/u.test(name)).flatMap(([, ids]) => ids));
-    const researcherTurns = turns.filter((turn) => !gateThreads.has(turn.threadId)).length;
-    const sentBack = calls.filter((call) => call.toolName === "submit_research_draft" && JSON.stringify(call.result ?? "").includes("sent_back")).length;
-    const metrics = researchMetrics({ drafts, opened, researcherTurns, sentBack, started: count("start_research") > 0 });
-    // Per draft, oldest first: what it held and who sent it back. The messages are the server's words about the plan, so only their kind leaves.
-    const timeline = calls.filter((call) => call.toolName === "submit_research_draft").map((call, index) => {
-      const findings = drafts[index] ?? [];
-      const byClass: Record<string, number> = {};
-      for (const finding of findings) byClass[finding.sourceClass] = (byClass[finding.sourceClass] ?? 0) + 1;
-      const result = JSON.stringify(call.result ?? "");
-      return { accepted: result.includes("accepted"), byClass, findings: findings.length,
-        sentBackBy: !result.includes("sent_back") ? null : result.includes("[Independent check]") ? "verifier"
-          : /Research questions still open|Открытые вопросы исследования/u.test(result) ? "gap_judge" : "gap_mechanical" };
+  const secrets = proxy ? [proxy.url, proxy.host, proxy.login, proxy.password] : [];
+  const clean = (value: string) => redactResearchSecrets(value, secrets);
+  const archive = createResearchArchive(options.answersDir, secrets, options.answersFile);
+  let ownedProxy: string | null = null;
+  if (proxy) {
+    try {
+      ownedProxy = await researchProxySetup(() => json(ctx.session.api, "/api/me/proxies", { body: { domainHints: [".ru"], host: proxy.host, login: proxy.login,
+        name: SCENARIO_S_NAME, password: proxy.password, port: proxy.port, protocol: proxy.protocol }, method: "POST" }));
+    } catch { fail("research_proxy_setup_failed"); }
+  }
+  const questions: Record<string, unknown>[] = [];
+  const extracted: { job: ResearchJob; answer: StructuredResearchAnswer }[] = [];
+  const createdChats = new Map<ResearchJob, string>();
+  let failed = false;
+  try {
+    const results = await researchPool(options.jobs, options.concurrency, async (job) => {
+      const started = Date.now();
+      const deadline = started + researchQuestionTimeout(ctx.marginSeconds);
+      let chatId: string | null = null;
+      let capture: (() => Promise<void>) | null = null;
+      const savedAnswers = new Map<string, string>();
+      const savedGates = new Map<string, { role: string; report: string; state: string }>();
+      let grade = emptyEval<ResearchGrade>("no_answer");
+      let extraction = emptyEval<StructuredResearchAnswer>("no_answer");
+      let questionFailed = false;
+      const facts: Record<string, unknown> = { metrics: null, roles: null, tokens: null, tokensByModel: [], terminal: "unknown",
+        timeline: [], gateTurnFacts: [], gateTurns: 0, fetchOutcomes: {}, fetchProxyReads: 0, serverNotes: [] };
+      let drafts: TDraftFinding[][] = [];
+      const question = SCENARIO_T_QUESTIONS.find((entry) => entry.kind === job.kind) ?? fail("research_kind_missing");
+      try {
+        const chat = await createScenarioChat(ctx.session.api, `Research scenario ${job.kind} ${job.repeat}`);
+        chatId = chat.id;
+        createdChats.set(job, chat.id);
+        run.chats.push(chat.id);
+        capture = async () => {
+          const answers = (await ctx.db.query<{ id: string; content: unknown }>(`SELECT r."id", m."content" FROM "ModelRun" r
+            JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."chatId" = $1 AND r."subagentTurnId" IS NULL
+              AND (r."answerCompletedAt" IS NOT NULL OR r."status"::text IN ('complete', 'error', 'cancelled')) ORDER BY r."createdAt"`, [chat.id])).rows;
+          for (const row of answers) {
+            if (savedAnswers.has(row.id) || !isRecord(row.content) || !Array.isArray(row.content.blocks)) continue;
+            const answer = row.content.blocks.filter((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
+              .map((block: { text: string }) => block.text).join("\n");
+            if (!answer.trim()) continue;
+            archive.write(job, chat.id, `answer-${row.id}`, { ...job, chat: chat.id, run: row.id, answer });
+            savedAnswers.set(row.id, clean(answer));
+          }
+          const gates = (await ctx.db.query<{ id: string; name: string; report: string | null; state: string }>(`SELECT t."id", th."name", t."result"->>'report' AS "report", t."state"::text AS "state"
+            FROM "SubagentTurn" t JOIN "SubagentThread" th ON th."id" = t."threadId"
+            WHERE t."chatId" = $1 AND th."name" ~ '^(gap-judge|verifier|skeptic)-' AND t."endedAt" IS NOT NULL ORDER BY t."startedAt"`, [chat.id])).rows;
+          for (const row of gates) {
+            if (savedGates.has(row.id)) continue;
+            const gate = { role: researchThreadRole(row.name), report: row.report ?? "", state: row.state };
+            archive.write(job, chat.id, `gate-${row.id}`, { ...job, chat: chat.id, ...gate });
+            savedGates.set(row.id, { ...gate, report: clean(gate.report) });
+          }
+        };
+        const sent = await trySend(ctx, run, chat.id, question.text, [], { search: route });
+        if (!sent.ok) fail("research_send_failed");
+        let quiet = 0;
+        const terminal = await poll(Math.max(1, deadline - Date.now()), async () => {
+          await capture!();
+          const mains = await mainRuns(ctx.db, chat.id);
+          const original = mains.find((entry) => entry.id === sent.runId);
+          const idle = original && TERMINAL_RUN_STATES.has(original.status) && mains.every((entry) => TERMINAL_RUN_STATES.has(entry.status)) &&
+            await owedCallbacks(ctx.db, chat.id) === 0;
+          quiet = idle ? quiet + 1 : 0;
+          return quiet >= 2 ? original!.status : null;
+        }, "research_question_timeout", 3_000);
+        const { rows: calls } = await ctx.db.query<{ arguments: Record<string, unknown> | null; result: Record<string, unknown> | null; toolName: string }>(`SELECT c."arguments", c."result", c."toolName"
+          FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1 ORDER BY c."startedAt"`, [chat.id]);
+        const count = (name: string) => calls.filter((call) => call.toolName === name).length;
+        drafts = calls.filter((call) => call.toolName === "submit_research_draft").map((call) =>
+          (Array.isArray(call.arguments?.findings) ? call.arguments.findings : []).filter(isRecord).map((finding) => ({ claim: String(finding.claim ?? ""),
+            quote: String(finding.quote ?? ""), sourceClass: String(finding.source_class ?? ""), url: String(finding.url ?? "") })));
+        const opened = new Set(calls.filter((call) => call.toolName === "fetch_url" && (call.result?.rawPreview as { fetchUrl?: { outcome?: string } } | undefined)?.fetchUrl?.outcome === "read")
+          .flatMap((call) => typeof call.arguments?.url === "string" ? [call.arguments.url] : []));
+        for (const call of calls) {
+          if (!call.toolName.startsWith("mcp_workspace") || !call.arguments || !JSON.stringify(call.arguments).includes("aiqsa-browser")) continue;
+          for (const match of JSON.stringify(call.arguments).matchAll(/https?:\/\/[^\s"'\\]+/gu)) opened.add(match[0]);
+        }
+        const turns = await turnRows(ctx.db, chat.id);
+        const names = await threadIdsByName(ctx.db, chat.id);
+        const gateThreads = new Set([...names].filter(([name]) => researchThreadRole(name) !== "researchers").flatMap(([, ids]) => ids));
+        const sentBack = calls.filter((call) => call.toolName === "submit_research_draft" && JSON.stringify(call.result ?? "").includes("sent_back")).length;
+        const frame = (await ctx.db.query<{ windowEndsAt: Date | null; releasedAt: Date | null; releasedBy: unknown }>(`SELECT "windowEndsAt", "releasedAt", "answer"->>'released_by' AS "releasedBy"
+          FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chat.id, sent.runId])).rows[0] ?? null;
+        const metrics = researchMetrics({ drafts, opened, researcherTurns: turns.filter((turn) => !gateThreads.has(turn.threadId)).length,
+          sentBack, started: count("start_research") > 0, planWindow: researchPlanWindow(frame) });
+        const gates = (await ctx.db.query<TGateRow>(`SELECT th."name", t."reasonCode", t."state"::text AS "state", t."result"->>'report' AS "report"
+          FROM "SubagentTurn" t JOIN "SubagentThread" th ON th."id" = t."threadId"
+          WHERE t."chatId" = $1 AND th."name" ~ '^(gap-judge|verifier|skeptic)-' ORDER BY t."startedAt"`, [chat.id])).rows;
+        Object.assign(facts, researchProcessFacts({ calls, drafts, gates }));
+        const usage = await researchUsage(ctx, chat.id, turns, names);
+        Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
+          roles: usage.roles, tokensByModel: usage.byModel, planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
+          searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
+        questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && metrics.independentOpened === 0);
+      } catch {
+        questionFailed = true;
+        facts.harnessError = "research_question_failed";
+        if (chatId !== null) {
+          const mains = await mainRuns(ctx.db, chatId).catch(() => []);
+          for (const main of mains.filter((entry) => !TERMINAL_RUN_STATES.has(entry.status))) {
+            await request(ctx.session.api, `/api/model-runs/${encodeURIComponent(main.id)}/cancel`, { body: {}, method: "POST" }).catch(() => undefined);
+          }
+          await capture?.().catch(() => undefined);
+        }
+      }
+      const answer = [...savedAnswers.values()].join("\n\n---\n\n");
+      facts.serverNotes = researchServerNotes(answer);
+      if (answer && chatId !== null) {
+        grade = await evaluateResearch(judge, RESEARCH_JUDGE_PROMPT, { question: question.text, answer,
+          drafts: drafts.map((draft) => draft.map((finding) => ({ claim: clean(finding.claim), quote: clean(finding.quote), sourceClass: clean(finding.sourceClass), url: clean(finding.url) }))),
+          gates: [...savedGates.values()], process: facts }, decodeResearchGrade);
+        extraction = await evaluateResearch(judge, RESEARCH_EXTRACTION_PROMPT, { question: question.text, answer }, decodeStructuredResearchAnswer);
+        try {
+          archive.write(job, chatId, "judge", grade);
+          archive.write(job, chatId, "extraction", extraction);
+        } catch { questionFailed = true; facts.harnessError = "research_archive_write_failed"; }
+        if (extraction.value) extracted.push({ job, answer: extraction.value });
+      }
+      const summary: Record<string, unknown> & { failed: boolean } = { ...facts, ...researchEvaluationSummary({ job, answerCount: savedAnswers.size, gateReportCount: savedGates.size,
+        grade, extraction, failed: questionFailed, wallSeconds: seconds(started) }) };
+      if (chatId !== null) {
+        try { archive.write(job, chatId, "summary", summary); }
+        catch { summary.failed = true; summary.harnessError = "research_archive_write_failed"; }
+      }
+      questions.push(summary);
+      failed ||= summary.failed;
+      emit({ stage: "research_question", ...summary });
     });
-    const { rows: gateRows } = await ctx.db.query<{ name: string; reasonCode: string | null; report: string | null; state: string; modelId: string | null }>(`SELECT th."name", t."reasonCode", t."state"::text AS "state", t."modelId", t."result"->>'report' AS "report"
-      FROM "SubagentTurn" t JOIN "SubagentThread" th ON th."id" = t."threadId" WHERE t."chatId" = $1 AND th."name" ~ '^(gap-judge|verifier)-' ORDER BY t."startedAt"`, [chat.id]);
-    const gateTurnFacts = gateRows.map((row) => ({ name: row.name, reason: safeCode(row.reasonCode), reportChars: row.report?.length ?? 0, state: row.state }));
-    const fetchOutcomes: Record<string, number> = {};
-    for (const call of calls.filter((entry) => entry.toolName === "fetch_url")) {
-      const facts = (call.result?.rawPreview as { fetchUrl?: { outcome?: string; proxyCode?: string } } | undefined)?.fetchUrl;
-      const code = safeCode(facts?.proxyCode ?? facts?.outcome) ?? "unknown";
-      fetchOutcomes[code] = (fetchOutcomes[code] ?? 0) + 1;
+    failed ||= results.some((result) => result.status === "rejected");
+    const comparisons = [...new Set(options.jobs.map((job) => job.kind))].map((kind) => {
+      const jobs = options.jobs.filter((job) => job.kind === kind);
+      const own = extracted.filter((entry) => entry.job.kind === kind).sort((a, b) => a.job.repeat - b.job.repeat);
+      const comparison = { kind, expectedRuns: jobs.length, ...researchRepeatability(own.map((entry) => entry.answer)), detailsSaved: false };
+      try {
+        archive.write(jobs[0], createdChats.get(jobs[0]) ?? "no-chat", "comparisons", { kind, expectedRuns: jobs.length,
+          ...researchComparisonDetails(jobs.map((job) => ({ repeat: job.repeat, chat: createdChats.get(job) ?? null,
+            answer: own.find((entry) => entry.job.repeat === job.repeat)?.answer ?? null }))) });
+        comparison.detailsSaved = true;
+      } catch { failed = true; }
+      return comparison;
+    });
+    Object.assign(run.line, { questions, comparisons, questionFailures: results.filter((result) => result.status === "rejected").length });
+  } finally {
+    if (ownedProxy !== null) {
+      try {
+        const stored = (await ctx.db.query<{ version: number }>(`SELECT "version" FROM "NetworkProxy" WHERE "id" = $1`, [ownedProxy])).rows[0];
+        if (stored) await json(ctx.session.api, `/api/me/proxies/${encodeURIComponent(ownedProxy)}`, { body: { expectedVersion: stored.version }, method: "DELETE" });
+      } catch { fail("research_proxy_cleanup_failed"); }
     }
-    const answersFile = process.env.AIQSA_SUBAGENTS_ANSWERS_FILE;
-    if (answersFile) appendFileSync(answersFile, `\n\n===== T ${question.kind} gate reports =====\n\n${gateRows.map((row) => `--- ${row.name} (${row.state}) ---\n${row.report ?? ""}`).join("\n\n")}\n`, { mode: 0o600 });
-    const { rows: answers } = await ctx.db.query<{ note: string | null; text: string | null }>(`SELECT m."content"::text AS "text", NULL AS "note" FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId"
-      WHERE r."id" = $1`, [sent.ok ? sent.runId : ""]);
-    const answer = answers[0]?.text ?? "";
-    // The check's sentences are the server's own words (`verifier.ts`, `notes.ts`), so they may leave; nothing else of the answer does.
-    const serverNotes = [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт пришёл|This report came|Research ended|Исследование завершилось)[^*]{0,400})\*/gu)].map((match) => match[1]);
-    await keepAnswers(ctx, chat.id, `T ${question.kind}`);
-    const usage = usageByPurpose(await settledUsage(ctx.db, [chat.id]));
-    questions.push({ fetchOutcomes, gateTurnFacts, gateTurns: turns.length - researcherTurns, kind: question.kind, metrics, timeline, searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length,
-      fetchCalls: count("fetch_url"), serverNotes, terminal: terminal.status, tokens: usage.total, wallSeconds: seconds(started) });
-    emit({ stage: "research_question", ...questions.at(-1) });
-    if (terminal.status !== "complete" || !metrics.started || (question.kind === "purchase" && metrics.independentOpened === 0)) failed = true;
   }
-  Object.assign(run.line, { questions });
-  for (const stored of (await ctx.db.query<{ id: string; version: number }>(`SELECT "id", "version" FROM "NetworkProxy"`)).rows) {
-    await request(ctx.session.api, `/api/me/proxies/${encodeURIComponent(stored.id)}`, { body: { expectedVersion: stored.version }, method: "DELETE" }).catch(() => undefined);
-  }
-  return { success: !failed && questions.length > 0, usage: usageByPurpose(await settledUsage(ctx.db, run.chats)) };
+  return { success: !failed && questions.length === options.jobs.length, usage: usageByPurpose(await settledUsage(ctx.db, run.chats)) };
 }
 
 const N_TURN_MS = 10 * 60_000;
@@ -1843,6 +1988,11 @@ async function main() {
   const scenarios = selectedSubagentScenarios(process.env.AIQSA_SUBAGENTS_SELECT);
   const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
   const options = subagentHarnessOptions(process.env, scenarios, route.model);
+  const researchOptions = scenarios.includes("T") ? researchEvalOptions(process.env) : null;
+  if (researchOptions) {
+    if (process.env.AIQSA_SUBAGENTS_TEST_PROXY?.trim() && !parseTestProxy(process.env.AIQSA_SUBAGENTS_TEST_PROXY)) fail("research_proxy_invalid");
+    createResearchArchive(researchOptions.answersDir);
+  }
   const marginSeconds = boundedInteger(process.env.AIQSA_SUBAGENTS_MARGIN_SECONDS, 600, 60, 3_600, "margin_invalid");
   const label = process.env.AIQSA_SUBAGENTS_LABEL?.trim() || "unlabelled";
   if (!/^[A-Za-z0-9._/-]{1,80}$/u.test(label)) fail("label_invalid");
@@ -1885,10 +2035,19 @@ async function main() {
       }
     }
     if (scenarios.includes("T") && process.env.AIQSA_SUBAGENTS_VERIFIER_FAMILY) await ensureResearchVerifier(api, process.env.AIQSA_SUBAGENTS_VERIFIER_FAMILY);
+    let research: Context["research"] = null;
+    if (researchOptions) {
+      await ensureResearchRoles(api, route, secret, researchOptions);
+      const checks = researchOptions.checks;
+      const client = createFetchOpenAIResponsesClient({ apiKey: secret, baseUrl: route.apiRoot, acceptStreamedCreate: true,
+        defaultTimeoutMs: 10 * 60_000, initialRequestRetry: { maxAttempts: 1 }, requestIsolation: true });
+      research = { options: researchOptions, judge: checks.model ? (instructions, input) => client.create({ model: checks.model,
+        instructions, input, max_output_tokens: 16_384, store: false, ...(checks.effort ? { reasoning: { effort: checks.effort } } : {}) }) : null };
+    }
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model, contextWindow: chatProvider.contextWindow,
       reused: chatProvider.reused, secondModel: second !== null, modelWithoutVision: blind !== null, restartHook: options.restart !== null,
       configuredBounds: target.configuredBounds, scenarios, runs: options.runs });
-    const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, search, second,
+    const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, research, search, second,
       session: { api }, target };
     for (let index = 1; index <= options.runs; index += 1) {
       for (const id of scenarios) records.push(await runScenario(ctx, id, index));
