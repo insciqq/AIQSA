@@ -245,7 +245,7 @@ class Harness(unittest.TestCase):
 
     def write_plan(self, *entries: Dict[str, Any]) -> None:
         temporary = self.plan_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"version": 1, "proxies": list(entries)}), "utf-8")
+        temporary.write_text(json.dumps({"version": 1, "generation": 1, "proxies": list(entries)}), "utf-8")
         os.replace(temporary, self.plan_path)
 
     def forwarder(self, *, real_policy: bool = False, tls: Optional[ssl.SSLContext] = None) -> Tuple[_forwarder.Forwarder, int]:
@@ -512,6 +512,138 @@ class Choices(Harness):
         self.assertNotIn(PASSWORD, json.dumps(peek))
 
 
+class Establishing(Harness):
+    """A route or plan that changes while a connection is being established: the stale stream is never published."""
+
+    def held_network(self, instance: _forwarder.Forwarder) -> Any:
+        network, background = instance.network, self.background
+
+        class Held:
+            """Holds the first open of each kind until released, and keeps what it opened."""
+
+            def __init__(self) -> None:
+                self.reached = threading.Event()
+                self.release = background.call(asyncio.Event)
+                self.opened: List[asyncio.StreamWriter] = []
+                self.hold = 1
+
+            async def _held(self, opening: Any) -> Any:
+                stream = await opening
+                self.opened.append(stream[1])
+                if self.hold > 0:
+                    self.hold -= 1
+                    self.reached.set()
+                    await self.release.wait()
+                return stream
+
+            def open_direct(self, host: str, port: int) -> Any:
+                return self._held(network.open_direct(host, port))
+
+            def open_proxy(self, proxy: Any, host: str, port: int, *, tunnel: bool = True) -> Any:
+                return self._held(network.open_proxy(proxy, host, port, tunnel=tunnel))
+
+        held = Held()
+        instance.network = held  # type: ignore[assignment]
+        return held
+
+    def in_background(self, function: Callable[[], Any]) -> "concurrent.futures.Future[Any]":
+        pool = concurrent.futures.ThreadPoolExecutor(1)
+        self.addCleanup(pool.shutdown, False)
+        return pool.submit(function)
+
+    def test_a_connect_opening_directly_when_the_route_moves_to_a_proxy_does_not_keep_the_old_exit(self) -> None:
+        upstream = self.fake("http")
+        self.write_plan(entry("named", upstream))
+        instance, port = self.forwarder()
+        held = self.held_network(instance)
+        pending = self.in_background(lambda: self.connect(port, f"shop.example:{self.site.port}"))
+        self.assertTrue(held.reached.wait(10))
+        self.background.call(lambda: instance.control("route", {"host": "shop.example", "choice": {"kind": "proxy", "ref": "named"}}))
+        self.background.call(held.release.set)
+        tunnel, status, _ = pending.result(20)
+        self.assertEqual(status, 200)
+        self.assertTrue(self.background.call(lambda: held.opened[0].is_closing()), "the direct stream was closed unused")
+        tunnel.sendall(b"GET /old-exit HTTP/1.1\r\nHost: shop.example\r\n\r\n")
+        self.assertIn(b"site saw GET /old-exit", tunnel.recv(65536))
+        self.assertEqual(upstream.targets, [f"shop.example:{self.site.port}"], "it went through the proxy")
+        outcome = self.background.call(lambda: instance.control("outcome", {"host": "shop.example"}))["outcome"]
+        self.assertEqual((outcome["kind"], outcome["id"]), ("proxy", "named"))
+
+    def test_a_plain_request_is_held_to_the_same_rule(self) -> None:
+        upstream = self.fake("http")
+        self.write_plan(entry("named", upstream))
+        instance, port = self.forwarder()
+        held = self.held_network(instance)
+        pending = self.in_background(lambda: self.plain(port, f"http://shop.example:{self.site.port}/page"))
+        self.assertTrue(held.reached.wait(10))
+        self.background.call(lambda: instance.control("route", {"host": "shop.example", "choice": {"kind": "proxy", "ref": "named"}}))
+        self.background.call(held.release.set)
+        status, data, _ = pending.result(20)
+        self.assertEqual(status, 200)
+        self.assertIn(b"proxy forwarded GET", data)
+        self.assertEqual(self.site.lines, [], "the site never saw it directly")
+
+    def test_a_connect_through_a_proxy_when_the_route_moves_to_direct(self) -> None:
+        upstream = self.fake("http")
+        self.write_plan(entry("kz", upstream, hints=(".kz",)))
+        instance, port = self.forwarder()
+        held = self.held_network(instance)
+        pending = self.in_background(lambda: self.connect(port, f"shop.kz:{self.site.port}"))
+        self.assertTrue(held.reached.wait(10))
+        self.background.call(lambda: instance.control("route", {"host": "shop.kz", "choice": {"kind": "direct"}}))
+        self.background.call(held.release.set)
+        tunnel, status, _ = pending.result(20)
+        self.assertEqual(status, 200)
+        self.assertTrue(self.background.call(lambda: held.opened[0].is_closing()))
+        tunnel.sendall(b"GET /now-direct HTTP/1.1\r\nHost: shop.kz\r\n\r\n")
+        self.assertIn(b"site saw GET /now-direct", tunnel.recv(65536))
+        outcome = self.background.call(lambda: instance.control("outcome", {"host": "shop.kz"}))["outcome"]
+        self.assertEqual(outcome["kind"], "direct")
+
+    def test_a_plan_that_changes_mid_open_is_held_to_it_too(self) -> None:
+        upstream = self.fake("socks5")
+        self.write_plan(entry("es", upstream, hints=(".es",)))
+        instance, port = self.forwarder()
+        held = self.held_network(instance)
+        pending = self.in_background(lambda: self.connect(port, f"shop.kz:{self.site.port}"))
+        self.assertTrue(held.reached.wait(10))
+        self.write_plan(entry("kz", upstream, hints=(".kz",)))
+        self.background.call(held.release.set)
+        _, status, _ = pending.result(20)
+        self.assertEqual(status, 200)
+        self.assertEqual(upstream.targets, [f"shop.kz:{self.site.port}"])
+        self.assertTrue(self.background.call(lambda: held.opened[0].is_closing()))
+
+    def test_a_second_change_during_the_retry_fails_with_a_stable_code_and_sends_nothing(self) -> None:
+        upstream = self.fake("http")
+        self.write_plan(entry("named", upstream))
+        instance, port = self.forwarder()
+        held = self.held_network(instance)
+        held.hold = 2
+        pending = self.in_background(lambda: self.connect(port, f"shop.example:{self.site.port}"))
+        self.assertTrue(held.reached.wait(10))
+        self.background.call(lambda: instance.control("route", {"host": "shop.example", "choice": {"kind": "proxy", "ref": "named"}}))
+
+        async def twice() -> None:
+            # The first stream is rejected, the retry opens under the named proxy and holds; then the route moves again.
+            held.release.set()
+            await asyncio.sleep(0)
+            held.release.clear()
+            for _ in range(200):
+                if len(held.opened) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            instance.control("route", {"host": "shop.example", "choice": {"kind": "direct"}})
+            held.release.set()
+
+        self.background.run(twice())
+        tunnel, status, head = pending.result(20)
+        self.assertEqual(status, 502)
+        self.assertIn(b"X-Aiqsa-Proxy-Code: proxy_route_changed", head)
+        self.assertEqual(self.site.lines, [])
+        self.assertIsNotNone(tunnel)
+
+
 class Plain(Harness):
     def test_through_an_http_proxy_in_absolute_form_with_its_credentials(self) -> None:
         upstream = self.fake("http")
@@ -684,20 +816,52 @@ class PlanChanges(Harness):
         kept.sendall(b"GET /kept HTTP/1.1\r\nHost: b.es\r\n\r\n")
         self.assertIn(b"site saw GET /kept", kept.recv(65536))
 
-    def test_no_plan_is_direct_and_an_unreadable_plan_is_a_visible_failure(self) -> None:
+    def test_only_an_explicit_empty_plan_means_none_and_a_gap_never_goes_direct(self) -> None:
         upstream = self.fake("http")
         self.write_plan(entry("kz", upstream, hints=(".kz",)))
         _, port = self.forwarder()
         self.through(port, "a.kz")
-        self.plan_path.unlink()
-        self.through(port, "b.kz")
-        self.assertEqual(len(upstream.targets), 1)
-        self.plan_path.write_text("{not json", "utf-8")
         connections = self.site.connections
+        # A plan expected and gone, then one that cannot be read: a hinted site and any other are refused alike.
+        self.plan_path.unlink()
+        for target in (f"b.kz:{self.site.port}", f"c.example:{self.site.port}"):
+            _, status, head = self.connect(port, target)
+            self.assertEqual(status, 502)
+            self.assertIn(b"proxy_unavailable", head)
+        self.plan_path.write_text("{not json", "utf-8")
         _, status, head = self.connect(port, f"c.example:{self.site.port}")
         self.assertEqual(status, 502)
         self.assertIn(b"proxy_unavailable", head)
-        self.assertEqual(self.site.connections, connections)
+        self.assertEqual(self.site.connections, connections, "nothing connected directly")
+        # The plan restored: the hint holds again, with no direct tunnel left behind.
+        self.write_plan(entry("kz", upstream, hints=(".kz",)))
+        self.through(port, "b.kz")
+        self.assertEqual(upstream.targets[-1].split(":")[0], "b.kz")
+        # The owner dropped every proxy: an explicit empty plan is the only thing that opens the way direct.
+        self.write_plan()
+        targets = len(upstream.targets)
+        self.through(port, "c.kz")
+        self.assertEqual(len(upstream.targets), targets)
+
+    def test_a_direct_tunnel_closes_when_a_new_plan_sends_its_site_through_a_proxy(self) -> None:
+        upstream = self.fake("socks5")
+        self.write_plan(entry("es", upstream, hints=(".es",)))
+        _, port = self.forwarder()
+        needed, status, _ = self.connect(port, f"shop.kz:{self.site.port}")
+        self.assertEqual((status, upstream.targets), (200, []))
+        kept, _, _ = self.connect(port, f"other.example:{self.site.port}")
+        command, _, _ = self.connect(port, f"cmd.kz:{self.site.port}", route="direct")
+        self.write_plan(entry("es", upstream, hints=(".es",)), entry("kz", upstream, hints=(".kz",)))
+        self.through(port, "www.shop.kz")
+        needed.settimeout(5)
+        try:
+            self.assertEqual(needed.recv(16), b"")
+        except ConnectionResetError:
+            pass
+        # A site the plan does not touch, and a command that said direct itself, keep theirs.
+        for tunnel, path in ((kept, b"/kept"), (command, b"/command")):
+            tunnel.sendall(b"GET " + path + b" HTTP/1.1\r\nHost: x\r\n\r\n")
+            self.assertIn(b"site saw GET " + path, tunnel.recv(65536))
 
     def test_where_sites_stay_survives_a_vm_stop_and_failures_do_not(self) -> None:
         first, second = self.fake("http"), self.fake("http")
@@ -736,10 +900,11 @@ class PlanFile(unittest.TestCase):
 
     def test_shapes_that_cannot_be_trusted_are_refused(self) -> None:
         good = entry("one", hints=(".kz",))
-        for broken in ("{", "[]", json.dumps({"version": 2, "proxies": []}), json.dumps({"version": 1, "proxies": [{**good, "port": 0}]}),
-                       json.dumps({"version": 1, "proxies": [{**good, "port": True}]}), json.dumps({"version": 1, "proxies": [{**good, "protocol": "ftp"}]}),
-                       json.dumps({"version": 1, "proxies": [{**good, "domainHints": ".kz"}]}), json.dumps({"version": 1, "proxies": [{**good, "available": "yes"}]}),
-                       json.dumps({"version": 1, "proxies": [good, good]})):
+        for broken in ("{", "[]", json.dumps({"version": 1, "proxies": []}), json.dumps({"version": 1, "generation": "1", "proxies": []}),
+                       json.dumps({"version": 1, "generation": True, "proxies": []}), json.dumps({"version": 2, "proxies": []}), json.dumps({"version": 1, "generation": 1, "proxies": [{**good, "port": 0}]}),
+                       json.dumps({"version": 1, "generation": 1, "proxies": [{**good, "port": True}]}), json.dumps({"version": 1, "generation": 1, "proxies": [{**good, "protocol": "ftp"}]}),
+                       json.dumps({"version": 1, "generation": 1, "proxies": [{**good, "domainHints": ".kz"}]}), json.dumps({"version": 1, "generation": 1, "proxies": [{**good, "available": "yes"}]}),
+                       json.dumps({"version": 1, "generation": 1, "proxies": [good, good]})):
             with self.subTest(broken[:60]):
                 self.path.write_text(broken, "utf-8")
                 with self.assertRaises(_plan.PlanInvalid):
@@ -748,13 +913,13 @@ class PlanFile(unittest.TestCase):
     def test_no_file_is_no_plan_and_a_link_is_refused(self) -> None:
         self.assertIsNone(_plan.load(self.path))
         target = Path(self.directory) / "elsewhere.json"
-        target.write_text(json.dumps({"version": 1, "proxies": []}), "utf-8")
+        target.write_text(json.dumps({"version": 1, "generation": 1, "proxies": []}), "utf-8")
         self.path.symlink_to(target)
         with self.assertRaises(_plan.PlanInvalid):
             _plan.load(self.path)
 
     def test_what_may_be_listed_holds_no_credential(self) -> None:
-        self.path.write_text(json.dumps({"version": 1, "proxies": [entry("one", hints=(".kz",))]}), "utf-8")
+        self.path.write_text(json.dumps({"version": 1, "generation": 1, "proxies": [entry("one", hints=(".kz",))]}), "utf-8")
         plan = _plan.load(self.path)
         assert plan is not None
         self.assertNotIn(PASSWORD, json.dumps(plan.public()))
@@ -788,7 +953,7 @@ class RealProcess(Harness):
     def deliver(self, *entries: Dict[str, Any]) -> None:
         path = _paths.proxy_plan_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"version": 1, "proxies": list(entries)}), "utf-8")
+        path.write_text(json.dumps({"version": 1, "generation": 1, "proxies": list(entries)}), "utf-8")
 
     def test_it_binds_loopback_only_keeps_no_secret_anywhere_and_restarts_on_its_port(self) -> None:
         self.assertFalse(client.has_plan())
@@ -821,6 +986,17 @@ class RealProcess(Harness):
             except ProcessLookupError:
                 break
         self.assertEqual(client.ensure(), port)
+
+    def test_an_empty_plan_or_none_wants_no_forwarder_and_a_damaged_one_does(self) -> None:
+        self.assertFalse(client.has_plan())
+        self.deliver()
+        self.assertFalse(client.has_plan())
+        self.assertIsNone(client.load_plan())
+        self.assertFalse(_paths.proxy_run_dir().exists())
+        _paths.proxy_plan_path().write_text("{not json", "utf-8")
+        self.assertTrue(client.has_plan())
+        with self.assertRaises(client.ProxyError):
+            client.load_plan()
 
     def test_a_command_gets_the_forwarder_in_every_common_variable_and_mcp_stays_off_it(self) -> None:
         self.deliver(entry("kz", port=dead_port(), hints=(".kz",)))
