@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SUBAGENT_FOLLOWUP_LIMITS } from "@/lib/contracts/subagents";
 import type { SubagentBackgroundStartInput, SubagentBinding, WorkspaceAttachments } from "@/lib/server/subagents/ports";
 import { FakeSubagentCallbackSink, FakeSubagentRunner, FakeWorkspaceAttachments, endedSubagentResult } from "@/tests/support/subagentPorts";
 import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
@@ -110,9 +111,9 @@ describe("background sub-agent runs", () => {
       threadId: "thread-researcher", chatId: "chat-1", parentRunId: "parent-run", parentToolCallId: "call-2", userId: "user-1" };
     expect(await control.deliver(message)).toEqual({ kind: "delivered", state: "running" });
     expect(await control.deliver(message)).toEqual({ kind: "delivered", state: "running" });
-    // The sub-agent reads it at its next round: the runner received it, and the mailbox records receipt.
+    // The sub-agent reads it at its next round: the runner received it, and only reading stamps it (`SubagentHost.mailbox`).
     expect(runner!.turns.get(turnId)!.messages).toEqual([message.message]);
-    expect(store.turns[0]!.mailbox).toEqual([{ delivered: true, nonce: "call-2", text: "Also check prices" }]);
+    expect(store.turns[0]!.mailbox).toEqual([{ delivered: false, nonce: "call-2", text: "Also check prices" }]);
     for (let index = 1; index < 32; index += 1) await control.deliver({ ...message, message: { ...message.message, nonce: `n-${index}` } });
     await expect(control.deliver({ ...message, message: { ...message.message, nonce: "n-33" } })).rejects.toBeInstanceOf(SubagentMailboxFullError);
     runner!.finish(turnId, endedSubagentResult("researcher"));
@@ -279,6 +280,69 @@ describe("background sub-agent runs", () => {
     await vi.waitFor(() => expect(localSubagentTurnIds()).not.toContain(turnId));
     expect(await inner.attached({ chatId: "chat-1", userId: "user-1" })).toEqual([]);
     expect(runner.turns.size).toBe(0);
+  });
+
+  describe("what one agent writes another", () => {
+    const send = { chatId: "chat-1", from: "scout", nonce: "m-1", parentRunId: "parent-run", text: "It costs 42", to: "researcher", userId: "user-1" };
+
+    it("reaches a running turn's mailbox, foreground or background, and a wait hears of it at once", async () => {
+      const { control, runner, store } = setup();
+      const started = await control.start(startInput("researcher"));
+      const turnId = started.kind === "started" ? started.turnId : "";
+      await vi.waitFor(() => expect(runner!.turns.get(turnId)).toBeDefined());
+      expect(await control.send(send)).toEqual({ kind: "delivered" });
+      expect(runner!.turns.get(turnId)!.messages).toEqual([{ from: "scout", nonce: "m-1", origin: "subagent_message", text: "It costs 42" }]);
+      expect(store.turns[0]!.mailbox).toEqual([{ delivered: false, from: "scout", nonce: "m-1", origin: "subagent_message", text: "It costs 42" }]);
+
+      store.turns.push({ ...store.turns[0]!, mailbox: [], mode: "foreground", name: "front", runActive: false, runId: null, threadId: "thread-front",
+        turnId: "turn-front" });
+      await runner!.start({ ...runner!.turns.get(turnId)!.input, name: "front", threadId: "thread-front", turnId: "turn-front" });
+      expect(await control.send({ ...send, nonce: "m-2", to: "front" })).toEqual({ kind: "delivered" });
+      expect(store.turns[1]!.mailbox).toMatchObject([{ from: "scout", nonce: "m-2" }]);
+      await control.stopAll({ chatId: "chat-1", userId: "user-1" });
+    });
+
+    it("stops a ping-pong at its bound with a visible code, leaving the main agent's messages their own room", async () => {
+      const { control, runner, store } = setup();
+      const started = await control.start(startInput("researcher"));
+      const turnId = started.kind === "started" ? started.turnId : "";
+      await vi.waitFor(() => expect(runner!.turns.get(turnId)).toBeDefined());
+      for (let index = 0; index < SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn; index += 1) {
+        expect(await control.send({ ...send, nonce: `m-${index}` })).toEqual({ kind: "delivered" });
+      }
+      expect(await control.send({ ...send, nonce: "one-more" })).toEqual({ code: "subagent_message_limit_reached", kind: "refused" });
+      expect(store.turns[0]!.mailbox).toHaveLength(SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn);
+      expect(await control.deliver({ chatId: "chat-1", message: { nonce: "main", origin: "main_agent", text: "Hold on" }, name: "researcher",
+        parentRunId: "parent-run", parentToolCallId: "c", threadId: "thread-researcher", userId: "user-1" })).toEqual({ kind: "delivered", state: "running" });
+      await control.stopAll({ chatId: "chat-1", userId: "user-1" });
+    });
+
+    it("refuses a name it cannot reach, and one that ended says how", async () => {
+      const { control, runner } = setup();
+      expect(await control.send({ ...send, to: "nobody" })).toEqual({ code: "subagent_not_found", kind: "refused" });
+      const started = await control.start(startInput("researcher"));
+      const turnId = started.kind === "started" ? started.turnId : "";
+      await vi.waitFor(() => expect(runner!.turns.get(turnId)).toBeDefined());
+      runner!.finish(turnId, endedSubagentResult("researcher"));
+      await vi.waitFor(async () => expect(await control.send(send)).toEqual({ code: "subagent_not_active", kind: "refused", state: "done" }));
+    });
+
+    it("goes into the main agent's running answer, and refuses when none can read it", async () => {
+      const { control, store } = setup();
+      const main = { ...send, to: "main" };
+      expect(await control.send(main)).toEqual({ code: "subagent_not_active", kind: "refused" });
+      store.mainRuns.push({ callbacks: [], chatId: "chat-1", open: true, runId: "main-1", status: "streaming" });
+      expect(await control.send(main)).toEqual({ kind: "delivered" });
+      expect(store.mainMessages).toEqual([{ from: "scout", nonce: "m-1", text: "It costs 42" }]);
+      store.mainMessages.push(...Array.from({ length: SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun }, () => ({ from: "scout", nonce: "x", text: "x" })));
+      expect(await control.send({ ...main, nonce: "m-2" })).toEqual({ code: "subagent_message_limit_reached", kind: "refused" });
+    });
+
+    it("sends an asked question out without holding the asker", () => {
+      const { control, sink } = setup();
+      control.questionAsked({ chatId: "chat-1", userId: "user-1" });
+      expect(sink.flushes).toEqual([{ chatId: "chat-1", userId: "user-1" }]);
+    });
   });
 
   it("never stamps a message delivered that no execution here will read", async () => {

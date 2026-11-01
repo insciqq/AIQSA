@@ -2,8 +2,10 @@ import type {
   ActiveSubagentState,
   EndedSubagentCallResult,
   SUBAGENT_ERROR_CODES,
+  SubagentAgentListing,
   SubagentBindingSource,
   SubagentErrorCode,
+  SubagentThreadState,
   SubagentToolGroup,
   SubagentTurnMode
 } from "../../contracts/subagents";
@@ -96,11 +98,16 @@ export type SubagentTurnInput = SubagentChatScope & Readonly<{
 
 export type SubagentTurnHandle = Readonly<{ turnId: string }>;
 
-/** A message for a running turn: from the main agent (its mailbox) or a user follow-up the parent received while it waited. */
+/**
+ * A message for a running turn's mailbox: from the main agent, from another sub-agent, or a user follow-up the parent
+ * received while it waited. Only `user` is the user's speech. Foreground and background turns take the same messages.
+ */
 export type SubagentMessage = Readonly<{
+  /** The writer's name, for `subagent_message`. */
+  from?: string;
   /** Idempotency key: the sending tool call's id, or the follow-up's. */
   nonce: string;
-  origin: "main_agent" | "user";
+  origin: "main_agent" | "subagent_message" | "user";
   text: string;
 }>;
 
@@ -253,6 +260,40 @@ export type SubagentCallbackDisposition =
   /** Its branch is not the active one: recorded there, owed, and it wakes nothing. */
   | "inactive_branch";
 
+/** What one agent writes another: `from` and `to` are names, so a child of a sub-agent writes and is written to the same way. */
+export type SubagentSendInput = SubagentChatScope & Readonly<{
+  /** The writer's own name, as its row and the reader see it. */
+  from: string;
+  /** The sending call's id, so a repeat finds its row. */
+  nonce: string;
+  parentRunId: string;
+  text: string;
+  /** A name on the caller's branch, or `MAIN_AGENT_NAME`. */
+  to: string;
+}>;
+
+export type SubagentSendOutcome =
+  | Readonly<{ kind: "delivered" }>
+  /**
+   * `subagent_not_found`, `subagent_not_active` (with how it ended, for a sub-agent), or
+   * `subagent_message_limit_reached` at the recipient's bound.
+   */
+  | Readonly<{ code: SubagentErrorCode; kind: "refused"; state?: SubagentThreadState }>;
+
+/**
+ * What the agents of a chat use to see and reach each other (operator decisions 2026-10-31). Every call names the
+ * chat and owner, and `parentRunId` places the caller on its branch: the main-agent run that started it, or its own
+ * for the main agent. A name resolves to the thread of that name there. A message is untrusted data whoever wrote it,
+ * and delivery proves receipt, not obedience.
+ */
+export interface SubagentMessaging {
+  /** The agents on the caller's branch; null when the chat is not the caller's to read. */
+  agents(input: SubagentChatScope & Readonly<{ parentRunId: string }>): Promise<SubagentAgentListing | null>;
+  send(input: SubagentSendInput): Promise<SubagentSendOutcome>;
+  /** A turn now waits for its parent's answer: its question goes out, into the running answer or waking the main agent. */
+  questionAsked(scope: SubagentChatScope): void;
+}
+
 /**
  * Takes the callbacks of background turns that ended (done, partial, blocked,
  * needs_approval, failed, stopped, interrupted). A callback stays owed until
@@ -281,10 +322,14 @@ export type SubagentCallbackDisposition =
  *   cut mark, never refused; a wake-up turn shares a fixed room among its
  *   callbacks the same way. The whole result stays on the turn and in the
  *   thread view.
+ * - A question: a background turn waiting for an answer owes its question the
+ *   same way, under the same claim, until it resumes (`SUBAGENT_WAIT_REASONS`).
  * Owner: `20261029221046686-sub-agent-background-runs`.
  */
 export interface SubagentCallbackSink {
   deliver(callback: SubagentCallback): Promise<SubagentCallbackDisposition>;
+  /** Delivers the chat's owed callbacks and questions now, coalesced with others close together. */
+  flush(scope: SubagentChatScope): Promise<unknown>;
 }
 
 /** Operations of a shared Workspace session that stay exclusive while several runs are attached. */

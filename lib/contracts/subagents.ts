@@ -1,4 +1,4 @@
-import { RUN_FOLLOWUP_MAX_CHARS } from "./runFollowups";
+import { RUN_FOLLOWUP_MAX_CHARS, RUN_FOLLOWUP_MAX_COUNT } from "./runFollowups";
 import { WORKSPACE_ACTIVITY_PATH_MAX_CHARS } from "./workspace";
 
 /**
@@ -41,6 +41,8 @@ export const SUBAGENT_LIMITS = Object.freeze({
   nameCharacters: 48,
   /** A brief, or a message to a running sub-agent, which rides on the follow-up store. */
   messageCharacters: RUN_FOLLOWUP_MAX_CHARS,
+  /** What one agent writes another carries a fact or a question: results go through files and reports, and it rides on a running answer's reserve. */
+  agentMessageCharacters: 4_000,
   /** Input model selector, matching the admitted model catalog identifiers. */
   modelCharacters: 256,
   /** Input effort selector, matching the model policy catalog. */
@@ -78,7 +80,7 @@ export function normalizeSubagentName(value: unknown): string | null {
 /** The states of a turn and so of a thread on a branch (`SubagentTurnState`). */
 export const SUBAGENT_THREAD_STATES = ["running", "waiting", "done", "stopped", "failed", "interrupted"] as const;
 export type SubagentThreadState = (typeof SUBAGENT_THREAD_STATES)[number];
-/** `waiting`: still active, but waiting for the user (a browser handoff it asked for). */
+/** `waiting`: still active, but waiting for the user (a browser handoff it asked for) or for its parent's answer (`SUBAGENT_WAIT_REASONS`). */
 export const ACTIVE_SUBAGENT_STATES = ["running", "waiting"] as const satisfies readonly SubagentThreadState[];
 export type ActiveSubagentState = (typeof ACTIVE_SUBAGENT_STATES)[number];
 export type EndedSubagentState = Exclude<SubagentThreadState, ActiveSubagentState>;
@@ -123,7 +125,7 @@ export function isSubagentBindingSource(value: unknown): value is SubagentBindin
 }
 
 /** Who wrote a follow-up (`RunFollowupOrigin`); only `user` follow-ups are the user's clarifications. */
-export const RUN_FOLLOWUP_ORIGINS = ["user", "main_agent", "subagent_callback"] as const;
+export const RUN_FOLLOWUP_ORIGINS = ["user", "main_agent", "subagent_callback", "subagent_message", "subagent_question"] as const;
 export type RunFollowupOrigin = (typeof RUN_FOLLOWUP_ORIGINS)[number];
 
 /**
@@ -135,11 +137,28 @@ export type RunFollowupOrigin = (typeof RUN_FOLLOWUP_ORIGINS)[number];
  * `read_tool_result` can read; the full report also stays on the turn.
  */
 export const SUBAGENT_FOLLOWUP_LIMITS = Object.freeze({
-  /** `main_agent` messages one background sub-agent run takes. */
+  /** `main_agent` messages one sub-agent turn takes. */
   messagesPerRun: 32,
-  /** `subagent_callback` follow-ups one main-agent run takes; later callbacks stay owed for its terminal flush. */
+  /**
+   * What other sub-agents write one turn, counted apart so a neighbour never uses up the main agent's. Well past any
+   * exchange of facts and small enough that two agents answering each other stop after a few paid rounds.
+   */
+  agentMessagesPerTurn: 16,
+  /** Questions one turn asks: each may wake the main agent, a paid turn, so one that keeps asking is told to report. */
+  questionsPerTurn: 8,
+  /**
+   * Follow-ups from sub-agents one main-agent run takes, callbacks, messages and questions together; later callbacks
+   * and questions stay owed for its terminal flush, and a later message is refused visibly.
+   */
   callbacksPerRun: 64
 });
+
+/**
+ * The highest ordinal of a run's own follow-ups: the user's and those from sub-agents, each within its bound, which
+ * move the revision the answer closes at. Above it sit the mailbox rows of the turns the run hosts
+ * (`RunFollowup.subagentTurnId`): they never move that revision, and only their turn reads them.
+ */
+export const RUN_FOLLOWUP_REVISION_MAX = RUN_FOLLOWUP_MAX_COUNT + SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun;
 
 /**
  * The nonce of a turn's `subagent_callback` follow-up (`RunFollowup.nonce`):
@@ -151,11 +170,33 @@ export function subagentCallbackNonce(turnId: string): string {
   return `subagent-callback:${turnId}`;
 }
 
+/** The nonce of a turn's question delivered into a main-agent answer: one per `ask_parent` call (`ModelRunToolCall.id`). */
+export function subagentQuestionNonce(callId: string): string {
+  return `subagent-question:${callId}`;
+}
+
+/** The nonce of a message one agent wrote another: one per sending call (`ModelRunToolCall.id`), so a repeat finds its row. */
+export function subagentMessageNonce(callId: string): string {
+  return `subagent-message:${callId}`;
+}
+
 /** The server-written user turn that wakes an idle main agent with sub-agent callbacks (`MessageSystemTurnKind`). */
 export const SUBAGENT_CALLBACK_TURN_KIND = "subagent_callback";
 
 /** The usage purpose of sub-agent model calls: personal, counted toward the user's allowance (`lib/domain/usagePurpose.ts`). */
 export const SUBAGENT_USAGE_PURPOSE = "subagent";
+
+/**
+ * The name every agent of a chat knows the main agent by: an address beside the sub-agents' names, which can never
+ * take it (`SUBAGENT_RESERVED_NAMES`). Names are unique among a branch's threads, so a child of a sub-agent is
+ * addressed the same way.
+ */
+export const MAIN_AGENT_NAME = "main";
+
+/** What every agent of a chat sees of the others, and what a sub-agent writes with (operator decisions 2026-10-31). */
+export const LIST_AGENTS_TOOL_NAME = "list_agents";
+export const SEND_AGENT_MESSAGE_TOOL_NAME = "send_agent_message";
+export const ASK_PARENT_TOOL_NAME = "ask_parent";
 
 /** The main agent's tools for sub-agents. None of them is ever offered to a sub-agent (no nesting, no resource changes). */
 export const CALL_SUBAGENT_TOOL_NAME = "call_subagent";
@@ -186,6 +227,10 @@ export const SUBAGENT_ERROR_CODES = Object.freeze({
   nameInvalid: "subagent_name_invalid",
   /** The message is empty, too long or not text. */
   messageInvalid: "subagent_message_invalid",
+  /** The recipient took as many messages as it may, or the turn asked as many questions as it may: the bound of a ping-pong. */
+  messageLimit: "subagent_message_limit_reached",
+  /** The addressee has ended or, for the main agent, runs no answer that can read it now. */
+  notActive: "subagent_not_active",
   /** Background mode is not offered in this run (Telegram turns, scheduled tasks). */
   backgroundUnavailable: "subagent_background_unavailable",
   /** Usage limits refused a background sub-agent run; nothing ran. */
@@ -217,7 +262,15 @@ export const SUBAGENT_BLOCKED_REASONS = Object.freeze({
   /** This Workspace's guest image has no per-agent browser tabs; only the main agent may browse until it is recreated. */
   browserUnavailable: "browser_unavailable",
   /** An irreversible website action or payment the user's own message did not ask for. */
-  actionNotAuthorized: "action_not_authorized"
+  actionNotAuthorized: "action_not_authorized",
+  /** A foreground turn's question: its parent, waiting inside its call, answers by continuing it by name. */
+  needsAnswer: "needs_answer"
+} as const);
+
+/** Why an active turn is `waiting`, beside the browser handoff that names none (`SubagentTurn.reasonCode`). */
+export const SUBAGENT_WAIT_REASONS = Object.freeze({
+  /** Its question to its parent: it resumes on the answer, and the main agent is woken for it if it has ended. */
+  answer: "waiting_for_answer"
 } as const);
 
 /** Why a turn ended as `stopped` or `interrupted` (`SubagentTurn.reasonCode`). */
@@ -348,6 +401,8 @@ export type SubagentCallResult =
       name: string;
       /** Only for `done`. */
       outcome?: SubagentOutcome;
+      /** A hand-back's question (`needs_answer`), kept whatever the report says. */
+      question?: string;
       /** A blocked outcome's reason, or why the turn failed, stopped or was interrupted. */
       reason?: string;
       report: string;
@@ -367,6 +422,44 @@ export type SubagentCallResult =
   | Readonly<{ kind: "delivered"; name: string; state: ActiveSubagentState }>;
 
 export type EndedSubagentCallResult = Extract<SubagentCallResult, { kind: "ended" }>;
+
+/**
+ * What `list_agents` shows of the agents of a branch: a glance that lets one agent see what another is doing, never
+ * its context. A report is its writer's own account and untrusted data. Each bound keeps the listing of a full chat
+ * readable at one step; the whole result of a background turn stays readable by `resultHandle`.
+ */
+export const SUBAGENT_LISTING_LIMITS = Object.freeze({
+  /** Agents one listing shows, active ones first: more than may run at once, with room for those that just ended. */
+  agents: 32,
+  briefCharacters: 400,
+  reportCharacters: 800,
+  /** The latest steps of one agent: enough to tell what it is on, far from its history. */
+  steps: 6,
+  stepSummaryCharacters: 160
+});
+
+/** One step of a listed agent: a stored step, or one still running. */
+export type SubagentAgentStep = Readonly<{ outcome: SubagentStep["outcome"] | "running"; summary: string; tool: string }>;
+
+export type SubagentAgentEntry = Readonly<{
+  brief?: string;
+  briefTruncated?: true;
+  /** Absent on the main agent. */
+  mode?: SubagentTurnMode;
+  name: string;
+  outcome?: SubagentOutcome;
+  /** Who started it, by the name it answers to; null on the main agent. */
+  parent: string | null;
+  reason?: string;
+  report?: string;
+  reportTruncated?: true;
+  resultHandle?: string;
+  /** `idle`: the main agent runs no answer now. */
+  state: SubagentThreadState | "idle";
+  steps: readonly SubagentAgentStep[];
+}>;
+
+export type SubagentAgentListing = Readonly<{ agents: readonly SubagentAgentEntry[]; truncated?: true }>;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -395,8 +488,8 @@ function decodeApproval(value: unknown): SubagentApprovalRequest | null {
   return { arguments: value.arguments, reason: value.reason, serverName: value.serverName, toolName: value.toolName };
 }
 
-const ENDED_KEYS = ["approvals", "files", "filesNotice", "kind", "model", "name", "outcome", "reason", "report", "reportTruncated", "state",
-  "steps", "stepsTruncated", "resultHandle", "resultUnavailableReason"];
+const ENDED_KEYS = ["approvals", "files", "filesNotice", "kind", "model", "name", "outcome", "question", "reason", "report", "reportTruncated",
+  "state", "steps", "stepsTruncated", "resultHandle", "resultUnavailableReason"];
 
 /** A `call_subagent` or `stop_subagent` result, or a stored turn result; null when it is not one exactly. */
 export function decodeSubagentCallResult(value: unknown): SubagentCallResult | null {
@@ -419,6 +512,7 @@ export function decodeSubagentCallResult(value: unknown): SubagentCallResult | n
   if (value.reason !== undefined && !isSubagentCode(value.reason)) return null;
   if ((value.outcome === "blocked" || state === "failed") && value.reason === undefined) return null;
   if (typeof value.report !== "string") return null;
+  if (value.question !== undefined && !boundedText(value.question, SUBAGENT_LIMITS.agentMessageCharacters)) return null;
   if (value.filesNotice !== undefined && value.filesNotice !== SUBAGENT_FILES_TRUNCATED_NOTICE) return null;
   if (value.resultHandle !== undefined && (typeof value.resultHandle !== "string" || !/^tor1_[a-f0-9]{32}$/u.test(value.resultHandle))) return null;
   if (value.resultUnavailableReason !== undefined && !isSubagentCode(value.resultUnavailableReason)) return null;
@@ -444,6 +538,7 @@ export function decodeSubagentCallResult(value: unknown): SubagentCallResult | n
     model: { effort: value.model.effort as string | null, id: value.model.id },
     name,
     ...(value.outcome !== undefined ? { outcome: value.outcome } : {}),
+    ...(typeof value.question === "string" ? { question: value.question } : {}),
     ...(value.reason !== undefined ? { reason: value.reason } : {}),
     report: value.report,
     ...(typeof value.resultHandle === "string" ? { resultHandle: value.resultHandle } : {}),

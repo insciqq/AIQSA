@@ -1,4 +1,5 @@
 import {
+  MAIN_AGENT_NAME,
   SUBAGENT_END_REASONS,
   SUBAGENT_ERROR_CODES,
   isActiveSubagentState,
@@ -18,7 +19,11 @@ import type {
   SubagentCallerScope,
   SubagentChatScope,
   SubagentDeliveryOutcome,
+  SubagentMessage,
+  SubagentMessaging,
   SubagentRunner,
+  SubagentSendInput,
+  SubagentSendOutcome,
   SubagentStopReason,
   SubagentTurnHandle,
   WorkspaceAttachments
@@ -43,13 +48,13 @@ export const SUBAGENT_BACKGROUND_TURN_MS = 60 * 60_000;
 const STOP_WAIT_MS = 20_000;
 
 /**
- * The thread's mailbox holds `SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun`
- * messages and the port has no refusal for more: `deliver` throws this, and
- * the engine's `call_subagent` handler returns it as the visible refusal
- * `code` (`subagent_message_invalid`), never a failed call.
+ * A turn's mailbox holds `SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun` messages
+ * from the main agent and the port has no refusal for more: `deliver` throws
+ * this, and the engine's `call_subagent` handler returns it as the visible
+ * refusal `code` (`subagent_message_limit_reached`), never a failed call.
  */
 export class SubagentMailboxFullError extends Error {
-  readonly code = SUBAGENT_ERROR_CODES.messageInvalid;
+  readonly code = SUBAGENT_ERROR_CODES.messageLimit;
 
   constructor() {
     super("subagent_mailbox_full");
@@ -84,7 +89,7 @@ const globalExecutions = globalThis as typeof globalThis & { [EXECUTIONS]?: Map<
 /** Process-wide, like the run controllers: Stop routes run in other route bundles than the run that started a turn. */
 const executions = globalExecutions[EXECUTIONS] ??= new Map<string, Execution>();
 
-export type SubagentBackgroundOperations = SubagentBackgroundControl & Readonly<{
+export type SubagentBackgroundOperations = SubagentBackgroundControl & Pick<SubagentMessaging, "questionAsked" | "send"> & Readonly<{
   /** The user's Stop on a thread (`user_stop`): its active turn, wherever it runs. Returns the turns that ended. */
   stopThread(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number>;
   /** "Stop all": every active turn of the chat, every branch (`stop_all`). */
@@ -349,6 +354,39 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     return ended.filter(Boolean).length;
   }
 
+  /**
+   * A message into a turn's mailbox, foreground or background, on record before anything else. Only reading it stamps it
+   * delivered (the runner does), so one whose turn never gets to read it stays unread for the thread's next turn, and an
+   * execution of this process hears of it at once, which is what ends a wait.
+   */
+  async function deliverToTurn(turn: SubagentTurnRecord, message: SubagentMessage & Readonly<{ origin: "main_agent" | "subagent_message" }>):
+    Promise<SubagentDeliveryOutcome> {
+    const stored = await deps.store.insertMailbox({ authorName: message.from ?? "Main agent", chatId: turn.chatId, nonce: message.nonce,
+      origin: message.origin, text: message.text, turnId: turn.turnId, userId: turn.userId });
+    if (stored === "full") throw new SubagentMailboxFullError();
+    if (stored === "closed") {
+      const current = await deps.store.findTurn({ chatId: turn.chatId, turnId: turn.turnId, userId: turn.userId });
+      return current?.result ? { kind: "ended", result: current.result } : { kind: "not_found" };
+    }
+    const outcome = await deps.runner?.deliver({ turnId: turn.turnId }, message);
+    return outcome && outcome.kind !== "not_found" ? outcome : { kind: "delivered", state: isActiveSubagentState(turn.state) ? turn.state : "running" };
+  }
+
+  async function sendToTurn(input: SubagentSendInput): Promise<SubagentSendOutcome> {
+    const turn = await deps.store.findThreadTurnOnBranch({ chatId: input.chatId, name: input.to, parentRunId: input.parentRunId, userId: input.userId });
+    if (!turn) return { code: SUBAGENT_ERROR_CODES.notFound, kind: "refused" };
+    if (!isActiveSubagentState(turn.state)) return { code: SUBAGENT_ERROR_CODES.notActive, kind: "refused", state: turn.state };
+    try {
+      const outcome = await deliverToTurn(turn, { from: input.from, nonce: input.nonce, origin: "subagent_message", text: input.text });
+      if (outcome.kind === "delivered") return { kind: "delivered" };
+      return outcome.kind === "ended" ? { code: SUBAGENT_ERROR_CODES.notActive, kind: "refused", state: outcome.result.state }
+        : { code: SUBAGENT_ERROR_CODES.notFound, kind: "refused" };
+    } catch (error) {
+      if (error instanceof SubagentMailboxFullError) return { code: error.code, kind: "refused" };
+      throw error;
+    }
+  }
+
   return Object.freeze({
     async availability(scope: SubagentCallerScope): Promise<SubagentBackgroundAvailability> {
       if (!deps.runner || !(await deps.store.callerAvailable(scope))) {
@@ -388,21 +426,23 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       if (!turn || turn.threadId !== input.threadId) return { kind: "not_found" };
       if (!isActiveSubagentState(turn.state)) return turn.result ? { kind: "ended", result: turn.result } : { kind: "not_found" };
       if (turn.mode !== "background" || !turn.runId) return { kind: "not_found" };
-      const stored = await deps.store.insertMailbox({ chatId: input.chatId, nonce: input.message.nonce, runId: turn.runId,
-        text: input.message.text, userId: input.userId });
-      if (stored === "full") throw new SubagentMailboxFullError();
-      if (stored === "closed") {
-        const current = await deps.store.findTurn({ chatId: input.chatId, turnId: turn.turnId, userId: input.userId });
-        return current?.result ? { kind: "ended", result: current.result } : { kind: "not_found" };
-      }
-      // On record in its mailbox but no execution of this process reads it (a restart cut it): accepted, never stamped
-      // delivered, so it stays undelivered once recovery ends the turn interrupted.
-      if (!deps.runner || !executions.has(turn.turnId)) return { kind: "delivered", state: turn.state };
-      const outcome = await deps.runner.deliver({ turnId: turn.turnId }, input.message);
-      if (outcome.kind === "delivered") {
-        await deps.store.markMailboxDelivered({ chatId: input.chatId, nonce: input.message.nonce, runId: turn.runId, userId: input.userId });
-      }
-      return outcome;
+      return deliverToTurn(turn, input.message);
+    },
+
+    async send(input: SubagentSendInput): Promise<SubagentSendOutcome> {
+      if (input.to !== MAIN_AGENT_NAME) return sendToTurn(input);
+      const outcome = await deps.store.messageMainAgent({ authorName: input.from, chatId: input.chatId, nonce: input.nonce,
+        parentRunId: input.parentRunId, text: input.text, userId: input.userId });
+      if (outcome === "delivered") return { kind: "delivered" };
+      return { code: outcome === "full" ? SUBAGENT_ERROR_CODES.messageLimit : SUBAGENT_ERROR_CODES.notActive, kind: "refused" };
+    },
+
+    questionAsked(scope: SubagentChatScope): void {
+      // Never held by the wake-up it may admit: the asker is already waiting, and a failure leaves it owed for recovery's flush.
+      void deps.callbacks.flush(scope).catch((error: unknown) => {
+        logEvent("run_recovery", { action: "retry", code: "subagent_callback_flush_failed", error, outcome: "failed", stage: "dispatch",
+          subsystem: "run_recovery" });
+      });
     },
 
     async stop(input: SubagentCallerScope & Readonly<{ name: string }>): Promise<SubagentBackgroundStopResult> {

@@ -12,7 +12,9 @@ import {
   normalizedEndResult,
   type BackgroundOrphan,
   type CallbackIntoRunOutcome,
+  type MailboxInsertInput,
   type MailboxInsertOutcome,
+  type MainAgentMessageOutcome,
   type OwedCallbackChat,
   type OwedCallbacks,
   type SubagentAdmission,
@@ -21,7 +23,7 @@ import {
   type SubagentSettlement,
   type SubagentTurnRecord
 } from "@/lib/server/runs/subagentBackground/store";
-import { renderCallbackFollowup } from "@/lib/server/runs/subagentBackground/render";
+import { renderCallbackFollowup, renderQuestionFollowup } from "@/lib/server/runs/subagentBackground/render";
 
 /**
  * An in-memory `SubagentBackgroundStore` for the focused tests of the
@@ -32,12 +34,14 @@ export type MemoryTurn = {
   callbackRunId: string | null;
   chatId: string;
   endedAt: number | null;
-  mailbox: Array<{ delivered: boolean; nonce: string; text: string }>;
+  mailbox: Array<{ delivered: boolean; from?: string; nonce: string; origin?: "subagent_message"; text: string }>;
   mode: SubagentTurnMode;
   modelId: string;
   name: string;
   parentAnswerId: string;
   parentRunId: string;
+  /** While it waits for an answer: what its `ask_parent` call asks. */
+  question?: string;
   result: EndedSubagentCallResult | null;
   runId: string | null;
   runActive: boolean;
@@ -135,30 +139,55 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     return input.messageId === "answer-1" ? ["parent-run"] : [];
   }
 
-  async insertMailbox(input: SubagentChatScope & Readonly<{ nonce: string; runId: string; text: string }>): Promise<MailboxInsertOutcome> {
-    const turn = this.turns.find((candidate) => candidate.runId === input.runId);
-    if (!turn?.runActive) return "closed";
+  async insertMailbox(input: MailboxInsertInput): Promise<MailboxInsertOutcome> {
+    const turn = this.turns.find((candidate) => candidate.turnId === input.turnId);
+    if (!turn?.runActive && turn?.mode !== "foreground") return "closed";
     if (turn.mailbox.some((entry) => entry.nonce === input.nonce)) return "exists";
-    if (turn.mailbox.length >= SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun) return "full";
-    turn.mailbox.push({ delivered: false, nonce: input.nonce, text: input.text });
+    const sent = turn.mailbox.filter((entry) => (entry.origin ?? "main_agent") === input.origin).length;
+    if (sent >= (input.origin === "main_agent" ? SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun : SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn)) return "full";
+    turn.mailbox.push({ delivered: false, nonce: input.nonce, ...(input.origin === "main_agent" ? {} : { from: input.authorName, origin: input.origin }),
+      text: input.text });
     return "inserted";
   }
 
-  async markMailboxDelivered(input: SubagentChatScope & Readonly<{ nonce: string; runId: string }>): Promise<void> {
-    const entry = this.turns.find((turn) => turn.runId === input.runId)?.mailbox.find((candidate) => candidate.nonce === input.nonce);
-    if (entry) entry.delivered = true;
+  /** What a sub-agent wrote the main agent's running answer. */
+  readonly mainMessages: Array<{ from: string; nonce: string; text: string }> = [];
+
+  async messageMainAgent(input: SubagentChatScope & Readonly<{ authorName: string; nonce: string; parentRunId: string; text: string }>): Promise<MainAgentMessageOutcome> {
+    const run = this.mainRuns.find((candidate) => candidate.chatId === input.chatId && candidate.status === "streaming");
+    if (!run?.open) return "closed";
+    if (this.mainMessages.length >= SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun) return "full";
+    this.mainMessages.push({ from: input.authorName, nonce: input.nonce, text: input.text });
+    return "delivered";
+  }
+
+  /** Stranded messages of a chat that the next answer takes, by id, and those taken. */
+  readonly strandedMessages: Array<{ chatId: string; id: string }> = [];
+  readonly movedMessages: Array<{ followupId: string; runId: string }> = [];
+
+  async moveMessageIntoRun(input: SubagentChatScope & Readonly<{ followupId: string; runId: string }>): Promise<boolean> {
+    const run = this.mainRuns.find((candidate) => candidate.runId === input.runId);
+    if (!run?.open) return false;
+    this.movedMessages.push({ followupId: input.followupId, runId: input.runId });
+    return true;
   }
 
   async owedCallbacks(scope: SubagentChatScope): Promise<OwedCallbacks | null> {
     if (this.goneChats.has(scope.chatId)) return null;
     const owed = this.turns.filter((turn) => turn.chatId === scope.chatId && turn.mode === "background" && turn.endedAt !== null &&
       turn.callbackRunId === null).sort((left, right) => left.endedAt! - right.endedAt!);
+    const asking = this.turns.filter((turn) => turn.chatId === scope.chatId && turn.mode === "background" && turn.state === "waiting" &&
+      turn.callbackRunId === null && turn.question !== undefined);
     const main = this.mainRuns.find((run) => run.chatId === scope.chatId && run.status === "streaming");
+    const moved = new Set(this.movedMessages.map((message) => message.followupId));
     return {
-      activeBranch: owed.filter((turn) => !this.inactiveAnswers.has(turn.parentAnswerId))
+      activeBranch: [...owed.filter((turn) => !this.inactiveAnswers.has(turn.parentAnswerId))
         .map((turn) => ({ name: turn.name, result: turn.result!, turnId: turn.turnId })),
-      inactiveTurnIds: owed.filter((turn) => this.inactiveAnswers.has(turn.parentAnswerId)).map((turn) => turn.turnId),
-      mainRun: main ? { id: main.runId, status: main.status } : null
+      ...asking.filter((turn) => !this.inactiveAnswers.has(turn.parentAnswerId))
+        .map((turn) => ({ name: turn.name, question: turn.question!, turnId: turn.turnId }))],
+      inactiveTurnIds: [...owed, ...asking].filter((turn) => this.inactiveAnswers.has(turn.parentAnswerId)).map((turn) => turn.turnId),
+      mainRun: main ? { id: main.runId, status: main.status } : null,
+      strandedMessageIds: this.strandedMessages.filter((message) => message.chatId === scope.chatId && !moved.has(message.id)).map((message) => message.id)
     };
   }
 
@@ -166,6 +195,11 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     const run = this.mainRuns.find((candidate) => candidate.runId === input.runId);
     if (!run?.open) return "closed";
     const turn = this.turns.find((candidate) => candidate.turnId === input.turnId);
+    if (turn?.state === "waiting" && turn.question !== undefined && turn.callbackRunId === null) {
+      turn.callbackRunId = run.runId;
+      run.callbacks.push({ text: renderQuestionFollowup({ name: turn.name, question: turn.question }), turnId: input.turnId });
+      return "delivered";
+    }
     if (!turn?.result || turn.callbackRunId !== null) return "claimed";
     turn.callbackRunId = run.runId;
     run.callbacks.push({ text: renderCallbackFollowup({ name: turn.name, result: turn.result, turnId: turn.turnId }, { tokens: 2_048 }),
