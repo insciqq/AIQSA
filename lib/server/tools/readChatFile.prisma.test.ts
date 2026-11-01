@@ -31,9 +31,9 @@ describe("chat file read authority in PostgreSQL", () => {
       expect(await reader.read({ ...scope, userId: users[1]! })).toEqual(missing);
       expect(await reader.read({ ...scope, userId: users[1]!, chatId: chats[1]! })).toEqual(missing);
       expect(await reader.read({ ...scope, chatId: otherChat.id })).toEqual(missing);
-      await prisma.attachment.update({ where: { id: attachment.id }, data: { savedAt: new Date() } });
+      await prisma.attachment.update({ where: { id: attachment.id }, data: { chatId: null, savedAt: new Date() } });
       expect(await reader.read(scope)).toEqual(missing);
-      await prisma.attachment.update({ where: { id: attachment.id }, data: { savedAt: null } });
+      await prisma.attachment.update({ where: { id: attachment.id }, data: { chatId: chats[0]!, savedAt: null } });
       await prisma.chat.update({ where: { id: chats[0]! }, data: { permanentDeletionAt: new Date() } });
       expect(await reader.read(scope)).toEqual(missing);
     } finally {
