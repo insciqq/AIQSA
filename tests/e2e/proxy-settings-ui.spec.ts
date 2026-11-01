@@ -56,11 +56,10 @@ test.beforeAll(async ({ browser, baseURL }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill(LOCAL_RESTRICTED_MEMBER.email);
   await page.getByLabel("Password", { exact: true }).fill(LOCAL_RESTRICTED_MEMBER.password);
-  // A first page on a dev server may take the click before it hydrates: the sign-in is tried until it lands.
-  await expect(async () => {
-    await page.getByRole("button", { name: "Sign in" }).click();
-    await expect(page).toHaveURL("/", { timeout: 10_000 });
-  }).toPass({ timeout: 120_000 });
+  // Only the session is needed here: the first page after sign-in can take a dev server longer than any navigation wait.
+  const signedIn = page.waitForResponse((response) => response.url().endsWith("/api/auth/login") && response.ok(), { timeout: 120_000 });
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await signedIn;
   sessions = { administrator: await administrator.storageState(), personal: await member.storageState() };
   await administrator.close();
   await member.close();
