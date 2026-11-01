@@ -245,6 +245,7 @@ const backgroundControl = (extra: Partial<NonNullable<SubagentChildHost["backgro
   start: vi.fn(async (input: Parameters<NonNullable<SubagentChildHost["background"]>["start"]>[0]) =>
     ({ kind: "started" as const, name: input.name, state: "running" as const, turnId: `bg-${input.name}` })),
   stop: vi.fn(async () => ({ kind: "not_found" as const })),
+  reportsOnTheirWay: vi.fn(() => 0),
   stopChildren: vi.fn(async () => 0),
   ...extra
 }) satisfies NonNullable<SubagentChildHost["background"]>;
@@ -993,6 +994,20 @@ describe("a sub-agent's children", () => {
       { text: "Outcome: done\nUsed left's report." }], { children });
     const handle = await ctx.runner.start(ctx.input());
     await vi.waitFor(() => expect(children.store.activeChildren).toHaveBeenCalled());
+    expect(ctx.requests).toHaveLength(2);
+    await ctx.runner.deliver(handle, { from: "left", nonce: "subagent-callback:bg-left", origin: "subagent_callback", text: "[Sub-agent callback] left ended: 3 offers." });
+    expect(await ctx.runner.wait(handle)).toMatchObject({ report: "Outcome: done\nUsed left's report.", state: "done" });
+    expect(userTexts(ctx.requests[2]!).join("\n")).toContain("left ended: 3 offers.");
+  });
+
+  it("stays for a report on its way, past the looks that give up on a child gone from the record", async () => {
+    const reportsOnTheirWay = vi.fn(() => 1);
+    const children = childHost({ background: backgroundControl({ reportsOnTheirWay }) });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: partial\nStill waiting for left." },
+      { text: "Outcome: done\nUsed left's report." }], { children });
+    const handle = await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(reportsOnTheirWay.mock.calls.length).toBeGreaterThan(2), { timeout: 5_000 });
+    expect(reportsOnTheirWay).toHaveBeenCalledWith("thread-1");
     expect(ctx.requests).toHaveLength(2);
     await ctx.runner.deliver(handle, { from: "left", nonce: "subagent-callback:bg-left", origin: "subagent_callback", text: "[Sub-agent callback] left ended: 3 offers." });
     expect(await ctx.runner.wait(handle)).toMatchObject({ report: "Outcome: done\nUsed left's report.", state: "done" });
