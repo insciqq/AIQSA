@@ -256,7 +256,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const { execution, lease } = pending;
     const signal = lease?.signal ?? new AbortController().signal;
     const scope = execution.scope;
-    // A child ends by its parent's time too, with room for its report before its parent's own.
+    // A child ends by its parent's time too. A parent stops waiting for reports when its tool time ends, so one still
+    // working then ends with it, unreported.
     const ownTimeMs = input.deadlineAt ? Math.min(turnTimeMs, Math.max(0, input.deadlineAt.getTime() - now())) : turnTimeMs;
     const deadlineAt = new Date(now() + ownTimeMs);
     void (async () => {
