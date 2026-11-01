@@ -4,6 +4,11 @@ import {
   WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, workspaceBrowserSessionPath,
   type WorkspaceSecretKind
 } from "@/lib/contracts/workspaceSecrets";
+import {
+  isProxyCountry, isProxyOwner, isProxyPort, isProxyProtocol, PROXY_LIMITS, type ProxyRunPlan, type ProxyRunPlanEntry
+} from "@/lib/contracts/proxies";
+import { normalizeProxyHint } from "@/lib/domain/proxySelection";
+import type { RunProxyConnections } from "../../proxies/runProxies";
 import { READ_SECRET_TOOL_NAME } from "../../tools/readSecret";
 import type { AcceptedWorkspaceSecret } from "./store";
 import { parseWorkspaceSecretMutation, WorkspaceSecretError } from "./validation";
@@ -16,6 +21,69 @@ const ENTRY_COUNT = WORKSPACE_SECRET_MAX_COUNT + WORKSPACE_BROWSER_SESSION_MAX_C
  */
 export const WORKSPACE_BROWSER_SESSION_USER_PATH =
   "A website sign-in with no saved credentials and none the user gave goes through browser_handoff: the user signs in, and enters any code, in the live browser of the web chat and presses Done, and the sign-in is saved to their Secrets after the answer for later requests. Never ask for a password or a code in the chat. As an advanced alternative, the user can import a Playwright storage_state JSON in Studio → Secrets (Add secret → Browser session, or Edit → Replace saved value) for their next Workspace request. Websites have no Reconnect or Reauthorize (MCP Reconnect is unrelated).";
+/**
+ * One proxy of a run on its way to the guest's forwarder (`ops/workspace-guest/python/aiqsa/proxy/`): the frozen plan
+ * entry, with the credentials `RunProxies` loaded now. `available: false` is a plan entry that cannot be used now; it
+ * still travels, without credentials, so that a site matching it fails visibly instead of going direct.
+ */
+export type WorkspaceRunProxy = ProxyRunPlanEntry & Readonly<{ available: boolean; login: string | null; password: string | null }>;
+
+const WORKSPACE_RUN_PROXIES_MAX_COUNT = 200;
+/** Every bound of `PROXY_LIMITS` at once for each proxy would be far larger than a real plan; refused rather than cut. */
+const WORKSPACE_RUN_PROXIES_MAX_BYTES = 1024 * 1024;
+/**
+ * Where a run's proxies live: a managed file, so it shares what keeps `/workspace/secrets/` out of output capture, project
+ * archives, downloads and shares, and it travels as one more entry of the install, which replaces the directory every
+ * time. A run without proxies therefore leaves none behind, with no second guest operation (`_paths.proxy_plan_path`).
+ */
+const WORKSPACE_PROXY_PLAN_ID = "aiqsa-proxies.json";
+export const WORKSPACE_PROXY_PLAN_PATH = `/workspace/secrets/files/${WORKSPACE_PROXY_PLAN_ID}`;
+
+/** The plan joined with what `RunProxies` loaded: every plan entry once, in plan order, and a password only for one that loaded. */
+export function workspaceRunProxies(plan: ProxyRunPlan, loaded: RunProxyConnections): readonly WorkspaceRunProxy[] {
+  const connections = new Map(loaded.connections.map((connection) => [connection.id, connection]));
+  return plan.entries.map((entry) => {
+    const connection = connections.get(entry.id);
+    return { ...entry, available: connection !== undefined, login: connection?.login ?? null, password: connection?.password ?? null };
+  });
+}
+
+function isBoundedText(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+
+function isCredential(value: unknown, maximum: number): value is string | null {
+  return value === null || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= maximum);
+}
+
+/** The runner's own check of what the app sends. Failing it fails the install; it never drops a proxy, which would open its sites directly. */
+export function parseWorkspaceRunProxies(value: unknown): readonly WorkspaceRunProxy[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > WORKSPACE_RUN_PROXIES_MAX_COUNT) throw new WorkspaceSecretError("workspace_secret_invalid");
+  const ids = new Set<string>();
+  const proxies = value.map((item: unknown): WorkspaceRunProxy => {
+    const entry = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+    const { active, available, country, domainHints, host, id, login, name, owner, password, port, protocol } = entry;
+    if (typeof active !== "boolean" || typeof available !== "boolean" || !(country === null || isProxyCountry(country)) ||
+      !Array.isArray(domainHints) || domainHints.length > PROXY_LIMITS.hintsPerProxy || domainHints.some((hint) => normalizeProxyHint(hint) !== hint) ||
+      !isBoundedText(host, PROXY_LIMITS.hostMaxLength) || !isBoundedText(id, 128) || ids.has(id) || !isBoundedText(name, PROXY_LIMITS.nameMaxLength) ||
+      !isCredential(login, PROXY_LIMITS.loginMaxLength) || !isCredential(password, PROXY_LIMITS.passwordMaxLength) ||
+      !isProxyOwner(owner) || !isProxyPort(port) || !isProxyProtocol(protocol) || Object.keys(entry).length !== 12) {
+      throw new WorkspaceSecretError("workspace_secret_invalid");
+    }
+    ids.add(id);
+    return { active, available, country, domainHints: domainHints as string[], host, id, login, name, owner, password, port, protocol };
+  });
+  if (Buffer.byteLength(JSON.stringify(proxies), "utf8") > WORKSPACE_RUN_PROXIES_MAX_BYTES) throw new WorkspaceSecretError("workspace_secret_limit");
+  return proxies;
+}
+
+/** The plan as one more managed file of the install; nothing else reads it, and the secrets guide never mentions its values. */
+export function workspaceProxyPlanEntry(proxies: readonly WorkspaceRunProxy[]) {
+  const content = Buffer.from(JSON.stringify({ version: 1, proxies }), "utf8");
+  return { id: WORKSPACE_PROXY_PLAN_ID, value: { kind: "file" as const, base64: content.toString("base64") } };
+}
+
 /** Ids, field names, name and a description whose JSON escaping is at most six bytes per character. */
 const ENTRY_METADATA_MAX_BYTES = 64 * 1024;
 /**
@@ -23,10 +91,10 @@ const ENTRY_METADATA_MAX_BYTES = 64 * 1024;
  * values within their serialized total, plus per-entry metadata.
  */
 export const WORKSPACE_SECRETS_REQUEST_MAX_BYTES = Math.ceil(WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES / 3) * 4 +
-  WORKSPACE_SECRET_TOTAL_MAX_BYTES + ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 64 * 1024;
+  WORKSPACE_SECRET_TOTAL_MAX_BYTES + ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 64 * 1024 + WORKSPACE_RUN_PROXIES_MAX_BYTES;
 /** The guest bundle adds the environment map and a guide repeating names and descriptions, never values. */
 export const WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES = WORKSPACE_SECRETS_REQUEST_MAX_BYTES + WORKSPACE_SECRET_ENV_MAX_BYTES +
-  ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 256 * 1024;
+  ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 256 * 1024 + Math.ceil(WORKSPACE_RUN_PROXIES_MAX_BYTES / 3) * 4;
 
 export function parseAcceptedWorkspaceSecrets(value: unknown): readonly AcceptedWorkspaceSecret[] {
   if (!Array.isArray(value) || value.length > ENTRY_COUNT) throw new WorkspaceSecretError("workspace_secret_invalid");

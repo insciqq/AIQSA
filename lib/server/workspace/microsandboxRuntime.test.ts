@@ -587,6 +587,35 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: "/workspace/project/.uv" });
   });
 
+  it("delivers a run's proxies in the install's stdin as one managed file, and none without any", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
+    value.sandbox.execStreamWith.mockImplementationOnce(async (_command, configure) => {
+      (configure as (input: typeof builder) => unknown)(builder);
+      return value.secretHelper;
+    });
+    const password = "synthetic-proxy-password";
+    const proxy = { active: true, available: true, country: "KZ", domainHints: [".kz"], host: "proxy.example.com", id: "proxy-1", login: "synthetic-login",
+      name: "KZ1", owner: "personal" as const, password, port: 1080, protocol: "socks5" as const };
+    const sync = value.runtime.syncPersonalSecrets.bind(value.runtime);
+    await sync({ ...sessionInput, modelRunId: callInput.modelRunId, proxies: [proxy], secrets: [] });
+    expect(JSON.stringify(builder.args.mock.calls)).not.toContain(password);
+    const installed = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as
+      { environment: unknown; guide: string; secrets: { id: string; value: { base64: string; kind: string } }[] };
+    expect(installed.secrets.map(({ id, value: { kind } }) => ({ id, kind }))).toEqual([{ id: "aiqsa-proxies.json", kind: "file" }]);
+    expect(JSON.parse(Buffer.from(installed.secrets[0]!.value.base64, "base64").toString())).toEqual({ version: 1, proxies: [proxy] });
+    expect(JSON.stringify(installed.environment)).not.toContain(password);
+    expect(installed.guide).not.toContain(password);
+
+    value.secretPipe.write.mockClear();
+    await sync({ ...sessionInput, modelRunId: "next_run", secrets: [] });
+    expect((JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { secrets: unknown[] }).secrets).toEqual([]);
+
+    await expect(sync({ ...sessionInput, modelRunId: "bad_run", proxies: [{ ...proxy, port: 0 }], secrets: [] }))
+      .rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+  });
+
   it("delivers a text secret named like a variable to every command under that name, and lists it in the guide", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
