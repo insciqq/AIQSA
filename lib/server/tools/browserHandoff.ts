@@ -20,7 +20,9 @@ export const BROWSER_HANDOFF_UNAVAILABLE = "browser_handoff_unavailable";
  * absent), and the user is given that agent's tab only.
  */
 export type BrowserHandoffMode =
-  | Readonly<{ agent?: BrowserAgentRef; kind: "interactive"; live: BrowserLiveRunHandle | null; toolTimeLeftMs(): number }>
+  | Readonly<{ agent?: BrowserAgentRef; kind: "interactive"; live: BrowserLiveRunHandle | null; toolTimeLeftMs(): number;
+    /** A research run's shorter wait, read when the call runs; undefined before research starts. */
+    waitMs?(): number | undefined }>
   | Readonly<{ chatUrl: string; kind: "telegram" }>
   | Readonly<{ kind: "unattended" }>;
 
@@ -30,7 +32,7 @@ export const browserHandoffTool: RunTool = {
     "credentials for the site and gave none in the chat, a code sent to them " +
     "(SMS, email, an authenticator app), a CAPTCHA or bot check, a consent, or a choice that is theirs to make. Open the page " +
     "that needs them first. The chat shows the user the live browser with your message; they act in it and press Done or " +
-    "Cancel, and this call returns then, or after at most 10 minutes, with the outcome and the page the browser shows. You " +
+    "Cancel, and this call returns then, or when the run's handoff wait ends (shorter during research), with the outcome and the page the browser shows. You " +
     "never see what the user typed. After `completed`, look at the page yourself (take a screenshot and view it) before you go " +
     "on. Never ask for a password in the chat, type only credentials the user saved or gave you, and never try to solve a " +
     "CAPTCHA.",
@@ -96,6 +98,10 @@ const NEXT_STEPS: Readonly<Record<"cancelled" | "completed" | "timed_out", strin
     "them and finish with what you have."
 };
 
+const RESEARCH_TIMED_OUT_NEXT = "The user did not finish in time. Call record_evidence with kind \"unreachable\", target set to the site, " +
+  "and reason explaining what the site needed and that the handoff timed out, so it reaches the report. Do not ask for another handoff " +
+  "for this site; go on with the remaining research.";
+
 /**
  * `browser_handoff`: the call waits inside the turn until Done, Cancel or its bounded wait, never past the
  * turn's tool time; Stop and the run's deadline end it through `signal`, which the batch then treats as the
@@ -121,7 +127,8 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
         "again in a chat with you (ask there to open the site; the chat shows the live browser), so later runs can use the " +
         "saved sign-in." });
   }
-  const waitMs = Math.min(BROWSER_HANDOFF_WAIT_MS, Math.max(0, mode.toolTimeLeftMs()));
+  const researchWaitMs = mode.waitMs?.();
+  const waitMs = Math.min(researchWaitMs ?? BROWSER_HANDOFF_WAIT_MS, BROWSER_HANDOFF_WAIT_MS, Math.max(0, mode.toolTimeLeftMs()));
   if (!mode.live || waitMs < 30_000) {
     return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,
       message: !mode.live
@@ -149,7 +156,7 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
         outcome: handoff.outcome,
         page: handoff.page,
         ...(handoff.saved ? { signInSavedAfterAnswer: handoff.saved } : {}),
-        next: NEXT_STEPS[handoff.outcome]
+        next: handoff.outcome === "timed_out" && researchWaitMs !== undefined ? RESEARCH_TIMED_OUT_NEXT : NEXT_STEPS[handoff.outcome]
       });
   }
 }

@@ -573,7 +573,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const browserHandoff: BrowserHandoffMode | undefined = !workspace ? undefined
           : input.scheduled ? { kind: "unattended" }
             : input.telegram ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
-              : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now() };
+              : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now(),
+                waitMs: () => research?.holding() ? research.handoffWaitMs : undefined };
         const registryInput = {
           ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,
