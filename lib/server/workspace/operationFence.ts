@@ -24,7 +24,7 @@ export type WorkspaceIdleRefresh = Readonly<{
   /** Between touches: well under the shortest idle timeout a guest may have. */
   intervalMs: number;
   /**
-   * How long after the operation became active, or last ran a request, the touches go on: a whole turn and its
+   * How long after the operation became active, or last ran a request, the touches go on: the longest turn and its
    * handoff, so an app that never retires its operation (a crash) does not keep a guest up for good.
    */
   lifetimeMs: number;

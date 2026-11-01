@@ -29,7 +29,7 @@ export type ResearchRunScope = Readonly<{
   /** The branch's earlier runs: a run id read from a stored result counts only when it is one of these. */
   branchRunIds: readonly string[];
   chatId: string;
-  /** Moves the turn's deadline, once and for this run only; does nothing until the engine passes `extendTurn` to `run.ts`. */
+  /** Moves the turn's deadline, once and for this run only. */
   extendTurn(endsAt: number): void;
   /** How running researchers are found and told to finish; absent where the run has no messaging. */
   mailbox?: Pick<SubagentMessaging, "agents" | "send">;
@@ -79,7 +79,10 @@ export type ResearchEvidencePort = Readonly<{
  * the plan opens with.
  */
 export type ResearchPlanWindowPort = Readonly<{
-  /** Resolves when the window closes. Stop rejects it through `signal`; a closed tab changes nothing. */
+  /**
+   * Resolves when the window closes. Stop rejects it through `signal`; a closed tab changes nothing. On a window already answered no
+   * window opens: the proposal is the plan rebuilt from what the person changed, and it replaces the answer's plan at once.
+   */
   open(input: Readonly<{ goal: string; proposal: ResearchPlanProposal; signal: AbortSignal }>): Promise<ResearchPlanAnswer>;
 }>;
 
@@ -95,8 +98,8 @@ export type ResearchTimePort = Readonly<{
   /** The plan stands, so the phases count from now and the turn is extended. Within one instance only the first call counts: a model may start twice. */
   planReleased(): void;
   /**
-   * Why no researcher may start now, for the model to read; null while one may. Null before `planReleased` too: a researcher in one
-   * batch with today's `start_research` may run first, and must never be refused depending on that order.
+   * Why no researcher may start now, for the model to read; null while one may. Null before `planReleased` too: the time phases have
+   * not started then, and `run.ts` refuses a researcher before the plan on its own.
    */
   researcherRefusal(): string | null;
   /** The signal a researcher's turn runs under: its own limit on top of the run's. */
