@@ -180,9 +180,9 @@ describe("withConversationPixels", () => {
       imageInputLimits: { imageBytes, imageCount: 20, imagePixels: 1_000_000, payloadBytes } });
     const rows = [row("h1", { byteSize: 8 }), row("h2", { byteSize: 8 }), row("h3", { byteSize: 8 }), row("h4", { byteSize: 64 })];
 
-    // Newest first: h4 exceeds the payload budget, then h3 and h2 fit and h1 no longer does.
-    const payload = await harness(rows).service.withConversationPixels(request([], earlier, { modelCapabilities: limits(20) }), USER);
-    expect(ids(payload)).toEqual(["h2", "h3"]);
+    // Newest first: h4 exceeds the payload budget; h3 fits while half the payload stays free for an on-demand view.
+    const payload = await harness(rows).service.withConversationPixels(request([], earlier, { modelCapabilities: limits(32) }), USER);
+    expect(ids(payload)).toEqual(["h3"]);
 
     const perImage = await harness(rows).service.withConversationPixels(request([], earlier, { modelCapabilities: limits(1_000, 32) }), USER);
     expect(ids(perImage)).toEqual(["h1", "h2", "h3"]);
@@ -502,5 +502,61 @@ describe("paid image usage write", () => {
       code: "image_usage_unrecorded", prisma_code: "P1001" })]);
     expect(records.filter((record) => record.stage === "provider")).toEqual([expect.objectContaining({ code: "image_output_missing" })]);
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|images\.example|fixture-secret/);
+  });
+});
+
+
+describe("reading a requested earlier chat image", () => {
+  beforeEach(() => { access.value = personal; });
+  const scope = { attachmentId: "old", chatId: "chat-1", userId: USER };
+
+  it("reserves an image slot for an explicit read and leaves Workspace selection equivalent", async () => {
+    const modelCapabilities = { ...request([], []).modelCapabilities,
+      imageInputLimits: { imageCount: 4, imageBytes: 1_000_000, imagePixels: 1_000_000, payloadBytes: 8_000_000 } };
+    const { service } = harness(history(6).map(({ id }) => row(id)));
+    expect(ids(await service.withConversationPixels(request([], history(6), { modelCapabilities }), USER))).toEqual(["h4", "h5", "h6"]);
+    const workspace = { enabled: true } as unknown as NonNullable<ProviderRunRequest["workspace"]>;
+    expect(ids(await service.withConversationPixels(request([], history(6), { modelCapabilities, workspace }), USER)))
+      .toEqual(["h3", "h4", "h5", "h6"]);
+  });
+
+  it("checks the exact owner, chat and lifecycle before reading and returns a bounded static preview", async () => {
+    const png = await sharp({ create: { background: "#20305a", channels: 3, height: 600, width: 1600 } }).png().toBuffer();
+    const record = row("old", { byteSize: png.length, checksum: createHash("sha256").update(png).digest("hex") });
+    const findFirst = vi.fn(async () => record);
+    const getObject = vi.fn(async () => ({ body: png, contentType: "image/png" }));
+    const service = createPrismaImageGenerationService({ attachment: { findFirst } } as unknown as PrismaClient,
+      { getObject } as unknown as StorageAdapter);
+    const preview = await service.readConversationImage(scope);
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "old", chatId: "chat-1", userId: USER,
+      kind: "image", status: "ready", savedAt: null, chat: { userId: USER, permanentDeletionAt: null } } }));
+    expect(preview).toMatchObject({ width: 1024, height: 384, mimeType: "image/png" });
+    expect(await sharp(preview!.bytes).metadata()).toMatchObject({ width: 1024, height: 384, format: "png" });
+    expect(getObject).toHaveBeenCalledWith(record.storageKey, { maxBytes: record.byteSize, signal: expect.any(AbortSignal) });
+  });
+
+  it("returns no bytes for absent, foreign or deleted rows, and rejects a changed checksum", async () => {
+    const findFirst = vi.fn(async () => null as Row | null);
+    const getObject = vi.fn(async () => ({ body: bytes("corrupt"), contentType: "image/png" }));
+    const service = createPrismaImageGenerationService({ attachment: { findFirst } } as unknown as PrismaClient,
+      { getObject } as unknown as StorageAdapter);
+    expect(await service.readConversationImage(scope)).toBeNull();
+    expect(getObject).not.toHaveBeenCalled();
+    findFirst.mockResolvedValue(row("old"));
+    await expect(service.readConversationImage(scope)).rejects.toMatchObject({ code: "image_reference_invalid" });
+  });
+
+  it("converts supported static upload formats for result images", async () => {
+    const pixel = sharp({ create: { background: "red", channels: 3, height: 2, width: 2 } });
+    const examples = [["image/webp", await pixel.clone().webp().toBuffer()], ["image/gif", await pixel.clone().gif().toBuffer()],
+      ["image/bmp", bitmap24(2, 2, () => [255, 0, 0])], ["image/tiff", await syntheticTiff(2, 2, () => [255, 0, 0])]] as const;
+    for (const [mimeType, body] of examples) {
+      const findFirst = vi.fn(async () => row("old", { mimeType, byteSize: body.length, checksum: createHash("sha256").update(body).digest("hex") }));
+      const service = createPrismaImageGenerationService({ attachment: { findFirst } } as unknown as PrismaClient,
+        { getObject: async () => ({ body, contentType: mimeType }) } as unknown as StorageAdapter);
+      const preview = await service.readConversationImage(scope);
+      expect(preview).toMatchObject({ width: 2, height: 2, mimeType: "image/png" });
+      expect(await sharp(preview!.bytes).metadata()).toMatchObject({ format: "png" });
+    }
   });
 });

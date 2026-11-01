@@ -1,4 +1,5 @@
 {
+  "read_chat_file": "other",
   "web_search": "search",
   "search_selected_engines": "search",
   "fetch_url": "fetch_url",
