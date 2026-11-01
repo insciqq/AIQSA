@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient, type SubagentBindingSource, type SubagentTurnMode, type SubagentTurnState } from "@prisma/client";
 import {
+  RUN_FOLLOWUP_REVISION_MAX,
   SUBAGENT_END_REASONS,
   SUBAGENT_ERROR_CODES,
   SUBAGENT_LIMITS,
@@ -7,7 +8,7 @@ import {
   type SubagentErrorCode
 } from "../../../contracts/subagents";
 import { dispatchableModelRunStatuses, json } from "../../runs/prismaRepositoryShared";
-import type { SubagentBinding } from "../../subagents/ports";
+import type { SubagentBinding, SubagentMessage } from "../../subagents/ports";
 import type { TranscriptItem } from "../transcript";
 import { decodeTranscriptItem } from "../transcriptCodec";
 import { attemptFenced, durableAttemptTimes, withRecordedAt } from "../transcriptRepository";
@@ -92,7 +93,8 @@ const turnSelect = {
 } as const;
 const threadSelect = { anchorRunId: true, definitionId: true, id: true, name: true, typeName: true } as const;
 
-type StoreClient = Pick<PrismaClient, "$transaction" | "modelRun" | "modelRunToolCall" | "runTranscriptItem" | "subagentThread" | "subagentTurn">;
+type StoreClient = Pick<PrismaClient, "$transaction" | "modelRun" | "modelRunToolCall" | "runFollowup" | "runTranscriptItem" | "subagentThread" |
+  "subagentTurn">;
 
 /** Runs one fence read takes: a branch longer than this is beyond any context window (`TRANSCRIPT_LOAD_RUN_LIMIT`). */
 const EFFECT_RUN_LIMIT = 2_000;
@@ -225,11 +227,32 @@ export function createSubagentThreadStore(client: StoreClient) {
       });
     },
 
-    /** Marks an active turn as waiting for the user (a browser handoff) or running again. */
-    async setActiveState(input: Readonly<{ chatId: string; state: "running" | "waiting"; turnId: string; userId: string }>): Promise<boolean> {
-      const updated = await client.subagentTurn.updateMany({ data: { state: input.state },
+    /**
+     * Marks an active turn as waiting for the user (a browser handoff) or its parent's answer (`reason`), or running
+     * again, which clears the question's claim: the turn's own end owes a callback of its own.
+     */
+    async setActiveState(input: Readonly<{ chatId: string; reason?: string; state: "running" | "waiting"; turnId: string; userId: string }>): Promise<boolean> {
+      const updated = await client.subagentTurn.updateMany({ data: { callbackRunId: null, reasonCode: input.reason ?? null, state: input.state },
         where: { chatId: input.chatId, id: input.turnId, state: { in: ACTIVE }, userId: input.userId } });
       return updated.count === 1;
+    },
+
+    /** The messages a thread's turns on these runs have not read, oldest first; other branches keep theirs. */
+    async unreadMessages(input: Readonly<{ chatId: string; runIds: readonly string[]; threadId: string; userId: string }>): Promise<readonly SubagentMessage[]> {
+      const rows = await client.runFollowup.findMany({ orderBy: [{ createdAt: "asc" }, { ordinal: "asc" }],
+        select: { authorName: true, nonce: true, origin: true, text: true },
+        where: { chatId: input.chatId, deliveredAt: null, modelRunId: { in: [...new Set(input.runIds)] }, ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX },
+          origin: { in: ["main_agent", "subagent_message"] }, subagentTurn: { threadId: input.threadId, userId: input.userId } } });
+      return rows.flatMap((row): SubagentMessage[] => row.origin === "subagent_message"
+        ? [{ from: row.authorName, nonce: row.nonce, origin: "subagent_message", text: row.text }]
+        : row.origin === "main_agent" ? [{ nonce: row.nonce, origin: "main_agent", text: row.text }] : []);
+    },
+
+    /** The receipt of messages a turn read; a row already stamped keeps its time. */
+    async markMessagesRead(input: Readonly<{ chatId: string; nonces: readonly string[]; runIds: readonly string[]; threadId: string; userId: string }>): Promise<void> {
+      await client.runFollowup.updateMany({ data: { deliveredAt: new Date() },
+        where: { chatId: input.chatId, deliveredAt: null, modelRunId: { in: [...new Set(input.runIds)] }, nonce: { in: [...input.nonces] },
+          ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX }, subagentTurn: { threadId: input.threadId, userId: input.userId } } });
     },
 
     /** Ends an active turn with its result; a turn that already ended keeps how it ended. */

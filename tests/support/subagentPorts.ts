@@ -212,6 +212,13 @@ export class FakeSubagentCallbackSink implements SubagentCallbackSink {
     this.callbacks.push(callback);
     return typeof this.disposition === "function" ? this.disposition(callback) : this.disposition;
   }
+
+  /** The chats a question asked to flush. */
+  readonly flushes: SubagentChatScope[] = [];
+
+  async flush(scope: SubagentChatScope): Promise<void> {
+    this.flushes.push(scope);
+  }
 }
 
 /**

@@ -1,6 +1,7 @@
 import { verifiedFollowups } from "./followupProvenance";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeRunFollowupInput, RUN_FOLLOWUP_MAX_COUNT, RUN_FOLLOWUP_MAX_TOTAL_CHARS } from "../../contracts/runFollowups";
+import { RUN_FOLLOWUP_REVISION_MAX } from "../../contracts/subagents";
 import { textMessageContent } from "../../domain/content";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { validateRunAccess } from "../auth/entitlements";
@@ -52,10 +53,13 @@ export const runFollowupSelect = {
   } }
 } satisfies Prisma.ModelRunSelect;
 
+/** A run's own follow-ups: above them sit the mailbox rows of the turns it hosts, which only those turns read. */
+const ownFollowup = { ordinal: { lte: RUN_FOLLOWUP_REVISION_MAX } };
+
 /** Every follow-up the engine delivers into its run, with its origin. */
 const engineFollowupSelect = {
   followupMode: true, followupClosedAt: true,
-  followups: { orderBy: { ordinal: "asc" }, select: {
+  followups: { orderBy: { ordinal: "asc" }, where: ownFollowup, select: {
     id: true, ordinal: true, text: true, authorName: true, createdAt: true, deliveredAt: true, precedingText: true, origin: true
   } }
 } satisfies Prisma.ModelRunSelect;
@@ -156,7 +160,7 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
       await lockRun(tx, input.runId);
       const result = await tx.modelRun.updateMany({ where: { id: input.runId, userId: input.userId,
         status: { in: activeModelRunStatuses }, answerCompletedAt: null, followupMode: { not: null },
-        followupRevision: input.revision, followups: { none: { deliveredAt: null } } }, data: { followupClosedAt: new Date() } });
+        followupRevision: input.revision, followups: { none: { ...ownFollowup, deliveredAt: null } } }, data: { followupClosedAt: new Date() } });
       return result.count === 1;
     })
   };
@@ -166,7 +170,7 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
 export async function runFollowupsAllowCompletion(tx: Prisma.TransactionClient, runId: string, revision = 0): Promise<boolean> {
   const run = await tx.modelRun.findUnique({ where: { id: runId }, select: {
     followupMode: true, followupRevision: true, followupClosedAt: true,
-    followups: { where: { deliveredAt: null }, select: { id: true }, take: 1 }
+    followups: { where: { ...ownFollowup, deliveredAt: null }, select: { id: true }, take: 1 }
   } });
   return Boolean(run && (run.followupMode === null || run.followupRevision === revision &&
     (revision === 0 || run.followupClosedAt !== null) && run.followups.length === 0));

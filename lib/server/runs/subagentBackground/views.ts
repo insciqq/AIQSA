@@ -1,10 +1,19 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { ModelRunStatus, Prisma, PrismaClient } from "@prisma/client";
 import {
+  ASK_PARENT_TOOL_NAME,
+  MAIN_AGENT_NAME,
+  RUN_FOLLOWUP_REVISION_MAX,
+  SEND_AGENT_MESSAGE_TOOL_NAME,
   SUBAGENT_LIMITS,
+  SUBAGENT_LISTING_LIMITS,
+  decodeSubagentCallResult,
   isActiveSubagentState,
   isSubagentCode,
   isSubagentOutcome,
   normalizeSubagentName,
+  type SubagentAgentEntry,
+  type SubagentAgentListing,
+  type SubagentAgentStep,
   type SubagentOutcome,
   type SubagentThreadState
 } from "../../../contracts/subagents";
@@ -26,15 +35,17 @@ import { summarizeMessageRunToolActivity } from "../../chats/prismaRepository";
 import { TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { branchPathMessageIds } from "../../toolObservations/repository";
 import { foldWorkspaceActivityEntries, projectWorkspaceActivity } from "../../workspace/activityProjection";
+import { activeModelRunStatuses } from "../prismaRepositoryShared";
 import { isRunEndedToolCallResult } from "../toolLoopPersistence";
-import { impliedResult } from "./store";
+import { agentBranchPath, impliedResult } from "./store";
 
 /**
  * The owner-only projections of a chat's sub-agents
  * (`lib/contracts/subagentViews.ts`): only the chat's active branch, only the
  * owner's own chat while it is not pending deletion, content-free apart from
  * names, briefs and reports. A missing chat or thread and one the caller may
- * not see read the same (null).
+ * not see read the same (null). `branchAgents` is the same reading for an
+ * agent of the chat (`list_agents`): the caller's own branch, bounded excerpts.
  */
 
 const turnSelect = {
@@ -194,7 +205,65 @@ function summarize(thread: ThreadRow, turns: readonly TurnRow[], facts: SummaryF
   };
 }
 
+/**
+ * What a turn wrote to other agents, from its own calls: each is on record there whatever became of it, so a sent message
+ * needs no second row. A refused call delivered nothing and shows as the failed step it was.
+ */
+function sentMessages(calls: readonly Readonly<{ arguments: unknown; startedAt: Date | null; state: string; toolName: string }>[]): SubagentTurnMessage[] {
+  return calls.flatMap((call): SubagentTurnMessage[] => {
+    if (call.state === "error" || !call.startedAt || typeof call.arguments !== "object" || call.arguments === null) return [];
+    const args = call.arguments as { message?: unknown; question?: unknown; to?: unknown };
+    const createdAt = call.startedAt.toISOString();
+    if (call.toolName === ASK_PARENT_TOOL_NAME && typeof args.question === "string" && args.question.trim()) {
+      return [{ createdAt, delivery: "accepted", question: true, text: boundedText(args.question, SUBAGENT_LIMITS.messageCharacters), to: MAIN_AGENT_NAME }];
+    }
+    if (call.toolName !== SEND_AGENT_MESSAGE_TOOL_NAME || typeof args.message !== "string" || !args.message.trim() || typeof args.to !== "string") return [];
+    const to = args.to.trim().toLowerCase();
+    return to === MAIN_AGENT_NAME || normalizeSubagentName(to) === to
+      ? [{ createdAt, delivery: "accepted", text: boundedText(args.message, SUBAGENT_LIMITS.messageCharacters), to }] : [];
+  });
+}
+
+/** The call that started a turn: its `message` argument is the turn's brief. */
+function briefOf(args: unknown): string {
+  return typeof args === "object" && args !== null && !Array.isArray(args) && typeof (args as Record<string, unknown>).message === "string"
+    ? (args as Record<string, string>).message : "";
+}
+
+/** The start of a text, with whether anything was left out. */
+function excerpt(value: string, max: number): Readonly<{ cut: boolean; text: string }> {
+  const characters = Array.from(value.trim());
+  return { cut: characters.length > max, text: characters.slice(0, max).join("") };
+}
+
+const stepLine = (value: string) => excerpt(value.replace(/\s+/gu, " "), SUBAGENT_LISTING_LIMITS.stepSummaryCharacters).text;
+
+const listedCallSelect = {
+  arguments: true, completedAt: true, id: true, modelRunId: true, ordinal: true, providerCallId: true, result: true, roundIndex: true,
+  startedAt: true, state: true, subagentTurnId: true, toolName: true
+} satisfies Prisma.ModelRunToolCallSelect;
+
+type ListedCall = Prisma.ModelRunToolCallGetPayload<{ select: typeof listedCallSelect }>;
+
+/**
+ * One call as a line of a listing: the name an answer's process disclosure gives it and, for a Workspace or fetch step,
+ * the one bounded line that tells what it was on. Never its arguments or result as such.
+ */
+function agentStep(call: ListedCall, input: Readonly<{ active: boolean; definitions: unknown; normalizedRequest: Prisma.JsonValue | undefined;
+  run: Readonly<{ id: string; status: ModelRunStatus }>; userId: string }>): SubagentAgentStep | null {
+  if (input.normalizedRequest === undefined) return null;
+  const shown = summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest: input.normalizedRequest, status: input.run.status,
+    toolCalls: [call], userId: input.userId }, input.userId)?.calls[0];
+  if (!shown) return null;
+  const entry = subagentTurnWorkspaceActivity({ active: input.active, calls: [call], definitions: input.definitions, runId: input.run.id })?.entries.at(-1);
+  const summary = entry?.command?.preview ?? entry?.file?.displayPath ?? entry?.search?.query ?? shown.fetchTarget ?? "";
+  return { outcome: shown.status === "running" ? "running" : shown.status === "complete" ? "complete" : shown.status === "error" ? "error" : "unknown",
+    summary: stepLine(summary), tool: stepLine(shown.serverName ? `${shown.serverName}: ${shown.toolName}` : shown.toolName) || "tool" };
+}
+
 export type SubagentViews = Readonly<{
+  /** The agents on the branch of `parentRunId`, for an agent of the chat; null when the chat is not the caller's to read. */
+  branchAgents(input: Readonly<{ chatId: string; parentRunId: string; userId: string }>): Promise<SubagentAgentListing | null>;
   /** The chat's threads on its active branch; null when the caller may not see the chat. */
   chatThreads(input: Readonly<{ chatId: string; userId: string }>): Promise<SubagentChatThreads | null>;
   /** The chats among these that the caller owns and that have sub-agents on their active branch. */
@@ -287,7 +356,72 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
     return { summary: summarize(thread, turns, await loadSummaryFacts(tx, [latest], input.userId, new Map())), thread, turns };
   }
 
+  /**
+   * What the listing shows of the agents it names, active ones first: a stored step list and report for one that ended,
+   * and for one still working only the latest lines of its calls, so listing never reads a whole history.
+   */
+  async function listAgents(tx: Prisma.TransactionClient, input: Readonly<{ chatId: string; parentRunId: string; userId: string }>):
+    Promise<SubagentAgentListing | null> {
+    const chat = await tx.chat.findFirst({ select: { activeLeafMessageId: true }, where: { id: input.chatId, permanentDeletionAt: null, userId: input.userId } });
+    if (!chat) return null;
+    const path = await agentBranchPath(tx, { activeLeafMessageId: chat.activeLeafMessageId, chatId: input.chatId, parentRunId: input.parentRunId, userId: input.userId });
+    if (!path) return null;
+    const threads = await tx.subagentThread.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }], select: threadSelect,
+      where: { chatId: input.chatId, userId: input.userId } });
+    const onBranch = threads.flatMap((thread) => {
+      const latest = onPath(path, thread.anchorRun.assistantMessageId) ? branchTurns(thread, path).at(-1) : undefined;
+      return latest ? [{ latest, thread }] : [];
+    });
+    const ordered = [...onBranch.filter(({ latest }) => isActiveSubagentState(latest.state)),
+      ...onBranch.filter(({ latest }) => !isActiveSubagentState(latest.state))];
+    const shown = ordered.slice(0, SUBAGENT_LISTING_LIMITS.agents);
+    const turns = shown.map(({ latest }) => latest);
+    const [requests, briefs, hostRuns, mainRun] = await Promise.all([
+      loadActivityRequests(tx, [...new Set(turns.map((turn) => turn.parentRunId))], input.userId),
+      turns.length === 0 ? [] : tx.modelRunToolCall.findMany({ select: { arguments: true, id: true, modelRunId: true },
+        where: { OR: turns.map((turn) => ({ id: turn.parentToolCallId, modelRunId: turn.parentRunId })) } }),
+      tx.modelRun.findMany({ select: { id: true, workspaceRunBinding: { select: { toolDefinitions: true } } },
+        where: { id: { in: turns.flatMap((turn) => turn.executionRun ? [turn.executionRun.id] : []) } } }),
+      tx.modelRun.findFirst({ select: { id: true }, where: { chatId: input.chatId, status: { in: activeModelRunStatuses }, subagentTurnId: null, userId: input.userId } })
+    ]);
+    const entries: SubagentAgentEntry[] = [{ name: MAIN_AGENT_NAME, parent: null, state: mainRun ? "running" : "idle", steps: [] }];
+    for (const { latest, thread } of shown) {
+      const active = isActiveSubagentState(latest.state);
+      const hostRunId = latest.executionRun?.id ?? latest.parentRunId;
+      const stored = active ? null : decodeSubagentCallResult(latest.result);
+      const ended = stored?.kind === "ended" ? stored : null;
+      const calls = active ? await tx.modelRunToolCall.findMany({ orderBy: [{ roundIndex: "desc" }, { ordinal: "desc" }], select: listedCallSelect,
+        take: SUBAGENT_LISTING_LIMITS.steps, where: { modelRunId: hostRunId, subagentTurnId: latest.id } }) : [];
+      const steps = active ? [...calls].reverse().flatMap((call) => {
+        const step = agentStep(call, { active, definitions: hostRuns.find((run) => run.id === hostRunId)?.workspaceRunBinding?.toolDefinitions,
+          normalizedRequest: requests.get(latest.parentRunId), run: { id: hostRunId, status: latest.executionRun?.status ?? latest.parentRun.status },
+          userId: input.userId });
+        return step ? [step] : [];
+      }) : (ended?.steps ?? []).slice(-SUBAGENT_LISTING_LIMITS.steps).map((step): SubagentAgentStep =>
+        ({ outcome: step.outcome, summary: stepLine(step.summary), tool: stepLine(step.tool) }));
+      const brief = excerpt(briefOf(briefs.find((call) => call.id === latest.parentToolCallId && call.modelRunId === latest.parentRunId)?.arguments),
+        SUBAGENT_LISTING_LIMITS.briefCharacters);
+      const report = excerpt(ended?.report ?? "", SUBAGENT_LISTING_LIMITS.reportCharacters);
+      const outcome = outcomeOf(latest.state, latest.outcome);
+      entries.push({
+        ...(brief.text ? { brief: brief.text } : {}), ...(brief.cut ? { briefTruncated: true as const } : {}),
+        mode: latest.mode, name: thread.name, ...(outcome ? { outcome } : {}),
+        // The main agent starts every thread until sub-agents have children of their own.
+        parent: MAIN_AGENT_NAME,
+        ...(isSubagentCode(latest.reasonCode) ? { reason: latest.reasonCode } : {}),
+        ...(report.text ? { report: report.text } : {}), ...(report.cut ? { reportTruncated: true as const } : {}),
+        ...(ended?.resultHandle ? { resultHandle: ended.resultHandle } : {}),
+        state: latest.state, steps
+      });
+    }
+    return { agents: entries, ...(ordered.length > shown.length ? { truncated: true as const } : {}) };
+  }
+
   return Object.freeze({
+    async branchAgents(input) {
+      return client.$transaction((tx) => listAgents(tx, input));
+    },
+
     async chatThreads({ chatId, userId }) {
       return client.$transaction((tx) => chatThreads(tx, chatId, userId));
     },
@@ -327,8 +461,12 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
             modelRunId: true, ordinal: true, providerCallId: true, result: true, roundIndex: true, startedAt: true, state: true,
             subagentTurnId: true, toolName: true
           }, where: { modelRunId: { in: hostRunIds }, subagentTurnId: { in: shown.map((turn) => turn.id) } } }),
-          tx.runFollowup.findMany({ orderBy: { ordinal: "asc" }, select: { createdAt: true, deliveredAt: true, modelRunId: true, text: true },
-            where: { modelRunId: { in: shown.flatMap((turn) => turn.executionRun ? [turn.executionRun.id] : []) }, origin: "main_agent" } }),
+          tx.runFollowup.findMany({ orderBy: { ordinal: "asc" }, select: { authorName: true, createdAt: true, deliveredAt: true, modelRunId: true,
+            origin: true, subagentTurnId: true, text: true }, where: { OR: [
+            { ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX }, subagentTurnId: { in: shown.map((turn) => turn.id) } },
+            // A message from before mailboxes named their turn, on the run that was the turn's.
+            { modelRunId: { in: shown.flatMap((turn) => turn.executionRun ? [turn.executionRun.id] : []) }, origin: "main_agent", subagentTurnId: null }
+          ] } }),
           tx.providerModel.findMany({ select: { displayName: true, id: true },
             where: { id: { in: shown.flatMap((turn) => turn.providerModelId ? [turn.providerModelId] : []) } } })
         ]);
@@ -341,9 +479,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
           const host = hostRuns.find((run) => run.id === hostRunId);
           const normalizedRequest = activityRequests.get(turn.parentRunId);
           const call = parentCalls.find((candidate) => candidate.id === turn.parentToolCallId && candidate.modelRunId === turn.parentRunId);
-          const args = call?.arguments;
-          const brief = typeof args === "object" && args !== null && !Array.isArray(args) && typeof (args as Record<string, unknown>).message === "string"
-            ? boundedText((args as Record<string, string>).message, SUBAGENT_LIMITS.messageCharacters) : "";
+          const brief = boundedText(briefOf(call?.arguments), SUBAGENT_LIMITS.messageCharacters);
           const ended = isActiveSubagentState(turn.state) ? null : turn.result;
           const result = ended === null ? null : (() => {
             const decoded = ended as { files?: unknown; report?: unknown } | null;
@@ -353,13 +489,16 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
           const files = Array.isArray(result?.files)
             ? result.files.filter((path): path is string => typeof path === "string" && path.trim().length > 0 &&
               path.length <= SUBAGENT_LIMITS.filePathCharacters).slice(0, SUBAGENT_LIMITS.files) : [];
-          const messages = mailbox.filter((entry) => entry.modelRunId === turn.executionRun?.id)
-            .slice(0, SUBAGENT_VIEW_LIMITS.messagesPerTurn).flatMap((entry): SubagentTurnMessage[] => {
+          const turnCalls = calls.filter((entry) => entry.modelRunId === hostRunId && entry.subagentTurnId === turn.id);
+          const received = mailbox.filter((entry) => entry.subagentTurnId ? entry.subagentTurnId === turn.id : entry.modelRunId === turn.executionRun?.id)
+            .flatMap((entry): SubagentTurnMessage[] => {
               const text = boundedText(entry.text, SUBAGENT_LIMITS.messageCharacters);
               return text ? [{ createdAt: entry.createdAt.toISOString(),
-                delivery: entry.deliveredAt ? "delivered" : isActiveSubagentState(turn.state) ? "accepted" : "undelivered", text }] : [];
+                delivery: entry.deliveredAt ? "delivered" : isActiveSubagentState(turn.state) ? "accepted" : "undelivered",
+                ...(entry.origin === "subagent_message" ? { from: entry.authorName } : {}), text }] : [];
             });
-          const turnCalls = calls.filter((entry) => entry.modelRunId === hostRunId && entry.subagentTurnId === turn.id);
+          const messages = [...received, ...sentMessages(turnCalls)].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+            .slice(0, SUBAGENT_VIEW_LIMITS.messagesPerTurn);
           const toolActivity = host && normalizedRequest !== undefined ? summarizeMessageRunToolActivity({
             errorPayload: host.errorPayload, normalizedRequest, status: host.status, toolCalls: turnCalls, userId: input.userId
           }, input.userId) : null;
