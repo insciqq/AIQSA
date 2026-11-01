@@ -19,7 +19,8 @@ export const PROXY_LIMITS = Object.freeze({
   hostMaxLength: 253,
   loginMaxLength: 255,
   nameMaxLength: 64,
-  passwordMaxLength: 255
+  passwordMaxLength: 255,
+  proxiesPerOwner: 50
 });
 
 /** Why a save was refused. */
@@ -27,11 +28,18 @@ export const PROXY_INPUT_FAILURE_CODES = [
   "proxy_country_invalid",
   "proxy_hint_invalid",
   "proxy_host_invalid",
+  "proxy_input_invalid",
+  "proxy_login_invalid",
   "proxy_name_invalid",
+  "proxy_password_invalid",
   "proxy_port_invalid",
   "proxy_protocol_invalid"
 ] as const;
 export type ProxyInputFailureCode = (typeof PROXY_INPUT_FAILURE_CODES)[number];
+
+/** Why a valid save was still refused; nothing was written. */
+export const PROXY_CHANGE_FAILURE_CODES = ["proxy_conflict", "proxy_limit", "proxy_name_taken"] as const;
+export type ProxyChangeFailureCode = (typeof PROXY_CHANGE_FAILURE_CODES)[number];
 
 /** Why a proxy's own address was refused (`lib/server/proxies/address.ts`). */
 export const PROXY_ADDRESS_FAILURE_CODES = [
@@ -115,6 +123,8 @@ export type ProxyWire = Readonly<{
   owner: ProxyOwner;
   port: number;
   protocol: ProxyProtocol;
+  /** The revision an update or a deletion is guarded by. A check leaves it as it was. */
+  version: number;
 }>;
 
 /** What a member sees of an administrator proxy in settings: no address, login or password. */
@@ -133,6 +143,11 @@ export type ProxyWriteInput = Readonly<{
   port: number;
   protocol: ProxyProtocol;
 }>;
+
+/** An update: what is absent keeps its value, and `expectedVersion` guards the whole change. */
+export type ProxyUpdateInput = Partial<ProxyWriteInput> & Readonly<{ expectedVersion: number }>;
+
+export type ProxyDeleteInput = Readonly<{ expectedVersion: number }>;
 
 const proxyItem = (base: string, id: string) => `${base}/${encodeURIComponent(id)}`;
 

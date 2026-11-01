@@ -1,16 +1,17 @@
+import { PROXY_LIMITS, isProxyCountry, isProxyProtocol, type ProxyProtocol } from "./proxies";
 import { WORKSPACE_SECRET_KINDS, isWorkspaceEnvName, isWorkspaceSecretId, type WorkspaceSecretKind } from "./workspaceSecrets";
 
 /**
  * Client-safe contract of the answer cards for changes the agent made, or
- * proposed, to the user's own secrets, Skills, Assistants and custom
- * sub-agents (`manage_secret`, `manage_skill`, `manage_assistant`,
- * `create_subagent`, `edit_subagent`, `delete_subagent`). A Skill save keeps
+ * proposed, to the user's own secrets, Skills, Assistants, custom sub-agents
+ * and proxies (`manage_secret`, `manage_skill`, `manage_assistant`,
+ * `create_subagent`, `edit_subagent`, `delete_subagent`, `manage_proxy`). A Skill save keeps
  * its own card (`skillSaves.ts`). A change already happened when its card
  * shows. A proposal (`delete_proposed`, `publish_proposed`) changed nothing:
  * only the user's click in the card performs it, through the same owner
  * route as Studio, and the route refuses it as a conflict when the resource
  * changed since the proposal (a secret's revision, a Skill's, an
- * Assistant's or a custom sub-agent's definition version).
+ * Assistant's or a custom sub-agent's definition version, a proxy's version).
  */
 
 /** Cards one answer shows; later ones are left out. */
@@ -22,7 +23,7 @@ export const RESOURCE_CHANGE_TASKS_LIMIT = 5;
 export const RESOURCE_CHANGE_NAMES_LIMIT = 16;
 /** UTF-16 lengths the decoder accepts; producers clip with `clipResourceChangeText`. */
 export const RESOURCE_CHANGE_TEXT_LIMITS = Object.freeze({
-  assistantName: 80, groupName: 200, secretName: 120, skillName: 256, subagentName: 48, summary: 300, taskTitle: 120
+  assistantName: 80, groupName: 200, proxyName: PROXY_LIMITS.nameMaxLength, secretName: 120, skillName: 256, subagentName: 48, summary: 300, taskTitle: 120
 });
 export const SECRETS_LIBRARY_PATH = "/?library=secrets";
 export const ASSISTANTS_LIBRARY_PATH = "/?library=assistants";
@@ -161,7 +162,31 @@ export type SubagentChangeCard = Readonly<{
   defaultChange?: SubagentDefaultChange;
 }>;
 
-export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard | SubagentChangeCard;
+/**
+ * A personal proxy the agent saved or changed, or proposes deleting. A creation's Undo deletes it, guarded by
+ * `proxyVersion`; a confirmed deletion is guarded the same way. An update has no Undo: a replaced password is not kept.
+ * The endpoint, the login and the password stay off the card, which travels with the answer.
+ */
+export type ProxyChangeCard = Readonly<{
+  version: 1;
+  resource: "proxy";
+  action: "created" | "updated" | "delete_proposed";
+  proxyId: string;
+  /** The version the change left, or the one the proposal saw. */
+  proxyVersion: number;
+  name: string;
+  protocol: ProxyProtocol;
+  country: string | null;
+  domainHints: readonly string[];
+  /** `updated` only: the name before a rename. */
+  previousName: string | null;
+  /** `updated` only: the password was replaced or removed; the earlier one is not kept. */
+  passwordChanged: boolean;
+  /** `delete_proposed` only: this proposal's own identity. */
+  proposalId: string | null;
+}>;
+
+export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard | SubagentChangeCard | ProxyChangeCard;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -309,12 +334,28 @@ function decodeSubagentCard(value: Record<string, unknown>): SubagentChangeCard 
     consequences, proposalId: value.proposalId, ...(defaultChange ? { defaultChange } : {}) };
 }
 
+function decodeProxyCard(value: Record<string, unknown>): ProxyChangeCard | null {
+  if (!exact(value, ["version", "resource", "action", "proxyId", "proxyVersion", "name", "protocol", "country", "domainHints", "previousName",
+    "passwordChanged", "proposalId"]) || (value.action !== "created" && value.action !== "updated" && value.action !== "delete_proposed") ||
+    !id(value.proxyId) || !positive(value.proxyVersion) || !text(value.name, limits.proxyName) || !isProxyProtocol(value.protocol) ||
+    !(value.country === null || isProxyCountry(value.country)) ||
+    !(value.previousName === null || (value.action === "updated" && text(value.previousName, limits.proxyName))) ||
+    typeof value.passwordChanged !== "boolean" || (value.passwordChanged && value.action !== "updated") ||
+    !proposalIdentity(value.proposalId, value.action === "delete_proposed")) return null;
+  const domainHints = list(value.domainHints, PROXY_LIMITS.hintsPerProxy, (hint) => text(hint, PROXY_LIMITS.hintMaxLength) ? hint : null);
+  if (!domainHints) return null;
+  return { version: 1, resource: "proxy", action: value.action, proxyId: value.proxyId, proxyVersion: value.proxyVersion, name: value.name,
+    protocol: value.protocol, country: value.country, domainHints, previousName: value.previousName, passwordChanged: value.passwordChanged,
+    proposalId: value.proposalId };
+}
+
 export function decodeResourceChangeCard(value: unknown): ResourceChangeCard | null {
   if (!record(value) || value.version !== 1) return null;
   if (value.resource === "secret") return decodeSecretCard(value);
   if (value.resource === "skill") return decodeSkillCard(value);
   if (value.resource === "assistant") return decodeAssistantCard(value);
   if (value.resource === "subagent") return decodeSubagentCard(value);
+  if (value.resource === "proxy") return decodeProxyCard(value);
   return null;
 }
 
@@ -331,6 +372,7 @@ export function resourceChangeCardKey(card: ResourceChangeCard): string {
       : `assistant:${card.assistantId}:${card.action}:${card.definitionVersion}`;
     case "subagent": return card.proposalId ? `subagent:${card.definitionId}:proposal:${card.proposalId}`
       : `subagent:${card.definitionId}:${card.action}:${card.definitionVersion}${card.defaultChange ? `:default:${card.defaultChange.changeId}` : ""}`;
+    case "proxy": return card.proposalId ? `proxy:${card.proxyId}:proposal:${card.proposalId}` : `proxy:${card.proxyId}:${card.action}:${card.proxyVersion}`;
   }
 }
 
