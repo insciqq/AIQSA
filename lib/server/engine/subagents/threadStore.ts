@@ -7,6 +7,7 @@ import {
   type EndedSubagentCallResult,
   type SubagentErrorCode
 } from "../../../contracts/subagents";
+import { activeRunControllerRegistry } from "../../runs/activeRunControllerRegistry";
 import { dispatchableModelRunStatuses, json } from "../../runs/prismaRepositoryShared";
 import { threadOnBranch } from "../../subagents/branchPath";
 import { childAdmissionRefusal, mailboxWriter, turnMainRunId, turnsOfMainRuns } from "../../subagents/nesting";
@@ -132,12 +133,15 @@ function interruptedResult(name: string, turn: Readonly<{ modelId: string; reaso
 /**
  * Ends the chat's foreground turns whose parent run is no longer active, so
  * they neither count toward the cap nor keep their thread busy; returns how
- * many it ended. A background turn is its own run's to settle.
+ * many it ended. A background turn is its own run's to settle, and so is a
+ * foreground one while its run is still ending here: Stop marks a run ended
+ * before it stops its sub-agents.
  */
 async function endOrphanedForegroundTurns(tx: Prisma.TransactionClient, chatId: string, userId: string): Promise<number> {
   const orphans = await tx.subagentTurn.findMany({
     select: { ...turnSelect, thread: { select: { name: true } } },
-    where: { chatId, mode: "foreground", parentRun: { status: { notIn: dispatchableModelRunStatuses } }, state: { in: ACTIVE }, userId }
+    where: { chatId, mode: "foreground", parentRun: { id: { notIn: [...activeRunControllerRegistry.executing()] },
+      status: { notIn: dispatchableModelRunStatuses } }, state: { in: ACTIVE }, userId }
   });
   for (const turn of orphans) {
     await tx.subagentTurn.updateMany({

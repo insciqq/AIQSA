@@ -4,6 +4,7 @@ import { SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS } from "../../../contracts/subage
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { prisma } from "../../prisma";
+import { activeRunControllerRegistry } from "../../runs/activeRunControllerRegistry";
 import type { SubagentBinding } from "../../subagents/ports";
 import { createToolCallStore } from "../toolCallStore";
 import type { TranscriptItem } from "../transcript";
@@ -292,6 +293,22 @@ describe("sub-agent threads on PostgreSQL", () => {
         turnId: parentAgent.turnId, userId });
       await expect(child("late")).resolves.toEqual({ code: SUBAGENT_ERROR_CODES.notActive, kind: "refused" });
       await expect(prisma.subagentThread.count({ where: { chatId, name: "late" } })).resolves.toBe(0);
+    });
+
+    it("leaves a foreground turn to a run Stop ended on record but that is still ending here, until that run is gone", async () => {
+      const { chatId, child, parentAgent, userId } = await nested();
+      const admitted = await child("one");
+      if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+      const lease = activeRunControllerRegistry.register(parentAgent.runId)!;
+      await prisma.modelRun.update({ data: { status: "cancelled" }, where: { id: parentAgent.runId } });
+      activeRunControllerRegistry.abort(parentAgent.runId);
+      try {
+        await expect(store.endOrphanedTurns({ chatId, userId })).resolves.toBe(0);
+        await expect(prisma.subagentTurn.findUniqueOrThrow({ where: { id: admitted.turn.id } })).resolves.toMatchObject({ state: "running" });
+      } finally {
+        lease.release();
+      }
+      await expect(store.endOrphanedTurns({ chatId, userId })).resolves.toBe(1);
     });
 
     it("ends a foreground child orphaned by its background parent's run, keeps its result for the parent, and goes with it", async () => {

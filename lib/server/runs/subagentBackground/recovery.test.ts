@@ -53,6 +53,8 @@ describe("background sub-agent recovery", () => {
     await vi.waitFor(() => expect(wakeUps).toHaveLength(1));
     expect(wakeUps[0]).toEqual({ chatId: "chat-a", turnIds: ["turn-chat-a-one", "turn-chat-a-two"] });
     expect(store.strandedInterrupts).toBe(1);
+    // A run still ending here keeps its foreground turns too: Stop's cascade settles them, as what they are.
+    expect(store.strandedLiveRunIds).toEqual(["run-chat-b-three"]);
   });
 
   it("keeps a cut-off run whose Workspace authority could not be retired for the next pass, then settles it and owes its callback", async () => {

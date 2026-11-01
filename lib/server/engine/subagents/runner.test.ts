@@ -957,6 +957,28 @@ describe("a sub-agent's children", () => {
     expect(stopChildren).toHaveBeenCalledWith({ chatId: "chat", threadId: "thread-1", userId: "user" });
   });
 
+  it.each(["parent_stopped", "deadline"] as const)("settles every level as stopped behind a slow child's stop, on %s", async (reason) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const stopChildren = vi.fn(async () => {
+      await gate;
+      return 1;
+    });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true }), callChild("right", "c2")] }, { hang: true }],
+      { children: childHost({ background: backgroundControl({ stopChildren }) }) });
+    await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(ctx.requests).toHaveLength(2));
+    const stopping = ctx.runner.stopAll(reason);
+    await vi.waitFor(() => expect(stopChildren).toHaveBeenCalled());
+    // The parent's row stays active behind its children, which is the window a recovery pass must leave alone.
+    expect(ctx.settled.map((entry) => entry.turnId)).not.toContain("turn-1");
+    release();
+    await stopping;
+    const ended = Object.fromEntries(ctx.settled.map((entry) => [entry.turnId, entry.result]));
+    expect(ended["turn-1"]).toMatchObject({ reason, state: "stopped" });
+    expect(ended["child-turn-1"]).toMatchObject({ reason, state: "stopped" });
+  });
+
   it("never lets a child's start outlive a parent stopped beside it, whose call to start it was still reading the usage limits", async () => {
     let reached!: () => void;
     let release!: () => void;
