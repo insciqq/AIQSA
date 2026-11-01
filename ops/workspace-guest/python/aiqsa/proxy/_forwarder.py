@@ -20,11 +20,15 @@ navigates, and closes the site's tunnels so that Chromium's pooled sockets canno
 different proxies for one site therefore share the last choice; the host tells the other one. Commands do better:
 `aiqsa-browser proxied` carries the choice in their proxy URL's user name, per connection, leaving the route alone.
 
-What is on disk. The plan is reread when its file changes, which is the next install. A different plan (the newest
-install wins, as for the VM's SSH identities and files) restarts failures and routes and closes tunnels through a
-proxy it dropped or moved. Which proxy a site stays on, and where each rotation stands, are kept beside it, so they
-hold across a chat's runs and VM stops; a write lost to a VM stop costs at most a rotation step. No log line carries
-a password, an address or a site.
+What is on disk. The plan is reread when its file changes. A forwarder runs because a plan was expected, so only an
+explicitly empty plan means "no proxies": a file that is gone or unreadable refuses everything rather than guessing.
+A different plan restarts failures and routes and closes every tunnel it would not open now, a direct one included.
+Which proxy a site stays on, and where each rotation stands, are kept beside it, so they hold across a chat's runs and
+VM stops; a write lost to a VM stop costs at most a rotation step. No log line carries a password, an address or a site.
+
+A connection takes time to establish, and a route or plan can change meanwhile. So `_open` notes the site's epoch when
+it decides and checks it again when the stream is ready, in the same tick that registers the tunnel: a stale stream is
+closed and the decision made once more, never published.
 """
 
 from __future__ import annotations
@@ -179,8 +183,9 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, limi
 
 
 class _Tunnel:
-    def __init__(self, site: str, proxy_id: Optional[str], pinned: bool, *writers: asyncio.StreamWriter):
-        self.site = site
+    def __init__(self, host: str, proxy_id: Optional[str], pinned: bool, *writers: asyncio.StreamWriter):
+        self.host = host
+        self.site = site_of(host)
         self.proxy_id = proxy_id
         #: Chosen by the command per connection, so a route for its site does not concern it.
         self.pinned = pinned
@@ -201,6 +206,9 @@ class Forwarder:
         self._plan_mark: Any = object()
         self.state: selection.State = self._load_state()
         self.routes: Dict[str, Dict[str, str]] = {}
+        #: Bumped when the plan changes, and per site when its route moves: what a connection being established checks.
+        self.plan_epoch = 0
+        self.route_epochs: Dict[str, int] = {}
         self.outcomes: Dict[str, Dict[str, Any]] = {}
         self.tunnels: Set[_Tunnel] = set()
         self.connections = 0
@@ -275,22 +283,33 @@ class Forwarder:
         self._plan_mark = mark
         previous = self.plan
         try:
-            self.plan, self.plan_invalid = _plan.load(self.plan_path), False
+            self.plan = _plan.load(self.plan_path)
         except _plan.PlanInvalid:
-            self.plan, self.plan_invalid = None, True
+            self.plan = None
+        # A forwarder runs because a plan was expected: gone or unreadable is a gap, and only an empty plan says "none".
+        self.plan_invalid = self.plan is None
         # Each run of a chat installs its plan, a sub-agent's starting mid-turn too: the same plan changes nothing.
         if previous is not None and self.plan is not None and previous.fingerprint == self.plan.fingerprint:
             return
         # A later run's plan: failures and explicit routes start over; where each site stays and each rotation stand hold.
+        self.plan_epoch += 1
         self.state = {**self.state, "failed": {}}
         self.routes.clear()
         self.outcomes.clear()
+        self._close_what_the_plan_would_not_open(previous)
+
+    def _close_what_the_plan_would_not_open(self, previous: Optional[_plan.Plan]) -> None:
+        """A site the new plan sends through a proxy must not keep a direct tunnel, and no tunnel keeps a proxy that left or moved."""
         for tunnel in list(self.tunnels):
-            if tunnel.proxy_id is None:
+            moved = tunnel.proxy_id is not None and (self.plan is None or previous is None or
+                                                     self.plan.endpoint(tunnel.proxy_id) != previous.endpoint(tunnel.proxy_id))
+            if tunnel.pinned:
+                # A command's own choice, direct included, holds for its connection; a proxy it named can still be gone.
+                if moved:
+                    tunnel.close()
                 continue
-            before = previous.endpoint(tunnel.proxy_id) if previous else None
-            after = self.plan.endpoint(tunnel.proxy_id) if self.plan else None
-            if after is None or before != after:
+            decision = self._select(tunnel.host, None, apply=False)
+            if moved or decision["kind"] == "failed" or decision.get("proxyId") != tunnel.proxy_id:
                 tunnel.close()
 
     def _entries(self) -> List[Dict[str, Any]]:
@@ -312,6 +331,10 @@ class Forwarder:
 
     def _explicit_for(self, host: str, pinned: Optional[Mapping[str, str]]) -> Optional[Mapping[str, str]]:
         return pinned if pinned is not None else self.routes.get(site_of(host))
+
+    def _epoch(self, host: str, pinned: Optional[Mapping[str, str]]) -> Tuple[int, int]:
+        """What must not change while a connection is established. A command's own choice takes no route, only the plan."""
+        return self.plan_epoch, 0 if pinned is not None else self.route_epochs.get(site_of(host), 0)
 
     def _remember(self, host: str, outcome: Dict[str, Any]) -> None:
         site = site_of(host)
@@ -339,13 +362,37 @@ class Forwarder:
         attempts = [] if attempts is None else attempts
         loop = asyncio.get_running_loop()
         deadline = loop.time() + OPEN_BUDGET
+        decided_again = False
+
+        def stale(epoch: Tuple[int, int]) -> bool:
+            self.refresh_plan()
+            return self._epoch(host, pinned) != epoch
+
         while True:
+            self.refresh_plan()
+            epoch = self._epoch(host, pinned)
             explicit = self._explicit_for(host, pinned)
             decision = self._select(host, explicit)
             if decision["kind"] == "failed":
                 raise self._failed(host, decision["code"], attempts, decision["tried"])
             if decision["kind"] == "direct":
-                return await self._open_direct(host, port, decision), None, False
+                try:
+                    direct = await asyncio.wait_for(self.network.open_direct(host, port), ATTEMPT_TIMEOUT * 2)
+                except (asyncio.TimeoutError, _upstream.UpstreamFailure) as error:
+                    if stale(epoch) and not decided_again:
+                        decided_again = True
+                        continue
+                    code = error.code if isinstance(error, _upstream.UpstreamFailure) else "site_timeout"
+                    self._remember(host, {"kind": "direct", "reason": decision["reason"], "code": code})
+                    raise Refusal(403 if code == "proxy_target_refused" else 502, code, f"{code}: the direct connection failed.") from None
+                if stale(epoch):
+                    _abort(direct[1])
+                    if decided_again:
+                        raise self._failed(host, "proxy_route_changed", attempts) from None
+                    decided_again = True
+                    continue
+                self._remember(host, {"kind": "direct", "reason": decision["reason"]})
+                return direct, None, False
             proxy_id = decision["proxyId"]
             label = self.plan.label(proxy_id)  # type: ignore[union-attr]
             if proxy_id in seen:
@@ -361,11 +408,23 @@ class Forwarder:
                     raise asyncio.TimeoutError()
                 stream = await asyncio.wait_for(self.network.open_proxy(proxy, host, port, tunnel=tunnel), min(ATTEMPT_TIMEOUT, remaining))
             except (asyncio.TimeoutError, _upstream.UpstreamFailure) as error:
+                if stale(epoch) and not decided_again:
+                    # It was the old route's attempt: its failure says nothing about the new one.
+                    decided_again = True
+                    seen.discard(proxy_id)
+                    continue
                 code = error.code if isinstance(error, _upstream.UpstreamFailure) else "proxy_timeout"
                 attempts.append({**label, "code": code})
                 if decision["reason"] == "explicit":
                     raise self._failed(host, code, attempts) from None
                 self._state_changed(selection.record_failure(host, proxy_id, self.state))
+                continue
+            if stale(epoch):
+                _abort(stream[1])
+                if decided_again:
+                    raise self._failed(host, "proxy_route_changed", attempts) from None
+                decided_again = True
+                seen.discard(proxy_id)
                 continue
             # A page's later requests stay on this proxy; what it took to get here stays part of the site's story.
             previous = self.outcomes.get(site_of(host)) or {}
@@ -373,19 +432,6 @@ class Forwarder:
             self._remember(host, {"kind": "proxy", "reason": decision["reason"], "hint": decision["hint"], **label,
                                   **({"movedFrom": moved} if moved else {})})
             return stream, proxy, decision["reason"] == "explicit"
-
-    async def _open_direct(self, host: str, port: int, decision: Mapping[str, Any]) -> _upstream.Stream:
-        try:
-            stream = await asyncio.wait_for(self.network.open_direct(host, port), ATTEMPT_TIMEOUT * 2)
-        except asyncio.TimeoutError:
-            code = "site_timeout"
-        except _upstream.UpstreamFailure as error:
-            code = error.code
-        else:
-            self._remember(host, {"kind": "direct", "reason": decision["reason"]})
-            return stream
-        self._remember(host, {"kind": "direct", "reason": decision["reason"], "code": code})
-        raise Refusal(403 if code == "proxy_target_refused" else 502, code, f"{code}: the direct connection failed.")
 
     def _check_target(self, request: _Request) -> str:
         if address.is_refused_target(request.host):
@@ -436,7 +482,7 @@ class Forwarder:
     async def _tunnel(self, host: str, request: _Request, pinned: Optional[Mapping[str, str]],
                       reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         (up_reader, up_writer), proxy, _explicit = await self._open(host, request.port, pinned, tunnel=True)
-        tunnel = _Tunnel(site_of(host), proxy["id"] if proxy else None, pinned is not None, writer, up_writer)
+        tunnel = _Tunnel(host, proxy["id"] if proxy else None, pinned is not None, writer, up_writer)
         self.tunnels.add(tunnel)
         try:
             writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -480,7 +526,7 @@ class Forwarder:
         attempts: List[Dict[str, str]] = []
         while True:
             (up_reader, up_writer), proxy, explicit = await self._open(host, request.port, pinned, tunnel=False, seen=seen, attempts=attempts)
-            tunnel = _Tunnel(site_of(host), proxy["id"] if proxy else None, pinned is not None, writer, up_writer)
+            tunnel = _Tunnel(host, proxy["id"] if proxy else None, pinned is not None, writer, up_writer)
             self.tunnels.add(tunnel)
             sending: Optional[asyncio.Future] = None
             try:
@@ -491,7 +537,7 @@ class Forwarder:
                 status = head[9:12]
                 if status == b"407" and proxy is not None and proxy["protocol"] != "socks5":
                     # An HTTP proxy's answer to its own credentials, in band: its failure, moved on from while nothing was sent back.
-                    attempts.append({**self.plan.label(proxy["id"]), "code": "proxy_auth_failed"})  # type: ignore[union-attr]
+                    attempts.append({"id": proxy["id"], "name": proxy["name"], "country": proxy["country"], "code": "proxy_auth_failed"})
                     if explicit or length or chunked:
                         raise self._failed(host, "proxy_auth_failed", attempts)
                     self._state_changed(selection.record_failure(host, proxy["id"], self.state))
@@ -560,6 +606,7 @@ class Forwarder:
             self.routes[site] = {"kind": choice["kind"], **({"ref": choice["ref"]} if choice["kind"] == "proxy" else {})}
         moved = before != self.routes.get(site)
         if moved:
+            self.route_epochs[site] = self.route_epochs.get(site, 0) + 1
             # Chromium pools sockets per host, so an open tunnel would keep the old exit.
             target = decision.get("proxyId") if decision["kind"] == "proxy" else None
             for tunnel in list(self.tunnels):
