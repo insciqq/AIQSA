@@ -1,5 +1,8 @@
+import type { PrismaClient } from "@prisma/client";
+import type { StorageAdapter } from "../uploads/storage";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createSavedToolResultReader,
   executeReadToolResult,
   saveToolResultText,
   TOOL_RESULT_LIMITS,
@@ -113,4 +116,19 @@ describe("read_tool_result", () => {
     const result = await executeReadToolResult(call({ handle }), context(null));
     expect(json(result)?.error).toBe("tool_result_not_found");
   });
+});
+
+
+it("does not carry a saved-result handle into Continue in new chat", async () => {
+  const findFirst = vi.fn(async ({ where }: { where: { modelRun: { chatId: string; userId: string } } }) =>
+    where.modelRun.chatId === "original" && where.modelRun.userId === "owner" ? {
+      byteSize: 32, checksum: "a".repeat(64), formatVersion: 1, inlineText: JSON.stringify("Original result"), maskable: false,
+      sourceKind: "workspace", sourceTruncated: false, state: "READY", storageKey: null, storageMode: "INLINE",
+      toolCall: { arguments: {}, toolName: "read_chat_file" }
+    } : null);
+  const reader = createSavedToolResultReader({ prisma: { toolObservation: { findFirst } } as unknown as PrismaClient,
+    storage: {} as unknown as StorageAdapter });
+  expect(json(await executeReadToolResult(call({ handle }), { reader, chatId: "original", userId: "owner" }))?.text).toBe("Original result");
+  expect(json(await executeReadToolResult(call({ handle }), { reader, chatId: "continued", userId: "owner" }))?.error).toBe("tool_result_not_found");
+  expect(json(await executeReadToolResult(call({ handle }), { reader, chatId: "original", userId: "other" }))?.error).toBe("tool_result_not_found");
 });

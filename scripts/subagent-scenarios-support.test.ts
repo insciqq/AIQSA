@@ -3,17 +3,19 @@ import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { read, utils } from "xlsx";
 import { parseSpreadsheetDocument } from "../lib/server/parsing/spreadsheet";
+import { zipEntries } from "../lib/server/parsing/spreadsheetArchive.testFixtures";
+import { validateUpload } from "../lib/server/uploads/validation";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
-  SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
+  SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
   bindingEvidence, blindImageEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence,
   mainImageToolEvidence, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
-  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
-  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
+  oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
+  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
   stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type LWorkspaceCall, type MEvidence, type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
@@ -47,7 +49,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(15);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(16);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
@@ -56,6 +58,12 @@ describe("sub-agent scenario selection and options", () => {
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("M");
     expect(selectedSubagentScenarios("m")).toEqual(["M"]);
     expect(subagentHarnessOptions({}, ["M"], "m")).toMatchObject({ restart: null, secondModel: null, textModel: null });
+  });
+
+  it("runs N only when named, with nothing beyond the stand", () => {
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("N");
+    expect(selectedSubagentScenarios("n")).toEqual(["N"]);
+    expect(subagentHarnessOptions({}, ["N"], "m")).toMatchObject({ restart: null, secondModel: null, textModel: null });
   });
 
   it("runs L only when named, with nothing beyond the stand", () => {
@@ -230,6 +238,74 @@ describe("agents talking (M)", () => {
       toolName: "send_agent_message" }), tool({ threadId: "b", toolName: "send_agent_message" }), tool({ threadId: "a", toolName: "list_agents" })];
     expect(agentToolEvidence(rows, "a", "send_agent_message")).toEqual({ calls: 2, codes: ["subagent_message_limit_reached"], succeeded: 1 });
     expect(agentToolEvidence(rows, null, "send_agent_message")).toEqual({ calls: 0, codes: [], succeeded: 0 });
+  });
+});
+
+describe("an earlier file read without a Workspace (N)", () => {
+  const facts = scenarioNFacts("0123456789ABCDEF");
+  const runs = { first: "run-first", second: "run-second" };
+  const chatFileCall = (runId: string, state: string, resultCode: string | null = null) =>
+    ({ resultCode, runId, state, toolName: "read_chat_file" }) as unknown as ToolRow;
+  const passing = { answerHasCodeWord: true, firstAnswerHasCodeWord: false, firstTerminal: "complete", secondTerminal: "complete", sessionStarted: false,
+    tools: scenarioNToolEvidence([chatFileCall(runs.second, "complete")], runs) };
+
+  it("builds a Word package the upload gate takes as a document", () => {
+    const validation = validateUpload({ byteSize: facts.document.byteLength, bytes: facts.document, fileName: SCENARIO_N_FILE_NAME,
+      maxBytes: 1_000_000, mimeType: SCENARIO_N_MIME_TYPE, scope: "attachment" });
+    expect(validation).toMatchObject({ kind: "document", ok: true });
+    expect(zipEntries(facts.document)[0]?.name).toBe("[Content_Types].xml");
+  });
+
+  it("holds three headed sections with the per-run word only in the third", () => {
+    const xml = zipEntries(facts.document).find((entry) => entry.name === "word/document.xml")?.data.toString("utf8") ?? "";
+    const heading = (section: number) => xml.indexOf(`Раздел ${section}.`);
+    expect(xml.match(/<w:pStyle w:val="Heading1"\/>/gu)).toHaveLength(3);
+    expect(heading(1)).toBeGreaterThan(0);
+    expect(heading(2)).toBeGreaterThan(heading(1));
+    expect(heading(3)).toBeGreaterThan(heading(2));
+    expect(xml.indexOf(facts.codeWord)).toBeGreaterThan(heading(3));
+    expect(xml.split(facts.codeWord)).toHaveLength(2);
+    expect(facts.codeWord).toBe(facts.codeWord.toLowerCase());
+    expect(scenarioNFacts("fedcba9876543210").codeWord).not.toBe(facts.codeWord);
+  });
+
+  it("asks exactly what each turn needs and gives the word away nowhere", () => {
+    const first = SUBAGENT_PROMPTS.N.first();
+    const second = SUBAGENT_PROMPTS.N.second();
+    expect(first).toContain(SCENARIO_N_FILE_NAME);
+    expect(first).not.toContain("разделе 3");
+    expect(second).toContain("разделе 3");
+    expect(second).toContain("read_chat_file");
+    for (const prompt of [first, second]) expect(prompt.toLowerCase()).not.toContain("0123456789abcdef");
+  });
+
+  it("requires a parsed document holding section 3 before anything paid is sent", () => {
+    const ready = { extractedTextNull: false, processingErrorCode: null, status: "ready" };
+    expect(scenarioNUploadChecks(ready, true)).toEqual([]);
+    expect(scenarioNUploadChecks(null, false)).toEqual(["upload_not_settled"]);
+    expect(scenarioNUploadChecks(ready, false)).toEqual(["upload_text_lacks_section_3"]);
+    expect(scenarioNUploadChecks({ extractedTextNull: true, processingErrorCode: "parser_unavailable", status: "failed" }, false))
+      .toEqual(["upload_not_ready", "upload_has_no_text"]);
+  });
+
+  it("counts the reads per turn and every Workspace tool", () => {
+    const rows = [chatFileCall(runs.first, "complete"), chatFileCall(runs.second, "error"), chatFileCall(runs.second, "complete"), chatFileCall("sub-agent-run", "complete"),
+      { runId: runs.second, state: "complete", toolName: "mcp_workspace_sandbox_shell_0123456789" } as unknown as ToolRow];
+    expect(scenarioNToolEvidence(rows, runs)).toEqual({ firstTurnReads: 1, secondTurnReads: 2, secondTurnReadsSucceeded: 1, workspaceCalls: 1 });
+  });
+
+  it("passes only two finished runs, no Workspace, and the word from a successful read", () => {
+    expect(oracleN(passing)).toEqual({ failed: [], counts: { answerHasCodeWord: 1, firstTurnReads: 0, secondTurnReads: 1,
+      secondTurnReadsSucceeded: 1, sessionStarted: 0, workspaceCalls: 0 } });
+    expect(oracleN({ ...passing, answerHasCodeWord: false, firstTerminal: "error", secondTerminal: "error",
+      tools: scenarioNToolEvidence([], runs) }).failed)
+      .toEqual(["first_run_not_complete", "second_run_not_complete", "code_word_not_in_answer", "chat_file_not_read"]);
+    expect(oracleN({ ...passing, tools: scenarioNToolEvidence([chatFileCall(runs.second, "error", "chat_file_not_found")], runs) }).failed).toEqual(["chat_file_read_failed"]);
+    expect(oracleN({ ...passing, tools: scenarioNToolEvidence([chatFileCall(runs.second, "complete", "chat_file_no_text")], runs) }).failed).toEqual(["chat_file_read_failed"]);
+    expect(oracleN({ ...passing, tools: scenarioNToolEvidence([chatFileCall(runs.first, "complete")], runs) }).failed).toEqual(["chat_file_not_read"]);
+    expect(oracleN({ ...passing, sessionStarted: true }).failed).toEqual(["workspace_session_started"]);
+    expect(oracleN({ ...passing, tools: { ...passing.tools, workspaceCalls: 1 } }).failed).toEqual(["workspace_tool_called"]);
+    expect(oracleN({ ...passing, firstAnswerHasCodeWord: true }).failed).toEqual(["code_word_in_first_answer"]);
   });
 });
 

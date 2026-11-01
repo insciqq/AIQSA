@@ -114,7 +114,7 @@ type LiveChannel = McpHolder & { execs: Map<string, string>; idle?: ReturnType<t
 
 type LocalSession = McpHolder & {
   activeCalls: Map<string, Readonly<{ controller: AbortController; modelRunId: string }>>;
-  execOwners: Map<string, string>;
+  execOwners: Map<string, Readonly<{ agentId: string; modelRunId: string }>>;
   /** The live browser channel's own MCP connection and its streamers by run (`browserLive`). */
   live?: LiveChannel;
   runtimeSandboxId: string;
@@ -1360,7 +1360,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       // registry is the authority and may legitimately address an execution
       // this runner process never started (after a restart).
       const cachedOwner = execSessionId ? session.execOwners.get(execSessionId) : undefined;
-      if (!execSessionId || (cachedOwner !== undefined && cachedOwner !== input.modelRunId)) {
+      if (!execSessionId || (cachedOwner !== undefined && cachedOwner.modelRunId !== input.modelRunId)) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
     }
@@ -1443,7 +1443,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         }
         const id = execSessionIdFrom(result);
         if (!id) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-        session.execOwners.set(id, input.modelRunId);
+        session.execOwners.set(id, { agentId: input.agent ? workspaceAgentId(input.agent) : WORKSPACE_UNATTRIBUTED_AGENT_ID,
+          modelRunId: input.modelRunId });
         mcp.execs.add(id);
         const normalized = { ...boundedMcpResult(result, this.config.toolOutputMaxBytes, input.originalName), execSessionId: id };
         finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed", code: normalized.errorCode });
@@ -1592,14 +1593,15 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
 
   private cachedExecutionIds(session: LocalSession, modelRunId: string): string[] {
     return [...session.execOwners.entries()]
-      .filter(([, ownerRunId]) => ownerRunId === modelRunId)
+      .filter(([, owner]) => owner.modelRunId === modelRunId)
       .map(([id]) => id);
   }
 
   /**
    * Observe the leader after TERM and KILL before releasing its handle.
    * The pinned MCP cannot certify escaped/background descendants even after
-   * leader exit, so the durable owner still requires an exact VM stop.
+   * leader exit. Only the agent's process proof can discharge that ownership;
+   * without it the durable owner still requires an exact VM stop.
    */
   private async terminateExecutionIds(
     session: LocalSession,
@@ -1634,10 +1636,16 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         exited = execPollReportsLeaderExit(await poll(execSessionId));
       }
       if (exited && await call("sandbox_exec_close", { execSessionId })) mcp.execs.delete(execSessionId);
-      // Retain cached ownership as well: handle disposal cannot erase an
-      // unresolved descendant obligation before the disk-preserving stop.
     }));
-    return unknown;
+    const owners = new Map(ids.map((id) => [id, session.execOwners.get(id)]));
+    const agents = new Set([...owners.values()].flatMap((owner) => owner ? [owner.agentId] : []));
+    const closedAgents = new Set<string>();
+    await Promise.all([...agents].map(async (agentId) => {
+      const result = await this.stopAgentProcesses(session, agentId, signal);
+      if (result.outcome === "closed") closedAgents.add(agentId);
+    }));
+    return ids.map<WorkspaceExecutionTermination>((runtimeExecSessionId) => ({ runtimeExecSessionId,
+      outcome: closedAgents.has(owners.get(runtimeExecSessionId)?.agentId ?? "") ? "closed" : "unknown" }));
   }
 
   async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {
@@ -1656,16 +1664,27 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   async terminateAgentProcesses(
     input: Parameters<NonNullable<WorkspaceRuntime["terminateAgentProcesses"]>>[0]
   ): Promise<WorkspaceAgentProcessTermination> {
-    const request = workspaceAgentStopRequest(input.agentId);
     const session = this.session(input.sessionId, input.runtimeSandboxId);
-    input.signal?.throwIfAborted();
+    return this.stopAgentProcesses(session, input.agentId, input.signal);
+  }
+
+  private async stopAgentProcesses(session: LocalSession, agentId: string, signal?: AbortSignal): Promise<WorkspaceAgentProcessTermination> {
+    const request = workspaceAgentStopRequest(agentId);
+    signal?.throwIfAborted();
     try {
       const deadline = AbortSignal.timeout(WORKSPACE_AGENT_STOP_TIMEOUT_MS + 2_000);
       const result = await readStreamWithAbort(() => session.sandbox.execWith("/usr/bin/python3", (builder) => builder
         .args(["-I", "-c", WORKSPACE_AGENT_STOP_GUEST_SCRIPT]).timeout(WORKSPACE_AGENT_STOP_TIMEOUT_MS).stdinBytes(request)),
-      input.signal ? AbortSignal.any([input.signal, deadline]) : deadline);
+      signal ? AbortSignal.any([signal, deadline]) : deadline);
       if (!result.success || result.stdoutBytes().byteLength > 256) return { outcome: "unknown" };
-      return parseWorkspaceAgentStopOutcome(result.stdout());
+      const stopped = parseWorkspaceAgentStopOutcome(result.stdout());
+      if (stopped.outcome === "closed") {
+        for (const [id, owner] of session.execOwners) {
+          if (owner.agentId === agentId) session.execOwners.delete(id);
+        }
+      }
+      // A leader exit or handle disposal cannot discharge an unproven descendant.
+      return stopped;
     } catch {
       return { outcome: "unknown" };
     }
@@ -1700,7 +1719,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
 
   async collectBrowserSessions(input: Parameters<WorkspaceRuntime["collectBrowserSessions"]>[0]): ReturnType<WorkspaceRuntime["collectBrowserSessions"]> {
     const session = await this.runningSession(input);
-    const terminated = await this.terminateExecutionIds(session, this.cachedExecutionIds(session, input.modelRunId));
+    const terminated = await this.terminateExecutionIds(session, this.cachedExecutionIds(session, input.modelRunId), input.signal);
     if (terminated.some((entry) => entry.outcome === "unknown")) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
     const files: WorkspaceOutputStream[] = [];
     const skipped: WorkspaceBrowserSkipCode[] = [];
@@ -1745,7 +1764,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const session = await this.runningSession(input);
     const quiesced = await this.terminateExecutionIds(
       session,
-      this.cachedExecutionIds(session, input.modelRunId)
+      this.cachedExecutionIds(session, input.modelRunId),
+      input.signal
     ).catch(() => null);
     if (!quiesced || quiesced.some((result) => result.outcome === "unknown")) {
       throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");

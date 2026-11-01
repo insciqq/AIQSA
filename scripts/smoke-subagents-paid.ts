@@ -70,6 +70,19 @@
  *   and `m-pong` count at each other until `subagent_message_limit_reached` ends them. `m-hold` asks a question nobody
  *   answers, and the thread's Stop reaches it in `waiting`. Paid calls: about 60–90 codex-lb requests, most of them the
  *   count, in about 15–30 minutes.
+ * - N: an earlier file read without a Workspace, one chat and two sends, only when named, no sub-agents.
+ *   The Workspace goes off for the installation through `/api/admin/workspace` and comes back on in a
+ *   `finally`; when it cannot, the line says `workspaceRestored: false` and the harness stops, because
+ *   later scenarios need it. A DOCX of three headed sections, with a per-run word only in section 3, goes
+ *   up through `/api/uploads` as the composer sends a document; before anything paid, read-only SQL requires
+ *   `ready`, extracted text and the word in that text (`checksFailed` says otherwise, and that upload stays
+ *   on the stand: no route deletes an unsent attachment). The first send attaches it and asks only for the
+ *   title; the second, attaching nothing, asks what section 3 says and for the word, through `read_chat_file`.
+ *   A first run that does not complete ends the scenario before the second send; a refusal at admission
+ *   lands in `admissionRefusal`. Oracles: both runs complete, the chat has no Workspace session and no
+ *   Workspace tool call, the word is in the second answer and not in the first (matched inside SQL; the word
+ *   stays in memory), and the second run has a `read_chat_file` call that succeeded. Paid calls: about 3–5
+ *   codex-lb requests (first turn 1, second turn 2–3, possibly a title), no System Vision, in about 1–3 minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -126,15 +139,15 @@ import {
 } from "./browser-scenarios-support";
 import {
   TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureTextModel, errorCode,
-  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, standDatabase,
+  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setWorkspaceEnabled, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
-  SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
-  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM,
+  SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
-  scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
+  scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
+  type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
   type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
@@ -211,12 +224,13 @@ type SendAttempt = Readonly<{ code: string; ok: false } | { ok: true; runId: str
 
 /** One send as the composer would make it, now: a refusal comes back, an accepted send gives the admitted run's id. */
 async function trySend(ctx: Context, run: Run, chatId: string, text: string,
-  files: readonly Readonly<{ attachmentId: string; fileName: string; type: "file" }>[] = []): Promise<SendAttempt> {
+  files: readonly Readonly<{ attachmentId: string; fileName: string; type: "file" }>[] = [],
+  controls: Readonly<{ workspace?: Readonly<{ enabled: boolean }> }> = {}): Promise<SendAttempt> {
   const leaf = await activeLeaf(ctx, chatId);
   const known = new Set((await mainRuns(ctx.db, chatId)).map((entry) => entry.id));
   const abort = new AbortController();
   const response = await request(ctx.session.api, `/api/chats/${encodeURIComponent(chatId)}/messages`, { body: {
-    content: { blocks: [{ text, type: "text" }, ...files] }, expectedActiveLeafId: leaf, ...runControls(ctx.model)
+    content: { blocks: [{ text, type: "text" }, ...files] }, expectedActiveLeafId: leaf, ...runControls(ctx.model), ...controls
   }, method: "POST", signal: abort.signal });
   if (!response.ok) return { code: await errorCode(response), ok: false };
   run.streams.push({ abort, drained: discard(response) });
@@ -1052,7 +1066,7 @@ async function scenarioK(ctx: Context, run: Run): Promise<Outcome> {
 
   let blindAnswered = false;
   if (ctx.blind) {
-    const blindRun = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.blind(facts, ctx.blind.id));
+    const blindRun = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.blind(facts, ctx.blind.model.modelId));
     const terminal = await waitRun(ctx, blindRun);
     const { rows } = await ctx.db.query<{ hit: boolean }>(`SELECT m."content"::text ~* '\\mred\\M' AS "hit"
       FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."id" = $1`, [blindRun]);
@@ -1236,6 +1250,83 @@ async function scenarioM(ctx: Context, run: Run): Promise<Outcome> {
   return { success: checks.length === 0, usage };
 }
 
+const N_TURN_MS = 10 * 60_000;
+
+/** Uploads the document as the composer does without a Workspace: no scope. */
+async function uploadDocument(ctx: Context, facts: ScenarioNFacts): Promise<string> {
+  const form = new FormData();
+  form.append("file", new File([Uint8Array.from(facts.document)], SCENARIO_N_FILE_NAME, { type: SCENARIO_N_MIME_TYPE }));
+  const uploaded = decodeUploadAttachmentResponse(await json(ctx.session.api, "/api/uploads", { form, method: "POST", timeoutMs: L_PARSE_MS }));
+  return uploaded?.attachment.id ?? fail("upload_response_invalid");
+}
+
+/** Whether the run's answer holds the word, matched inside SQL so neither leaves it. */
+async function answerHolds(db: PostgresClient, runId: string, word: string): Promise<boolean> {
+  const { rows } = await db.query<{ hit: boolean }>(`SELECT strpos(lower(m."content"::text), $2) > 0 AS "hit"
+    FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."id" = $1`, [runId, word]);
+  return rows[0]?.hit === true;
+}
+
+/** N's two turns, with the Workspace already off for the installation. */
+async function noWorkspaceTurns(ctx: Context, run: Run): Promise<Outcome> {
+  const facts = scenarioNFacts(runSecrets(randomBytes(16)).nonce);
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario N");
+  run.chats.push(chat.id);
+  const started = Date.now();
+  const attachmentId = await uploadDocument(ctx, facts);
+  const stored = await settledAttachment(ctx.db, attachmentId);
+  const { rows: parsed } = await ctx.db.query<{ hit: boolean }>(`SELECT coalesce(strpos(lower("extractedText"), $2) > 0, false) AS "hit"
+    FROM "Attachment" WHERE "id" = $1`, [attachmentId, facts.codeWord]);
+  const textHasCodeWord = parsed[0]?.hit === true;
+  const uploadFailures = scenarioNUploadChecks(stored, textHasCodeWord);
+  run.line.upload = { bytes: facts.document.byteLength, extractedTextNull: stored?.extractedTextNull ?? null,
+    processingErrorCode: stableCode(stored?.processingErrorCode), status: stableCode(stored?.status), textHasCodeWord };
+  if (uploadFailures.length > 0) {
+    run.line.checksFailed = uploadFailures;
+    return { success: false, usage: null };
+  }
+
+  const noWorkspace = { workspace: { enabled: false } };
+  const refused = (code: string): Outcome => {
+    Object.assign(run.line, { admissionRefusal: stableCode(code), checksFailed: ["admission_refused"] });
+    return { success: false, usage: null };
+  };
+  const first = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.N.first(), [{ attachmentId, fileName: SCENARIO_N_FILE_NAME, type: "file" }], noWorkspace);
+  if (!first.ok) return refused(first.code);
+  const firstTerminal = await waitRun(ctx, first.runId, N_TURN_MS);
+  Object.assign(run.line, { firstFailureCode: firstTerminal.errorCode, firstTerminal: firstTerminal.status });
+  if (firstTerminal.status !== "complete") {
+    run.line.checksFailed = ["first_run_not_complete"];
+    return { success: false, usage: null };
+  }
+  await waitMainIdle(ctx, chat.id, N_TURN_MS);
+  const second = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.N.second(), [], noWorkspace);
+  if (!second.ok) return refused(second.code);
+  const secondTerminal = await waitRun(ctx, second.runId, N_TURN_MS);
+  Object.assign(run.line, { secondFailureCode: secondTerminal.errorCode, secondTerminal: secondTerminal.status, wallSeconds: seconds(started) });
+
+  const { tools, usage } = await commonEvidence(ctx, run, chat.id);
+  const verdict = oracleN({
+    answerHasCodeWord: await answerHolds(ctx.db, second.runId, facts.codeWord),
+    firstAnswerHasCodeWord: await answerHolds(ctx.db, first.runId, facts.codeWord),
+    firstTerminal: firstTerminal.status, secondTerminal: secondTerminal.status,
+    sessionStarted: await sessionSample(ctx.db, chat.id) !== null,
+    tools: scenarioNToolEvidence(tools, { first: first.runId, second: second.runId })
+  });
+  Object.assign(run.line, { checksFailed: verdict.failed, oracleCounts: verdict.counts });
+  return { success: verdict.failed.length === 0, usage };
+}
+
+/** Later scenarios need the Workspace, so it comes back on whatever happened; `runScenario` stops the harness when it could not. */
+async function scenarioN(ctx: Context, run: Run): Promise<Outcome> {
+  try {
+    await setWorkspaceEnabled(ctx.session.api, false);
+    return await noWorkspaceTurns(ctx, run);
+  } finally {
+    run.line.workspaceRestored = await setWorkspaceEnabled(ctx.session.api, true).then(() => true, () => false);
+  }
+}
+
 async function runScenario(ctx: Context, id: SubagentScenarioId, index: number): Promise<SubagentRunRecord> {
   const run: Run = { chats: [], interactions: [], line: { run: index, scenario: id }, streams: [], tasks: [] };
   const started = Date.now();
@@ -1269,6 +1360,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "K": outcome = await scenarioK(ctx, run); break;
       case "L": outcome = await scenarioL(ctx, run); break;
       case "M": outcome = await scenarioM(ctx, run); break;
+      case "N": outcome = await scenarioN(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
@@ -1287,6 +1379,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
   Object.assign(run.line, cleanup);
   emit(run.line);
   if (!cleaned) fail("cleanup_failed");
+  if (run.line.workspaceRestored === false) fail("workspace_not_restored");
   return { run: index, scenario: id, success: outcome.success, usage: outcome.usage,
     wallSeconds: typeof run.line.wallSeconds === "number" ? run.line.wallSeconds : seconds(started) };
 }

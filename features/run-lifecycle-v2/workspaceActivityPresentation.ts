@@ -382,6 +382,12 @@ export function workspaceOutputStatusCopyV2(
     case "retrying":
       return "The answer completed, but some generated files are still being prepared.";
     case "failed":
+      if (status.errorCode === "workspace_output_limit_exceeded") {
+        return "The answer is kept, but the generated files exceed the download limit. Ask the agent to reduce the output files and export them again.";
+      }
+      if (status.errorCode === "workspace_output_export_failed" || status.errorCode === "workspace_execution_cleanup_failed") {
+        return "The answer is kept, but some generated files could not be prepared for download. Ask the agent to check the existing files and export them again. If Workspace remains unavailable, ask an administrator to restore it.";
+      }
       return "Some generated files could not be prepared for download.";
     default:
       return null;

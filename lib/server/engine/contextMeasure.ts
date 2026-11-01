@@ -6,6 +6,7 @@ import {
   replaysNativeCompaction,
   sameTranscriptOrigin,
   selectTranscript,
+  transcriptUserText,
   type SelectedTranscriptItem,
   type TranscriptImages,
   type TranscriptItem,
@@ -139,14 +140,14 @@ export function contextItemTokens(
   images?: TranscriptImages
 ): number {
   const framing = calibration.framing;
-  if (item.kind === "tool_result" && item.image) {
+  if (item.kind === "tool_result" && (item.image || images?.attached(item))) {
     const attached = images?.attached(item);
     return estimate(item.name) + estimate(item.output) + framing.tool_result +
       (attached ? attached.tokens : estimate(images?.note ?? IMAGE_REFERENCE_NOTE));
   }
   switch (item.kind) {
     case "user":
-      return estimate(item.text) + framing.user;
+      return estimate(transcriptUserText(item)) + framing.user;
     case "assistant_text":
       return (sameTranscriptOrigin(item.origin, target) && item.outputTokens !== undefined
         ? item.outputTokens : estimate(item.text)) + framing.assistant_text;
@@ -197,7 +198,7 @@ export function measureContext(input: Readonly<{
   const later = (entry: SelectedTranscriptItem) => weight(recorded(entry.item), notes);
   const weigh = (entries: readonly SelectedTranscriptItem[]) => entries.reduce((total, entry) => total + later(entry), 0);
   const beyond = (entry: SelectedTranscriptItem) => recorded(entry.item) !== entry.item || (entry.item.kind === "tool_result" &&
-    entry.item.image !== undefined && input.images?.attached(entry.item) !== undefined)
+    input.images?.attached(entry.item) !== undefined)
     ? Math.max(0, weight(entry.item, input.images) - later(entry)) : 0;
   // Run context is rebuilt for every run, so it counts with the fixed part, never as an item added or removed.
   const rebuilt = (entry: SelectedTranscriptItem) => entry.item.kind === "user" && entry.item.runContext === true;

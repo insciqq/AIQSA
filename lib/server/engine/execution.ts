@@ -255,8 +255,14 @@ function maxOutputTokens(request: ProviderRunRequest): number {
 }
 
 /** The failure a terminal error shows: a stable code and a message without values. */
-function failurePayload(error: unknown, workspaceRun: boolean): Readonly<{ code: string; message: string }> {
+function failurePayload(error: unknown, workspaceRun: boolean, answerPublished: boolean): Readonly<{ code: string; message: string }> {
   if (error instanceof EngineFailure) return { code: error.code, message: error.message };
+  if (answerPublished && error instanceof WorkspaceRuntimeError) {
+    if (error.code === "workspace_output_limit_exceeded") return { code: error.code,
+      message: "Your answer is saved, but the generated files exceed the download limit. Ask the agent to reduce the output files and export them again." };
+    if (error.code === "workspace_execution_cleanup_failed") return { code: error.code,
+      message: "Your answer is saved, but Workspace cleanup could not be confirmed and files may not be ready for download. Ask the agent to check the existing files and export them again; if Workspace remains unavailable, ask an administrator to restore it." };
+  }
   if (error instanceof WorkspaceRuntimeError) return { code: error.code, message: "The Workspace could not complete this turn." };
   const failure = observedFailure(error);
   if (failure.code === PROVIDER_CONTEXT_LENGTH_EXCEEDED) return { code: "context_too_large", message: CONTEXT_TOO_LARGE_MESSAGE };
@@ -442,7 +448,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id) });
         const conversationFor = (mode: "continuation" | "input") => buildRunConversation({ continuationTurns,
-          current: { messageId: input.created.userMessageId, mode }, messages: conversationMessages, nativeAnswers });
+          current: { messageId: input.created.userMessageId, mode }, messages: conversationMessages, nativeAnswers,
+          workspace: Boolean(workspace), attachments: [...input.prepared.providerRequest.attachments,
+            ...(normalizedRequest.fileReferences ?? []).map((file) => ({ id: file.attachmentId, fileName: file.fileName, kind: file.kind })),
+            ...(normalizedRequest.imageReferences ?? []).map((file) => ({ id: file.attachmentId, fileName: file.fileName, kind: "image" }))] });
         let conversation = conversationFor(input.approvalContinuation ? "continuation" : "input");
         // An approval continuation sends the approved call itself, then continues the stopped turn with its result.
         let approvedCall: ModelToolCall | null = null;
@@ -924,7 +933,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const cancelled = !interrupted && (stop.signal.aborted || error instanceof ToolBatchInactiveError && !deadline.signal.aborted);
         const failure = interrupted ? new EngineFailure(WORKSPACE_STOPPED_INTERRUPTION.code, WORKSPACE_STOPPED_INTERRUPTION.message)
           : deadline.signal.aborted && !cancelled ? deadline.signal.reason : error;
-        const payload = failurePayload(failure, Boolean(workspace));
+        const payload = failurePayload(failure, Boolean(workspace), answerPublished);
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, code: cancelled ? "model_run_cancelled" : payload.code,
           connectionId: snapshot.connectionId, duration_ms: Math.max(0, now() - startedAt), error,
           outcome: cancelled ? "cancelled" : "failed", providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId,

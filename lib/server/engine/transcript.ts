@@ -71,6 +71,8 @@ export type TranscriptRequestAnchor = Readonly<{
 }>;
 
 export type TranscriptUserItem = Readonly<{
+  /** File marks rebuilt from the branch; kept outside summaries, which must not contain attachment identifiers. */
+  attachmentNotice?: string;
   /** With `followup`: what a sub-agent sent the main agent (a callback, message or question), delivered by the server, never the user's speech. */
   callback?: true;
   /** A follow-up delivered into a running turn; it does not start a turn. */
@@ -305,8 +307,12 @@ function replayWindow(items: readonly TranscriptItem[], start: number, base: Tra
   target: TranscriptTarget): Pick<TranscriptSelection, "tail" | "window"> {
   if (!base) return { tail: 0, window: items.slice(start) };
   const keepFrom = base.keepFromId ? keptTailIndex(items, start, base) : start;
-  const stays = items.slice(0, keepFrom).filter((item) =>
-    item.kind === "user" && (item.runContext === true || item.id === target.carriedInputId));
+  const stays = items.slice(0, keepFrom).flatMap((item): TranscriptItem[] => {
+    if (item.kind !== "user") return [];
+    if (item.runContext === true || item.id === target.carriedInputId) return [item];
+    // Keep only the file marks, without resurrecting compacted user speech or treating metadata as a new turn.
+    return item.attachmentNotice ? [{ ...item, text: "", runContext: true }] : [];
+  });
   return { tail: stays.length + 1, window: [base, ...stays, ...items.slice(keepFrom, start), ...items.slice(start + 1)] };
 }
 
@@ -443,6 +449,10 @@ export type TranscriptProjectionOptions = Readonly<{
   images?: TranscriptImages;
 }>;
 
+export function transcriptUserText(item: TranscriptUserItem): string {
+  return [item.text, item.attachmentNotice].filter(Boolean).join("\n\n");
+}
+
 function historyItems(
   item: TranscriptItem,
   target: TranscriptTarget,
@@ -450,7 +460,7 @@ function historyItems(
 ): ProviderHistoryItem[] {
   switch (item.kind) {
     case "user":
-      return [{ ...(item.id === options.currentInputId ? { currentInput: true as const } : {}), text: item.text, type: "user" }];
+      return [{ ...(item.id === options.currentInputId ? { currentInput: true as const } : {}), text: transcriptUserText(item), type: "user" }];
     case "assistant_text":
       return [{
         ...(item.native && sameTranscriptOrigin(item.origin, target) ? { native: item.native } : {}),
@@ -468,7 +478,7 @@ function historyItems(
         type: "tool_call"
       }];
     case "tool_result": {
-      const attached = item.image ? options.images?.attached(item) : undefined;
+      const attached = options.images?.attached(item);
       return [{
         callId: item.callId,
         ...(attached ? { images: [attached.image] } : {}),

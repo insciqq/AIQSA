@@ -1,3 +1,4 @@
+import { CHAT_FILE_NO_TEXT } from "../tools/chatFileContext";
 import { checkpointOutputsTool, WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { analyzeImageTools, visionAnalysisGuidance } from "../tools/analyzeImage";
 import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
@@ -1618,6 +1619,10 @@ export async function prepareRun(
     return failure(attachmentAccess.code, attachmentAccess.status);
   }
 
+  if (!workspaceEnabled && attachments.some((attachment) => attachment.kind === "document" && !attachment.extractedText?.trim())) {
+    return failure("document_text_unavailable", 400, CHAT_FILE_NO_TEXT + " Upload a readable copy or enable Workspace.");
+  }
+
   const pdfTextAvailability = pdfRoute ? null : validatePdfTextAvailability(
     attachments,
     modelCapabilities,
@@ -1631,11 +1636,12 @@ export async function prepareRun(
     );
   }
 
-  const imageRecords = (imagePlan || artifactToolAvailable || workspaceEnabled || chatVisionPlan) && imageReferenceIds.length
-    ? await deps.repository.loadAttachments(input.userId, imageReferenceIds)
-    : [];
+  const referenceLoadIds = imagePlan || artifactToolAvailable || workspaceEnabled || chatVisionPlan
+    ? imageReferenceIds : imageReferenceIds.filter((id) => !attachmentIds.includes(id));
+  const imageRecords = referenceLoadIds.length ? await deps.repository.loadAttachments(input.userId, referenceLoadIds) : [];
   const imageReferences = referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
-    const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
+    const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready")
+      ?? attachments.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
     return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
   })).slice(-256);
   // Any conversation file with stored bytes, extraction outcome aside; ready
@@ -1739,14 +1745,14 @@ export async function prepareRun(
   if (workspaceAdmissionPlan) {
     appendTurnGuidance(workspaceMissingContentNotice(attachments, workspaceAdmissionPlan.normalized.inboxIndexPath));
   }
-  if (imagePlan || imageReferences.length > 0) {
+  if (imagePlan || workspaceEnabled && imageReferences.length > 0) {
     prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
-  }
+  } else if (imageReferences.length > 0) appendTurnGuidance(IMAGE_EDITING_GUIDANCE);
   if (imageUnavailableGuidance) {
     prompt = { ...prompt, system: [prompt.system, imageUnavailableGuidance].filter(Boolean).join("\n\n") };
   }
-  if (imagePlan || chatVision) {
-    appendTurnGuidance(imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision)));
+  if (imagePlan || chatVision || !workspaceEnabled && imageReferences.length > 0) {
+    appendTurnGuidance(imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision), !workspaceEnabled));
   }
   const artifactFileGuidance = artifactToolAvailable ? artifactFileInstructions(fileReferences, workspaceCheckpoints) : null;
   appendTurnGuidance(artifactFileGuidance);
