@@ -47,7 +47,9 @@ export const proposeResearchPlanTool: RunTool = {
   capability: "session",
   description: "Show the user your plan after scoping, before any researcher starts. The user sees how you understood the task, your " +
     "assumptions and the steps, and may change them for a moment; with no action research starts by itself, so never wait for an " +
-    "answer and never ask a question. This call returns when the plan stands, with the final plan and whether the user changed it. " +
+    "answer and never ask a question. The criteria come from what you read while scoping, in plain words, each with why it matters; a " +
+    "knowledge question lists its outcomes or sub-questions there. What is unknown about the user and changes the result goes in branches. " +
+    "This call returns when the plan stands, with the final plan and whether the user changed it. " +
     "Refused until start_research ran. When the result says the user changed the plan, call this once more with the user's words " +
     "and your questions rebuilt from them: no window opens then.",
   inputSchema: {
@@ -55,13 +57,13 @@ export const proposeResearchPlanTool: RunTool = {
     properties: {
       assumptions: { description: "What you assume in place of asking the user, each named plainly; empty when nothing is assumed.", items: { type: "string" }, type: "array" },
       branches: {
-        description: "What is unknown about the user and changes the result, each with the cases the report will split by; empty when none.",
+        description: "What is unknown about the user and changes the result, each with the cases the report will split by, as in \"up to 70 kg, A; heavier, B\"; empty when none.",
         items: keyed({ cases: { items: keyed({ label }), type: "array" }, unknown: { description: "What is unknown about the user.", type: "string" } }),
         type: "array"
       },
       criteria: {
-        description: "What the answer is judged by, found while scoping, each with why it matters in plain words. For a knowledge question: its outcomes or sub-questions.",
-        items: keyed({ criterion: { type: "string" }, why: { type: "string" } }),
+        description: "What the answer is judged by, at least one, found in the guides and standards you read while scoping and not from memory. For a knowledge question: its outcomes or sub-questions.",
+        items: keyed({ criterion: { description: "In plain words, in the user's language.", type: "string" }, why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
         type: "array"
       },
       questions: {
@@ -160,9 +162,11 @@ const SCOPING_MINUTES = RESEARCH_TIME_MS.scoping / 60_000;
 export function researchScopingInstructions(): string {
   return [
     `Research started with scoping: you have up to ${SCOPING_MINUTES} minutes before the plan. Read a few guides or standards on how such a thing ` +
-      "is chosen and find the criteria yourself: the user may not know what matters.",
+      "is chosen and find the criteria yourself: the user may not know what matters, and criteria from memory float between runs.",
+    "Write each criterion in plain words with why it matters. A knowledge question gets its outcomes or sub-questions in the same place, each with why it matters.",
     `Then call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}. Do not wait until the time is up, and do not start researchers: they start after the plan.`,
-    "Ask the user nothing, here or in the plan: what you lack becomes a named assumption, or a branch when it changes the result.",
+    "Ask the user nothing, here or in the plan: what you lack becomes a named assumption. What is unknown about the user and changes the result " +
+      "becomes a branch with its cases, so the report can say \"up to 70 kg, A; heavier, B\".",
     "Nothing you write now reaches the user."
   ].join("\n");
 }

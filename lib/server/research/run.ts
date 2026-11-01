@@ -34,7 +34,8 @@ import { proposeResearchPlanTool, researchDraftReservedInstruction, researchScop
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { PlanUpdate } from "../tools/updatePlan";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
-import { researcherBrief, researchMethodText, researchPlanUpdate } from "./method";
+import { createResearchRounds, researchFilledCells, researchMatrix } from "./matrix";
+import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchRunScope } from "./ports";
 import { createResearchSources } from "./sources";
@@ -81,6 +82,11 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * text of the provider's last attempt. A delivered follow-up makes the report in hand
  * no longer the answer until the model has read it, and it stays only for recovery.
  *
+ * What ends the going round is the matrix and the gates' own cap (`matrix.ts`, `gates.ts`): a round's researchers read its empty cells, the
+ * main agent reads them after each report, and rounds that fill no new cell end research. An approval continuation starts that count
+ * afresh, as it does the clock; what a gate sent back it counts across approvals, from the stored results (`researchOfTurn`). A run with no
+ * frame, such as one stored before the matrix, has nothing to count and goes on as it always did.
+ *
  * What the research system adds sits behind ports, one set per run (`ports.ts`): absent, each is a no-op and a run goes as
  * described here.
  */
@@ -119,6 +125,8 @@ const REBUILD_FIRST = `Nothing started: the user changed the plan, so your quest
 /** Around what the gates said, in the call's result: an approval continuation reads it back from there (`researchOfTurn`). */
 const SENT_BACK_START = "Not shown to the user yet. ";
 const SENT_BACK_END = ` Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`;
+/** The gate a send back came from, by its place: the cap counts it even from a result too long to be stored whole. */
+const SENT_BACK_BY = /^\{"status":"sent_back","gate":"([^"\\]{1,64})"/u;
 
 /** The research run a start call's result names. It is the result's first field, read by its place: a long result is stored as an excerpt, which no JSON parser reads. */
 const STARTED_RESEARCH_RUN = /^\{"research_run":"([^"\\]{1,64})"/u;
@@ -199,6 +207,8 @@ export function createRunResearch(input: RunResearchInput) {
   /** What the last draft's gates said, while it stands. */
   let sentBack: string | null = null;
   const lastWord = () => sentBack;
+  /** The gate that said it. */
+  let sentBackBy: string | null = null;
   /** A text draft's gates cannot send it back when its tools are closed: nothing could act on that. */
   let closedForText = false;
   const isAccepted = () => accepted !== null;
@@ -236,6 +246,10 @@ export function createRunResearch(input: RunResearchInput) {
     now: input.now, researchRunId, runId: input.runId, sources, userFollowups: () => input.subagentInput.userFollowups(), userId: input.userId,
     userMessage: input.userMessage });
   const gates = [...ports.report.gates, ...input.deps.gates ?? RESEARCH_GATES];
+  const rounds = createResearchRounds(async (signal) => {
+    const matrix = await researchMatrix(ports.coverage, signal);
+    return matrix && researchFilledCells(matrix.coverage);
+  });
   /** What building the answer from the records came to: a run composes once, however many of its ends ask. */
   let composing: Promise<string | null> | null = null;
   const note = (key: ResearchNoteKey, draft: Pick<ResearchDraft, "report">) => researchNote(key, draft.report);
@@ -285,25 +299,29 @@ export function createRunResearch(input: RunResearchInput) {
     if (!plan) return;
     held = unchecked(draft);
     const attempt = attempts.length + 1;
+    await rounds.settle(execution.signal);
     const outcome = await runResearchGates({ draft, gates, runId: input.runId, context: {
       attempt,
       coverage: ports.coverage,
       earlier: [...attempts],
       evidence: ports.evidence,
       plan,
+      researchersClosed: () => rounds.stopped() ? "no_new_cell" : ports.time.researcherRefusal() === null ? null : "time",
       signal: execution.signal,
       sources,
       subagents: { run: (request, signal) => turns.run(request, { attempt, round: execution.round, signal }) },
       time: { remainingMs: () => ports.time.gatesEndAt(input.gatesEndAt) - input.now(), sendBackAllowed: () => toolsOpen && input.toolTimeLeft() },
       verifierModel: () => turns.verifierModel()
     } });
-    attempts.push({ draft, message: outcome.kind === "sent_back" ? outcome.message : null });
+    attempts.push(outcome.kind === "sent_back" ? { draft, gate: outcome.gate, message: outcome.message } : { draft, message: null });
     held = { draft, notes: outcome.notes ?? [] };
     if (outcome.kind === "accepted") {
       accepted = { draft, notes: [...outcome.notes, ...draft.findings.length === 0 ? [note("no_findings", draft)] : []] };
       sentBack = null;
+      sentBackBy = null;
     } else {
       sentBack = outcome.message;
+      sentBackBy = outcome.gate;
     }
   }
 
@@ -338,6 +356,20 @@ export function createRunResearch(input: RunResearchInput) {
     } finally {
       running.delete(researcher);
     }
+  }
+
+  /**
+   * A researcher's call as part of its round. One that ran counts for the round, and its result ends with what is still empty, which is where
+   * the main agent reads what to do next.
+   */
+  async function researcherOfRound(tool: EngineTool, execution: EngineToolExecution, call: ModelToolCall): Promise<ToolExecutionResult> {
+    const result = await underTime(tool, execution, call);
+    if (result.status !== "complete") return result;
+    rounds.ran(execution.round);
+    const matrix = await researchMatrix(ports.coverage, execution.signal);
+    if (!matrix) return result;
+    const line = researchCoverageLine(matrix, await rounds.newCells(researchFilledCells(matrix.coverage)));
+    return { ...result, content: [...result.content, { text: line, type: "text" }] };
   }
 
   const startTool: EngineTool = {
@@ -466,7 +498,8 @@ export function createRunResearch(input: RunResearchInput) {
       }
       if (isAccepted()) return resultOf(call, { message: "The report is shown to the user exactly as you wrote it. Your answer is complete.", status: "accepted" });
       input.rearmReservedCall();
-      return resultOf(call, { message: `${SENT_BACK_START}${lastWord() ?? ""}${SENT_BACK_END}`.trim(), status: "sent_back" });
+      // The fields keep this order: `researchOfTurn` reads the gate back by its place.
+      return resultOf(call, { status: "sent_back", ...sentBackBy === null ? {} : { gate: sentBackBy }, message: `${SENT_BACK_START}${lastWord() ?? ""}${SENT_BACK_END}`.trim() });
     }
   };
 
@@ -480,6 +513,8 @@ export function createRunResearch(input: RunResearchInput) {
     outstanding: () => plan !== null && accepted === null && !checking,
     /** From `start_research` on, the round's text stays out of the answer. */
     holding: researching,
+    /** The matrix may grow: the plan stands and can no longer be rebuilt, which replaces only a frame nobody changed. */
+    frameOpen: () => plan !== null && standing === null,
     heldToken(delta: string): void {
       attemptText += delta;
     },
@@ -549,19 +584,21 @@ export function createRunResearch(input: RunResearchInput) {
         if (rebuildOwed) return harnessToolError(call, "research_plan_rebuild_first", REBUILD_FIRST);
         const closed = ports.time.researcherRefusal();
         if (closed !== null) return harnessToolError(call, "research_researchers_closed", closed);
+        await rounds.enter(execution.round, execution.signal);
+        if (rounds.stopped()) return harnessToolError(call, "research_no_new_cell", researchNoNewCellMessage());
         const { background: _background, ...foreground } = call.arguments;
         void _background;
         const { message } = foreground;
         const name = normalizeSubagentName(foreground.name);
-        if (typeof message !== "string" || name === null || briefed.has(name)) {
-          return underTime(tool, execution, { ...call, arguments: foreground });
-        }
-        const brief = researcherBrief(message, plan);
+        if (typeof message !== "string" || name === null) return researcherOfRound(tool, execution, { ...call, arguments: foreground });
+        const matrix = await researchMatrix(ports.coverage, execution.signal);
+        if (briefed.has(name)) return researcherOfRound(tool, execution, { ...call, arguments: { ...foreground, message: researcherMatrixBrief(message, matrix) } });
+        const brief = researcherBrief(message, plan, matrix);
         if (brief === null) return harnessToolError(call, "research_brief_too_long", "Nothing started: this brief leaves no room for the research method. Shorten it and call again.");
         briefed.add(name);
         // Researchers work on these questions now, so the plan no longer changes.
         standing = null;
-        return underTime(tool, execution, { ...call, arguments: { ...foreground, message: brief } });
+        return researcherOfRound(tool, execution, { ...call, arguments: { ...foreground, message: brief } });
       } });
     },
 
@@ -680,21 +717,24 @@ export function createRunResearch(input: RunResearchInput) {
   };
 }
 
-/** What the gates said of a draft, from its call's stored result; null when they accepted it, and undefined when they never ended on it. */
-function gatesWord(result: Extract<TranscriptItem, { kind: "tool_result" }> | undefined): string | null | undefined {
+/** What the gates said of a draft and which one said it, from its call's stored result; `message` null when they accepted it, and undefined when they never ended on it. */
+function gatesWord(result: Extract<TranscriptItem, { kind: "tool_result" }> | undefined): Pick<ResearchAttempt, "gate" | "message"> | undefined {
   if (result?.outcome !== "complete") return undefined;
+  const gate = SENT_BACK_BY.exec(result.output)?.[1];
+  const by = gate === undefined ? {} : { gate };
   let parsed: unknown;
   try {
     // A repeat note may follow the JSON (`repeatIdenticalNote`).
     parsed = JSON.parse(result.output.slice(0, result.output.lastIndexOf("}") + 1));
   } catch {
-    return undefined;
+    // An excerpt keeps the gate's name and loses its words, which a cap does not need.
+    return gate === undefined ? undefined : { ...by, message: "" };
   }
   const { message, status } = (parsed ?? {}) as { message?: unknown; status?: unknown };
-  if (status === "accepted") return null;
+  if (status === "accepted") return { message: null };
   if (status !== "sent_back" || typeof message !== "string") return undefined;
   const start = message.startsWith(SENT_BACK_START) ? SENT_BACK_START.length : 0;
-  return message.slice(start, message.endsWith(SENT_BACK_END) ? -SENT_BACK_END.length : undefined);
+  return { ...by, message: message.slice(start, message.endsWith(SENT_BACK_END) ? -SENT_BACK_END.length : undefined) };
 }
 
 /** What a plan call's stored result says, excerpted or not: null when the call was refused or never returned. */
@@ -715,8 +755,9 @@ function planOfResult(result: Extract<TranscriptItem, { kind: "tool_result" }> |
 
 /**
  * What a turn's items hold of its research: its calls since the last message of the user's or the server's own. `attempts` are
- * the drafts the gates ended on with what they said, rebuilt with new objects for an approval continuation: what a gate keeps
- * by object identity is gone, so a gate that must remember reads these (`verifier.ts`). `goal` is there once research started and
+ * the drafts the gates ended on with what they said and which gate sent each back, rebuilt with new objects for an approval continuation:
+ * what a gate keeps by object identity is gone, so a gate that must remember reads these (`verifier.ts`), and they are what keeps a
+ * gate to its cap across an approval. `goal` is there once research started and
  * `plan` once it stands: a person never edits questions, so they come from the arguments of the last plan call the window answered,
  * which stay whole however its long result was excerpted, and an older start holds its whole plan itself. `owedRebuild` is a changed
  * plan whose questions have not followed. `researchRun` is what the start call's stored result names, there only when it names one,
@@ -765,8 +806,8 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
       const decoded = decodeResearchDraft(parsed);
       if (!decoded.ok) continue;
       draft ??= decoded.value;
-      const message = gatesWord(results.get(item.callId));
-      if (message !== undefined) attempts.unshift({ draft: decoded.value, message });
+      const word = gatesWord(results.get(item.callId));
+      if (word !== undefined) attempts.unshift({ draft: decoded.value, ...word });
     }
   }
   const owed = plan && !rebuilt ? released as StandingPlan | null : null;

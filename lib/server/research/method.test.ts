@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { decodeResearchDraft, decodeResearchPlan, RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchPlan } from "../../contracts/research";
+import { decodeResearchDraft, decodeResearchPlan, decodeResearchPlanProposal, RESEARCH_LIMITS, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFrame,
+  type ResearchPlan } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { harnessPromptSection } from "../engine/prompts/harness";
-import { proposeResearchPlanTool, startResearchTool, submitResearchDraftTool } from "../tools/research";
+import { proposeResearchPlanTool, researchScopingInstructions, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import { runResearchGates, type ResearchGateContext } from "./gates";
-import { researcherBrief, researcherMethodFooter, researchMethodText, researchPlanUpdate } from "./method";
+import { researchMatrixCoverage } from "./matrix";
+import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researcherMatrixFooter, researcherMethodFooter, researchMethodText, researchNoNewCellMessage, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { researchOffered } from "./run";
 import { createResearchSources, researchRunsOnBranch } from "./sources";
@@ -130,13 +132,117 @@ describe("the method", () => {
   });
 });
 
+describe("scoping and the proposal", () => {
+  const criterion = { criterion: "Who gets better", key: "who-gets-better", why: "It says whether this applies to the user." };
+  const proposal = (criteria: unknown) => ({ assumptions: [], branches: [], criteria, questions: [question], rows: [], skipped_source_classes: [], steps: ["One", "Two", "Three", "Four"], understood: "The task." });
+
+  it("holds criteria with reasons for a purchase and for a knowledge question alike, and refuses one without", () => {
+    const purchase = decodeResearchPlanProposal(proposal([{ criterion: "Durability", key: "durability", why: "It is bought for years." }]));
+    expect(purchase).toMatchObject({ ok: true, value: { criteria: [{ why: "It is bought for years." }] } });
+    expect(decodeResearchPlanProposal({ ...proposal([criterion]), rows: [{ key: "trial-1", label: "The 2024 trial" }] })).toMatchObject({ ok: true, value: { criteria: [{ key: "who-gets-better" }] } });
+    expect(decodeResearchPlanProposal(proposal([]))).toMatchObject({ message: expect.stringContaining("criteria"), ok: false });
+    expect(decodeResearchPlanProposal(proposal([{ ...criterion, why: " " }]))).toMatchObject({ message: expect.stringContaining("why"), ok: false });
+    expect(decodeResearchPlanProposal(proposal([{ criterion: "C", key: "c" }]))).toMatchObject({ message: expect.stringContaining("why"), ok: false });
+  });
+
+  it("tells the model where criteria come from, and carries the same in the tool it fills in", () => {
+    const scoping = researchScopingInstructions();
+    for (const phrase of ["guides or standards", "plain words", "why it matters", "outcomes or sub-questions", "branch"]) expect(scoping).toContain(phrase);
+    const tool = JSON.stringify(proposeResearchPlanTool);
+    for (const phrase of ["guides and standards", "plain words", "why it matters", "outcomes or sub-questions", "branches"]) expect(tool).toContain(phrase);
+    expect(tool).toContain("70 kg");
+  });
+
+  it("opens the method for a plan that stands, and sends researchers for empty cells only", () => {
+    const text = researchMethodText(plan);
+    expect(text.startsWith("The plan stands.")).toBe(true);
+    expect(text).not.toContain("Research started");
+    expect(text).toContain("empty cells only");
+    expect(text).toContain("change_research_frame");
+  });
+});
+
+describe("the matrix in a brief", () => {
+  const frame: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Durability", key: "durability", why: "W." }, { criterion: "Firmness", key: "firmness", why: "W." }],
+    rows: [{ key: "x1", label: "Lonax X1" }, { key: "y2", label: "Dreamline\nY2" }] };
+  const matrixOf = (from: ResearchFrame = frame) => ({ coverage: researchMatrixCoverage(from, []), frame: from });
+  const large: ResearchFrame = { ...frame, criteria: Array.from({ length: 24 }, (_value, index) => ({ criterion: "A criterion in many words", key: `criterion-${index}`, why: "W." })),
+    rows: Array.from({ length: 64 }, (_value, index) => ({ key: `row-${index}`, label: "A candidate with a long name" })) };
+
+  it("names the keys with their words and the cells still empty, on one line each", () => {
+    const footer = researcherMatrixFooter(matrixOf(), 10_000)!;
+    expect(footer).toBe(["# The matrix (from the server)", "Rows: x1 (Lonax X1), y2 (Dreamline Y2).", "Criteria: durability (Durability), firmness (Firmness).",
+      "4 of 4 cells are still empty. x1: durability, firmness; y2: durability, firmness"].join("\n"));
+  });
+
+  it("falls back to counts per row for a long matrix, then to keys alone, and to nothing when no room is left", () => {
+    const footer = researcherMatrixFooter(matrixOf(large), 10_000);
+    expect(footer).toContain("row-0: 24 of 24");
+    expect(footer).toContain("criterion-23");
+    expect(footer!.length).toBeLessThanOrEqual(3_000);
+    expect(researcherMatrixFooter(matrixOf(), 120)).toBe("# The matrix (from the server)\nRows: x1, y2.\nCriteria: durability, firmness.\n4 of 4 cells are still empty.");
+    expect(researcherMatrixFooter(matrixOf(), 80)).toBe("# The matrix (from the server)\n4 of 4 cells are still empty.");
+    expect(researcherMatrixFooter(matrixOf(), 10)).toBeNull();
+  });
+
+  it("says what to do with no rows yet, and that nothing is empty when nothing is", () => {
+    const rowless = { ...frame, rows: [] };
+    expect(researcherMatrixFooter(matrixOf(rowless), 10_000)).toContain("Rows: none yet.");
+    expect(researcherMatrixFooter(matrixOf(rowless), 10_000)).toContain("2 of 2 cells are still empty. durability, firmness");
+  });
+
+  it("stays within the bound on a brief, and a brief with no room for the matrix still goes", () => {
+    const brief = researcherBrief("x".repeat(RUN_FOLLOWUP_MAX_CHARS - researcherMethodFooter(plan).length - 3), plan, matrixOf(large))!;
+    expect(brief).not.toContain("# The matrix");
+    expect(brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+    expect(researcherBrief("x".repeat(RUN_FOLLOWUP_MAX_CHARS), plan, matrixOf())).toBeNull();
+    const roomy = researcherBrief("Cover it.", plan, matrixOf())!;
+    expect(roomy).toContain("# Research method");
+    expect(roomy.endsWith("x1: durability, firmness; y2: durability, firmness")).toBe(true);
+    expect(researcherMatrixBrief("Go on.", null)).toBe("Go on.");
+    expect(researcherMatrixBrief("x".repeat(RUN_FOLLOWUP_MAX_CHARS), matrixOf()).length).toBe(RUN_FOLLOWUP_MAX_CHARS);
+  });
+
+  it("keeps the line the main agent reads short, whatever the matrix", () => {
+    expect(researchCoverageLine(matrixOf(), 1)).toBe("The matrix (from the server): 4 of 4 cells empty, 1 newly filled in this round so far. Empty: x1: durability, firmness; y2: durability, firmness. Send researchers for empty cells only.");
+    expect(researchCoverageLine(matrixOf(), null)).toContain("4 of 4 cells empty. Empty:");
+    const long = researchCoverageLine(matrixOf(large), 0);
+    expect(long.length).toBeLessThanOrEqual(600);
+    expect(long).toContain("Send researchers for empty cells only.");
+  });
+
+  it("says why no further researcher starts", () => {
+    expect(researchNoNewCellMessage()).toContain("submit_research_draft");
+    expect(researchNoNewCellMessage()).toContain(`${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds`);
+  });
+});
+
 describe("running the gates", () => {
   const passing = { name: "p", run: async () => ({ kind: "pass" as const, notes: ["Passed."] }) };
+
+  it("holds each gate to its send backs, counting only its own, and turns the next one into its note", async () => {
+    const asked = { draft, gate: "a", message: "Again." };
+    const gate = { name: "a", run: async () => ({ kind: "send_back" as const, message: "Again.", unresolvedNote: "Left open." }) };
+    expect(await runResearchGates({ context: context({ earlier: [asked] }), draft, gates: [gate], runId: "r" })).toMatchObject({ gate: "a", kind: "sent_back" });
+    const capped = new Array<typeof asked>(RESEARCH_ROUND_LIMITS.sendBacksPerCheck).fill(asked);
+    expect(await runResearchGates({ context: context({ earlier: capped }), draft, gates: [gate, passing], runId: "r" })).toEqual({ kind: "accepted", notes: ["Left open.", "Passed."] });
+    const others = capped.map((attempt) => ({ ...attempt, gate: "b" }));
+    expect(await runResearchGates({ context: context({ earlier: others }), draft, gates: [gate], runId: "r" })).toMatchObject({ gate: "a", kind: "sent_back" });
+    const older = capped.map(({ draft: stored, message }) => ({ draft: stored, message }));
+    expect(await runResearchGates({ context: context({ earlier: older }), draft, gates: [gate], runId: "r" })).toMatchObject({ gate: "a", kind: "sent_back" });
+  });
+
+  it("says plainly that a gate with no note of its own left something open, never that time ran out", async () => {
+    const asked = { draft, gate: "a", message: "Again." };
+    const gate = { name: "a", run: async () => ({ kind: "send_back" as const, message: "Again." }) };
+    const earlier = new Array<typeof asked>(RESEARCH_ROUND_LIMITS.sendBacksPerCheck).fill(asked);
+    expect(await runResearchGates({ context: context({ earlier }), draft, gates: [gate], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("unresolved", draft.report)] });
+  });
 
   it("stops at the first send back, so a draft goes back before anything checks it further", async () => {
     const later = vi.fn(async () => ({ kind: "pass" as const }));
     const outcome = await runResearchGates({ context: context(), draft, gates: [{ name: "a", run: async () => ({ kind: "send_back", message: "Again." }) }, { name: "b", run: later }], runId: "r" });
-    expect(outcome).toEqual({ kind: "sent_back", message: "Again." });
+    expect(outcome).toEqual({ gate: "a", kind: "sent_back", message: "Again." });
     expect(later).not.toHaveBeenCalled();
   });
 
