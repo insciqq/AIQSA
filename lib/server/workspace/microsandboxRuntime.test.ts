@@ -24,6 +24,10 @@ import { workspaceGuideInput } from "./guides";
 import { BOUND_WORKSPACE_UV_CACHE, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS, WORKSPACE_UV_CACHE_DIRECTORY } from "./guestCache";
 import { WORKSPACE_SECRET_ENV_EXIT } from "./secrets/guest";
 import { parseWorkspaceSecretValue } from "./secrets/validation";
+import { WORKSPACE_AGENT_STOP_GUEST_SCRIPT } from "./agentProcessGuest";
+import { createWorkspaceCoordinator, type WorkspaceCoordinatorRepository, type WorkspaceExecutionBinding } from "./coordinator";
+import type { WorkspaceExecutionRegistry } from "./executionRegistry";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -1791,6 +1795,108 @@ describe("Microsandbox Workspace lifecycle", () => {
 
 describe("Microsandbox terminal process proof", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("saves the finished run's browser sign-in through settlement while another agent keeps the VM", async () => {
+    vi.useFakeTimers();
+    try {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      sdk.callTool.mockImplementation(async ({ name, arguments: args }) => ({ content: [{ type: "text", text: JSON.stringify({
+        data: name === "sandbox_exec_start" ? { execSessionId: args.env.AIQSA_AGENT_ID === "main" ? "exec_main" : "exec_other" }
+          : { done: true, exitStatus: { code: 0 }, error: null }
+      }) }] }));
+      await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_exec_start", agent: { kind: "main" } });
+      await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_exec_start", modelRunId: "other_run",
+        agent: { kind: "subagent", name: "researcher", threadId: "other_agent" } });
+      const bytes = Buffer.from(JSON.stringify({ cookies: [], origins: [] }));
+      value.files.set("/workspace/secrets/browser/shop.example.json", bytes);
+      const listing = JSON.stringify({ entries: [{ file: true, name: "shop.example.json", size: bytes.length }] });
+      value.sandbox.execWith.mockImplementation(async (_command, configure) => {
+        const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinBytes: vi.fn().mockReturnThis() };
+        (configure as (input: typeof builder) => unknown)(builder);
+        const stopping = builder.args.mock.calls[0]?.[0]?.[2] === WORKSPACE_AGENT_STOP_GUEST_SCRIPT;
+        if (stopping) expect(JSON.parse(builder.stdinBytes.mock.calls[0]![0].toString())).toEqual({ agentId: "main" });
+        const text = stopping ? '{"outcome":"closed"}' : listing;
+        return { success: true, stdout: () => text, stdoutBytes: () => Buffer.from(text) };
+      });
+      const binding = { ...sessionInput, runId: "run_fixture", userId: "owner", chatId: "chat", guestUsed: true,
+        operationOwner: "run:run_fixture", operationGeneration: 1, operationAttached: true } as unknown as WorkspaceExecutionBinding;
+      const saved: unknown[] = [];
+      const repository = {
+        binding: async () => binding,
+        attachedRuns: async () => [{ active: true, modelRunId: "other_run", subagentThreadId: "other_agent" }],
+        runAgentIds: async () => ["main"],
+        detachRun: vi.fn(async () => true),
+        saveBrowserSessions: vi.fn<WorkspaceCoordinatorRepository["saveBrowserSessions"]>(async (input) => {
+          expect(input.skipped).toEqual([]);
+          for await (const file of input.files) saved.push(file);
+          return { saved: saved.length, unchanged: 0, skipped: {} };
+        })
+      } satisfies Partial<WorkspaceCoordinatorRepository>;
+      const registry = { listOpen: async () => [{ ...sessionInput, id: "execution", modelRunId: "run_fixture",
+        modelRunToolCallId: "call_fixture", runtimeExecSessionId: "exec_main", state: "ACTIVE" }] } as unknown as WorkspaceExecutionRegistry;
+      const coordinator = createWorkspaceCoordinator({ config, registry, runtime: value.runtime,
+        repository: repository as unknown as WorkspaceCoordinatorRepository, storage: createMemoryStorageAdapter() });
+      const settled = coordinator.settle({ outcome: "completed", runId: "run_fixture", userId: "owner" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(settled).resolves.toMatchObject({ quiesced: true, sessionSettled: true, stoppedVm: false });
+      expect(saved).toEqual([{ fileName: "shop.example.json", bytes }]);
+      expect(repository.saveBrowserSessions).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userId: "owner", runId: "run_fixture" }));
+      expect(value.sandbox.stopWithTimeout).not.toHaveBeenCalled();
+      // The stopped agent's proof must not erase another run's ownership.
+      await expect(value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_exec_poll", arguments: { execSessionId: "exec_other" } }))
+        .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["executions", "agent", "collection"] as const)(
+    "collects a finished execution's browser sign-in after %s cleanup proves its descendants stopped", async (cleanup) => {
+      vi.useFakeTimers();
+      try {
+        const value = fixture();
+        await value.runtime.ensureSession(ensureInput);
+        let closed = false;
+        sdk.callTool.mockImplementation(async ({ name }) => {
+          if (name === "sandbox_exec_poll" && closed) return { isError: true, content: [] };
+          if (name === "sandbox_exec_close") closed = true;
+          return { content: [{ type: "text", text: JSON.stringify({ data: name === "sandbox_exec_start"
+            ? { execSessionId: "exec_fixture" } : { done: true, exitStatus: { code: 0 }, error: null } }) }] };
+        });
+        await value.runtime.callBoundTool({ ...callInput, agent: { kind: "main" }, originalName: "sandbox_exec_start" });
+        await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_exec_poll", arguments: { execSessionId: "exec_fixture" } });
+        const bytes = Buffer.from(JSON.stringify({ cookies: [], origins: [] }));
+        value.files.set("/workspace/secrets/browser/shop.example.json", bytes);
+        const listing = JSON.stringify({ entries: [{ file: true, name: "shop.example.json", size: bytes.length }] });
+        value.sandbox.execWith.mockResolvedValueOnce({ success: true,
+          stdout: () => '{"outcome":"closed"}', stdoutBytes: () => Buffer.from('{"outcome":"closed"}') })
+          .mockResolvedValueOnce({ success: true, stdout: () => listing, stdoutBytes: () => Buffer.from(listing) });
+        if (cleanup === "executions") {
+          const terminated = value.runtime.terminateExecutions({ ...sessionInput,
+            executions: [{ modelRunId: "run_fixture", runtimeExecSessionId: "exec_fixture" }] });
+          await vi.advanceTimersByTimeAsync(3_000);
+          await expect(terminated).resolves.toEqual([{ outcome: "closed", runtimeExecSessionId: "exec_fixture" }]);
+        } else if (cleanup === "agent") {
+          await expect(value.runtime.terminateAgentProcesses({ ...sessionInput, agentId: "main" })).resolves.toEqual({ outcome: "closed" });
+        }
+        const callsBeforeCollection = sdk.callTool.mock.calls.length;
+        const collecting = value.runtime.collectBrowserSessions({ ...sessionInput, modelRunId: "run_fixture" });
+        await vi.advanceTimersByTimeAsync(3_000);
+        const collection = await collecting;
+        expect(collection.skipped).toEqual([]);
+        expect(collection.files).toHaveLength(1);
+        expect(collection.files[0]).toMatchObject({ relativePath: "shop.example.json", byteSize: bytes.length });
+        expect(Buffer.from(await new Response(collection.files[0]!.body).arrayBuffer())).toEqual(bytes);
+        // The collector must not poll a disposed handle after the agent's stop proof.
+        if (cleanup !== "collection") expect(sdk.callTool).toHaveBeenCalledTimes(callsBeforeCollection);
+        await expect(value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory: "/workspace/output/fixture" }))
+          .resolves.toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it.each([
     { name: "bare done after EOF", data: { done: true, exitStatus: null, error: null } },
