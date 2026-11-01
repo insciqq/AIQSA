@@ -11,7 +11,7 @@ function tool(name: string, capability: RunTool["capability"]): EngineTool {
 }
 
 const tools = [
-  tool("manage_secret", "session"), tool("manage_skill", "skill"), tool("save_skill", "skill"), tool("manage_assistant", "session"),
+  tool("manage_proxy", "session"), tool("manage_secret", "session"), tool("manage_skill", "skill"), tool("save_skill", "skill"), tool("manage_assistant", "session"),
   tool("create_artifact", "artifact"), tool("create_scheduled_task", "session"), tool("manage_scheduled_task", "session"),
   tool("report_monitoring_result", "session"), tool("checkpoint_outputs", "workspace"),
   tool(callSubagentTool.name, "session"), tool(stopSubagentTool.name, "session"),
@@ -31,7 +31,7 @@ describe("sub-agent tool registry", () => {
   it("never offers a resource change, an export, the reserved report or a sub-agent tool, and keeps load_skill", () => {
     const registry = subagentToolRegistry(parent, null);
     const names = registry.definitions().map((definition) => definition.name);
-    for (const excluded of ["manage_secret", "manage_skill", "save_skill", "manage_assistant", "create_artifact", "create_scheduled_task",
+    for (const excluded of ["manage_proxy", "manage_secret", "manage_skill", "save_skill", "manage_assistant", "create_artifact", "create_scheduled_task",
       "manage_scheduled_task", "report_monitoring_result", "checkpoint_outputs", callSubagentTool.name, stopSubagentTool.name]) {
       expect(names).not.toContain(excluded);
       // A call of one is an unknown tool: refused before anything is recorded as sent.

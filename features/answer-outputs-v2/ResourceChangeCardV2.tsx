@@ -17,6 +17,7 @@ import {
   resourceChangeCardKey,
   type AssistantChangeCard,
   type AssistantChangeField,
+  type ProxyChangeCard,
   type ResourceChangeCard,
   type ResourceChangeDiff,
   type SecretChangeCard,
@@ -37,7 +38,7 @@ import {
 import { SKILL_LIBRARY_PATH } from "@/lib/contracts/skillSaves";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
 import type { WorkspaceSecretKind } from "@/lib/contracts/workspaceSecrets";
-import { deleteSecretVersion, readSecretState, ResourceChangeApiError } from "./resourceChangeApi";
+import { deleteProxyVersion, deleteSecretVersion, readProxyState, readSecretState, ResourceChangeApiError } from "./resourceChangeApi";
 import { shellLinkClick } from "./shellLinkClick";
 
 /** What the resource is now, as a settled answer reads it; unknown until read (or while the answer runs). */
@@ -606,12 +607,65 @@ function SubagentCardV2({ card, live }: Readonly<{ card: SubagentChangeCard; liv
   );
 }
 
+function ProxyCardV2({ card, live }: Readonly<{ card: ProxyChangeCard; live: boolean }>) {
+  const state = useCardState(card);
+  const { outcome, remote } = state;
+  const read = useCallback((signal: AbortSignal) => readProxyState(card.proxyId, card.proxyVersion, signal), [card.proxyId, card.proxyVersion]);
+  useRemoteRead(!live && card.action !== "updated" && !outcome ? read : null, state.setRemote);
+
+  function remove(undo: boolean) {
+    void state.run(async () => {
+      try {
+        await deleteProxyVersion(card.proxyId, card.proxyVersion);
+        state.finish(undo ? { heading: "Proxy removed", message: "Undone: the proxy is deleted." } : { heading: "Proxy deleted", message: null });
+      } catch (failure) {
+        if (failure instanceof ResourceChangeApiError && failure.code === "proxy_conflict") state.setRemote("changed");
+        else if (failure instanceof ResourceChangeApiError && failure.code === "proxy_not_found") state.setRemote("missing");
+        else state.setError(undo ? "Undo failed. Try again." : "The proxy could not be deleted. Try again.");
+      }
+    });
+  }
+
+  // "SOCKS5 · KZ · .kz, ozon.ru", with no address: a card travels with the answer.
+  const meta = [card.protocol.toUpperCase(), card.country, card.domainHints.join(", ")].filter(Boolean).join(" · ");
+  if (card.action === "updated") {
+    const detail = [card.previousName ? `Renamed from “${card.previousName}”.` : null,
+      card.passwordChanged ? "The password changed; the earlier one is not kept." : null].filter(Boolean).join("\n");
+    return (
+      <CardV2 detail={detail || null} error={null} heading="Proxy updated" headingRef={state.headingRef} icon="server" meta={meta} name={card.name}
+        resource="proxy" state="done" status={null} />
+    );
+  }
+  if (card.action === "created") {
+    const gone = remote === "missing" || remote === "changed";
+    return (
+      <CardV2 error={state.error} heading={outcome?.heading ?? "Proxy saved"} headingRef={state.headingRef} icon="server" meta={meta} name={card.name}
+        resource="proxy" state={outcome ? "done" : remote} status={outcome?.message ?? (remote === "missing" ? "This proxy no longer exists."
+          : remote === "changed" ? "Undo is not available: the proxy changed after this, and that change is kept." : null)}
+        actions={outcome || gone ? null : <UndoButtonV2 busy={state.busy} label={`Undo saving ${card.name}`} onClick={() => remove(true)} />} />
+    );
+  }
+  const asking = !outcome && remote !== "missing" && remote !== "changed";
+  return (
+    <CardV2 error={state.error}
+      heading={outcome?.heading ?? (remote === "missing" ? "Proxy already deleted" : remote === "changed" ? "Proxy not deleted" : "Delete proxy?")}
+      headingRef={state.headingRef} icon="server" meta={meta} name={card.name} resource="proxy" state={outcome ? "done" : asking ? "asking" : remote}
+      status={outcome?.message ?? (remote === "changed" ? "The proxy changed after this proposal, so nothing was deleted." : null)}
+      confirm={asking ? (
+        <ConfirmV2 busy={state.busy} confirmLabel="Delete proxy" keepLabel="Keep proxy" label={`Delete ${card.name}`}
+          text={`Delete “${card.name}”? The agent stops opening sites through it, in running answers too. This cannot be undone.`}
+          onConfirm={() => remove(false)} onKeep={() => state.finish({ heading: "Proxy kept", message: null })} />
+      ) : null} />
+  );
+}
+
 function ResourceChangeCardV2({ card, live }: Readonly<{ card: ResourceChangeCard; live: boolean }>) {
   switch (card.resource) {
     case "secret": return <SecretCardV2 card={card} live={live} />;
     case "skill": return <SkillDeleteCardV2 card={card} live={live} />;
     case "assistant": return <AssistantCardV2 card={card} live={live} />;
     case "subagent": return <SubagentCardV2 card={card} live={live} />;
+    case "proxy": return <ProxyCardV2 card={card} live={live} />;
   }
 }
 

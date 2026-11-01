@@ -23,6 +23,7 @@ import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import type { HarnessToolDescriptor } from "../tools/harnessTool";
 import { MANAGE_ASSISTANT_TOOL_NAME } from "../tools/manageAssistant";
+import { MANAGE_PROXY_TOOL_NAME } from "../tools/manageProxy";
 import { MANAGE_SECRET_TOOL_NAME } from "../tools/manageSecret";
 import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
 import { MONITORING_VERDICT_TOOL_NAME } from "../tools/monitoringVerdict";
@@ -330,7 +331,7 @@ export const SUBAGENT_TOOLS: readonly HarnessToolDescriptor[] = Object.freeze([
  */
 export const SUBAGENT_EXCLUDED_TOOL_NAMES: readonly string[] = Object.freeze([
   ...SUBAGENT_TOOLS.map((tool) => tool.name),
-  MANAGE_SECRET_TOOL_NAME, MANAGE_SKILL_TOOL_NAME, SAVE_SKILL_TOOL_NAME, MANAGE_ASSISTANT_TOOL_NAME, ARTIFACT_TOOL_NAME,
+  MANAGE_PROXY_TOOL_NAME, MANAGE_SECRET_TOOL_NAME, MANAGE_SKILL_TOOL_NAME, SAVE_SKILL_TOOL_NAME, MANAGE_ASSISTANT_TOOL_NAME, ARTIFACT_TOOL_NAME,
   CREATE_SCHEDULED_TASK_TOOL_NAME, MANAGE_SCHEDULED_TASK_TOOL_NAME, MONITORING_VERDICT_TOOL_NAME, CHECKPOINT_OUTPUTS_TOOL_NAME
 ]);
 
