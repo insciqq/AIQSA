@@ -408,6 +408,19 @@ describe("background sub-agent runs", () => {
 });
 
 describe("a sub-agent's background children", () => {
+  it("counts a child whose stop outlasts the wait and reports its forced end", async () => {
+    const ctx = withParent();
+    ctx.runner!.stop = async () => null;
+    const id = await child(ctx, "slow-child");
+    try {
+      expect(await ctx.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" })).toBe(1);
+      expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(0);
+    } finally {
+      ctx.runner!.finish(id, endedSubagentResult("slow-child"));
+      await vi.waitFor(() => expect(localSubagentTurnIds()).not.toContain(id));
+    }
+  });
+
   const parentAgent = { name: "research", runId: "parent-bg-run", threadId: "thread-research", toolState: { calls: 0 }, turnId: "turn-research" };
   const childInput = (name: string, overrides: Partial<SubagentBackgroundStartInput> = {}) => startInput(name, { parentAgent, ...overrides });
 
