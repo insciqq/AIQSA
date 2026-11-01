@@ -6,7 +6,7 @@ import type { ToolExecutionResult } from "./types";
 
 /**
  * How a self-service tool (`manage_secret`, `manage_skill`,
- * `manage_assistant`) commits a change with its tool call: the change, the
+ * `manage_assistant`, `manage_proxy`) commits a change with its tool call: the change, the
  * call's settlement and the answer's card commit in one transaction, so a
  * repeated or recovered delivery returns the settled result and never applies
  * twice (`agent_docs/RUN_CONTRACTS.md`, "Agent-initiated changes"). The

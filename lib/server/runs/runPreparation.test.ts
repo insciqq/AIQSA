@@ -4587,6 +4587,51 @@ describe("page reader admission", () => {
   });
 });
 
+describe("proxy plan admission", () => {
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+  const plan: import("../../contracts/proxies").ProxyRunPlan = { entries: [{ active: true, country: "KZ", domainHints: [".kz"], host: "proxy.example.com", id: "proxy-1", name: "Almaty",
+    owner: "personal", port: 1080, protocol: "socks5" }] };
+  const tooling = (toolCalling = true) => createHarness({ capabilities: { ...baseCapabilities, toolCalling } }).deps;
+
+  it("freezes the user's plan on the run", async () => {
+    const planForRun = vi.fn(async () => plan);
+    const prepared = preparedFrom(await prepareRun({ ...tooling(), proxies: { planForRun } }, sendInput(toolBody)));
+    expect(prepared.normalizedRequest.proxies).toEqual(plan);
+    expect(planForRun).toHaveBeenCalledWith("user-1");
+  });
+
+  it("freezes it for a scheduled occurrence too, so a matching site does not go direct there", async () => {
+    const send = sendInput(toolBody);
+    if (send.source.kind !== "send") throw new Error("invalid send fixture");
+    const prepared = preparedFrom(await prepareRun({ ...tooling(), proxies: { planForRun: async () => plan } }, { ...send,
+      source: { ...send.source, scheduledOccurrence: { occurrenceId: "occurrence-1", previousResult: null, promptUrlDigests: [], relevantMcpServerIds: null,
+        taskGeneration: 1, taskId: "task-1", taskRevision: 1 } } }));
+    expect(prepared.normalizedRequest.proxies).toEqual(plan);
+  });
+
+  it("leaves no field on a run without proxies, so its request stays byte-identical", async () => {
+    const without = preparedFrom(await prepareRun(tooling(), sendInput(toolBody)));
+    const empty = preparedFrom(await prepareRun({ ...tooling(), proxies: { planForRun: async () => null } }, sendInput(toolBody)));
+    for (const prepared of [without, empty]) {
+      expect(Object.keys(prepared.normalizedRequest)).not.toContain("proxies");
+      expect(Object.keys(prepared.providerRequest)).not.toContain("proxies");
+    }
+    expect(JSON.stringify(empty.normalizedRequest)).toBe(JSON.stringify(without.normalizedRequest));
+  });
+
+  it("reads nothing for a run with no tools to use a proxy", async () => {
+    const planForRun = vi.fn(async () => plan);
+    const cases: Array<readonly [RunPreparationDeps, RunPreparationInput]> = [
+      [{ ...tooling(), proxies: { planForRun } }, sendInput({ ...toolBody, tools: "none" })],
+      [{ ...tooling(false), proxies: { planForRun } }, sendInput(toolBody)]
+    ];
+    for (const [deps, input] of cases) {
+      expect(preparedFrom(await prepareRun(deps, input)).normalizedRequest.proxies).toBeUndefined();
+    }
+    expect(planForRun).not.toHaveBeenCalled();
+  });
+});
+
 describe("scheduled task management admission", () => {
   const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
   type ManagementAdmission = Readonly<{ chatTask: Readonly<{ taskId: string; title: string }> | null }> | null;
