@@ -322,6 +322,10 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
       ? roleItem("mcp_guard", "MCP guard", policy.mcpGuardModel,
           "data-changing MCP calls ask for approval until the guard is available", "warn")
       : null,
+    policy.researchVerifierModel
+      ? roleItem("research_verifier", "Research verifier", policy.researchVerifierModel,
+          "research answers go out unchecked, saying so, until the verifier is available", "warn")
+      : null,
     policy.chatTitleModel
       ? roleItem(
           "chat_titles",

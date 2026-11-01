@@ -95,7 +95,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId", "decisionProviderModelId", "decisionFeatures",
-        "mcpGuardProviderModelId", "mcpGuardReasoningEffort", "visionProviderModelId", "visionReasoningEffort", "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
+        "mcpGuardProviderModelId", "mcpGuardReasoningEffort", "researchVerifierProviderModelId", "researchVerifierReasoningEffort", "visionProviderModelId", "visionReasoningEffort", "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
         "chatPdfProcessingMode", "chatPdfFallbackMethod", "chatPdfNativeProviderModelId", "chatPdfNativeReasoningEffort", "imageProviderModelId", "imageModels"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
@@ -130,13 +130,14 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const imageModels = hasImageUpdate && record(value) ? decodeImageModels(value.imageModels) : null;
       const hasTitleModelUpdate = record(value) && Object.hasOwn(value, "chatTitleProviderModelId");
       const hasMcpGuardUpdate = record(value) && Object.hasOwn(value, "mcpGuardProviderModelId");
+      const hasResearchVerifierUpdate = record(value) && Object.hasOwn(value, "researchVerifierProviderModelId");
       const hasVisionUpdate = record(value) && Object.hasOwn(value, "visionProviderModelId");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
       const hasPdfNativeUpdate = record(value) && Object.hasOwn(value, "chatPdfNativeProviderModelId");
       const hasPdfPolicyUpdate = record(value) && (Object.hasOwn(value, "chatPdfProcessingMode") || Object.hasOwn(value, "chatPdfFallbackMethod"));
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasMcpGuardUpdate && !hasVisionUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasMcpGuardUpdate && !hasResearchVerifierUpdate && !hasVisionUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
         hasDecisionModelUpdate && !textOrNull(value.decisionProviderModelId, 256) ||
         hasDecisionFeaturesUpdate && !decisionFeatures ||
         hasImageUpdate !== Object.hasOwn(value, "imageModels") ||
@@ -147,6 +148,9 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         hasMcpGuardUpdate !== Object.hasOwn(value, "mcpGuardReasoningEffort") ||
         hasMcpGuardUpdate && (!textOrNull(value.mcpGuardProviderModelId, 256) || !textOrNull(value.mcpGuardReasoningEffort, 32)) ||
         value.mcpGuardProviderModelId === null && value.mcpGuardReasoningEffort !== null ||
+        hasResearchVerifierUpdate !== Object.hasOwn(value, "researchVerifierReasoningEffort") ||
+        hasResearchVerifierUpdate && (!textOrNull(value.researchVerifierProviderModelId, 256) || !textOrNull(value.researchVerifierReasoningEffort, 32)) ||
+        value.researchVerifierProviderModelId === null && value.researchVerifierReasoningEffort !== null ||
         hasVisionUpdate !== Object.hasOwn(value, "visionReasoningEffort") ||
         hasVisionUpdate && (!textOrNull(value.visionProviderModelId, 256) || !textOrNull(value.visionReasoningEffort, 32)) ||
         value.visionProviderModelId === null && value.visionReasoningEffort !== null ||
@@ -176,6 +180,10 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
           ...(hasMcpGuardUpdate ? {
             mcpGuardProviderModelId: value.mcpGuardProviderModelId as string | null,
             mcpGuardReasoningEffort: value.mcpGuardReasoningEffort as string | null
+          } : {}),
+          ...(hasResearchVerifierUpdate ? {
+            researchVerifierProviderModelId: value.researchVerifierProviderModelId as string | null,
+            researchVerifierReasoningEffort: value.researchVerifierReasoningEffort as string | null
           } : {}),
           ...(hasVisionUpdate ? {
             visionProviderModelId: value.visionProviderModelId as string | null,

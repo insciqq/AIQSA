@@ -312,6 +312,7 @@ describe("Prisma admin provider repository", () => {
           { chatPdfProviderModelId: "model-1" },
           { visionProviderModelId: "model-1" },
           { mcpGuardProviderModelId: "model-1" },
+          { researchVerifierProviderModelId: "model-1" },
           { chatPdfNativeProviderModelId: "model-1" }
         ]
       }
