@@ -11,6 +11,27 @@ const request = {
 };
 
 describe("sub-agent wake-up turn", () => {
+  it.each(["research_researcher", "research_verifier"])("keeps the chat model when %s is the first answer-role binding", async (bindingKey) => {
+    const bindings = [
+      { bindingKey, connectionId: "research-connection", providerModelId: "research-model", role: "answer" },
+      { bindingKey: "answer", connectionId: "chat-connection", providerModelId: "chat-model", role: "answer" }
+    ];
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: "leaf" }]),
+      chat: { findFirst: vi.fn(async () => ({ activeLeafMessageId: "leaf", assistantId: null })) },
+      modelRun: { findFirst: vi.fn(async ({ select }: { select: { providerRunBindings: { where: { bindingKey?: string; role: string } } } }) => ({
+        normalizedRequest: request,
+        providerRunBindings: bindings.filter((binding) => binding.role === select.providerRunBindings.where.role &&
+          (select.providerRunBindings.where.bindingKey === undefined || binding.bindingKey === select.providerRunBindings.where.bindingKey))
+      })) }
+    };
+    const client = { ...tx, $transaction: async (work: (client: typeof tx) => unknown) => work(tx), user: { findFirst: vi.fn() } };
+    const send = vi.fn<SubagentWakeUpSend>(async () => new Response(null, { status: 200 }));
+    const admit = createSubagentWakeUpAdmitter({ client: client as unknown as PrismaClient, send });
+    expect(await admit({ chatId: "chat", text: "callback", turns: [{ kind: "callback", turnId: "child-turn" }], userId: "user" })).toBe("admitted");
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ body: expect.objectContaining({ modelId: "chat-model", provider: "chat-connection" }) }));
+  });
+
   it("sends what the branch's latest main-agent turn chose, as the composer would", () => {
     const body = wakeUpSendBody({ activeLeafMessageId: "leaf", answerBinding: { connectionId: "conn", providerModelId: "model" },
       assistantChat: false, normalizedRequest: request });
