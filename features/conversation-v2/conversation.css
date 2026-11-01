@@ -1231,6 +1231,7 @@ button[data-tone="warn"] .v2-subagent-line-name {
 
 .v2-subagent-thread-body {
   display: grid;
+  align-content: start;
   gap: 2rem;
   padding: 1.5rem 0 max(4rem, env(safe-area-inset-bottom));
 }

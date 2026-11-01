@@ -27,6 +27,7 @@ import {
   createPrismaSubagentBackgroundStore,
   lockChatSubagentAdmission
 } from "./store";
+import { createPrismaMcpRuntimeRepository } from "../../mcp/runtimeRepository";
 import { createSubagentViews } from "./views";
 import { createSubagentUserMessageHandler } from "./userMessageHandler";
 import type { AuthConfig } from "../../auth/config";
@@ -646,6 +647,18 @@ describe("background sub-agent runs on PostgreSQL", () => {
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 
+  it("leaves a stranded foreground turn to a run still ending here, and ends it once that run is gone", async () => fixture(async (f) => {
+    const thread = await f.thread("holder");
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: f.main.runId,
+      parentToolCallId: thread.callId, provider: "fake", state: "running", threadId: thread.threadId, userId: f.userId } });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    const scope = { chatId: f.chatId, userId: f.userId };
+    expect(await store.interruptStrandedForegroundTurns({ ...scope, liveRunIds: [f.main.runId] })).toBe(0);
+    expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: turn.id } })).state).toBe("running");
+    expect(await store.interruptStrandedForegroundTurns({ ...scope, liveRunIds: [] })).toBe(1);
+    expect(await prisma.subagentTurn.findUniqueOrThrow({ where: { id: turn.id } })).toMatchObject({ reasonCode: "restart", state: "interrupted" });
+  }));
+
   it("re-owes a callback the stopped answer never read, wakes nothing on the Stop, and recovery wakes the idle chat once", async () => fixture(async (f) => {
     const admitted = await store.admit(admission(f, await f.thread("reader")));
     if (admitted.kind !== "admitted") throw new Error("not admitted");
@@ -739,6 +752,70 @@ describe("a sub-agent's children on PostgreSQL", () => {
     expect(running[0]).toMatchObject({ parentAnswerId: f.main.assistantMessageId, parentThreadId: parent.threadId });
   }));
 
+  it("refuses a child of a turn that ended, though the run behind that turn still runs", async () => fixture(async (f) => {
+    const parent = await backgroundParent(f);
+    const thread = await childThread(f, parent, "late");
+    await store.settle({ chatId: f.chatId, result: endedSubagentResult("parent", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: parent.turnId, userId: f.userId });
+    expect(await store.admit(childAdmission(f, parent, thread))).toEqual({ code: "subagent_not_active", kind: "refused" });
+    expect(await prisma.subagentTurn.count({ where: { threadId: thread.threadId } })).toBe(0);
+  }));
+
+  it("takes the user's message to a child of a background sub-agent in either mode, while its main answer stays on the branch", async () => fixture(async (f) => {
+    const parent = await backgroundParent(f);
+    const behind = await childThread(f, parent, "behind");
+    const admitted = await store.admit(childAdmission(f, parent, behind));
+    if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+    const inline = await childThread(f, parent, "inline");
+    const foreground = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: parent.runId,
+      parentToolCallId: inline.callId, provider: "fake", state: "running", threadId: inline.threadId, userId: f.userId } });
+    const handler = createSubagentUserMessageHandler({ control: control().control, views,
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.test", configured: true }) as unknown as AuthConfig,
+      resolveAuth: async () => ({ expiresAt: new Date(), id: "session", userId: f.userId,
+        user: { displayName: "Synthetic owner", email: null, id: f.userId, role: "admin", status: "active" } }) });
+    const text = "Only this helper may buy the synthetic item.";
+    const send = (threadId: string, turnId: string) => handler(new Request("https://aiqsa.test/api/messages", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nonce: "direct", text, turnId })
+    }), { params: { chatId: f.chatId, threadId } });
+    const reads = [{ runId: admitted.runId, threadId: behind.threadId, turnId: admitted.turnId },
+      { runId: parent.runId, threadId: inline.threadId, turnId: foreground.id }];
+    for (const { runId, threadId, turnId } of reads) {
+      expect((await send(threadId, turnId)).status).toBe(202);
+      expect(await prisma.runFollowup.findMany({ select: { authorUserId: true, origin: true, subagentTurnId: true, text: true }, where: { modelRunId: runId } }))
+        .toEqual([{ authorUserId: f.userId, origin: "user", subagentTurnId: turnId, text }]);
+      await expect(createSubagentThreadStore(prisma).unreadMessages({ chatId: f.chatId, runIds: [runId], threadId, userId: f.userId }))
+        .resolves.toEqual([{ nonce: "user:direct", origin: "user", text }]);
+    }
+    // The branch the user left takes nothing, the same for a child as for its parent.
+    await prisma.chat.update({ where: { id: f.chatId }, data: { activeLeafMessageId: f.main.userMessageId } });
+    for (const { turnId } of reads) {
+      expect(await store.insertMailbox({ authorName: "You", chatId: f.chatId, nonce: "off-branch", origin: "user", text, turnId, userId: f.userId })).toBe("closed");
+    }
+  }));
+
+  it("holds the main run's MCP generation while a child outlives its parent's run, by the raw rule and the filter alike", async () => fixture(async (f) => {
+    const parent = await backgroundParent(f);
+    const admitted = await store.admit(childAdmission(f, parent, await childThread(f, parent, "behind")));
+    if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+    const serverId = randomUUID(), revisionId = randomUUID(), generationId = randomUUID(), fingerprint = "c".repeat(64);
+    await prisma.mcpServer.create({ data: { displayName: "Synthetic Records", enabled: true, id: serverId, namespace: `held_${randomUUID().replaceAll("-", "")}` } });
+    await prisma.mcpRevision.create({ data: { configuration: {}, draftHash: "a".repeat(64), id: revisionId, identityHash: "b".repeat(64), revisionNumber: 1, serverId,
+      validationEvidence: {} } });
+    const userServer = await prisma.mcpUserServer.create({ data: { enabled: false, serverId, userId: f.userId } });
+    await prisma.mcpRuntimeGeneration.create({ data: { fingerprint, id: generationId, revisionId, state: "ready", userServerId: userServer.id } });
+    await prisma.mcpRunBinding.create({ data: { modelRunId: f.main.runId, runtimeGenerationFingerprint: fingerprint, runtimeGenerationId: generationId } });
+    const runtime = createPrismaMcpRuntimeRepository({ prisma });
+    const scope = { chatId: f.chatId, userId: f.userId };
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    await store.settle({ ...scope, result: endedSubagentResult("parent", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: parent.turnId });
+    expect(await runtime.markStarting({ fingerprint, generationId, now: new Date() })).toBe(true);
+    expect(await runtime.deleteDrainedGeneration(generationId)).toBe(false);
+    await store.settle({ ...scope, result: endedSubagentResult("behind", { outcome: undefined, reason: "parent_stopped", state: "stopped" }), turnId: admitted.turnId });
+    expect(await runtime.markStarting({ fingerprint, generationId, now: new Date() })).toBe(false);
+    expect(await runtime.deleteDrainedGeneration(generationId)).toBe(true);
+    await prisma.mcpRevision.deleteMany({ where: { serverId } });
+    await prisma.mcpServer.delete({ where: { id: serverId } });
+  }));
+
   it("refuses a parent's call on another agent's thread, under the lock", async () => fixture(async (f) => {
     const parent = await backgroundParent(f);
     const strangers = await f.thread("strangers");
@@ -808,4 +885,3 @@ describe("a sub-agent's children on PostgreSQL", () => {
     expect(under.map((turn) => turn.name).sort()).toEqual(["one", "parent"]);
   }));
 });
-

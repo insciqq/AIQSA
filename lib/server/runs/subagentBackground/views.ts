@@ -38,7 +38,8 @@ import { TURN_ANSWER_SELECT, mailboxWriter, turnAnswerMessageId } from "../../su
 import { foldWorkspaceActivityEntries, projectWorkspaceActivity } from "../../workspace/activityProjection";
 import { activeModelRunStatuses } from "../prismaRepositoryShared";
 import { isRunEndedToolCallResult } from "../toolLoopPersistence";
-import { agentBranchPath, impliedResult } from "./store";
+import { agentBranchPath } from "../../subagents/branchPath";
+import { impliedResult } from "./store";
 
 /**
  * The owner-only projections of a chat's sub-agents

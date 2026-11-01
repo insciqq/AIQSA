@@ -111,4 +111,3 @@ describe("a child in the tree", () => {
     expect(subagentDetailText(subagentThread("thread-left", "stopped", { parent, reason: SUBAGENT_END_REASONS.parentStopped }))).toBe("Stopped with parent");
   });
 });
-

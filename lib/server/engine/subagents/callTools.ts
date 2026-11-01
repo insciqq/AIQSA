@@ -330,7 +330,7 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
     const thread = lookup?.thread ?? await deps.store.ensureThread({ branchRunIds: deps.branchRunIds, chatId: deps.chatId,
       definitionId: type.type?.definitionId ?? null, name: args.name, parentRunId: branchRunId,
       ...(caller ? { parentThreadId: caller.threadId } : {}), typeName: type.type?.name ?? null, userId: deps.userId });
-    const started = await deps.background.start({ ...scope, binding, brief: args.message, ...(caller ? { deadlineAt: deps.deadlineAt() } : {}),
+    const started = await deps.background.start({ ...scope, binding, brief: args.message, ...(caller ? { deadlineAt: deps.deadlineAt(), signal: execution.signal } : {}),
       kind: lookup ? "continue" : "start", name: args.name, threadId: thread.id, type: type.type, userMessage: deps.userMessage });
     if (started.kind === "started") deps.onChildStarted?.(started.name);
     return started.kind === "started"

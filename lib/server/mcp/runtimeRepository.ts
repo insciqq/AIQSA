@@ -44,17 +44,34 @@ import type {
 } from "./runtimeCoordinator";
 
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"] as const;
+const ACTIVE_RUN = { is: { status: { in: [...ACTIVE_RUN_STATUSES] } } } satisfies Prisma.ModelRunNullableScalarRelationFilter;
 /**
- * A run holds its bound MCP runtimes while it is active, and while a background sub-agent run it started is: such a
- * run calls MCP under its parent's binding rows by reference (`lib/server/runs/subagentBackground/store.ts`), so the
- * generation must outlive the parent's own answer. The raw queries below spell out the same rule.
+ * A run holds its bound MCP runtimes while it is active, while a background sub-agent run it started is, and while a
+ * background child of that run is: such a run calls MCP under the main run's binding rows by reference
+ * (`lib/server/runs/subagentBackground/store.ts`), so the generation must outlive the main answer, and a child must
+ * outlive a parent that a stop settled on record first. The raw queries take the same rule from `RUN_HOLDS_RUNTIME_SQL`.
  */
 const RUN_HOLDS_RUNTIME = {
   OR: [
     { status: { in: [...ACTIVE_RUN_STATUSES] } },
-    { subagentTurnsStarted: { some: { executionRun: { is: { status: { in: [...ACTIVE_RUN_STATUSES] } } }, mode: "background" } } }
+    { subagentTurnsStarted: { some: { mode: "background", OR: [
+      { executionRun: ACTIVE_RUN },
+      { executionRun: { is: { subagentTurnsStarted: { some: { executionRun: ACTIVE_RUN, mode: "background" } } } } }
+    ] } } }
   ]
 } satisfies Prisma.ModelRunWhereInput;
+/** `RUN_HOLDS_RUNTIME` over a joined `"ModelRun" AS run`. */
+const RUN_HOLDS_RUNTIME_SQL = Prisma.sql`(run."status" IN ('preparing', 'queued', 'streaming', 'in_progress') OR EXISTS (
+  SELECT 1 FROM "SubagentTurn" AS turn
+  JOIN "ModelRun" AS background ON background."subagentTurnId" = turn."id"
+  WHERE turn."parentRunId" = run."id" AND turn."mode" = 'background'
+    AND (background."status" IN ('preparing', 'queued', 'streaming', 'in_progress') OR EXISTS (
+      SELECT 1 FROM "SubagentTurn" AS "childTurn"
+      JOIN "ModelRun" AS child ON child."subagentTurnId" = "childTurn"."id"
+      WHERE "childTurn"."parentRunId" = background."id" AND "childTurn"."mode" = 'background'
+        AND child."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
+    ))
+))`;
 const RECENT_ACTIVITY_MS = 15 * 60_000;
 const DRAIN_GRACE_MS = 60_000;
 const INVENTORY_FRESH_MS = 5 * 60_000;
@@ -731,12 +748,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
-                AND (run."status" IN ('preparing', 'queued', 'streaming', 'in_progress') OR EXISTS (
-                  SELECT 1 FROM "SubagentTurn" AS turn
-                  JOIN "ModelRun" AS background ON background."subagentTurnId" = turn."id"
-                  WHERE turn."parentRunId" = run."id" AND turn."mode" = 'background'
-                    AND background."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
-                ))
+                AND ${RUN_HOLDS_RUNTIME_SQL}
             )
           )
       `.catch(retainDatabaseFailure);
@@ -773,12 +785,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
-                AND (run."status" IN ('preparing', 'queued', 'streaming', 'in_progress') OR EXISTS (
-                  SELECT 1 FROM "SubagentTurn" AS turn
-                  JOIN "ModelRun" AS background ON background."subagentTurnId" = turn."id"
-                  WHERE turn."parentRunId" = run."id" AND turn."mode" = 'background'
-                    AND background."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
-                ))
+                AND ${RUN_HOLDS_RUNTIME_SQL}
             )
           )
       `.catch(retainDatabaseFailure);
@@ -875,12 +882,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
-                AND (run."status" IN ('preparing', 'queued', 'streaming', 'in_progress') OR EXISTS (
-                  SELECT 1 FROM "SubagentTurn" AS turn
-                  JOIN "ModelRun" AS background ON background."subagentTurnId" = turn."id"
-                  WHERE turn."parentRunId" = run."id" AND turn."mode" = 'background'
-                    AND background."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
-                ))
+                AND ${RUN_HOLDS_RUNTIME_SQL}
             )
           )
         RETURNING generation."retryAt"

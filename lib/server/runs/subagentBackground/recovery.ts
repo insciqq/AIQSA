@@ -149,7 +149,7 @@ export async function reconcileSubagentRuns(deps: SubagentRecoveryDeps,
         prisma_code: databaseFailureCode(error), run_id: orphan.runId, stage: "recovery", subsystem: "run_recovery" });
     }
   }
-  await deps.store.interruptStrandedForegroundTurns(input).catch((error: unknown) => {
+  await deps.store.interruptStrandedForegroundTurns({ ...input, liveRunIds: deps.liveRunIds() }).catch((error: unknown) => {
     logEvent("run_recovery", { action: "retry", code: "subagent_turn_recovery_failed", error, outcome: "failed",
       prisma_code: databaseFailureCode(error), stage: "recovery", subsystem: "run_recovery" });
   });

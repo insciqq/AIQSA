@@ -10,6 +10,10 @@ import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
+import { FakeSubagentCallbackSink, FakeSubagentRunner } from "@/tests/support/subagentPorts";
+import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
+import { createSubagentBackgroundControl } from "../../runs/subagentBackground/control";
+import type { UsageLimitStatus } from "../../usageLimits/repository";
 import type { SubagentBinding, SubagentMessage, SubagentMessaging, SubagentTurnInput } from "../../subagents/ports";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackground/render";
@@ -241,6 +245,7 @@ const backgroundControl = (extra: Partial<NonNullable<SubagentChildHost["backgro
   start: vi.fn(async (input: Parameters<NonNullable<SubagentChildHost["background"]>["start"]>[0]) =>
     ({ kind: "started" as const, name: input.name, state: "running" as const, turnId: `bg-${input.name}` })),
   stop: vi.fn(async () => ({ kind: "not_found" as const })),
+  reportsOnTheirWay: vi.fn(() => 0),
   stopChildren: vi.fn(async () => 0),
   ...extra
 }) satisfies NonNullable<SubagentChildHost["background"]>;
@@ -952,12 +957,79 @@ describe("a sub-agent's children", () => {
     expect(stopChildren).toHaveBeenCalledWith({ chatId: "chat", threadId: "thread-1", userId: "user" });
   });
 
+  it.each(["parent_stopped", "deadline"] as const)("settles every level as stopped behind a slow child's stop, on %s", async (reason) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const stopChildren = vi.fn(async () => {
+      await gate;
+      return 1;
+    });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true }), callChild("right", "c2")] }, { hang: true }],
+      { children: childHost({ background: backgroundControl({ stopChildren }) }) });
+    await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(ctx.requests).toHaveLength(2));
+    const stopping = ctx.runner.stopAll(reason);
+    await vi.waitFor(() => expect(stopChildren).toHaveBeenCalled());
+    // The parent's row stays active behind its children, which is the window a recovery pass must leave alone.
+    expect(ctx.settled.map((entry) => entry.turnId)).not.toContain("turn-1");
+    release();
+    await stopping;
+    const ended = Object.fromEntries(ctx.settled.map((entry) => [entry.turnId, entry.result]));
+    expect(ended["turn-1"]).toMatchObject({ reason, state: "stopped" });
+    expect(ended["child-turn-1"]).toMatchObject({ reason, state: "stopped" });
+  });
+
+  it("never lets a child's start outlive a parent stopped beside it, whose call to start it was still reading the usage limits", async () => {
+    let reached!: () => void;
+    let release!: () => void;
+    const atGate = new Promise<void>((resolve) => { reached = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const store = new MemorySubagentStore();
+    store.callers.add("run");
+    store.turns.push({ callbackRunId: null, chatId: "chat", endedAt: null, mailbox: [], mode: "foreground", modelId: "fake-qsa", name: "shop", parentAnswerId: "answer-1",
+      parentRunId: "run", result: null, runActive: true, runId: null, state: "running", threadId: "thread-1", turnId: "turn-1", userId: "user" });
+    const children = new FakeSubagentRunner();
+    const background = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink("wake_up"), runner: children, stopWaitMs: 100, store,
+      usageLimits: { loadUsageLimitStatus: async () => {
+        reached();
+        await gate;
+        return { effective: { exempt: false, messagesPerDay: { source: null, value: null }, messagesPerHour: { source: null, value: null },
+          monthlyBudgetMicros: { source: null, value: null } }, installationCapMicros: null, installationSpentMicros: 0, lastDay: { count: 0, freesAt: null },
+        lastHour: { count: 0, freesAt: null }, userSpentMicros: 0 } satisfies UsageLimitStatus;
+      } } });
+    const hang = engineTool("wait_here", "session", (execution) => new Promise((_, reject) =>
+      execution.signal.addEventListener("abort", () => reject(execution.signal.reason as Error), { once: true })), { effects: "external" });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true }), { arguments: {}, id: "c2", name: "wait_here" }] }],
+      { children: childHost({ background }), tools: [hang] });
+    const handle = await ctx.runner.start(ctx.input());
+    await atGate;
+    expect(await ctx.runner.stop(handle, "user_stop")).toMatchObject({ reason: "user_stop", state: "stopped" });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(store.turns.filter((turn) => turn.name === "left")).toEqual([]);
+    expect([...children.turns.values()].filter((turn) => !turn.input.signal.aborted)).toEqual([]);
+  });
+
   it("stays for the report of a child it left in the background, and goes on from it", async () => {
     const children = childHost({ background: backgroundControl() }, { activeChildren: vi.fn(async () => 1) });
     const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: partial\nStill waiting for left." },
       { text: "Outcome: done\nUsed left's report." }], { children });
     const handle = await ctx.runner.start(ctx.input());
     await vi.waitFor(() => expect(children.store.activeChildren).toHaveBeenCalled());
+    expect(ctx.requests).toHaveLength(2);
+    await ctx.runner.deliver(handle, { from: "left", nonce: "subagent-callback:bg-left", origin: "subagent_callback", text: "[Sub-agent callback] left ended: 3 offers." });
+    expect(await ctx.runner.wait(handle)).toMatchObject({ report: "Outcome: done\nUsed left's report.", state: "done" });
+    expect(userTexts(ctx.requests[2]!).join("\n")).toContain("left ended: 3 offers.");
+  });
+
+  it("stays for a report on its way, past the looks that give up on a child gone from the record", async () => {
+    const reportsOnTheirWay = vi.fn(() => 1);
+    const children = childHost({ background: backgroundControl({ reportsOnTheirWay }) });
+    const ctx = setup([{ calls: [callChild("left", "c1", { background: true })] }, { text: "Outcome: partial\nStill waiting for left." },
+      { text: "Outcome: done\nUsed left's report." }], { children });
+    const handle = await ctx.runner.start(ctx.input());
+    await vi.waitFor(() => expect(reportsOnTheirWay.mock.calls.length).toBeGreaterThan(2), { timeout: 5_000 });
+    expect(reportsOnTheirWay).toHaveBeenCalledWith("thread-1");
     expect(ctx.requests).toHaveLength(2);
     await ctx.runner.deliver(handle, { from: "left", nonce: "subagent-callback:bg-left", origin: "subagent_callback", text: "[Sub-agent callback] left ended: 3 offers." });
     expect(await ctx.runner.wait(handle)).toMatchObject({ report: "Outcome: done\nUsed left's report.", state: "done" });

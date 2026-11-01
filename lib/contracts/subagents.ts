@@ -254,7 +254,7 @@ export const SUBAGENT_ERROR_CODES = Object.freeze({
   messageInvalid: "subagent_message_invalid",
   /** The recipient took as many messages as it may, or the turn asked as many questions as it may: the bound of a ping-pong. */
   messageLimit: "subagent_message_limit_reached",
-  /** The addressee has ended or, for the main agent, runs no answer that can read it now. */
+  /** The addressee has ended or, for the main agent, runs no answer that can read it now; or a child's parent turn ended before it started. */
   notActive: "subagent_not_active",
   /** Background mode is not offered in this run (Telegram turns, scheduled tasks). */
   backgroundUnavailable: "subagent_background_unavailable",

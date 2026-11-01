@@ -1402,9 +1402,10 @@ export function oracleO(input: OEvidence): OracleVerdict {
   const failed: string[] = [];
   if (reports.children.some((turn) => turn?.state !== "done")) failed.push("children_did_not_finish");
   if (!reports.leadHoldsBoth) failed.push("children_reports_not_used");
-  for (const [child, parent] of [[nest.left, nest.lead], [nest.right, nest.lead], [nest.inner, nest.holder], [nest.side, nest.holder], [nest.approver, nest.clerk]] as const) {
-    if (parents[child] !== parent) failed.push("child_not_under_parent");
-  }
+  const under = (pairs: ReadonlyArray<readonly [string, string]>) => {
+    if (pairs.some(([child, parent]) => parents[child] !== parent)) failed.push("child_not_under_parent");
+  };
+  under([[nest.left, nest.lead], [nest.right, nest.lead], [nest.inner, nest.holder], [nest.side, nest.holder]]);
   if (parents[nest.lead] !== null) failed.push("parent_not_at_top");
   if (limit.refused !== 1 || limit.calls !== 3) failed.push("third_child_not_refused");
   if (!limit.leadNamedCode) failed.push("third_child_code_not_reported");
@@ -1415,6 +1416,7 @@ export function oracleO(input: OEvidence): OracleVerdict {
   if (stop.turns.length !== 3 || stop.turns.some((turn) => turn?.state !== "stopped" || turn.reasonCode !== SUBAGENT_END_REASONS.parentStopped)) failed.push("stop_missed_a_level");
   if (approval.unavailable !== null) failed.push("approval_step_unavailable");
   else {
+    under([[nest.approver, nest.clerk]]);
     if (approval.childTurn?.outcome !== "blocked" || approval.childTurn.reasonCode !== SUBAGENT_BLOCKED_REASONS.needsApproval) failed.push("child_not_blocked_on_approval");
     if (approval.parentTurn?.outcome !== "blocked" || approval.parentTurn.reasonCode !== SUBAGENT_BLOCKED_REASONS.needsApproval) failed.push("approval_did_not_climb");
     if (approval.approvalsOnMainRun !== 1) failed.push("approval_not_on_main_agent");

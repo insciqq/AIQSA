@@ -123,7 +123,7 @@ function compose(): Composition {
     }),
     reconcile: (input: Readonly<{ chatId?: string; userId?: string }> = {}) => reconcileSubagentRuns({ backoff: state.backoff,
       bootedAt: processBootedAt(), deferred: state.deferred, flush: callbacks.flush, retireFailures: state.retireFailures ??= new Map(),
-      liveRunIds: () => activeRunControllerRegistry.ids(), staleMs: STALE_MS, store,
+      liveRunIds: () => activeRunControllerRegistry.executing(), staleMs: STALE_MS, store,
       ...(state.wiring.workspace ? { workspace: state.wiring.workspace } : {}) }, input),
     async stopUnderMessage({ messageId, userId }: Readonly<{ messageId: string; userId: string }>): Promise<number> {
       const message = await prisma.message.findFirst({ select: { chatId: true }, where: { chat: { userId }, id: messageId } });

@@ -22,13 +22,13 @@ function startInput(name: string, overrides: Partial<SubagentBackgroundStartInpu
     parentToolCallId: `call-${name}`, threadId: `thread-${name}`, type: null, userId: "user-1", userMessage: "Find the 5 best", ...overrides };
 }
 
-function setup(options: Readonly<{ runner?: FakeSubagentRunner | null; usageRefuses?: boolean }> = {}) {
+function setup(options: Readonly<{ runner?: FakeSubagentRunner | null; usage?: () => Promise<UsageLimitStatus>; usageRefuses?: boolean }> = {}) {
   const store = new MemorySubagentStore();
   store.callers.add("parent-run");
   const runner = options.runner === undefined ? new FakeSubagentRunner() : options.runner;
   const sink = new FakeSubagentCallbackSink("wake_up");
   const workspace = new FakeWorkspaceAttachments();
-  const usageLimits = options.usageRefuses
+  const usageLimits = options.usage ? { loadUsageLimitStatus: options.usage } : options.usageRefuses
     ? { loadUsageLimitStatus: async (): Promise<UsageLimitStatus> => { throw new Error("unreadable"); } } : unlimited;
   const control = createSubagentBackgroundControl({ callbacks: sink, runner, stopWaitMs: 2_000, store, usageLimits, workspace });
   return { control, runner, sink, store, workspace };
@@ -234,11 +234,10 @@ describe("background sub-agent runs", () => {
   it.each(["stopAll", "stopThread", "stopUnderMessage"] as const)(
     "never runs a turn whose admission had not committed when %s came", async (operation) => {
       const { control, runner, store } = setup();
-      let release: () => void = () => undefined;
+      let release!: () => void;
       store.admitBeforeGate = () => new Promise<void>((resolve) => { release = resolve; });
-      const before = localSubagentTurnIds().length;
       const starting = control.start(startInput("early"));
-      await vi.waitFor(() => expect(localSubagentTurnIds()).toHaveLength(before + 1));
+      await vi.waitFor(() => expect(release).toBeDefined());
       expect(store.turns).toHaveLength(0);
       const scope = { chatId: "chat-1", userId: "user-1" };
       const stopping = operation === "stopAll" ? control.stopAll(scope)
@@ -254,11 +253,10 @@ describe("background sub-agent runs", () => {
 
   it("leaves another thread's admission alone when stopping one thread", async () => {
     const { control, runner, store } = setup();
-    let release: () => void = () => undefined;
+    let release!: () => void;
     store.admitBeforeGate = () => new Promise<void>((resolve) => { release = resolve; });
-    const before = localSubagentTurnIds().length;
     const starting = control.start(startInput("other"));
-    await vi.waitFor(() => expect(localSubagentTurnIds()).toHaveLength(before + 1));
+    await vi.waitFor(() => expect(release).toBeDefined());
     expect(await control.stopThread({ chatId: "chat-1", threadId: "thread-unrelated", userId: "user-1" })).toBe(0);
     release();
     const started = await starting;
@@ -414,8 +412,8 @@ describe("a sub-agent's background children", () => {
   const childInput = (name: string, overrides: Partial<SubagentBackgroundStartInput> = {}) => startInput(name, { parentAgent, ...overrides });
 
   /** The parent sub-agent, active: where a child's report lands. */
-  function withParent() {
-    const ctx = setup();
+  function withParent(options: Parameters<typeof setup>[0] = {}) {
+    const ctx = setup(options);
     ctx.store.callers.add("parent-bg-run");
     ctx.store.turns.push({ callbackRunId: null, chatId: "chat-1", endedAt: null, mailbox: [], mode: "background", modelId: "fake-model", name: "research",
       parentAnswerId: "answer-1", parentRunId: "parent-run", result: null, runActive: true, runId: "parent-bg-run", state: "running",
@@ -516,6 +514,127 @@ describe("a sub-agent's background children", () => {
       threadId: "thread-inner", turnId: "turn-inner", userId: "user-1" });
     vi.spyOn(ctx.runner!, "stop").mockImplementation(() => new Promise(() => undefined));
     expect(await ctx.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" })).toBe(0);
+  });
+
+  /** A child's start parked in its usage read, past the point where a parent's end looked for it before. */
+  function parkedAtUsage() {
+    let reached!: () => void;
+    let release!: () => void;
+    const atGate = new Promise<void>((resolve) => { reached = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ctx = withParent({ usage: async () => {
+      reached();
+      await gate;
+      return NO_LIMITS;
+    } });
+    return { atGate, ctx, release };
+  }
+
+  it("never starts a child whose parent ended while its start read the usage limits", async () => {
+    const { atGate, ctx, release } = parkedAtUsage();
+    const executing = localSubagentTurnIds().length;
+    const starting = ctx.control.start(childInput("late"));
+    await atGate;
+    const stopping = ctx.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" });
+    release();
+    await stopping;
+    expect(await starting).toEqual({ code: "subagent_background_unavailable", kind: "refused" });
+    expect(ctx.store.turns.filter((turn) => turn.name === "late")).toEqual([]);
+    expect(ctx.runner!.turns.size).toBe(0);
+    // A refused start leaves no execution behind for the next stop to wait on.
+    expect(localSubagentTurnIds()).toHaveLength(executing);
+  });
+
+  it("never starts a child whose parent was cancelled while its start read the usage limits, Stop all included", async () => {
+    const { atGate, ctx, release } = parkedAtUsage();
+    const cancelled = new AbortController();
+    const starting = ctx.control.start(childInput("late", { signal: cancelled.signal }));
+    await atGate;
+    cancelled.abort();
+    release();
+    expect(await starting).toEqual({ code: "subagent_background_unavailable", kind: "refused" });
+    expect(ctx.runner!.turns.size).toBe(0);
+    const stoppedAll = parkedAtUsage();
+    const parked = stoppedAll.ctx.control.start(childInput("late"));
+    await stoppedAll.atGate;
+    const stopping = stoppedAll.ctx.control.stopAll({ chatId: "chat-1", userId: "user-1" });
+    stoppedAll.release();
+    await stopping;
+    expect(await parked).toEqual({ code: "subagent_background_unavailable", kind: "refused" });
+    expect(stoppedAll.ctx.runner!.turns.size).toBe(0);
+  });
+
+  it("refuses at once a start its parent's cancellation already reached", async () => {
+    const ctx = withParent();
+    const cancelled = new AbortController();
+    cancelled.abort();
+    expect(await ctx.control.start(childInput("late", { signal: cancelled.signal }))).toEqual({ code: "subagent_background_unavailable", kind: "refused" });
+    expect(ctx.store.turns.filter((turn) => turn.name === "late")).toEqual([]);
+  });
+
+  it("carries its parent's cancellation into a child that already runs", async () => {
+    const ctx = withParent();
+    const cancelled = new AbortController();
+    const turnId = await child(ctx, "helper", { signal: cancelled.signal });
+    cancelled.abort();
+    await vi.waitFor(() => expect(ctx.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ result: { reason: "parent_stopped", state: "stopped" }, state: "stopped" }));
+    expect(ctx.runner!.turns.get(turnId)!.input.signal.aborted).toBe(true);
+    expect(ctx.store.turns.find((entry) => entry.turnId === "turn-research")!.mailbox).toEqual([]);
+  });
+
+  it("refuses a child whose parent turn has ended, though the run behind it still runs", async () => {
+    const ctx = withParent();
+    ctx.store.turns.find((entry) => entry.turnId === "turn-research")!.state = "stopped";
+    expect(await ctx.control.start(childInput("late"))).toEqual({ code: "subagent_not_active", kind: "refused" });
+    expect(ctx.runner!.turns.size).toBe(0);
+  });
+
+  it("counts a child's report as on its way from before its end is on record until it lands, however slow its parent's mailbox", async () => {
+    const ctx = withParent();
+    const turnId = await child(ctx, "helper");
+    let settle!: () => void;
+    let land!: () => void;
+    const settling = new Promise<void>((resolve) => { settle = resolve; });
+    const landing = new Promise<void>((resolve) => { land = resolve; });
+    const settleTurn = ctx.store.settle.bind(ctx.store), insert = ctx.store.insertMailbox.bind(ctx.store);
+    vi.spyOn(ctx.store, "settle").mockImplementation(async (input) => {
+      await settling;
+      return settleTurn(input);
+    });
+    vi.spyOn(ctx.store, "insertMailbox").mockImplementation(async (input) => {
+      await landing;
+      return insert(input);
+    });
+    expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(0);
+    ctx.runner!.finish(turnId, endedSubagentResult("helper", { report: "Done" }));
+    await vi.waitFor(() => expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(1));
+    expect(ctx.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ state: "running" });
+    settle();
+    await vi.waitFor(() => expect(ctx.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ state: "done" }));
+    expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(1);
+    expect(ctx.control.reportsOnTheirWay("thread-other")).toBe(0);
+    land();
+    await vi.waitFor(() => expect(ctx.control.reportsOnTheirWay("thread-research")).toBe(0));
+    expect(ctx.store.turns.find((entry) => entry.turnId === "turn-research")!.mailbox).toHaveLength(1);
+  });
+
+  it("counts no report that failed, that no parent takes or that a stopped parent is not owed", async () => {
+    const failed = withParent();
+    const insert = vi.spyOn(failed.store, "insertMailbox").mockRejectedValue(new Error("mailbox_down"));
+    failed.runner!.finish(await child(failed, "helper"), endedSubagentResult("helper", { report: "Done" }));
+    await vi.waitFor(() => expect(insert).toHaveBeenCalled());
+    await vi.waitFor(() => expect(failed.control.reportsOnTheirWay("thread-research")).toBe(0));
+    const orphan = withParent();
+    const turnId = await child(orphan, "helper");
+    orphan.store.turns.find((entry) => entry.turnId === "turn-research")!.state = "stopped";
+    orphan.runner!.finish(turnId, endedSubagentResult("helper", { report: "Done" }));
+    await vi.waitFor(() => expect(orphan.store.turns.find((entry) => entry.turnId === turnId)).toMatchObject({ state: "done" }));
+    await vi.waitFor(() => expect(orphan.control.reportsOnTheirWay("thread-research")).toBe(0));
+    const stopped = withParent();
+    await child(stopped, "helper");
+    await stopped.control.stopChildren({ chatId: "chat-1", threadId: "thread-research", userId: "user-1" });
+    expect(stopped.control.reportsOnTheirWay("thread-research")).toBe(0);
+    expect(stopped.store.turns.find((entry) => entry.turnId === "turn-research")!.mailbox).toEqual([]);
   });
 
   it("stops one still being admitted when its parent ends, so it never runs", async () => {
