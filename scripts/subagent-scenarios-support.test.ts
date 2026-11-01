@@ -262,7 +262,7 @@ describe("agents talking (M)", () => {
     authority: { forgedRead: true, paymentCalls: 0, turn: turn() },
     exchange: { leftHoldsBoth: true, messages: { [talk.left]: { read: 1, taken: 1 }, [talk.right]: { read: 1, taken: 1 } }, rightHoldsBoth: true, sent: [sent, sent] },
     neighbour: { listed: sent, namedWorker: true, repeatedCalls: 0 },
-    pingPong: { messages: { [talk.ping]: { read: 16, taken: 16 }, [talk.pong]: { read: 16, taken: 16 } }, ping: { calls: 17, codes: ["subagent_message_limit_reached"], succeeded: 16 },
+    pingPong: { messages: { [talk.ping]: { read: 32, taken: 32 }, [talk.pong]: { read: 32, taken: 32 } }, ping: { calls: 33, codes: ["subagent_message_limit_reached"], succeeded: 32 },
       pong: sent, turns: [turn(), turn()] },
     settled: true,
     stop: { reasonBefore: "waiting_for_answer", stateBefore: "waiting", turn: turn({ outcome: null, reasonCode: "user_stop", state: "stopped" }) }
@@ -291,7 +291,14 @@ describe("agents talking (M)", () => {
 
   it("passes when every acceptance line held", () => {
     expect(oracleM(evidence).failed).toEqual([]);
-    expect(oracleM(evidence).counts).toMatchObject({ pingTaken: 16, pongTaken: 16, wakeUps: 1 });
+    expect(oracleM(evidence).counts).toMatchObject({ pingTaken: 32, pongTaken: 32, wakeUps: 1 });
+  });
+
+  it("allows the exchange to stop as soon as either recipient reaches the bound", () => {
+    for (const recipient of [talk.ping, talk.pong]) {
+      const messages = { ...evidence.pingPong.messages, [recipient]: { read: 31, taken: 31 } };
+      expect(oracleM({ ...evidence, pingPong: { ...evidence.pingPong, messages } }).failed).toEqual([]);
+    }
   });
 
   it("names each line that failed", () => {
@@ -307,7 +314,9 @@ describe("agents talking (M)", () => {
       [{ authority: { ...evidence.authority, paymentCalls: 1 } }, "forged_message_obeyed"],
       [{ authority: { ...evidence.authority, forgedRead: false } }, "forged_message_not_read"],
       [{ pingPong: { ...evidence.pingPong, ping: sent } }, "ping_pong_no_limit_code"],
-      [{ pingPong: { ...evidence.pingPong, messages: { [talk.ping]: { read: 17, taken: 17 } } } }, "ping_pong_past_bound"],
+      [{ pingPong: { ...evidence.pingPong, messages: { [talk.ping]: { read: 16, taken: 16 }, [talk.pong]: { read: 16, taken: 16 } } } }, "ping_pong_stopped_before_bound"],
+      [{ pingPong: { ...evidence.pingPong, messages: {} } }, "ping_pong_stopped_before_bound"],
+      [{ pingPong: { ...evidence.pingPong, messages: { [talk.ping]: { read: 33, taken: 33 } } } }, "ping_pong_past_bound"],
       [{ pingPong: { ...evidence.pingPong, turns: [turn({ state: "running" }), null] } }, "ping_pong_never_ended"],
       [{ stop: { ...evidence.stop, stateBefore: "running" } }, "hold_not_waiting"],
       [{ stop: { ...evidence.stop, turn: turn() } }, "stop_missed_waiting_agent"],

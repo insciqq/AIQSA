@@ -147,21 +147,21 @@ export type RunFollowupOrigin = (typeof RUN_FOLLOWUP_ORIGINS)[number];
  */
 export const SUBAGENT_FOLLOWUP_LIMITS = Object.freeze({
   /** `main_agent` messages one sub-agent turn takes. */
-  messagesPerRun: 32,
+  messagesPerRun: 64,
   /**
    * What other sub-agents write one turn, counted apart so a neighbour never uses up the main agent's. Well past any
    * exchange of facts and small enough that two agents answering each other stop after a few paid rounds.
    */
-  agentMessagesPerTurn: 16,
+  agentMessagesPerTurn: 32,
   /** Questions one turn asks: each may wake the main agent, a paid turn, so one that keeps asking is told to report. */
-  questionsPerTurn: 8,
+  questionsPerTurn: 16,
   /**
    * The longest `wait_for_reply`: a neighbour replies within a few steps, and past that the agent is better off going on.
    * A background `ask_parent` has no bound of its own: it waits for as long as the turn has tool time left, and the turn's
    * own hour ends it. Its answer may have to wake the main agent, wait for usage limits or go through the user, and a
    * wait spends nothing while the work behind the question is worth keeping.
    */
-  replyWaitMinutes: 5,
+  replyWaitMinutes: 10,
   /**
    * Follow-ups from sub-agents one main-agent run takes, callbacks, messages and questions together; later callbacks
    * and questions stay owed for its terminal flush, and a later message is refused visibly.
