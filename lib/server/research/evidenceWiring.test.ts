@@ -19,9 +19,10 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { StorageAdapter } from "../uploads/storage";
-import type { ResearchSubagentRequest } from "./gates";
+import type { ResearchGate, ResearchSubagentRequest } from "./gates";
 import { NOOP_RESEARCH_PORTS, researchPorts, type ResearchEvidencePort, type ResearchEvidenceWrite, type ResearchPortFactories, type ResearchRunScope } from "./ports";
 import { proposeCall } from "./planWindow.testFixtures";
+import { checkQuotes, type QuoteCheck } from "./quoteCheck";
 import type { ResearchEngineDeps } from "./run";
 
 /**
@@ -234,6 +235,80 @@ describe("record_evidence through the real engine", () => {
     void _research;
     await run(none.adapter, deps).text();
     expect(toolsOf(none.requests[1])).not.toContain(RECORD_EVIDENCE_TOOL_NAME);
+  });
+});
+
+describe("what the final checks read", () => {
+  const LINK = "https://lab.example/x1";
+  const EARLIER_LINK = "https://shop.example/x1";
+  const QUOTE = "held up after 10 years";
+  const EARLIER_QUOTE = "an earlier answer's words";
+
+  const fetchedItems = (id: string, url: string, text: string): TranscriptItem[] => [
+    { arguments: JSON.stringify({ url }), callId: id, id: `${id}-call`, kind: "tool_call", name: "fetch_url" },
+    { callId: id, id: `${id}-result`, kind: "tool_result", name: "fetch_url", outcome: "complete", output: JSON.stringify({ text, url }) }
+  ];
+  /** The stopped turn as its run left it: research started, and a call waiting for the user. */
+  const stoppedTurn = (researchRun: string): TranscriptItem[] => [
+    { arguments: JSON.stringify(PLAN), callId: "call-start", id: "stored-call", kind: "tool_call", name: START_RESEARCH_TOOL_NAME },
+    { callId: "call-start", id: "stored-result", kind: "tool_result", name: START_RESEARCH_TOOL_NAME, outcome: "complete",
+      output: JSON.stringify({ research_run: researchRun, method: "How to run it.", status: "started" }) },
+    { arguments: "{}", callId: "call-held", id: "held-call", kind: "tool_call", name: "mcp_shop_buy" },
+    { callId: "call-held", id: "held-result", kind: "tool_result", name: "mcp_shop_buy", outcome: "error", output: "Waiting for approval." }
+  ];
+  const finding = (quote: string, url: string) => ({ claim: "The X1 holds up.", quote, source_class: "independent_tests", standing: "confirmed", url });
+  const draft = { arguments: { findings: [finding(QUOTE, LINK), finding(EARLIER_QUOTE, EARLIER_LINK)], report: "# Report\n\nIt holds up.", unreachable: [] }, id: "call-draft",
+    name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME };
+
+  /** A gate reading the sources as the verifier's quote check and the gap check do. */
+  function quoteGate() {
+    const seen: (readonly QuoteCheck[])[] = [];
+    const gate: ResearchGate = { name: "quotes", run: async (submitted, context) => {
+      seen.push(checkQuotes(submitted.findings, await context.sources.opened(context.signal)));
+      return { kind: "pass" };
+    } };
+    return { gate, seen };
+  }
+
+  /** The branch's stored runs: an earlier answer's `run-0`, whose thread read its own page, and what `threads` holds of `run-1`. */
+  function branchOf(deps: NativeEngineDeps, stored: readonly (readonly TranscriptItem[])[], threads: Readonly<Record<string, readonly TranscriptItem[]>>) {
+    vi.mocked(deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map(stored.map((_items, index) => [`answer-${index}`, `run-${index}`])));
+    vi.mocked(deps.transcripts.loadRuns).mockResolvedValue(new Map(stored.map((items, index) => [`run-${index}`, [...items]])));
+    vi.mocked(deps.subagentThreads!.threadEffectItems).mockImplementation(async ({ runIds }) =>
+      runIds.flatMap((id) => threads[id] ? [{ items: [...threads[id]], threadId: `thread-of-${id}` }] : []));
+    const content = (text: string) => ({ blocks: [{ text, type: "text" as const }] });
+    const messages = [...stored.flatMap((_items, index) => [{ content: content("Проведи исследование."), id: `question-${index}`, role: "user" as const },
+      { content: content(""), id: `answer-${index}`, role: "assistant" as const }]), { content: content("Go on."), id: "current-user-message", role: "user" as const }];
+    const base = prepared();
+    const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
+    return { prepared: { ...base, normalizedRequest: request, providerRequest: request } };
+  }
+
+  it("reaches what a researcher read in the run before the approval, and no earlier answer's page", async () => {
+    const { gate, seen } = quoteGate();
+    const deps = engineOf({ gates: [gate] });
+    const threads = { "run-0": fetchedItems("call-earlier", EARLIER_LINK, `Shop: ${EARLIER_QUOTE}.`), "run-1": fetchedItems("call-page", LINK, `The X1 ${QUOTE} of use.`) };
+    const branch = branchOf(deps, [[], stoppedTurn("run-1")], threads);
+    vi.mocked(deps.approvedCall).mockResolvedValue({ providerCallId: "call-held", toolName: "mcp_shop_buy" });
+    vi.mocked(deps.subagentThreads!.backgroundRunIds).mockImplementation(async ({ parentRunIds }) => parentRunIds.includes("run-1") ? ["background-1"] : []);
+    await run(scripted([{ calls: [draft] }]).adapter, deps, { ...branch, approvalContinuation: { approvalId: "approval-1" },
+      created: { assistantMessageId: "answer-c", runId: "run-c", userMessageId: "current-user-message" } }).text();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]![0]).toMatchObject({ excerpt: { source: { kind: "cited" } }, status: "found" });
+    expect(seen[0]![1]).toEqual({ reason: "not_in_opened_text", status: "unsupported" });
+    expect(vi.mocked(deps.subagentThreads!.backgroundRunIds).mock.calls.at(-1)![0]).toMatchObject({ parentRunIds: ["run-1", "run-c"] });
+    expect(vi.mocked(deps.subagentThreads!.threadEffectItems).mock.calls.at(-1)![0]).toEqual({ chatId: "chat", runIds: ["run-1", "run-c", "background-1"], userId: "user" });
+  });
+
+  it("reads an ordinary research run's own pages alone, as it always did", async () => {
+    const { gate, seen } = quoteGate();
+    const deps = engineOf({ gates: [gate] });
+    const branch = branchOf(deps, [[]], { "run-0": fetchedItems("call-earlier", EARLIER_LINK, `Shop: ${EARLIER_QUOTE}.`), "run-1": fetchedItems("call-page", LINK, `The X1 ${QUOTE} of use.`) });
+    await run(scripted([{ calls: begin }, { calls: [draft] }]).adapter, deps, { ...branch, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "current-user-message" } }).text();
+    expect(seen[0]![0]).toMatchObject({ status: "found" });
+    expect(seen[0]![1]).toEqual({ reason: "not_in_opened_text", status: "unsupported" });
+    expect(vi.mocked(deps.subagentThreads!.backgroundRunIds).mock.calls.at(-1)![0]).toMatchObject({ parentRunIds: ["run-1"] });
+    expect(vi.mocked(deps.subagentThreads!.threadEffectItems).mock.calls.at(-1)![0]).toEqual({ chatId: "chat", runIds: ["run-1"], userId: "user" });
   });
 });
 

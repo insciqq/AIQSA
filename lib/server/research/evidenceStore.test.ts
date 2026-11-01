@@ -445,6 +445,24 @@ describe("limits", () => {
     await expect(recorded(port, finding("broke after a year"))).resolves.toMatchObject({ pageId: null, quoteCheck: { reason: null, status: "not_verbatim" } });
   });
 
+  it("says the page was not kept whatever the check made of it, and only a wrong quote keeps its own word", async () => {
+    const full = (memory: Tables) => {
+      for (let index = 0; index < RESEARCH_PAGE_LIMITS.pagesPerRun; index += 1) memory.pages.push({ chatId: "chat", contentHash: `hash-${index}`, modelRunId: "run-1", sizeBytes: 1, userId: "user" });
+    };
+    const cutBeforeTheQuote = tables();
+    printed(cutBeforeTheQuote, `${"ж".repeat(RESEARCH_PAGE_LIMITS.bytesPerPage / 2)}${QUOTE}`);
+    full(cutBeforeTheQuote);
+    await expect(recorded(storeOf(cutBeforeTheQuote).port, finding())).resolves.toMatchObject({ pageId: null, quoteCheck: { reason: "page_not_stored", status: "not_checked" } });
+    const readInPart = tables();
+    fetched(readInPart, LINK, "The first part of a long page.", { truncated: true });
+    full(readInPart);
+    await expect(recorded(storeOf(readInPart).port, finding())).resolves.toMatchObject({ pageId: null, quoteCheck: { reason: "page_not_stored", status: "not_checked" } });
+    const noPage = tables();
+    full(noPage);
+    await expect(recorded(storeOf(noPage).port, finding())).resolves.toMatchObject({ pageId: null, quoteCheck: { reason: "not_in_opened_text", status: "unsupported" } });
+    await expect(recorded(storeOf(noPage).port, notFound)).resolves.toMatchObject({ pageId: null, quoteCheck: null });
+  });
+
   it("counts only its own research's rows, and a page kept already takes no room", async () => {
     const memory = tables();
     fetched(memory);
