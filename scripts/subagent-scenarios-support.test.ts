@@ -15,7 +15,7 @@ import {
   mainImageToolEvidence, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
   oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
-  oracleO, restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioOFacts, scenarioNUploadChecks, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
+  oracleO, oracleP, restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioOFacts, scenarioPFacts, scenarioNUploadChecks, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
   stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type LWorkspaceCall, type MEvidence, type OEvidence, type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
@@ -49,7 +49,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(17);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(18);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
@@ -187,6 +187,23 @@ describe("a sub-agent's children (O)", () => {
     expect(SUBAGENT_PROMPTS.O.approval(facts)).toContain(facts.recordId);
     expect(SUBAGENT_PROMPTS.O.limit()).toContain("тремя вызовами call_subagent с background: true");
     expect(SUBAGENT_PROMPTS.O.stop()).toContain("sleep 900");
+  });
+
+  it("P runs only when named, keeps the user out of the brief and fails each acceptance line by name", () => {
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("P");
+    expect(selectedSubagentScenarios("p")).toEqual(["P"]);
+    const facts = scenarioPFacts("0123456789abcdef");
+    expect(SUBAGENT_PROMPTS.P.start()).not.toMatch(/пользовател/iu);
+    expect(SUBAGENT_PROMPTS.P.message(facts)).toContain(facts.word);
+    expect(SUBAGENT_PROMPTS.P.message(facts)).toContain(facts.note);
+    const held = { accepted: true, mainChatHoldsNote: false, messages: { read: 1, taken: 1 }, reportHoldsWord: true, settled: true, turn: { state: "done" } as TurnRow };
+    expect(oracleP(held).failed).toEqual([]);
+    expect(oracleP({ ...held, accepted: false }).failed).toEqual(["user_message_not_accepted"]);
+    expect(oracleP({ ...held, messages: { read: 0, taken: 1 } }).failed).toEqual(["user_message_not_read"]);
+    expect(oracleP({ ...held, turn: null }).failed).toEqual(["listener_did_not_finish"]);
+    expect(oracleP({ ...held, reportHoldsWord: false }).failed).toEqual(["user_message_not_followed"]);
+    expect(oracleP({ ...held, mainChatHoldsNote: true }).failed).toEqual(["user_message_in_main_chat"]);
+    expect(oracleP({ ...held, settled: false }).failed).toEqual(["callbacks_owed"]);
   });
 
   it("runs only when named", () => {
