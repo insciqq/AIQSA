@@ -77,8 +77,11 @@ export const recordEvidenceTool: RunTool = {
   strict: false
 };
 
-/** What a run's `record_evidence` reaches: the one port of its research, and whether a plan stands (`RunResearch.holding`). */
-export type RecordEvidenceTarget = Readonly<{ evidence: Pick<ResearchEvidencePort, "record">; planStands(): boolean }>;
+/**
+ * What a run's `record_evidence` reaches: the one port of its research, and whether research has started (`RunResearch.holding`). That is
+ * from `start_research` on, scoping included, and not from the plan's release: what scoping finds is a finding.
+ */
+export type RecordEvidenceTarget = Readonly<{ evidence: Pick<ResearchEvidencePort, "record">; researching(): boolean }>;
 
 const CORRECT = `call ${RECORD_EVIDENCE_TOOL_NAME} again with supersedes set to this record's id`;
 
@@ -125,7 +128,7 @@ export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: Wo
     effects: "local",
     observationSource: "workspace",
     execute: async ({ call, signal }) => {
-      if (!target.planStands()) return harnessToolError(call, "research_not_started", NOT_STARTED);
+      if (!target.researching()) return harnessToolError(call, "research_not_started", NOT_STARTED);
       const decoded = decodeResearchRecord(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_record_invalid", decoded.message);
       const written = await target.evidence.record({ author, record: decoded.value }, signal);

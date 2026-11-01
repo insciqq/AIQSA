@@ -21,9 +21,9 @@ const stored = (quoteCheck: ResearchEvidenceRecord["quoteCheck"]) => ({ id: RECO
 
 const properties = recordEvidenceTool.inputSchema.properties as Record<string, Record<string, unknown>>;
 
-function targetOf(written: Awaited<ReturnType<RecordEvidenceTarget["evidence"]["record"]>> = { kind: "recorded", record: stored({ reason: null, status: "found" }) }, planStands = true) {
+function targetOf(written: Awaited<ReturnType<RecordEvidenceTarget["evidence"]["record"]>> = { kind: "recorded", record: stored({ reason: null, status: "found" }) }, researching = true) {
   const record = vi.fn(async () => written);
-  return { record, target: { evidence: { record }, planStands: () => planStands } satisfies RecordEvidenceTarget };
+  return { record, target: { evidence: { record }, researching: () => researching } satisfies RecordEvidenceTarget };
 }
 
 const signal = new AbortController().signal;
@@ -75,7 +75,7 @@ describe("a record_evidence call", () => {
     expect(record).toHaveBeenLastCalledWith({ author: { name: null, threadId: null }, record: expect.anything() }, signal);
   });
 
-  it("is refused until a plan stands, with nothing written", async () => {
+  it("is refused until research started, with nothing written", async () => {
     const { record, target } = targetOf(undefined, false);
     const result = await recordEvidenceEngineTool(target, { kind: "main" }).execute(call(FINDING));
     expect(result.status).toBe("error");
@@ -129,7 +129,7 @@ describe("a record_evidence call", () => {
     const result = await recordEvidenceEngineTool(refused.target, { kind: "main" }).execute(call(FINDING));
     expect(result.status).toBe("error");
     expect(value(result)).toEqual({ code: "research_records_full", message: "Nothing was recorded." });
-    const failing = { evidence: { record: vi.fn(async () => { throw new Error("down"); }) }, planStands: () => true };
+    const failing = { evidence: { record: vi.fn(async () => { throw new Error("down"); }) }, researching: () => true };
     await expect(recordEvidenceEngineTool(failing, { kind: "main" }).execute(call(FINDING))).rejects.toThrow("down");
   });
 
