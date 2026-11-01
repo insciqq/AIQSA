@@ -325,6 +325,9 @@ export type NormalizedRunRequest = {
   }>;
   /** Durable operator/client suppression for all client-side run tools. */
   toolMode: "auto" | "none";
+  /** Proxies frozen at admission: ids and non-secret fields, never a password
+   * (`lib/server/proxies/runProxies.ts` loads those). Absent: a run without proxies. */
+  proxies?: import("../../contracts/proxies").ProxyRunPlan;
   workspace?: NormalizedRunWorkspace;
 };
 
