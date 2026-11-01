@@ -66,6 +66,8 @@ const ACTIVE_TURN_STATES: SubagentTurnState[] = ["running", "waiting"];
 /** What a main-agent run takes from sub-agents among its own follow-ups, within one bound (`callbacksPerRun`). */
 const FROM_SUBAGENTS: RunFollowupOrigin[] = ["subagent_callback", "subagent_message", "subagent_question"];
 const ENDED_RUN_STATUSES: ModelRunStatus[] = ["complete", "cancelled", "error"];
+/** An `ask_parent` call that holds its question: it ends with the question, whatever came of it. */
+const OPEN_ASK: Prisma.ModelRunToolCallWhereInput = { state: { in: ["pending", "running"] }, toolName: ASK_PARENT_TOOL_NAME };
 
 /** One turn as the control and the callbacks use it. */
 export type SubagentTurnRecord = Readonly<{
@@ -221,14 +223,27 @@ export async function claimSubagentCallbacksForRun(tx: Prisma.TransactionClient,
 
 /**
  * The compare-and-set every delivery of a callback or a question goes through, for what that delivery rendered: a
- * callback only of a turn that ended, a question only of a turn that still waits for its answer.
+ * callback only of a turn that ended, a question only of a turn that still waits for its answer, on that very call.
  */
 async function claimTurns(tx: Prisma.TransactionClient, input: Readonly<{ chatId: string; claims: readonly SubagentCallbackClaim[]; runId: string }>): Promise<number> {
-  const turnIds = (kind: SubagentCallbackClaim["kind"]) => input.claims.flatMap((claim) => claim.kind === kind ? [claim.turnId] : []);
+  const ended = input.claims.flatMap((claim) => claim.kind === "callback" ? [claim.turnId] : []);
+  const asking = input.claims.flatMap((claim): Prisma.SubagentTurnWhereInput[] => claim.kind === "question" ? [{ endedAt: null,
+    executionRun: { is: { toolCalls: { some: { ...OPEN_ASK, id: claim.callId, subagentTurnId: claim.turnId } } } }, id: claim.turnId,
+    reasonCode: SUBAGENT_WAIT_REASONS.answer, state: "waiting" }] : []);
   const { count } = await tx.subagentTurn.updateMany({ data: { callbackRunId: input.runId }, where: { callbackRunId: null, chatId: input.chatId,
-    mode: "background", OR: [{ endedAt: { not: null }, id: { in: turnIds("callback") } },
-      { endedAt: null, id: { in: turnIds("question") }, reasonCode: SUBAGENT_WAIT_REASONS.answer, state: "waiting" }] } });
+    mode: "background", OR: [{ endedAt: { not: null }, id: { in: ended } }, ...asking] } });
   return count;
+}
+
+/**
+ * Holds a turn's row to the end of the transaction, taken after the chat and the receiving run (settlement's owner,
+ * chat, run order; anything else that takes the row under the chat's lock cannot meet it). `setActiveState` and the
+ * turn's tool records write without the chat's lock, so a delivery takes the row before it reads what the turn asks.
+ * The claim's own check cannot do this: an UPDATE that waited for the row checks only that row again, and reads other
+ * tables from the snapshot it began with, so only a read behind the lock sees the question that came next.
+ */
+async function lockTurn(tx: Prisma.TransactionClient, scope: SubagentChatScope, turnId: string): Promise<void> {
+  await tx.$queryRaw`SELECT "id" FROM "SubagentTurn" WHERE "id" = ${turnId} AND "chatId" = ${scope.chatId} AND "userId" = ${scope.userId} FOR UPDATE`;
 }
 
 async function lockChatScope(tx: Prisma.TransactionClient, scope: SubagentChatScope) {
@@ -365,8 +380,7 @@ async function askedQuestions(tx: Prisma.TransactionClient, turns: readonly Read
   if (runIds.length === 0) return new Map();
   const calls = await tx.modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
     select: { arguments: true, id: true, subagentTurnId: true },
-    where: { modelRunId: { in: runIds }, state: { in: ["pending", "running"] }, subagentTurnId: { in: turns.map((turn) => turn.id) },
-      toolName: ASK_PARENT_TOOL_NAME } });
+    where: { ...OPEN_ASK, modelRunId: { in: runIds }, subagentTurnId: { in: turns.map((turn) => turn.id) } } });
   const questions = new Map<string, Readonly<{ callId: string; text: string }>>();
   for (const call of calls) {
     const text = (call.arguments as { question?: unknown } | null)?.question;
@@ -668,6 +682,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       return client.$transaction(async (tx): Promise<CallbackIntoRunOutcome> => {
         const run = await receivingRun(tx, { chatId, userId }, runId);
         if (!run) return "closed";
+        await lockTurn(tx, { chatId, userId }, turnId);
         const turn = await tx.subagentTurn.findFirst({ select: { executionRun: { select: { id: true } }, parentRun: { select: { assistantMessageId: true } },
           reasonCode: true, result: true, state: true, thread: { select: { name: true } } }, where: { chatId, id: turnId, userId } });
         const parentAnswer = turn?.parentRun.assistantMessageId;
