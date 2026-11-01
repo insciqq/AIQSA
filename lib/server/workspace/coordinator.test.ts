@@ -349,6 +349,50 @@ function fixture() {
 describe("Workspace coordinator", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
+  it.each([
+    { code: "workspace_execution_cleanup_failed", stage: "collection" },
+    { code: "workspace_output_limit_exceeded", stage: "collection" },
+    { code: "workspace_execution_cleanup_failed", stage: "retirement" }
+  ] as const)(
+    "keeps the published answer and explains how to recover files after $code at $stage", async ({ code, stage }) => {
+      const value = fixture();
+      value.setRuntimeSandboxId("runtime_1");
+      if (stage === "collection") vi.mocked(value.runtime.collectOutputs).mockRejectedValueOnce(new WorkspaceRuntimeError(code));
+      else {
+        vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+        vi.mocked(value.runtime.retireSessionOperation!).mockRejectedValue(new WorkspaceRuntimeError(code));
+      }
+      const recorded = vi.spyOn(value.repository, "markExportFailed");
+      const memory = memoryNativeEngine();
+      const repository = nativeRunRepository();
+      const { adapter, requests } = scriptedNativeAdapter([{ text: "The finished answer." }]);
+      const result = await nativeSseEvents(createNativeRunExecutionResponse({ adapter,
+        created: { assistantMessageId: "answer-1", runId: value.runId, userMessageId: "question-1" },
+        engine: memory.engine, prepared: nativePrepared({ workspace: value.workspace }),
+        repository: repository as unknown as RunRepository, services: {}, userId: "user_1", workspace: value.coordinator }));
+
+      expect(memory.published()).toBe("The finished answer.");
+      expect(result.filter((event) => event.type === "token").map((event) => event.data.delta).join(""))
+        .toBe("The finished answer.");
+      const publishedAt = result.findIndex((event) => event.type === "answer_complete");
+      expect(publishedAt).toBeGreaterThan(-1);
+      expect(publishedAt).toBeLessThan(result.length - 1);
+      expect(result.at(-1)).toMatchObject({ type: "error", data: { code,
+        message: expect.stringMatching(/Your answer is saved.*files.*Ask the agent.*export/u) } });
+      expect(repository.failRun).toHaveBeenCalledExactlyOnceWith(value.runId, "answer-1", result.at(-1)!.data,
+        { recoveryTerminal: true });
+      expect(memory.runs.complete).not.toHaveBeenCalled();
+      expect(memory.runs.publishAnswer.mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(value.runtime.collectOutputs).mock.invocationCallOrder[0]!);
+      expect(requests).toHaveLength(1);
+      if (stage === "collection") expect(recorded).toHaveBeenCalledWith(expect.objectContaining({ code: code === "workspace_output_limit_exceeded"
+        ? code : "workspace_output_export_failed" }));
+      expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(false);
+      expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" })).toEqual([]);
+      expect(value.runtime.retireSessionOperation).toHaveBeenCalled();
+    }
+  );
+
   it.each(["STOPPED", "READY"])("hands off an untouched run on an existing %s guest without runtime activity", async state => {
     const f = fixture();
     f.setUntouchedSession(state);

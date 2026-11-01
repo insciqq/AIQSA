@@ -5,6 +5,7 @@ import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
+import { createPrismaRunRepository } from "../runs/prismaRepository";
 import type { RunUsageAttribution } from "../runs/runRepositoryContract";
 import { createNativeRunStore } from "./runStore";
 import type { TranscriptItem } from "./transcript";
@@ -68,6 +69,21 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("native run store", () => {
+  it.each(["workspace_execution_cleanup_failed", "workspace_output_limit_exceeded"] as const)(
+    "keeps the completed message when Workspace handoff settles the run as %s", async (code) => {
+      const scope = await nativeRun();
+      await expect(store.publishAnswer(scope, { followupRevision: 0, text: "The finished answer." })).resolves.toBe(true);
+      const failure = { code, message: "Your answer is saved. Ask the agent to check the files and export them again." };
+      await expect(createPrismaRunRepository(prisma).failRun(scope.runId, scope.assistantMessageId, failure,
+        { recoveryTerminal: true })).resolves.toBe(true);
+      await expect(prisma.message.findUniqueOrThrow({ where: { id: scope.assistantMessageId } })).resolves
+        .toMatchObject({ content: textMessageContent("The finished answer."), status: "complete" });
+      await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: scope.runId } })).resolves
+        .toMatchObject({ answerCompletedAt: expect.any(Date), status: "error", errorPayload: { ...failure, recoveryTerminal: true } });
+      await expect(store.complete(scope)).resolves.toBe(false);
+    }
+  );
+
   it("publishes the answer once, then completes the run and closes its open calls with an unknown outcome", async () => {
     const scope = await nativeRun();
     await expect(store.publishAnswer(scope, { followupRevision: 0, text: "The answer." })).resolves.toBe(true);
