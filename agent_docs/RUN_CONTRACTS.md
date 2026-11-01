@@ -10,6 +10,7 @@ paths:
   - "lib/server/webFetch/**"
   - "lib/server/engine/**"
   - "lib/server/subagents/**"
+  - "lib/server/research/**"
 ---
 # Run Contracts
 
@@ -97,6 +98,18 @@ Code: `lib/server/telegram/`.
 ## Research
 
 Operator decisions 2026-11-01. The model starts it when the user wants a thorough result, with no control, only with Search in an interactive web run. It stays in one run that ends in an ordinary answer: Stop ends it, so researchers run in the foreground, and a restart never replays it. The server holds the report back until its gates end; a failed gate or the deadline leaves a visible note, never a lost answer (`lib/server/research/run.ts`).
+
+The research system is being built on that method, part by part, on one contract (`lib/contracts/research.ts`, which holds every number below) and one set of ports (`lib/server/research/ports.ts`). A port not yet filled is a no-op, so a run behaves as above until its part lands; the code shows which have. These decisions bind each part:
+
+- No clarifying questions. The user may give the request and leave, so what the model lacks becomes a named assumption, or a branch when it changes the result.
+- The user may not know what matters for what they ask about, so the model scopes first: it reads how such a thing is chosen and finds the criteria itself, and the user is told plainly that a plan is being made.
+- The plan window, as in ChatGPT Deep Research: a short plan the user can change for a moment. With no action, research starts. The start button, a saved edit and a chat message end the window at once, an edit in progress holds it through a lease, and an abandoned edit releases the last saved plan. A closed tab changes nothing. The window's times are the server's, so a countdown survives a reload and a wrong client clock.
+- Time: phases count from the plan's release, and research winds down through them to a hard end, never a silent crash or an unmarked incomplete answer. Only a research run's turn is extended, once, at that moment. One researcher's turn has its own limit, so one stuck agent cannot spend the budget. Stop works in every phase.
+- A site that wants a person gets a shorter handoff in research, then goes to the unreachable list and the work goes on, since the user may have left. Other runs keep their wait.
+- A finding is an append-only record the moment it is made: a correction supersedes, and nothing is deleted while the run lives, so no send back or rewrite can lose one (a real run went from 15 findings to 0). A cell recorded as nothing found counts as filled.
+- Page texts live with the run and go with it (`agent_docs/ARCHITECTURE.md`), so a check reads what the researcher saw.
+- Roles: the main agent stays on the chat's model; an administrator may bind researchers, and the checks (gap judge, verifier, skeptic). Not set, a role runs on the chat's model; set and unusable, research is refused visibly, never run on another model. Model names live in settings, never in code. Not everyone has two models, so a check may run on the report's own model: a separate context is still useful, and the answer says it is not an independent model.
+- Nothing restarts by itself: only the user's Continue picks research up from what was recorded, and only on the interrupted run of its own branch. Any other new message is an ordinary turn.
 
 ## Skills
 

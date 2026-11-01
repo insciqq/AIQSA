@@ -1662,9 +1662,14 @@ model SystemModelPolicy {
   chatPdfNativeReasoningEffort String? @db.VarChar(32)
   mcpGuardProviderModelId String?
   mcpGuardReasoningEffort String?        @db.VarChar(32)
-  /// The research method's independent checker. Null: the main model checks and the answer says so.
+  /// The research method's independent checker, and the role of every check (gap judge, verifier, skeptic). The columns
+  /// keep their name, so both installations' choice and the previous release's writers stay safe. Null: the main model
+  /// checks and the answer says so.
   researchVerifierProviderModelId String?
   researchVerifierReasoningEffort String? @db.VarChar(32)
+  /// The research method's researchers. Null: they run on the chat's model.
+  researchResearcherProviderModelId String?
+  researchResearcherReasoningEffort String? @db.VarChar(32)
   visionProviderModelId   String?
   visionReasoningEffort   String?        @db.VarChar(32)
   chatPdfProviderModelId   String?
@@ -1702,6 +1707,7 @@ model SystemModelPolicy {
   chatPdfNativeProviderModel ProviderModel? @relation("ChatPdfNativeProviderModel", fields: [chatPdfNativeProviderModelId], references: [id], onDelete: Restrict)
   mcpGuardProviderModel   ProviderModel? @relation("McpGuardProviderModel", fields: [mcpGuardProviderModelId], references: [id], onDelete: Restrict)
   researchVerifierProviderModel ProviderModel? @relation("ResearchVerifierProviderModel", fields: [researchVerifierProviderModelId], references: [id], onDelete: Restrict)
+  researchResearcherProviderModel ProviderModel? @relation("ResearchResearcherProviderModel", fields: [researchResearcherProviderModelId], references: [id], onDelete: Restrict)
   visionProviderModel     ProviderModel? @relation("VisionProviderModel", fields: [visionProviderModelId], references: [id], onDelete: Restrict)
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
@@ -1716,6 +1722,7 @@ model SystemModelPolicy {
   @@index([chatTitleProviderModelId])
   @@index([mcpGuardProviderModelId])
   @@index([researchVerifierProviderModelId])
+  @@index([researchResearcherProviderModelId])
   @@index([visionProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
@@ -2160,6 +2167,7 @@ model ProviderModel {
   chatPdfNativeRoles          SystemModelPolicy[]             @relation("ChatPdfNativeProviderModel")
   mcpGuardRoles               SystemModelPolicy[]             @relation("McpGuardProviderModel")
   researchVerifierRoles       SystemModelPolicy[]             @relation("ResearchVerifierProviderModel")
+  researchResearcherRoles     SystemModelPolicy[]             @relation("ResearchResearcherProviderModel")
   visionRoles                 SystemModelPolicy[]             @relation("VisionProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
@@ -2994,6 +3002,9 @@ model ModelRun {
   memoryHistoryRuns            MemoryHistoryRun[]
   memoryToolEvents             MemoryToolEvent[]
   providerRunBindings          ProviderRunBinding[]
+  researchEvidence             ResearchEvidence[]
+  researchFrame                ResearchFrame?
+  researchPages                ResearchPage[]
   searchRuns                   SearchRun[]
   skillRunBindings             ModelRunSkillBinding[]
   toolCalls                    ModelRunToolCall[]
@@ -3264,6 +3275,122 @@ model RunTranscriptItem {
   /// NULLS NOT DISTINCT, so the main agent keeps one sequence per run
   /// (`20261029230200_run_transcript_item_thread_sequence_index`).
   @@unique([modelRunId, subagentThreadId, sequence], map: "RunTranscriptItem_thread_sequence_key")
+}
+
+/// One research run's frame (`lib/contracts/research.ts`, `agent_docs/RUN_CONTRACTS.md`): the goal, the plan proposal and
+/// its window, the user's answer, the matrix with its change log. Keyed by the run, so a run has one. It is what a Continue
+/// reloads after a restart. Goes with its run, and so with the branch, the chat and the account.
+model ResearchFrame {
+  modelRunId         String          @id
+  userId             String
+  chatId             String
+  goal               String
+  /// The interrupted run this one continues. Written once, when the row is created, and only after the server verified that
+  /// run is the one this turn continues, on its branch: a key that carries the owner and chat cannot say more than that.
+  /// A reader walks it to reach the earlier records, bounded by `RESEARCH_EVIDENCE_LIMITS.continuationChain`. Deleting the
+  /// earlier run clears only this column (column-scoped SET NULL in the migration): its rows go with it, and this run keeps its own.
+  continuedFromRunId String?
+  /// The proposal in its tool's form (`researchPlanProposalDocument`), null while scoping.
+  proposal           Json?
+  /// The server's own times, so a reload never depends on the client's clock.
+  windowEndsAt       DateTime?
+  /// Set while an edit holds the timer.
+  heldUntil          DateTime?
+  /// When the plan was released, and the time phases start; null while the window is open. Set with `answer` and `frame`.
+  releasedAt         DateTime?
+  /// The user's answer in its stored form (`researchPlanAnswerDocument`).
+  answer             Json?
+  /// The matrix and its change log (`ResearchFrame` in `lib/contracts/research.ts`). `version` is its compare-and-swap:
+  /// parallel researchers change it, and a lost update would lose a row or a reason.
+  frame              Json?
+  version            Int             @default(1)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  modelRun           ModelRun        @relation(fields: [userId, chatId, modelRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "ResearchFrame_modelRun_fkey")
+  continuedFrom      ResearchFrame?  @relation("ResearchFrameContinuation", fields: [userId, chatId, continuedFromRunId], references: [userId, chatId, modelRunId], onDelete: SetNull, onUpdate: Restrict, map: "ResearchFrame_continuedFrom_fkey")
+  continuations      ResearchFrame[] @relation("ResearchFrameContinuation")
+
+  @@unique([userId, chatId, modelRunId])
+  @@index([userId, chatId, continuedFromRunId])
+}
+
+/// One evidence record of a research run (`ResearchEvidenceRecord` in `lib/contracts/research.ts`). Append-only: a correction
+/// is a new row naming what it `supersedes`, and nothing is changed or deleted while the run lives. Goes with its run.
+model ResearchEvidence {
+  id                String            @id @default(uuid())
+  userId            String
+  chatId            String
+  modelRunId        String
+  /// Run-scoped, so every reader sees one stable order.
+  sequence          Int
+  kind              String            @db.VarChar(16)
+  /// The sub-agent that wrote it, plain values like a transcript item's thread key; both null for the main agent.
+  authorThreadId    String?
+  authorName        String?           @db.VarChar(48)
+  /// The record this one corrects, at most one correction each. It may be an earlier run's when this run continues it;
+  /// deleting that run clears only this column.
+  supersedesId      String?
+  rowKey            String?           @db.VarChar(48)
+  criterionKey      String?           @db.VarChar(48)
+  claim             String?
+  url               String?
+  quote             String?
+  sourceClass       String?           @db.VarChar(32)
+  standing          String?           @db.VarChar(32)
+  /// A `not_found` cell's or an `unreachable` site's reason.
+  reason            String?
+  /// An `unreachable` record's site.
+  target            String?
+  /// A `dataset` record's method, sample and examples, in its tool's form.
+  dataset           Json?
+  /// The quote check's result when the record was written.
+  quoteCheck        String?           @db.VarChar(16)
+  quoteCheckReason  String?           @db.VarChar(32)
+  /// The stored page the quote was checked on; deleting that page's run clears only this column.
+  pageId            String?
+  /// Source facts only the server writes (`lib/server/research/sourceQuality.ts`).
+  registrableDomain String?           @db.VarChar(253)
+  textGroupKey      String?           @db.VarChar(64)
+  /// As exact as the page gives it: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+  publishedOn       String?           @db.VarChar(10)
+  createdAt         DateTime          @default(now())
+  modelRun          ModelRun          @relation(fields: [userId, chatId, modelRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "ResearchEvidence_modelRun_fkey")
+  supersedes        ResearchEvidence? @relation("ResearchEvidenceCorrection", fields: [userId, chatId, supersedesId], references: [userId, chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "ResearchEvidence_supersedes_fkey")
+  supersededBy      ResearchEvidence? @relation("ResearchEvidenceCorrection")
+  page              ResearchPage?     @relation(fields: [userId, chatId, pageId], references: [userId, chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "ResearchEvidence_page_fkey")
+
+  @@unique([userId, chatId, id])
+  @@unique([modelRunId, sequence])
+  @@unique([userId, chatId, supersedesId])
+  @@index([userId, chatId, pageId])
+}
+
+/// The text an agent of a research run saw (`ResearchStoredPage` in `lib/contracts/research.ts`): kept by the server from
+/// the agent's own tool results and browser output, bounded per page and per run, immutable, and never in logs, exports,
+/// shares or Memory. It lives with the run and goes with it (operator decision 2026-11-01); `agent_docs/ARCHITECTURE.md` has
+/// its privacy and size story.
+model ResearchPage {
+  id          String             @id @default(uuid())
+  userId      String
+  chatId      String
+  modelRunId  String
+  url         String
+  /// The link's SHA-256: a link can be longer than an index entry.
+  linkHash    String             @db.Char(64)
+  text        String
+  sizeBytes   Int
+  contentHash String             @db.Char(64)
+  /// How the text was obtained: `tool` or `browser`.
+  obtainedBy  String             @db.VarChar(16)
+  /// The page was over the bound, so `text` is its start.
+  truncated   Boolean            @default(false)
+  capturedAt  DateTime           @default(now())
+  modelRun    ModelRun           @relation(fields: [userId, chatId, modelRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "ResearchPage_modelRun_fkey")
+  evidence    ResearchEvidence[]
+
+  @@unique([userId, chatId, id])
+  /// The same text of the same link is kept once per run, however many researchers read it.
+  @@unique([modelRunId, linkHash, contentHash])
 }
 
 model ModelRunEvent {

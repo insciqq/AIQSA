@@ -15,6 +15,7 @@ import type { PrepareRunSubagentsInput } from "../engine/subagents/runSubagents"
 import type { EngineTool, EngineToolExecution } from "../engine/toolRegistry";
 import type { SavedToolResultReader } from "../engine/toolResults";
 import type { TranscriptItem, TranscriptUserItem } from "../engine/transcript";
+import { logEvent } from "../observability";
 import type { SubagentStopReason } from "../subagents/ports";
 import { planActivityEntry } from "../tools/harnessActivity";
 import { harnessToolError } from "../tools/harnessTool";
@@ -23,6 +24,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, type ResearchAttempt, type ResearchGate } from "./gates";
 import { researcherBrief, researchMethodText, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
+import { researchPorts, type ResearchGatePorts, type ResearchPortFactories, type ResearchReportEnding } from "./ports";
 import { createResearchSources } from "./sources";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -55,10 +57,15 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * response that holds it completed, before any record of it, and with no report the
  * text of the provider's last attempt. A delivered follow-up makes the report in hand
  * no longer the answer until the model has read it, and it stays only for recovery.
+ *
+ * What the research system adds sits behind ports, one set per run (`ports.ts`): absent, each is a no-op and a run goes as
+ * described here.
  */
 export type ResearchEngineDeps = Readonly<{
   /** The named gates; absent, the ones the product ships (`RESEARCH_GATES`). */
   gates?: readonly ResearchGate[];
+  /** The parts of the research system; a port left out is its no-op. */
+  ports?: ResearchPortFactories;
   verifier?: ResearchVerifierRole;
 }>;
 
@@ -85,6 +92,8 @@ const resultOf = (call: ModelToolCall, value: { [key: string]: string }): ToolEx
 export type RunResearchInput = Readonly<{
   chatId: string;
   deps: ResearchEngineDeps;
+  /** Moves the turn's deadline for this run (`ResearchRunScope`); absent, a turn keeps its own. */
+  extendTurn?(endsAt: number): void;
   /** When the gates must have ended, so publication keeps its reserve. */
   gatesEndAt: number;
   items(): readonly TranscriptItem[];
@@ -136,23 +145,33 @@ export function createRunResearch(input: RunResearchInput) {
     userMessage: input.userMessage });
   const sources = createResearchSources({ chatId: input.chatId, items: input.items, runId: input.runId, savedResults: input.savedResults,
     threads: input.threads, userId: input.userId });
-  const gates = input.deps.gates ?? RESEARCH_GATES;
+  const ports = researchPorts(input.deps.ports, { chatId: input.chatId, extendTurn: (endsAt) => input.extendTurn?.(endsAt), now: input.now, runId: input.runId,
+    sources, subagents: input.subagentInput, userId: input.userId });
+  const gatePorts: ResearchGatePorts = { coverage: ports.coverage, evidence: ports.evidence };
+  const gates = [...ports.report.gates, ...input.deps.gates ?? RESEARCH_GATES];
   const note = (key: ResearchNoteKey, draft: Pick<ResearchDraft, "report">) => researchNote(key, draft.report);
   /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
   const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: researchCarriedNotes(gates, draft, attempts) });
+  /** The plan stands: research proper starts, and its phases count from here. */
+  const planStands = (standing: ResearchPlan) => {
+    plan = standing;
+    ports.time.planReleased();
+  };
 
   async function check(draft: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<void> {
     if (!plan) return;
     held = unchecked(draft);
     const attempt = attempts.length + 1;
+    // The ports ride beside the context's own fields; a gate reads them through `researchGatePorts`.
     const outcome = await runResearchGates({ draft, gates, runId: input.runId, context: {
+      ...gatePorts,
       attempt,
       earlier: [...attempts],
       plan,
       signal: execution.signal,
       sources,
       subagents: { run: (request, signal) => turns.run(request, { attempt, round: execution.round, signal }) },
-      time: { remainingMs: () => input.gatesEndAt - input.now(), sendBackAllowed: () => toolsOpen && input.toolTimeLeft() },
+      time: { remainingMs: () => ports.time.gatesEndAt(input.gatesEndAt) - input.now(), sendBackAllowed: () => toolsOpen && input.toolTimeLeft() },
       verifierModel: () => turns.verifierModel()
     } });
     attempts.push({ draft, message: outcome.kind === "sent_back" ? outcome.message : null });
@@ -173,11 +192,12 @@ export function createRunResearch(input: RunResearchInput) {
     execute: async ({ call, persistedToolCallId }) => {
       const decoded = decodeResearchPlan(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_plan_invalid", decoded.message);
-      plan = decoded.value;
+      const started = decoded.value;
+      planStands(started);
       unconfirmedStart = null;
-      const entry = planActivityEntry({ callId: persistedToolCallId, runId: input.runId, update: researchPlanUpdate(plan) });
+      const entry = planActivityEntry({ callId: persistedToolCallId, runId: input.runId, update: researchPlanUpdate(started) });
       if (entry) await input.onPlan(entry);
-      return resultOf(call, { method: researchMethodText(plan), status: "started" });
+      return resultOf(call, { method: researchMethodText(started), status: "started" });
     }
   };
 
@@ -210,6 +230,8 @@ export function createRunResearch(input: RunResearchInput) {
   };
 
   return {
+    /** This run's ports, for what the engine wires beside the run (a sub-agent's `record_evidence` writes through `ports.evidence`). */
+    ports,
     reservedCall: { instruction: researchDraftReservedInstruction(), name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },
     tools: [startTool, submitTool] as readonly EngineTool[],
 
@@ -268,16 +290,19 @@ export function createRunResearch(input: RunResearchInput) {
       return tools.map((tool): EngineTool => tool.definition.name !== CALL_SUBAGENT_TOOL_NAME ? tool : { ...tool, execute: async (execution) => {
         const { call } = execution;
         if (!plan) return tool.execute(execution);
+        const closed = ports.time.researcherRefusal();
+        if (closed !== null) return harnessToolError(call, "research_researchers_closed", closed);
+        const signal = ports.time.researcherSignal(execution.signal);
         const { background: _background, ...foreground } = call.arguments;
         void _background;
         const { message, name } = foreground;
         if (typeof message !== "string" || typeof name !== "string" || briefed.has(name)) {
-          return tool.execute({ ...execution, call: { ...call, arguments: foreground } });
+          return tool.execute({ ...execution, call: { ...call, arguments: foreground }, signal });
         }
         const brief = researcherBrief(message, plan);
         if (brief === null) return harnessToolError(call, "research_brief_too_long", "Nothing started: this brief leaves no room for the research method. Shorten it and call again.");
         briefed.add(name);
-        return tool.execute({ ...execution, call: { ...call, arguments: { ...foreground, message: brief } } });
+        return tool.execute({ ...execution, call: { ...call, arguments: { ...foreground, message: brief } }, signal });
       } });
     },
 
@@ -361,10 +386,25 @@ export function createRunResearch(input: RunResearchInput) {
       return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
     },
 
+    /**
+     * The answer the server builds from the records when `finish` or `afterEnding` had none, never for a stopped run or one
+     * waiting for the user. Apart from them because it reads a store, and they answer at once. Answer first: its failure costs
+     * what it would have built, never the run's end.
+     */
+    async composed(ended: ResearchReportEnding): Promise<string | null> {
+      if (!plan) return null;
+      try {
+        return await ports.report.compose({ ended });
+      } catch (error) {
+        logEvent("run_execution", { code: "research_report_failed", error, outcome: "failed", run_id: input.runId, stage: "execution" });
+        return null;
+      }
+    },
+
     /** An approval continuation goes on with the research its turn started; every other later turn is an ordinary one. */
     resume(items: readonly TranscriptItem[]): void {
       const found = researchOfTurn(items);
-      if (found.plan) plan = found.plan;
+      if (found.plan) planStands(found.plan);
       // Before the draft: what the gates carry for it comes from these.
       attempts.push(...found.attempts);
       if (found.draft) held = unchecked(found.draft);

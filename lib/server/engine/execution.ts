@@ -932,7 +932,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
-        const researched = runResearch?.finish(outcome.kind === "approval") ?? null;
+        let researched = runResearch?.finish(outcome.kind === "approval") ?? null;
+        if (researched === null && runResearch && outcome.kind !== "approval") researched = await runResearch.composed("no_report");
         if (researched !== null) await showResearchAnswer(researched);
         // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
         if (researched === null && (outcome.kind === "empty" || outcome.kind === "answered" && runResearch?.holding() === true && !answer.text.trim())) {
@@ -993,7 +994,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...failureCauseFields({ cancelled, failure, stopped: stop.signal.aborted, timedOut: deadline.signal.aborted, turnMs,
             workspaceRun: Boolean(workspace) }) });
         // Answer first: a report research held reaches the answer whatever ended the run, with a note saying so.
-        const heldReport = answerPublished ? null : research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
+        let heldReport = answerPublished ? null : research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
+        if (heldReport === null && research && !answerPublished && !cancelled) heldReport = await research.composed(deadline.signal.aborted ? "timed_out" : "failed");
         if (heldReport !== null) await showResearchAnswer?.(heldReport);
         answer.stop();
         // Its sub-agents end with it and keep what they recorded; their turns settle before the run's records do.
