@@ -23,7 +23,9 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * monitoring check's verdict) is offered alone once more when its call
  * budget, tool rounds or tool time ran out before it was made; past tool time
  * that round runs inside the answer reserve, and the turn's deadline still
- * ends it.
+ * ends it. A run that researches (`draft`, `lib/server/research/run.ts`) may
+ * take its answer from a checked draft instead of a further model round, and
+ * has a response without calls checked like one.
  * Everything the loop knows is the transcript; every effect goes through
  * its ports.
  */
@@ -45,6 +47,13 @@ export type AgentLoopPorts = Readonly<{
   /** False when a follow-up arrived after the last delivery: the turn goes on. */
   closeFollowups(): Promise<boolean>;
   deliverFollowups(): Promise<readonly TranscriptUserItem[]>;
+  /** A run's held draft: the turn's answer may already be taken, and a response without calls may go back to the model. */
+  draft?: Readonly<{
+    /** Asked before each round: the answer is taken, so no model round follows. A delivered follow-up gives it back. */
+    answerTaken(input: Readonly<{ toolChoice: LoopToolChoice }>): boolean;
+    /** A response ended without calls that may run: what to send the model back with, or null when the turn may end. */
+    responseEnded(input: Readonly<{ round: number; text: string; toolsClosed: boolean }>): Promise<TranscriptUserItem | null>;
+  }>;
   /**
    * Tool rounds the turn may take; the next round answers without tools. Null:
    * no round count, so tools close only at the tool time (or a spent call budget).
@@ -146,6 +155,15 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       ports.reservedCall?.outstanding() === true ? ports.reservedCall : null;
     if (reserved) reservedOffered = true;
     const toolChoice: LoopToolChoice = open || reserved ? "auto" : "none";
+    if (ports.draft?.answerTaken({ toolChoice })) {
+      const followups = await settleFollowups(ports);
+      if (followups.length === 0) return ended(round - 1);
+      await ports.append(followups);
+      answerText = "";
+      answerNow = null;
+      toolsAllowed = true;
+      continue;
+    }
     const asking = answerNow === "due" && toolChoice === "none";
     if (asking) answerNow = "taken";
     await ports.roundStart(round);
@@ -175,10 +193,17 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
         answerNow = "due";
         continue;
       }
+      const sentBack = await ports.draft?.responseEnded({ round, text: result.finalText, toolsClosed: toolChoice === "none" }) ?? null;
+      if (sentBack) {
+        await ports.append([sentBack]);
+        answerText = "";
+        answerNow = null;
+        continue;
+      }
       // The answer is final unless a follow-up arrived: then the turn goes on with it.
       const followups = await settleFollowups(ports);
       if (followups.length === 0) {
-        return callsOnly && approvals.length === 0 && !answerText.trim() ? { kind: "empty", rounds: round } : ended(round);
+        return callsOnly && approvals.length === 0 && !answerText.trim() && !ports.draft?.answerTaken({ toolChoice }) ? { kind: "empty", rounds: round } : ended(round);
       }
       await ports.append(followups);
       answerText = "";
