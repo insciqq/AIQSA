@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { readToolResultTool as engineReadToolResultTool } from "../engine/toolResults";
 import { mcpFindToolsTool } from "../mcp/discovery";
 import { memorySearchTool } from "../memory/search/contract";
-import { AGENT_MESSAGE_TOOLS, SUBAGENT_TOOLS } from "../subagents/tools";
+import { AGENT_MESSAGE_TOOLS, SUBAGENT_CHILD_TOOLS, SUBAGENT_TOOLS } from "../subagents/tools";
 import { analyzeConversationImageTool, analyzeImageTool } from "./analyzeImage";
 import { artifactTool, readArtifactTool } from "./artifact";
 import { browserHandoffTool } from "./browserHandoff";
@@ -68,6 +68,7 @@ function firstPartyTools(): RunTool[] {
     ...SELF_SERVICE_TOOLS.map((descriptor) => descriptor.tool),
     ...SUBAGENT_TOOLS.map((descriptor) => descriptor.tool),
     ...AGENT_MESSAGE_TOOLS.map((descriptor) => descriptor.tool),
+    ...SUBAGENT_CHILD_TOOLS.map((descriptor) => descriptor.tool),
     createScheduledTaskTool("Europe/Moscow"),
     manageScheduledTaskTool({ chatTask: { taskId: "task-1", title: "Check mail" }, userUrlDigests: [] }),
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,

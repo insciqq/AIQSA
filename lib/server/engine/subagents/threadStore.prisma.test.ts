@@ -243,6 +243,11 @@ describe("sub-agent threads on PostgreSQL", () => {
         active: { branchRunId: run.runId, parentRunId: parentAgent.runId }, latest: { id: admitted.turn.id }, thread: { parentThreadId: parentAgent.threadId } });
       await expect(store.threadRunIds({ chatId, parentRunIds: [run.runId], threadId: admitted.thread.id, userId })).resolves.toEqual([parentAgent.runId]);
       await expect(store.activeChildren({ chatId, threadId: parentAgent.threadId, userId })).resolves.toBe(1);
+      // Its browser handoff keeps its parent waiting; its question to that parent does not, since nothing else would move.
+      await store.setActiveState({ chatId, state: "waiting", turnId: admitted.turn.id, userId });
+      await expect(store.activeChildren({ chatId, threadId: parentAgent.threadId, userId })).resolves.toBe(1);
+      await store.setActiveState({ chatId, reason: "waiting_for_answer", state: "waiting", turnId: admitted.turn.id, userId });
+      await expect(store.activeChildren({ chatId, threadId: parentAgent.threadId, userId })).resolves.toBe(0);
     });
 
     it("refuses a third at once, a grandchild and another agent's name, and writes nothing", async () => {

@@ -232,7 +232,7 @@ name: ${NAME_RULE}, unique among the user's custom sub-agents.
 description: when to use it, in one or two sentences; you see it in the list of custom sub-agents. At most ${SUBAGENT_DEFINITION_LIMITS.descriptionCharacters} characters.
 instructions: its standing instructions, at most ${SUBAGENT_DEFINITION_LIMITS.instructionsCharacters} characters.
 model and effort: optional, the exact id of a model from the user's models listed in the context (each named with its connection) and an effort it supports; omitted, it runs on the model and effort of the answer that calls it.
-tools: optional, the tool groups it may use, from ${GROUP_LIST}; omitted, it has every tool a sub-agent has. A list never adds tools a sub-agent lacks.
+tools: optional, the tool groups it may use, from ${GROUP_LIST}; omitted, it has every tool a sub-agent has. A list never adds tools a sub-agent lacks, and only one without a list starts helpers of its own.
 default: true also makes it the user's default sub-agent, which a call with no type starts from their next message on. Pass it in this one call when the user asks for that too.
 The answer shows a card with Undo. Refusals: ${CODES.definitionExists}, ${CODES.definitionLimit}, ${CODES.modelUnavailable}, ${CODES.effortUnsupported}.`;
 

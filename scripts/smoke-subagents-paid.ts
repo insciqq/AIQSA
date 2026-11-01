@@ -83,6 +83,17 @@
  *   Workspace tool call, the word is in the second answer and not in the first (matched inside SQL; the word
  *   stays in memory), and the second run has a `read_chat_file` call that succeeded. Paid calls: about 3–5
  *   codex-lb requests (first turn 1, second turn 2–3, possibly a title), no System Vision, in about 1–3 minutes.
+ * - O: a sub-agent's children, one chat, only when named. `o-lead` starts `o-left` and `o-right` in the foreground: each works
+ *   out a per-run hash with a Workspace command and the lead's report holds both, which no brief states. Continued, it asks
+ *   for three background helpers in one response: exactly one is refused `subagent_child_limit_reached`, its report names the
+ *   code, and it ended after the two that ran, both done, because a parent waits for its children's reports. Then a helper
+ *   is told to start its own: no such thread exists, and `depthRefused` counts a refusal if the model tried a tool it is not
+ *   offered (`subagent_depth_limit_reached`; the refusal itself is proven in the focused tests). `o-holder` starts `o-inner`
+ *   in the foreground and `o-side` in the background, both in `sleep 900`; once all three run, the main agent's Stop ends every
+ *   one of them `parent_stopped`. Last, `o-clerk`'s helper `o-approver` calls a destructive MCP tool of a synthetic server this
+ *   harness hosts (below): it is not sent, the helper and the clerk end `blocked (needs_approval)`, the card is on the main
+ *   agent's run, and only the Allow sends it, once. Every child is read from the chat's thread list under its parent. Paid calls:
+ *   about 30–45 codex-lb requests in about 8–15 minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -111,6 +122,9 @@
  * - AIQSA_SUBAGENTS_TEXT_MODEL (K's last step) with OPENROUTER_API_KEY: a text-only OpenRouter chat model, added by
  *   `ensureTextModel`, whose public listing proves it takes no images. Without it, K uses AIQSA_SUBAGENTS_SECOND_MODEL
  *   only when the catalog says that model has no image input; `ensureModel` declares vision on what it adds.
+ * - AIQSA_SUBAGENTS_FIXTURE_HOST (O: the MCP fixture's listen address, default 127.0.0.1) and AIQSA_SUBAGENTS_FIXTURE_PUBLIC_HOST
+ *   (the host the stand's app container reaches it by, default the listen address). An app that cannot reach it fails O's
+ *   last step as `approval_step_unavailable`, with the code in the line, and the other steps still count.
  * - AIQSA_SUBAGENTS_RESTART_COMMAND (G), AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS (30..900, default 300):
  *   one shell line run on the harness host with /bin/sh -c, output discarded and only its exit code kept,
  *   that restarts the stand's app container on the server through the SSH connection that forwards the
@@ -133,6 +147,8 @@ import {
   decodeSubagentSummaryResponse, decodeSubagentThreadView
 } from "../lib/contracts/subagentViews";
 import { decodeUploadAttachmentResponse } from "../lib/contracts/uploads";
+import { registerBulkResultMcpServer, type BulkRegistrationClient } from "../tests/e2e/support/bulkResultMcpEndpoint";
+import { createWriteApprovalFixture, startMutableMcpEndpoint } from "../tests/e2e/support/mutableMcpEndpoint";
 import {
   BrowserScenarioError, handoffOutcome, requireBrowserScenarioStand, type BrowserScenarioStand, type InteractionEvidence,
   type OracleVerdict, type ScenarioInteraction, type StandTarget
@@ -144,10 +160,10 @@ import {
 } from "./browser-scenarios-stand";
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
-  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
-  scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
+  scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
+  type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
   type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
@@ -203,10 +219,11 @@ async function activeLeaf(ctx: Context, chatId: string): Promise<string | null> 
   return leaf as string | null;
 }
 
-/** Owed callbacks: ended background turns no main-agent run received yet. */
+/** Owed callbacks: ended background turns no main-agent run received yet; a child reports to its parent and owes none. */
 async function owedCallbacks(db: PostgresClient, chatId: string): Promise<number> {
-  const { rows } = await db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "SubagentTurn"
-    WHERE "chatId" = $1 AND "mode" = 'background' AND "state"::text NOT IN ('running', 'waiting') AND "callbackRunId" IS NULL`, [chatId]);
+  const { rows } = await db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "SubagentTurn" t
+    JOIN "SubagentThread" th ON th."id" = t."threadId" AND th."parentThreadId" IS NULL
+    WHERE t."chatId" = $1 AND t."mode" = 'background' AND t."state"::text NOT IN ('running', 'waiting') AND t."callbackRunId" IS NULL`, [chatId]);
   return rows[0]?.count ?? 0;
 }
 
@@ -225,7 +242,7 @@ type SendAttempt = Readonly<{ code: string; ok: false } | { ok: true; runId: str
 /** One send as the composer would make it, now: a refusal comes back, an accepted send gives the admitted run's id. */
 async function trySend(ctx: Context, run: Run, chatId: string, text: string,
   files: readonly Readonly<{ attachmentId: string; fileName: string; type: "file" }>[] = [],
-  controls: Readonly<{ workspace?: Readonly<{ enabled: boolean }> }> = {}): Promise<SendAttempt> {
+  controls: Readonly<{ mcp?: Readonly<{ mode: "load_all" }>; workspace?: Readonly<{ enabled: boolean }> }> = {}): Promise<SendAttempt> {
   const leaf = await activeLeaf(ctx, chatId);
   const known = new Set((await mainRuns(ctx.db, chatId)).map((entry) => entry.id));
   const abort = new AbortController();
@@ -1317,6 +1334,125 @@ async function noWorkspaceTurns(ctx: Context, run: Run): Promise<Outcome> {
   return { success: verdict.failed.length === 0, usage };
 }
 
+const O_TURN_MS = 15 * 60_000;
+const O_STOP_MS = 3 * 60_000;
+
+/** What the chat's thread list says started each sub-agent: what the tree nests it under. */
+async function threadParents(ctx: Context, chatId: string): Promise<Record<string, string | null>> {
+  const listed = decodeSubagentChatThreads(await json(ctx.session.api, SUBAGENT_API_PATHS.chatThreads(chatId))) ?? fail("threads_response_invalid");
+  return Object.fromEntries(listed.threads.map((thread) => [thread.name, thread.parent?.name ?? null]));
+}
+
+/** The admin and personal routes `registerBulkResultMcpServer` drives, on this harness's session. */
+function mcpClient(api: Api): BulkRegistrationClient {
+  const call = (method: string) => async (path: string, init?: Readonly<{ data: unknown }>) => {
+    const response = await request(api, path, { ...(init ? { body: init.data } : {}), method });
+    return { json: () => response.json() as Promise<unknown>, ok: () => response.ok, status: () => response.status };
+  };
+  return { delete: call("DELETE"), patch: call("PATCH"), post: call("POST"), put: call("PUT") };
+}
+
+/**
+ * O's last step: a call a helper may not make climbs to the main agent's card, and only the Allow sends it. The server is
+ * this harness's own, so `dispatches` counts what reached it, and it goes when the step ends.
+ */
+async function approvalStep(ctx: Context, run: Run, chatId: string, facts: ScenarioOFacts): Promise<OEvidence["approval"]> {
+  const { approver, clerk } = SUBAGENT_NAMES.nest;
+  const none = { approvalsOnMainRun: 0, childTurn: null, dispatchedAfterAllow: 0, dispatchedBeforeAllow: 0, parentTurn: null };
+  const records = createWriteApprovalFixture();
+  const host = process.env.AIQSA_SUBAGENTS_FIXTURE_HOST?.trim() || "127.0.0.1";
+  const publicHost = process.env.AIQSA_SUBAGENTS_FIXTURE_PUBLIC_HOST?.trim() || host;
+  const endpoint = await startMutableMcpEndpoint(records.tools, { callTool: records.callTool, host, publicHost });
+  let serverId: string | null = null;
+  try {
+    const { rows } = await ctx.db.query<{ userId: string }>(`SELECT "userId" FROM "Chat" WHERE "id" = $1`, [chatId]);
+    const userId = rows[0]?.userId ?? fail("chat_owner_missing");
+    serverId = await registerBulkResultMcpServer(mcpClient(ctx.session.api), { endpointUrl: endpoint.url, name: `Sub-agent records ${randomUUID().slice(0, 8)}`, userId });
+    await waitMainIdle(ctx, chatId);
+    const sent = await trySend(ctx, run, chatId, SUBAGENT_PROMPTS.O.approval(facts), [], { mcp: { mode: "load_all" } });
+    if (!sent.ok) return { ...none, unavailable: stableCode(sent.code) };
+    await waitRun(ctx, sent.runId);
+    const deletion = { id: facts.recordId };
+    const card = await poll(O_TURN_MS, async () => {
+      const found = await ctx.db.query<{ id: string; modelRunId: string; onMain: boolean }>(`SELECT a."id", a."modelRunId", (r."subagentTurnId" IS NULL) AS "onMain"
+        FROM "McpToolApproval" a JOIN "ModelRun" r ON r."id" = a."modelRunId" WHERE a."chatId" = $1 AND a."decision" IS NULL ORDER BY a."createdAt" DESC`, [chatId]);
+      return found.rows.length > 0 ? found.rows : null;
+    }, "approval_card_missing", 3_000).catch(() => []);
+    const dispatchedBeforeAllow = endpoint.dispatches("delete_record", deletion);
+    const threads = await threadIdsByName(ctx.db, chatId);
+    const turns = await turnRows(ctx.db, chatId);
+    const firstTurn = (name: string) => turns.find((turn) => turn.threadId === threads.get(name)?.at(-1)) ?? null;
+    const approvalsOnMainRun = card.filter((row) => row.onMain).length;
+    const [pending] = card;
+    if (pending) {
+      await json(ctx.session.api, `/api/model-runs/${encodeURIComponent(pending.modelRunId)}/mcp-approvals/${encodeURIComponent(pending.id)}`, {
+        body: { decision: "allow_once", nonce: randomUUID() }, method: "POST" });
+      await poll(O_TURN_MS, async () => endpoint.dispatches("delete_record", deletion) > 0 ? true : null, "approved_call_not_sent", 3_000).catch(() => false);
+      await waitMainIdle(ctx, chatId);
+    }
+    return { approvalsOnMainRun, childTurn: firstTurn(approver), dispatchedAfterAllow: endpoint.dispatches("delete_record", deletion), dispatchedBeforeAllow,
+      parentTurn: firstTurn(clerk), unavailable: null };
+  } catch (error) {
+    return { ...none, unavailable: error instanceof Error ? stableCode(error.message) : "approval_step_failed" };
+  } finally {
+    if (serverId) await request(ctx.session.api, `/api/admin/mcp/${encodeURIComponent(serverId)}`, { method: "DELETE" }).catch(() => undefined);
+    await endpoint.close().catch(() => undefined);
+  }
+}
+
+async function scenarioO(ctx: Context, run: Run): Promise<Outcome> {
+  const facts = scenarioOFacts(runSecrets(randomBytes(16)).nonce);
+  const { deep, deeper, first, holder, inner, lead, left, right, second, side, third } = SUBAGENT_NAMES.nest;
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario O");
+  run.chats.push(chat.id);
+  const started = Date.now();
+  const threadOf = async (name: string) => (await threadIdsByName(ctx.db, chat.id)).get(name)?.at(-1) ?? null;
+  const step = async (prompt: string) => (await waitRun(ctx, await send(ctx, run, chat.id, prompt))).status;
+  const terminals: Record<string, string> = {};
+
+  terminals.reports = await step(SUBAGENT_PROMPTS.O.reports(facts));
+  const reports: OEvidence["reports"] = { children: await Promise.all([left, right].map((name) => latestTurnOf(ctx.db, chat.id, name))),
+    leadHoldsBoth: await reportHolds(ctx.db, chat.id, lead, [facts.expected.left, facts.expected.right]) };
+
+  terminals.limit = await step(SUBAGENT_PROMPTS.O.limit());
+  const leadTurn = await waitTurnEnded(ctx, chat.id, lead, O_TURN_MS);
+  const asked = await toolRows(ctx.db, chat.id);
+  const limitCalls = asked.filter((row) => row.turnId === leadTurn?.turnId && row.toolName === "call_subagent");
+  const children = await Promise.all([first, second, third].map((name) => latestTurnOf(ctx.db, chat.id, name)));
+  const endTime = (turn: TurnRow | null) => turn?.endedAt ? new Date(turn.endedAt).getTime() : Number.POSITIVE_INFINITY;
+  const limit: OEvidence["limit"] = { calls: limitCalls.length, children,
+    leadEndedLast: children.every((turn) => turn === null || endTime(turn) <= endTime(leadTurn)),
+    leadNamedCode: await reportHolds(ctx.db, chat.id, lead, ["subagent_child_limit_reached"]),
+    refused: limitCalls.filter((row) => row.resultCode === "subagent_child_limit_reached").length };
+
+  terminals.depth = await step(SUBAGENT_PROMPTS.O.depth());
+  const deepThread = await threadOf(deep);
+  const depth: OEvidence["depth"] = { grandchildren: (await threadIdsByName(ctx.db, chat.id)).get(deeper)?.length ?? 0,
+    refused: (await toolRows(ctx.db, chat.id)).filter((row) => row.threadId === deepThread && row.resultCode === "subagent_depth_limit_reached").length };
+
+  const stopRun = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.O.stop());
+  const running = await poll(O_TURN_MS, async () => {
+    const threads = await threadIdsByName(ctx.db, chat.id);
+    const [turns, tools] = [await turnRows(ctx.db, chat.id), await toolRows(ctx.db, chat.id)];
+    const id = (name: string) => threads.get(name)?.at(-1);
+    return [holder, inner, side].every((name) => turns.some((turn) => turn.threadId === id(name) && turn.state === "running")) &&
+      [inner, side].every((name) => tools.some((tool) => tool.threadId === id(name) && tool.state === "running")) ? true : null;
+  }, "levels_not_running", 3_000).catch(() => false);
+  const stoppedAt = Date.now();
+  await request(ctx.session.api, `/api/model-runs/${encodeURIComponent(stopRun)}/cancel`, { body: {}, method: "POST" });
+  terminals.stop = (await waitRun(ctx, stopRun)).status;
+  const stopTurns = await Promise.all([holder, inner, side].map((name) => waitTurnEnded(ctx, chat.id, name, O_STOP_MS)));
+  const stop: OEvidence["stop"] = { running, secondsToEnd: seconds(stoppedAt), turns: stopTurns };
+
+  const approval = await approvalStep(ctx, run, chat.id, facts);
+  const { settled, usage } = await commonEvidence(ctx, run, chat.id);
+  const verdict = oracleO({ approval, depth, limit, parents: await threadParents(ctx, chat.id), reports, settled, stop });
+  const checks = [...verdict.failed];
+  if (!usage.split) checks.push("usage_not_split");
+  Object.assign(run.line, { approvalUnavailable: approval.unavailable, checksFailed: checks, oracleCounts: verdict.counts, terminals, wallSeconds: seconds(started) });
+  return { success: checks.length === 0, usage };
+}
+
 /** Later scenarios need the Workspace, so it comes back on whatever happened; `runScenario` stops the harness when it could not. */
 async function scenarioN(ctx: Context, run: Run): Promise<Outcome> {
   try {
@@ -1361,6 +1497,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "L": outcome = await scenarioL(ctx, run); break;
       case "M": outcome = await scenarioM(ctx, run); break;
       case "N": outcome = await scenarioN(ctx, run); break;
+      case "O": outcome = await scenarioO(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
