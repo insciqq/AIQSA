@@ -25,7 +25,7 @@ import { reportedAnswerCost, usageAttributionsWithEstimatedCost } from "../runs/
 import { withPinnedHostedSearchIdentity } from "../runs/searchArtifactIdentity";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
-import { toolCallBounds, turnSoftDeadlineMs } from "../runs/turnDeadline";
+import { toolCallBounds, TURN_HANDOFF_RESERVE_MS, turnSoftDeadlineMs } from "../runs/turnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
@@ -73,6 +73,7 @@ import {
   userAuthoredFollowup,
   type RunSubagents,
   type SubagentBackgroundParts,
+  type PrepareRunSubagentsInput,
   type SubagentEngineDeps,
   type SubagentRegistryHost,
   type SubagentRunPorts
@@ -80,6 +81,7 @@ import {
 import { renderSubagentTypeCatalog } from "../subagents/typeCatalog";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
+import { createRunResearch, researchOffered, type ResearchEngineDeps, type RunResearch } from "../research/run";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -115,6 +117,8 @@ export type NativeEngineDeps = SubagentEngineDeps & Readonly<{
     runtimeGenerationId: string | null }>[]>;
   now?: () => number;
   observations(): Promise<Pick<ToolObservationService, "withReservation">>;
+  /** The research method's parts; absent, a run offers no research. */
+  research?: ResearchEngineDeps;
   runs: NativeRunStore;
   savedResults: SavedToolResultReader;
   toolCalls: ToolCallStore;
@@ -391,6 +395,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       let runContext: RunContext | null = null;
       let live: BrowserLiveRunHandle | null = null;
       let runSubagents: RunSubagents | null = null;
+      let research: RunResearch | null = null;
+      /** Puts what research held into the answer, as what the user reads. */
+      let showResearchAnswer: ((text: string) => Promise<void>) | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
@@ -596,7 +603,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const subagentServerTurns = new Set([...continuationTurns, ...await systemWrittenTurns(input.repository, { chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id), userId: input.userId })]);
         // Sub-agents (`call_subagent`): the main agent's registry only, on the run's own frozen bindings (`subagents/`).
-        const subagents = await prepareRunSubagents({
+        const subagentInput: PrepareRunSubagentsInput = {
           ...(backgroundParts ? { backgroundParts } : {}),
           admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
           branchRunIds,
@@ -629,9 +636,20 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
           unknownEffects: (threadId) => agentFences.agent(threadId), usage,
           userMessage: currentUserMessageText(contextMessages, subagentServerTurns)
-        });
+        };
+        const subagents = await prepareRunSubagents(subagentInput);
         runSubagents = subagents;
-        const registry = subagents ? withSubagentTools(mainRegistry, subagents.tools) : mainRegistry;
+        // Research is the main agent's (`research/run.ts`): its tools ride beside the sub-agent tools, which its researchers run on.
+        const runResearch = subagents && engine.research && engine.subagentThreads && researchOffered({ monitoring: normalizedRequest.monitoringVerdictTool === true,
+          scheduled: input.scheduled === true, searchOptions: normalizedRequest.searchPlan.options.length, subagents: true, telegram: input.telegram === true })
+          ? createRunResearch({ chatId: scope.chatId, deps: engine.research, gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
+            items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; }, runId,
+            savedResults: engine.savedResults, subagentInput, threads: engine.subagentThreads, toolTimeLeft, userId: input.userId,
+            userMessage: subagentInput.userMessage }) : null;
+        research = runResearch;
+        if (input.approvalContinuation) runResearch?.resume(conversation.items);
+        const registry = subagents ? withSubagentTools(mainRegistry, [...(runResearch?.withResearcherBriefs(subagents.tools) ?? subagents.tools),
+          ...(runResearch?.tools ?? [])]) : mainRegistry;
         // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
         // only for this run rides in with its input (`systemPrompt.ts`).
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
@@ -655,8 +673,17 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           items.push(...added);
           await record(added);
         };
+        // What research held becomes the answer with no further model call, and the transcript's record of what was said.
+        showResearchAnswer = async (text) => {
+          answer.restart();
+          sink.send({ data: { round: 0 }, type: "message_reset" });
+          answer.beginRound();
+          answer.push(text);
+          answer.completeRound(text);
+          await append([{ id: randomUUID(), kind: "assistant_text", text }]);
+        };
         // The run's one report reserved outside the budgets, when its registry offers it.
-        const reservedReport = reservedToolCallForRequest(normalizedRequest);
+        const reservedReport = reservedToolCallForRequest(normalizedRequest) ?? runResearch?.reservedCall ?? null;
         const reserved = reservedReport && registry.resolve(reservedReport.name) ? reservedReport : null;
         const batchDeps: ToolBatchDeps = {
           chatId: scope.chatId,
@@ -788,7 +815,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             },
             onEvent: async (event) => {
               const pinned = withPinnedHostedSearchIdentity(event, normalizedRequest);
-              if (pinned.type === "token") answer.push(pinned.data.delta);
+              if (pinned.type === "token") {
+                // While research runs nothing streams into the answer: the round's text is known whole when it ends.
+                if (!runResearch?.holding()) answer.push(pinned.data.delta);
+              }
               // Kept outputs of an attempt are saved once it completed; the rest are live only.
               else if (projectRunOutputArtifactEvent(pinned)) pending.push(pinned);
               else if (pinned.type !== "usage") sink.send(pinned);
@@ -823,6 +853,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             followupRevision = batch.revision;
             delivered.push(...fromUser.map((entry) => entry.text));
             if (fromUser.length > 0) unknownEffects.userSpoke();
+            runResearch?.followupDelivered();
             // The answer starts over after the user's follow-up, as the delivered record shows.
             answer.restart();
             sink.send({ data: { round: batch.revision }, type: "message_reset" });
@@ -830,6 +861,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return accepted.map((entry) => ({ ...(fromUser.includes(entry) ? {} : { callback: true as const }),
               followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
           },
+          ...(runResearch ? { draft: {
+            answerTaken: (taken: Readonly<{ toolChoice: LoopToolChoice }>) => runResearch.answerTaken(taken),
+            // A draft written as a message has no call of its own: the server records one, in no conversation, so its gates run like any other's.
+            responseEnded: (ended: Readonly<{ round: number; text: string; toolsClosed: boolean }>) => runResearch.responseEnded({ ...ended,
+              runDraftCall: (call, round) => runToolBatch(batchDeps, { calls: 0 }, { calls: [call], round }) })
+          } } : {}),
           maxToolRounds: budgets.maxToolRounds,
           prepareRequest: async ({ answerNow, reserved: reservedRound, toolChoice }: Readonly<{ answerNow?: true;
             reserved?: true; round: number; toolChoice: LoopToolChoice }>) => {
@@ -853,7 +890,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
               : prepared;
           },
-          ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => toolState.reservedCalled !== true } } : {}),
+          ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => runResearch ? runResearch.outstanding() : toolState.reservedCalled !== true } } : {}),
           // The response keeps its request's anchor, so the chat's next run measures its first request from it (issue #62).
           responseItems: (result) => modelResponseItems({ estimate: estimateApproxTokens,
             history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target,
@@ -861,7 +898,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           roundEnd: async (result) => {
             for (const event of pending) await sink.publish(event);
             pending = [];
-            answer.completeRound(result.finalText);
+            const held = runResearch?.holding() === true;
+            if (held) runResearch?.roundText(result.finalText);
+            answer.completeRound(held ? "" : result.finalText);
             context.observe(result.usage);
           },
           roundStart: async (round) => {
@@ -882,8 +921,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
+        const researched = runResearch?.finish(outcome.kind === "approval") ?? null;
+        if (researched !== null) await showResearchAnswer(researched);
         // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
-        if (outcome.kind === "empty") {
+        if (researched === null && (outcome.kind === "empty" || outcome.kind === "answered" && runResearch?.holding() === true && !answer.text.trim())) {
           throw new EngineFailure("model_answer_empty", "The model returned no answer. Send your request again.");
         }
 
@@ -940,9 +981,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           run_id: runId, stage: answerPublished ? "completion" : "execution",
           ...failureCauseFields({ cancelled, failure, stopped: stop.signal.aborted, timedOut: deadline.signal.aborted, turnMs,
             workspaceRun: Boolean(workspace) }) });
+        // Answer first: a report research held reaches the answer whatever ended the run, with a note saying so.
+        const heldReport = answerPublished ? null : research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
+        if (heldReport !== null) await showResearchAnswer?.(heldReport);
         answer.stop();
         // Its sub-agents end with it and keep what they recorded; their turns settle before the run's records do.
-        await runSubagents?.runner.stopAll(deadline.signal.aborted && !cancelled ? "deadline" : "parent_stopped");
+        const endReason = deadline.signal.aborted && !cancelled ? "deadline" as const : "parent_stopped" as const;
+        await runSubagents?.runner.stopAll(endReason);
+        await research?.stopAll(endReason);
         await runContext?.close();
         await live?.end("run_finished");
         if (workspace && input.workspace) {
