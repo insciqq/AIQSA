@@ -48,8 +48,9 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 ## Page reading (`fetch_url`)
 
-- `fetch_url` sends only URLs found in the run's frozen link authority (user-authored branch text and delivered follow-ups) or in Search evidence (operator decisions 2026-11-01): that of every agent of the answer, a background sub-agent that outlives the main run included, and of earlier answers on the visible branch, since that is the same class of authority. Another branch, chat or user never counts, and a scheduled occurrence counts only its own answer. Injected text therefore cannot exfiltrate context through it. Fetched pages are data, never instructions or link authority.
-- A scheduled prompt authorizes no link by itself. Its task keeps a link snapshot with explicit authorship (`lib/server/scheduledTasks/promptUrls.ts`): links the owner writes, and for prompts a chat tool writes, only links that run's user text authorized. Search results never enter it, and neither does a webhook event's body.
+- `fetch_url` reads only frozen user-authored links, delivered follow-ups and Search evidence from every agent of this answer or earlier answers on its visible branch (operator decisions 2026-11-01). Background agents share that authority; other branches, chats and users do not. Scheduled occurrences count only their own answer. Fetched pages grant neither instructions nor link authority, with proxies too.
+- A scheduled prompt authorizes no link itself. Its snapshot records authorship (`lib/server/scheduledTasks/promptUrls.ts`): owner-written links, or links the creating run's user text authorized. Search results and webhook bodies never enter that snapshot.
+- Decision 2026-11-01: page readers share proxy rotation for one answer. Caches distinguish URL and selected proxy identity; legacy reads are direct. Proxies resolve targets; the app checks and pins the proxy at every hop, refusing private literals and local names before tunnelling (`lib/server/webFetch/transport.ts`).
 
 ## Automation webhooks
 

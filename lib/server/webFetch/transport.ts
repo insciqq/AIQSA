@@ -1,12 +1,17 @@
 import { brotliDecompressSync, inflateRawSync, unzipSync } from "node:zlib";
 import { mcpSafeFetch, McpSafeFetchError, networkAddressScope, type McpSafeFetchOptions } from "../mcp/safeFetch";
+import type { RunProxyConnection } from "../proxies/runProxies";
+import { WebFetchError, type WebFetchFailureCode } from "./errors";
+import { fetchProxyHop } from "./proxyHop";
 import { FETCH_URL_MAX_LENGTH } from "./urls";
+
+export { WebFetchError, type WebFetchFailureCode } from "./errors";
 
 /**
  * The page transport of `fetch_url`: GET only, over the pinned SSRF-safe
- * transport (`mcpSafeFetch`: DNS pinned per hop, every resolved address
- * checked). Only public addresses are reachable, with no administrator
- * exception; ports 80 and 443 only; no userinfo, cookies or auth headers; one
+ * transport (`mcpSafeFetch`: DNS pinned per hop), or through a proxy whose
+ * address is checked and pinned per hop. Proxy DNS resolves target names.
+ * Targets use ports 80 and 443 only; no userinfo, cookies or auth headers; one
  * fixed user agent. Redirects are followed manually so each hop is checked
  * again. One deadline covers the whole exchange and the body is bounded while
  * it streams.
@@ -22,34 +27,6 @@ const ACCEPT = "text/html,application/xhtml+xml,text/plain;q=0.9,text/markdown;q
   "application/pdf;q=0.8,*/*;q=0.1";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const ALLOWED_PORTS = new Set(["", "80", "443"]);
-
-export type WebFetchFailureCode =
-  | "fetch_url_invalid"
-  | "fetch_url_credentials"
-  | "fetch_port_not_allowed"
-  | "fetch_blocked_address"
-  | "fetch_redirect_invalid"
-  | "fetch_redirect_limit"
-  | "fetch_timeout"
-  | "fetch_too_large"
-  | "fetch_unsupported_content_type"
-  | "fetch_http_status"
-  | "fetch_network_error";
-
-export class WebFetchError extends Error {
-  readonly code: WebFetchFailureCode;
-  readonly httpStatus?: number;
-  /** Whether a request may have reached a server before the failure. */
-  readonly dispatched: boolean;
-
-  constructor(code: WebFetchFailureCode, options: Readonly<{ dispatched: boolean; httpStatus?: number }>) {
-    super(code);
-    this.name = "WebFetchError";
-    this.code = code;
-    this.dispatched = options.dispatched;
-    if (options.httpStatus !== undefined) this.httpStatus = options.httpStatus;
-  }
-}
 
 export type WebFetchResponse = Readonly<{
   body: Uint8Array;
@@ -168,6 +145,15 @@ function decodeContent(raw: Uint8Array, encoding: string | null, maxBytes: numbe
  * the caller's abort reason when its signal ended the exchange.
  */
 export async function fetchWebPage(url: string, options: WebFetchOptions): Promise<WebFetchResponse> {
+  return fetchPage(url, options);
+}
+
+/** GET only; the same proxy handles every redirect, with its address checked per connection. */
+export async function fetchThroughProxy(url: string, connection: RunProxyConnection, options: WebFetchOptions): Promise<WebFetchResponse> {
+  return fetchPage(url, options, connection);
+}
+
+async function fetchPage(url: string, options: WebFetchOptions, proxy?: RunProxyConnection): Promise<WebFetchResponse> {
   const limits = { ...WEB_FETCH_LIMITS, ...options.limits };
   const deadline = new AbortController();
   // A native TimeoutError keeps transport observability classifying it as a deadline.
@@ -188,7 +174,9 @@ export async function fetchWebPage(url: string, options: WebFetchOptions): Promi
       const refusal = webFetchUrlRefusal(current);
       if (refusal) throw new WebFetchError(refusal, { dispatched });
       try {
-        response = await mcpSafeFetch(current.href, {
+        response = proxy ? await fetchProxyHop(current, proxy,
+          { accept: ACCEPT, "accept-encoding": "gzip, deflate, br", "user-agent": WEB_FETCH_USER_AGENT }, signal)
+          : await mcpSafeFetch(current.href, {
           headers: { accept: ACCEPT, "accept-encoding": "gzip, deflate, br", "user-agent": WEB_FETCH_USER_AGENT },
           method: "GET",
           redirect: "manual",
@@ -202,6 +190,9 @@ export async function fetchWebPage(url: string, options: WebFetchOptions): Promi
         });
       } catch (error) {
         if (error instanceof McpSafeFetchError) throw transportFailure(error, dispatched);
+        if (error instanceof WebFetchError && dispatched && !error.dispatched) {
+          throw new WebFetchError(error.code, { dispatched, httpStatus: error.httpStatus });
+        }
         throw error;
       }
       dispatched = true;
@@ -239,7 +230,10 @@ export async function fetchWebPage(url: string, options: WebFetchOptions): Promi
   } catch (error) {
     if (response) await discard(response);
     // A deadline during connection setup cannot prove that nothing was sent.
-    if (deadline.signal.aborted && !(options.signal?.aborted)) throw new WebFetchError("fetch_timeout", { dispatched: true });
+    if (deadline.signal.aborted && !(options.signal?.aborted)) throw new WebFetchError(proxy ? "proxy_timeout" : "fetch_timeout", { dispatched: true });
+    if (proxy && !options.signal?.aborted && !(error instanceof WebFetchError)) {
+      throw new WebFetchError("proxy_connect_failed", { dispatched });
+    }
     throw error;
   } finally {
     clearTimeout(timer);
