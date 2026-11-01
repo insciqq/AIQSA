@@ -1042,7 +1042,7 @@ async function scenarioK(ctx: Context, run: Run): Promise<Outcome> {
 
   let blindAnswered = false;
   if (ctx.blind) {
-    const blindRun = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.blind(facts, ctx.blind.id));
+    const blindRun = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.K.blind(facts, ctx.blind.model.modelId));
     const terminal = await waitRun(ctx, blindRun);
     const { rows } = await ctx.db.query<{ hit: boolean }>(`SELECT m."content"::text ~* '\\mred\\M' AS "hit"
       FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."id" = $1`, [blindRun]);
