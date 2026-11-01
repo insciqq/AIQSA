@@ -7,10 +7,13 @@ import { checkProxyAddress, isRefusedProxyTarget } from "../proxies/address";
 import type { RunProxyConnection } from "../proxies/runProxies";
 import { WebFetchError, type WebFetchFailureCode } from "./errors";
 
+/** What a request through a proxy needs of it. */
+export type ProxyHopConnection = Pick<RunProxyConnection, "host" | "login" | "password" | "port" | "protocol">;
+
 const fail = (code: WebFetchFailureCode, dispatched = true) => new WebFetchError(code, { dispatched });
 
 /** Covers installation-environment discovery as well as the check's own DNS deadline. */
-async function checkedAddress(connection: RunProxyConnection, signal: AbortSignal) {
+async function checkedAddress(connection: ProxyHopConnection, signal: AbortSignal) {
   signal.throwIfAborted();
   return new Promise<Awaited<ReturnType<typeof checkProxyAddress>>>((resolve, reject) => {
     const aborted = () => reject(signal.reason);
@@ -49,7 +52,7 @@ async function bytes(socket: Socket, size: number, signal: AbortSignal): Promise
   }
 }
 
-async function httpTunnel(socket: Socket, url: URL, connection: RunProxyConnection, signal: AbortSignal) {
+async function httpTunnel(socket: Socket, url: URL, connection: ProxyHopConnection, signal: AbortSignal) {
   const authority = `${url.hostname}:${url.port || (url.protocol === "https:" ? 443 : 80)}`;
   const auth = connection.login !== null || connection.password !== null
     ? `Proxy-Authorization: Basic ${Buffer.from(`${connection.login ?? ""}:${connection.password ?? ""}`).toString("base64")}\r\n` : "";
@@ -72,7 +75,7 @@ async function httpTunnel(socket: Socket, url: URL, connection: RunProxyConnecti
   }
 }
 
-async function socksTunnel(socket: Socket, url: URL, connection: RunProxyConnection, signal: AbortSignal) {
+async function socksTunnel(socket: Socket, url: URL, connection: ProxyHopConnection, signal: AbortSignal) {
   const auth = connection.login !== null || connection.password !== null;
   socket.write(Buffer.from([5, 1, auth ? 2 : 0]));
   const hello = await bytes(socket, 2, signal);
@@ -116,7 +119,7 @@ async function socksTunnel(socket: Socket, url: URL, connection: RunProxyConnect
 }
 
 /** GET through a fresh tunnel. Every hop checks DNS again; there is no shared pool. */
-export async function fetchProxyHop(url: URL, connection: RunProxyConnection, headers: Record<string, string>,
+export async function fetchProxyHop(url: URL, connection: ProxyHopConnection, headers: Record<string, string>,
   signal: AbortSignal): Promise<Response> {
   const targetHost = url.hostname.replace(/^\[|\]$/gu, "").replace(/\.$/u, "");
   if (isRefusedProxyTarget(url) || (!isIP(targetHost) && (!targetHost.includes(".") || targetHost.endsWith(".local")))) {

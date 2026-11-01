@@ -206,6 +206,8 @@ export type ToolRegistryServices = Readonly<{
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
   extractPage?: FetchUrlSessionDeps["extractPage"];
   fetchPage?: FetchUrlSessionDeps["fetchPage"];
+  /** Credentials of the proxies a run froze; absent, a plan's proxies read as unavailable and never go direct. */
+  runProxies?: FetchUrlSessionDeps["runProxies"];
   images?: Pick<ImageGenerationService, "execute" | "withConversationPixels"> & Partial<Pick<ImageGenerationService, "readConversationImage">>;
   chatFiles?: ChatFileReader;
   mcp?: Readonly<{
@@ -546,6 +548,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       plan: fetchPlan,
       scheduled: fetchPlan.taskUrlDigests !== undefined,
       searchAvailable: request.searchPlan.options.length > 0,
+      ...(request.proxies ? { proxyPlan: request.proxies, userId: owner.userId } : {}),
+      ...(input.services.runProxies ? { runProxies: input.services.runProxies } : {}),
       ...(input.services.fetchPage ? { fetchPage: input.services.fetchPage } : {}),
       ...(input.services.extractPage ? { extractPage: input.services.extractPage } : {}),
       ...(repository.loadRunSearchSourceUrls ? { loadSearchUrls: () => repository.loadRunSearchSourceUrls!({ ...owner,

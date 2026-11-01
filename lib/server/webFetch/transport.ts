@@ -1,8 +1,7 @@
 import { brotliDecompressSync, inflateRawSync, unzipSync } from "node:zlib";
 import { mcpSafeFetch, McpSafeFetchError, networkAddressScope, type McpSafeFetchOptions } from "../mcp/safeFetch";
-import type { RunProxyConnection } from "../proxies/runProxies";
 import { WebFetchError, type WebFetchFailureCode } from "./errors";
-import { fetchProxyHop } from "./proxyHop";
+import { fetchProxyHop, type ProxyHopConnection } from "./proxyHop";
 import { FETCH_URL_MAX_LENGTH } from "./urls";
 
 export { WebFetchError, type WebFetchFailureCode } from "./errors";
@@ -149,11 +148,11 @@ export async function fetchWebPage(url: string, options: WebFetchOptions): Promi
 }
 
 /** GET only; the same proxy handles every redirect, with its address checked per connection. */
-export async function fetchThroughProxy(url: string, connection: RunProxyConnection, options: WebFetchOptions): Promise<WebFetchResponse> {
+export async function fetchThroughProxy(url: string, connection: ProxyHopConnection, options: WebFetchOptions): Promise<WebFetchResponse> {
   return fetchPage(url, options, connection);
 }
 
-async function fetchPage(url: string, options: WebFetchOptions, proxy?: RunProxyConnection): Promise<WebFetchResponse> {
+async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHopConnection): Promise<WebFetchResponse> {
   const limits = { ...WEB_FETCH_LIMITS, ...options.limits };
   const deadline = new AbortController();
   // A native TimeoutError keeps transport observability classifying it as a deadline.
