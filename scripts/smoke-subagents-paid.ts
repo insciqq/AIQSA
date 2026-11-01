@@ -94,6 +94,11 @@
  *   harness hosts (below): it is not sent, the helper and the clerk end `blocked (needs_approval)`, the card is on the main
  *   agent's run, and only the Allow sends it, once. Every child is read from the chat's thread list under its parent. Paid calls:
  *   about 30–45 codex-lb requests in about 8–15 minutes.
+ * - P: the user writes to a working sub-agent, one chat, only when named. `p-listener` is briefed with three `sleep` commands
+ *   and nothing about the user; once its first command runs, the harness posts to the thread as the browser does, asking
+ *   for a per-run word at the end of the report and not to repeat a per-run note. Oracles: the message is accepted and read
+ *   by the turn, the turn ends done, its report holds the word, and the note is in no message of the main chat (both matched
+ *   inside SQL; they stay in memory). Paid calls: about 5–8 codex-lb requests in about 2–3 minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -160,9 +165,9 @@ import {
 } from "./browser-scenarios-stand";
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
-  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
-  scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
+  scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
   type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
@@ -1267,6 +1272,47 @@ async function scenarioM(ctx: Context, run: Run): Promise<Outcome> {
   return { success: checks.length === 0, usage };
 }
 
+const P_TURN_MS = 6 * 60_000;
+
+/** The user's messages to the chat's sub-agents: who each went to and whether that turn read it; their text stays in the database. */
+async function userMessageRows(db: PostgresClient, chatId: string): Promise<Array<{ read: boolean; recipient: string | null }>> {
+  const { rows } = await db.query<{ read: boolean; recipient: string | null }>(`SELECT (f."deliveredAt" IS NOT NULL) AS "read", th."name" AS "recipient"
+    FROM "RunFollowup" f JOIN "SubagentTurn" t ON t."id" = f."subagentTurnId" JOIN "SubagentThread" th ON th."id" = t."threadId"
+    WHERE f."chatId" = $1 AND f."origin"::text = 'user'`, [chatId]);
+  return rows;
+}
+
+async function scenarioP(ctx: Context, run: Run): Promise<Outcome> {
+  const facts = scenarioPFacts(runSecrets(randomBytes(16)).nonce);
+  const name = SUBAGENT_NAMES.listener;
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario P");
+  run.chats.push(chat.id);
+  const started = Date.now();
+  const sent = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.P.start());
+  // Its first command is running: the message lands in the middle of the turn and the next step takes it.
+  const working = await poll(P_TURN_MS, async () => {
+    const turn = await latestTurnOf(ctx.db, chat.id, name);
+    if (turn?.state !== "running") return null;
+    const calls = await toolRows(ctx.db, chat.id);
+    return calls.some((call) => call.threadId === turn.threadId && call.toolName.includes("sandbox")) ? turn : null;
+  }, "listener_not_working", 1_000);
+  const reply = await json(ctx.session.api, `${SUBAGENT_API_PATHS.chatThreads(chat.id)}/${working.threadId}/messages`, {
+    body: { nonce: randomBytes(16).toString("hex"), text: SUBAGENT_PROMPTS.P.message(facts), turnId: working.turnId }, method: "POST" });
+  const terminal = (await waitRun(ctx, sent)).status;
+  const turn = await waitTurnEnded(ctx, chat.id, name, P_TURN_MS);
+  const { settled, usage } = await commonEvidence(ctx, run, chat.id);
+  const rows = (await userMessageRows(ctx.db, chat.id)).filter((row) => row.recipient === name);
+  const { rows: inChat } = await ctx.db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "Message"
+    WHERE "chatId" = $1 AND strpos("content"::text, $2) > 0`, [chat.id, facts.note]);
+  const verdict = oracleP({ accepted: (reply as { accepted?: unknown } | null)?.accepted === true, mainChatHoldsNote: (inChat[0]?.count ?? 0) > 0,
+    messages: { read: rows.filter((row) => row.read).length, taken: rows.length }, reportHoldsWord: await reportHolds(ctx.db, chat.id, name, [facts.word]),
+    settled, turn });
+  const checks = [...verdict.failed];
+  if (!usage.split) checks.push("usage_not_split");
+  Object.assign(run.line, { checksFailed: checks, oracleCounts: verdict.counts, terminals: { start: terminal }, wallSeconds: seconds(started) });
+  return { success: checks.length === 0, usage };
+}
+
 const N_TURN_MS = 10 * 60_000;
 
 /** Uploads the document as the composer does without a Workspace: no scope. */
@@ -1498,6 +1544,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "M": outcome = await scenarioM(ctx, run); break;
       case "N": outcome = await scenarioN(ctx, run); break;
       case "O": outcome = await scenarioO(ctx, run); break;
+      case "P": outcome = await scenarioP(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
