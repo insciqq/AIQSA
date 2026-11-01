@@ -1,4 +1,11 @@
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "../../contracts/memorySearchActivity";
+import {
+  CHANGE_RESEARCH_FRAME_TOOL_NAME,
+  PROPOSE_RESEARCH_PLAN_TOOL_NAME,
+  RECORD_EVIDENCE_TOOL_NAME,
+  START_RESEARCH_TOOL_NAME,
+  SUBMIT_RESEARCH_DRAFT_TOOL_NAME
+} from "../../contracts/research";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "@/lib/domain/workspace";
 import type { ThreadMcpUnavailableServer, ThreadToolActivityOrigin } from "@/lib/contracts/chats";
@@ -33,6 +40,15 @@ export const TOOL_ACTIVITY_REQUEST_KEYS = Object.freeze([
   "agent", "answerReviewStep", "fetchUrl", "imagePlan", "mcp", "mcpDiscovery", "monitoringVerdictTool", "scheduledTaskManagementTool",
   "scheduledTaskTool", "searchPlan", "skillSaveTool", "skills", "toolBudgets", "visionAnalysis", "workspace", "workspaceImageView"
 ]);
+
+/** Each research tool and the name its live step carries (`lib/server/research/run.ts`, `recordEvidence.ts`, `changeResearchFrame.ts`). */
+const RESEARCH_STEP_NAMES = [
+  [START_RESEARCH_TOOL_NAME, "Started"],
+  [PROPOSE_RESEARCH_PLAN_TOOL_NAME, "Plan"],
+  [RECORD_EVIDENCE_TOOL_NAME, "Recording evidence"],
+  [CHANGE_RESEARCH_FRAME_TOOL_NAME, "Extending the matrix"],
+  [SUBMIT_RESEARCH_DRAFT_TOOL_NAME, "Checking the report"]
+] as const;
 
 export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (value: string) => string = plainWorkspaceActivityText): Map<string, {
   origin: ThreadToolActivityOrigin;
@@ -137,6 +153,9 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   for (const name of ["create_subagent", "edit_subagent", "delete_subagent"]) {
     descriptors.set(name, { origin: "session", serverName: "Sub-agents", toolName: name });
   }
+  // Research's tools under the names their live steps carry, so a stored row and its live step are one call. The words are the client's
+  // (`describeToolCallV2`). Set for every run, like the harness tools: a research run leaves no mark in its request.
+  for (const [name, step] of RESEARCH_STEP_NAMES) descriptors.set(name, { origin: "tool", serverName: "Research", toolName: step });
   if (normalizedRequest.fetchUrl) descriptors.set("fetch_url", { origin: "web_fetch", serverName: "Web", toolName: "fetch_url" });
   // The chat form of System Vision; Workspace analysis keeps its existing activity.
   if (normalizedRequest.visionAnalysis && normalizedRequest.workspace === undefined) {
