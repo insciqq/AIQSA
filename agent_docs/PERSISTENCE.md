@@ -25,6 +25,7 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - Publishing a Skill grants future use only; accepted revisions survive unpublication and deletion. Deleting an Assistant clears run and chat references but keeps their snapshots.
 - Removing a personal saved file keeps copies already admitted into chats. Temporary chat attachments never become personal files implicitly. Artifact deduplication is scoped to one owner.
 - The protected `Full access` group gives its explicit members every current and future active provider connection, answer model and Search source; its name and lifecycle cannot change. MCP servers are never included implicitly and the group never confers personal identity or secrets.
+- A research frame's `continuedFromRunId` lets a Continue reach the interrupted run's records. Its key carries the owner and the chat but cannot say the branch, so only the server's own check at the Continue writes it, once, and a reader walks only from the current run under a bound. Deleting the earlier run takes its rows and clears only this column, as it does a later run's correction or page reference: a plain `SET NULL` would null the required owner columns too, so these keys are column-scoped.
 
 ## Recovery and derived state
 
@@ -64,6 +65,8 @@ Cutoffs and batch sizes live in code; these are the product decisions behind the
 - A webhook event keeps its body only until its run is admitted, after which the body lives only in that chat under the task's history retention, or until it is discarded because it can no longer run; it never runs later. The bodyless row stays seven days for deduplication and the rate cap (decision 2026-10-25, `lib/contracts/scheduledTasks.ts`). The webhook and its events go with the task and the account.
 - Operator telemetry has no foreign key to users; deleting an account clears its id from incidents in the same transaction.
 - An answer problem report stores a reason and an optional comment, never the question or answer, and disappears with the answer, chat or reporting account.
+- Research evidence, stored pages and frames live with their run (operator decision 2026-11-01): they go with it, and so with the branch, the chat and the account, through their keys and with no job, cutoff or switch of their own. While the run lives nothing deletes a record.
+- Stored pages are the one large thing here, and they sit in PostgreSQL rather than object storage so they go with the run in one transaction. `RESEARCH_PAGE_LIMITS` bounds them; most pages are tens of KB, so a run usually keeps a few MB, and the database compresses long text. They stay as long as the chat does and every backup carries them, so an installation that researches daily should watch the size of `ResearchPage`; deleting chats is what frees it.
 
 ## Backup and restore
 
