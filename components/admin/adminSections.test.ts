@@ -31,6 +31,7 @@ describe("adminSections", () => {
       { group: "platform", id: "assistants", label: "Assistants" },
       { group: "platform", id: "workspace", label: "Workspace" },
       { group: "platform", id: "connect", label: "AIQSA Connect" },
+      { group: "platform", id: "proxies", label: "Proxies" },
       { group: "platform", id: "email", label: "Email" },
       { group: "platform", id: "telegram", label: "Telegram" },
       { group: "platform", id: "usage", label: "Usage" }

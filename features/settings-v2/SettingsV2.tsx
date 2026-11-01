@@ -22,24 +22,27 @@ import {
 } from "react";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
+import { ProxyListPanel } from "./ProxyListPanel";
 
 export type SettingsSectionV2 =
   | "account"
   | "connections"
   | "connected_apps"
   | "data"
-  | "general";
+  | "general"
+  | "proxies";
 
 type SettingsIntentV2 =
   | Readonly<{ kind: "close" }>
   | Readonly<{ kind: "section"; section: SettingsSectionV2 }>;
 
-const SECTION_ORDER: readonly SettingsSectionV2[] = ["general", "account", "connections", "connected_apps", "data"];
+const SECTION_ORDER: readonly SettingsSectionV2[] = ["general", "account", "connections", "connected_apps", "proxies", "data"];
 const SECTION_META: Record<SettingsSectionV2, Readonly<{ icon: UiV2IconName; label: string }>> = {
   general: { icon: "sun", label: "General" },
   account: { icon: "user", label: "Account" },
   connections: { icon: "plug", label: "Connections" },
   connected_apps: { icon: "link", label: "Claude Code & Codex" },
+  proxies: { icon: "globe", label: "Proxies" },
   data: { icon: "archive", label: "Data" }
 };
 
@@ -95,10 +98,10 @@ export function SettingsSwitchV2({
 }
 
 export function SettingsV2({
-  busy = false,
+  busy: ownerBusy = false,
   busyMessage = "Updating settings…",
   connectedAppsContent,
-  dirty = false,
+  dirty: ownerDirty = false,
   generalSlot = null,
   initialSection = "general",
   noticeSlot,
@@ -126,13 +129,18 @@ export function SettingsV2({
   onSectionChange?(section: SettingsSectionV2): void;
   onThemeChange(theme: ThemeId): void;
   /** Bodies of the remaining tabs; a tab without a body is not listed. */
-  panels?: Partial<Record<Exclude<SettingsSectionV2, "connected_apps" | "general">, ReactNode>>;
+  panels?: Partial<Record<Exclude<SettingsSectionV2, "connected_apps" | "general" | "proxies">, ReactNode>>;
   /** A task owned by the active Settings section, rendered under its breadcrumb. */
   subview?: Readonly<{ label: string; onBack(): void }>;
   themeId: ThemeId;
 }>) {
+  const [proxiesBusy, setProxiesBusy] = useState(false);
+  const [proxiesDirty, setProxiesDirty] = useState(false);
+  const busy = ownerBusy || proxiesBusy;
+  const dirty = ownerDirty || proxiesDirty;
+  const dirtyLabel = proxiesDirty ? "proxy" : "account";
   const available = SECTION_ORDER.filter((section) =>
-    section === "connected_apps" || section === "general" || panels[section] !== undefined
+    section === "connected_apps" || section === "general" || section === "proxies" || panels[section] !== undefined
   );
   const [activeSection, setActiveSection] = useState<SettingsSectionV2>(
     available.includes(initialSection) ? initialSection : "general"
@@ -173,7 +181,7 @@ export function SettingsV2({
   const confirmDiscard = () => {
     const intent = discardIntent;
     if (!intent) return;
-    onDiscard?.();
+    if (ownerDirty) onDiscard?.();
     setDiscardIntent(null);
     applyIntent(intent);
   };
@@ -284,7 +292,7 @@ export function SettingsV2({
         </header>
         {busy || dirty ? (
           <p className="v2-settings-state" role="status">
-            {busy ? busyMessage : "Unsaved account changes"}
+            {proxiesBusy ? "Saving the proxy…" : busy ? busyMessage : `Unsaved ${dirtyLabel} changes`}
           </p>
         ) : null}
         {noticeSlot ? <div className="v2-settings-notice">{noticeSlot}</div> : null}
@@ -338,6 +346,10 @@ export function SettingsV2({
                 {connectedAppsContent}
               </div>
             </section>
+          ) : activeSection === "proxies" ? (
+            <section className="v2-settings-section" aria-labelledby="v2-settings-proxies-heading" data-testid="settings-proxies-panel">
+              <ProxyListPanel audience="personal" onBusyChange={setProxiesBusy} onDirtyChange={setProxiesDirty} />
+            </section>
           ) : (
             <section
               className="v2-settings-section"
@@ -352,13 +364,13 @@ export function SettingsV2({
       {discardIntent ? (
         <section
           ref={discardRef}
-          aria-label="Unsaved account changes"
+          aria-label={`Unsaved ${dirtyLabel} changes`}
           aria-modal="true"
           className="v2-settings-confirm"
           role="alertdialog"
         >
           <h2>Discard unsaved changes?</h2>
-          <p>Your unsaved account changes will be lost.</p>
+          <p>Your unsaved {dirtyLabel} changes will be lost.</p>
           <div>
             <UiV2Button onClick={() => setDiscardIntent(null)}>Keep editing</UiV2Button>
             <UiV2Button tone="destructive" onClick={confirmDiscard}>Discard changes</UiV2Button>
