@@ -1,4 +1,4 @@
-import { WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./manifest";
+import { WORKSPACE_PROXY_PLAN_PATH, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./manifest";
 
 /** Environments of the runs one shared Workspace serves: the newest of them, within the file bound. */
 const WORKSPACE_RUN_ENVIRONMENTS_KEPT = 24;
@@ -106,6 +106,25 @@ try:
     write(temporary / 'user_config', include + b'\n' + existing_config + b'\n')
     write(temporary / '.environment.json', environments)
     write(temporary / 'guide', data['guide'].encode('utf-8'))
+    # The VM has one proxy plan, renamed into place so that it is never absent, and only over an equal or older
+    # generation: a sub-agent of an earlier answer installs later than a newer run and must not undo its plan.
+    plan_path = pathlib.Path('${WORKSPACE_PROXY_PLAN_PATH}')
+    offered = data.get('proxyPlan')
+    publish_plan = False
+    if offered is not None:
+        current = -1
+        try:
+            fd = os.open(plan_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if stat.S_ISREG(info.st_mode) and info.st_size <= ${WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES}:
+                    held = json.loads(stream.read()).get('generation')
+                    if isinstance(held, int): current = held
+        except (AttributeError, OSError, ValueError):
+            pass  # Nothing there, or nothing readable: an offer replaces what cannot be ordered.
+        publish_plan = offered['generation'] >= current
+    if publish_plan:
+        write(temporary / '.proxy-plan.json', json.dumps({'version': 1, **offered}, ensure_ascii=False).encode('utf-8'))
     for name in ['ssh', 'files']:
         remove(managed / name)
         os.replace(temporary / name, managed / name)
@@ -116,6 +135,7 @@ try:
         os.replace(temporary / name, managed / name)
     os.replace(temporary / 'user_config', config_path)
     os.replace(temporary / 'guide', root / 'SECRETS.md')
+    if publish_plan: os.replace(temporary / '.proxy-plan.json', plan_path)
 except BaseException:
     sys.exit(1)
 finally:
