@@ -78,12 +78,12 @@ describe("the method", () => {
     expect(text).toContain("shop.example");
   });
 
-  it("ends every brief with the source classes, the finding's form, and a named site's CAPTCHA going to the user", () => {
+  it("ends every brief with the source classes, the finding's form, and one handoff before leaving an unreachable site", () => {
     const footer = researcherMethodFooter(plan);
     expect(footer).toContain("verbatim quote");
-    expect(footer).toContain("browser_handoff");
-    expect(footer).toContain("never skip");
-    expect(footer).not.toMatch(/skip (?:it|the site) if/iu);
+    expect(footer).toContain("CAPTCHA or asks to sign in, call browser_handoff once");
+    expect(footer).toContain("if nobody comes, record it as unreachable with its reason and go on");
+    expect(footer).not.toContain("never skip");
     expect(researcherBrief("Cover it.", plan)).toBe(`Cover it.\n\n${footer}`);
     expect(researcherBrief("x".repeat(RUN_FOLLOWUP_MAX_CHARS), plan)).toBeNull();
   });
