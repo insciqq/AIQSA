@@ -44,6 +44,9 @@ export type WebFetchOptions = Readonly<{
    */
   maxBytesFor?(contentType: string | null): number;
   signal?: AbortSignal;
+  /** Before a direct redirect hop: null keeps it direct, a response hands off the rest of the read.
+   * The caller owns routing; continuation options retain the deadline and remaining redirect allowance. */
+  redirectRoute?(url: string, options: WebFetchOptions): Promise<WebFetchResponse | null>;
   /** Test seams of the pinned transport; never a policy override. */
   dispatch?: McpSafeFetchOptions["dispatch"];
   lookupHostname?: McpSafeFetchOptions["lookupHostname"];
@@ -172,6 +175,21 @@ async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHop
       current.hash = "";
       const refusal = webFetchUrlRefusal(current);
       if (refusal) throw new WebFetchError(refusal, { dispatched });
+      if (!proxy && redirects > 0 && options.redirectRoute) {
+        signal.throwIfAborted();
+        const routed = await new Promise<WebFetchResponse | null>((resolve, reject) => {
+          const aborted = () => reject(signal.reason);
+          signal.addEventListener("abort", aborted, { once: true });
+          Promise.resolve().then(() => options.redirectRoute!(current.href, {
+            ...options, redirectRoute: undefined, signal,
+            limits: { ...limits, maxRedirects: limits.maxRedirects - redirects }
+          })).then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+        });
+        if (routed !== null) {
+          if (!routed) throw new WebFetchError("fetch_network_error", { dispatched });
+          return routed;
+        }
+      }
       try {
         response = proxy ? await fetchProxyHop(current, proxy,
           { accept: ACCEPT, "accept-encoding": "gzip, deflate, br", "user-agent": WEB_FETCH_USER_AGENT }, signal)
@@ -232,6 +250,9 @@ async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHop
     if (deadline.signal.aborted && !(options.signal?.aborted)) throw new WebFetchError(proxy ? "proxy_timeout" : "fetch_timeout", { dispatched: true });
     if (proxy && !options.signal?.aborted && !(error instanceof WebFetchError)) {
       throw new WebFetchError("proxy_connect_failed", { dispatched });
+    }
+    if (dispatched && error instanceof WebFetchError && !error.dispatched) {
+      throw new WebFetchError(error.code, { dispatched, httpStatus: error.httpStatus });
     }
     throw error;
   } finally {
