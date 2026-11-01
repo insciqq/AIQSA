@@ -31,9 +31,12 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * Research of one run (operator decisions 2026-11-01): a thin state over the
  * ordinary loop, which ends in an ordinary answer, never a parallel process.
  *
- * A run is researching from its `start_research` call on. The call is the record
- * of that: an approval continuation finds it in the turn's items, and any other
- * later turn is an ordinary one, so nothing is ever replayed after a restart.
+ * A run is researching from the completed response that holds its
+ * `start_research` call, before any of that response's calls is dispatched: calls
+ * of one batch run at once, so a researcher beside it never starts outside the
+ * method. A start the batch then refused gives that back. The call is the record:
+ * an approval continuation finds it in the turn's items, and any other later turn
+ * is an ordinary one, so nothing is ever replayed after a restart.
  *
  * How the server sees a draft, and how it reaches the user. The model hands the
  * report in through a reserved call, whose arguments are never streamed, so the
@@ -48,7 +51,10 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * The call is reserved outside the budgets while research runs, so past the tool
  * time the loop offers it alone, once. A draft in hand means no paid round is
  * spent on tool-free text: the turn ends with that draft and a note. Whatever ends
- * the run, what it held reaches the answer (Answer first).
+ * the run, what it held reaches the answer (Answer first): the report as soon as the
+ * response that holds it completed, before any record of it, and with no report the
+ * text of the provider's last attempt. A delivered follow-up makes the report in hand
+ * no longer the answer until the model has read it, and it stays only for recovery.
  */
 export type ResearchEngineDeps = Readonly<{
   /** The named gates; absent, the ones the product ships (`RESEARCH_GATES`). */
@@ -96,8 +102,15 @@ export type RunResearch = ReturnType<typeof createRunResearch>;
 export function createRunResearch(input: RunResearchInput) {
   let plan: ResearchPlan | null = null;
   let accepted: Readonly<{ draft: ResearchDraft; notes: readonly string[] }> | null = null;
+  /** The report that stands: the latest one handed in since the last delivered follow-up. */
   let lastDraft: ResearchDraft | null = null;
+  /** The report a delivered follow-up superseded: what a run that fails or says nothing more still has to show. */
+  let supersededDraft: ResearchDraft | null = null;
+  /** What to give back if the batch refuses the start this response established research with. */
+  let unconfirmedStart: Readonly<{ draft: ResearchDraft | null }> | null = null;
   let lastHeld = "";
+  /** What the provider's current attempt streamed while research runs. */
+  let attemptText = "";
   let checking = false;
   let asked = false;
   let textDrafts = 0;
@@ -151,6 +164,7 @@ export function createRunResearch(input: RunResearchInput) {
       const decoded = decodeResearchPlan(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_plan_invalid", decoded.message);
       plan = decoded.value;
+      unconfirmedStart = null;
       const entry = planActivityEntry({ callId: persistedToolCallId, runId: input.runId, update: researchPlanUpdate(plan) });
       if (entry) await input.onPlan(entry);
       return resultOf(call, { method: researchMethodText(plan), status: "started" });
@@ -194,8 +208,47 @@ export function createRunResearch(input: RunResearchInput) {
     outstanding: () => plan !== null && accepted === null && !checking,
     /** The round's text stays out of the answer. */
     holding: () => plan !== null,
+    heldToken(delta: string): void {
+      attemptText += delta;
+    },
+    /** The provider's attempt failed and is sent again, so what it streamed is no one's. */
+    discardAttempt(): void {
+      attemptText = "";
+    },
     roundText(text: string): void {
+      attemptText = "";
       if (plan !== null && text.trim()) lastHeld = text;
+    },
+
+    /**
+     * A provider response completed, before any record of it is written or any of its calls sent: research starts here
+     * for all of them at once, and a report it holds is the run's whatever happens next. `calls` are all it made, `runnable`
+     * those that may run: a call in a round closed to it starts nothing, but its report is still the provider's complete text.
+     */
+    responseCompleted(response: Readonly<{ calls: readonly ModelToolCall[]; runnable: readonly ModelToolCall[] }>): void {
+      if (!plan) {
+        for (const call of response.runnable) {
+          if (call.name !== START_RESEARCH_TOOL_NAME) continue;
+          const decoded = decodeResearchPlan(call.arguments);
+          if (!decoded.ok) continue;
+          unconfirmedStart = { draft: lastDraft };
+          plan = decoded.value;
+          break;
+        }
+      }
+      if (!plan) return;
+      for (const call of response.calls) {
+        if (call.name !== SUBMIT_RESEARCH_DRAFT_TOOL_NAME) continue;
+        const decoded = decodeResearchDraft(call.arguments);
+        if (decoded.ok) lastDraft = decoded.value;
+      }
+    },
+    /** The batch ended: a start it refused before running (out of tool time, a spent budget) never started research. */
+    batchEnded(): void {
+      if (!unconfirmedStart) return;
+      lastDraft = unconfirmedStart.draft;
+      unconfirmedStart = null;
+      plan = null;
     },
 
     /**
@@ -260,9 +313,16 @@ export function createRunResearch(input: RunResearchInput) {
       return !isAccepted() && word ? server(`${word} Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the whole report.`) : null;
     },
 
-    /** A follow-up that arrived reopens the answer: the model reads it, and what it hands in next is checked again. */
+    /**
+     * A follow-up that arrived reopens the answer: the model reads it, and what it hands in next is checked again. The
+     * report so far stops being the answer, or tools closed by time would publish it unread, and the draft call is owed
+     * again. Each delivery buys one response at most, follow-ups are bounded and the turn's deadline still ends it.
+     */
     followupDelivered(): void {
+      supersededDraft = accepted?.draft ?? lastDraft ?? supersededDraft;
       accepted = null;
+      lastDraft = null;
+      input.rearmReservedCall();
     },
 
     /**
@@ -273,14 +333,22 @@ export function createRunResearch(input: RunResearchInput) {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
       if (!plan || waiting) return null;
       if (lastDraft) return researchAnswerText(lastDraft.report, [note("unresolved", lastDraft)]);
+      if (supersededDraft) return researchAnswerText(supersededDraft.report, [note("followup_not_applied", supersededDraft)]);
       return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
     },
 
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */
     afterEnding(reason: "failed" | "stopped" | "timed_out"): string | null {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
-      if (lastDraft) return researchAnswerText(lastDraft.report, [note(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed", lastDraft)]);
-      return reason !== "stopped" && lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
+      const report = lastDraft ?? supersededDraft;
+      if (report) {
+        return researchAnswerText(report.report, [note(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed", report),
+          ...lastDraft ? [] : [note("followup_not_applied", report)]]);
+      }
+      if (reason === "stopped") return null;
+      // The longer text says more: narration after a whole report written as a message must not replace it.
+      if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote("incomplete", attemptText)]);
+      return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
     },
 
     /** An approval continuation goes on with the research its turn started; every other later turn is an ordinary one. */

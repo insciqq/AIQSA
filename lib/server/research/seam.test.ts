@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
 import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunExecutionInput } from "../engine/execution";
 import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
@@ -33,11 +34,11 @@ function scripted(steps: readonly Step[]) {
       const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
       step.onCall?.();
       options.signal?.throwIfAborted();
+      if (step.text) yield { data: { delta: step.text }, type: "token" };
       if (step.hang) {
         await new Promise((_resolve, reject) => options.signal?.addEventListener("abort", () => reject(options.signal?.reason as Error), { once: true }));
       }
-      if (step.fail) throw Object.assign(new Error("rejected"), { code: "provider_request_rejected" });
-      if (step.text) yield { data: { delta: step.text }, type: "token" };
+      if (step.fail) throw Object.assign(new Error("rejected"), { code: "provider_response_not_retryable" });
       return { finalProviderResponsePreview: {}, finalText: step.text ?? "", toolCalls: [...(step.calls ?? [])],
         usage: { inputTokens: 100, outputTokens: 10 } };
     }
@@ -550,6 +551,182 @@ describe("the verifier's needs", () => {
     await run(main.adapter, memory).text();
     expect(outcome).toEqual({ code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" });
     expect(memory.published()).toContain("Not checked: the chat is busy.");
+  });
+});
+
+describe("review findings", () => {
+  const lastSaved = (repo: ReturnType<typeof repository>) => (repo.appendAssistantText.mock.calls.at(-1) as unknown[] | undefined)?.[1];
+
+  it("publishes a report the provider returned whole when recording its call fails, and checks nothing", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const spy = vi.fn(async () => ({ kind: "pass" as const }));
+      const main = scripted([{ calls: [start()] }, { calls: [submit()] }]);
+      const memory = engineOf({ gates: [gate("spy", spy)] });
+      vi.mocked(memory.deps.transcripts.append).mockImplementation(async (_scope, _from, items) => {
+        if (items.some((item) => item.kind === "tool_call" && item.name === SUBMIT_RESEARCH_DRAFT_TOOL_NAME)) throw new Error("database down");
+        memory.appended.push(...items);
+      });
+      const repo = repository();
+      const finished = events(run(main.adapter, memory, {}, repo));
+      await vi.advanceTimersByTimeAsync(5_000);
+      const seen = await finished;
+      expect(spy).not.toHaveBeenCalled();
+      expect(memory.toolCalls.begin).not.toHaveBeenCalledWith(expect.objectContaining({ toolName: SUBMIT_RESEARCH_DRAFT_TOOL_NAME }));
+      const shown = `${REPORT}\n\n---\n\n*${researchNote("run_failed", REPORT)}*`;
+      expect(tokens(seen).at(-1)).toBe(shown);
+      expect(repo.failRun).toHaveBeenCalledTimes(1);
+      expect(lastSaved(repo)).toBe(shown);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a researcher beside a slow start_research in the method: foreground, with the brief, whatever order they record in", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const main = scripted([
+      { calls: [start(), { arguments: { background: true, message: "Cover it.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { text: "Outcome: done\nreport" },
+      { calls: [submit()] }
+    ]);
+    const memory = engineOf({});
+    const begin = vi.mocked(memory.toolCalls.begin);
+    const original = begin.getMockImplementation()!;
+    begin.mockImplementation(async (input) => {
+      if (input.toolName === START_RESEARCH_TOOL_NAME) await new Promise((resolve) => setTimeout(resolve, 20));
+      return original(input);
+    });
+    await run(main.adapter, memory, { subagents: { background } }).text();
+    expect(background.turns).toEqual([]);
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "lab" }));
+    expect(JSON.stringify(main.requests[1]!.history)).toContain("# Research method (from the server)");
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("does not start research for a start the batch refused, and what follows is an ordinary answer", async () => {
+    let clock = 0;
+    const main = scripted([{ calls: [start()], onCall: () => { clock = 55 * 60_000; } }, { text: "Answered without research." }]);
+    const memory = engineOf({}, { now: () => clock });
+    const seen = await events(run(main.adapter, memory));
+    expect(tokens(seen)).toEqual(["Answered without research."]);
+    expect(memory.published()).toBe("Answered without research.");
+  });
+
+  it("keeps the last attempt's withheld text with a note when the provider fails for good", async () => {
+    const main = scripted([{ calls: [start()] }, { fail: true, text: "# Partial report" }]);
+    const memory = engineOf({});
+    const repo = repository();
+    const seen = await events(run(main.adapter, memory, {}, repo));
+    const shown = `# Partial report\n\n---\n\n*${researchNote("incomplete", "report")}*`;
+    expect(tokens(seen).at(-1)).toBe(shown);
+    expect(lastSaved(repo)).toBe(shown);
+    expect(repo.failRun).toHaveBeenCalledTimes(1);
+    expect(memory.published()).toBeNull();
+  });
+
+  it("keeps the last attempt's withheld text with a note at the turn's deadline", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const main = scripted([{ calls: [start()] }, { hang: true, text: "# Hanging report" }]);
+      const repo = repository();
+      const finished = run(main.adapter, engineOf({}), {}, repo).text();
+      await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
+      await finished;
+      expect(lastSaved(repo)).toBe(`# Hanging report\n\n---\n\n*${researchNote("incomplete", "report")}*`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops what a retried attempt streamed, so only the last attempt's text is kept", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const main = scripted([{ calls: [start()] }, { text: "DROPPED ATTEMPT" }, { fail: true, text: "Kept attempt" }]);
+      const memory = engineOf({});
+      let opened = 0;
+      memory.deps = { ...memory.deps, faults: () => ({ take: (fault) => fault === "stream_drop_once" && ++opened === 2 }) };
+      const repo = repository();
+      const finished = run(main.adapter, memory, {}, repo).text();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await finished;
+      expect(main.requests).toHaveLength(3);
+      expect(lastSaved(repo)).toBe(`Kept attempt\n\n---\n\n*${researchNote("incomplete", "report")}*`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a submitted report over later narration when the provider fails", async () => {
+    const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { fail: true, text: "Let me look at one more thing and also go on writing for a good long while." }]);
+    const memory = engineOf({ gates: [gate("gap", async () => ({ kind: "send_back", message: "Again." }))] });
+    const repo = repository();
+    await run(main.adapter, memory, {}, repo).text();
+    expect(lastSaved(repo)).toBe(`${REPORT}\n\n---\n\n*${researchNote("run_failed", REPORT)}*`);
+  });
+
+  /** A report in the reserved round past the tool time, then a user correction delivered at its end. */
+  function lateFollowup(after: readonly Step[]) {
+    let clock = 0;
+    const main = scripted([
+      { calls: [start()] },
+      { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-late", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
+      { calls: [submit("call-1")] },
+      ...after
+    ]);
+    let attempts = 0;
+    let handed = false;
+    const followups = {
+      close: vi.fn(async () => true),
+      deliver: vi.fn(async () => true),
+      load: vi.fn(async () => {
+        const due = !handed && attempts === 1;
+        if (due) handed = true;
+        return { entries: due ? [{ delivery: "accepted" as const, id: "f1", origin: "user" as const, text: "Correction: the budget is 500." }] : [], revision: 1 };
+      })
+    };
+    const memory = engineOf({ gates: [gate("count", async () => { attempts += 1; return { kind: "pass" }; })] }, { now: () => clock });
+    const repo = repository();
+    return { main, memory, response: () => run(main.adapter, memory, { prepared: { ...prepared(), followupAdmission: {} as never } }, { ...repo, followups } as never), repo };
+  }
+
+  it("lets the model read a follow-up delivered after the tool time, and publishes what it hands in then", async () => {
+    const late = lateFollowup([{ calls: [submit("call-2", { ...DRAFT, report: "Within 500." })] }]);
+    await late.response().text();
+    expect(late.main.requests).toHaveLength(4);
+    expect(JSON.stringify(late.main.requests[3]!.history)).toContain("Correction: the budget is 500.");
+    expect(late.main.requests[3]!.history?.at(-1)).toMatchObject({ text: expect.stringContaining(SUBMIT_RESEARCH_DRAFT_TOOL_NAME), type: "user" });
+    expect(late.memory.published()).toBe("Within 500.");
+  });
+
+  it("takes the model's message as the answer once it has read the follow-up", async () => {
+    const late = lateFollowup([{ text: "Within 500, as a message." }]);
+    await late.response().text();
+    expect(late.main.requests).toHaveLength(4);
+    expect(late.memory.published()).toContain("Within 500, as a message.");
+    expect(late.memory.published()).not.toContain(REPORT);
+  });
+
+  it("shows the earlier report with a note when the model says nothing more after a follow-up, without looping", async () => {
+    const late = lateFollowup([{ calls: [{ arguments: { plan: [{ status: "pending", step: "y" }] }, id: "call-other", name: "update_plan" }] }]);
+    await late.response().text();
+    // The reserved round, a tool-free one, and the one that asks for the answer: then it ends.
+    expect(late.main.requests.length).toBeLessThanOrEqual(6);
+    expect(late.memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("followup_not_applied", REPORT)}*`);
+  });
+
+  it("recovers the earlier report at the hard deadline when the model never answers the follow-up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const late = lateFollowup([{ hang: true }]);
+      const finished = late.response().text();
+      await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
+      await finished;
+      expect(late.main.requests).toHaveLength(4);
+      expect(late.repo.failRun).toHaveBeenCalledTimes(1);
+      expect(lastSaved(late.repo)).toBe(`${REPORT}\n\n---\n\n*${researchNote("time_out", REPORT)}*\n\n*${researchNote("followup_not_applied", REPORT)}*`);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

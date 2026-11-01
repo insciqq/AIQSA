@@ -51,6 +51,8 @@ export type AgentLoopPorts = Readonly<{
   draft?: Readonly<{
     /** Asked before each round: the answer is taken, so no model round follows. A delivered follow-up gives it back. */
     answerTaken(input: Readonly<{ toolChoice: LoopToolChoice }>): boolean;
+    /** A response completed, before any record of it is written or any of its calls sent. */
+    responseCompleted(input: Readonly<{ calls: readonly ModelToolCall[]; runnable: readonly ModelToolCall[] }>): void;
     /** A response ended without calls that may run: what to send the model back with, or null when the turn may end. */
     responseEnded(input: Readonly<{ round: number; text: string; toolsClosed: boolean }>): Promise<TranscriptUserItem | null>;
   }>;
@@ -144,6 +146,13 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
   const approvals: string[] = [];
   const ended = (round: number): AgentLoopOutcome =>
     approvals.length > 0 ? { approvals, kind: "approval", rounds: round } : { kind: "answered", rounds: round };
+  /** Delivered follow-ups start the answer over. A held draft owes the model one more offer of its reserved call to act on them. */
+  const startOver = () => {
+    answerText = "";
+    answerNow = null;
+    toolsAllowed = true;
+    if (ports.draft) reservedOffered = false;
+  };
   for (let round = 1; ; round += 1) {
     ports.signal.throwIfAborted();
     const timeLeft = ports.toolTimeLeft();
@@ -159,9 +168,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       const followups = await settleFollowups(ports);
       if (followups.length === 0) return ended(round - 1);
       await ports.append(followups);
-      answerText = "";
-      answerNow = null;
-      toolsAllowed = true;
+      startOver();
       continue;
     }
     const asking = answerNow === "due" && toolChoice === "none";
@@ -176,6 +183,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     const calls = distinctCalls(result.toolCalls);
     const items = ports.responseItems(result);
     const runnable = toolChoice === "none" ? [] : reserved ? calls.filter((call) => call.name === reserved.name) : calls;
+    ports.draft?.responseCompleted({ calls, runnable });
     if (runnable.length > 0) {
       await ports.appendCalls(items);
     } else {
@@ -206,9 +214,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
         return callsOnly && approvals.length === 0 && !answerText.trim() && !ports.draft?.answerTaken({ toolChoice }) ? { kind: "empty", rounds: round } : ended(round);
       }
       await ports.append(followups);
-      answerText = "";
-      answerNow = null;
-      toolsAllowed = true;
+      startOver();
       continue;
     }
     // A reserved round whose response made only other calls answers without tools next.
@@ -221,9 +227,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       const followups = await settleFollowups(ports);
       if (followups.length === 0) return ended(round);
       await ports.append(followups);
-      answerText = "";
-      answerNow = null;
-      toolsAllowed = true;
+      startOver();
       continue;
     }
     // A spent budget, or a batch of which nothing ran, is answered without tools; a batch of only correctable
@@ -236,9 +240,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     const followups = await ports.deliverFollowups();
     if (followups.length > 0) {
       await ports.append(followups);
-      answerText = "";
-      answerNow = null;
-      toolsAllowed = true;
+      startOver();
     }
   }
 }

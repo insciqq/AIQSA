@@ -110,6 +110,6 @@ export const submitResearchDraftTool: RunTool = {
 
 /** The ephemeral last provider message of a round that offers only the reserved draft. */
 export function researchDraftReservedInstruction(): string {
-  return `The time for research is up. Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} now with the whole report from what you have, naming in it ` +
-    "what could not be checked, and call no other tool.";
+  return `The time for research is up. Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} now with the whole report from what you have, taking in ` +
+    "anything the user just wrote and naming what could not be checked, and call no other tool.";
 }
