@@ -502,12 +502,12 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
               const from = mailboxWriter(entry.authorName);
               return text ? [{ createdAt: entry.createdAt.toISOString(),
                 delivery: entry.deliveredAt ? "delivered" : isActiveSubagentState(turn.state) ? "accepted" : "undelivered",
-                ...(from ? { from } : {}),
+                ...(entry.origin === "user" ? { user: true as const } : from ? { from } : {}),
                 ...(entry.origin === "subagent_question" ? { question: true as const } : {}), text }] : [];
             });
           const messages = [...received, ...sentMessages(turnCalls, visible.thread.parentThread?.name ?? MAIN_AGENT_NAME)]
             .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-            .slice(0, SUBAGENT_VIEW_LIMITS.messagesPerTurn);
+            .slice(-SUBAGENT_VIEW_LIMITS.messagesPerTurn);
           const toolActivity = host && normalizedRequest !== undefined ? summarizeMessageRunToolActivity({
             errorPayload: host.errorPayload, normalizedRequest, status: host.status, toolCalls: turnCalls, userId: input.userId
           }, input.userId) : null;

@@ -28,6 +28,12 @@ import {
   lockChatSubagentAdmission
 } from "./store";
 import { createSubagentViews } from "./views";
+import { createSubagentUserMessageHandler } from "./userMessageHandler";
+import type { AuthConfig } from "../../auth/config";
+import { loadChatExportSource, chatExportChatSelect } from "../../chats/exportChat";
+import { readGuardAuthority } from "../../mcp/guardAuthority";
+import { runFollowupsAllowCompletion, runFollowupSelect } from "../prismaRepositoryFollowups";
+import { verifiedFollowups } from "../followupProvenance";
 
 /**
  * Background sub-agent runs on a disposable database: admission races, the
@@ -241,6 +247,69 @@ describe("background sub-agent runs on PostgreSQL", () => {
     await transcripts.append(written, 1, [message], read);
     expect((await prisma.runFollowup.findFirstOrThrow({ where: { modelRunId: f.main.runId, nonce: "m-1" } })).deliveredAt).not.toBeNull();
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it.each(["foreground", "background"] as const)("keeps direct user messages private to their %s mailbox and refuses cross-user writes", async (mode) => fixture(async (f) => {
+    const thread = await f.thread("direct");
+    let turnId: string, runId: string;
+    if (mode === "background") {
+      const admitted = await store.admit(admission(f, thread));
+      if (admitted.kind !== "admitted") throw new Error("not admitted");
+      turnId = admitted.turnId;
+      runId = admitted.runId;
+    } else {
+      const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode, modelId: "fake-qsa", parentRunId: f.main.runId,
+        parentToolCallId: thread.callId, provider: "fake", state: "running", threadId: thread.threadId, userId: f.userId } });
+      turnId = turn.id;
+      runId = f.main.runId;
+    }
+    const background = control().control;
+    const handler = (actor: string) => createSubagentUserMessageHandler({ control: background, views,
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.test", configured: true }) as unknown as AuthConfig,
+      resolveAuth: async () => ({ expiresAt: new Date(), id: "session", userId: actor,
+        user: { displayName: "Synthetic owner", email: null, id: actor, role: "admin", status: "active" } }) });
+    const text = "Only this sub-agent may buy the synthetic item.";
+    const send = (actor: string, target = thread.threadId) => handler(actor)(new Request("https://aiqsa.test/api/messages", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nonce: "direct", text, turnId })
+    }), { params: { chatId: f.chatId, threadId: target } });
+    const other = await send(f.otherId), missing = await send(f.userId, "missing-thread");
+    expect([other.status, await other.json()]).toEqual([missing.status, await missing.json()]);
+    expect(other.status).toBe(404);
+    expect(await prisma.runFollowup.count({ where: { modelRunId: runId } })).toBe(0);
+    expect((await send(f.userId)).status).toBe(202);
+    expect((await send(f.userId)).status).toBe(202);
+    const rows = await prisma.runFollowup.findMany({ where: { modelRunId: runId } });
+    expect(rows).toHaveLength(1);
+    const receipt = rows[0]!;
+    expect(receipt).toMatchObject({ authorUserId: f.userId, deliveredAt: null, origin: "user", subagentTurnId: turnId });
+    expect(receipt.ordinal).toBeGreaterThan(RUN_FOLLOWUP_REVISION_MAX);
+    const unread = await createSubagentThreadStore(prisma).unreadMessages({ chatId: f.chatId, runIds: [runId], threadId: thread.threadId, userId: f.userId });
+    expect(unread).toEqual([{ nonce: "user:direct", origin: "user", text }]);
+    expect(decodeSubagentThreadView(await views.threadView({ chatId: f.chatId, threadId: thread.threadId, userId: f.userId }))?.turns[0]?.messages)
+      .toMatchObject([{ delivery: "accepted", text, user: true }]);
+    expect((await followups.load({ runId: f.main.runId, userId: f.userId }))?.entries).toEqual([]);
+    expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: runId }, select: { ...runFollowupSelect, followupRevision: true } }))
+      .toMatchObject({ followupRevision: 0, followups: [] });
+    const context = await repository.loadConversationContextForExpectedLeaf(f.chatId, f.userId, f.main.assistantMessageId);
+    expect(JSON.stringify(context)).not.toContain(text);
+    const chat = await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId }, select: chatExportChatSelect });
+    expect(JSON.stringify(await loadChatExportSource(prisma, chat))).not.toContain(text);
+    expect(await verifiedFollowups(prisma, { chatId: f.chatId, userId: f.userId,
+      references: [{ answerId: f.main.assistantMessageId, id: receipt.id }] })).toEqual(new Map());
+    // The transaction rechecks the active branch, after the route's view may have been read.
+    await prisma.chat.update({ where: { id: f.chatId }, data: { activeLeafMessageId: f.main.userMessageId } });
+    expect(await store.insertMailbox({ authorName: "You", chatId: f.chatId, nonce: "off-branch", origin: "user", text, turnId, userId: f.userId })).toBe("closed");
+    await prisma.chat.update({ where: { id: f.chatId }, data: { activeLeafMessageId: f.main.assistantMessageId } });
+    expect(await prisma.$transaction((tx) => runFollowupsAllowCompletion(tx, runId))).toBe(true);
+    await expect(prisma.runFollowup.create({ data: { authorName: "You", chatId: f.chatId, modelRunId: runId, nonce: "bad-position",
+      ordinal: 1, origin: "user", subagentTurnId: turnId, text } })).rejects.toThrow();
+    // Once delivered a row stays delivered (`run_followup_history_immutable`), so this comes after the unread checks.
+    await prisma.runFollowup.update({ where: { id: receipt.id }, data: { deliveredAt: new Date() } });
+    expect(await readGuardAuthority(prisma, { runId: f.main.runId, userId: f.userId,
+      admission: { version: 2, plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, messages: [] } }))
+      .toEqual({ ok: true, messages: [] });
+    await prisma.modelRun.update({ data: { followupClosedAt: new Date(), followupRevision: 1 }, where: { id: runId } });
+    await expect(prisma.modelRun.update({ data: { status: "complete" }, where: { id: runId } })).resolves.toMatchObject({ status: "complete" });
   }));
 
   it("lets a run complete with a mailbox message its turn never read", async () => fixture(async (f) => {

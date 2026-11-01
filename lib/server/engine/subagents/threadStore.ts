@@ -267,11 +267,11 @@ export function createSubagentThreadStore(client: StoreClient) {
       const rows = await client.runFollowup.findMany({ orderBy: [{ createdAt: "asc" }, { ordinal: "asc" }],
         select: { authorName: true, nonce: true, origin: true, text: true },
         where: { chatId: input.chatId, deliveredAt: null, modelRunId: { in: [...new Set(input.runIds)] }, ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX },
-          origin: { in: ["main_agent", "subagent_callback", "subagent_message", "subagent_question"] },
+          origin: { in: ["main_agent", "subagent_callback", "subagent_message", "subagent_question", "user"] },
           subagentTurn: { threadId: input.threadId, userId: input.userId } } });
-      return rows.flatMap((row): SubagentMessage[] => {
-        const from = mailboxWriter(row.authorName);
-        return row.origin === "user" ? [] : [{ ...(from ? { from } : {}), nonce: row.nonce, origin: row.origin, text: row.text }];
+      return rows.map((row): SubagentMessage => {
+        const from = row.origin === "user" ? undefined : mailboxWriter(row.authorName);
+        return { ...(from ? { from } : {}), nonce: row.nonce, origin: row.origin, text: row.text };
       });
     },
 

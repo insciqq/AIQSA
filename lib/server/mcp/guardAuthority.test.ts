@@ -13,13 +13,14 @@ function fixture() {
   const anchors = [{ id: "answer", branchSourceModelRunId: null as string | null, branchFollowups: null as unknown,
     assistantModelRuns: [{ id: "source-run", userId: "owner" }] }];
   const receipts = [{ id: correction.id, text: correction.text, modelRunId: "source-run", authorUserId: "owner" as string | null }];
-  const live: Array<{ text: string; authorUserId: string | null; origin?: "user" | "main_agent" | "subagent_callback" }> = [];
+  const live: Array<{ text: string; authorUserId: string | null; subagentTurnId?: string; origin?: "user" | "main_agent" | "subagent_callback" }> = [];
   const messageFindMany = vi.fn(async (query: { where: { role: string; id: { in: string[] } } }) => {
     const rows = query.where.role === "assistant" ? anchors : messages;
     return rows.filter(row => query.where.id.in.includes(row.id));
   });
-  const followupFindMany = vi.fn(async (query: { where: { modelRunId?: string; origin?: string } }) => query.where.modelRunId
-    ? live.filter((row) => query.where.origin === undefined || (row.origin ?? "user") === query.where.origin) : receipts);
+  const followupFindMany = vi.fn(async (query: { where: { modelRunId?: string; origin?: string; subagentTurnId?: null } }) => query.where.modelRunId
+    ? live.filter((row) => (query.where.origin === undefined || (row.origin ?? "user") === query.where.origin) &&
+      (query.where.subagentTurnId === undefined || !row.subagentTurnId)) : receipts);
   const db = { message: { findMany: messageFindMany }, runFollowup: { findMany: followupFindMany },
     modelRun: { findFirst: async () => ({ chatId: "chat", userMessageId: "current" }) } } as unknown as PrismaClient;
   const read = (admission: McpGuardAdmission) => readGuardAuthority(db, { admission, userId: "owner", runId: "run" });
@@ -48,7 +49,7 @@ describe("frozen guard references and provenance", () => {
     const admission: McpGuardAdmission = { version: 2, plan, messages: [{ kind: "followup", answerId: "answer", id: "correction" }] };
     expect(await f.read(admission)).toEqual({ ok: true, messages: [correction.text] });
     expect(f.followupFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
-      id: { in: ["correction"] }, authorUserId: "owner", modelRun: { userId: "owner", chat: { userId: "owner", permanentDeletionAt: null } }
+      id: { in: ["correction"] }, authorUserId: "owner", origin: "user", subagentTurnId: null, modelRun: { userId: "owner", chat: { userId: "owner", permanentDeletionAt: null } }
     } }));
     f.receipts[0].modelRunId = "unrelated-run";
     expect(await f.read(admission)).toEqual({ ok: false, code: "unavailable" });
@@ -104,4 +105,10 @@ describe("frozen guard references and provenance", () => {
     expect(guardAuthorityWindow(["x".repeat(48_000), "Send the report"])).toEqual({ ok: false, code: "too_long" });
     expect(guardAuthorityWindow(["Draft only", "x".repeat(48_000), "Send the report"])).toEqual({ ok: true, messages: ["Draft only"] });
   });
+});
+
+it("never uses a sub-agent's direct user message to authorize the main agent", async () => {
+  const f = fixture();
+  f.live.push({ authorUserId: "owner", origin: "user", subagentTurnId: "child-turn", text: "Buy this one." });
+  expect(await f.read({ version: 2, plan, messages: [] })).toEqual({ ok: true, messages: [] });
 });

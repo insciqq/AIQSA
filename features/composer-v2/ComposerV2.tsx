@@ -308,6 +308,8 @@ export type ComposerV2Props = Readonly<{
   /** Scopes transient notices without remounting the draft or its controls. */
   sessionKey?: string;
   activeRun?: boolean;
+  /** Text for an already bound agent: no capability or attachment controls. */
+  messageOnly?: boolean;
   artifactEdit?: ComposerArtifactEdit | null;
   artifactCreate?: boolean;
   artifactUnavailableReason?: string | null;
@@ -518,6 +520,7 @@ function CapabilityRow({
 export function ComposerV2({
   sessionKey = "composer",
   activeRun = false,
+  messageOnly = false,
   artifactEdit = null,
   artifactCreate = false,
   artifactUnavailableReason = null,
@@ -624,7 +627,7 @@ export function ComposerV2({
     : mcpSelection;
   const includedSkills = boundAssistant?.includedSkills ?? [];
   const artifactBlockReason = artifactCreate || artifactEdit ? artifactUnavailableReason : null;
-  const followupMode = activeRun && Boolean(onFollowup) && Boolean(runId);
+  const followupMode = messageOnly || activeRun && Boolean(onFollowup) && Boolean(runId);
   const bootstrapReason = followupMode ? disabledReason : configError
     ? "Could not load available capabilities."
     : !config
@@ -1198,7 +1201,7 @@ export function ComposerV2({
   // blocking reasons as the "+" menu, the chips and the header selectors.
   // It lives while the whole draft is its command, in the chat it opened in,
   // and never while a response runs or the field is blocked.
-  const paletteAllowed = !inputDisabled && !activeRun;
+  const paletteAllowed = !messageOnly && !inputDisabled && !activeRun;
   const paletteQuery = composerPaletteQuery(draft);
   const paletteValid = paletteQuery !== null && paletteAllowed && paletteSessionKey === sessionKey;
   if (layer === "commands" && !paletteValid) setLayer(null);
@@ -1423,7 +1426,7 @@ export function ComposerV2({
             aria-autocomplete={paletteOpen ? "list" : undefined}
             aria-controls={paletteOpen ? paletteListboxId : undefined}
             aria-expanded={paletteOpen ? true : undefined}
-            placeholder={followupMode ? "Follow up…" : artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
+            placeholder={messageOnly ? "Message this sub-agent…" : followupMode ? "Follow up…" : artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
             onChange={(event) => {
               const value = event.target.value;
               if (paletteAllowed && opensComposerPalette(draft, value)) openCommandPalette();
@@ -1441,6 +1444,7 @@ export function ComposerV2({
           />
 
           <div className="v2-composer-controls">
+            {!messageOnly ? <>
             <UiV2IconButton
               ref={plusTriggerRef}
               icon="plus"
@@ -1517,6 +1521,7 @@ export function ComposerV2({
               ) : null}
             </div>
 
+            </> : null}
             <span className="v2-composer-spacer" />
             <span className="v2-composer-run-action" data-followup={followupMode || undefined}>
               {dictationUi.control}
