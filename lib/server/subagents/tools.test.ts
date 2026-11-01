@@ -37,7 +37,7 @@ describe("sub-agent tool definitions", () => {
   });
 
   it("never offers a sub-agent nesting or a change of the user's resources, and keeps what it needs", () => {
-    for (const name of [...SUBAGENT_TOOL_NAMES, "manage_secret", "manage_skill", "save_skill", "manage_assistant", "create_artifact",
+    for (const name of [...SUBAGENT_TOOL_NAMES, "manage_proxy", "manage_secret", "manage_skill", "save_skill", "manage_assistant", "create_artifact",
       "create_scheduled_task", "manage_scheduled_task", "report_monitoring_result", "checkpoint_outputs"]) {
       expect(subagentMayUseTool(name), name).toBe(false);
     }

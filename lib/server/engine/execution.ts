@@ -29,6 +29,7 @@ import { toolCallBounds, TURN_HANDOFF_RESERVE_MS, turnSoftDeadlineMs } from "../
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
+import { MANAGE_PROXY_TOOL_NAME, manageProxyValues } from "../tools/manageProxy";
 import { MANAGE_SECRET_TOOL_NAME, manageSecretValues } from "../tools/manageSecret";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import { invalidProviderToolArguments, type ModelToolCall, type RunTool } from "../tools/types";
@@ -921,7 +922,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const batch = await runToolBatch(batchDeps, toolState, { calls, round });
             runResearch?.batchEnded();
             // A value the user had saved as a secret is not repeated in the answer, whatever the model writes (issue #52).
-            answer.mask(calls.flatMap((call) => call.name === MANAGE_SECRET_TOOL_NAME ? manageSecretValues(call.arguments) : []));
+            answer.mask(calls.flatMap((call) => call.name === MANAGE_SECRET_TOOL_NAME ? manageSecretValues(call.arguments)
+              : call.name === MANAGE_PROXY_TOOL_NAME ? manageProxyValues(call.arguments) : []));
             if (batch.approvals.length > 0 || normalizedRequest.mcpApproval?.guard) await emitApprovalCards();
             return batch;
           },

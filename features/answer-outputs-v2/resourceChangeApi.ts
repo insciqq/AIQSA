@@ -1,3 +1,4 @@
+import { PROXY_ROUTES, type ProxyDeleteInput } from "@/lib/contracts/proxies";
 import { decodeWorkspaceSecretList, type WorkspaceSecretMutation } from "@/lib/contracts/workspaceSecrets";
 
 /**
@@ -38,4 +39,18 @@ export async function readSecretState(secretId: string, versionId: string, signa
 export async function deleteSecretVersion(secretId: string, versionId: string): Promise<void> {
   const mutation: WorkspaceSecretMutation = { action: "delete", expectedVersionId: versionId, id: secretId };
   await request("/api/me/workspace/secrets", { body: JSON.stringify(mutation), headers: { "content-type": "application/json" }, method: "POST" });
+}
+
+/** Whether the user's proxy still has the version a card names. */
+export async function readProxyState(proxyId: string, proxyVersion: number, signal?: AbortSignal): Promise<SecretState> {
+  const body = await request(PROXY_ROUTES.personal, { signal });
+  if (!record(body) || !Array.isArray(body.proxies)) throw new ResourceChangeApiError(null, 200);
+  const proxy = body.proxies.find((entry: unknown) => record(entry) && entry.id === proxyId) as Record<string, unknown> | undefined;
+  return !proxy ? "missing" : proxy.version === proxyVersion ? "current" : "changed";
+}
+
+/** Deletes the proxy only while it still has that version; otherwise the route answers `proxy_conflict`, or `proxy_not_found` once it is gone. */
+export async function deleteProxyVersion(proxyId: string, proxyVersion: number): Promise<void> {
+  const guard: ProxyDeleteInput = { expectedVersion: proxyVersion };
+  await request(PROXY_ROUTES.personalItem(proxyId), { body: JSON.stringify(guard), headers: { "content-type": "application/json" }, method: "DELETE" });
 }

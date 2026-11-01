@@ -5,6 +5,7 @@ import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { admitMemorySearch } from "../memory/search/admission";
 import { createPrismaMemorySearchService } from "../memory/search/runtime";
 import { prisma } from "../prisma";
+import { createProxyRunPlanner } from "../proxies/store";
 import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { defaultSkillTools } from "../skills/defaultSkillTools";
@@ -45,6 +46,7 @@ export function defaultRunServices(storage: StorageAdapter) {
     } },
     mcp: defaultMcpRunPlan,
     mcpGuard: createMcpGuardService(prisma),
+    proxies: createProxyRunPlanner(prisma),
     providerAdmission: providerAdmissionService,
     providerRuntime: providerRuntimeResolver,
     skillTools: defaultSkillTools,
