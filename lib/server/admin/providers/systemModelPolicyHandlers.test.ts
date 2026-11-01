@@ -23,6 +23,18 @@ describe("administrator system model policy handlers", () => {
     });
     else expect(service.update).not.toHaveBeenCalled();
   });
+  it.each(["admin", "user"] as const)("guards independent research verifier writes for %s", async (role) => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session(role)) as never, service: service as never });
+    const patch = (body: object) => handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+    const response = await patch({ expectedVersion: 4, researchVerifierProviderModelId: "other", researchVerifierReasoningEffort: null });
+    expect(response.status).toBe(role === "admin" ? 200 : 403);
+    if (role !== "admin") return expect(service.update).not.toHaveBeenCalled();
+    expect(service.update).toHaveBeenCalledExactlyOnceWith({ expectedVersion: 4, researchVerifierProviderModelId: "other", researchVerifierReasoningEffort: null, userId: "user-1" });
+    expect((await patch({ expectedVersion: 4, researchVerifierProviderModelId: "other" })).status).toBe(400);
+    expect((await patch({ expectedVersion: 4, researchVerifierProviderModelId: null, researchVerifierReasoningEffort: "low" })).status).toBe(400);
+  });
   it.each(["admin", "user"] as const)("guards independent Vision writes for %s", async (role) => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
     const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session(role)) as never, service: service as never });
