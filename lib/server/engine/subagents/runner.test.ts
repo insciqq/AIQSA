@@ -20,6 +20,7 @@ import { SUBAGENT_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
+import { TRANSCRIPT_WRITE_RETRY } from "../transcriptWriter";
 import { createAgentUnknownEffects, type AgentUnknownEffects } from "../unknownEffects";
 import type { SubagentModelRoute } from "./modelRoutes";
 import { subagentRequestShape } from "./runSubagents";
@@ -524,6 +525,8 @@ describe("sub-agent runner", () => {
     const outputs = (ctx: Pick<ReturnType<typeof setup>, "appended">) => ctx.appended.flatMap((entry) => entry.items)
       .flatMap((item) => item.kind === "tool_result" ? [item.output] : []);
     const lookupCall: ModelToolCall = { arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" };
+    /** The mailbox receipts of the transcript writes that held their messages. */
+    const receipts = (ctx: Pick<ReturnType<typeof setup>, "host">) => vi.mocked(ctx.host.transcripts.append).mock.calls.flatMap((call) => call[3] ? [call[3]] : []);
 
     it("offers its tools beside whatever a custom sub-agent's groups leave, and none without the port", async () => {
       const ctx = setup([{ text: "Outcome: done\nDone." }], { messaging: fakeMessaging() });
@@ -534,7 +537,7 @@ describe("sub-agent runner", () => {
     });
 
     it("reads another agent's message at its next step, as that agent's untrusted words and never the user's speech", async () => {
-      const mailbox = { markRead: vi.fn(async () => undefined), unread: vi.fn(async () => []) };
+      const mailbox = { unread: vi.fn(async () => []) };
       const fences = createAgentUnknownEffects();
       const spoke = vi.fn();
       const ctx = setup([{ calls: [lookupCall] }, { text: "Outcome: done\nUsed it." }], { fences: { agent: (key) => ({ ...fences.agent(key), userSpoke: spoke }) },
@@ -552,11 +555,11 @@ describe("sub-agent runner", () => {
       expect(text.match(/<user_message>/gu)).toBeNull();
       expect(spoke).not.toHaveBeenCalled();
       expect(vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].followupTexts()).toEqual([]);
-      expect(mailbox.markRead).toHaveBeenCalledWith({ nonces: ["n1"], runIds: ["run"], threadId: "thread-1" });
+      expect(receipts(ctx)).toEqual([{ nonces: ["n1"], runIds: ["run"], threadId: "thread-1" }]);
     });
 
     it("reads first what an earlier turn left unread, each message once", async () => {
-      const mailbox = { markRead: vi.fn(async () => undefined), unread: vi.fn(async () => [neighbour("Left for you.")]) };
+      const mailbox = { unread: vi.fn(async () => [neighbour("Left for you.")]) };
       const ctx = setup([{ calls: [lookupCall] }, { text: "Outcome: done\nOk." }], { mailbox, messaging: fakeMessaging() });
       ctx.lookup.mockImplementationOnce(async ({ call }) => {
         await ctx.runner.deliver({ turnId: "turn-1" }, neighbour("Left for you."));
@@ -565,7 +568,49 @@ describe("sub-agent runner", () => {
       await ctx.runner.wait(await ctx.runner.start(ctx.input()));
       expect(userTexts(ctx.requests[0]!).filter((text) => text.includes("Left for you."))).toHaveLength(1);
       expect(userTexts(ctx.requests[1]!).filter((text) => text.includes("Left for you."))).toHaveLength(1);
-      expect(mailbox.markRead).toHaveBeenCalledTimes(1);
+      expect(receipts(ctx)).toHaveLength(1);
+    });
+
+    it("stamps a message only with the write that records it, so one that could not be recorded reaches the thread's next turn", async () => {
+      const mailbox = { unread: vi.fn(async () => [neighbour("Left for you.")]) };
+      const ctx = setup([{ text: "Outcome: done\nRead it." }], { mailbox, messaging: fakeMessaging() });
+      const append = vi.mocked(ctx.host.transcripts.append);
+      // Every attempt at the turn's first write fails, the message with the brief: the turn ends before it read anything.
+      for (let attempt = 0; attempt < TRANSCRIPT_WRITE_RETRY.attempts; attempt += 1) append.mockRejectedValueOnce(new Error("database_unavailable"));
+      expect(await ctx.runner.wait(await ctx.runner.start(ctx.input()))).toMatchObject({ state: "failed" });
+      expect(ctx.requests).toHaveLength(0);
+      await ctx.runner.wait(await ctx.runner.continue(ctx.input({ brief: "Again", turnId: "turn-2" })));
+      expect(userTexts(ctx.requests[0]!).filter((text) => text.includes("Left for you."))).toHaveLength(1);
+      const [, , items, read] = append.mock.calls.at(-2)!;
+      expect(items.some((item) => item.kind === "user" && item.text.includes("Left for you."))).toBe(true);
+      expect(read).toEqual({ nonces: ["n1"], runIds: ["run"], threadId: "thread-1" });
+    });
+
+    it("reads again in the thread's next turn a message read mid-turn whose write failed", async () => {
+      const mailbox = { unread: vi.fn<NonNullable<SubagentHost["mailbox"]>["unread"]>(async () => []) };
+      const ctx = setup([{ calls: [lookupCall] }, { text: "Outcome: done\nGoing on." }, { text: "Outcome: done\nRead it." }], { mailbox, messaging: fakeMessaging() });
+      const append = vi.mocked(ctx.host.transcripts.append);
+      const write = append.getMockImplementation()!;
+      let refused = 0;
+      append.mockImplementation(async (scope, from, items, read) => {
+        if (read && refused < TRANSCRIPT_WRITE_RETRY.attempts) {
+          refused += 1;
+          throw new Error("database_unavailable");
+        }
+        return write(scope, from, items, read);
+      });
+      ctx.lookup.mockImplementationOnce(async ({ call }) => {
+        await ctx.runner.deliver({ turnId: "turn-1" }, neighbour("Late news."));
+        return ok(call, "read");
+      });
+      expect(await ctx.runner.wait(await ctx.runner.start(ctx.input()))).toMatchObject({ state: "done" });
+      expect(userTexts(ctx.requests[1]!).join("\n")).toContain("Late news.");
+      // No write took its receipt, so the row is still unread, and this run's next turn of the thread does not skip it.
+      expect(refused).toBe(TRANSCRIPT_WRITE_RETRY.attempts);
+      mailbox.unread.mockResolvedValueOnce([neighbour("Late news.")]);
+      await ctx.runner.wait(await ctx.runner.continue(ctx.input({ brief: "Again", turnId: "turn-2" })));
+      expect(userTexts(ctx.requests.at(-1)!).filter((text) => text.includes("Late news."))).toHaveLength(1);
+      expect(receipts(ctx).at(-1)).toEqual({ nonces: ["n1"], runIds: ["run"], threadId: "thread-1" });
     });
 
     it("hands a foreground question back: tools close, and the turn ends blocked with its question", async () => {

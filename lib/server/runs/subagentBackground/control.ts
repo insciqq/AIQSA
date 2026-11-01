@@ -355,9 +355,9 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   }
 
   /**
-   * A message into a turn's mailbox, foreground or background, on record before anything else. Only reading it stamps it
-   * delivered (the runner does), so one whose turn never gets to read it stays unread for the thread's next turn, and an
-   * execution of this process hears of it at once, which is what ends a wait.
+   * A message into a turn's mailbox, foreground or background, on record before anything else. Only the reader's own
+   * transcript write stamps it delivered, so one whose turn never gets to read it stays unread for the thread's next turn,
+   * and an execution of this process hears of it at once, which is what ends a wait.
    */
   async function deliverToTurn(turn: SubagentTurnRecord, message: SubagentMessage & Readonly<{ origin: "main_agent" | "subagent_message" }>):
     Promise<SubagentDeliveryOutcome> {

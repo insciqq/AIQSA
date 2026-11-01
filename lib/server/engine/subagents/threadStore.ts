@@ -248,13 +248,6 @@ export function createSubagentThreadStore(client: StoreClient) {
         : row.origin === "main_agent" ? [{ nonce: row.nonce, origin: "main_agent", text: row.text }] : []);
     },
 
-    /** The receipt of messages a turn read; a row already stamped keeps its time. */
-    async markMessagesRead(input: Readonly<{ chatId: string; nonces: readonly string[]; runIds: readonly string[]; threadId: string; userId: string }>): Promise<void> {
-      await client.runFollowup.updateMany({ data: { deliveredAt: new Date() },
-        where: { chatId: input.chatId, deliveredAt: null, modelRunId: { in: [...new Set(input.runIds)] }, nonce: { in: [...input.nonces] },
-          ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX }, subagentTurn: { threadId: input.threadId, userId: input.userId } } });
-    },
-
     /** Ends an active turn with its result; a turn that already ended keeps how it ended. */
     async settle(input: SubagentTurnSettlement): Promise<boolean> {
       const result = input.result;
