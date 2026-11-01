@@ -109,6 +109,34 @@ type WorkspaceAttachmentRecord = Readonly<{
   storageKey: string;
 }>;
 
+export type WorkspaceRunProxyPlan = Readonly<{ generation: number; plan: ProxyRunPlan | null }>;
+
+/** Nesting is one level, so a chain of parents is short; the bound only keeps a damaged chain from looping. */
+const PROXY_PLAN_ADMISSION_MAX_HOPS = 8;
+
+/**
+ * A run's frozen proxies and the generation that orders them against other runs of the VM: when the plan was frozen, not
+ * when this row was made. A background sub-agent's run is created later, with its parent's request copied, so its own
+ * `createdAt` would pass off an old plan as new; its generation is the admission of the main run at the top of its chain.
+ * The database's clock on one host orders admissions across app restarts and VM stops, and two in one millisecond are
+ * equal, which only lets the later install stand.
+ */
+export async function workspaceRunProxyPlan(db: Readonly<{ modelRun: Readonly<{ findUnique: (args: never) => Promise<unknown> }> }>, runId: string): Promise<WorkspaceRunProxyPlan | null> {
+  type Row = { createdAt: Date; normalizedRequest?: unknown; subagentTurn: { parentRunId: string } | null };
+  const read = (id: string, select: Record<string, unknown>) => db.modelRun.findUnique({ select, where: { id } } as never) as Promise<Row | null>;
+  const parentage = { createdAt: true, subagentTurn: { select: { parentRunId: true } } };
+  const accepted = await read(runId, { ...parentage, normalizedRequest: true });
+  if (!accepted) return null;
+  let admission: Row = accepted;
+  for (let hop = 0; admission.subagentTurn && hop < PROXY_PLAN_ADMISSION_MAX_HOPS; hop += 1) {
+    const parent = await read(admission.subagentTurn.parentRunId, parentage);
+    if (!parent) break;
+    admission = parent;
+  }
+  const plan = (accepted.normalizedRequest as { proxies?: ProxyRunPlan } | null)?.proxies;
+  return { generation: admission.createdAt.getTime(), plan: plan && Array.isArray(plan.entries) ? plan : null };
+}
+
 export type WorkspaceExecutionBinding = Readonly<{
   assistantMessageId: string;
   chatId: string;
@@ -247,8 +275,8 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   unregisteredCommands(input: Readonly<{ runId: string }>): Promise<number>;
   attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
   personalSecrets(binding: WorkspaceExecutionBinding): Promise<readonly AcceptedWorkspaceSecret[]>;
-  /** The proxies this run froze at admission; null without any. */
-  runProxyPlan(binding: WorkspaceExecutionBinding): Promise<ProxyRunPlan | null>;
+  /** The proxies this run froze at admission and when that was (`workspaceRunProxyPlan`); null, it has no say over the VM's plan. */
+  runProxyPlan(binding: WorkspaceExecutionBinding): Promise<WorkspaceRunProxyPlan | null>;
   /**
    * MCP from guest code. Each execution initialization rotates the run's
    * bearer (fencing the previous incarnation's invocations and receipts);
@@ -692,9 +720,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async runProxyPlan(binding) {
-      const accepted = await prisma.modelRun.findUnique({ where: { id: binding.runId }, select: { normalizedRequest: true } });
-      const plan = (accepted?.normalizedRequest as { proxies?: ProxyRunPlan } | null)?.proxies;
-      return plan && Array.isArray(plan.entries) ? plan : null;
+      return workspaceRunProxyPlan(prisma, binding.runId);
     },
     async attachments(binding) {
       const accepted = await prisma.modelRun.findUnique({ where: { id: binding.runId }, select: { normalizedRequest: true } });
@@ -2002,15 +2028,16 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const runEnvironment = purpose === "execution" ? { ...code?.environment, ...browserEnvironment } : {};
           // Only an execution with internet needs them: Off denies a proxy too, so no password reaches that VM. A store that cannot
           // load them leaves every proxy unavailable, so a site that matches one fails visibly and never goes direct.
-          const proxyPlan = purpose === "execution" && binding.internetEnabled ? await input.repository.runProxyPlan(binding) : null;
-          const proxies = proxyPlan ? workspaceRunProxies(proxyPlan, await input.runProxies?.load({ plan: proxyPlan, userId: binding.userId }).catch(() => null) ??
-            { connections: [], unavailable: proxyPlan.entries.filter((entry) => entry.active).map(({ id, name }) => ({ code: PROXY_UNAVAILABLE_CODE, id, name })) }) : [];
+          const planned = purpose === "execution" && binding.internetEnabled ? await input.repository.runProxyPlan(binding) : null;
+          const frozen = planned?.plan ?? null;
+          const proxyPlan = planned ? { generation: planned.generation, proxies: frozen ? workspaceRunProxies(frozen, await input.runProxies?.load({ plan: frozen, userId: binding.userId }).catch(() => null) ??
+            { connections: [], unavailable: frozen.entries.filter((entry) => entry.active).map(({ id, name }) => ({ code: PROXY_UNAVAILABLE_CODE, id, name })) }) : [] } : null;
           // Each install rewrites the guest's one environment file, so two at once would lose a run's entry. The wait
           // for the other run touches no guest, so a cancellation here stops nothing.
           await withWorkspaceSessionExclusive(binding.sessionId, signal, () => input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId, agent: runAgent(binding),
             ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
-            ...(proxies.length > 0 ? { proxies } : {}),
+            ...(proxyPlan ? { proxyPlan } : {}),
             // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
             ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal

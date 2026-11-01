@@ -33,7 +33,7 @@ EXIT_SESSION = 7
 EXIT_USER_IN_CONTROL = 8
 _ELEMENT = {"element_not_found", "stale_element", "element_not_actionable", "not_a_select", "option_not_found"}
 _PAGE = {"invalid_url", "navigation_failed", "navigation_timeout", "wait_timeout", "timeout", "tab_not_found", "script_error"}
-_UNAVAILABLE = {"browser_unavailable", "browser_start_failed", "browser_crashed", "protocol_error", "proxy_browser_restart_required",
+_UNAVAILABLE = {"browser_unavailable", "browser_start_failed", "browser_crashed", "protocol_error", "proxy_browser_restart_pending",
                 proxy_client.UNAVAILABLE}
 #: What a shell answers when a command is missing or not executable.
 EXIT_COMMAND_NOT_RUN = 127
@@ -205,7 +205,7 @@ def _proxies_text(value: Optional[str]) -> str:
     listed = plan.public()
     names = [str(proxy["name"]).lower() for proxy in listed]
     lines = ["Proxies of this chat. Hints are advice: any of them opens any site when named. Logins and passwords, for a program that needs "
-             "its own, are in /workspace/secrets/files/aiqsa-proxies.json.", *(_listed(proxy, names) for proxy in listed)]
+             "its own, are in /workspace/secrets/.proxy-plan.json.", *(_listed(proxy, names) for proxy in listed)]
     if value:
         host = (urlsplit(value).hostname if "://" in value else value) or value
         peek = proxy_client.call("peek", {"host": host})

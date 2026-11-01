@@ -268,8 +268,8 @@ export interface WorkspaceRuntime {
     agent?: WorkspaceAgent;
     /** Server-owned values of this run (guest-code MCP bearer and relay, or why there is none), over the saved environment. */
     runEnvironment?: Readonly<Record<string, string>>;
-    /** The run's frozen proxies with their credentials, for the guest's forwarder; absent, none and no forwarder. */
-    proxies?: readonly import("./secrets/manifest").WorkspaceRunProxy[];
+    /** What the run offers the VM's proxy plan, credentials included, for the guest's forwarder; absent, it has no say. */
+    proxyPlan?: import("./secrets/manifest").WorkspaceProxyPlanDelivery;
     /**
      * A scheduled run's execution initialization: after delivery, bound the
      * guest uv cache with the fixed `BOUND_WORKSPACE_UV_CACHE` helper. Its

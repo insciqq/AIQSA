@@ -57,7 +57,7 @@ import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
-import { parseAcceptedWorkspaceSecrets, parseWorkspaceRunProxies, workspaceProxyPlanEntry, workspaceSecretEnvironment, workspaceSecretsGuide,
+import { parseAcceptedWorkspaceSecrets, parseWorkspaceProxyPlan, workspaceSecretEnvironment, workspaceSecretsGuide,
   WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
 import { workspaceAgentEnvironment, workspaceAgentId } from "../subagents/guestProtocol";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
@@ -1202,11 +1202,10 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       // Server-owned run values win over a saved variable of the same name.
       const environment = { ...workspaceSecretEnvironment(secrets),
         ...parseWorkspaceRunEnvironment(input.runEnvironment, RUNNER_GATEWAY_ORIGIN) };
-      // The newest install's proxies are the VM's, as its SSH identities and files are: the install replaces that directory,
-      // the forwarder rereads the file, and a run without proxies leaves none behind.
-      const proxies = parseWorkspaceRunProxies(input.proxies);
-      const bundle = Buffer.from(JSON.stringify({ secrets: proxies.length > 0 ? [...secrets, workspaceProxyPlanEntry(proxies)] : secrets,
-        environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
+      // The guest keeps the newest admission's plan, and the forwarder rereads the file it renames into place.
+      const proxyPlan = parseWorkspaceProxyPlan(input.proxyPlan);
+      const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId,
+        ...(proxyPlan ? { proxyPlan } : {}) }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
       const deadline = AbortSignal.timeout(90_000);
       const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
