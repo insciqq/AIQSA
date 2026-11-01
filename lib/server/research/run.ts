@@ -147,6 +147,9 @@ export const RESEARCHER_TIME_ENDED = "Its research time ended, so it was stopped
 const wordsOf = ({ assumptions, steps, understood }: ResearchPlanEdit): ResearchPlanEdit => ({ assumptions, steps, understood });
 const stepsUpdate = (plan: ResearchPlanEdit): PlanUpdate => ({ plan: plan.steps.map((step) => ({ status: "pending" as const, step })) });
 
+/** What a plan row shows: the line while scoping, the card, the user's words until the questions follow, and the plan that stands. */
+type PlanRowState = "scoping" | "stands" | "window" | "words";
+
 /** What the window's answer left for a further plan call. `words` are the user's, null where a stored result was cut before them. */
 type StandingPlan = Readonly<{ changed: boolean; releasedBy: ResearchPlanRelease; words: ResearchPlanEdit | null }>;
 
@@ -265,10 +268,14 @@ export function createRunResearch(input: RunResearchInput) {
     goal = started;
     scopingEndsAt = input.now() + RESEARCH_TIME_MS.scoping;
   };
-  /** The plan row of this run: every update replaces it (`planActivityEntry`), so a reload and a second tab show the latest. */
-  const showPlan = async (callId: string, update: PlanUpdate, researchPlan?: ThreadWorkspaceActivityEntry["researchPlan"]) => {
-    const entry = planActivityEntry({ callId, runId: input.runId, update });
-    if (entry) await input.onPlan({ ...entry, ...researchPlan ? { researchPlan } : {} });
+  /**
+   * The plan row of this run: every update replaces it (`planActivityEntry`), so a reload and a second tab show the latest. One call may
+   * show several states, and each is an update of its own: the run's event store takes an update id once, so a state sharing the
+   * call's id with the one before would be refused and the row would stay as it was.
+   */
+  const showPlan = async (callId: string, state: PlanRowState, update: PlanUpdate) => {
+    const entry = planActivityEntry({ callId: `${callId}:${state}`, runId: input.runId, update });
+    if (entry) await input.onPlan({ ...entry, ...state === "scoping" || state === "window" ? { researchPlan: { runId: researchRunId, state } } : {} });
   };
 
   /**
@@ -386,8 +393,7 @@ export function createRunResearch(input: RunResearchInput) {
       if (!researching()) startResearching(decoded.value.goal);
       unconfirmedStart = null;
       if (plan) return harnessToolError(call, "research_plan_stands", "Research already runs and its plan stands: go on with it.");
-      await showPlan(persistedToolCallId, { plan: [{ status: "in_progress", step: CYRILLIC.test(input.userMessage) ? PLANNING_LINE.ru : PLANNING_LINE.en }] },
-        { runId: researchRunId, state: "scoping" });
+      await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: CYRILLIC.test(input.userMessage) ? PLANNING_LINE.ru : PLANNING_LINE.en }] });
       // The server's fields, first so an excerpt would keep them: an approval continuation reads them back (`researchRunOf`).
       return resultOf(call, { research_run: researchRunId, status: "scoping", instructions: researchScopingInstructions() });
     }
@@ -420,7 +426,7 @@ export function createRunResearch(input: RunResearchInput) {
     const rebuilt = researchPlanFromProposal(researched, decoded.value);
     rebuildOwed = false;
     planStands(rebuilt);
-    await showPlan(execution.persistedToolCallId, researchPlanUpdate(rebuilt));
+    await showPlan(execution.persistedToolCallId, "stands", researchPlanUpdate(rebuilt));
     return planResult(call, { changed: on.changed, plan: decoded.value, releasedBy: on.releasedBy }, "rebuilt", "The plan stands with your rebuilt questions.", rebuilt);
   }
 
@@ -446,7 +452,7 @@ export function createRunResearch(input: RunResearchInput) {
         // Opened first, so the route finds the window as soon as the card shows it, and Stop may reject it while the card is written.
         const closing = ports.planWindow.open({ goal: researched, proposal: decoded.value, signal });
         closing.catch(() => undefined);
-        await showPlan(persistedToolCallId, stepsUpdate(decoded.value), { runId: researchRunId, state: "window" });
+        await showPlan(persistedToolCallId, "window", stepsUpdate(decoded.value));
         answer = await closing;
       } finally {
         windowOpen = false;
@@ -459,11 +465,11 @@ export function createRunResearch(input: RunResearchInput) {
       rebuildOwed = answer.changed;
       standing = answer.changed || fromChat ? { changed: answer.changed, releasedBy: answer.releasedBy, words: wordsOf(answer.plan) } : null;
       if (answer.changed) {
-        await showPlan(persistedToolCallId, stepsUpdate(answer.plan));
+        await showPlan(persistedToolCallId, "words", stepsUpdate(answer.plan));
         return planResult(call, answer, "released", `The user changed your plan. user_plan holds the user's own words, and they outrank yours. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} ` +
           "again now with your questions, criteria and rows rebuilt from them; no window opens, and no researcher can start until you do.", null);
       }
-      await showPlan(persistedToolCallId, researchPlanUpdate(stands));
+      await showPlan(persistedToolCallId, "stands", researchPlanUpdate(stands));
       return planResult(call, answer, "released", fromChat
         ? `The user wrote to you while the plan was on the screen. Their message comes right after this result and counts as their edit of the plan: if it changes the plan, call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} ` +
           "again with your questions rebuilt from it before you start researchers."

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES } from "../../contracts/subagents";
+import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { mergeWorkspaceActivity } from "../../domain/workspaceActivity";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
 import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunExecutionInput } from "../engine/execution";
 import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
@@ -12,6 +14,7 @@ import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
 import type { NativeRunStore } from "../engine/runStore";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
+import { workspaceActivityFingerprint } from "../runs/workspaceActivityPersistence";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
@@ -1237,7 +1240,7 @@ describe("the plan window through the real engine", () => {
   const research = { arguments: { message: "Cover the first question.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME };
   const researcherDone = { text: "Outcome: done\nclaim; link; quote; independent_tests; confirmed" };
   const planActivity = (seen: readonly ModelRunSseEvent[]) => seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity" ?
-    [event.data.payload as unknown as { items?: { text: string }[]; kind: string; researchPlan?: { runId: string; state: string } }] : []).filter((entry) => entry.kind === "plan");
+    [event.data.payload as ThreadWorkspaceActivityEntry] : []).filter((entry) => entry.kind === "plan");
   const store = (): ResearchPlanStore => ({ chatOpen: vi.fn(async () => true), closed: vi.fn(async () => undefined), held: vi.fn(async () => undefined), opened: vi.fn(async () => null),
     read: vi.fn(async () => null), rebuilt: vi.fn(async () => undefined) });
 
@@ -1333,6 +1336,82 @@ describe("the plan window through the real engine", () => {
     expect(vi.mocked(open.rows.rebuilt).mock.calls[0]![1].answer.plan).toMatchObject({ steps: saved.steps, understood: saved.understood });
     expect(planActivity(seen).at(-1)!.items?.[0]?.text).toBe("Что говорят тесты?");
     expect(open.memory.published()).toBe(REPORT);
+  });
+
+  /**
+   * The run's event store as `appendRunOutputEvents` keeps activity: an update id is one update, so the same id with other facts is
+   * refused. The engine then logs it and sends the unsaved row with no sequence, which the merge reads as older.
+   */
+  function activityStore() {
+    const saved: ThreadWorkspaceActivityEntry[] = [];
+    const prints = new Map<string, string>();
+    const appendRunOutputEvent = vi.fn(async (_runId: string, event: { data: { artifactType: string; payload: ThreadWorkspaceActivityEntry } }) => {
+      if (event.data.artifactType !== "workspace_activity") return event;
+      const entry = event.data.payload;
+      const print = workspaceActivityFingerprint(entry);
+      if (prints.has(entry.updateId!) && prints.get(entry.updateId!) !== print) throw new Error("workspace_activity_replay_invalid");
+      prints.set(entry.updateId!, print);
+      const kept = { ...entry, sequence: saved.length };
+      saved.push(kept);
+      return { ...event, data: { ...event.data, payload: kept } };
+    });
+    return { appendRunOutputEvent, saved };
+  }
+
+  const shownPlan = (entries: readonly ThreadWorkspaceActivityEntry[]) => mergeWorkspaceActivity(null, { entries })?.entries.find((entry) => entry.kind === "plan");
+
+  /** The plan rows on both ways a person reads them: live, and from what a reload folds. */
+  function expectPlanRows(seen: readonly ModelRunSseEvent[], store: ReturnType<typeof activityStore>) {
+    const live = planActivity(seen);
+    expect(new Set(live.map((entry) => entry.updateId)).size).toBe(live.length);
+    expect(live.every((entry) => entry.sequence !== undefined)).toBe(true);
+    expect(store.saved.filter((entry) => entry.kind === "plan")).toHaveLength(live.length);
+    for (const entries of [live, store.saved]) expect(shownPlan(entries)).not.toHaveProperty("researchPlan");
+    return live;
+  }
+
+  it.each([
+    ["the timer", "timer"],
+    ["the button", "start_button"],
+    ["a chat message", "chat_message"]
+  ] as const)("replaces the card with the plan that stands when %s closes the window, as an update of its own", async (_name, releasedBy) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const store = activityStore();
+      let written: "accepted" | "delivered" | null = null;
+      const followups = { close: vi.fn(async () => true), deliver: vi.fn(async () => { written = "delivered"; return true; }),
+        load: vi.fn(async () => ({ entries: written ? [{ delivery: written, id: "f1", origin: "user" as const, text: "Бюджет до 40 тысяч." }] : [], revision: 1 })) };
+      const open = await inWindow(standing, { prepared: { ...prepared({ noLimits: true }), followupAdmission: {} as never } },
+        { ...repository(), appendRunOutputEvent: store.appendRunOutputEvent, followups } as never);
+      if (releasedBy === "start_button") await open.post({ action: "start" });
+      if (releasedBy === "chat_message") {
+        await vi.advanceTimersByTimeAsync(2_500);
+        written = "accepted";
+        await vi.advanceTimersByTimeAsync(2_500);
+      }
+      if (releasedBy === "timer") await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.planWindow + 500);
+      const seen = await open.finished;
+      expect(JSON.parse(resultsOf(open.main.requests[2], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]!)).toMatchObject({ released_by: releasedBy });
+      const [scoping, window, stands, ...rest] = expectPlanRows(seen, store);
+      expect(rest).toEqual([]);
+      expect(scoping).toMatchObject({ researchPlan: { state: "scoping" } });
+      expect(window).toMatchObject({ researchPlan: { state: "window" } });
+      expect(stands).not.toHaveProperty("researchPlan");
+      expect(stands!.items?.[0]?.text).toBe("Which mattress holds up?");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives the user's words and the rebuilt plan an update each after a saved edit", async () => {
+    const store = activityStore();
+    const rebuilt = proposeCall({ questions: [{ question: "Что говорят тесты?", sites: [], source_classes: ["primary_official", "independent_tests", "owner_reviews", "action_channel"] }] }, "call-rebuilt");
+    const open = await inWindow([{ calls: [start()] }, { calls: [propose()] }, { calls: [rebuilt] }, { calls: [research] }, researcherDone, { calls: [submit()] }], FREE,
+      { ...repository(), appendRunOutputEvent: store.appendRunOutputEvent } as never);
+    await open.post({ action: "save", plan: { assumptions: [], steps: ["Только тесты"], understood: "Матрас на дачу." } });
+    const rows = expectPlanRows(await open.finished, store);
+    expect(rows.map((entry) => entry.items?.[0]?.text)).toEqual(["Составляю план перед началом исследования", proposalArguments(PLAN).steps[0], "Только тесты", "Что говорят тесты?"]);
+    expect(rows.map((entry) => entry.researchPlan?.state)).toEqual(["scoping", "window", undefined, undefined]);
   });
 
   it("takes a chat message as an edit: the window closes and the words still reach the model as a follow-up", async () => {
