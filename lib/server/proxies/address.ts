@@ -101,6 +101,11 @@ function addressRefused(address: string, host: string, port: number, environment
     classifyPersonalMcpAddress({ address, environment, localNetworkEnabled: false, url: urlOf(host, candidate) }) !== null);
 }
 
+/** Without every installation fact a public address might still be its own: a name that did not resolve just now hides one. */
+function incompleteEnvironment(environment: PersonalMcpNetworkEnvironment): boolean {
+  return environment.degraded || environment.unresolvedEndpoint === true;
+}
+
 let cachedEnvironment: { expiresAt: number; value: Promise<PersonalMcpNetworkEnvironment> } | null = null;
 
 function defaultEnvironment(): Promise<PersonalMcpNetworkEnvironment> {
@@ -109,7 +114,7 @@ function defaultEnvironment(): Promise<PersonalMcpNetworkEnvironment> {
   const building: Promise<PersonalMcpNetworkEnvironment> = buildPersonalMcpNetworkEnvironment(defaultPersonalMcpNetworkHost())
     .catch(() => degradedPersonalMcpNetworkEnvironment())
     .then((environment) => {
-      if (environment.degraded && cachedEnvironment?.value === building) {
+      if (incompleteEnvironment(environment) && cachedEnvironment?.value === building) {
         cachedEnvironment.expiresAt = Math.min(cachedEnvironment.expiresAt, Date.now() + DEGRADED_ENVIRONMENT_TTL_MS);
       }
       return environment;
@@ -179,8 +184,7 @@ export async function checkProxyAddress(
   if (records.some((record) => addressRefused(record.address, host, port, environment))) {
     return { code: "proxy_address_forbidden", ok: false };
   }
-  // Without every installation fact a public address might still be its own.
-  if (environment.degraded) return { code: "proxy_address_check_unavailable", ok: false };
+  if (incompleteEnvironment(environment)) return { code: "proxy_address_check_unavailable", ok: false };
   return { host, ok: true, pinned: { address: records[0]!.address, family: records[0]!.family }, port };
 }
 

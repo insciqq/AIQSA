@@ -67,6 +67,11 @@ export type PersonalMcpNetworkEnvironment = Readonly<{
   internalHostnamePorts: ReadonlySet<string>;
   /** Configured AIQSA endpoint hostnames denied on every port. */
   internalHostnames: ReadonlySet<string>;
+  /**
+   * A configured endpoint's name resolved to nothing just now, in any mode, so its address is missing from
+   * `internalAddressPorts`. Personal MCP tolerates this in a container; a proxy's public address check cannot.
+   */
+  unresolvedEndpoint?: boolean;
   mode: PersonalMcpNetworkMode;
   /** AIQSA's ports, denied on the shared hosts. */
   reservedPorts: ReadonlySet<number>;
@@ -387,6 +392,7 @@ export async function buildPersonalMcpNetworkEnvironment(
 ): Promise<PersonalMcpNetworkEnvironment> {
   const mode = networkMode(host);
   let degraded = false;
+  let unresolvedEndpoint = false;
   let interfaces: readonly PersonalMcpNetworkInterface[];
   try {
     interfaces = host.interfaces();
@@ -452,7 +458,10 @@ export async function buildPersonalMcpNetworkEnvironment(
     // On a host install a configured service may share the host's addresses;
     // without its address its address-and-port denial would silently vanish.
     // (In a container the Compose networks are denied whole either way.)
-    if (mode === "host" && endpoint.resolved && !endpoint.defaulted && addresses.length === 0) degraded = true;
+    if (endpoint.resolved && !endpoint.defaulted && addresses.length === 0) {
+      unresolvedEndpoint = true;
+      if (mode === "host") degraded = true;
+    }
     if (endpoint.match === "name_only") {
       internalHostnames.add(hostname);
       continue;
@@ -480,7 +489,8 @@ export async function buildPersonalMcpNetworkEnvironment(
     internalHostnames,
     mode,
     reservedPorts,
-    sharedHosts
+    sharedHosts,
+    unresolvedEndpoint
   };
 }
 
