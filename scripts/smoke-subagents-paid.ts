@@ -120,9 +120,11 @@
  *   Effort without a model is refused; omitted roles keep the stand's settings. VERIFIER_FAMILY remains available without CHECKS_MODEL.
  *   CHECKS_MODEL also grades and separately extracts structured comparisons from each saved answer; absent, evaluation says not_configured.
  *   The judge uses the rubric and extraction prompt in research-eval-support.ts. Scores require human reading: source pages are not independently fetched.
- *   Usage joins background execution runs to thread names; pooled foreground usage and missing receipts stay unknown. Minutes sum recorded turn intervals,
- *   including waits and overlapping roles, not model compute time. Judge/extraction usage is separate. Paid calls: hundreds per question plus two evaluation calls.
- *   No baseline is required. Stdout contains counts, labels and scores only; proxy values are redacted before private storage or evaluation.
+ *   Role tokens sum provider figures from transcript responses, including foreground threads; missing figures are counted, never filled in. UsageEvent
+ *   supplies the grand total and model split. Transcript totals omit retried attempts, compaction, Search and the harness judge/extraction calls;
+ *   judge/extraction usage is reported separately and is outside the chat ledger too. Minutes sum turn intervals, including waits and overlapping roles.
+ *   Private comparison files retain candidates, criteria, picks, ties and conflicting fact pairs. Stdout keeps comparison counts and the existing server check notes.
+ *   No baseline is required. Proxy values are redacted before private storage or evaluation. Paid calls: hundreds per question plus two evaluation calls.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -190,8 +192,8 @@ import {
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
   browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, SCENARIO_R_PHRASES, SUBAGENT_SCENARIO_NEEDS,
-  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchMetrics,
-  type PageReads, type RPhraseResult, type TDraftFinding,
+  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchMetrics, researchProcessFacts, researchServerNotes,
+  type PageReads, type RPhraseResult, type TDraftFinding, type TGateRow,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
@@ -203,8 +205,8 @@ import { createFetchOpenAIResponsesClient } from "../lib/server/providers/openai
 import {
   RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, configureResearchEvalRoles, createResearchArchive, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval,
   evaluateResearch, redactResearchSecrets, researchEvalOptions, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout,
-  researchRepeatability, researchRoleUsage, researchThreadRole, researchEffortConfiguration, type ResearchEvalCall, type ResearchGrade, type ResearchJob, type ResearchTiming,
-  type ResearchUsageRow, type StructuredResearchAnswer
+  researchComparisonDetails, researchRepeatability, researchRoleUsage, researchThreadRole, researchUsageByModel, researchEffortConfiguration, type ResearchEvalCall, type ResearchGrade, type ResearchJob, type ResearchTiming,
+  type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
 } from "./research-eval-support";
 
 const SECOND_MODEL_DISPLAY_NAME = "Sub-agents second model";
@@ -1542,15 +1544,21 @@ async function ensureResearchRoles(api: Api, route: { apiRoot: string }, secret:
   });
 }
 
-/** A missing execution thread cannot be recovered by guessing from a model id: foreground usage is pooled. */
+/** Thread-scoped transcript figures cover foreground agents; the paid-call ledger supplies the wider total and model split. */
 async function researchUsage(ctx: Context, chatId: string, turns: readonly TurnRow[], names: ReadonlyMap<string, readonly string[]>) {
   await settledUsage(ctx.db, [chatId]);
-  const { rows } = await ctx.db.query<ResearchUsageRow>(`SELECT u."purpose"::text AS "purpose", u."inputTokens", u."outputTokens", u."cachedInputTokens",
-    r."subagentThreadId" AS "threadId", r."id" AS "runId" FROM "UsageEvent" u JOIN "ModelRun" r ON r."id" = u."modelRunId" WHERE r."chatId" = $1`, [chatId]);
-  const main = (await ctx.db.query<ResearchTiming>(`SELECT "id" AS "runId", NULL AS "threadId", "answerStartedAt" AS "startedAt", "answerCompletedAt" AS "endedAt"
+  const { rows } = await ctx.db.query<ResearchUsageRow>(`SELECT u."purpose"::text AS "purpose", u."inputTokens", u."outputTokens", u."cachedInputTokens", u."modelId"
+    FROM "UsageEvent" u JOIN "ModelRun" r ON r."id" = u."modelRunId" WHERE r."chatId" = $1`, [chatId]);
+  const transcript = (await ctx.db.query<ResearchTranscriptRow>(`SELECT "id", "modelRunId" AS "runId", "subagentThreadId" AS "threadId", "subagentTurnId" AS "turnId",
+      "sequence", "createdAt", "kind"::text AS "kind", jsonb_build_object(
+        'origin', CASE WHEN jsonb_typeof("body"->'origin') = 'object' THEN '{}'::jsonb ELSE NULL END,
+        'outputTokens', "body"->'outputTokens', 'requestAnchor', CASE WHEN "body" ? 'requestAnchor'
+          THEN jsonb_build_object('inputTokens', "body"->'requestAnchor'->'inputTokens') ELSE NULL END) AS "body"
+    FROM "RunTranscriptItem" WHERE "chatId" = $1 ORDER BY "modelRunId", "subagentThreadId", "sequence"`, [chatId])).rows;
+  const main = (await ctx.db.query<ResearchTiming>(`SELECT NULL AS "threadId", "answerStartedAt" AS "startedAt", "answerCompletedAt" AS "endedAt"
     FROM "ModelRun" WHERE "chatId" = $1 AND "subagentTurnId" IS NULL`, [chatId])).rows;
-  return { roles: researchRoleUsage(rows, [...main, ...turns.map((turn) => ({ runId: turn.executionRunId, threadId: turn.threadId,
-    parentRunId: turn.parentRunId, startedAt: turn.startedAt, endedAt: turn.endedAt }))], names), total: usageByPurpose(rows) };
+  return { roles: researchRoleUsage(transcript, [...main, ...turns.map((turn) => ({ threadId: turn.threadId,
+    startedAt: turn.startedAt, endedAt: turn.endedAt }))], names), byModel: researchUsageByModel(rows), total: usageByPurpose(rows) };
 }
 
 async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
@@ -1570,6 +1578,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
   }
   const questions: Record<string, unknown>[] = [];
   const extracted: { job: ResearchJob; answer: StructuredResearchAnswer }[] = [];
+  const createdChats = new Map<ResearchJob, string>();
   let failed = false;
   try {
     const results = await researchPool(options.jobs, options.concurrency, async (job) => {
@@ -1582,12 +1591,14 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
       let grade = emptyEval<ResearchGrade>("no_answer");
       let extraction = emptyEval<StructuredResearchAnswer>("no_answer");
       let questionFailed = false;
-      const facts: Record<string, unknown> = { metrics: null, roles: null, tokens: null, terminal: "unknown" };
+      const facts: Record<string, unknown> = { metrics: null, roles: null, tokens: null, tokensByModel: [], terminal: "unknown",
+        timeline: [], gateTurnFacts: [], gateTurns: 0, fetchOutcomes: {}, fetchProxyReads: 0, serverNotes: [] };
       let drafts: TDraftFinding[][] = [];
       const question = SCENARIO_T_QUESTIONS.find((entry) => entry.kind === job.kind) ?? fail("research_kind_missing");
       try {
         const chat = await createScenarioChat(ctx.session.api, `Research scenario ${job.kind} ${job.repeat}`);
         chatId = chat.id;
+        createdChats.set(job, chat.id);
         run.chats.push(chat.id);
         capture = async () => {
           const answers = (await ctx.db.query<{ id: string; content: unknown }>(`SELECT r."id", m."content" FROM "ModelRun" r
@@ -1643,9 +1654,13 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chat.id, sent.runId])).rows[0] ?? null;
         const metrics = researchMetrics({ drafts, opened, researcherTurns: turns.filter((turn) => !gateThreads.has(turn.threadId)).length,
           sentBack, started: count("start_research") > 0, planWindow: researchPlanWindow(frame) });
+        const gates = (await ctx.db.query<TGateRow>(`SELECT th."name", t."reasonCode", t."state"::text AS "state", t."result"->>'report' AS "report"
+          FROM "SubagentTurn" t JOIN "SubagentThread" th ON th."id" = t."threadId"
+          WHERE t."chatId" = $1 AND th."name" ~ '^(gap-judge|verifier|skeptic)-' ORDER BY t."startedAt"`, [chat.id])).rows;
+        Object.assign(facts, researchProcessFacts({ calls, drafts, gates }));
         const usage = await researchUsage(ctx, chat.id, turns, names);
         Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
-          roles: usage.roles, planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
+          roles: usage.roles, tokensByModel: usage.byModel, planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
           searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
         questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && metrics.independentOpened === 0);
       } catch {
@@ -1660,6 +1675,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         }
       }
       const answer = [...savedAnswers.values()].join("\n\n---\n\n");
+      facts.serverNotes = researchServerNotes(answer);
       if (answer && chatId !== null) {
         grade = await evaluateResearch(judge, RESEARCH_JUDGE_PROMPT, { question: question.text, answer,
           drafts: drafts.map((draft) => draft.map((finding) => ({ claim: clean(finding.claim), quote: clean(finding.quote), sourceClass: clean(finding.sourceClass), url: clean(finding.url) }))),
@@ -1682,8 +1698,18 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
       emit({ stage: "research_question", ...summary });
     });
     failed ||= results.some((result) => result.status === "rejected");
-    const comparisons = [...new Set(options.jobs.map((job) => job.kind))].map((kind) => ({ kind, expectedRuns: options.jobs.filter((job) => job.kind === kind).length,
-      ...researchRepeatability(extracted.filter((entry) => entry.job.kind === kind).sort((a, b) => a.job.repeat - b.job.repeat).map((entry) => entry.answer)) }));
+    const comparisons = [...new Set(options.jobs.map((job) => job.kind))].map((kind) => {
+      const jobs = options.jobs.filter((job) => job.kind === kind);
+      const own = extracted.filter((entry) => entry.job.kind === kind).sort((a, b) => a.job.repeat - b.job.repeat);
+      const comparison = { kind, expectedRuns: jobs.length, ...researchRepeatability(own.map((entry) => entry.answer)), detailsSaved: false };
+      try {
+        archive.write(jobs[0], createdChats.get(jobs[0]) ?? "no-chat", "comparisons", { kind, expectedRuns: jobs.length,
+          ...researchComparisonDetails(jobs.map((job) => ({ repeat: job.repeat, chat: createdChats.get(job) ?? null,
+            answer: own.find((entry) => entry.job.repeat === job.repeat)?.answer ?? null }))) });
+        comparison.detailsSaved = true;
+      } catch { failed = true; }
+      return comparison;
+    });
     Object.assign(run.line, { questions, comparisons, questionFailures: results.filter((result) => result.status === "rejected").length });
   } finally {
     if (ownedProxy !== null) {

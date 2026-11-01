@@ -126,17 +126,19 @@ export function criteriaOverlap(a: StructuredResearchAnswer, b: StructuredResear
 }
 const dated = (date: string | null) => date !== null && /^\d{4}-\d{2}-\d{2}$/u.test(date) &&
   Number.isFinite(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date;
-/** Only explicitly dated price observations may differ over time; an undated price remains a conflict. */
+/** Prices vary by seller and observation date; other attributes must agree across sources. */
 export function conflictingFacts(a: StructuredResearchAnswer, b: StructuredResearchAnswer) {
   const conflicts: { left: ResearchFact; right: ResearchFact }[] = [];
-  let datedPriceChanges = 0;
+  let datedPriceChanges = 0, differentSellerPrices = 0;
   for (const left of a.facts) for (const right of b.facts) {
     if (key(left.candidate) !== key(right.candidate) || key(left.attribute) !== key(right.attribute) || key(left.value) === key(right.value)) continue;
-    if (key(left.attribute) === "price" && dated(left.date) && dated(right.date) && left.date !== right.date &&
-      left.link !== null && left.link === right.link) { datedPriceChanges += 1; continue; }
+    if (key(left.attribute) === "price") {
+      if (left.link !== null && right.link !== null && left.link !== right.link) { differentSellerPrices += 1; continue; }
+      if (left.link !== null && left.link === right.link && dated(left.date) && dated(right.date) && left.date !== right.date) { datedPriceChanges += 1; continue; }
+    }
     conflicts.push({ left, right });
   }
-  return { conflicts, datedPriceChanges };
+  return { conflicts, datedPriceChanges, differentSellerPrices };
 }
 export function comparePicks(a: StructuredResearchAnswer, b: StructuredResearchAnswer) {
   const matches = a.pick && b.pick ? key(a.pick) === key(b.pick) : null;
@@ -149,13 +151,23 @@ export function comparePicks(a: StructuredResearchAnswer, b: StructuredResearchA
 export function compareResearchAnswers(a: StructuredResearchAnswer, b: StructuredResearchAnswer) {
   const facts = conflictingFacts(a, b);
   return { shortlist: shortlistOverlap(a, b), criteria: criteriaOverlap(a, b), picks: comparePicks(a, b),
-    conflicts: facts.conflicts.length, datedPriceChanges: facts.datedPriceChanges };
+    conflicts: facts.conflicts.length, datedPriceChanges: facts.datedPriceChanges, differentSellerPrices: facts.differentSellerPrices };
 }
 export function researchRepeatability(answers: readonly StructuredResearchAnswer[]) {
   const counts = new Map<string, number>();
   for (const answer of answers) if (answer.pick) counts.set(key(answer.pick), (counts.get(key(answer.pick)) ?? 0) + 1);
+  const pairs = answers.flatMap((left, i) => answers.slice(i + 1).map((right, j) => ({ left: i + 1, right: i + j + 2, ...compareResearchAnswers(left, right) })));
+  const minimum = (values: readonly (number | null)[]) => values.length > 0 && values.every((value) => value !== null) ? Math.min(...values as number[]) : null;
   return { comparedRuns: answers.length, largestPickGroup: Math.max(0, ...counts.values()), ties: answers.filter((answer) => answer.tie !== null).length,
-    pairs: answers.flatMap((left, i) => answers.slice(i + 1).map((right, j) => ({ left: i + 1, right: i + j + 2, ...compareResearchAnswers(left, right) }))) };
+    minimumShortlistOverlap: minimum(pairs.map((pair) => pair.shortlist.jaccard)), minimumCriteriaOverlap: minimum(pairs.map((pair) => pair.criteria.jaccard)),
+    totalConflicts: pairs.reduce((total, pair) => total + pair.conflicts, 0), pairs };
+}
+
+/** Only the private archive receives names, criteria, picks, ties and the actual conflicting fact pairs. */
+export function researchComparisonDetails(runs: readonly Readonly<{ repeat: number; chat: string | null; answer: StructuredResearchAnswer | null }>[]) {
+  return { runs, pairs: runs.flatMap((left, i) => runs.slice(i + 1).flatMap((right, j) => left.answer && right.answer ? [{ left: i + 1, right: i + j + 2,
+    leftRepeat: left.repeat, rightRepeat: right.repeat, ...compareResearchAnswers(left.answer, right.answer),
+    conflictingFacts: conflictingFacts(left.answer, right.answer).conflicts }] : [])) };
 }
 
 export const RESEARCH_SCORE_KEYS = ["factualAccuracy", "citationAccuracy", "completeness", "sourceQuality", "toolEfficiency"] as const;
@@ -296,33 +308,78 @@ export type ResearchUsageRole = typeof RESEARCH_USAGE_ROLES[number];
 export function researchThreadRole(name: string): Exclude<ResearchUsageRole, "main" | "unattributed"> {
   return name.startsWith("gap-judge-") ? "gap_judge" : name.startsWith("verifier-") ? "verifier" : name.startsWith("skeptic-") ? "skeptic" : "researchers";
 }
-export type ResearchUsageRow = PurposeUsageRow & Readonly<{ threadId: string | null; runId: string }>;
-export type ResearchTiming = Readonly<{ runId: string | null; parentRunId?: string; threadId: string | null; startedAt: Date | string | null; endedAt: Date | string | null }>;
+export type ResearchUsageRow = PurposeUsageRow & Readonly<{ modelId: string }>;
+export type ResearchTiming = Readonly<{ threadId: string | null; startedAt: Date | string | null; endedAt: Date | string | null }>;
+export type ResearchTranscriptRow = Readonly<{ id: string; runId: string; threadId: string | null; turnId: string | null; sequence: number;
+  createdAt: Date | string; kind: string; body: unknown }>;
 const instant = (value: Date | string | null): number | null => value !== null && Number.isFinite(new Date(value).getTime()) ? new Date(value).getTime() : null;
-/** Minutes are summed turn intervals, including waits; pooled foreground tokens cannot be attributed by model or time. */
-export function researchRoleUsage(rows: readonly ResearchUsageRow[], timings: readonly ResearchTiming[], names: ReadonlyMap<string, readonly string[]>) {
+
+/**
+ * `modelResponseItems` in `lib/server/engine/transcript.ts` keeps the input anchor on the first item only; output tokens are
+ * shares, not repeated totals. Their sum is the provider's figure even though context measurement chose the individual shares.
+ * The loop appends a whole response in one createMany batch. Its timestamp, input anchor and intervening non-model items
+ * delimit responses even without usage. Run/thread/turn and sequence keep concurrent and continued agents separate.
+ * Role sums contain only reported counts; `missing` counts responses with an absent input or output figure, without filling it in.
+ * Retries without a retained response, compaction, Search and the harness's judge/extraction calls are absent from this split.
+ */
+export function researchRoleUsage(rows: readonly ResearchTranscriptRow[], timings: readonly ResearchTiming[], names: ReadonlyMap<string, readonly string[]>) {
   const roles = new Map([...names].flatMap(([name, ids]) => ids.map((id) => [id, researchThreadRole(name)] as const)));
   const threadRole = (id: string | null): ResearchUsageRole => id === null ? "main" : roles.get(id) ?? "unattributed";
-  const pooledRuns = new Set(timings.filter((timing) => timing.threadId !== null && timing.runId === null).map((timing) => timing.parentRunId));
-  const usageRole = (row: ResearchUsageRow): ResearchUsageRole => {
-    if (row.threadId === null) return row.purpose === "chat_answer" ? "main" : "unattributed";
-    return pooledRuns.has(row.runId) ? "unattributed" : threadRole(row.threadId);
-  };
+  const lanes = new Map<string, ResearchTranscriptRow[]>();
+  for (const row of new Map(rows.map((row) => [row.id, row])).values()) {
+    const lane = JSON.stringify([row.runId, row.threadId, row.turnId]);
+    const own = lanes.get(lane) ?? [];
+    own.push(row);
+    lanes.set(lane, own);
+  }
+  const responses: { role: ResearchUsageRole; items: Record<string, unknown>[] }[] = [];
+  for (const lane of lanes.values()) {
+    let previous: ResearchTranscriptRow | null = null;
+    let response: typeof responses[number] | null = null;
+    for (const row of lane.sort((a, b) => a.sequence - b.sequence)) {
+      if (!["assistant_text", "reasoning", "tool_call"].includes(row.kind) || !record(row.body) || !record(row.body.origin)) {
+        response = null; previous = row; continue;
+      }
+      if (!response || !previous || row.sequence !== previous.sequence + 1 || instant(row.createdAt) !== instant(previous.createdAt) || record(row.body.requestAnchor)) {
+        response = { role: threadRole(row.threadId), items: [] };
+        responses.push(response);
+      }
+      response.items.push(row.body);
+      previous = row;
+    }
+  }
+  const measured = responses.map((response) => {
+    const anchor = response.items[0]?.requestAnchor;
+    const output = response.items.map((item) => token(item.outputTokens));
+    return { role: response.role, inputTokens: record(anchor) ? token(anchor.inputTokens) : null,
+      outputTokens: output.every((value) => value !== null) ? output.reduce<number>((total, value) => total + value!, 0) : null };
+  });
   return Object.fromEntries(RESEARCH_USAGE_ROLES.map((role) => {
-    const own = rows.filter((row) => usageRole(row) === role);
+    const own = measured.filter((response) => response.role === role);
     const turns = timings.filter((timing) => threadRole(timing.threadId) === role);
-    const missingUsageTurns = turns.filter((turn) => turn.runId === null || !own.some((row) => row.runId === turn.runId)).length;
-    const sum = (field: keyof EvalTokens) => own.length > 0 && own.every((row) => token(row[field]) !== null) ? own.reduce((total, row) => total + row[field]!, 0) : null;
+    const sum = (field: "inputTokens" | "outputTokens") => {
+      const known = own.flatMap((response) => response[field] === null ? [] : [response[field]!]);
+      return known.length ? known.reduce((total, value) => total + value, 0) : null;
+    };
     const durations = turns.map((turn) => {
       const start = instant(turn.startedAt), end = instant(turn.endedAt);
       return start !== null && end !== null && end >= start ? (end - start) / 60_000 : null;
     });
-    return [role, { rows: own.length, turns: turns.length, missingUsageTurns,
-      inputTokens: missingUsageTurns ? null : sum("inputTokens"), outputTokens: missingUsageTurns ? null : sum("outputTokens"),
-      cachedInputTokens: missingUsageTurns ? null : sum("cachedInputTokens"),
-      observed: { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), cachedInputTokens: sum("cachedInputTokens") },
+    return [role, { responses: own.length, turns: turns.length, inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
+      missing: own.filter((response) => response.inputTokens === null || response.outputTokens === null).length,
+      missingInput: own.filter((response) => response.inputTokens === null).length, missingOutput: own.filter((response) => response.outputTokens === null).length,
       minutes: durations.length > 0 && durations.every((duration) => duration !== null) ? durations.reduce<number>((total, duration) => total + duration!, 0) : null }];
   }));
+}
+
+/** The grand ledger remains separate: it covers recorded paid attempts, including ones with no retained transcript response. */
+export function researchUsageByModel(rows: readonly ResearchUsageRow[]) {
+  return [...new Set(rows.map((row) => row.modelId))].sort().map((modelId) => {
+    const own = rows.filter((row) => row.modelId === modelId);
+    const sum = (field: keyof EvalTokens) => own.every((row) => token(row[field]) !== null) ? own.reduce((total, row) => total + row[field]!, 0) : null;
+    return { modelId, rows: own.length, inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), cachedInputTokens: sum("cachedInputTokens"),
+      missing: own.filter((row) => token(row.inputTokens) === null || token(row.outputTokens) === null).length };
+  });
 }
 
 export function researchPlanWindow(frame: Readonly<{ windowEndsAt: Date | string | null; releasedAt: Date | string | null; releasedBy: unknown }> | null) {

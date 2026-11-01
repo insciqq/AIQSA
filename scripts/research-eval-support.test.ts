@@ -6,10 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, T_QUESTION_MS, comparePicks, compareResearchAnswers, configureResearchEvalRoles, conflictingFacts, createResearchArchive,
   criteriaOverlap, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval, evaluateResearch, redactResearchSecrets, researchEvalOptions,
-  researchEffortConfiguration, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout, researchRepeatability, researchRoleUsage, shortlistOverlap,
-  type ResearchGrade, type ResearchUsageRow, type StructuredResearchAnswer
+  researchEffortConfiguration, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout, researchComparisonDetails, researchRepeatability, researchRoleUsage, researchUsageByModel, shortlistOverlap,
+  type ResearchGrade, type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
 } from "./research-eval-support";
-import { parseTestProxy, researchMetrics } from "./subagent-scenarios-support";
+import { parseTestProxy, researchMetrics, researchProcessFacts, researchServerNotes } from "./subagent-scenarios-support";
 
 const answer: StructuredResearchAnswer = {
   candidates: ["Candidate A", "Candidate B"], criteria: [{ name: "Durability", reason: null }, { name: "Price", reason: "Budget is fixed" }],
@@ -57,8 +57,46 @@ describe("research repeatability on handwritten answers", () => {
   it("allows a dated price change on the same page but never dates away a specification conflict", () => {
     const later = { ...answer, facts: answer.facts.map((fact) => ({ ...fact, date: "2026-11-02", value: "different" })) };
     expect(conflictingFacts(answer, later)).toMatchObject({ datedPriceChanges: 1, conflicts: [{ left: { attribute: "height" } }] });
-    expect(conflictingFacts(answer, { ...later, facts: later.facts.map((fact) => ({ ...fact, link: "https://example.test/other" })) }).conflicts).toHaveLength(2);
+    expect(conflictingFacts(answer, { ...later, facts: later.facts.map((fact) => ({ ...fact, link: "https://example.test/other" })) }))
+      .toMatchObject({ conflicts: [{ left: { attribute: "height" } }], datedPriceChanges: 0, differentSellerPrices: 1 });
     expect(conflictingFacts(answer, { ...later, facts: later.facts.map((fact) => ({ ...fact, date: "2026-02-30" })) }).conflicts).toHaveLength(2);
+  });
+
+  it.each([
+    { name: "same seller and date", link: "https://example.test/a", date: "2026-11-01", conflicts: 1, datedPriceChanges: 0, differentSellerPrices: 0 },
+    { name: "same seller without date", link: "https://example.test/a", date: null, conflicts: 1, datedPriceChanges: 0, differentSellerPrices: 0 },
+    { name: "same seller on another date", link: "https://example.test/a", date: "2026-11-02", conflicts: 0, datedPriceChanges: 1, differentSellerPrices: 0 },
+    { name: "different sellers on the same date", link: "https://example.test/b", date: "2026-11-01", conflicts: 0, datedPriceChanges: 0, differentSellerPrices: 1 },
+    { name: "different sellers on different dates", link: "https://example.test/b", date: "2026-11-02", conflicts: 0, datedPriceChanges: 0, differentSellerPrices: 1 },
+    { name: "different sellers without dates", link: "https://example.test/b", date: null, conflicts: 0, datedPriceChanges: 0, differentSellerPrices: 1 }
+  ])("classifies a changed price: $name", ({ link, date, conflicts, datedPriceChanges, differentSellerPrices }) => {
+    const first = { ...answer, facts: [answer.facts[0]] };
+    const second = { ...answer, facts: [{ ...answer.facts[0], value: "41000 RUB", link, date }] };
+    const result = conflictingFacts(first, second);
+    expect(result.conflicts).toHaveLength(conflicts);
+    expect(result).toMatchObject({ datedPriceChanges, differentSellerPrices });
+  });
+
+  it("does not invent a seller from an absent link, or relax non-price conflicts", () => {
+    const unknown = { ...answer, facts: [{ ...answer.facts[0], link: null }] };
+    expect(conflictingFacts(unknown, { ...unknown, facts: [{ ...unknown.facts[0], value: "41000 RUB", date: "2026-11-02" }] }).conflicts).toHaveLength(1);
+    const spec = { ...answer, facts: [answer.facts[1]] };
+    expect(conflictingFacts(spec, { ...spec, facts: [{ ...spec.facts[0], value: "30 cm", date: "2026-11-02", link: "https://example.test/b" }] }).conflicts).toHaveLength(1);
+  });
+
+  it("summarizes the acceptance table while retaining full comparisons only in the private entry", () => {
+    const other = { ...answer, candidates: ["Candidate A", "Candidate C"], criteria: [answer.criteria[0]],
+      facts: [{ ...answer.facts[1], value: "30 cm" }] };
+    const summary = researchRepeatability([answer, other]);
+    expect(summary).toMatchObject({ largestPickGroup: 2, comparedRuns: 2, ties: 0, minimumShortlistOverlap: 1 / 3,
+      minimumCriteriaOverlap: 0.5, totalConflicts: 1 });
+    expect(researchRepeatability([answer])).toMatchObject({ minimumShortlistOverlap: null, minimumCriteriaOverlap: null });
+    const runs = [{ repeat: 1, chat: "chat-one", answer }, { repeat: 2, chat: "chat-two", answer: other }, { repeat: 3, chat: null, answer: null }];
+    const details = researchComparisonDetails(runs);
+    expect(details.runs).toEqual(runs);
+    expect(details.pairs).toHaveLength(1);
+    expect(details.pairs[0]).toMatchObject({ leftRepeat: 1, rightRepeat: 2, shortlist: { jaccard: 1 / 3 }, criteria: { jaccard: 0.5 },
+      conflictingFacts: [{ left: { value: "20 cm", attribute: "height" }, right: { value: "30 cm" } }] });
   });
 
   it("keeps absent evidence unknown and reports criterion deltas and their stated reasons", () => {
@@ -248,33 +286,113 @@ describe("content-free stdout, role accounting and plan window", () => {
       url: `https://example.test/${marker}` }]], opened: new Set([`https://example.test/${marker}`]) });
     const summary = researchEvaluationSummary({ job: { kind: "purchase", repeat: 1 }, answerCount: 1, gateReportCount: 1, failed: false, wallSeconds: 5,
       extraction: { ...emptyEval<StructuredResearchAnswer>("ok"), value: marked }, grade: { ...emptyEval<ResearchGrade>("ok"), value: { ...grade, limitations: [marker] } } });
+    const other = { ...marked, facts: [{ ...marked.facts[0], value: `${marker} conflict` }] };
+    const root = directory();
     const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    process.stdout.write(`${JSON.stringify({ ...summary, metrics, comparisons: researchRepeatability([marked, marked]) })}\n`);
+    const file = createResearchArchive(root).write({ kind: "purchase", repeat: 1 }, "chat-one", "comparisons", researchComparisonDetails([
+      { repeat: 1, chat: "chat-one", answer: marked }, { repeat: 2, chat: "chat-two", answer: other }
+    ]));
+    const details = JSON.parse(readFileSync(join(root, file), "utf8"));
+    expect(details.runs[0].answer.candidates).toEqual([marker]);
+    expect(details.pairs[0].conflictingFacts[0].left.value).toBe(marker);
+    expect(statSync(join(root, file)).mode & 0o777).toBe(0o600);
+    const processFacts = researchProcessFacts({ drafts: [[{ claim: marker, quote: marker, url: `https://example.test/${marker}`, sourceClass: marker }]],
+      calls: [{ toolName: "submit_research_draft", result: { message: `${marker} [Skeptic]`, status: "sent_back" } }],
+      gates: [{ name: "skeptic-1", state: "done", reasonCode: null, report: marker }] });
+    process.stdout.write(`${JSON.stringify({ ...summary, metrics, ...processFacts, serverNotes: researchServerNotes(marker), comparisons: researchRepeatability([marked, other]) })}\n`);
     expect(output).toHaveBeenCalledOnce();
     expect(output.mock.calls[0][0]).not.toContain(marker);
     expect(output.mock.calls[0][0]).not.toContain("https:");
     expect(metrics.openedByClass).toEqual({ other: 1 });
   });
 
-  it("splits thread-bound usage and keeps pooled foreground and absent receipts unknown", () => {
-    const names = new Map([["research-one", ["r"]], ["gap-judge-one", ["g"]], ["verifier-one", ["v"]], ["skeptic-one", ["s"]]]);
-    const row = (runId: string, threadId: string | null, inputTokens: number | null, purpose = "subagent"): ResearchUsageRow =>
-      ({ runId, threadId, inputTokens, outputTokens: 3, cachedInputTokens: null, purpose });
-    const timings = [null, "r", "g", "v", "s"].map((threadId) => ({ runId: threadId === "g" ? null : threadId ?? "main", threadId,
-      startedAt: "2026-11-01T00:00:00Z", endedAt: "2026-11-01T00:02:00Z" }));
-    const result = researchRoleUsage([row("main", null, 10, "chat_answer"), row("r", "r", 20), row("v", "v", null), row("s", "s", 30), row("main", null, 40)], timings, names);
-    expect(result.main).toMatchObject({ inputTokens: 10, minutes: 2, missingUsageTurns: 0 });
-    expect(result.researchers).toMatchObject({ inputTokens: 20, minutes: 2 });
-    expect(result.gap_judge).toMatchObject({ inputTokens: null, minutes: 2, missingUsageTurns: 1 });
-    expect(result.verifier).toMatchObject({ inputTokens: null, outputTokens: 3, minutes: 2 });
-    expect(result.skeptic).toMatchObject({ inputTokens: 30, minutes: 2 });
-    expect(result.unattributed).toMatchObject({ inputTokens: 40, minutes: null });
-    const pooled = researchRoleUsage([row("r", "r", 20), row("main", null, 30, "search")], [...timings,
-      { ...timings[2], parentRunId: "r" }], names);
-    expect(pooled.researchers).toMatchObject({ inputTokens: null, missingUsageTurns: 1 });
-    expect(pooled.unattributed).toMatchObject({ inputTokens: 50 });
-    expect(researchRoleUsage([], [], names).main).toMatchObject({ inputTokens: null, minutes: null });
-    expect(researchRoleUsage([row("r", "r", 20)], [{ ...timings[1], endedAt: null }], names).researchers.minutes).toBeNull();
+  it("restores every draft decision, gate fact, fetch outcome and the existing server-note pattern", () => {
+    const finding = { claim: "private claim", quote: "private quote", sourceClass: "primary_official", url: "https://example.test/a" };
+    const calls = [
+      { toolName: "submit_research_draft", result: { status: "accepted" } },
+      ...["[Independent check]", "[Skeptic]", "Research questions still open", "Открытые вопросы исследования", "mechanical"].map((message) =>
+        ({ toolName: "submit_research_draft", result: { status: "sent_back", message } })),
+      { toolName: "fetch_url", result: { rawPreview: { fetchUrl: { outcome: "read", proxy: { name: "PRIVATE_PROXY" } } } } },
+      { toolName: "fetch_url", result: { rawPreview: { fetchUrl: { outcome: "fetch_network_error", proxyCode: "proxy_inactive" } } } },
+      { toolName: "fetch_url", result: { rawPreview: { fetchUrl: { outcome: "PRIVATE_PROXY" } } } }
+    ];
+    const facts = researchProcessFacts({ drafts: calls.slice(0, 6).map(() => [finding]), calls,
+      gates: [{ name: "skeptic-2", state: "done", reasonCode: null, report: "private report" }] });
+    expect(facts.timeline.map((entry) => entry.sentBackBy)).toEqual([null, "verifier", "skeptic", "gap_judge", "gap_judge", "gap_mechanical"]);
+    expect(facts.timeline[0]).toMatchObject({ accepted: true, findings: 1, byClass: { primary_official: 1 } });
+    expect(facts).toMatchObject({ gateTurns: 1, gateTurnFacts: [{ name: "skeptic-2", state: "done", reason: null, reportChars: 14 }],
+      fetchOutcomes: { read: 1, proxy_inactive: 1, unknown: 1 }, fetchProxyReads: 1 });
+    expect(JSON.stringify(facts)).not.toContain("PRIVATE_PROXY");
+    const prefixes = ["Проверено", "Independently checked", "Checked by", "Проверил", "Проверка", "Одну из проверок", "The check", "Не удалось",
+      "Source could", "Время вышло", "Time ran out", "Отчёт пришёл", "This report came", "Research ended", "Исследование завершилось"];
+    expect(researchServerNotes(prefixes.map((prefix) => `*${prefix} note.*`).join("\n"))).toEqual(prefixes.map((prefix) => `${prefix} note.`));
+    expect(researchServerNotes("ordinary private answer *Unrelated note*")).toEqual([]);
+  });
+
+  const names = new Map([["research-one", ["r"]], ["gap-judge-1", ["g"]], ["verifier-1", ["v"]], ["skeptic-1", ["s"]]]);
+  const origin = { model: "synthetic-worker", provider: "synthetic-route" };
+  const row = (id: string, threadId: string | null, sequence: number, kind: string, body: Record<string, unknown>, overrides: Partial<ResearchTranscriptRow> = {}): ResearchTranscriptRow =>
+    ({ id, runId: "shared-main-run", threadId, turnId: threadId ? `${threadId}-turn` : null, sequence, kind, body,
+      createdAt: "2026-11-01T00:00:00Z", ...overrides });
+  const timing = (threadId: string | null) => ({ threadId, startedAt: "2026-11-01T00:00:00Z", endedAt: "2026-11-01T00:02:00Z" });
+  const anchor = (inputTokens: number) => ({ attachmentIds: [], baseId: null, fixedTokens: 800, inputTokens });
+
+  it("counts a handwritten text-plus-two-calls response once, with one anchor and three output shares", () => {
+    const rows = [
+      row("text", "r", 0, "assistant_text", { origin, text: "Reading both sources", requestAnchor: anchor(900), outputTokens: 12 }),
+      row("call-a", "r", 1, "tool_call", { origin, name: "fetch_url", arguments: "{}", outputTokens: 10 }),
+      row("call-b", "r", 2, "tool_call", { origin, name: "fetch_url", arguments: "{}", outputTokens: 8 }),
+      row("result-a", "r", 3, "tool_result", { output: "source text" }),
+      row("result-b", "r", 4, "tool_result", { output: "source text" }),
+      row("main", null, 0, "assistant_text", { origin, text: "Answer", requestAnchor: anchor(1200), outputTokens: 50 }),
+      ...["g", "v", "s"].map((threadId) => row(threadId, threadId, 0, "assistant_text", { origin, text: "Check", requestAnchor: anchor(100), outputTokens: 5 }))
+    ];
+    const result = researchRoleUsage(rows, [null, "r", "g", "v", "s"].map(timing), names);
+    expect(result.researchers).toMatchObject({ inputTokens: 900, outputTokens: 30, responses: 1, missing: 0, minutes: 2 });
+    expect(result.main).toMatchObject({ inputTokens: 1200, outputTokens: 50, responses: 1, missing: 0, minutes: 2 });
+    for (const role of ["gap_judge", "verifier", "skeptic"]) expect(result[role]).toMatchObject({ inputTokens: 100, outputTokens: 5, responses: 1, missing: 0 });
+    expect(researchRoleUsage([...rows, rows[0]], [], names).researchers.inputTokens).toBe(900);
+  });
+
+  it("counts a missing response once, including multi-item rounds and partially reported figures", () => {
+    const rows = [
+      row("known", "r", 0, "assistant_text", { origin, requestAnchor: anchor(10), outputTokens: 2 }),
+      row("followup", "r", 1, "user", { text: "Continue" }),
+      row("missing-text", "r", 2, "assistant_text", { origin, text: "No figures" }),
+      row("missing-call-a", "r", 3, "tool_call", { origin }), row("missing-call-b", "r", 4, "tool_call", { origin }),
+      row("result", "r", 5, "tool_result", {}),
+      row("input-only", "r", 6, "assistant_text", { origin, requestAnchor: anchor(20) }),
+      row("followup-two", "r", 7, "user", {}), row("output-only", "r", 8, "assistant_text", { origin, outputTokens: 3 })
+    ];
+    expect(researchRoleUsage(rows, [], names).researchers).toMatchObject({ responses: 4, inputTokens: 30, outputTokens: 5, missing: 3, missingInput: 2, missingOutput: 2 });
+    expect(researchRoleUsage(rows.slice(2, 5), [], names).researchers).toMatchObject({ responses: 1, missing: 1, inputTokens: null, outputTokens: null });
+  });
+
+  it("keeps response boundaries across runs, turns, anchors and write batches and ignores compaction/synthetic items", () => {
+    const rows = [
+      row("one", "r", 0, "assistant_text", { origin, requestAnchor: anchor(10), outputTokens: 2 }),
+      row("two", "r", 1, "assistant_text", { origin, requestAnchor: anchor(10), outputTokens: 2 }),
+      row("three", "r", 2, "assistant_text", { origin }, { createdAt: "2026-11-01T00:00:01Z" }),
+      row("four", "r", 0, "assistant_text", { origin }, { runId: "another-run" }),
+      row("five", "r", 3, "assistant_text", { origin }, { turnId: "another-turn" }),
+      row("compact", "r", 4, "compaction", { origin, outputTokens: 1000 }),
+      row("synthetic", "r", 5, "assistant_text", { text: "Server message" })
+    ];
+    expect(researchRoleUsage(rows, [], names).researchers).toMatchObject({ responses: 5, inputTokens: 20, outputTokens: 4, missing: 3 });
+    expect(researchRoleUsage([row("zero", "s", 0, "assistant_text", { origin, requestAnchor: anchor(0), outputTokens: 0 })], [], names).skeptic)
+      .toMatchObject({ inputTokens: 0, outputTokens: 0, missing: 0 });
+    expect(researchRoleUsage([], [{ ...timing("r"), endedAt: null }], names).researchers).toMatchObject({ inputTokens: null, outputTokens: null, minutes: null });
+  });
+
+  it("splits the wider paid-call ledger by model without estimating missing fields", () => {
+    const usage = (modelId: string, purpose: string, inputTokens: number | null, outputTokens: number | null): ResearchUsageRow =>
+      ({ modelId, purpose, inputTokens, outputTokens, cachedInputTokens: null });
+    expect(researchUsageByModel([usage("synthetic-main", "chat_answer", 100, 10), usage("synthetic-worker", "subagent", 20, 2),
+      usage("synthetic-worker", "subagent", 30, 3), usage("synthetic-main", "compaction", 200, 20)]))
+      .toEqual([{ modelId: "synthetic-main", rows: 2, inputTokens: 300, outputTokens: 30, cachedInputTokens: null, missing: 0 },
+        { modelId: "synthetic-worker", rows: 2, inputTokens: 50, outputTokens: 5, cachedInputTokens: null, missing: 0 }]);
+    expect(researchUsageByModel([usage("synthetic-worker", "subagent", null, 2), usage("synthetic-worker", "subagent", 20, 3)])[0])
+      .toMatchObject({ inputTokens: null, outputTokens: 5, missing: 1 });
   });
 
   it("reports the plan wait and only a known release label, including a missing frame", () => {
