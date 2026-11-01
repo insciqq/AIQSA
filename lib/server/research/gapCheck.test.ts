@@ -199,7 +199,7 @@ describe("independent gap judgment", () => {
     expect(JSON.parse(request.brief)).toMatchObject({ plan: PLAN, findings: FINDINGS, planShortened: false, findingsShortened: false });
   });
 
-  it("sends only actionable questions and conflicts back, with their next steps, and reports limits", async () => {
+  it("sends only actionable questions and conflicts back, with their next steps and the limits to state, which no note repeats", async () => {
     const ctx = context({ subagents: { run: vi.fn(async () => judged(JSON.stringify({
       gaps: [gap("Delivery to the city is unknown.", "Open the chosen shop's delivery terms for Moscow."),
         gap("Two shops disagree on the warranty.", "Open the manufacturer's warranty for this exact model.")],
@@ -210,8 +210,9 @@ describe("independent gap judgment", () => {
     expect(messageOf(result)).toContain("Delivery to the city is unknown.");
     expect(messageOf(result)).toContain("Open the chosen shop's delivery terms for Moscow.");
     expect(messageOf(result)).toContain("Open the manufacturer's warranty for this exact model.");
-    expect(messageOf(result)).not.toContain("ten-year life");
-    expect(result.notes?.join()).toContain("ten-year life cannot be established");
+    expect(messageOf(result)).toContain("Limits to state in the report, if it does not yet:\nIndependent tests cover only one year; ten-year life cannot be established.");
+    expect(result.notes?.join() ?? "").not.toContain("ten-year life");
+    expect(result.kind === "send_back" ? result.unresolvedNote : "").not.toContain("ten-year life");
   });
 
   it.each([
@@ -469,9 +470,7 @@ describe("actionable gaps and page progress", () => {
       "No independent evidence for this exact model was found after searching."];
     const ctx = context({ subagents: { run: vi.fn(async () => judged(JSON.stringify({ gaps: [], limits }))) } });
     const result = await gapCheckGate.run(DRAFT, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes).toHaveLength(1);
-    for (const limit of limits) expect(result.notes?.[0]).toContain(limit);
+    expect(result).toEqual({ kind: "pass", notes: [] });
     const instructions = vi.mocked(ctx.subagents.run).mock.calls[0]![0].instructions;
     expect(instructions).toContain("no independent evidence for the exact model is a limit, not a gap");
     expect(instructions).toContain("two shops list different warranty terms");
@@ -479,18 +478,28 @@ describe("actionable gaps and page progress", () => {
     expect(instructions).toContain("unreachable are closed with a reason");
   });
 
-  it.each(["# Report", "# Отчёт"])("bounds reader-facing limits to one short note in %s", async (report) => {
+  it.each(["# Report", "# Отчёт"])("never turns limits into a note, whichever way the judge's turn goes on, in %s", async (report) => {
+    const limits = ["Ten-year durability cannot be established from these tests."];
+    const clean = await gapCheckGate.run({ ...DRAFT, report }, context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [], limits })) } }));
+    expect(clean).toEqual({ kind: "pass", notes: [] });
+    const sentBack = await gapCheckGate.run({ ...DRAFT, report }, context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [gap("Open?")], limits })) } }));
+    expect(sentBack.kind).toBe("send_back");
+    expect(JSON.stringify(sentBack.notes)).not.toContain("Ten-year");
+    // A later judge that cannot run names open gaps and that it could not finish, never the limits.
+    const earlier = [{ draft: DRAFT, message: messageOf(sentBack) }];
+    const failing = context({ earlier, subagents: { run: async () => { throw new Error("unavailable"); } } });
+    const later = await gapCheckGate.run({ ...DRAFT, report, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, failing);
+    expect(later.notes).toContain(researchNote("gap_judge_unfinished", report));
+    expect(JSON.stringify(later.notes)).not.toContain("Ten-year");
+  });
+
+  it("hands limits to the author in the message's language and within its bound, without internal names", async () => {
     const text = "primary_official independent_tests owner_reviews action_channel класс источников ";
     const limits = Array.from({ length: 12 }, (_, index) => `${index}. ${text.repeat(10)}`);
-    const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [], limits })) } });
-    const result = await gapCheckGate.run({ ...DRAFT, report }, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes).toHaveLength(1);
-    const note = result.notes![0]!;
-    expect(note).toContain(report === "# Отчёт" ? "Ограничения, отмеченные проверкой:" : "Limits the check noted:");
-    expect(note.split("\n").length).toBeLessThanOrEqual(3);
-    expect(note.length).toBeLessThanOrEqual(RESEARCH_LIMITS.reasonCharacters);
-    expect(note).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel|класс источников/u);
+    const result = await gapCheckGate.run(DRAFT, context({ plan: { ...PLAN, goal: "Выбрать матрас." }, subagents: { run: async () => judged(JSON.stringify({ gaps: [gap("Вопрос?")], limits })) } }));
+    expect(messageOf(result)).toContain("Ограничения, которые нужно указать в отчёте, если их там ещё нет:");
+    expect(messageOf(result).length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+    expect(messageOf(result)).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel|класс источников/u);
   });
 
   it("maps identifiers that leak into a judge's issue before adding a report note", async () => {
