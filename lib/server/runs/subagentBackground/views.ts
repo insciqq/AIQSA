@@ -378,7 +378,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
     const turns = shown.map(({ latest }) => latest);
     const [requests, briefs, hostRuns, mainRun] = await Promise.all([
       loadActivityRequests(tx, [...new Set(turns.map((turn) => turn.parentRunId))], input.userId),
-      turns.length === 0 ? [] : tx.modelRunToolCall.findMany({ select: { arguments: true, id: true, modelRunId: true },
+      tx.modelRunToolCall.findMany({ select: { arguments: true, id: true, modelRunId: true },
         where: { OR: turns.map((turn) => ({ id: turn.parentToolCallId, modelRunId: turn.parentRunId })) } }),
       tx.modelRun.findMany({ select: { id: true, workspaceRunBinding: { select: { toolDefinitions: true } } },
         where: { id: { in: turns.flatMap((turn) => turn.executionRun ? [turn.executionRun.id] : []) } } }),

@@ -65,8 +65,9 @@ describe("sub-agent production wiring", () => {
     const { subagentRunPorts } = await import("../engine/handlerSupport");
     const background = { availability: vi.fn(), deliver: vi.fn(), start: vi.fn(), stop: vi.fn() };
     const types = { catalog: vi.fn(), resolve: vi.fn() };
+    const messaging = { agents: vi.fn(), questionAsked: vi.fn(), send: vi.fn() };
     const releaseBrowserAgent = vi.fn(async () => undefined);
-    const native = { subagents: { background: () => background, types } } as unknown as Parameters<typeof subagentRunPorts>[0];
+    const native = { subagents: { background: () => background, messaging: () => messaging, types } } as unknown as Parameters<typeof subagentRunPorts>[0];
     const workspace = { releaseBrowserAgent } as unknown as NonNullable<Parameters<typeof subagentRunPorts>[1]["workspace"]>;
     const web = subagentRunPorts(native, { scheduled: false, telegram: false, workspace });
     expect(web.background).toBe(background);
@@ -76,6 +77,10 @@ describe("sub-agent production wiring", () => {
     // A scheduled occurrence and a Telegram turn follow the same rule for custom sub-agents and the default.
     expect(subagentRunPorts(native, { scheduled: true, telegram: false }).types).toBe(types);
     expect(subagentRunPorts(native, { scheduled: false, telegram: true }).types).toBe(types);
+    // Their foreground sub-agents see and reach each other all the same.
+    for (const run of [{ scheduled: false, telegram: false }, { scheduled: true, telegram: false }, { scheduled: false, telegram: true }]) {
+      expect(subagentRunPorts(native, run).messaging).toBe(messaging);
+    }
     const agent = { kind: "subagent" as const, name: "shop", threadId: "thread-1" };
     expect(web.browserIdentity?.environment(agent)).toMatchObject({ AIQSA_AGENT_ID: "thread-1", AIQSA_AGENT_NAME: "shop" });
     await web.browserIdentity?.release({ agent, chatId: "chat", modelRunId: "run-1", userId: "user" });

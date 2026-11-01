@@ -146,6 +146,8 @@ export const SUBAGENT_FOLLOWUP_LIMITS = Object.freeze({
   agentMessagesPerTurn: 16,
   /** Questions one turn asks: each may wake the main agent, a paid turn, so one that keeps asking is told to report. */
   questionsPerTurn: 8,
+  /** The longest `wait_for_reply`: a neighbour replies within a few steps, and past that the agent is better off going on. */
+  replyWaitMinutes: 5,
   /**
    * Follow-ups from sub-agents one main-agent run takes, callbacks, messages and questions together; later callbacks
    * and questions stay owed for its terminal flush, and a later message is refused visibly.

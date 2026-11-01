@@ -208,8 +208,6 @@ const OUTCOME_LINE = /^\s*\**\s*outcome\s*\**\s*:\s*\**\s*(done|partial|blocked)
 const SETTLE_ATTEMPTS = 3;
 /** How often a wait looks at the clock; a message ends it at once. */
 const MAIL_CHECK_MS = 1_000;
-/** The longest `wait_for_reply`: a neighbour replies within a few steps, and past that the agent is better off going on. */
-export const SUBAGENT_REPLY_WAIT_MS = 5 * 60_000;
 
 const boundLine = (value: string, max: number) => {
   const line = value.replace(/\s+/gu, " ").trim();
@@ -497,7 +495,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     const ended = (state: EndedSubagentState, extra: Readonly<{ outcome?: SubagentOutcome; reason?: string }> = {}) =>
       endedSubagentCallResult({ approvals, binding: input.binding, files: [...files], name: input.name, report: report || roundText,
         state, steps, ...(handBack.question ? { question: handBack.question } : {}), ...extra });
-    const fromMain = (message: SubagentMessage) => message.origin === "main_agent";
+    // Its parent is the main agent until sub-agents have children of their own.
+    const fromParent = (message: SubagentMessage) => message.origin === "main_agent";
     const agentTurn: AgentToolTurn = {
       name: input.name,
       async ask(question, execution) {
@@ -511,7 +510,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         if (!marked) return "unavailable";
         try {
           host.messaging?.questionAsked({ chatId: host.chatId, userId: host.userId });
-          return await mailArrived(turn, fromMain, execution.signal, host.toolTimeLeft) ? "answered" : "no_answer";
+          return await mailArrived(turn, fromParent, execution.signal, host.toolTimeLeft) ? "answered" : "no_answer";
         } finally {
           await host.setTurnState?.({ state: "running", turnId: input.turnId }).catch(() => false);
         }
@@ -519,8 +518,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       async waitForReply(from, execution) {
         // A foreground parent reads nothing until the turn ends: no wait can get its reply.
         if (from === MAIN_AGENT_NAME && input.mode === "foreground") return false;
-        const until = host.now() + SUBAGENT_REPLY_WAIT_MS;
-        return mailArrived(turn, (message) => from === MAIN_AGENT_NAME ? fromMain(message) : message.from === from, execution.signal,
+        const until = host.now() + SUBAGENT_FOLLOWUP_LIMITS.replyWaitMinutes * 60_000;
+        return mailArrived(turn, (message) => from === MAIN_AGENT_NAME ? fromParent(message) : message.from === from, execution.signal,
           () => host.now() < until && host.toolTimeLeft());
       }
     };
