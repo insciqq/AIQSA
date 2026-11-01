@@ -99,6 +99,13 @@
  *   for a per-run word at the end of the report and not to repeat a per-run note. Oracles: the message is accepted and read
  *   by the turn, the turn ends done, its report holds the word, and the note is in no message of the main chat (both matched
  *   inside SQL; they stay in memory). Paid calls: about 5–8 codex-lb requests in about 2–3 minutes.
+ * - Q: page reading across agents, one chat, only when named, on each Search route the stand has (client, then hosted). A background
+ *   `q-reader` makes 3 searches and reads a link of each with `fetch_url`, and the main agent reads 4 others from its report. Oracles:
+ *   more searches than the old limit of 2, no refusal of a link any agent's search found, and more than 5 pages in one answer.
+ *   Paid calls: about 8-12 codex-lb requests and 3 searches per route, in about 2-5 minutes.
+ * - R: when research starts, only when named: 10 Russian phrases, each in a new chat with Search on. A run that calls `start_research`
+ *   is stopped at once to save money. Oracle: each phrase went in its direction, reported by index. Paid calls: about 10-25 codex-lb
+ *   requests and a few searches, in about 5-10 minutes. This needs DEEPSEEK_API_KEY for the Search source, as Q does.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -159,13 +166,14 @@ import {
   type OracleVerdict, type ScenarioInteraction, type StandTarget
 } from "./browser-scenarios-support";
 import {
-  TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureTextModel, errorCode,
+  TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureSearchSource, ensureTextModel, errorCode,
   handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setWorkspaceEnabled, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
-  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, SCENARIO_R_PHRASES,
+  type PageReads, type RPhraseResult,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
@@ -191,10 +199,14 @@ type Context = Readonly<{
   marginSeconds: number;
   model: CatalogModel;
   options: SubagentHarnessOptions;
+  /** The Search routes Q and R run on: the client route, and the hosted one when the stand's model offers it. */
+  search: readonly SearchRoute[];
   second: CatalogModel | null;
   session: Session;
   target: StandTarget;
 }>;
+
+type SearchRoute = Readonly<{ mode: "all_selected" | "model_choice"; model: CatalogModel; name: string; optionId: string }>;
 
 /** What one scenario run created and started, for cleanup and for stopping its streams. */
 type Run = {
@@ -247,12 +259,14 @@ type SendAttempt = Readonly<{ code: string; ok: false } | { ok: true; runId: str
 /** One send as the composer would make it, now: a refusal comes back, an accepted send gives the admitted run's id. */
 async function trySend(ctx: Context, run: Run, chatId: string, text: string,
   files: readonly Readonly<{ attachmentId: string; fileName: string; type: "file" }>[] = [],
-  controls: Readonly<{ mcp?: Readonly<{ mode: "load_all" }>; workspace?: Readonly<{ enabled: boolean }> }> = {}): Promise<SendAttempt> {
+  controls: Readonly<{ mcp?: Readonly<{ mode: "load_all" }>; search?: SearchRoute; workspace?: Readonly<{ enabled: boolean }> }> = {}): Promise<SendAttempt> {
+  const { search, ...others } = controls;
   const leaf = await activeLeaf(ctx, chatId);
   const known = new Set((await mainRuns(ctx.db, chatId)).map((entry) => entry.id));
   const abort = new AbortController();
   const response = await request(ctx.session.api, `/api/chats/${encodeURIComponent(chatId)}/messages`, { body: {
-    content: { blocks: [{ text, type: "text" }, ...files] }, expectedActiveLeafId: leaf, ...runControls(ctx.model), ...controls
+    content: { blocks: [{ text, type: "text" }, ...files] }, expectedActiveLeafId: leaf, ...runControls(search?.model ?? ctx.model), ...others,
+    ...(search ? { searchPlan: { mode: search.mode, optionIds: [search.optionId] }, searchStrategy: undefined } : {})
   }, method: "POST", signal: abort.signal });
   if (!response.ok) return { code: await errorCode(response), ok: false };
   run.streams.push({ abort, drained: discard(response) });
@@ -1313,6 +1327,77 @@ async function scenarioP(ctx: Context, run: Run): Promise<Outcome> {
   return { success: checks.length === 0, usage };
 }
 
+/** The page reader's calls of one thread or of the main agent, by the outcome stored with each. */
+async function pageReads(db: PostgresClient, chatId: string, threadId: string | null): Promise<PageReads> {
+  const { rows } = await db.query<{ count: number; outcome: string | null }>(`SELECT c."result"->'rawPreview'->'fetchUrl'->>'outcome' AS "outcome", count(*)::int AS "count"
+    FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
+    WHERE r."chatId" = $1 AND c."toolName" = 'fetch_url' AND c."subagentThreadId" IS NOT DISTINCT FROM $2 GROUP BY 1`, [chatId, threadId]);
+  return Object.fromEntries(rows.map((row) => [safeCode(row.outcome) ?? "unknown", row.count]));
+}
+
+const Q_TURN_MS = 15 * 60_000;
+
+async function scenarioQ(ctx: Context, run: Run): Promise<Outcome> {
+  const started = Date.now();
+  const routes: Record<string, unknown>[] = [];
+  let failed = false;
+  let usage: Outcome["usage"] = null;
+  for (const route of ctx.search) {
+    const chat = await createScenarioChat(ctx.session.api, `Sub-agent scenario Q ${route.name}`);
+    run.chats.push(chat.id);
+    const first = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.Q.start(), [], { search: route });
+    if (!first.ok) fail(`send_${first.code}`);
+    await waitRun(ctx, first.ok ? first.runId : "");
+    const turn = await waitTurnEnded(ctx, chat.id, SUBAGENT_NAMES.reader, Q_TURN_MS);
+    await waitMainIdle(ctx, chat.id);
+    const second = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.Q.next(), [], { search: route });
+    if (!second.ok) fail(`send_${second.code}`);
+    const terminal = await waitRun(ctx, second.ok ? second.runId : "");
+    const evidence = await commonEvidence(ctx, run, chat.id);
+    usage = evidence.usage;
+    const threadId = (await threadIdsByName(ctx.db, chat.id)).get(SUBAGENT_NAMES.reader)?.at(-1) ?? null;
+    const tools = await toolRows(ctx.db, chat.id);
+    const verdict = oracleQ({ main: await pageReads(ctx.db, chat.id, null), reader: threadId ? await pageReads(ctx.db, chat.id, threadId) : {},
+      searches: tools.filter((row) => row.threadId === threadId && row.state === "complete" && /^search_(?:selected_engines|engine_[1-3])$/u.test(row.toolName)).length,
+      settled: evidence.settled, turn });
+    if (verdict.failed.length > 0) failed = true;
+    routes.push({ checksFailed: verdict.failed, oracleCounts: verdict.counts, route: route.name, terminal: terminal.status });
+  }
+  Object.assign(run.line, { routes, wallSeconds: seconds(started) });
+  return { success: !failed && routes.length > 0, usage };
+}
+
+const R_PHRASE_MS = 5 * 60_000;
+
+async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
+  const started = Date.now();
+  const route = ctx.search[0] ?? fail("search_route_missing");
+  const results: RPhraseResult[] = [];
+  for (const [index, phrase] of SCENARIO_R_PHRASES.entries()) {
+    const chat = await createScenarioChat(ctx.session.api, `Sub-agent scenario R ${index}`);
+    run.chats.push(chat.id);
+    const sent = await trySend(ctx, run, chat.id, phrase.text, [], { search: route });
+    if (!sent.ok) fail(`send_${sent.code}`);
+    const runId = sent.ok ? sent.runId : "";
+    // Started, or the run ended without starting: either answers this phrase.
+    const started_ = await poll(R_PHRASE_MS, async () => {
+      const { rows } = await ctx.db.query<{ count: number; status: string }>(`SELECT r."status"::text AS "status", (SELECT count(*)::int FROM "ModelRunToolCall" c
+        WHERE c."modelRunId" = r."id" AND c."toolName" = 'start_research') AS "count" FROM "ModelRun" r WHERE r."id" = $1`, [runId]);
+      const row = rows[0];
+      if ((row?.count ?? 0) > 0) return "started" as const;
+      return row && TERMINAL_RUN_STATES.has(row.status) ? "ended" as const : null;
+    }, "phrase_timeout", 1_000);
+    if (started_ === "started") await request(ctx.session.api, `/api/model-runs/${encodeURIComponent(runId)}/cancel`, { body: {}, method: "POST" }).catch(() => undefined);
+    const terminal = await waitRun(ctx, runId, R_PHRASE_MS);
+    results.push({ expected: phrase.start, index, started: started_ === "started", status: terminal.status });
+    await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
+  }
+  const verdict = oracleR(results);
+  const usage = usageByPurpose(await settledUsage(ctx.db, run.chats));
+  Object.assign(run.line, { checksFailed: verdict.failed, oracleCounts: verdict.counts, phrases: results, route: route.name, wallSeconds: seconds(started) });
+  return { success: verdict.failed.length === 0, usage };
+}
+
 const N_TURN_MS = 10 * 60_000;
 
 /** Uploads the document as the composer does without a Workspace: no scope. */
@@ -1545,6 +1630,8 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "N": outcome = await scenarioN(ctx, run); break;
       case "O": outcome = await scenarioO(ctx, run); break;
       case "P": outcome = await scenarioP(ctx, run); break;
+      case "Q": outcome = await scenarioQ(ctx, run); break;
+      case "R": outcome = await scenarioR(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
@@ -1613,10 +1700,21 @@ async function main() {
       }
       if (blind?.model.capabilities.imageInput) fail("text_model_has_image_input");
     }
+    // Q and R search for real: the DeepSeek client route always, and the codex-lb hosted route when its model offers one.
+    const search: SearchRoute[] = [];
+    if (scenarios.some((id) => SUBAGENT_SCENARIO_NEEDS[id].search)) {
+      const client = await ensureSearchSource(api, { kind: "deepseek_search_api", provider: "deepseek", secret: process.env.DEEPSEEK_API_KEY ?? fail("deepseek_key_required") });
+      search.push({ mode: "all_selected", model, name: "client", optionId: client });
+      if (process.env.AIQSA_SUBAGENTS_HOSTED_SEARCH === "1") {
+        const hostedModel = await ensureModel(api, { apiRoot: route.apiRoot, model: route.model }, secret, "Sub-agents hosted search model", { nativeSearch: true });
+        const hosted = await ensureSearchSource(api, { connectionId: hostedModel.connectionId, kind: "web_search" });
+        search.push({ mode: "model_choice", model: await catalogModel(api, hostedModel), name: "hosted", optionId: hosted });
+      }
+    }
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model, contextWindow: chatProvider.contextWindow,
       reused: chatProvider.reused, secondModel: second !== null, modelWithoutVision: blind !== null, restartHook: options.restart !== null,
       configuredBounds: target.configuredBounds, scenarios, runs: options.runs });
-    const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, second,
+    const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, search, second,
       session: { api }, target };
     for (let index = 1; index <= options.runs; index += 1) {
       for (const id of scenarios) records.push(await runScenario(ctx, id, index));

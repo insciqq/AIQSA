@@ -8,6 +8,7 @@ import { validateUpload } from "../lib/server/uploads/validation";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
+  SCENARIO_R_PHRASES, oracleQ, oracleR,
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
   SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
@@ -49,7 +50,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(18);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(20);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
@@ -891,5 +892,27 @@ describe("summary", () => {
     expect(s6BaselineRows()[0]?.costEstimates?.frontier.noCache).toBe(13.8424);
     expect(S6_BASELINE).toHaveLength(2);
     expect(subagentScenarioSummary("A", []).baseline).toBeUndefined();
+  });
+});
+
+describe("scenarios Q and R", () => {
+  const done = { state: "done" } as never;
+  const good = { main: { read: 4 }, reader: { read: 3 }, searches: 3, settled: true, turn: done };
+
+  it("Q passes on seven reads across two agents, and names each failure", () => {
+    expect(oracleQ(good).failed).toEqual([]);
+    expect(oracleQ({ ...good, reader: { fetch_url_not_in_conversation: 3 } }).failed).toEqual(expect.arrayContaining(["reader_read_nothing", "reader_link_refused"]));
+    expect(oracleQ({ ...good, main: { fetch_url_not_in_conversation: 1, read: 3 } }).failed).toContain("other_agents_link_refused");
+    expect(oracleQ({ ...good, main: { fetch_url_limit_reached: 2, read: 2 } }).failed).toEqual(expect.arrayContaining(["no_more_than_five_pages", "page_limit_still_applies"]));
+    expect(oracleQ({ ...good, searches: 2 }).failed).toContain("searches_stopped_early");
+  });
+
+  it("R compares each phrase with its direction, by index only", () => {
+    expect(SCENARIO_R_PHRASES.filter((phrase) => phrase.start)).toHaveLength(5);
+    expect(SCENARIO_R_PHRASES).toHaveLength(10);
+    const verdict = oracleR([{ expected: true, index: 0, started: false, status: "complete" }, { expected: false, index: 5, started: true, status: "cancelled" },
+      { expected: true, index: 1, started: true, status: "cancelled" }]);
+    expect(verdict.failed).toEqual(["phrase_0_not_started", "phrase_5_started"]);
+    expect(verdict.counts).toEqual({ asked: 3, correct: 1, started: 2 });
   });
 });
