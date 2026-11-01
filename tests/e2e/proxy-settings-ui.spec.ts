@@ -299,7 +299,7 @@ test("an administrator adds, checks, edits and deletes a proxy", async ({ browse
     const elsewhere = await context.request.patch(`${API.administrator}/${current.id}`, { data: { expectedVersion: current.version, name: renamed } });
     expect(elsewhere.ok()).toBe(true);
     await row.getByRole("switch", { name: `Use ${name}` }).click();
-    const movedRow = panel.getByRole("listitem").filter({ has: panel.getByRole("heading", { name: renamed, exact: true }) });
+    const movedRow = panel.getByRole("listitem").filter({ has: page.getByRole("heading", { name: renamed, exact: true }) });
     await expect(movedRow.getByRole("alert")).toContainText("changed somewhere else");
     await expect(movedRow.getByRole("switch", { name: `Use ${renamed}` })).toHaveAttribute("aria-checked", "true");
 
