@@ -41,7 +41,7 @@ export type ResearchRunScope = Readonly<{
   researchRunId: string;
   /** The current run. Its rows of research are keyed by `researchRunId`, so an approval continuation reads what its turn wrote. */
   runId: string;
-  /** What agents of this run really opened. */
+  /** What agents of this research really opened. */
   sources: ResearchGateContext["sources"];
   /** What the user wrote into this answer, delivered yet or not: during the plan window that counts as an edit. */
   userFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;
