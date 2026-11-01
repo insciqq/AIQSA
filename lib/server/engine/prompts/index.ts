@@ -20,6 +20,7 @@ export {
 } from "./harness";
 export {
   SUBAGENT_ROLE_SECTION,
+  subagentAgentMessageText,
   subagentFollowupText,
   subagentTurnText,
   subagentsPromptSection,

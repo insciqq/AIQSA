@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
+import { RUN_FOLLOWUP_REVISION_MAX, SUBAGENT_FOLLOWUP_LIMITS, SUBAGENT_WAIT_REASONS } from "../../../contracts/subagents";
 import { decodeSubagentChatThreads, decodeSubagentThreadView } from "../../../contracts/subagentViews";
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { createNativeOrphanFinder } from "../../engine/recovery";
+import { createSubagentThreadStore } from "../../engine/subagents/threadStore";
 import { ActiveMessageMutationConflictError } from "../../messages/handlers";
 import { createPrismaMessageBranchRepository } from "../../messages/prismaRepository";
 import { prisma } from "../../prisma";
@@ -185,7 +187,8 @@ describe("background sub-agent runs on PostgreSQL", () => {
     expect(runner.turns.get(turnId)?.messages).toHaveLength(1);
     expect(await prisma.runFollowup.count({ where: { origin: "main_agent" } })).toBeGreaterThanOrEqual(1);
     const view = decodeSubagentThreadView(await views.threadView({ chatId: f.chatId, threadId: thread.threadId, userId: f.userId }));
-    expect(view?.turns[0]).toMatchObject({ brief: "Brief for shop", messages: [{ delivery: "delivered", text: "Check delivery too" }],
+    // Accepted, and stamped only once the sub-agent reads it.
+    expect(view?.turns[0]).toMatchObject({ brief: "Brief for shop", messages: [{ delivery: "accepted", text: "Check delivery too" }],
       mode: "background", state: "running" });
     // The mailbox orders itself and never moves the run's follow-up revision, which a completing run's guard checks
     // (`ModelRun_followup_completion_guard`), so a sub-agent that ends after a message still completes.
@@ -200,6 +203,127 @@ describe("background sub-agent runs on PostgreSQL", () => {
       .toEqual({ status: "complete" });
     expect(decodeSubagentThreadView(await views.threadView({ chatId: f.chatId, threadId: thread.threadId, userId: f.userId }))?.turns[0])
       .toMatchObject({ report: "Two shops", state: "done" });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it("keeps a foreground turn's mailbox on the run hosting it, apart from that run's own follow-ups", async () => fixture(async (f) => {
+    const thread = await f.thread("front");
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: f.main.runId,
+      parentToolCallId: thread.callId, provider: "fake", state: "running", threadId: thread.threadId, userId: f.userId } });
+    const { control: background } = control();
+    const send = { chatId: f.chatId, from: "scout", nonce: "m-1", parentRunId: f.main.runId, text: "It costs 42", to: "front", userId: f.userId };
+    expect(await background.send(send)).toEqual({ kind: "delivered" });
+    expect(await background.send(send)).toEqual({ kind: "delivered" });
+    const rows = await prisma.runFollowup.findMany({ where: { modelRunId: f.main.runId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ authorName: "scout", deliveredAt: null, origin: "subagent_message", subagentTurnId: turn.id });
+    expect(rows[0]!.ordinal).toBeGreaterThan(RUN_FOLLOWUP_REVISION_MAX);
+    // The main agent's answer neither reads it nor waits for it, and the user's own follow-ups keep their ordinals.
+    expect((await followups.load({ runId: f.main.runId, userId: f.userId }))?.entries).toEqual([]);
+    expect(await followups.accept({ assistantMessageId: f.main.assistantMessageId, chatId: f.chatId, nonce: "user-1", runId: f.main.runId,
+      text: "Prefer cheaper ones", userId: f.userId })).toMatchObject({ entry: { ordinal: 1 }, kind: "accepted" });
+    // A turn's mailbox is the thread's until it is read: another turn reads what this one did not, once.
+    const threads = createSubagentThreadStore(prisma);
+    const scope = { chatId: f.chatId, runIds: [f.main.runId], threadId: thread.threadId, userId: f.userId };
+    expect(await threads.unreadMessages(scope)).toEqual([{ from: "scout", nonce: "m-1", origin: "subagent_message", text: "It costs 42" }]);
+    await threads.markMessagesRead({ ...scope, nonces: ["m-1"] });
+    expect(await threads.unreadMessages(scope)).toEqual([]);
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it("lets a run complete with a mailbox message its turn never read", async () => fixture(async (f) => {
+    const thread = await f.thread("front");
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: f.main.runId,
+      parentToolCallId: thread.callId, provider: "fake", state: "running", threadId: thread.threadId, userId: f.userId } });
+    expect(await store.insertMailbox({ authorName: "scout", chatId: f.chatId, nonce: "m-1", origin: "subagent_message", text: "Unread", turnId: turn.id,
+      userId: f.userId })).toBe("inserted");
+    // A moved revision is what makes `ModelRun_followup_completion_guard` look at a run's unread rows.
+    await prisma.modelRun.update({ data: { followupClosedAt: new Date(), followupRevision: 1 }, where: { id: f.main.runId } });
+    await expect(prisma.modelRun.update({ data: { status: "complete" }, where: { id: f.main.runId } })).resolves.toMatchObject({ status: "complete" });
+  }));
+
+  it("stops a ping-pong at the recipient's bound and refuses a turn that ended", async () => fixture(async (f) => {
+    const thread = await f.thread("busy");
+    const admitted = await store.admit(admission(f, thread));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    const message = { authorName: "scout", chatId: f.chatId, origin: "subagent_message" as const, text: "Again", turnId: admitted.turnId, userId: f.userId };
+    for (let index = 0; index < SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn; index += 1) {
+      expect(await store.insertMailbox({ ...message, nonce: `m-${index}` })).toBe("inserted");
+    }
+    expect(await store.insertMailbox({ ...message, nonce: "one-more" })).toBe("full");
+    // The main agent's messages are counted apart, and a repeat of one that went in finds it.
+    expect(await store.insertMailbox({ ...message, authorName: "Main agent", nonce: "main-1", origin: "main_agent" })).toBe("inserted");
+    expect(await store.insertMailbox({ ...message, nonce: "m-0" })).toBe("exists");
+    await store.settle({ chatId: f.chatId, result: endedSubagentResult("busy"), turnId: admitted.turnId, userId: f.userId });
+    expect(await store.insertMailbox({ ...message, nonce: "late" })).toBe("closed");
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it("takes a sub-agent's message into the running answer, and carries one that answer never read into the next", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, userId: f.userId };
+    const message = { ...scope, authorName: "scout", nonce: "m-1", parentRunId: f.main.runId, text: "It costs 42" };
+    expect(await store.messageMainAgent(message)).toBe("delivered");
+    expect(await store.messageMainAgent(message)).toBe("delivered");
+    const batch = await followups.load({ runId: f.main.runId, userId: f.userId });
+    expect(batch).toMatchObject({ entries: [{ delivery: "accepted", origin: "subagent_message" }], revision: 1 });
+    expect(batch!.entries[0]!.text).toContain("<agent_message from=\"scout\">\nIt costs 42");
+    // Never the user's clarification.
+    expect((await repository.getRunOutcomeForUser(f.main.runId, f.userId))?.followups?.entries).toEqual([]);
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    expect(await store.messageMainAgent({ ...message, nonce: "m-2" })).toBe("closed");
+    const owed = await store.owedCallbacks(scope);
+    expect(owed?.strandedMessageIds).toHaveLength(1);
+    expect(owed?.mainRun).toBeNull();
+  }));
+
+  it("owes a waiting turn's question like a callback, and its own end a callback of its own", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, userId: f.userId };
+    const threads = createSubagentThreadStore(prisma);
+    const thread = await f.thread("asker");
+    const admitted = await store.admit(admission(f, thread));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    await prisma.modelRunToolCall.create({ data: { arguments: { question: "Which size?" }, modelRunId: admitted.runId, ordinal: 0, providerCallId: "ask-1",
+      roundIndex: 1, state: "running", subagentThreadId: thread.threadId, subagentTurnId: admitted.turnId, toolName: "ask_parent" } });
+    await threads.setActiveState({ ...scope, reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting", turnId: admitted.turnId });
+    expect((await store.owedCallbacks(scope))?.activeBranch).toEqual([{ name: "asker", question: "Which size?", turnId: admitted.turnId }]);
+    expect(await store.deliverIntoRun({ ...scope, runId: f.main.runId, turnId: admitted.turnId })).toBe("delivered");
+    expect((await store.owedCallbacks(scope))?.activeBranch).toEqual([]);
+    expect(await followups.load({ runId: f.main.runId, userId: f.userId })).toMatchObject({ entries: [{ delivery: "accepted", origin: "subagent_question" }] });
+    // The answer ended without reading it: owed again, like a callback.
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    expect((await store.owedCallbacks(scope))?.activeBranch).toEqual([{ name: "asker", question: "Which size?", turnId: admitted.turnId }]);
+    await prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId, turnIds: [admitted.turnId],
+      userMessageId: f.main.assistantMessageId }));
+    expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: admitted.turnId } })).callbackRunId).toBe(f.main.runId);
+    // Stopped while it waits: the claim was the question's, so its end is still owed to the main agent.
+    await store.settle({ ...scope, result: endedSubagentResult("asker", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: admitted.turnId });
+    expect((await store.owedCallbacks(scope))?.activeBranch).toMatchObject([{ name: "asker", result: { state: "stopped" }, turnId: admitted.turnId }]);
+  }));
+
+  it("resumes a waiting turn with its claim cleared, and recovery finds a question left owed", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, userId: f.userId };
+    const threads = createSubagentThreadStore(prisma);
+    const thread = await f.thread("asker");
+    const admitted = await store.admit(admission(f, thread));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    await threads.setActiveState({ ...scope, reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting", turnId: admitted.turnId });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    expect(await store.findOwedCallbackChats({ chatId: f.chatId, endedBefore: new Date(Date.now() + 60_000), limit: 10 }))
+      .toEqual([{ chatId: f.chatId, turnIds: [admitted.turnId], userId: f.userId }]);
+    await prisma.subagentTurn.update({ data: { callbackRunId: f.main.runId }, where: { id: admitted.turnId } });
+    await threads.setActiveState({ ...scope, state: "running", turnId: admitted.turnId });
+    expect(await prisma.subagentTurn.findUniqueOrThrow({ select: { callbackRunId: true, reasonCode: true, state: true }, where: { id: admitted.turnId } }))
+      .toEqual({ callbackRunId: null, reasonCode: null, state: "running" });
+  }));
+
+  it("lists the branch's agents for one of them, content-light, and nothing for a stranger", async () => fixture(async (f) => {
+    const thread = await f.thread("shop");
+    const admitted = await store.admit(admission(f, thread));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    const listing = await views.branchAgents({ chatId: f.chatId, parentRunId: f.main.runId, userId: f.userId });
+    expect(listing?.agents).toMatchObject([{ name: "main", parent: null, state: "running" },
+      { brief: "Brief for shop", mode: "background", name: "shop", parent: "main", state: "running", steps: [] }]);
+    expect(await views.branchAgents({ chatId: f.chatId, parentRunId: f.main.runId, userId: f.otherId })).toBeNull();
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 

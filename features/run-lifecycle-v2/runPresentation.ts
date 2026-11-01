@@ -412,6 +412,19 @@ export function describeToolCallV2(
   if (origin === "tool" && (call.toolName === "call_subagent" || call.toolName === "stop_subagent")) {
     return describeSubagentCallV2(call, phase);
   }
+  // What a sub-agent does with the other agents of its chat, in its thread's steps.
+  if (origin === "tool" && call.toolName === "list_agents") {
+    if (phase === "failed") return "Could not look at the other agents";
+    return running ? "Looking at what the other agents do" : "Looked at what the other agents do";
+  }
+  if (origin === "tool" && call.toolName === "send_agent_message") {
+    if (phase === "failed") return "Could not write to another agent";
+    return running ? "Writing to another agent" : "Wrote to another agent";
+  }
+  if (origin === "tool" && call.toolName === "ask_parent") {
+    if (phase === "failed") return "Could not ask the main agent";
+    return running ? "Waiting for the main agent's answer" : "Asked the main agent";
+  }
   // The agent handed the live browser to the user (`features/browser-live/`).
   if ((origin === "tool" || origin === "workspace") && safeToolName(call.toolName) === "browser_handoff") {
     if (phase === "failed") return "Browser handoff failed";

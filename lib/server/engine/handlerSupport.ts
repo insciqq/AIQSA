@@ -12,7 +12,7 @@ import { processBootedAt, reconcileNativeRuns, type NativeRecoveryDeps } from ".
 import type { ToolRegistryServices } from "./toolRegistry";
 import type { SubagentRunPorts } from "./subagents/runSubagents";
 import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
-import type { BrowserAgentIdentity, SubagentBackgroundControl, SubagentTypeResolver } from "../subagents/ports";
+import type { BrowserAgentIdentity, SubagentBackgroundControl, SubagentMessaging, SubagentTypeResolver } from "../subagents/ports";
 import { subagentManagementToolNames } from "../subagents/managementTools";
 
 /**
@@ -35,7 +35,7 @@ export type NativeEngineHandlerDeps = Readonly<{
    * chats only, never a Telegram turn or a scheduled occurrence) and the user's custom types. The browser identity
    * comes from the run's own Workspace coordinator.
    */
-  subagents?: Readonly<{ background?: () => SubagentBackgroundControl; types?: SubagentTypeResolver }>;
+  subagents?: Readonly<{ background?: () => SubagentBackgroundControl; messaging?: () => SubagentMessaging; types?: SubagentTypeResolver }>;
   /** The owners of the harness and self-service tools (`defaultNativeToolServices`). */
   tools?: Pick<ToolRegistryServices, "secrets" | "selfService">;
 }>;
@@ -59,8 +59,8 @@ export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
 }
 
 /**
- * The sub-agent ports one run gets: background turns only in a web or Assistant chat, the runner's custom types in
- * every run, and the browser identity of its Workspace coordinator, whose release frees an agent's browser slot when
+ * The sub-agent ports one run gets: background turns only in a web or Assistant chat, messaging and the runner's custom
+ * types in every run, and the browser identity of its Workspace coordinator, whose release frees an agent's browser slot when
  * its turn ends. Absent ports are unavailable (`callTools.ts`).
  */
 export function subagentRunPorts(native: NativeEngineHandlerDeps, input: Readonly<{ scheduled: boolean; telegram: boolean;
@@ -74,6 +74,7 @@ export function subagentRunPorts(native: NativeEngineHandlerDeps, input: Readonl
   return {
     ...(background ? { background } : {}),
     ...(browserIdentity ? { browserIdentity } : {}),
+    ...(native.subagents?.messaging ? { messaging: native.subagents.messaging() } : {}),
     ...(native.subagents?.types ? { types: native.subagents.types } : {})
   };
 }

@@ -425,11 +425,11 @@ describe("call_subagent with the background port", () => {
 
   it("refuses a message to a full mailbox visibly", async () => {
     const background = new FakeSubagentBackgroundControl();
-    vi.spyOn(background, "deliver").mockRejectedValue(Object.assign(new Error("mailbox_full"), { code: "subagent_message_invalid" }));
+    vi.spyOn(background, "deliver").mockRejectedValue(Object.assign(new Error("mailbox_full"), { code: SUBAGENT_ERROR_CODES.messageLimit }));
     const ctx = setup({ background, found: visible({ active: turn({ mode: "background", parentRunId: "run", state: "running" }) }) });
     const result = await executeCallSubagent(ctx.deps, execution({ message: "One more thing", name: "shop" }));
     expect(result.status).toBe("error");
-    expect(value(result).error).toBe(SUBAGENT_ERROR_CODES.messageInvalid);
+    expect(value(result).error).toBe(SUBAGENT_ERROR_CODES.messageLimit);
   });
 });
 

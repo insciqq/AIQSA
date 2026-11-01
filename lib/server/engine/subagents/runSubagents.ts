@@ -13,6 +13,7 @@ import type {
   BrowserAgentIdentity,
   SubagentBackgroundControl,
   SubagentBinding,
+  SubagentMessaging,
   SubagentRunner,
   SubagentTurnInput,
   SubagentTypeResolver
@@ -52,6 +53,8 @@ import type { SubagentThreadStore } from "./threadStore";
 export type SubagentRunPorts = Readonly<{
   background?: SubagentBackgroundControl;
   browserIdentity?: BrowserAgentIdentity;
+  /** How the run's agents see and reach each other, whatever kind of run it is. */
+  messaging?: SubagentMessaging;
   types?: SubagentTypeResolver;
 }>;
 
@@ -214,6 +217,8 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
       ...(hostRunId ? { hostRunId } : {}), runId: input.runId, ...(signal ? { signal } : {}), userId: input.scope.userId });
   };
   const route = routeFor(null);
+  const scopeOf = { chatId: input.chatId, userId: input.scope.userId };
+  const messaging = input.ports?.messaging;
   const foregroundHost: SubagentHost = {
     buildRegistry: input.buildRegistry,
     branchRunIds: input.branchRunIds,
@@ -224,6 +229,10 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     deadlineSignal: input.deadline,
     ...(input.faults ? { faults: input.faults } : {}),
     followupTexts: input.followupTexts,
+    ...(messaging ? { mailbox: {
+      markRead: (read) => store.markMessagesRead({ ...scopeOf, ...read }),
+      unread: (thread) => store.unreadMessages({ ...scopeOf, ...thread })
+    }, messaging } : {}),
     maxToolCalls: input.budgets.maxToolCalls,
     maxToolRounds: input.budgets.maxToolRounds,
     now: input.now,
@@ -237,7 +246,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     runContextItems: input.runContextItems,
     saveResult: input.saveResult,
     ...(input.secrets ? { secrets: input.secrets } : {}),
-    setTurnState: ({ state, turnId }) => store.setActiveState({ chatId: input.chatId, state, turnId, userId: input.scope.userId }),
+    setTurnState: (turn) => store.setActiveState({ ...scopeOf, ...turn }),
     settleTurn: ({ result, turnId }) => store.settle({ chatId: input.chatId, result, turnId, userId: input.scope.userId }),
     settleUsage: async () => { await input.usage.settle(); },
     signal: input.signal,
@@ -274,6 +283,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     chatId: input.chatId,
     deadlineAt: () => new Date(input.deadlineAt),
     defaultType,
+    ...(messaging ? { messaging } : {}),
     parent,
     runId: input.runId,
     runner,

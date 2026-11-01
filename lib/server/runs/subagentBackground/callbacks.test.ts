@@ -144,6 +144,60 @@ describe("background sub-agent callbacks", () => {
     expect(admitWakeUp).not.toHaveBeenCalled();
   });
 
+  describe("a turn waiting for an answer", () => {
+    function asking(store: ReturnType<typeof setup>["store"], overrides: Partial<MemoryTurn> = {}) {
+      const turn = store.addEnded({ ...scope, name: "asker", result: endedSubagentResult("asker") });
+      Object.assign(turn, { endedAt: null, question: "Which size?", result: null, state: "waiting" }, overrides);
+      return turn;
+    }
+
+    it("goes into the running answer like a callback, once", async () => {
+      const { admitWakeUp, callbacks, store } = setup();
+      store.mainRuns.push({ callbacks: [], chatId: scope.chatId, open: true, runId: "main-1", status: "streaming" });
+      const turn = asking(store);
+      const report = await callbacks.flush(scope);
+      expect(report.dispositions.get(turn.turnId)).toBe("delivered");
+      expect(turn.callbackRunId).toBe("main-1");
+      expect(store.mainRuns[0]!.callbacks[0]!.text).toContain("<agent_question from=\"asker\">\nWhich size?");
+      expect(store.mainRuns[0]!.callbacks[0]!.text).toContain("call_subagent");
+      expect((await callbacks.flush(scope)).dispositions.size).toBe(0);
+      expect(admitWakeUp).not.toHaveBeenCalled();
+    });
+
+    it("wakes a main agent that has ended, and stays owed when usage limits refuse", async () => {
+      const woken = setup();
+      const turn = asking(woken.store);
+      expect((await woken.callbacks.flush(scope)).dispositions.get(turn.turnId)).toBe("wake_up");
+      expect(woken.wakeUps[0]).toMatchObject({ turnIds: [turn.turnId] });
+      expect(woken.wakeUps[0]!.text).toContain("waiting for your answer");
+      expect(woken.wakeUps[0]!.text).toContain("Which size?");
+
+      const limited = setup(["usage_limited"]);
+      const held = asking(limited.store);
+      expect((await limited.callbacks.flush(scope)).dispositions.get(held.turnId)).toBe("pending");
+      expect(held.callbackRunId).toBeNull();
+    });
+
+    it("wakes nothing for a branch that is no longer active", async () => {
+      const { admitWakeUp, callbacks, store } = setup();
+      const turn = asking(store, { parentAnswerId: "answer-old" });
+      store.inactiveAnswers.add("answer-old");
+      expect((await callbacks.flush(scope)).dispositions.get(turn.turnId)).toBe("inactive_branch");
+      expect(admitWakeUp).not.toHaveBeenCalled();
+    });
+  });
+
+  it("carries a message an ended answer left unread into the next one, and wakes nothing for it", async () => {
+    const { admitWakeUp, callbacks, store } = setup();
+    store.strandedMessages.push({ chatId: scope.chatId, id: "stranded-1" });
+    await callbacks.flush(scope);
+    expect(store.movedMessages).toEqual([]);
+    expect(admitWakeUp).not.toHaveBeenCalled();
+    store.mainRuns.push({ callbacks: [], chatId: scope.chatId, open: true, runId: "main-2", status: "streaming" });
+    await callbacks.flush(scope);
+    expect(store.movedMessages).toEqual([{ followupId: "stranded-1", runId: "main-2" }]);
+  });
+
   it("wakes nothing in a chat being deleted", async () => {
     const { admitWakeUp, callbacks, store } = setup();
     const turn = store.addEnded({ ...scope, name: "a", result: endedSubagentResult("a") });

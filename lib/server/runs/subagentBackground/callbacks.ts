@@ -25,7 +25,8 @@ import type { SubagentBackgroundStore } from "./store";
  *   (`SUBAGENT_CALLBACK_RECHECK_MS`), so no wake-up waits for recovery's sweep.
  * Every claim is `callbackRunId IS NULL` compare-and-set (`store.ts`), so a
  * turn's end, a main run's terminal flush and recovery may all try and only
- * one delivers.
+ * one delivers. A turn waiting for an answer owes its question through all of
+ * this like a callback, so a question to a main agent that has ended wakes it.
  */
 
 /** How long a callback waits for others to share its wake-up turn. */
@@ -74,7 +75,7 @@ export function createSubagentCallbacks(deps: Readonly<{
   admitWakeUp: SubagentWakeUpAdmitter;
   coalesceMs?: number;
   recheckMs?: readonly number[];
-  store: Pick<SubagentBackgroundStore, "deliverIntoRun" | "owedCallbacks">;
+  store: Pick<SubagentBackgroundStore, "deliverIntoRun" | "moveMessageIntoRun" | "owedCallbacks">;
 }>): SubagentCallbacks {
   const coalesceMs = deps.coalesceMs ?? SUBAGENT_CALLBACK_COALESCE_MS;
   const recheckMs = deps.recheckMs ?? SUBAGENT_CALLBACK_RECHECK_MS;
@@ -89,6 +90,12 @@ export function createSubagentCallbacks(deps: Readonly<{
     for (let round = 0; round < FLUSH_ATTEMPTS; round += 1) {
       const owed = await deps.store.owedCallbacks(scope);
       if (!owed) return { chatGone: true, dispositions, retryable };
+      // A message an answer ended without reading goes into the next one and wakes nothing: it asks for no answer.
+      if (owed.mainRun && round === 0) {
+        for (const followupId of owed.strandedMessageIds ?? []) {
+          await deps.store.moveMessageIntoRun({ ...scope, followupId, runId: owed.mainRun.id });
+        }
+      }
       for (const turnId of owed.inactiveTurnIds) dispositions.set(turnId, "inactive_branch");
       const callbacks = owed.activeBranch.filter((callback) => !dispositions.has(callback.turnId) ||
         dispositions.get(callback.turnId) === "pending");
@@ -193,7 +200,8 @@ export function createSubagentCallbacks(deps: Readonly<{
       if (report.chatGone) return "inactive_branch";
       // Absent: another flush delivered it before this one read the owed list.
       return report.dispositions.get(callback.turnId) ?? "delivered";
-    }
+    },
+    flush
   };
 
   return Object.freeze({

@@ -10,9 +10,9 @@ import { describeToolCallV2, planCallHiddenV2, runWaitingPhraseV2, stepDurationS
 import { workspaceActiveLabelV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { isActiveSubagentState } from "@/lib/contracts/subagents";
-import type { SubagentThreadSummary, SubagentTurnMessage, SubagentTurnView } from "@/lib/contracts/subagentViews";
+import type { SubagentThreadSummary, SubagentTurnView } from "@/lib/contracts/subagentViews";
 import { formatChatRoutePath } from "@/lib/domain/chatRoute";
-import { subagentReasonText, subagentStatePresentation } from "./subagentPresentation";
+import { subagentMessageLabel, subagentReasonText, subagentStatePresentation } from "./subagentPresentation";
 import {
   SUBAGENT_POLL_INTERVAL_MS,
   refreshSubagentThreadView,
@@ -21,12 +21,6 @@ import {
   useSubagentStore,
   type SubagentThreadTarget
 } from "./subagentStore";
-
-const DELIVERY_LABELS: Readonly<Record<SubagentTurnMessage["delivery"], string>> = {
-  accepted: "Sent",
-  delivered: "Read by the sub-agent",
-  undelivered: "Not delivered"
-};
 
 function newer(left: SubagentThreadSummary | null, right: SubagentThreadSummary | null): SubagentThreadSummary | null {
   if (!left || !right) return left ?? right;
@@ -76,9 +70,9 @@ function turnWorkDurationMs(turn: SubagentTurnView): number | null {
 
 function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boolean; turn: SubagentTurnView }>) {
   const active = isActiveSubagentState(turn.state);
-  const state = subagentStatePresentation(turn.state, turn.outcome);
+  const state = subagentStatePresentation(turn.state, turn.outcome, turn.reason);
   const reason = subagentReasonText(turn.reason);
-  const liveLabel = !active ? null : turn.state === "waiting" ? "Waiting for you"
+  const liveLabel = !active ? null : turn.state === "waiting" ? state.label
     : workspaceActiveLabelV2(turn.workspaceActivity) ?? runningStepLabel(turn.toolActivity) ?? runWaitingPhraseV2(turn.id);
   return (
     <article className="v2-subagent-turn" data-state={turn.state} data-turn-id={turn.id}>
@@ -88,9 +82,7 @@ function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boo
       </div>
       {turn.messages.map((message, index) => (
         <div className="v2-subagent-brief" data-message="" key={`${message.createdAt}:${index}`}>
-          <div className="v2-subagent-brief-label">
-            Message from the main agent · {DELIVERY_LABELS[message.delivery]}
-          </div>
+          <div className="v2-subagent-brief-label">{subagentMessageLabel(message)}</div>
           <p>{message.text}</p>
         </div>
       ))}
@@ -147,9 +139,10 @@ function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boo
 
 /**
  * A sub-agent's thread, read-only (operator decision 2026-10-29): the main
- * agent's briefs and messages, its steps as an answer's process disclosure
- * shows them, its replies and state, Stop while it is active, and the way
- * back to the chat. It has no composer; writing to a sub-agent comes later.
+ * agent's briefs, the messages agents wrote it and it wrote them, its steps as
+ * an answer's process disclosure shows them, its replies and state, Stop while
+ * it is active, and the way back to the chat. It has no composer; writing to a
+ * sub-agent comes later.
  */
 export function SubagentThreadViewV2({
   onBack,
@@ -170,7 +163,7 @@ export function SubagentThreadViewV2({
   const view = entry?.view ?? null;
   const unavailable = entry?.status === "unavailable";
   const thread = unavailable ? null : newer(view?.thread ?? null, listed);
-  const state = thread ? subagentStatePresentation(thread.state, thread.outcome) : null;
+  const state = thread ? subagentStatePresentation(thread.state, thread.outcome, thread.reason) : null;
   const active = thread ? isActiveSubagentState(thread.state) : false;
   const chatHref = formatChatRoutePath({ chatId: target.chatId });
 

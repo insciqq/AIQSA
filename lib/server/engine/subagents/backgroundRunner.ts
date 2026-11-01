@@ -32,8 +32,11 @@ const ENDED_TURN_KEPT_MS = 60_000;
 /** A host and whether a background start of its run has been asked for (only such a host is kept after its run). */
 type HostEntry = { host: SubagentBackgroundHost; used: boolean };
 
-/** A foreground turn running in a main-agent run of this process, and how to stop it there. */
-type ForegroundEntry = Readonly<{ stop(reason: SubagentStopReason): Promise<EndedSubagentCallResult | null> }>;
+/** A foreground turn running in a main-agent run of this process, and how to reach it there. */
+type ForegroundEntry = Readonly<{
+  deliver(message: SubagentMessage): Promise<SubagentDeliveryOutcome>;
+  stop(reason: SubagentStopReason): Promise<EndedSubagentCallResult | null>;
+}>;
 
 type State = { foreground?: Map<string, ForegroundEntry>; hosts: Map<string, HostEntry>;
   timers: Map<string, ReturnType<typeof setTimeout>>; turns: Map<string, SubagentRunner> };
@@ -95,14 +98,14 @@ function foregroundTurns(): Map<string, ForegroundEntry> {
 }
 
 /**
- * A main-agent run's foreground runner, whose turns the thread Stop and Stop all reach like background ones
- * (`control.ts` stops a turn through `backgroundSubagentRunner.stop`): each turn it starts or continues is listed by
+ * A main-agent run's foreground runner, whose turns the thread Stop, Stop all and other agents' messages reach like
+ * background ones (`control.ts` goes through `backgroundSubagentRunner`): each turn it starts or continues is listed by
  * its id until it ends. The control finds the turn by its owner's scope before it asks, so the id alone names it.
  */
 export function withForegroundTurnStops<R extends SubagentRunner>(runner: R): R {
   const listed = async (handle: Promise<SubagentTurnHandle>) => {
     const started = await handle;
-    const entry: ForegroundEntry = { stop: (reason) => runner.stop(started, reason) };
+    const entry: ForegroundEntry = { deliver: (message) => runner.deliver(started, message), stop: (reason) => runner.stop(started, reason) };
     foregroundTurns().set(started.turnId, entry);
     void runner.wait(started).catch(() => undefined).finally(() => {
       if (foregroundTurns().get(started.turnId) === entry) foregroundTurns().delete(started.turnId);
@@ -152,7 +155,9 @@ export const backgroundSubagentRunner: SubagentRunner = Object.freeze({
   },
   async deliver(handle: SubagentTurnHandle, message: SubagentMessage): Promise<SubagentDeliveryOutcome> {
     const runner = state.turns.get(handle.turnId);
-    return runner ? runner.deliver(handle, message) : { kind: "not_found" };
+    if (runner) return runner.deliver(handle, message);
+    // A foreground turn runs in its main-agent run; on record either way, and read by the thread's next turn when not here.
+    return await foregroundTurns().get(handle.turnId)?.deliver(message) ?? { kind: "not_found" };
   },
   async stop(handle: SubagentTurnHandle, reason: SubagentStopReason) {
     const runner = state.turns.get(handle.turnId);

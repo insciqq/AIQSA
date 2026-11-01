@@ -319,6 +319,9 @@ describe("run lifecycle v2 presentation", () => {
     for (const origin of ["tool", "workspace"] as const) {
       const call = { origin, toolName: "browser_handoff" };
       expect(describeToolCallV2(call, "running")).toBe("Waiting for you in the browser");
+      expect(describeToolCallV2({ origin: "tool", toolName: "ask_parent" }, "running")).toBe("Waiting for the main agent's answer");
+      expect(describeToolCallV2({ origin: "tool", toolName: "send_agent_message" }, "settled")).toBe("Wrote to another agent");
+      expect(describeToolCallV2({ origin: "tool", toolName: "list_agents" }, "running")).toBe("Looking at what the other agents do");
       expect(describeToolCallV2(call, "settled")).toBe("Asked for your help in the browser");
       expect(describeToolCallV2(call, "cancelled")).toBe("Browser handoff stopped");
     }

@@ -110,6 +110,8 @@ describe("call_subagent results", () => {
       { ...ended, name: "Shop Amazon" },
       { ...ended, extra: true },
       { ...ended, report: 7 },
+      { ...ended, question: "" },
+      { ...ended, question: "x".repeat(SUBAGENT_LIMITS.agentMessageCharacters + 1) },
       { ...ended, resultHandle: "invalid" },
       { ...ended, resultUnavailableReason: "Invalid reason" },
       { ...ended, filesNotice: "unreviewed" },
@@ -119,6 +121,12 @@ describe("call_subagent results", () => {
       { continued: "no", kind: "started", name: "a", state: "running" }
     ];
     for (const value of refused) expect(decodeSubagentCallResult(value), JSON.stringify(value).slice(0, 80)).toBeNull();
+  });
+
+  it("keeps a hand-back's question, and a stored result from before it reads as it did", () => {
+    const handedBack = { ...ended, outcome: "blocked", question: "Which size?", reason: "needs_answer" };
+    expect(decodeSubagentCallResult(handedBack)).toEqual(handedBack);
+    expect(decodeSubagentCallResult(ended)).not.toHaveProperty("question");
   });
 
   it("keeps full reports, large approval handbacks and historical truncation markers decodable", () => {

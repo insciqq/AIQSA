@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SUBAGENT_LISTING_LIMITS } from "../../../contracts/subagents";
 import { decodeSubagentSummaryResponse, decodeSubagentThreadView } from "../../../contracts/subagentViews";
 import { toolActivityDescriptors, TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { runEndedToolCallResult } from "../toolLoopPersistence";
@@ -177,6 +178,77 @@ describe("subagentTurnWorkspaceActivity", () => {
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1")], definitions: null, runId: "run-1" })).toBeNull();
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [], definitions, runId: "run-1" })).toBeNull();
   });
+});
+
+describe("what an agent of the chat sees of the others", () => {
+  function listing(input: Readonly<{ calls?: readonly unknown[]; main?: unknown; threads: readonly unknown[] }>) {
+    const { client, tx } = fakeClient({ calls: input.calls ?? [], threads: input.threads });
+    const findFirst = vi.fn(async () => input.main ?? null);
+    Object.assign(tx, { modelRun: { findFirst: vi.fn(async (query: { where: { status?: unknown } }) =>
+      query.where.status ? findFirst() : { assistantMessageId: "answer-1" }), findMany: vi.fn(async () => []) } });
+    return { client, tx };
+  }
+
+  it("names every agent of the branch with its parent, state, brief, latest steps and report, active ones first", async () => {
+    const steps = Array.from({ length: 9 }, (_, index) => ({ outcome: "complete", summary: `step ${index}`, tool: "web_search" }));
+    const result = { approvals: [], files: [], kind: "ended", model: { effort: null, id: "m" }, name: "ended", outcome: "done",
+      report: "r".repeat(2_000), resultHandle: `tor1_${"a".repeat(32)}`, state: "done", steps };
+    const { client, tx } = listing({ calls: [runningCall("turn-a", { id: "tool-2" })], main: { id: "main-run" },
+      threads: [thread("ended", [turn("turn-b", "done", { result })]), thread("alpha", [turn("turn-a", "running")])] });
+    vi.mocked(tx.modelRunToolCall.findMany).mockImplementation((async (query: { where: { OR?: unknown; subagentTurnId?: unknown } }) => query.where.OR
+      ? [{ arguments: { message: "b".repeat(1_000) }, id: "call-turn-a", modelRunId: "parent-1" }]
+      : [runningCall("turn-a", { id: "tool-2" })]) as never);
+    const agents = await createSubagentViews(client).branchAgents({ chatId: "chat-1", parentRunId: "parent-1", userId: "user-1" });
+    expect(agents!.agents.map((agent) => [agent.name, agent.parent, agent.state])).toEqual([["main", null, "running"], ["alpha", "main", "running"], ["ended", "main", "done"]]);
+    const [, alpha, ended] = agents!.agents;
+    expect(alpha).toMatchObject({ briefTruncated: true, mode: "background", steps: [{ outcome: "running", tool: "web_search" }] });
+    expect(alpha!.brief).toHaveLength(SUBAGENT_LISTING_LIMITS.briefCharacters);
+    // A step is a line: the query it ran with stays out unless its projection shows it.
+    expect(JSON.stringify(alpha)).not.toContain("private query");
+    expect(ended).toMatchObject({ outcome: "done", reportTruncated: true, resultHandle: `tor1_${"a".repeat(32)}` });
+    expect(ended!.report).toHaveLength(SUBAGENT_LISTING_LIMITS.reportCharacters);
+    expect(ended!.steps.map((step) => step.summary)).toEqual(["step 3", "step 4", "step 5", "step 6", "step 7", "step 8"]);
+  });
+
+  it("says the main agent is idle, keeps to the bound, and reads nothing for a chat that is not the caller's", async () => {
+    const threads = Array.from({ length: SUBAGENT_LISTING_LIMITS.agents + 2 }, (_, index) => thread(`agent-${index}`, [turn(`turn-${index}`, "done")]));
+    const { client } = listing({ threads });
+    const agents = await createSubagentViews(client).branchAgents({ chatId: "chat-1", parentRunId: "parent-1", userId: "user-1" });
+    expect(agents!.agents[0]).toEqual({ name: "main", parent: null, state: "idle", steps: [] });
+    expect(agents!.agents).toHaveLength(SUBAGENT_LISTING_LIMITS.agents + 1);
+    expect(agents!.truncated).toBe(true);
+    const { client: gone, tx } = listing({ threads });
+    tx.chat.findFirst.mockResolvedValue(null as never);
+    expect(await createSubagentViews(gone).branchAgents({ chatId: "chat-1", parentRunId: "parent-1", userId: "user-2" })).toBeNull();
+    expect(tx.subagentThread.findMany).not.toHaveBeenCalled();
+  });
+});
+
+it("shows what a turn received and wrote as rows of its thread, in order, naming the other agent", async () => {
+  const row = thread("alpha", [turn("turn-a", "running")]);
+  const { client, tx } = fakeClient({ threads: [row] });
+  Object.assign(tx.subagentThread, { findFirst: vi.fn(async () => row) });
+  const later = new Date(at.getTime() + 1_000);
+  const calls = [
+    { arguments: { message: "Mine is 7", to: "beta" }, modelRunId: "run-turn-a", startedAt: later, state: "complete", subagentTurnId: "turn-a", toolName: "send_agent_message" },
+    { arguments: { message: "Refused", to: "beta" }, modelRunId: "run-turn-a", startedAt: later, state: "error", subagentTurnId: "turn-a", toolName: "send_agent_message" },
+    { arguments: { question: "Which size?" }, modelRunId: "run-turn-a", startedAt: new Date(at.getTime() + 2_000), state: "running", subagentTurnId: "turn-a",
+      toolName: "ask_parent" }
+  ];
+  const read = vi.fn(async () => [
+    { authorName: "beta", createdAt: at, deliveredAt: at, modelRunId: "run-turn-a", origin: "subagent_message", subagentTurnId: "turn-a", text: "It is 42" },
+    { authorName: "Main agent", createdAt: new Date(at.getTime() + 3_000), deliveredAt: null, modelRunId: "run-turn-a", origin: "main_agent", subagentTurnId: "turn-a", text: "Size M." }
+  ]);
+  tx.modelRunToolCall.findMany.mockResolvedValue(calls as never);
+  Object.assign(tx, { modelRun: { findMany: vi.fn(async () => []) }, runFollowup: { findMany: read } });
+  const view = await createSubagentViews(client).threadView({ chatId: "chat-1", threadId: "alpha", userId: "user-1" });
+  expect(view!.turns[0]!.messages).toEqual([
+    { createdAt: at.toISOString(), delivery: "delivered", from: "beta", text: "It is 42" },
+    { createdAt: later.toISOString(), delivery: "accepted", text: "Mine is 7", to: "beta" },
+    { createdAt: new Date(at.getTime() + 2_000).toISOString(), delivery: "accepted", question: true, text: "Which size?", to: "main" },
+    { createdAt: new Date(at.getTime() + 3_000).toISOString(), delivery: "accepted", text: "Size M." }
+  ]);
+  expect(decodeSubagentThreadView(view)?.turns[0]?.messages).toEqual(view!.turns[0]!.messages);
 });
 
 it("returns the full report in the thread view", async () => {
