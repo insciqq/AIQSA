@@ -17,6 +17,7 @@ import { checkDocs, runDocsCheck } from "./docs-check.mjs";
 import {
   AGENT_DOC_BUDGETS,
   HANDWRITTEN_AGENT_DOCS,
+  INSTRUCTION_BUDGETS,
   REQUIRED_DOCS
 } from "./docs-manifest.mjs";
 
@@ -140,10 +141,11 @@ describe("documentation sanity check", () => {
 
   it("also bounds instructions outside agent_docs", () => {
     const root = fixture();
-    write(root, "AGENTS.md", Array(1701).fill("word").join(" "));
+    const budget = INSTRUCTION_BUDGETS.find(({ filename }) => filename === "AGENTS.md")!.words;
+    write(root, "AGENTS.md", Array(budget + 1).fill("word").join(" "));
 
     expect(checkDocs(root)).toEqual([
-      "AGENTS.md: 1701 words exceed the 1700-word instruction budget"
+      `AGENTS.md: ${budget + 1} words exceed the ${budget}-word instruction budget`
     ]);
   });
 

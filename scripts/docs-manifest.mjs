@@ -20,18 +20,19 @@ export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
 // or edited. Each rule there is a symlink to the agent document that carries the frontmatter.
 export const AGENT_RULES_DIRECTORY = ".claude/rules";
 
-// Budgets leave little headroom on purpose: when a document outgrows them, delete what the code
-// already says instead of compressing the prose.
+// Budgets are an alarm, not a target: when a document outgrows them, delete what the code already
+// says. A rule the code cannot show (an operator decision, an accepted risk, an invariant with its
+// reason) is never cut to fit; raise the budget instead (operator decision 2026-11-01).
 export const AGENT_DOC_BUDGETS = Object.freeze({
   files: 16,
   nonEmptyLines: 900,
   nonEmptyLinesPerFile: 120,
-  words: 17500,
-  wordsPerFile: 2500
+  words: 21000,
+  wordsPerFile: 3500
 });
 
 export const INSTRUCTION_BUDGETS = Object.freeze([
-  Object.freeze({ filename: "AGENTS.md", lines: 120, words: 1700 }),
+  Object.freeze({ filename: "AGENTS.md", lines: 120, words: 1800 }),
   Object.freeze({ filename: "CLAUDE.md", lines: 80, words: 100 })
 ]);
 

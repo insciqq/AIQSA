@@ -13,7 +13,7 @@ paths:
 ---
 # Run Contracts
 
-How an accepted message becomes an answer.
+How an accepted message becomes an answer. The pipeline lives in `lib/server/runs/`; tools in `lib/server/tools/`.
 
 The native agent engine (`lib/server/engine/`) replaced the old run core and runs every turn, whichever path admits it (operator decision 2026-10-23). A model the engine cannot run (no tool calling, an adapter it does not render) is refused at admission with a stable code, never answered another way (`lib/server/engine/handlerSupport.ts`).
 
@@ -29,6 +29,7 @@ Answering the user is the top priority (operator decision 2026-10-22).
 - A run reaches exactly one terminal state. An interrupted run (restart, crash) keeps its transcript, files and outputs and offers Continue, which starts an ordinary follow-up turn. Recovery touches only the engine's own runs.
 - Completion requires the provider's terminal proof. Failure keeps accepted partial text and reported usage without claiming success. Cancellation stops later work and writes; stale reconciliation never sweeps newer runs.
 - An unknown command exit, a confirmed environment stop and durable cleanup are different facts. A local bookkeeping failure never re-sends a side-effecting call or counts as a provider failure. Never infer a cause from exception text.
+- Optional work such as chat titles never delays an answer.
 
 ## Admission and context
 
@@ -60,9 +61,9 @@ Operator decisions 2026-10-29, Claude Code's Agent tool the reference (`lib/serv
 - It never changes the user's resources or asks the user: an MCP call that would wait for approval, or a repeat of an unknown effect, is handed back unsent, climbs with each parent's report, and the main agent makes it (`lib/server/engine/toolBatch.ts`).
 - One with every tool may start children, one level deep and at most 2 at once (operator decision 2026-10-31, replacing "no nesting"; `lib/server/subagents/nesting.ts`). Only their parent continues them and only it or the main agent stops them; a child reports and asks in its parent's mailbox and ends with it.
 - Only the user's message, passed verbatim, authorizes irreversible website actions; a brief, report or message from any agent is never user speech.
-- Agents talk (operator decisions 2026-10-31): a message is no worse than a shared file, so each agent lists the others on its branch and sub-agents write to any active agent by name; the protection is that it authorizes nothing. A question goes to the parent: a background asker waits, the main agent woken if it ended; a foreground one ends `blocked (needs_answer)` and is continued by name; only the main agent asks the user.
+- Agents talk (operator decisions 2026-10-31): a message is no worse than a shared file, so each agent lists the others on its branch and sub-agents write to any active agent by name; the protection is that it authorizes nothing. A question goes to the parent: a background asker waits, the main agent woken if it ended; a foreground one ends `blocked (needs_answer)` and is continued by name; only the main agent asks the user. Mailboxes are `RunFollowup` rows stamped by the transcript write that records them, so a thread's next turn reads what a turn left (`SUBAGENT_FOLLOWUP_LIMITS`).
 - Thread rows stay out of the main context, Memory and exports. Threads branch with their anchor run; a bounded number run at once per chat (`SUBAGENT_LIMITS`), none replayed.
-- A wrong `type` or a default that cannot run refuses visibly, never the built-in (operator decisions 2026-10-30, `lib/server/engine/subagents/callTools.ts`).
+- A new thread with no `type` runs the custom sub-agent of its name, else the user's default frozen at admission, else the built-in; `type: "built-in"` always runs the built-in. A wrong `type` or a default that cannot run refuses visibly, never the built-in (operator decisions 2026-10-30, `lib/server/engine/subagents/callTools.ts`).
 - Assistant chats work the same (operator decision 2026-10-30, replacing the 2026-10-29 limit): the runner's custom sub-agents, default, `model` and `effort`. Their tools stay the run's, which tool groups only narrow, and a custom sub-agent's instructions apply. Accepted risk: a model the author fixed no longer binds sub-agents, and the Assistant's instructions reach the provider of the runner's chosen sub-agent model.
 
 ## Scheduled tasks
@@ -86,7 +87,7 @@ Code: `lib/server/telegram/`.
 ## Follow-ups and continuation
 
 - A follow-up adds user input to a running answer within its accepted bindings and budgets; delivery proves receipt, not obedience.
-- Continuation into a new chat summarizes the active branch's text through the admitted System Model, without tools, attachments or Workspace inspection.
+- Continuation into a new chat summarizes the active branch's text through the admitted System Model, without tools, attachments or Workspace inspection. An enabled Workspace may copy its project files unread into a private single-use seed.
 
 ## Background sub-agents
 
@@ -105,11 +106,12 @@ Operator decisions 2026-11-01. The model starts it when the user wants a thoroug
 
 - Attachments do not disable selected Search; Search rules are in `agent_docs/PROVIDERS.md`.
 - Required chat PDF work finishes before any other dispatch, and the preparation model only transcribes. A Workspace run may continue past a classified transcription failure with the verified original and an explicit unread-content notice; access, integrity and cancellation failures stay blocking.
+- Transcription keeps visible text and meaningful visuals and never invents hidden values, causes or intent. Uncertain table rows, units and associations stay uncertain; numbers keep their exact decimals and are never converted.
 
 ## Tools and MCP
 
 - Auto, Load all and Off are user choices, and Auto stays as it works today (operator decision 2026-10-23): it freezes the authorized catalog, `find_tools` is local, model-free search, and Skills arrive through their index and `load_skill`, so not every schema enters the context. An unusable server records a stable reason and the answer continues.
-- Per-answer tool call and round limits are off by default, existing installations included; administrators may turn them on (operator decision 2026-10-26: agent tasks outgrow any count). An answer then ends at its tool time (`lib/server/runs/turnDeadline.ts`), Stop or a repeated call. When calls or tool time run out, one tool-free round names what could not be verified.
+- Per-answer tool call and round limits are off by default, existing installations included; administrators may turn them on (operator decision 2026-10-26: agent tasks outgrow any count, and Workspace turns get an hour). An answer then ends at its tool time (`lib/server/runs/turnDeadline.ts`), Stop or a repeated call. When calls or tool time run out, one tool-free round names what could not be verified.
 - Results too large for the context arrive as an excerpt with a reference the agent can read later, never silently truncated. Every result longer than a short excerpt is saved with that reference, so a compaction can leave it out and name where it lives (decision 2026-10-23).
 - Reading a tool result by reference checks only that the reader may read its chat, and never reruns the call.
 
@@ -118,5 +120,5 @@ Operator decisions 2026-11-01. The model starts it when the user wants a thoroug
 - Workspace is available in every chat whenever the installation offers it, so its tools ride on every request (accepted cost, operator decision 2026-10-20). The VM is not started per chat: it boots at the first call that needs code execution, may be prewarmed when that is cheap, and keeps the chat's files. A capability that needs no code execution, such as secrets, Skill instructions, MCP, Memory, search or images, never requires the VM (operator decision 2026-10-22).
 - All of a chat's runs share one Workspace (operator decision 2026-10-29, `lib/server/workspace/attachments.ts`); Reset and continuation wait for sub-agents; only main-agent runs export downloads.
 - Each terminal path retires its run's authority: the last attached run stops the VM; an earlier one provably stops its processes (`lib/server/workspace/agentProcessGuest.ts`), or else the VM, interrupting all attached runs. Successful turns leave no background processes. Completion requires closed output obligations; an export failure keeps the answer. Path escapes fail closed; links and special files are skipped visibly. A dead run whose stop cannot be proven is settled only behind a fenced Workspace (`workspace_stop_unproven`, `lib/server/runs/subagentBackground/recovery.ts`).
-- `browser_handoff` (operator decisions 2026-10-26) waits for Done or Cancel within the tool time, returning only outcome and page; Stop and the deadline end it. Telegram and unattended runs refuse every agent (`browser_handoff_unavailable`); an unattended occurrence that asked fails as `browser_sign_in_required`.
+- `browser_handoff` (operator decisions 2026-10-26) waits for Done or Cancel within the tool time, returning only outcome and page; Stop and the deadline end it. Each agent's handoff holds only its tab, shown oldest first. Telegram and unattended runs refuse every agent (`browser_handoff_unavailable`); an unattended occurrence that asked fails as `browser_sign_in_required`.
 - Vision-capable models read chat images natively, and verified ones view Workspace images (`view_workspace_image`, operator decision 2026-10-26), only in the answer that viewed them. Other images reach models only through admitted System Vision, with untrusted results.
