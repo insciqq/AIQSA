@@ -100,6 +100,17 @@ describe("tool schema portability", () => {
     for (const tool of tools) expect(containerTypeLists(tool.inputSchema), tool.name).toEqual([]);
   });
 
+  it("requires every property of a strict tool, or OpenAI refuses the whole request with 400", () => {
+    // Seen 2026-11-01: `fetch_url` gained an optional `proxy` while strict, and every answer failed on a real stand.
+    const requiresAll = (schema: unknown, path: string): string[] => {
+      if (!schema || typeof schema !== "object") return [];
+      const node = schema as { items?: unknown; properties?: Record<string, unknown>; required?: readonly string[] };
+      const missing = node.properties ? Object.keys(node.properties).filter((key) => !node.required?.includes(key)).map((key) => `${path}.${key}`) : [];
+      return [...missing, ...Object.entries(node.properties ?? {}).flatMap(([key, child]) => requiresAll(child, `${path}.${key}`)), ...requiresAll(node.items, `${path}[]`)];
+    };
+    for (const tool of firstPartyTools().filter((candidate) => candidate.strict)) expect(requiresAll(tool.inputSchema, "$"), tool.name).toEqual([]);
+  });
+
   it("has no type list naming array or object in any library schema literal", () => {
     // Covers schemas built from plans the list above cannot construct (Search, image generation, structured outputs).
     const root = fileURLToPath(new URL("../../", import.meta.url));

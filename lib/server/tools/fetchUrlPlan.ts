@@ -93,7 +93,8 @@ export const fetchUrlTool: RunTool = {
     type: "object"
   },
   name: FETCH_URL_TOOL_NAME,
-  strict: true
+  // `proxy` is optional, which a strict schema refuses: OpenAI answers 400 for the whole request.
+  strict: false
 };
 
 /** Newest user messages of a branch whose text is read for links. */

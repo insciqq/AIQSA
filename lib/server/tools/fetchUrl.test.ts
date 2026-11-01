@@ -37,8 +37,8 @@ function session(options: Partial<Parameters<typeof createFetchUrlSession>[0]> =
 }
 
 describe("fetch_url tool contract", () => {
-  it("is a strict read-only page reader offered only with the exact frozen marker", () => {
-    expect(fetchUrlTool).toMatchObject({ capability: "web_fetch", name: "fetch_url", strict: true,
+  it("is a read-only page reader offered only with the exact frozen marker", () => {
+    expect(fetchUrlTool).toMatchObject({ capability: "web_fetch", name: "fetch_url", strict: false,
       inputSchema: { additionalProperties: false, required: ["url"], properties: { url: { maxLength: 2048 } } } });
     expect(fetchUrlTool.description.length).toBeLessThan(400);
     expect(fetchUrlToolsForRequest({ fetchUrl: { version: 1, userUrlDigests: [] } })).toEqual([fetchUrlTool]);
