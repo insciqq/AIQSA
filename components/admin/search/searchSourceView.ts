@@ -167,18 +167,16 @@ export type SearchSourceForm = {
   draft: AdminSearchDraft;
   executionInputs: {
     maxOutputTokens: string;
-    maxSearchCallsPerAnswer: string;
   };
 };
 
 export const DEFAULT_SEARCH_DESCRIPTION = "Web search available in chat.";
 
 export function executionInputValues(
-  draft: Pick<AdminSearchDraft, "maxOutputTokens" | "maxSearchCallsPerAnswer">
+  draft: Pick<AdminSearchDraft, "maxOutputTokens">
 ): SearchSourceForm["executionInputs"] {
   return {
-    maxOutputTokens: draft.maxOutputTokens === null ? "" : String(draft.maxOutputTokens),
-    maxSearchCallsPerAnswer: String(draft.maxSearchCallsPerAnswer)
+    maxOutputTokens: draft.maxOutputTokens === null ? "" : String(draft.maxOutputTokens)
   };
 }
 
@@ -195,27 +193,19 @@ function boundedInputInteger(
 
 export function searchExecutionValidation(form: SearchSourceForm): Readonly<{
   maxOutputTokens: string | null;
-  maxSearchCallsPerAnswer: string | null;
   valid: boolean;
 }> {
   if (form.draft.adapterKind !== "provider_model_client") {
-    return { maxOutputTokens: null, maxSearchCallsPerAnswer: null, valid: true };
+    return { maxOutputTokens: null, valid: true };
   }
   // The raw results API has no model reply to limit, so the field is hidden.
   const maxOutputTokens = form.draft.protocol === "deepseek_search_api" ? undefined : boundedInputInteger(
     form.executionInputs.maxOutputTokens,
     adminSearchExecutionLimits.maxOutputTokens
   );
-  const maxSearchCallsPerAnswer = boundedInputInteger(
-    form.executionInputs.maxSearchCallsPerAnswer,
-    adminSearchExecutionLimits.maxSearchCallsPerAnswer
-  );
   return {
     maxOutputTokens: form.executionInputs.maxOutputTokens.trim() && maxOutputTokens === null ? "Enter a whole number of at least 16, or leave blank for Auto." : null,
-    maxSearchCallsPerAnswer: maxSearchCallsPerAnswer === null
-      ? `Enter a whole number from ${adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum} to ${adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum}.`
-      : null,
-    valid: (!form.executionInputs.maxOutputTokens.trim() || maxOutputTokens !== null) && maxSearchCallsPerAnswer !== null
+    valid: !form.executionInputs.maxOutputTokens.trim() || maxOutputTokens !== null
   };
 }
 
@@ -228,8 +218,6 @@ export function draftForModel(
   current?: Pick<
     AdminSearchDraft,
     | "maxOutputTokens"
-    | "maxResults"
-    | "maxSearchCallsPerAnswer"
     | "queryMaxCharacters"
     | "reasoningPolicy"
     | "timeoutMs"
@@ -244,9 +232,6 @@ export function draftForModel(
     maxOutputTokens: searchApi
       ? adminSearchExecutionDefaults.maxOutputTokens
       : current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: current?.maxResults ?? adminSearchExecutionDefaults.maxResults,
-    maxSearchCallsPerAnswer: current?.maxSearchCallsPerAnswer ??
-      adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: model.searchKind === "perplexity_search"
       ? "openrouter_perplexity_chat"
       : model.searchKind === "gemini_google_search"
@@ -272,8 +257,6 @@ export function emptySearchForm(): SearchSourceForm {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: adminSearchExecutionDefaults.maxResults,
-    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: "openai_responses_web_search",
     providerModelId: null,
     queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,

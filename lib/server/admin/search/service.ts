@@ -325,7 +325,6 @@ function hostedDraftFor(draft: AdminSearchDraft, current: AdminSearchDraft | nul
         adapterKind: "answer_provider_hosted",
         credentialMode: "answer_provider",
         maxOutputTokens: current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
-        maxSearchCallsPerAnswer: current?.maxSearchCallsPerAnswer ?? adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
         providerModelId: null,
         reasoningPolicy: "provider_default"
       }
@@ -942,7 +941,6 @@ export function createAdminSearchService(input: Readonly<{
       outcome.status !== "available" ||
       outcome.method !== "provider_search" || outcome.protocol !== draft.protocol ||
       !Number.isSafeInteger(outcome.normalizedSourceCount) || outcome.normalizedSourceCount < 0 ||
-      outcome.normalizedSourceCount > draft.maxResults ||
       outcome.normalizedSourceCount === 0 && !sourceUrlsUnavailable ||
       binding?.providerModelId !== draft.providerModelId ||
       binding?.connectionId !== sourceConnectionId

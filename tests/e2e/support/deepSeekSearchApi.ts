@@ -16,7 +16,7 @@ import { PAID_SETUP_TIMEOUT_MS, pollUntil } from "./paidProviders";
  * without any probe, else a new one gets only DeepSeek V4.1 Flash through the
  * ordinary admin connection API (at most 8 probes of that model, never Quick
  * Setup); a set-up source on that connection is reused, else Admin → Search →
- * Add source saves it with one request per answer (Save runs one probe
+ * Add source saves it (Save runs one probe
  * search), and it is enabled. Keys are only sent to the stand's admin API.
  */
 
@@ -158,8 +158,6 @@ export async function deepSeekSearchApiSource(page: Page, prisma: PrismaClient, 
     const option = searchModel.locator("option").filter({ hasText: `${connectionName} Search API · key via ` }).first();
     await expect(option).toBeAttached();
     await searchModel.selectOption({ label: (await option.textContent())!.trim() });
-    await sheet.getByText("Advanced Search execution", { exact: true }).click();
-    await sheet.getByLabel("Maximum requests to this source per answer").fill("1");
     await sheet.getByRole("button", { name: "Save", exact: true }).click();
     await expect(sheet, "Save passed its probe search and closed the sheet").toHaveCount(0, { timeout: 180_000 });
   }
@@ -171,7 +169,5 @@ export async function deepSeekSearchApiSource(page: Page, prisma: PrismaClient, 
     source = searchApiSource(await searchCatalog(page.request), connectionId)!;
   }
   expect(source.enabled, "the DeepSeek Search API source is enabled").toBe(true);
-  summary.maxSearchCallsPerAnswer = source.configuration?.maxSearchCallsPerAnswer ?? null;
-  if (!existing) expect(summary.maxSearchCallsPerAnswer, "the source allows one request per answer").toBe(1);
   return source;
 }

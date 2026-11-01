@@ -12,9 +12,7 @@ import { providerResponseTimeoutSeconds } from "./providerResponseTimeout";
 export type AdminSearchDraft = {
   adapterKind: SearchAdapterKind;
   credentialMode: SearchCredentialMode;
-  maxResults: number;
   maxOutputTokens: number | null;
-  maxSearchCallsPerAnswer: number;
   protocol: SearchProtocol;
   providerModelId: string | null;
   queryMaxCharacters: number;
@@ -27,9 +25,6 @@ export type AdminSearchReasoningPolicy = "lowest_supported" | "provider_default"
 export const adminSearchExecutionDefaults = Object.freeze({
   /** Auto follows the admitted model configuration, output ceiling and context. */
   maxOutputTokens: null,
-  /** A source may be revisited for query refinement, while the run-wide tool budget remains authoritative. */
-  maxSearchCallsPerAnswer: 8,
-  maxResults: 8,
   queryMaxCharacters: 1_000,
   timeoutMs: 120_000,
   reasoningPolicy: "lowest_supported" as const
@@ -37,8 +32,6 @@ export const adminSearchExecutionDefaults = Object.freeze({
 
 export const adminSearchExecutionLimits = Object.freeze({
   maxOutputTokens: Object.freeze({ maximum: Number.MAX_SAFE_INTEGER, minimum: 16 }),
-  maxSearchCallsPerAnswer: Object.freeze({ maximum: 32, minimum: 1 }),
-  maxResults: Object.freeze({ maximum: 20, minimum: 1 }),
   queryMaxCharacters: Object.freeze({ maximum: 4_000, minimum: 32 }),
   timeoutMs: Object.freeze({ maximum: 900_000, minimum: 5_000 })
 });
@@ -136,17 +129,11 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
   if (!(
     (value.adapterKind === "answer_provider_hosted" || value.adapterKind === "provider_model_client") &&
     (value.credentialMode === "answer_provider" || value.credentialMode === "provider_model") &&
-    boundedInteger(value.maxResults, adminSearchExecutionLimits.maxResults.minimum, adminSearchExecutionLimits.maxResults.maximum) &&
     (value.maxOutputTokens === null || boundedInteger(
       value.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum
     )) &&
-    boundedInteger(
-      value.maxSearchCallsPerAnswer,
-      adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
-      adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum
-    ) &&
     (value.protocol === "anthropic_web_search" ||
       value.protocol === "deepseek_responses_web_search" ||
       value.protocol === "deepseek_search_api" ||
@@ -166,8 +153,6 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
     adapterKind: value.adapterKind,
     credentialMode: value.credentialMode,
     maxOutputTokens: value.maxOutputTokens,
-    maxResults: Number(value.maxResults),
-    maxSearchCallsPerAnswer: value.maxSearchCallsPerAnswer,
     protocol: value.protocol,
     providerModelId: value.providerModelId,
     queryMaxCharacters: Number(value.queryMaxCharacters),

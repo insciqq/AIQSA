@@ -44,7 +44,7 @@
  *    one is made the same way with only DeepSeek V4.1 Flash (at most 8
  *    probes of that model, no Quick Setup), whose setup adds the source after
  *    one probe search; a source the connection lacks is added through Admin
- *    Search "Add source" with at most one request per answer and enabled;
+ *    Search "Add source" and enabled;
  *    one codex-lb answer with only that source shows cited sources and
  *    leaves exactly one billed `web_search` row. Bound on DeepSeek: at most
  *    8 model probes (new connection only), 1 probe search in setup or on
@@ -73,7 +73,7 @@ import { mcpOversizedResponseMessage, mcpToolFailureMessage } from "../../lib/co
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../lib/contracts/adminSearch";
 import type { ContentBlock } from "../../lib/domain/content";
 import type { ValidatedSearchQuery } from "../../lib/domain/search";
-import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient, DEEPSEEK_SEARCH_API_STRATEGY_ID } from "../../lib/server/providers/deepSeekSearchApi";
+import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient, DEEPSEEK_SEARCH_API_MAX_RESULTS, DEEPSEEK_SEARCH_API_STRATEGY_ID } from "../../lib/server/providers/deepSeekSearchApi";
 import { ProviderSearchExecutionError } from "../../lib/server/providers/types";
 import { providerModelTemplateId } from "../../lib/domain/providerTemplates";
 import {
@@ -503,8 +503,7 @@ test("DeepSeek Search API built in: setup with the key enables it without Add so
       return current?.ready && current.configurationActive ? current : null;
     }, "built_in_search_api_not_ready");
     Object.assign(summary, { after: { enabled: source.enabled, readiness: source.readiness, system: source.system,
-      check: source.draftTestEvidence && { method: source.draftTestEvidence.method, sources: source.draftTestEvidence.normalizedSourceCount },
-      maxSearchCallsPerAnswer: source.configuration?.maxSearchCallsPerAnswer ?? null },
+      check: source.draftTestEvidence && { method: source.draftTestEvidence.method, sources: source.draftTestEvidence.normalizedSourceCount } },
     apiSourcesOnConnection: await db().searchOption.count({ where: { kind: "deepseek_search_api", sourceConnectionId: connectionId } }) });
     expect(source.enabled, "setup enabled the source").toBe(true);
     expect(source.draftTestEvidence?.method, "setup published it after a live check").toBe("provider_search");
@@ -586,8 +585,6 @@ async function deepSeekSearchApiSource(page: Page, connectionId: string, summary
     const option = searchModel.locator("option").filter({ hasText: `${connectionName} Search API · key via ` }).first();
     await expect(option).toBeAttached();
     await searchModel.selectOption({ label: (await option.textContent())!.trim() });
-    await sheet.getByText("Advanced Search execution", { exact: true }).click();
-    await sheet.getByLabel("Maximum requests to this source per answer").fill("1");
     await page.screenshot({ path: test.info().outputPath("deepseek-search-api-add-source.png") });
     await sheet.getByRole("button", { name: "Save", exact: true }).click();
     await expect(sheet, "Save passed its probe search and closed the sheet").toHaveCount(0, { timeout: 180_000 });
@@ -639,8 +636,6 @@ test("DeepSeek Search API: one search through the new source, cited sources, one
     summary.deepSeekModels = deepSeek.models.filter((model) => model.enabled).length;
     expect(summary.deepSeekModels, "the DeepSeek connection has an enabled model").not.toBe(0);
     const source = await deepSeekSearchApiSource(page, deepSeek.id, summary);
-    summary.maxSearchCallsPerAnswer = source.configuration?.maxSearchCallsPerAnswer ?? null;
-    if (!summary.sourceReused) expect(summary.maxSearchCallsPerAnswer, "the source allows one request per answer").toBe(1);
 
     const codex = await codexAnswerModel(request);
     summary.answerModel = codex.upstreamModelId;
@@ -687,7 +682,7 @@ function directSearchApiRequest(apiKey: string, query: string) {
   return adapter.search({
     correlationId: "prod-1018-direct",
     query: query as ValidatedSearchQuery,
-    searchPolicy: { maxResults: 3, modelId: DEEPSEEK_SEARCH_API_MODEL, provider: "deepseek", strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID },
+    searchPolicy: { maxResults: DEEPSEEK_SEARCH_API_MAX_RESULTS, modelId: DEEPSEEK_SEARCH_API_MODEL, provider: "deepseek", strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID },
     strategyId: "prod-1018-direct"
   }, { timeoutMs: 30_000 });
 }

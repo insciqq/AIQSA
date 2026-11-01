@@ -322,8 +322,7 @@ describe("Search plan tool router", () => {
 
     expect(router.tools).toEqual([
       expect.objectContaining({
-        description: "Search the web through the user-selected source \"Company Gateway Search\". " + SEARCH_GUIDANCE_TEXT +
-          " This source can be requested at most 2 times for this answer.",
+        description: "Search the web through the user-selected source \"Company Gateway Search\". " + SEARCH_GUIDANCE_TEXT,
         name: "search_engine_1"
       })
     ]);
@@ -336,8 +335,7 @@ describe("Search plan tool router", () => {
       runtimes: {}
     })!;
     expect(router.tools).toEqual([expect.objectContaining({
-      description: "Search the web through the user's selected search sources. " + SEARCH_GUIDANCE_TEXT +
-        " This source can be requested at most 2 times for this answer.",
+      description: "Search the web through the user's selected search sources. " + SEARCH_GUIDANCE_TEXT,
       name: "search_selected_engines"
     })]);
   });
@@ -458,7 +456,7 @@ describe("Search plan tool router", () => {
     expect(serialized).not.toContain("private system prompt");
   });
 
-  it("keeps every cited source past maxResults and numbers each engine's sources as its findings do", async () => {
+  it("keeps all cited and browsed sources past the former limits and numbers each engine's sources as its findings do", async () => {
     const answerAdapter = runtime().adapter;
     const openai = option("openai");
     const perplexity = option("perplexity", {
@@ -467,7 +465,7 @@ describe("Search plan tool router", () => {
       protocol: "openrouter_perplexity_chat",
       provider: "openrouter"
     });
-    const browsed = Array.from({ length: 8 }, (_, index) => ({
+    const browsed = Array.from({ length: 30 }, (_, index) => ({
       title: `Browsed ${index}`, url: `https://example.com/browsed/${index}`
     }));
     const cited = Array.from({ length: 3 }, (_, index) => ({
@@ -498,8 +496,8 @@ describe("Search plan tool router", () => {
         perplexity: { adapter: answerAdapter, responseTimeoutMs: 300_000, searchAdapter: createOpenRouterPerplexitySearchAdapter({
           client: {
             createChatCompletion: async () => ({
-              choices: [{ finish_reason: "stop", message: { content: "Fact [1]; later fact [15].", role: "assistant" } }],
-              citations: Array.from({ length: 15 }, (_, index) => `https://example.com/perplexity/${index + 1}`),
+              choices: [{ finish_reason: "stop", message: { content: "Fact [1]; later fact [50].", role: "assistant" } }],
+              citations: Array.from({ length: 50 }, (_, index) => `https://example.com/perplexity/${index + 1}`),
               id: "or-cited", model: "perplexity/sonar-pro-search", object: "chat.completion",
               usage: { completion_tokens: 5, prompt_tokens: 11 }
             })
@@ -512,15 +510,15 @@ describe("Search plan tool router", () => {
     const [openaiExecution, perplexityExecution] = searchExecutionsFromToolResult(result);
 
     expect(result.rawPreview?.searchResultVersion).toBe(SEARCH_TOOL_RESULT_VERSION);
-    // OpenAI: every cited page survives maxResults 8, first; browsed pages fill maxResults.
+    // OpenAI keeps every cited page first, then every distinct browsed page.
     expect(openaiExecution?.sources.map((source) => source.url)).toEqual([
       ...cited.map((source) => source.url),
       ...browsed.map((source) => source.url)
     ]);
-    expect(openaiExecution?.sources.map((source) => source.citation)).toEqual([1, 2, 3, ...Array(8).fill(undefined)]);
-    // Perplexity: all fifteen cited sources are kept with the provider's numbers.
-    expect(perplexityExecution?.sources).toHaveLength(15);
-    expect(perplexityExecution?.sources.at(-1)).toMatchObject({ citation: 15, url: "https://example.com/perplexity/15" });
+    expect(openaiExecution?.sources.map((source) => source.citation)).toEqual([1, 2, 3, ...Array(30).fill(undefined)]);
+    // Perplexity keeps all fifty sources with the provider's numbers.
+    expect(perplexityExecution?.sources).toHaveLength(50);
+    expect(perplexityExecution?.sources.at(-1)).toMatchObject({ citation: 50, url: "https://example.com/perplexity/50" });
     // The model reads each engine's sources beside its findings, numbered as its findings number them.
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain([
@@ -529,8 +527,8 @@ describe("Search plan tool router", () => {
         `[${index + 1}] ${source.title} — ${source.url}`).join("\n")}`
     ].join("\n\n"));
     expect(text.endsWith([
-      'Search source "perplexity":\nFact [1]; later fact [15].',
-      `Sources for "perplexity":\n${Array.from({ length: 15 }, (_, index) =>
+      'Search source "perplexity":\nFact [1]; later fact [50].',
+      `Sources for "perplexity":\n${Array.from({ length: 50 }, (_, index) =>
         `[${index + 1}] Source ${index + 1} — https://example.com/perplexity/${index + 1}`).join("\n")}`
     ].join("\n\n"))).toBe(true);
     // The durable result still fits and replays the same text.
@@ -538,7 +536,7 @@ describe("Search plan tool router", () => {
     expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toEqual(result);
   });
 
-  it("does not spend browsed slots on pages OpenAI cites with its attribution parameter", async () => {
+  it("deduplicates browsed pages OpenAI cites with its attribution parameter", async () => {
     const browsed = Array.from({ length: 10 }, (_, index) => ({
       title: `Browsed ${index}`, url: `https://example.com/browsed/${index}`
     }));
@@ -575,7 +573,7 @@ describe("Search plan tool router", () => {
     const [execution] = searchExecutionsFromToolResult(result);
 
     // Three cited pages first (the browsed ones under their clean URLs), then
-    // maxResults 8 distinct browsed pages.
+    // all distinct browsed pages.
     expect(execution?.sources.map(({ citation, url }) => ({ citation, url }))).toEqual([
       { citation: 1, url: "https://example.com/browsed/0" },
       { citation: 2, url: "https://example.com/browsed/1" },
@@ -1125,164 +1123,46 @@ describe("Search plan tool router", () => {
     expect(secondRequest).toHaveBeenCalledOnce();
   });
 
-  it("bounds Search invocations per answer without counting fan-out engines separately", async () => {
-    const onFirstRequest = vi.fn();
-    const onSecondRequest = vi.fn();
-    const first = option("first");
-    const second = option("second");
-    const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [first, second] },
-      runtimes: {
-        first: runtime({ onRequest: onFirstRequest }),
-        second: runtime({ onRequest: onSecondRequest })
+  it.each(["all_selected", "model_choice"] as const)(
+    "continues past retired limits in accepted snapshots with %s routing",
+    async (mode) => {
+      const onFirstRequest = vi.fn();
+      const onSecondRequest = vi.fn();
+      // These are persisted bindings accepted before the limits were removed.
+      const first = option("first", {
+        config: { ...option("base").config, maxSearchCallsPerAnswer: 1, queryMaxCharacters: 4_000 }
+      });
+      const second = option("second", {
+        config: { ...option("base").config, maxSearchCallsPerAnswer: 3, queryMaxCharacters: 4_000 }
+      });
+      const plan = JSON.parse(JSON.stringify({ mode, options: [first, second] }));
+      const router = createSearchPlanToolRouter({
+        plan,
+        runtimes: {
+          first: runtime({ onRequest: onFirstRequest }),
+          second: runtime({ onRequest: onSecondRequest })
+        }
+      })!;
+      for (const tool of router.tools) {
+        expect(tool.description).not.toMatch(/at most|limit|budget|maximum|\d+ times/iu);
+        expect(tool.inputSchema).toMatchObject({ properties: { query: { maxLength: 4_000 } } });
       }
-    })!;
-    const name = router.tools[0]!.name;
-
-    await expect(router.execute(
-      { ...call(name, "first query"), id: "call-1" },
-      answerRequest()
-    )).resolves.toMatchObject({ status: "complete" });
-    await expect(router.execute(
-      { ...call(name, "second query"), id: "call-2" },
-      answerRequest()
-    )).resolves.toMatchObject({ status: "complete" });
-    const blocked = await router.execute(
-      { ...call(name, "third query"), id: "call-3" },
-      answerRequest()
-    );
-
-    expect(blocked).toMatchObject({
-      rawPreview: { providerCall: false },
-      status: "error"
-    });
-    expect(blocked.content).toEqual([
-      expect.objectContaining({ text: expect.stringContaining("search_invocation_limit_reached") })
-    ]);
-    expect(onFirstRequest).toHaveBeenCalledTimes(2);
-    expect(onSecondRequest).toHaveBeenCalledTimes(2);
-    expect(searchExecutionsFromToolResult(blocked)).toEqual([]);
-  });
-
-  it.each([8, 32])("permits an explicitly admitted %i-call source budget and a longer query", async (maxCalls) => {
-    const onRequest = vi.fn();
-    const selected = option("expanded", {
-      config: {
-        ...option("base").config,
-        maxSearchCallsPerAnswer: maxCalls,
-        queryMaxCharacters: 4_000
+      // Exceed both the old defaults and the largest configurable call budget.
+      for (let index = 0; index < 35; index += 1) {
+        for (const tool of router.tools) {
+          const result = await router.execute({
+            ...call(tool.name, index === 34 ? "q".repeat(4_000) : `refined query ${index}`),
+            id: `call-${index}-${tool.name}`
+          }, answerRequest());
+          expect(result.status).toBe("complete");
+          expect(searchExecutionsFromToolResult(result)).toHaveLength(mode === "all_selected" ? 2 : 1);
+        }
       }
-    });
-    const router = createSearchPlanToolRouter({
-      plan: { mode: "model_choice", options: [selected] },
-      runtimes: { expanded: runtime({ onRequest }) }
-    })!;
-    const name = router.tools[0]!.name;
-    expect(router.tools[0]?.inputSchema).toMatchObject({ properties: { query: { maxLength: 4_000 } } });
-    const longQuery = "q".repeat(4_000);
-
-    for (let index = 0; index < maxCalls; index += 1) {
-      await expect(router.execute(
-        { ...call(name, index === maxCalls - 1 ? longQuery : `query ${index}`), id: `call-${index}` },
-        answerRequest()
-      )).resolves.toMatchObject({ status: "complete" });
+      expect(onFirstRequest).toHaveBeenCalledTimes(35);
+      expect(onSecondRequest).toHaveBeenCalledTimes(35);
+      expect(onFirstRequest.mock.calls[34]?.[0].query).toHaveLength(4_000);
     }
-    const blocked = await router.execute({ ...call(name, "excess query"), id: `call-${maxCalls}` }, answerRequest());
-
-    expect(blocked).toMatchObject({ status: "error" });
-    expect(blocked.content[0]).toMatchObject({ text: expect.stringContaining("search_invocation_limit_reached") });
-    expect(onRequest).toHaveBeenCalledTimes(maxCalls);
-    expect(onRequest.mock.calls[maxCalls - 1]?.[0].query).toBe(longQuery);
-  });
-
-  it("tracks invocation budgets independently for each selected source", async () => {
-    const onFirstRequest = vi.fn();
-    const onSecondRequest = vi.fn();
-    const first = option("first", {
-      config: { ...option("base").config, maxSearchCallsPerAnswer: 1 }
-    });
-    const second = option("second", {
-      config: { ...option("base").config, maxSearchCallsPerAnswer: 3 }
-    });
-    const router = createSearchPlanToolRouter({
-      plan: { mode: "model_choice", options: [first, second] },
-      runtimes: {
-        first: runtime({ onRequest: onFirstRequest }),
-        second: runtime({ onRequest: onSecondRequest })
-      }
-    })!;
-
-    await router.execute(
-      { ...call(router.tools[0]!.name, "first source query"), id: "call-first-1" },
-      answerRequest()
-    );
-    const firstBlocked = await router.execute(
-      { ...call(router.tools[0]!.name, "first source retry"), id: "call-first-2" },
-      answerRequest()
-    );
-    await router.execute(
-      { ...call(router.tools[1]!.name, "second source query"), id: "call-second-1" },
-      answerRequest()
-    );
-    await router.execute(
-      { ...call(router.tools[1]!.name, "second source retry"), id: "call-second-2" },
-      answerRequest()
-    );
-
-    expect(firstBlocked.rawPreview?.providerCall).toBe(false);
-    expect(onFirstRequest).toHaveBeenCalledOnce();
-    expect(onSecondRequest).toHaveBeenCalledTimes(2);
-  });
-
-  it("blocks fan-out when any participating source has exhausted its own budget", async () => {
-    const onFirstRequest = vi.fn();
-    const onSecondRequest = vi.fn();
-    const first = option("first", {
-      config: { ...option("base").config, maxSearchCallsPerAnswer: 1 }
-    });
-    const second = option("second", {
-      config: { ...option("base").config, maxSearchCallsPerAnswer: 3 }
-    });
-    const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [first, second] },
-      runtimes: {
-        first: runtime({ onRequest: onFirstRequest }),
-        second: runtime({ onRequest: onSecondRequest })
-      }
-    })!;
-    const name = router.tools[0]!.name;
-
-    await router.execute(
-      { ...call(name, "combined query"), id: "call-combined-1" },
-      answerRequest()
-    );
-    const blocked = await router.execute(
-      { ...call(name, "combined retry"), id: "call-combined-2" },
-      answerRequest()
-    );
-
-    expect(blocked.rawPreview?.providerCall).toBe(false);
-    expect(onFirstRequest).toHaveBeenCalledOnce();
-    expect(onSecondRequest).toHaveBeenCalledOnce();
-  });
-
-  it("restores the settled invocation count before recovery continues", async () => {
-    const onRequest = vi.fn();
-    const selected = option("selected", {
-      config: { ...option("base").config, maxSearchCallsPerAnswer: 1 }
-    });
-    const router = createSearchPlanToolRouter({
-      initialInvocationCounts: { selected: 1 },
-      plan: { mode: "model_choice", options: [selected] },
-      runtimes: { selected: runtime({ onRequest }) }
-    })!;
-
-    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
-
-    expect(result.rawPreview?.providerCall).toBe(false);
-    expect(result.status).toBe("error");
-    expect(onRequest).not.toHaveBeenCalled();
-  });
+  );
 
   it("bounds each engine call with its configured timeout", async () => {
     const timed = option("timed", { config: { ...option("base").config, timeoutMs: 5 } });
@@ -1552,7 +1432,7 @@ describe("Search plan tool router", () => {
     ]);
   });
 
-  it("collects pre-cancelled engines without dispatch or consuming their invocation budget", async () => {
+  it("collects pre-cancelled engines without dispatch", async () => {
     const controller = new AbortController();
     const reason = new Error("run_cancelled");
     controller.abort(reason);
@@ -1684,7 +1564,7 @@ describe("DeepSeek Search API engine", () => {
 
     // The tool advertises the API's query bound; only the generated query is sent.
     expect(router.tools[0]!.inputSchema).toMatchObject({ properties: { query: { maxLength: 128 } } });
-    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toEqual({ count: 8, need_content: false, query: "bounded query" });
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toEqual({ count: 50, need_content: false, query: "bounded query" });
     expect(JSON.stringify(fetchFn.mock.calls)).not.toContain("private");
     expect(result.status).toBe("complete");
     expect((result.content[0] as { text: string }).text).toBe([
@@ -1699,6 +1579,22 @@ describe("DeepSeek Search API engine", () => {
       estimatedCostMicros: 750, modelId: "deepseek-search-api", operationCount: 1, provider: "deepseek",
       purpose: "web_search", usage: { webSearchCount: 1 }
     });
+    roundTrips(result);
+  });
+
+  it("requests the provider maximum and persists every result despite old settings", async () => {
+    const results = Array.from({ length: 50 }, (_, index) => ({
+      summary: `Summary ${index + 1}`, title: `Result ${index + 1}`, url: `https://example.com/result/${index + 1}`
+    }));
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ results }));
+    const router = apiRouter(fetchFn);
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toMatchObject({ count: 50 });
+    const [execution] = searchExecutionsFromToolResult(result);
+    expect(execution?.sources).toHaveLength(50);
+    expect(execution?.sources.at(-1)).toMatchObject({ citation: 50, rank: 50, url: results[49]!.url });
+    expect((result.content[0] as { text: string }).text).toContain("[50] Result 50 — https://example.com/result/50");
     roundTrips(result);
   });
 

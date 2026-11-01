@@ -28,8 +28,6 @@ function source(overrides: Partial<AdminSearchIntegration> = {}): AdminSearchInt
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
       maxOutputTokens: 4_096,
-      maxResults: 8,
-      maxSearchCallsPerAnswer: 2,
       protocol: "openrouter_perplexity_chat",
       providerModelId: "model-sonar",
       queryMaxCharacters: 500,
@@ -202,26 +200,25 @@ describe("plan and form helpers", () => {
     expect(searchExecutionValidation(form).valid).toBe(true);
     expect(searchExecutionValidation({
       ...form,
-      executionInputs: { maxOutputTokens: "12", maxSearchCallsPerAnswer: "33" }
+      executionInputs: { maxOutputTokens: "12" }
     })).toEqual({
       maxOutputTokens: "Enter a whole number of at least 16, or leave blank for Auto.",
-      maxSearchCallsPerAnswer: "Enter a whole number from 1 to 32.",
       valid: false
     });
     expect(searchExecutionValidation({ ...form,
-      executionInputs: { maxOutputTokens: "8193", maxSearchCallsPerAnswer: "32" }
+      executionInputs: { maxOutputTokens: "8193" }
     }).valid).toBe(true);
   });
 
   it("starts new sources with research-capable defaults and preserves saved settings when changing models", () => {
     const fresh = emptySearchForm();
-    expect(fresh.draft).toMatchObject({ maxOutputTokens: null, maxSearchCallsPerAnswer: 8,
+    expect(fresh.draft).toMatchObject({ maxOutputTokens: null,
       queryMaxCharacters: 1_000, timeoutMs: 120_000 });
     const saved = searchFormFrom(source());
-    expect(saved.draft).toMatchObject({ maxOutputTokens: 4_096, maxSearchCallsPerAnswer: 2,
+    expect(saved.draft).toMatchObject({ maxOutputTokens: 4_096,
       queryMaxCharacters: 500, timeoutMs: 300_000 });
     expect(draftForModel(catalog.providerModels[0]!, saved.draft)).toMatchObject({
-      maxOutputTokens: 4_096, maxSearchCallsPerAnswer: 2, queryMaxCharacters: 500, timeoutMs: 300_000
+      maxOutputTokens: 4_096, queryMaxCharacters: 500, timeoutMs: 300_000
     });
   });
 });
@@ -281,6 +278,6 @@ describe("DeepSeek Search API choices", () => {
     expect(searchHeaderStatus(apiSource, NOW)).toBe("Working · DeepSeek Search API, key via DeepSeek V4 Flash · not checked yet");
     const form = searchFormFrom(apiSource);
     expect(searchExecutionValidation({ ...form, executionInputs: { ...form.executionInputs, maxOutputTokens: "12" } }))
-      .toEqual({ maxOutputTokens: null, maxSearchCallsPerAnswer: null, valid: true });
+      .toEqual({ maxOutputTokens: null, valid: true });
   });
 });
