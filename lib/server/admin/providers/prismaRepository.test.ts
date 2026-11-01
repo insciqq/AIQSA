@@ -313,6 +313,7 @@ describe("Prisma admin provider repository", () => {
           { visionProviderModelId: "model-1" },
           { mcpGuardProviderModelId: "model-1" },
           { researchVerifierProviderModelId: "model-1" },
+          { researchResearcherProviderModelId: "model-1" },
           { chatPdfNativeProviderModelId: "model-1" }
         ]
       }
@@ -1308,6 +1309,10 @@ describe("Prisma admin provider repository", () => {
     expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
       data: { rerankerProviderModelId: null, updatedByUserId: null, version: { increment: 1 } },
       where: { rerankerProviderModelId: { in: ["model-1"] } }
+    });
+    expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
+      data: { researchResearcherProviderModelId: null, researchResearcherReasoningEffort: null, updatedByUserId: null, version: { increment: 1 } },
+      where: { researchResearcherProviderModelId: { in: ["model-1"] } }
     });
     expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
       data: { chatPdfProviderModelId: null, chatPdfReasoningEffort: null, updatedByUserId: null, version: { increment: 1 } },

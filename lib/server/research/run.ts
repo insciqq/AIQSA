@@ -9,7 +9,7 @@ import {
   type ResearchDraft,
   type ResearchPlan
 } from "../../contracts/research";
-import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { LoopToolChoice } from "../engine/loop";
 import type { PrepareRunSubagentsInput } from "../engine/subagents/runSubagents";
@@ -69,6 +69,7 @@ export type ResearchEngineDeps = Readonly<{
   gates?: readonly ResearchGate[];
   /** The parts of the research system; a port left out is its no-op. */
   ports?: ResearchPortFactories;
+  researcher?: ResearchVerifierRole;
   verifier?: ResearchVerifierRole;
 }>;
 
@@ -149,7 +150,9 @@ export function createRunResearch(input: RunResearchInput) {
   const attempts: ResearchAttempt[] = [];
   // Frozen now, read at no cost to a run that never researches: the promise settles whatever happens and nothing waits for it.
   const verifierChoice = input.deps.verifier?.frozenChoice() ?? Promise.resolve({ kind: "not_set" as const });
+  const researcherChoice = input.deps.researcher?.frozenChoice() ?? Promise.resolve({ kind: "not_set" as const });
   const turns = createResearchTurns({ subagentInput: input.subagentInput, verifierChoice, ...(input.deps.verifier ? { verifierRole: input.deps.verifier } : {}),
+    researcherChoice, ...(input.deps.researcher ? { researcherRole: input.deps.researcher } : {}),
     userMessage: input.userMessage });
   const sources = createResearchSources({ chatId: input.chatId, items: input.items, runId: input.runId, savedResults: input.savedResults,
     threads: input.threads, userId: input.userId });
@@ -228,6 +231,8 @@ export function createRunResearch(input: RunResearchInput) {
     execute: async ({ call, persistedToolCallId }) => {
       const decoded = decodeResearchPlan(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_plan_invalid", decoded.message);
+      const refused = await turns.startRefusal();
+      if (refused) return harnessToolError(call, refused.code, refused.message);
       const started = decoded.value;
       planStands(started);
       unconfirmedStart = null;
@@ -324,7 +329,9 @@ export function createRunResearch(input: RunResearchInput) {
      * classes, and it runs in the foreground, because Stop spares background sub-agents and must end all research.
      */
     withResearcherBriefs(tools: readonly EngineTool[]): readonly EngineTool[] {
-      return tools.map((tool): EngineTool => tool.definition.name !== CALL_SUBAGENT_TOOL_NAME ? tool : { ...tool, execute: async (execution) => {
+      return tools.map((tool): EngineTool => tool.definition.name === STOP_SUBAGENT_TOOL_NAME ? { ...tool,
+        execute: (execution) => plan ? turns.researcherCall(tool, execution) : tool.execute(execution)
+      } : tool.definition.name !== CALL_SUBAGENT_TOOL_NAME ? tool : { ...tool, execute: async (execution) => {
         const { call } = execution;
         if (!plan) return tool.execute(execution);
         const closed = ports.time.researcherRefusal();
@@ -334,12 +341,12 @@ export function createRunResearch(input: RunResearchInput) {
         void _background;
         const { message, name } = foreground;
         if (typeof message !== "string" || typeof name !== "string" || briefed.has(name)) {
-          return tool.execute({ ...execution, call: { ...call, arguments: foreground }, signal });
+          return turns.researcherCall(tool, { ...execution, call: { ...call, arguments: foreground }, signal });
         }
         const brief = researcherBrief(message, plan);
         if (brief === null) return harnessToolError(call, "research_brief_too_long", "Nothing started: this brief leaves no room for the research method. Shorten it and call again.");
         briefed.add(name);
-        return tool.execute({ ...execution, call: { ...call, arguments: { ...foreground, message: brief } }, signal });
+        return turns.researcherCall(tool, { ...execution, call: { ...call, arguments: { ...foreground, message: brief } }, signal });
       } });
     },
 

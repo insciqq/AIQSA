@@ -146,6 +146,10 @@ function server(initialRoles = rolesCatalog(), initialModel = modelCatalog()) {
             researchVerifierModel: body.researchVerifierProviderModelId ? { ...pick(body.researchVerifierProviderModelId)!, available: true } : null,
             researchVerifierReasoningEffort: body.researchVerifierReasoningEffort as string | null
           } : {}),
+          ...(Object.hasOwn(body, "researchResearcherProviderModelId") ? {
+            researchResearcherModel: body.researchResearcherProviderModelId ? { ...pick(body.researchResearcherProviderModelId)!, available: true } : null,
+            researchResearcherReasoningEffort: body.researchResearcherReasoningEffort as string | null
+          } : {}),
           ...(Object.hasOwn(body, "visionProviderModelId") ? {
             visionModel: body.visionProviderModelId ? { ...pick(body.visionProviderModelId)!, available: true } : null,
             visionReasoningEffort: body.visionReasoningEffort as string | null
@@ -1101,12 +1105,29 @@ it("shows an unavailable research verifier and clears only that role, and an uns
   const row = await screen.findByTestId("admin-role-research-verifier");
   expect(within(row).getByTestId("admin-role-research-verifier-status")).toHaveTextContent("Model unavailable");
   expect(within(row).getByText(/the model of the chat checks and the answer says so/)).toBeVisible();
-  fireEvent.click(within(row).getByRole("button", { name: "Research verifier actions" }));
+  fireEvent.click(within(row).getByRole("button", { name: "Research checks actions" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
   await waitFor(() => expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
     { expectedVersion: 1, researchVerifierProviderModelId: null, researchVerifierReasoningEffort: null }
   ]));
   await waitFor(() => expect(within(row).getByTestId("admin-role-research-verifier-status")).toHaveTextContent("Not assigned"));
+});
+
+it("shows an unavailable researcher and clears only that role, restoring ordinary sub-agent settings", async () => {
+  const catalog = rolesCatalog();
+  catalog.policy.researchResearcherModel = { ...titleModel, available: false };
+  catalog.policy.researchResearcherReasoningEffort = null;
+  const calls = server(catalog);
+  renderSection();
+  const row = await screen.findByTestId("admin-role-research-researcher");
+  expect(within(row).getByTestId("admin-role-research-researcher-status")).toHaveTextContent("Model unavailable");
+  expect(within(row).getByText(/researchers keep the chat's usual sub-agent settings/)).toBeVisible();
+  fireEvent.click(within(row).getByRole("button", { name: "Researchers actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
+  await waitFor(() => expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+    { expectedVersion: 1, researchResearcherProviderModelId: null, researchResearcherReasoningEffort: null }
+  ]));
+  await waitFor(() => expect(within(row).getByTestId("admin-role-research-researcher-status")).toHaveTextContent("Not assigned"));
 });
 
 it("shows an unavailable assigned MCP guard and clears only that independent role", async () => {
@@ -1124,4 +1145,29 @@ it("shows an unavailable assigned MCP guard and clears only that independent rol
     { expectedVersion: 1, mcpGuardProviderModelId: null, mcpGuardReasoningEffort: null }
   ]));
   await waitFor(() => expect(within(row).getByTestId("admin-role-mcp-guard-status")).toHaveTextContent("Not assigned"));
+});
+
+it("saves a researcher model and high effort independently, and Undo restores its previous effort", async () => {
+  const catalog = rolesCatalog();
+  catalog.policy.researchVerifierModel = { ...titleModel, available: true };
+  catalog.policy.researchVerifierReasoningEffort = "low";
+  const calls = server(catalog);
+  const { reportNotice } = renderSection();
+  const picker = await screen.findByRole("button", { name: "Researchers deployment" });
+  fireEvent.click(picker);
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Researchers deployment" })).getByRole("option", { name: /GPT Luna/ }));
+  const reasoning = screen.getByRole("combobox", { name: "Researchers reasoning" });
+  await waitFor(() => expect(reasoning).toBeEnabled());
+  fireEvent.change(reasoning, { target: { value: "high" } });
+  await waitFor(() => expect(reasoning).toHaveValue("high"));
+  const undo = reportNotice.mock.calls.at(-1)?.[1];
+  expect(undo?.label).toBe("Undo");
+  await act(async () => { undo?.onSelect(); });
+  await waitFor(() => expect(reasoning).toHaveValue(""));
+  expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+    { expectedVersion: 1, researchResearcherProviderModelId: "luna", researchResearcherReasoningEffort: null },
+    { expectedVersion: 2, researchResearcherProviderModelId: "luna", researchResearcherReasoningEffort: "high" },
+    { expectedVersion: 3, researchResearcherProviderModelId: "luna", researchResearcherReasoningEffort: null }
+  ]);
+  expect(screen.getByRole("combobox", { name: "Research checks reasoning" })).toHaveValue("low");
 });

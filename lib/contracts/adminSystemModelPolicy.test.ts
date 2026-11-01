@@ -57,6 +57,16 @@ describe("administrator system model policy contract", () => {
     for (const patch of [{ researchVerifierModel: null }, { researchVerifierModel: null, researchVerifierReasoningEffort: "low" },
       { researchVerifierModel: { ...candidate, available: "yes" }, researchVerifierReasoningEffort: null }]) expect(decode(patch)).toBeNull();
   });
+  it("reads the researcher role and rejects a malformed pair", () => {
+    const candidate = { ...response.systemModelPolicy.candidates[0], available: true };
+    const decode = (patch: object) => decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...response.systemModelPolicy,
+      policy: { ...response.systemModelPolicy.policy, ...patch } } });
+    expect(decode({ researchResearcherModel: candidate, researchResearcherReasoningEffort: "low" })?.systemModelPolicy.policy)
+      .toMatchObject({ researchResearcherModel: { available: true }, researchResearcherReasoningEffort: "low" });
+    expect(decode({ researchResearcherModel: null, researchResearcherReasoningEffort: null })?.systemModelPolicy.policy.researchResearcherModel).toBeNull();
+    for (const patch of [{ researchResearcherModel: null }, { researchResearcherModel: null, researchResearcherReasoningEffort: "low" },
+      { researchResearcherModel: { ...candidate, available: "yes" }, researchResearcherReasoningEffort: null }]) expect(decode(patch)).toBeNull();
+  });
   it("rejects forged or malformed recommendation readiness and qualification evidence", () => {
     const entry = { id: "terra-low", modelName: "Terra", displayName: "My model", providerModelId: "model-1", connectionId: "connection-1",
       reasoningEffort: "low", unavailableReason: null, evidence: { revision: "test", passedCases: 5, totalCases: 5, latencyP50Ms: 3000, latencyP95Ms: 14000 } };
