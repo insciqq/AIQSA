@@ -471,6 +471,8 @@ export function createRunResearch(input: RunResearchInput) {
   };
 
   return {
+    /** Every agent's handoff uses this wait once research starts, since the user may have left. */
+    handoffWaitMs: RESEARCH_TIME_MS.handoffWait,
     /** This run's ports, for what the engine wires beside the run (a sub-agent's `record_evidence` writes through `ports.evidence`). */
     ports,
     reservedCall: { instruction: researchDraftReservedInstruction(), name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },

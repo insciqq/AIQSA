@@ -45,8 +45,8 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
       "claimed by a party or not verified.",
-    "List what you could not reach and why. If a site the user named shows a CAPTCHA or asks to sign in, call browser_handoff so the user " +
-      "can pass it; never skip such a site. Any other site that blocks you: say so and go on."
+    "List what you could not reach and why. If a site shows a CAPTCHA or asks to sign in, call browser_handoff once so the user " +
+      "can pass it; if nobody comes, record it as unreachable with its reason and go on. Any other site that blocks you: say so and go on."
   ].join("\n");
 }
 
