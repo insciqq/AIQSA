@@ -207,13 +207,10 @@ const HOLD_WORK = (minutes: number) => `каждый ${minutes} минут по�
   "команде за раз, на переднем плане (без `&`, nohup, timeout и других обёрток), и не заканчивает работу раньше; " +
   "коротко отчитывается только после этого.";
 
-/** J's picture: a fixed 64×64 solid red PNG, written by one shell command; base64 needs no packages and no quoting. */
-export const SCENARIO_J_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsAtx/ZMZxgi+hcEK" +
-  "LNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywKqxUDxqh7TUQAAAABJRU5ErkJggg==";
-
 /**
- * K's pictures: a 64×64 solid PNG of the given colour from standard Python, so
- * no agent needs a package or copies image bytes through a model.
+ * J's and K's pictures: a 64×64 solid PNG of the given colour from standard Python, so
+ * no agent needs a package or copies image bytes through a model. A model copying
+ * base64 with a long repeat dropped into a corrupt file twice on 2026-11-01.
  */
 export const SCENARIO_K_PNG_SCRIPT = [
   "import struct, sys, zlib",
@@ -456,8 +453,8 @@ export const SUBAGENT_PROMPTS = Object.freeze({
     // The Workspace-free agent has no sleep to wait with: a long written answer outlasts the viewer and its wake-up.
     start: (imageName: string) => [
       "Сделай ровно три шага по порядку. Суб-агентов ровно два, вызовов call_subagent ровно два.",
-      `1. Выполни в Workspace ровно одну команду в shell: \`printf '%s' '${SCENARIO_J_PNG_BASE64}' | base64 -d > ` +
-        `/workspace/project/${imageName}\`. Она создаёт маленькую картинку. Не проверяй её и больше ничего в Workspace не запускай.`,
+      `1. Выполни в Workspace ровно одну команду в shell: \`python3 - /workspace/project/${imageName} 255 0 0 <<'PY'\n` +
+        `${SCENARIO_K_PNG_SCRIPT}\nPY\`. Она создаёт маленькую картинку. Не проверяй её и больше ничего в Workspace не запускай.`,
       `2. Запусти в фоне (background: true) суб-агента ${SUBAGENT_NAMES.capture.viewer}. Его задание: ровно один раз посмотреть файл ` +
         `/workspace/project/${imageName} инструментом view_workspace_image, а если такого инструмента нет, то analyze_image, ` +
         "не запуская команд, и сообщить, какого цвета картинка.",

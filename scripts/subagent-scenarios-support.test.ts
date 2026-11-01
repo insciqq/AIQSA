@@ -8,7 +8,7 @@ import { validateUpload } from "../lib/server/uploads/validation";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
-  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_PNG_BASE64, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
+  DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
   SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
   bindingEvidence, blindImageEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence,
@@ -158,7 +158,7 @@ describe("files and images across agents (K)", () => {
   });
 
   it("recognizes a PNG by its signature", () => {
-    expect(pngBytes(Buffer.from(SCENARIO_J_PNG_BASE64, "base64"))).toBe(true);
+    expect(pngBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]))).toBe(true);
     expect(pngBytes(new Uint8Array([1, 2, 3]))).toBe(false);
   });
 });
@@ -730,14 +730,12 @@ describe("scenario J: the capture and retire defects", () => {
     wakeUps: [wakeUp]
   };
 
-  it("names the two agents, the per-run file and the exact fan-out, and writes an image the product can decode", async () => {
+  it("names the two agents, the per-run file and the exact fan-out, and has the picture written by a script", () => {
     const prompt = SUBAGENT_PROMPTS.J.start("subagent-j-1.png");
-    expect(prompt).toContain(`printf '%s' '${SCENARIO_J_PNG_BASE64}' | base64 -d > /workspace/project/subagent-j-1.png`);
+    expect(prompt).toContain(`python3 - /workspace/project/subagent-j-1.png 255 0 0 <<'PY'\n${SCENARIO_K_PNG_SCRIPT}\nPY`);
     for (const name of Object.values(SUBAGENT_NAMES.capture)) expect(prompt).toContain(`суб-агента ${name}.`);
     expect(prompt).toContain("Суб-агентов ровно два, вызовов call_subagent ровно два");
     expect(SUBAGENT_PROMPTS.J.question.answer).toBe(String(12 * 12));
-    const image = sharp(Buffer.from(SCENARIO_J_PNG_BASE64, "base64"));
-    expect(await image.metadata()).toMatchObject({ format: "png", height: 64, width: 64 });
   });
 
   it("counts an image call as succeeded only when it completed without a code, on the viewer's own thread", () => {
