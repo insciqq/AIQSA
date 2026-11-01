@@ -632,14 +632,14 @@ function ProxyCardV2({ card, live }: Readonly<{ card: ProxyChangeCard; live: boo
     const detail = [card.previousName ? `Renamed from “${card.previousName}”.` : null,
       card.passwordChanged ? "The password changed; the earlier one is not kept." : null].filter(Boolean).join("\n");
     return (
-      <CardV2 detail={detail || null} error={null} heading="Proxy updated" headingRef={state.headingRef} icon="server" meta={meta} name={card.name}
+      <CardV2 detail={detail || null} error={null} heading="Proxy updated" headingRef={state.headingRef} icon="globe" meta={meta} name={card.name}
         resource="proxy" state="done" status={null} />
     );
   }
   if (card.action === "created") {
     const gone = remote === "missing" || remote === "changed";
     return (
-      <CardV2 error={state.error} heading={outcome?.heading ?? "Proxy saved"} headingRef={state.headingRef} icon="server" meta={meta} name={card.name}
+      <CardV2 error={state.error} heading={outcome?.heading ?? "Proxy saved"} headingRef={state.headingRef} icon="globe" meta={meta} name={card.name}
         resource="proxy" state={outcome ? "done" : remote} status={outcome?.message ?? (remote === "missing" ? "This proxy no longer exists."
           : remote === "changed" ? "Undo is not available: the proxy changed after this, and that change is kept." : null)}
         actions={outcome || gone ? null : <UndoButtonV2 busy={state.busy} label={`Undo saving ${card.name}`} onClick={() => remove(true)} />} />
@@ -649,7 +649,7 @@ function ProxyCardV2({ card, live }: Readonly<{ card: ProxyChangeCard; live: boo
   return (
     <CardV2 error={state.error}
       heading={outcome?.heading ?? (remote === "missing" ? "Proxy already deleted" : remote === "changed" ? "Proxy not deleted" : "Delete proxy?")}
-      headingRef={state.headingRef} icon="server" meta={meta} name={card.name} resource="proxy" state={outcome ? "done" : asking ? "asking" : remote}
+      headingRef={state.headingRef} icon="globe" meta={meta} name={card.name} resource="proxy" state={outcome ? "done" : asking ? "asking" : remote}
       status={outcome?.message ?? (remote === "changed" ? "The proxy changed after this proposal, so nothing was deleted." : null)}
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete proxy" keepLabel="Keep proxy" label={`Delete ${card.name}`}

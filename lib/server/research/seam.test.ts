@@ -469,7 +469,7 @@ describe("the verifier's needs", () => {
     const main = scripted([{ calls: [start()] }, { calls: [submit()] }, { text: "Outcome: done\nfirst" }, { text: "Outcome: done\nsecond" }]);
     const memory = engineOf({ gates: [turnOf("judge"), turnOf("verifier")] });
     await run(main.adapter, memory).text();
-    const parents = memory.threads.admitForeground.mock.calls.map(([input]) => input.parentToolCallId);
+    const parents = vi.mocked(memory.threads.admitForeground).mock.calls.map(([input]) => input.parentToolCallId);
     expect(parents).toHaveLength(2);
     expect(new Set(parents).size).toBe(2);
     const gateCalls = memory.toolCalls.begin.mock.calls.map(([input]) => input).filter((input) => input.providerCallId.startsWith("research_gate_"));

@@ -3089,7 +3089,7 @@ describe("Workspace coordinator under a native engine run", () => {
 });
 
 describe("a run's proxies reach its VM with the secrets", () => {
-  const plan = { entries: [{ active: true, country: null, hints: [".ru"], host: "203.0.113.7", id: "proxy-1", name: "ru", owner: "personal" as const, port: 8080, protocol: "http" as const }] };
+  const plan = { entries: [{ active: true, country: null, domainHints: [".ru"], host: "203.0.113.7", id: "proxy-1", name: "ru", owner: "personal" as const, port: 8080, protocol: "http" as const }] };
 
   async function deliver(load: (() => Promise<never>) | null) {
     const f = fixture();

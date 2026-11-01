@@ -29,7 +29,7 @@ const EXIT_ADDRESS_URL = "https://api.ipify.org/?format=text";
 
 function failureStatus(error: unknown): Exclude<ProxyCheckStatus, "ok"> {
   if (error instanceof WebFetchError) {
-    if (isProxyCheckStatus(error.code) && error.code !== "ok") return error.code;
+    if (isProxyCheckStatus(error.code)) return error.code;
     if (error.code === "fetch_timeout") return "proxy_timeout";
   }
   return "proxy_connect_failed";
