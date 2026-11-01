@@ -488,8 +488,6 @@ describe("Prisma admin provider repository", () => {
       adapterKind: "answer_provider_hosted",
       credentialMode: "answer_provider",
       maxOutputTokens: 4_096,
-      maxResults: 7,
-      maxSearchCallsPerAnswer: 2,
       protocol: scenario.protocol,
       providerModelId: null,
       queryMaxCharacters: 500,
@@ -618,6 +616,7 @@ describe("Prisma admin provider repository", () => {
                   adapterKind: "provider_model_client",
                   credentialMode: "provider_model",
                   maxOutputTokens: 8_192,
+                  // A stored pre-upgrade draft; these retired fields must not be republished.
                   maxResults: 11,
                   maxSearchCallsPerAnswer: 4,
                   protocol: "openai_responses_web_search",
@@ -792,8 +791,6 @@ describe("Prisma admin provider repository", () => {
           ...(scenario.existingClient
             ? {
               maxOutputTokens: 8_192,
-              maxResults: 11,
-              maxSearchCallsPerAnswer: 4,
               providerModelId: "model-2",
               queryMaxCharacters: 333,
               reasoningPolicy: "provider_default",
@@ -819,7 +816,6 @@ describe("Prisma admin provider repository", () => {
         draft: expect.objectContaining(scenario.existingClient
           ? {
               maxOutputTokens: 8_192,
-              maxSearchCallsPerAnswer: 4,
               providerModelId: "model-2",
               reasoningPolicy: "provider_default"
             }

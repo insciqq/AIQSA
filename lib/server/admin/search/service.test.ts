@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminSearchDraft } from "../../../contracts/adminSearch";
 import { ProviderSearchExecutionError } from "../../providers/types";
@@ -11,8 +12,6 @@ const draft: AdminSearchDraft = {
   adapterKind: "provider_model_client",
   credentialMode: "provider_model",
   maxOutputTokens: 4_096,
-  maxResults: 8,
-  maxSearchCallsPerAnswer: 2,
   protocol: "openai_responses_web_search",
   providerModelId: "technical-1",
   queryMaxCharacters: 500,
@@ -203,6 +202,47 @@ function policyRow(version = 1) {
 }
 
 describe("admin Search service", () => {
+  it.each(["current", "legacy"] as const)("keeps a stored legacy source ready and accepts a %s re-save", async (inputShape) => {
+    const legacy = { ...draft, maxResults: 2, maxSearchCallsPerAnswer: 2 };
+    const legacyHosted = { ...hostedDraft, maxResults: 8, maxSearchCallsPerAnswer: 8 };
+    // These fingerprints include the removed fields, as the previous release did.
+    const oldHash = (value: object) => createHash("sha256")
+      .update(JSON.stringify(value, Object.keys(value).sort())).digest("hex");
+    const storedChild = (configuration: typeof legacy | typeof legacyHosted, id: string) => child(configuration, {
+      id, strategyId: id, testedDraftHash: oldHash(configuration),
+      activeRevision: { ...activeRevision(configuration, `${id}:revision`), draftHash: oldHash(configuration) },
+      activeRevisionId: `${id}:revision`
+    });
+    const row = option([storedChild(legacy, "client"), storedChild(legacyHosted, "hosted")]);
+    const revisions = revisionRepository();
+    const tx = {
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()), updateMany: vi.fn(async () => ({ count: 0 })) },
+      providerModel: { findMany: vi.fn(async () => [providerModel()]), findFirst: vi.fn(async () => providerModel()) },
+      searchOption: { findMany: vi.fn(async () => [row]), findUnique: vi.fn(async () => row), update: vi.fn() },
+      searchIntegrationRevision: revisions,
+      searchStrategy: { update: vi.fn(), updateMany: vi.fn(async () => ({ count: 1 })) }
+    };
+    const prisma = { ...tx, $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx) } as unknown as PrismaClient;
+    const test = vi.fn(async () => ({ method: "provider_search" as const, normalizedSourceCount: 50,
+      probeBinding: PROBE_BINDING, protocol: draft.protocol, status: "available" as const }));
+    const service = createAdminSearchService({ prisma, now: () => NOW, tester: { currentBinding: currentProbeBinding, test } });
+
+    expect((await service.list()).integrations[0]).toMatchObject({
+      configuration: draft, configurationActive: true, draftDirty: false, ready: true, readiness: "ready"
+    });
+    expect(test).not.toHaveBeenCalled();
+    expect(tx.searchStrategy.updateMany).not.toHaveBeenCalled();
+    await service.saveAndCheck({ description: "Web evidence", displayName: "OpenAI Search",
+      draft: inputShape === "legacy" ? legacy : draft, expectedDraftVersion: 1, id: "source-1", userId: "admin-1" });
+    expect(test).toHaveBeenCalledExactlyOnceWith({ draft, userId: "admin-1" });
+    expect(revisions.create).toHaveBeenCalledTimes(1);
+    expect(revisions.create).toHaveBeenCalledWith({ data: expect.objectContaining({ configuration: draft,
+      searchStrategyId: "client", draftHash: searchDraftHash(draft) }) });
+    // The unchanged hosted configuration reuses its old revision despite the old hash.
+    expect(tx.searchStrategy.update).toHaveBeenCalledWith({ where: { id: "hosted" },
+      data: expect.objectContaining({ activeRevisionId: "hosted:revision" }) });
+  });
+
   it("aggregates hosted and incomplete broader-model setup into one usable source", async () => {
     const client = child(draft, {
       draftTestEvidence: null,
@@ -1114,11 +1154,10 @@ describe("admin Search service", () => {
   });
 
   it("applies advanced execution controls only to the broader-model route", async () => {
-    const savedHostedDraft = { ...hostedDraft, maxOutputTokens: 16_384, maxSearchCallsPerAnswer: 16 };
+    const savedHostedDraft = { ...hostedDraft, maxOutputTokens: 16_384 };
     const advancedDraft: AdminSearchDraft = {
       ...draft,
       maxOutputTokens: 8_192,
-      maxSearchCallsPerAnswer: 4,
       reasoningPolicy: "provider_default"
     };
     const strategyUpdateMany = vi.fn(async () => ({ count: 1 }));
@@ -1240,7 +1279,6 @@ describe("admin Search service", () => {
   it("creates an exact hosted revision when client limits change", async () => {
     const changedDraft: AdminSearchDraft = {
       ...draft,
-      maxResults: 12,
       queryMaxCharacters: 900,
       timeoutMs: 25_000
     };

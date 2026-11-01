@@ -133,14 +133,13 @@ describe("Search source evidence normalization", () => {
     ]);
     expect(kept.map((source) => source.rank)).toEqual(Array.from({ length: 80 }, (_, index) => index + 1));
     expect(citedSearchSources(browsed)).toHaveLength(30);
-    expect(normalizeSearchSources(browsed, 20)).toHaveLength(30);
     expect(searchSourcesFromCitationArtifacts(cited.map((source) => ({
       data: { artifactType: "citation", payload: { ...source, index: source.citation } }, type: "artifact"
     })))).toEqual(kept.slice(0, 50));
   });
 
-  it("preserves citation numbers beyond the old number ceiling", () => {
+  it("rejects citation numbers beyond the provider-input sanity bound", () => {
     expect(normalizeSearchSources([{ citation: 10_001, url: "https://example.com/last" }])[0])
-      .toMatchObject({ citation: 10_001, rank: 1 });
+      .not.toHaveProperty("citation");
   });
 });

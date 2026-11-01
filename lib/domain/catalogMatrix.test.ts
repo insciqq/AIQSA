@@ -356,7 +356,7 @@ describe("catalog capability matrix", () => {
         ...template!.routes,
         {
           adapterKind: "provider_model_client" as const,
-          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
+          config: { queryMaxCharacters: 500, timeoutMs: 300_000 },
           credentialMode: "provider_model" as const,
           executionModes: ["all_selected", "model_choice"] as const,
           kind: "provider_model_web_search" as const,
@@ -419,7 +419,7 @@ describe("catalog capability matrix", () => {
       kind: "web_search" as const,
       routes: [{
         adapterKind: "provider_model_client" as const,
-        config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
+        config: { queryMaxCharacters: 500, timeoutMs: 300_000 },
         credentialMode: "provider_model" as const,
         executionModes: ["all_selected", "model_choice"] as const,
         kind: "provider_model_web_search" as const,

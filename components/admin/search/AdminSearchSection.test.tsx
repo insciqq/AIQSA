@@ -513,8 +513,10 @@ describe("AdminSearchSection", () => {
     });
 
     const savedDraft = calls.find(({ body }) => body?.action === "save_and_check")?.body?.draft;
-    expect(savedDraft).not.toHaveProperty("maxResults");
-    expect(savedDraft).not.toHaveProperty("maxSearchCallsPerAnswer");
+    expect(Object.keys(savedDraft as object).sort()).toEqual([
+      "adapterKind", "credentialMode", "maxOutputTokens", "protocol", "providerModelId",
+      "queryMaxCharacters", "reasoningPolicy", "timeoutMs"
+    ]);
 
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Perplexity Search EU" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));

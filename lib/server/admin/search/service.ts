@@ -604,10 +604,11 @@ export function createAdminSearchService(input: Readonly<{
     const activeDraft = child.activeRevision
       ? optionalDraft(child.activeRevision.configuration)
       : null;
+    // Older immutable revision hashes include retired controls. Compare the
+    // normalized configuration so an upgrade does not invalidate that revision.
     const activeIsConfigurationRevision = Boolean(
       !checkedEvidence && child.activeRevision && activeDraft &&
       child.activeRevision.id === child.activeRevisionId &&
-      child.activeRevision.draftHash === draftHash &&
       searchDraftHash(activeDraft) === draftHash &&
       record(child.activeRevision.validationEvidence).method === "configuration"
     );

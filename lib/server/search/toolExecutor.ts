@@ -1,4 +1,3 @@
-import { DEEPSEEK_SEARCH_API_MAX_RESULTS } from "../providers/deepSeekSearchApi";
 import { admittedOutputAllowance, isModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import type { ValidatedSearchQuery } from "../../domain/search";
@@ -356,7 +355,6 @@ function queryOnlyRequest(
     };
   } else if (option.protocol === "deepseek_search_api" && option.provider === "deepseek") {
     searchPolicy = {
-      maxResults: DEEPSEEK_SEARCH_API_MAX_RESULTS,
       modelId: option.modelId ?? "",
       provider: "deepseek",
       strategyId: "deepseek-search-api"

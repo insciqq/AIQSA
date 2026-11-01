@@ -35,6 +35,15 @@ describe("search plans", () => {
 });
 
 describe("fan-out evidence", () => {
+  it("keeps every source beyond the former merged-list ceiling", () => {
+    const sources = Array.from({ length: 50 }, (_, index) => ({
+      rank: index + 1, title: `Source ${index + 1}`, url: `https://example.test/source/${index + 1}`
+    }));
+    const merged = mergeSearchEvidence(["engine"], [{ invocationId: "call", optionId: "engine", sources }]);
+    expect(merged).toHaveLength(50);
+    expect(merged.at(-1)).toMatchObject({ title: "Source 50", url: sources[49]!.url });
+  });
+
   it("uses plan/local order, drops unsafe URLs, and deduplicates with attribution", () => {
     expect(mergeSearchEvidence(["second", "first"], [
       {

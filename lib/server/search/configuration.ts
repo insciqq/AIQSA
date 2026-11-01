@@ -110,8 +110,9 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Fingerprint effective settings even when the caller supplies a stored legacy draft. */
 export function searchDraftHash(value: AdminSearchDraft): string {
-  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+  return createHash("sha256").update(canonicalJson(normalizeSearchDraft(value)), "utf8").digest("hex");
 }
 
 export function searchExecutionModes(adapterKind: SearchAdapterKind): SearchPlanMode[] {
