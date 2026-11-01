@@ -274,7 +274,7 @@ async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegra
 export async function ensureSearchSource(api: Api, input: SearchSourceInput): Promise<string> {
   let connectionId: string | null = input.kind === "web_search" ? input.connectionId : null;
   if (input.kind === "deepseek_search_api") {
-    const existing = (await connections(api)).find((connection) => (connection as { family?: unknown }).family === input.provider && !connection.checkRunning);
+    const existing = (await connections(api)).find((connection) => connection.family === input.provider && !connection.checkRunning);
     if (existing) connectionId = existing.id;
     else {
       const snapshot = await json(api, "/api/admin/providers/quick-setup");
@@ -296,6 +296,15 @@ export async function ensureSearchSource(api: Api, input: SearchSourceInput): Pr
     entry.sourceConnectionId === connectionId && entry.kind === input.kind && entry.archivedAt === null && entry.configurationActive) ?? null, "search_source_missing", 3_000);
   if (!integration.enabled) await json(api, `/api/admin/search/${encodeURIComponent(integration.id)}/actions`, { body: { action: "enable" }, method: "POST" });
   return integration.strategyId;
+}
+
+/** The research verifier role on the first enabled answer model of a connection of that family (of another family than the chat's, as the role is meant to be). */
+export async function ensureResearchVerifier(api: Api, family: string): Promise<void> {
+  const connection = (await connections(api)).find((candidate) => candidate.family === family && candidate.enabled && !candidate.checkRunning) ?? fail("verifier_connection_missing");
+  const model = connection.models.find((candidate) => candidate.enabled) ?? fail("verifier_model_missing");
+  const current = await json(api, "/api/admin/providers/system-model-policy");
+  const policy = isRecord(current) && isRecord(current.systemModelPolicy) && isRecord(current.systemModelPolicy.policy) ? current.systemModelPolicy.policy : fail("system_policy_invalid");
+  await json(api, "/api/admin/providers/system-model-policy", { body: { expectedVersion: policy.version, researchVerifierProviderModelId: model.id, researchVerifierReasoningEffort: null }, method: "PATCH" });
 }
 
 /** The user's catalog entry of a configured model, once it offers tool calling. */

@@ -106,6 +106,13 @@
  * - R: when research starts, only when named: 10 Russian phrases, each in a new chat with Search on. A run that calls `start_research`
  *   is stopped at once to save money. Oracle: each phrase went in its direction, reported by index. Paid calls: about 10-25 codex-lb
  *   requests and a few searches, in about 5-10 minutes. This needs DEEPSEEK_API_KEY for the Search source, as Q does.
+ * - S: proxies end to end, one chat per step, only when named, with the operator's proxy in AIQSA_SUBAGENTS_TEST_PROXY (process only, never printed, never written).
+ *   A proxy pasted in chat is saved for `.ru` and tested; the browser opens a hinted page, Yandex Market, Wildberries and Ozon, and an address echo through the named
+ *   proxy; `fetch_url` reads through it; a dead proxy fails visibly; a switched-off one is refused by name. Oracles compare exit addresses inside SQL and print booleans. The
+ *   answers go to AIQSA_SUBAGENTS_ANSWERS_FILE when set (0600), for reading by hand. Paid calls: about 15-30 codex-lb requests, in about 5-10 minutes.
+ * - T: research metrics, one chat per question of `SCENARIO_T_QUESTIONS` (AIQSA_SUBAGENTS_T_KINDS narrows them), only when named. Per question: researchers, drafts, send-backs,
+ *   what later rounds added, opened pages per source class, the check's note as the server wrote it. With AIQSA_SUBAGENTS_VERIFIER_FAMILY the verifier role goes to that
+ *   connection's first model. Paid calls: hundreds of codex-lb requests and tens of searches per question, in about 10-40 minutes each.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -147,7 +154,7 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -166,14 +173,15 @@ import {
   type OracleVerdict, type ScenarioInteraction, type StandTarget
 } from "./browser-scenarios-support";
 import {
-  TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureSearchSource, ensureTextModel, errorCode,
+  TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureResearchVerifier, ensureSearchSource, ensureTextModel, errorCode,
   handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setWorkspaceEnabled, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
   browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, SCENARIO_R_PHRASES, SUBAGENT_SCENARIO_NEEDS,
-  type PageReads, type RPhraseResult,
+  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchMetrics,
+  type PageReads, type RPhraseResult, type TDraftFinding,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
@@ -1411,6 +1419,126 @@ async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
   return { success: verdict.failed.length === 0, usage };
 }
 
+/** A chat's answers for reading by hand: a file of the operator's own choosing, never output. S's answers mask the saved password (`passwordInAnswer` checks that). */
+async function keepAnswers(ctx: Context, chatId: string, label: string, redact: readonly string[] = []): Promise<void> {
+  const file = process.env.AIQSA_SUBAGENTS_ANSWERS_FILE;
+  if (!file) return;
+  const { rows } = await ctx.db.query<{ content: unknown }>(`SELECT m."content" FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId"
+    WHERE r."chatId" = $1 AND r."subagentTurnId" IS NULL ORDER BY r."createdAt"`, [chatId]);
+  const text = rows.map((row) => (row.content as { blocks?: { text?: string }[] } | null)?.blocks?.map((block) => block.text ?? "").join("\n") ?? "").join("\n\n---\n\n");
+  const clean = redact.reduce((value, secret) => value.split(secret).join("[proxy]"), text);
+  appendFileSync(file, `\n\n===== ${label} =====\n\n${clean}\n`, { mode: 0o600 });
+}
+
+const S_TURN_MS = 12 * 60_000;
+
+async function resultsHold(db: PostgresClient, chatId: string, toolLike: string, urlPart: string, needle: string): Promise<boolean> {
+  const { rows } = await db.query<{ hit: boolean }>(`SELECT coalesce(bool_or(strpos(c."result"::text, $4) > 0), false) AS "hit" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
+    WHERE r."chatId" = $1 AND c."toolName" LIKE $2 AND strpos(c."arguments"::text, $3) > 0`, [chatId, toolLike, urlPart, needle]);
+  return rows[0]?.hit === true;
+}
+
+async function fetchCodes(db: PostgresClient, chatId: string): Promise<string[]> {
+  const { rows } = await db.query<{ code: string | null }>(`SELECT coalesce(c."result"->'rawPreview'->'fetchUrl'->>'proxyCode', c."result"->'rawPreview'->'fetchUrl'->>'outcome') AS "code"
+    FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1 AND c."toolName" = 'fetch_url'`, [chatId]);
+  return [...new Set(rows.flatMap((row) => { const code = safeCode(row.code); return code ? [code] : []; }))];
+}
+
+async function scenarioS(ctx: Context, run: Run): Promise<Outcome> {
+  const proxy = parseTestProxy(process.env.AIQSA_SUBAGENTS_TEST_PROXY) ?? fail("test_proxy_required");
+  const started = Date.now();
+  const terminals: Record<string, string> = {};
+  const step = async (name: string, text: string) => {
+    const chat = await createScenarioChat(ctx.session.api, `Proxy scenario ${name}`);
+    run.chats.push(chat.id);
+    const sent = await trySend(ctx, run, chat.id, text);
+    if (!sent.ok) fail(`send_${sent.code}`);
+    terminals[name] = (await waitRun(ctx, sent.ok ? sent.runId : "", S_TURN_MS)).status;
+    await waitMainIdle(ctx, chat.id, S_TURN_MS);
+    // The proxy's address and login may be repeated in an answer, and they leave nowhere.
+    await keepAnswers(ctx, chat.id, `S ${name}`, [proxy.url, proxy.password, proxy.login, proxy.host]);
+    return chat.id;
+  };
+  const saveChat = await step("save", SCENARIO_S_PROMPTS.save(proxy.url));
+  const { rows: saved } = await ctx.db.query<{ active: boolean; exitIsProxy: boolean; hint: boolean; id: string; ok: boolean; sealed: boolean; version: number }>(`SELECT p."id", p."active", p."version",
+      '.ru' = ANY(p."domainHints") AS "hint", p."lastCheckStatus" = 'ok' AS "ok", p."lastExitAddress" = $2 AS "exitIsProxy", p."passwordEnvelope" IS NOT NULL AS "sealed"
+    FROM "NetworkProxy" p WHERE lower(p."name") = $1`, [SCENARIO_S_NAME, proxy.host]);
+  const row = saved[0];
+  const { rows: inAnswer } = await ctx.db.query<{ hit: boolean }>(`SELECT coalesce(bool_or(strpos(m."content"::text, $2) > 0), false) AS "hit" FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."chatId" = $1`, [saveChat, proxy.password]);
+  const browseChat = await step("browse", SCENARIO_S_PROMPTS.browse());
+  const readChat = await step("read", SCENARIO_S_PROMPTS.read());
+  const { rows: through } = await ctx.db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
+    WHERE r."chatId" = $1 AND c."toolName" = 'fetch_url' AND c."result"->'rawPreview'->'fetchUrl'->'proxy'->>'name' = $2 AND c."result"->'rawPreview'->'fetchUrl'->>'outcome' = 'read'`, [readChat, SCENARIO_S_NAME]);
+  // A dead proxy: the same host on a port nothing listens on, hinted for one echo site.
+  await json(ctx.session.api, "/api/me/proxies", { body: { domainHints: [SCENARIO_S_DEAD_HINT], host: proxy.host, login: proxy.login, name: SCENARIO_S_DEAD_NAME, password: proxy.password, port: 1, protocol: "http" }, method: "POST" });
+  const deadChat = await step("dead", SCENARIO_S_PROMPTS.dead());
+  const { rows: deadRows } = await ctx.db.query<{ direct: boolean; failed: boolean }>(`SELECT
+      coalesce(bool_or(c."result"::text ~ '[0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}'), false) AS "direct",
+      coalesce(bool_or(c."toolName" LIKE 'mcp_workspace%' AND strpos(c."result"::text, 'proxy_') > 0), false) AS "failed"
+    FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1 AND strpos(c."arguments"::text, $2) > 0`, [deadChat, SCENARIO_S_DEAD_HINT]);
+  // Switched off: naming it is refused. The route takes the version it last read.
+  if (row) await json(ctx.session.api, `/api/me/proxies/${encodeURIComponent(row.id)}`, { body: { active: false, expectedVersion: (await ctx.db.query<{ version: number }>(`SELECT "version" FROM "NetworkProxy" WHERE "id" = $1`, [row.id])).rows[0]?.version }, method: "PATCH" });
+  const offChat = await step("off", SCENARIO_S_PROMPTS.off());
+  const verdict = oracleS({ browserHintExit: await resultsHold(ctx.db, browseChat, "mcp_workspace%", "2ip.ru", proxy.host), browserNamedExit: await resultsHold(ctx.db, browseChat, "mcp_workspace%", "ipify", proxy.host),
+    checkOk: row?.ok === true, deadBrowserFailed: deadRows[0]?.failed === true, deadFetchCodes: await fetchCodes(ctx.db, deadChat), deadWentDirect: deadRows[0]?.direct === true, exitIsProxy: row?.exitIsProxy === true,
+    fetchExit: await resultsHold(ctx.db, readChat, "fetch_url", "ipify", proxy.host), fetchThroughProxy: through[0]?.count ?? 0, hintSaved: row?.hint === true, offFetchCodes: await fetchCodes(ctx.db, offChat),
+    passwordInAnswer: inAnswer[0]?.hit === true, saved: row?.sealed === true, terminals });
+  const usage = usageByPurpose(await settledUsage(ctx.db, run.chats));
+  for (const stored of (await ctx.db.query<{ id: string; version: number }>(`SELECT "id", "version" FROM "NetworkProxy"`)).rows) {
+    await request(ctx.session.api, `/api/me/proxies/${encodeURIComponent(stored.id)}`, { body: { expectedVersion: stored.version }, method: "DELETE" }).catch(() => undefined);
+  }
+  Object.assign(run.line, { checksFailed: verdict.failed, deadFetchCodes: await fetchCodes(ctx.db, deadChat), oracleCounts: verdict.counts, offFetchCodes: await fetchCodes(ctx.db, offChat), terminals, wallSeconds: seconds(started) });
+  return { success: verdict.failed.length === 0, usage };
+}
+
+const T_QUESTION_MS = 75 * 60_000;
+
+async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
+  const route = ctx.search[0] ?? fail("search_route_missing");
+  const kinds = process.env.AIQSA_SUBAGENTS_T_KINDS?.split(",").map((kind) => kind.trim()).filter(Boolean);
+  const questions: Record<string, unknown>[] = [];
+  let failed = false;
+  for (const question of SCENARIO_T_QUESTIONS.filter((entry) => !kinds || kinds.includes(entry.kind))) {
+    const started = Date.now();
+    const chat = await createScenarioChat(ctx.session.api, `Research scenario ${question.kind}`);
+    run.chats.push(chat.id);
+    const sent = await trySend(ctx, run, chat.id, question.text, [], { search: route });
+    if (!sent.ok) fail(`send_${sent.code}`);
+    const terminal = await waitRun(ctx, sent.ok ? sent.runId : "", T_QUESTION_MS);
+    await waitMainIdle(ctx, chat.id, T_QUESTION_MS);
+    const { rows: calls } = await ctx.db.query<{ arguments: Record<string, unknown> | null; result: Record<string, unknown> | null; threadId: string | null; toolName: string }>(`SELECT c."arguments", c."result",
+        c."subagentThreadId" AS "threadId", c."toolName" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1 ORDER BY c."startedAt"`, [chat.id]);
+    const count = (name: string) => calls.filter((call) => call.toolName === name).length;
+    const drafts: TDraftFinding[][] = calls.filter((call) => call.toolName === "submit_research_draft" && call.arguments).map((call) => ((call.arguments!.findings ?? []) as Record<string, unknown>[]).map((finding) => ({
+      claim: String(finding.claim ?? ""), quote: String(finding.quote ?? ""), sourceClass: String(finding.source_class ?? ""), url: String(finding.url ?? "") })));
+    const opened = new Set(calls.filter((call) => call.toolName === "fetch_url" && (call.result?.rawPreview as { fetchUrl?: { outcome?: string } } | undefined)?.fetchUrl?.outcome === "read")
+      .flatMap((call) => typeof call.arguments?.url === "string" ? [call.arguments.url] : []));
+    for (const call of calls) {
+      if (!call.toolName.startsWith("mcp_workspace") || !call.arguments || !JSON.stringify(call.arguments).includes("aiqsa-browser")) continue;
+      for (const match of JSON.stringify(call.arguments).matchAll(/https?:\/\/[^\s"'\\]+/gu)) opened.add(match[0]);
+    }
+    const turns = await turnRows(ctx.db, chat.id);
+    const names = await threadIdsByName(ctx.db, chat.id);
+    const gateThreads = new Set([...names.entries()].filter(([name]) => /^(?:gap-judge|verifier)-/u.test(name)).flatMap(([, ids]) => ids));
+    const researcherTurns = turns.filter((turn) => !gateThreads.has(turn.threadId)).length;
+    const sentBack = calls.filter((call) => call.toolName === "submit_research_draft" && JSON.stringify(call.result ?? "").includes("sent_back")).length;
+    const metrics = researchMetrics({ drafts, opened, researcherTurns, sentBack, started: count("start_research") > 0 });
+    const { rows: answers } = await ctx.db.query<{ note: string | null; text: string | null }>(`SELECT m."content"::text AS "text", NULL AS "note" FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId"
+      WHERE r."id" = $1`, [sent.ok ? sent.runId : ""]);
+    const answer = answers[0]?.text ?? "";
+    // The check's sentences are the server's own words (`verifier.ts`, `notes.ts`), so they may leave; nothing else of the answer does.
+    const serverNotes = [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт пришёл|This report came|Research ended|Исследование завершилось)[^*]{0,400})\*/gu)].map((match) => match[1]);
+    await keepAnswers(ctx, chat.id, `T ${question.kind}`);
+    const usage = usageByPurpose(await settledUsage(ctx.db, [chat.id]));
+    questions.push({ gateTurns: turns.length - researcherTurns, kind: question.kind, metrics, searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length,
+      fetchCalls: count("fetch_url"), serverNotes, terminal: terminal.status, tokens: usage.total, wallSeconds: seconds(started) });
+    emit({ stage: "research_question", ...questions.at(-1) });
+    if (terminal.status !== "complete" || !metrics.started || (question.kind === "purchase" && metrics.independentOpened === 0)) failed = true;
+  }
+  Object.assign(run.line, { questions });
+  return { success: !failed && questions.length > 0, usage: usageByPurpose(await settledUsage(ctx.db, run.chats)) };
+}
+
 const N_TURN_MS = 10 * 60_000;
 
 /** Uploads the document as the composer does without a Workspace: no scope. */
@@ -1645,6 +1773,8 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "P": outcome = await scenarioP(ctx, run); break;
       case "Q": outcome = await scenarioQ(ctx, run); break;
       case "R": outcome = await scenarioR(ctx, run); break;
+      case "S": outcome = await scenarioS(ctx, run); break;
+      case "T": outcome = await scenarioT(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
@@ -1724,6 +1854,7 @@ async function main() {
         search.push({ mode: "model_choice", model: await catalogModel(api, hostedModel), name: "hosted", optionId: hosted });
       }
     }
+    if (scenarios.includes("T") && process.env.AIQSA_SUBAGENTS_VERIFIER_FAMILY) await ensureResearchVerifier(api, process.env.AIQSA_SUBAGENTS_VERIFIER_FAMILY);
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model, contextWindow: chatProvider.contextWindow,
       reused: chatProvider.reused, secondModel: second !== null, modelWithoutVision: blind !== null, restartHook: options.restart !== null,
       configuredBounds: target.configuredBounds, scenarios, runs: options.runs });

@@ -8,7 +8,7 @@ import { validateUpload } from "../lib/server/uploads/validation";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
-  SCENARIO_R_PHRASES, oracleQ, oracleR,
+  SCENARIO_R_PHRASES, SCENARIO_S_PROMPTS, oracleQ, oracleR, oracleS, parseTestProxy, researchMetrics,
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
   SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
@@ -50,7 +50,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(20);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(22);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
@@ -915,5 +915,31 @@ describe("scenarios Q and R", () => {
       { expected: true, index: 1, started: true, status: "cancelled" }]);
     expect(verdict.failed).toEqual(["phrase_0_not_started", "phrase_5_started"]);
     expect(verdict.counts).toEqual({ asked: 3, askedFirst: 0, correct: 1, started: 2 });
+  });
+});
+
+describe("scenarios S and T", () => {
+  const good = { browserHintExit: true, browserNamedExit: true, checkOk: true, deadBrowserFailed: true, deadFetchCodes: ["proxy_all_failed"], deadWentDirect: false,
+    exitIsProxy: true, fetchExit: true, fetchThroughProxy: 2, hintSaved: true, offFetchCodes: ["proxy_inactive"], passwordInAnswer: false, saved: true, terminals: { save: "complete" } };
+
+  it("S names each failure and keeps its URL out of everything but the first message", () => {
+    expect(oracleS(good).failed).toEqual([]);
+    expect(oracleS({ ...good, deadWentDirect: true, passwordInAnswer: true, terminals: { read: "error" } }).failed).toEqual(["password_in_answer", "dead_proxy_went_direct", "read_error"]);
+    for (const prompt of [SCENARIO_S_PROMPTS.browse(), SCENARIO_S_PROMPTS.read(), SCENARIO_S_PROMPTS.dead(), SCENARIO_S_PROMPTS.off()]) expect(prompt).not.toContain("example-secret");
+    expect(SCENARIO_S_PROMPTS.save("http://u:example-secret@example.org:1")).toContain("example-secret");
+  });
+
+  it("reads the test proxy only as a complete http URL", () => {
+    expect(parseTestProxy("http://u:p%40ss@198.51.100.7:43128")).toMatchObject({ host: "198.51.100.7", login: "u", password: "p@ss", port: 43128 });
+    for (const raw of [undefined, "", "not a url", "socks5://u:p@h:1", "http://h:1", "http://u@h:1"]) expect(parseTestProxy(raw)).toBeNull();
+  });
+
+  it("T counts what later rounds added and which classes rest on opened pages", () => {
+    const finding = (claim: string, url: string, sourceClass: string) => ({ claim, quote: "q", sourceClass, url });
+    const metrics = researchMetrics({ drafts: [[finding("a", "https://x/a", "primary_official")],
+      [finding("A ", "https://x/a", "primary_official"), finding("b", "https://x/b", "independent_tests"), finding("c", "https://x/c", "owner_reviews")]],
+    opened: new Set(["https://x/a", "https://x/b"]), researcherTurns: 4, sentBack: 1, started: true });
+    expect(metrics).toEqual({ addedByLaterRounds: 2, attempts: 2, findings: 3, independentOpened: 1, openedByClass: { independent_tests: 1, primary_official: 1 },
+      researcherTurns: 4, sentBack: 1, started: true });
   });
 });
