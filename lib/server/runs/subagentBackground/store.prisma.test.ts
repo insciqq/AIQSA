@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { RUN_FOLLOWUP_REVISION_MAX, SUBAGENT_FOLLOWUP_LIMITS, SUBAGENT_WAIT_REASONS } from "../../../contracts/subagents";
+import { RUN_FOLLOWUP_REVISION_MAX, SUBAGENT_FOLLOWUP_LIMITS, SUBAGENT_WAIT_REASONS, subagentQuestionNonce } from "../../../contracts/subagents";
 import { decodeSubagentChatThreads, decodeSubagentThreadView } from "../../../contracts/subagentViews";
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
@@ -355,6 +355,47 @@ describe("background sub-agent runs on PostgreSQL", () => {
     expect((await store.owedCallbacks(scope))?.activeBranch).toMatchObject([{ name: "asker", result: { state: "stopped" }, turnId: admitted.turnId }]);
     await claim([{ kind: "callback", turnId: admitted.turnId }]);
     expect(await callbackRunId()).toBe(f.main.runId);
+  }));
+
+  it("delivers the question its turn asks when the turn moves on to the next one in the middle of a delivery", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, userId: f.userId };
+    const thread = await f.thread("asker");
+    const admitted = await store.admit(admission(f, thread));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    const ask = (db: Pick<typeof prisma, "modelRunToolCall">, providerCallId: string, question: string, ordinal: number) => db.modelRunToolCall.create({
+      data: { arguments: { question }, modelRunId: admitted.runId, ordinal, providerCallId, roundIndex: 1, state: "running", subagentThreadId: thread.threadId,
+        subagentTurnId: admitted.turnId, toolName: "ask_parent" }, select: { id: true } });
+    const first = await ask(prisma, "ask-1", "Which size?", 0);
+    await createSubagentThreadStore(prisma).setActiveState({ ...scope, reason: SUBAGENT_WAIT_REASONS.answer, state: "waiting", turnId: admitted.turnId });
+    // The parent's answer ended the first question and the runner asked the next, as `setActiveState` and the tool records
+    // write them, without the chat's lock. It commits only once the delivery waits for the turn.
+    let holding!: () => void;
+    const held = new Promise<void>((resolve) => { holding = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let second = "";
+    const moved = prisma.$transaction(async (tx) => {
+      await tx.subagentTurn.update({ data: { reasonCode: SUBAGENT_WAIT_REASONS.answer }, where: { id: admitted.turnId } });
+      await tx.modelRunToolCall.update({ data: { state: "complete" }, where: { id: first.id } });
+      second = (await ask(tx, "ask-2", "Which colour?", 1)).id;
+      holding();
+      await released;
+    });
+    await held;
+    const delivering = store.deliverIntoRun({ ...scope, runId: f.main.runId, turnId: admitted.turnId });
+    await expect.poll(async () => (await prisma.$queryRaw<Array<{ waiting: number }>>`
+      SELECT count(*)::int AS "waiting" FROM pg_stat_activity
+      WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%"SubagentTurn"%'`)[0]?.waiting, { timeout: 4_000 }).toBe(1);
+    release();
+    await moved;
+    expect(await delivering).toBe("delivered");
+    const rows = await prisma.runFollowup.findMany({ where: { modelRunId: f.main.runId, subagentTurnId: admitted.turnId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.nonce).toBe(subagentQuestionNonce(second));
+    expect(rows[0]!.text).toContain("Which colour?");
+    expect(rows[0]!.text).not.toContain("Which size?");
+    expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: admitted.turnId } })).callbackRunId).toBe(f.main.runId);
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 
   it("resumes a waiting turn with its claim cleared, and recovery finds a question left owed", async () => fixture(async (f) => {
