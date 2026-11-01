@@ -1,0 +1,448 @@
+{
+  "format": [
+    "Shared vectors of the proxy selection rules. lib/domain/proxySelection.test.ts and the Workspace guest's Python tests both read this file; a rule changes here and in both languages together.",
+    "hints: normalize `input` into `output`; null means the text is not a hint.",
+    "hosts: normalize `input` into `host`; null means it matches no hint. `site` is the site key of `host`.",
+    "selection: start from `state`, or from the empty state {cursors: {}, failed: {}, sites: {}} when absent, and thread the state through `steps` in order. `select` passes `host` and `explicit` (absent means no choice; {kind: direct} or {kind: proxy, ref}) and expects `expect`, compared whole. `fail` records that `proxyId` failed on `host`. `state` on a step, when present, is the whole state after it, and key order does not matter. An empty map stays in the state; a site without failures has no key under `failed`.",
+    "toTry: the active proxies a blocked result names for `host`, in order.",
+    "blockedHttpStatuses: site responses that read as a block; they never count as a proxy failure.",
+    "Selection outcomes: {kind: direct, reason: explicit|no_match}; {kind: proxy, proxyId, reason: explicit|hint|site, hint: <matched hint>|null}; {kind: failed, code, tried: [ids]}."
+  ],
+  "version": 1,
+  "blockedHttpStatuses": [401, 403, 407, 451, 498],
+  "hints": [
+    { "name": "a zone", "input": ".kz", "output": ".kz" },
+    { "name": "a zone without its dot", "input": "kz", "output": ".kz" },
+    { "name": "a domain", "input": "ozon.ru", "output": "ozon.ru" },
+    { "name": "a domain with a leading dot", "input": ".ozon.ru", "output": "ozon.ru" },
+    { "name": "a subdomain", "input": "seller.ozon.ru", "output": "seller.ozon.ru" },
+    { "name": "upper case", "input": "OZON.RU", "output": "ozon.ru" },
+    { "name": "an upper case zone", "input": ".KZ", "output": ".kz" },
+    { "name": "surrounding spaces", "input": "  .kz ", "output": ".kz" },
+    { "name": "a trailing dot", "input": "ozon.ru.", "output": "ozon.ru" },
+    { "name": "a zone with a trailing dot", "input": ".kz.", "output": ".kz" },
+    { "name": "an internationalized zone", "input": ".рф", "output": ".xn--p1ai" },
+    { "name": "an internationalized zone in upper case", "input": ".РФ", "output": ".xn--p1ai" },
+    { "name": "an internationalized domain", "input": "Яндекс.рф", "output": "xn--d1acpjx3f.xn--p1ai" },
+    { "name": "an internationalized domain with a trailing dot", "input": "президент.рф.", "output": "xn--d1abbgf6aiiy.xn--p1ai" },
+    { "name": "the ASCII form of an internationalized zone", "input": ".xn--p1ai", "output": ".xn--p1ai" },
+    { "name": "an underscore", "input": "my_shop.kz", "output": "my_shop.kz" },
+    { "name": "empty", "input": "", "output": null },
+    { "name": "only spaces", "input": "   ", "output": null },
+    { "name": "only a dot", "input": ".", "output": null },
+    { "name": "two leading dots", "input": "..kz", "output": null },
+    { "name": "two trailing dots", "input": "ozon.ru..", "output": null },
+    { "name": "an empty label", "input": "ozon..ru", "output": null },
+    { "name": "a wildcard", "input": "*.kz", "output": null },
+    { "name": "a scheme", "input": "https://ozon.ru", "output": null },
+    { "name": "a port", "input": "ozon.ru:443", "output": null },
+    { "name": "a path", "input": "ozon.ru/catalog", "output": null },
+    { "name": "userinfo", "input": "user@ozon.ru", "output": null },
+    { "name": "a space inside", "input": "ozon .ru", "output": null },
+    { "name": "several hints in one", "input": ".kz,.ru", "output": null },
+    { "name": "an IPv4 address", "input": "93.184.216.34", "output": null },
+    { "name": "a number", "input": "2130706433", "output": null },
+    { "name": "a hexadecimal last label", "input": "example.0x7f", "output": null },
+    { "name": "an IPv6 address", "input": "::1", "output": null },
+    { "name": "a label starting with a hyphen", "input": "-ozon.ru", "output": null },
+    { "name": "a label ending with a hyphen", "input": "ozon-.ru", "output": null },
+    { "name": "a label over 63 characters", "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ru", "output": null },
+    { "name": "an internationalized name with a slash", "input": "яндекс.рф/путь", "output": null },
+    { "name": "digits written in full width read as an address", "input": "１２７.０.０.１", "output": null }
+  ],
+  "hosts": [
+    { "name": "a plain host", "input": "www.ozon.ru", "host": "www.ozon.ru", "site": "ozon.ru" },
+    { "name": "a registered domain", "input": "ozon.ru", "host": "ozon.ru", "site": "ozon.ru" },
+    { "name": "a deep subdomain", "input": "a.b.c.ozon.ru", "host": "a.b.c.ozon.ru", "site": "ozon.ru" },
+    { "name": "case and a trailing dot", "input": "WWW.Ozon.RU.", "host": "www.ozon.ru", "site": "ozon.ru" },
+    { "name": "an internationalized name", "input": "www.Яндекс.рф", "host": "www.xn--d1acpjx3f.xn--p1ai", "site": "xn--d1acpjx3f.xn--p1ai" },
+    { "name": "a public second level", "input": "shop.example.co.uk", "host": "shop.example.co.uk", "site": "example.co.uk" },
+    { "name": "a public second level of a zone", "input": "www.example.com.kz", "host": "www.example.com.kz", "site": "example.com.kz" },
+    { "name": "a short domain is not a public second level", "input": "mail.ya.ru", "host": "mail.ya.ru", "site": "ya.ru" },
+    { "name": "com under a long zone is an ordinary label", "input": "a.com.example", "host": "a.com.example", "site": "com.example" },
+    { "name": "a public second level on its own", "input": "co.uk", "host": "co.uk", "site": "co.uk" },
+    { "name": "an underscore", "input": "my_shop.example.kz", "host": "my_shop.example.kz", "site": "example.kz" },
+    { "name": "a single label", "input": "localhost", "host": null },
+    { "name": "a zone alone", "input": "kz", "host": null },
+    { "name": "an IPv4 address", "input": "93.184.216.34", "host": null },
+    { "name": "an IPv6 address", "input": "[2606:4700::1]", "host": null },
+    { "name": "a host with a port", "input": "ozon.ru:443", "host": null },
+    { "name": "empty", "input": "", "host": null }
+  ],
+  "selection": [
+    {
+      "name": "no proxies goes direct",
+      "proxies": [],
+      "steps": [
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "direct", "reason": "no_match" } }
+      ]
+    },
+    {
+      "name": "a hint matches its zone and its domain with subdomains, at label boundaries only",
+      "proxies": [
+        { "id": "kz", "name": "KZ", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "ozon", "name": "Ozon", "owner": "personal", "active": true, "domainHints": ["ozon.ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "kaspi.kz", "expect": { "kind": "proxy", "proxyId": "kz", "reason": "hint", "hint": ".kz" } },
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "proxy", "proxyId": "ozon", "reason": "hint", "hint": "ozon.ru" } },
+        { "op": "select", "host": "www.ozon.ru", "expect": { "kind": "proxy", "proxyId": "ozon", "reason": "site", "hint": "ozon.ru" } },
+        { "op": "select", "host": "notozon.ru", "expect": { "kind": "direct", "reason": "no_match" } },
+        { "op": "select", "host": "ozon.ru.evil.example", "expect": { "kind": "direct", "reason": "no_match" } },
+        { "op": "select", "host": "example.kzz", "expect": { "kind": "direct", "reason": "no_match" } },
+        { "op": "select", "host": "kz", "expect": { "kind": "direct", "reason": "no_match" } },
+        { "op": "select", "host": "93.184.216.34", "expect": { "kind": "direct", "reason": "no_match" } }
+      ]
+    },
+    {
+      "name": "the site's host is normalized before it matches",
+      "proxies": [
+        { "id": "rf", "name": "RF", "owner": "personal", "active": true, "domainHints": [".xn--p1ai"] },
+        { "id": "ozon", "name": "Ozon", "owner": "personal", "active": true, "domainHints": ["ozon.ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "Яндекс.РФ", "expect": { "kind": "proxy", "proxyId": "rf", "reason": "hint", "hint": ".xn--p1ai" } },
+        { "op": "select", "host": "OZON.RU.", "expect": { "kind": "proxy", "proxyId": "ozon", "reason": "hint", "hint": "ozon.ru" } }
+      ]
+    },
+    {
+      "name": "the most specific hint wins, whichever proxy comes first",
+      "proxies": [
+        { "id": "ru", "name": "RU", "owner": "personal", "active": true, "domainHints": [".ru"] },
+        { "id": "ozon", "name": "Ozon", "owner": "personal", "active": true, "domainHints": ["ozon.ru"] },
+        { "id": "seller", "name": "Seller", "owner": "personal", "active": true, "domainHints": ["seller.ozon.ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "seller.ozon.ru", "expect": { "kind": "proxy", "proxyId": "seller", "reason": "hint", "hint": "seller.ozon.ru" } },
+        { "op": "select", "host": "market.yandex.ru", "expect": { "kind": "proxy", "proxyId": "ru", "reason": "hint", "hint": ".ru" } }
+      ]
+    },
+    {
+      "name": "a proxy with several hints competes with its most specific one",
+      "proxies": [
+        { "id": "ozon", "name": "Ozon", "owner": "personal", "active": true, "domainHints": ["ozon.ru"] },
+        { "id": "both", "name": "Both", "owner": "personal", "active": true, "domainHints": [".ru", "seller.ozon.ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "seller.ozon.ru", "expect": { "kind": "proxy", "proxyId": "both", "reason": "hint", "hint": "seller.ozon.ru" } }
+      ]
+    },
+    {
+      "name": "personal comes before administrator on the same hint",
+      "proxies": [
+        { "id": "admin", "name": "Admin", "owner": "administrator", "active": true, "domainHints": [".kz"] },
+        { "id": "mine", "name": "Mine", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "kaspi.kz", "expect": { "kind": "proxy", "proxyId": "mine", "reason": "hint", "hint": ".kz" } },
+        { "op": "select", "host": "halykbank.kz", "expect": { "kind": "proxy", "proxyId": "mine", "reason": "hint", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "a more specific administrator hint beats a personal zone",
+      "proxies": [
+        { "id": "mine", "name": "Mine", "owner": "personal", "active": true, "domainHints": [".ru"] },
+        { "id": "admin", "name": "Admin", "owner": "administrator", "active": true, "domainHints": ["ozon.ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "proxy", "proxyId": "admin", "reason": "hint", "hint": "ozon.ru" } },
+        { "op": "select", "host": "ya.ru", "expect": { "kind": "proxy", "proxyId": "mine", "reason": "hint", "hint": ".ru" } }
+      ]
+    },
+    {
+      "name": "two proxies for one zone alternate between sites and wrap around",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" },
+          "state": { "cursors": { ".kz|personal": 1 }, "failed": {}, "sites": { "one.kz": "a" } } },
+        { "op": "select", "host": "two.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": ".kz" },
+          "state": { "cursors": { ".kz|personal": 0 }, "failed": {}, "sites": { "one.kz": "a", "two.kz": "b" } } },
+        { "op": "select", "host": "three.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "a site stays on its proxy, subdomains included, and rotation does not advance",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "www.one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } },
+        { "op": "select", "host": "www.one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": ".kz" } },
+        { "op": "select", "host": "api.one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": ".kz" },
+          "state": { "cursors": { ".kz|personal": 1 }, "failed": {}, "sites": { "one.kz": "a" } } },
+        { "op": "select", "host": "two.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "each tier rotates on its own cursor",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz", ".ru"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".kz", ".ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } },
+        { "op": "select", "host": "one.ru", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".ru" } },
+        { "op": "select", "host": "two.ru", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": ".ru" } }
+      ]
+    },
+    {
+      "name": "state from an earlier decision continues",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "state": { "cursors": { ".kz|personal": 1 }, "failed": {}, "sites": { "one.kz": "a" } },
+      "steps": [
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": ".kz" } },
+        { "op": "select", "host": "two.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "a failure moves the site to the next proxy and stays there",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } },
+        { "op": "fail", "host": "www.one.kz", "proxyId": "a",
+          "state": { "cursors": { ".kz|personal": 1 }, "failed": { "one.kz": ["a"] }, "sites": {} } },
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": ".kz" },
+          "state": { "cursors": { ".kz|personal": 0 }, "failed": { "one.kz": ["a"] }, "sites": { "one.kz": "b" } } },
+        { "op": "select", "host": "www.one.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "site", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "a failure on one site says nothing about another",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } },
+        { "op": "fail", "host": "one.kz", "proxyId": "a" },
+        { "op": "select", "host": "two.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "the same proxy failing twice is recorded once",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "fail", "host": "one.kz", "proxyId": "a" },
+        { "op": "fail", "host": "one.kz", "proxyId": "a",
+          "state": { "cursors": {}, "failed": { "one.kz": ["a"] }, "sites": {} } }
+      ]
+    },
+    {
+      "name": "a failure on an address is not recorded",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "fail", "host": "93.184.216.34", "proxyId": "a",
+          "state": { "cursors": {}, "failed": {}, "sites": {} } }
+      ]
+    },
+    {
+      "name": "after its tier a failure moves through the less specific and administrator tiers",
+      "proxies": [
+        { "id": "ru-admin", "name": "RU admin", "owner": "administrator", "active": true, "domainHints": [".ru"] },
+        { "id": "ozon-admin", "name": "Ozon admin", "owner": "administrator", "active": true, "domainHints": ["ozon.ru"] },
+        { "id": "ozon-mine", "name": "Ozon mine", "owner": "personal", "active": true, "domainHints": ["ozon.ru"] },
+        { "id": "other", "name": "Other", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "proxy", "proxyId": "ozon-mine", "reason": "hint", "hint": "ozon.ru" } },
+        { "op": "fail", "host": "ozon.ru", "proxyId": "ozon-mine" },
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "proxy", "proxyId": "ozon-admin", "reason": "hint", "hint": "ozon.ru" } },
+        { "op": "fail", "host": "ozon.ru", "proxyId": "ozon-admin" },
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "proxy", "proxyId": "ru-admin", "reason": "hint", "hint": ".ru" } },
+        { "op": "select", "host": "www.ozon.ru", "expect": { "kind": "proxy", "proxyId": "ru-admin", "reason": "site", "hint": ".ru" } }
+      ]
+    },
+    {
+      "name": "all proxies failing is a visible failure, never direct, and the next request tries again",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "administrator", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } },
+        { "op": "fail", "host": "one.kz", "proxyId": "a" },
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": ".kz" } },
+        { "op": "fail", "host": "one.kz", "proxyId": "b" },
+        { "op": "select", "host": "one.kz", "expect": { "kind": "failed", "code": "proxy_all_failed", "tried": ["a", "b"] },
+          "state": { "cursors": { ".kz|personal": 0, ".kz|administrator": 0 }, "failed": {}, "sites": {} } },
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "an explicit proxy opens a site its hints do not name, and leaves the state alone",
+      "proxies": [
+        { "id": "kz", "name": "KZ one", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "es", "name": "ES", "owner": "administrator", "active": true, "domainHints": [".es"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "ozon.ru", "explicit": { "kind": "proxy", "ref": "kz" },
+          "expect": { "kind": "proxy", "proxyId": "kz", "reason": "explicit", "hint": null },
+          "state": { "cursors": {}, "failed": {}, "sites": {} } },
+        { "op": "select", "host": "93.184.216.34", "explicit": { "kind": "proxy", "ref": "ES" },
+          "expect": { "kind": "proxy", "proxyId": "es", "reason": "explicit", "hint": null } },
+        { "op": "select", "host": "ozon.ru", "explicit": { "kind": "proxy", "ref": "kz ONE" },
+          "expect": { "kind": "proxy", "proxyId": "kz", "reason": "explicit", "hint": null } },
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "direct", "reason": "no_match" } }
+      ]
+    },
+    {
+      "name": "an explicit proxy beats a hint and a site's own proxy",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": ".kz" } },
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "b" },
+          "expect": { "kind": "proxy", "proxyId": "b", "reason": "explicit", "hint": null } },
+        { "op": "select", "host": "one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "explicit direct wins over a matching hint, and over all proxies having failed",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "direct" }, "expect": { "kind": "direct", "reason": "explicit" },
+          "state": { "cursors": {}, "failed": {}, "sites": {} } },
+        { "op": "fail", "host": "one.kz", "proxyId": "a" },
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "direct" }, "expect": { "kind": "direct", "reason": "explicit" },
+          "state": { "cursors": {}, "failed": { "one.kz": ["a"] }, "sites": {} } }
+      ]
+    },
+    {
+      "name": "an explicit proxy that failed is dialed again when named, never replaced",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "fail", "host": "one.kz", "proxyId": "a" },
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "a" },
+          "expect": { "kind": "proxy", "proxyId": "a", "reason": "explicit", "hint": null } }
+      ]
+    },
+    {
+      "name": "an explicit proxy that is unknown or off fails visibly, with no substitute",
+      "proxies": [
+        { "id": "off", "name": "Off", "owner": "personal", "active": false, "domainHints": [".kz"] },
+        { "id": "on", "name": "On", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "missing" },
+          "expect": { "kind": "failed", "code": "proxy_not_found", "tried": [] } },
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "off" },
+          "expect": { "kind": "failed", "code": "proxy_inactive", "tried": [] } },
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "OFF" },
+          "expect": { "kind": "failed", "code": "proxy_inactive", "tried": [] } }
+      ]
+    },
+    {
+      "name": "a shared name resolves to the personal proxy, then to one that is on, and an id always wins",
+      "proxies": [
+        { "id": "admin", "name": "KZ", "owner": "administrator", "active": true, "domainHints": [] },
+        { "id": "mine", "name": "kz", "owner": "personal", "active": true, "domainHints": [] },
+        { "id": "admin-off", "name": "RU", "owner": "administrator", "active": true, "domainHints": [] },
+        { "id": "mine-off", "name": "RU", "owner": "personal", "active": false, "domainHints": [] },
+        { "id": "KZ", "name": "Named by id", "owner": "administrator", "active": true, "domainHints": [] }
+      ],
+      "steps": [
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "kz" },
+          "expect": { "kind": "proxy", "proxyId": "mine", "reason": "explicit", "hint": null } },
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "ru" },
+          "expect": { "kind": "proxy", "proxyId": "admin-off", "reason": "explicit", "hint": null } },
+        { "op": "select", "host": "one.kz", "explicit": { "kind": "proxy", "ref": "KZ" },
+          "expect": { "kind": "proxy", "proxyId": "KZ", "reason": "explicit", "hint": null } }
+      ]
+    },
+    {
+      "name": "inactive proxies take no part in hints, and a site with only inactive matches goes direct",
+      "proxies": [
+        { "id": "off", "name": "Off", "owner": "personal", "active": false, "domainHints": ["ozon.ru"] },
+        { "id": "ru", "name": "RU", "owner": "administrator", "active": true, "domainHints": [".ru"] },
+        { "id": "kz-off", "name": "KZ", "owner": "personal", "active": false, "domainHints": [".kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "ozon.ru", "expect": { "kind": "proxy", "proxyId": "ru", "reason": "hint", "hint": ".ru" } },
+        { "op": "select", "host": "kaspi.kz", "expect": { "kind": "direct", "reason": "no_match" } }
+      ]
+    },
+    {
+      "name": "a site's proxy that no longer matches its host is replaced",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": ["seller.one.kz"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": ["www.one.kz"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "seller.one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": "seller.one.kz" } },
+        { "op": "select", "host": "www.one.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": "www.one.kz" },
+          "state": { "cursors": { "seller.one.kz|personal": 0, "www.one.kz|personal": 0 }, "failed": {}, "sites": { "one.kz": "b" } } }
+      ]
+    },
+    {
+      "name": "a host that is no domain matches no hint, and a named proxy still opens it",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".localhost"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "localhost", "expect": { "kind": "direct", "reason": "no_match" } },
+        { "op": "select", "host": "localhost", "explicit": { "kind": "proxy", "ref": "a" },
+          "expect": { "kind": "proxy", "proxyId": "a", "reason": "explicit", "hint": null } }
+      ]
+    }
+  ],
+  "toTry": [
+    {
+      "name": "matching proxies in selection order, then the other active ones in plan order",
+      "proxies": [
+        { "id": "other", "name": "Other", "owner": "personal", "active": true, "domainHints": [".es"] },
+        { "id": "ru-admin", "name": "RU admin", "owner": "administrator", "active": true, "domainHints": [".ru"] },
+        { "id": "off", "name": "Off", "owner": "personal", "active": false, "domainHints": ["ozon.ru"] },
+        { "id": "ru-mine", "name": "RU mine", "owner": "personal", "active": true, "domainHints": [".ru"] },
+        { "id": "ozon", "name": "Ozon", "owner": "administrator", "active": true, "domainHints": ["ozon.ru"] },
+        { "id": "none", "name": "None", "owner": "administrator", "active": true, "domainHints": [] }
+      ],
+      "host": "www.ozon.ru",
+      "output": ["ozon", "ru-mine", "ru-admin", "other", "none"]
+    },
+    {
+      "name": "a site no hint names can try every active proxy",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] },
+        { "id": "off", "name": "Off", "owner": "personal", "active": false, "domainHints": [] },
+        { "id": "b", "name": "B", "owner": "administrator", "active": true, "domainHints": [] }
+      ],
+      "host": "example.com",
+      "output": ["a", "b"]
+    },
+    {
+      "name": "an address can try every active proxy",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": [".kz"] }
+      ],
+      "host": "93.184.216.34",
+      "output": ["a"]
+    },
+    {
+      "name": "no proxies",
+      "proxies": [],
+      "host": "example.com",
+      "output": []
+    }
+  ]
+}
