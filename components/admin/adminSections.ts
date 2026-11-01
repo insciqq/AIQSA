@@ -10,6 +10,7 @@ import {
   Mail,
   Megaphone,
   MonitorSmartphone,
+  Network,
   Search,
   Send,
   ShieldCheck,
@@ -33,6 +34,7 @@ export type AdminSectionId =
   | "mcp"
   | "overview"
   | "providers"
+  | "proxies"
   | "retrieval"
   | "roles"
   | "search"
@@ -78,6 +80,7 @@ export const adminSections = [
   { Icon: Bot, group: "platform", id: "assistants", label: "Assistants" },
   { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
   { Icon: MonitorSmartphone, group: "platform", id: "connect", label: "AIQSA Connect" },
+  { Icon: Network, group: "platform", id: "proxies", label: "Proxies" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },
   { Icon: Send, group: "platform", id: "telegram", label: "Telegram" },
   { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }
