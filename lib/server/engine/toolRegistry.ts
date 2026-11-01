@@ -40,6 +40,7 @@ import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../
 import type { HarnessToolEffects } from "../tools/harnessTool";
 import { imageGenerationTool } from "../tools/imageGeneration";
 import { executeMonitoringVerdict, monitoringVerdictTool } from "../tools/monitoringVerdict";
+import { createChatFileTool, readChatFileTool, type ChatFileReader } from "../tools/readChatFile";
 import { executeReadSecret, readSecretTool } from "../tools/readSecret";
 import type { liveToolCallStatus } from "../runs/liveToolStatus";
 import { executeCreateScheduledTask, isScheduledTaskCreateCall, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
@@ -73,7 +74,7 @@ import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { defaultSkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
 import { namespacedWorkspaceToolName, workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 import { executeReadToolResult, readToolResultTool, type SavedToolResultReader } from "./toolResults";
-import { IMAGE_ANALYZE_NOTE, IMAGE_VIEW_NOTE, type TranscriptImages } from "./transcript";
+import { IMAGE_ANALYZE_NOTE, IMAGE_REFERENCE_NOTE, IMAGE_VIEW_NOTE, type TranscriptImages } from "./transcript";
 
 /**
  * The native engine's one tool registry, built once at the start of a run
@@ -198,7 +199,8 @@ export type ToolRegistryServices = Readonly<{
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
   extractPage?: FetchUrlSessionDeps["extractPage"];
   fetchPage?: FetchUrlSessionDeps["fetchPage"];
-  images?: Pick<ImageGenerationService, "execute" | "withConversationPixels">;
+  images?: Pick<ImageGenerationService, "execute" | "withConversationPixels"> & Partial<Pick<ImageGenerationService, "readConversationImage">>;
+  chatFiles?: ChatFileReader;
   mcp?: Readonly<{
     filterTools: McpToolAccessFilter;
     materialize?(userId: string, tools: readonly Readonly<{ namespacedName: string; revisionId: string; serverId: string }>[]):
@@ -394,6 +396,15 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     add({ activity: named(viewWorkspaceImageTool, "Workspace"), definition: viewWorkspaceImageTool, effects: "none",
       observationSource: "workspace", execute: (execution) => viewer.execute(execution.call, execution, execution.signal) });
     images = { attached: (item) => viewer.attached(item), note: IMAGE_VIEW_NOTE };
+  }
+
+  if (!request.workspace) {
+    const files = createChatFileTool({ request, runId: input.runId, userId: input.userId,
+      reader: input.services.chatFiles, readImage: input.services.images?.readConversationImage });
+    add({ activity: named(readChatFileTool, "Chat files"), definition: readChatFileTool, effects: "none", observationSource: "workspace",
+      execute: (execution) => files.execute(execution.call, execution.round, execution.signal) });
+    const previous = images;
+    images = { attached: (item) => files.images.attached(item) ?? previous?.attached(item), note: previous?.note ?? IMAGE_REFERENCE_NOTE };
   }
 
   if (clientTools && request.imagePlan && input.services.images) {

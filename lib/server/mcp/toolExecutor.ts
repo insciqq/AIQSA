@@ -119,6 +119,12 @@ export function mcpToolExecutionResult(
       type: "text"
     });
   }
+  if (result.unsupportedContentTypes.length > 0) {
+    const types = [...new Set(result.unsupportedContentTypes.map((type) =>
+      ["image", "audio", "resource", "resource_link"].includes(type) ? type : "other"))];
+    content.unshift({ type: "text", text: `[MCP result omitted non-text content: ${types.join(", ")}. ` +
+      "Those blocks are unavailable here; do not claim to have read, seen or heard them. Ask the tool for a text representation if needed.]" });
+  }
   return {
     callId: call.id,
     content,

@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { randomUUID, createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeThreadGeneratedImage, IMAGE_MAX_BYTES, IMAGE_MAX_INPUT_BYTES, IMAGE_MAX_INPUTS, IMAGE_MAX_PROMPT_CHARACTERS, IMAGE_MIME_TYPES, normalizeImageGenerationParameters, type ImageGenerationParameters, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
@@ -10,7 +11,11 @@ import { IMAGE_GENERATION_CALLS_PER_ANSWER, IMAGE_GENERATION_TOOL_NAME } from ".
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
 import { convertRasterForProvider, ProviderRasterConversionError, providerRasterNeedsConversion } from "../uploads/providerRasterConversion";
-import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
+import { extractImageMetadata } from "../uploads/imageMetadata";
+import { DEFAULT_PREVIEW_FIT, DIRECT_IMAGE_VIEW_LIMITS } from "../workspace/directImageView";
+import { StaticRasterError, validateStaticRaster } from "../uploads/staticRaster";
+import type { ChatFileScope, ChatImagePreview } from "../tools/readChatFile";
+import { transformStaticImage, WorkspaceImageError, WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { ProviderRunRequest, ProviderAttachment } from "../providers/types";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
@@ -91,10 +96,18 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       const currentImages = request.attachments.filter((attachment) => attachment.kind === "image").length;
       // A fresh image keeps only the newest earlier one for comparison.
       const historyLimit = currentImages > 0 ? 1 : 4;
-      const imageLimit = Math.min(historyLimit, Math.max(0, (request.modelCapabilities.imageInputLimits?.imageCount ?? 20) - currentImages));
+      const imageLimit = Math.min(historyLimit, Math.max(0, (request.modelCapabilities.imageInputLimits?.imageCount ?? 20) - currentImages - (request.workspace ? 0 : 1)));
       const ids = imageLimit ? [...new Set(references.map((reference) => reference.attachmentId))].filter((id) => !attached.has(id)).slice(-imageLimit) : [];
       const rows = await prisma.attachment.findMany({ where: { id: { in: ids }, kind: "image", status: "ready", savedAt: null, userId } });
       let remaining = Math.min(IMAGE_MAX_BYTES, request.modelCapabilities.imageInputLimits?.payloadBytes ?? Infinity) - request.attachments.reduce((sum, attachment) => sum + (attachment.base64Data || attachment.dataUrl ? attachment.byteSize : 0), 0);
+      // Leave room for an older image requested through read_chat_file; Workspace has its own file viewer.
+      if (!request.workspace) {
+        const ownEncoded = request.attachments.reduce((sum, file) => sum + (file.dataUrl?.length ?? file.base64Data?.length ?? 0), 0);
+        const available = Math.max(0, Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestBytes,
+          request.modelCapabilities.imageInputLimits?.payloadBytes ?? Infinity) - ownEncoded);
+        const reserved = Math.min(available / 2, Math.ceil(DIRECT_IMAGE_VIEW_LIMITS.imageBytes * 4 / 3));
+        remaining = Math.min(remaining, Math.floor((available - reserved) * 3 / 4));
+      }
       const extra: ProviderAttachment[] = [];
       let reading = false;
       for (const id of [...ids].reverse()) {
@@ -143,6 +156,38 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       const current = request.attachments.map((attachment): ProviderAttachment => attachment.kind === "image"
         ? { ...attachment, imageProvenance: { role: "current_message" } } : attachment);
       return withSystem([...earlier, ...current], `Image pixels in this request, in order. From earlier messages (references, not new uploads): ${JSON.stringify(visible(earlier))}. Accompanying the latest user message: ${JSON.stringify(visible(current))}. A caption before each image names its image_id and source message. Other image references have no visible pixels in this request.`);
+    },
+    async readConversationImage(scope: ChatFileScope, signal?: AbortSignal): Promise<ChatImagePreview | null> {
+      const row = await prisma.attachment.findFirst({ where: { id: scope.attachmentId, chatId: scope.chatId, userId: scope.userId,
+        kind: "image", status: "ready", savedAt: null, chat: { userId: scope.userId, permanentDeletionAt: null } } });
+      if (!row) return null;
+      if (row.byteSize < 1 || row.byteSize > WORKSPACE_IMAGE_LIMITS.maxBytes) throw new ImageInputError("image_input_invalid");
+      const boundedSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(WORKSPACE_IMAGE_LIMITS.timeoutMs)]);
+      const stored = await storage.getObject(row.storageKey, { maxBytes: row.byteSize, signal: boundedSignal });
+      if (stored.body.length !== row.byteSize || row.checksum && hash(stored.body) !== row.checksum) {
+        throw new ImageInputError("image_reference_invalid");
+      }
+      try {
+        let bytes = providerRasterNeedsConversion(row.mimeType)
+          ? await convertRasterForProvider(stored.body, row.mimeType, WORKSPACE_IMAGE_LIMITS, boundedSignal) : stored.body;
+        if (row.mimeType === "image/gif") {
+          const gif = extractImageMetadata(bytes, row.mimeType);
+          if (gif.animated || gif.width * gif.height > WORKSPACE_IMAGE_LIMITS.maxPixels ||
+            Math.max(gif.width, gif.height) > WORKSPACE_IMAGE_LIMITS.maxDimension) throw new ImageInputError("image_reference_unsupported");
+          bytes = await sharp(bytes, { limitInputPixels: WORKSPACE_IMAGE_LIMITS.maxPixels, failOn: "warning" }).timeout({ seconds: 8 }).png().toBuffer();
+        }
+        const metadata = await validateStaticRaster(bytes, { ...WORKSPACE_IMAGE_LIMITS, mimeTypes: ["image/png", "image/jpeg", "image/webp"] },
+          { signal: boundedSignal });
+        const preview = await transformStaticImage(bytes, metadata, DEFAULT_PREVIEW_FIT, boundedSignal);
+        boundedSignal.throwIfAborted();
+        if (!await resolveChatAccess(prisma, scope)) return null;
+        return { bytes: preview.output, width: preview.dimensions.width, height: preview.dimensions.height, mimeType: "image/png" };
+      } catch (error) {
+        if (error instanceof StaticRasterError || error instanceof WorkspaceImageError || error instanceof ProviderRasterConversionError) {
+          throw new ImageInputError("image_reference_unsupported");
+        }
+        throw error;
+      }
     },
     async authorize(plan: AcceptedImageGenerationPlan): Promise<boolean> {
       try {

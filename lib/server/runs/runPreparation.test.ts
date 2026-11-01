@@ -1033,6 +1033,17 @@ describe("run preparation", () => {
     }
   });
 
+  it("keeps earlier image references visible after switching to a model without vision or System Vision", async () => {
+    const earlier: ProviderConversationMessage = { id: "earlier", role: "user", content: { blocks: [{ type: "image", attachmentId: "photo" }] } };
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true, vision: false }, sendContext: [earlier],
+      attachments: [runAttachment({ id: "photo", kind: "image", mimeType: "image/png", storageKey: "private/photo" })] });
+    const run = preparedFrom(await prepareRun(harness.deps, sendInput(successBody()))).normalizedRequest;
+    expect(run.imageReferences).toEqual([{ attachmentId: "photo", messageId: "earlier", fileName: "photo.png", origin: "upload" }]);
+    expect(run.prompt.turnGuidance?.join("\n")).toContain("You do not see image pixels");
+    expect(run.prompt.turnGuidance?.join("\n")).toContain('"image_id":"photo"');
+    expect(run.visionAnalysis).toBeUndefined();
+  });
+
   it("lists each current-message image once among conversation image references", async () => {
     const bytes = Buffer.from("current-image");
     const records = [
@@ -1110,8 +1121,8 @@ describe("run preparation", () => {
       expect(system).toContain("only when the user explicitly asks");
       expect(system).toContain("The Workspace is unavailable in this message");
       expect(system).not.toContain("LibreOffice");
-      expect(system).not.toContain("Images in this conversation");
-      expect(system).not.toContain("image_id");
+      expect(system).toContain("Images in this conversation");
+      expect(system).toContain("read_chat_file");
     });
 
     it("conditions the Workspace rules on this run's Workspace and lists nothing without files or the artifact tool", async () => {
@@ -3575,6 +3586,15 @@ describe("run preparation", () => {
       messageContains: "exceed the model context budget"
     });
 
+  });
+
+  it("refuses a ready document with no extracted text without Workspace", async () => {
+    await expectFailure({ calls: ["entitlements", "capabilities", "context:send", "attachments"],
+      expected: { code: "document_text_unavailable", status: 400 },
+      messageContains: "No text was extracted",
+      harness: { attachments: [runAttachment({ id: "doc-empty", kind: "document", extractedText: null,
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", storageKey: "private/doc-empty" })] },
+      request: sendInput(successBody({ content: { blocks: [{ attachmentId: "doc-empty", type: "attachment" }] } })) });
   });
 
   it("rejects typed no-text, zero-emitted partial, and stored blank PDFs for text-extraction models", async () => {

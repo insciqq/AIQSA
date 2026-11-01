@@ -131,6 +131,7 @@ describe("MCP run tool executor helpers", () => {
     })).toEqual({
       callId: "call-1",
       content: [
+        { type: "text", text: expect.stringContaining("MCP result omitted non-text content: image") },
         { text: "created", type: "text" },
         { type: "json", value: { id: "task-1" } }
       ],
@@ -175,4 +176,16 @@ describe("MCP run tool executor helpers", () => {
     expect(projected.status).toBe(isError ? "error" : "complete");
     expect(callTool).toHaveBeenCalledOnce();
   });
+});
+
+
+it("tells the model when MCP non-text blocks were omitted, even alongside text", () => {
+  for (const text of [[], ["Caption"]]) {
+    const result = mcpToolExecutionResult({ id: "call", name: "mcp_images", arguments: {} }, {
+      isError: false, text, unsupportedContentTypes: ["image", "audio", "resource", "resource_link", "private-custom-type"]
+    });
+    expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("omitted non-text content: image, audio, resource, resource_link, other") });
+    expect(JSON.stringify(result.content)).not.toContain("private-custom-type");
+    if (text.length) expect(result.content).toContainEqual({ type: "text", text: "Caption" });
+  }
 });

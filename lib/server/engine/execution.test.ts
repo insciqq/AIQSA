@@ -154,6 +154,76 @@ async function events(response: Response): Promise<ModelRunSseEvent[]> {
 const created = { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" };
 
 describe("native run execution", () => {
+  it("answers from a DOCX supplied on turn 1 when turn 2 has no Workspace or attachments", async () => {
+    const fileBlock = { type: "file", attachmentId: "doc", fileName: "report.docx" };
+    const firstMessage = { id: "question-1", role: "user" as const, content: { blocks: [fileBlock] } };
+    const first = scriptedAdapter([{ text: "File received." }]);
+    const memory1 = memoryEngine();
+    await events(createNativeRunExecutionResponse({ adapter: first.adapter, created, engine: memory1.engine,
+      prepared: prepared({ attachmentIds: ["doc"], content: firstMessage.content,
+        attachments: [{ id: "doc", fileName: "report.docx", kind: "document", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          status: "ready", byteSize: 10, metadata: {}, extractedText: "Section 3: Keep the originals." }],
+        context: { mode: "branch_path", messages: [firstMessage] } }),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    const read = vi.fn(async () => ({ fileName: "report.docx", kind: "document", status: "ready", metadata: {},
+      extractedText: "Section 3: Keep the originals." }));
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}),
+      async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        requests.push(request);
+        expect(request.attachments).toEqual([]);
+        const result = request.history?.find((item) => item.type === "tool_result" && item.name === "read_chat_file");
+        if (!result || result.type !== "tool_result") {
+          expect(JSON.stringify(request.history)).toContain("report.docx");
+          expect(JSON.stringify(request.history)).toContain('attachment_id');
+          return { finalText: "", finalProviderResponsePreview: {}, usage: {},
+            toolCalls: [{ arguments: { attachment_id: "doc" }, id: "read-doc", name: "read_chat_file" }] };
+        }
+        const answer = (JSON.parse(result.output) as { text: string }).text;
+        yield { type: "token", data: { delta: answer } };
+        return { finalText: answer, finalProviderResponsePreview: {}, usage: {}, toolCalls: [] };
+      } };
+    const memory2 = memoryEngine();
+    const transcriptStore: TranscriptRepository = { ...memory2.engine.transcripts,
+      nativeRunsForAnswers: async () => new Map([["answer-1", "run-1"]]),
+      loadRuns: async () => new Map([["run-1", memory1.transcriptRows]]) };
+    const content = { blocks: [{ type: "text", text: "What does section 3 say?" }] };
+    await events(createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-2", runId: "run-2", userMessageId: "question-2" },
+      engine: { ...memory2.engine, transcripts: transcriptStore }, prepared: prepared({ content,
+        context: { mode: "branch_path", messages: [firstMessage,
+          { id: "answer-1", role: "assistant", content: { blocks: [{ type: "text", text: "File received." }] } },
+          { id: "question-2", role: "user", content }] } }),
+      repository: repository() as unknown as RunRepository, services: { chatFiles: { read } }, userId: "user" }));
+    expect(read).toHaveBeenCalledWith({ attachmentId: "doc", chatId: "chat", userId: "user" });
+    expect(memory2.published()).toBe("Section 3: Keep the originals.");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.tools).toEqual(first.requests[0]!.tools);
+    expect(requests[0]!.prompt.system).toBe(first.requests[0]!.prompt.system);
+  });
+
+  it("delivers an older chat image on demand as result pixels and stores only its textual reference", async () => {
+    const read = { arguments: { attachment_id: "oldest" }, id: "read-image", name: "read_chat_file" };
+    const { adapter, requests } = scriptedAdapter([{ calls: [read] }, { text: "The requested image is visible." }]);
+    const memory = memoryEngine();
+    const pixels = Buffer.from("synthetic-image-pixels");
+    const readConversationImage = vi.fn(async () => ({ bytes: pixels, width: 100, height: 100, mimeType: "image/png" as const }));
+    const current = { type: "text", text: "Read the first image, not the last four." };
+    await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      prepared: prepared({ content: { blocks: [current] },
+        modelCapabilities: { ...prepared().providerRequest.modelCapabilities, vision: true },
+        context: { mode: "branch_path", messages: [
+          { id: "old-images", role: "user", content: { blocks: ["oldest", "next", "third", "fourth", "fifth", "sixth"].map((attachmentId) =>
+            ({ type: "image", attachmentId })) } }, { id: "current", role: "user", content: { blocks: [current] } }
+        ] } }), repository: repository() as unknown as RunRepository,
+      services: { chatFiles: { read: async () => ({ kind: "image", fileName: "old.png", status: "ready", extractedText: null, metadata: {} }) },
+        images: { execute: vi.fn(), withConversationPixels: async (request) => request, readConversationImage } }, userId: "user" }));
+    expect(memory.published()).toBe("The requested image is visible.");
+    expect(readConversationImage).toHaveBeenCalledWith({ attachmentId: "oldest", chatId: "chat", userId: "user" }, expect.any(AbortSignal));
+    expect(requests[1]!.history?.find((item) => item.type === "tool_result" && item.name === read.name))
+      .toMatchObject({ images: [{ mimeType: "image/png", data: pixels.toString("base64") }] });
+    expect(JSON.stringify(memory.transcriptRows)).not.toContain(pixels.toString("base64"));
+  });
+
   it("streams reasoning headings and text, publishes the answer before completion and usage", async () => {
     const { adapter } = scriptedAdapter([{ heading: "Thinking it through", text: "Hello there." }]);
     const memory = memoryEngine();
