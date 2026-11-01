@@ -27,6 +27,7 @@ import {
   createPrismaSubagentBackgroundStore,
   lockChatSubagentAdmission
 } from "./store";
+import { createPrismaMcpRuntimeRepository } from "../../mcp/runtimeRepository";
 import { createSubagentViews } from "./views";
 import { createSubagentUserMessageHandler } from "./userMessageHandler";
 import type { AuthConfig } from "../../auth/config";
@@ -779,6 +780,29 @@ describe("a sub-agent's children on PostgreSQL", () => {
     }
   }));
 
+  it("holds the main run's MCP generation while a child outlives its parent's run, by the raw rule and the filter alike", async () => fixture(async (f) => {
+    const parent = await backgroundParent(f);
+    const admitted = await store.admit(childAdmission(f, parent, await childThread(f, parent, "behind")));
+    if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+    const serverId = randomUUID(), revisionId = randomUUID(), generationId = randomUUID(), fingerprint = "c".repeat(64);
+    await prisma.mcpServer.create({ data: { displayName: "Synthetic Records", enabled: true, id: serverId, namespace: `held_${randomUUID().replaceAll("-", "")}` } });
+    await prisma.mcpRevision.create({ data: { configuration: {}, draftHash: "a".repeat(64), id: revisionId, identityHash: "b".repeat(64), revisionNumber: 1, serverId,
+      validationEvidence: {} } });
+    const userServer = await prisma.mcpUserServer.create({ data: { enabled: false, serverId, userId: f.userId } });
+    await prisma.mcpRuntimeGeneration.create({ data: { fingerprint, id: generationId, revisionId, state: "ready", userServerId: userServer.id } });
+    await prisma.mcpRunBinding.create({ data: { modelRunId: f.main.runId, runtimeGenerationFingerprint: fingerprint, runtimeGenerationId: generationId } });
+    const runtime = createPrismaMcpRuntimeRepository({ prisma });
+    const scope = { chatId: f.chatId, userId: f.userId };
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    await store.settle({ ...scope, result: endedSubagentResult("parent", { outcome: undefined, reason: "user_stop", state: "stopped" }), turnId: parent.turnId });
+    expect(await runtime.markStarting({ fingerprint, generationId, now: new Date() })).toBe(true);
+    expect(await runtime.deleteDrainedGeneration(generationId)).toBe(false);
+    await store.settle({ ...scope, result: endedSubagentResult("behind", { outcome: undefined, reason: "parent_stopped", state: "stopped" }), turnId: admitted.turnId });
+    expect(await runtime.markStarting({ fingerprint, generationId, now: new Date() })).toBe(false);
+    expect(await runtime.deleteDrainedGeneration(generationId)).toBe(true);
+    await prisma.mcpServer.delete({ where: { id: serverId } });
+  }));
+
   it("refuses a parent's call on another agent's thread, under the lock", async () => fixture(async (f) => {
     const parent = await backgroundParent(f);
     const strangers = await f.thread("strangers");
@@ -848,4 +872,3 @@ describe("a sub-agent's children on PostgreSQL", () => {
     expect(under.map((turn) => turn.name).sort()).toEqual(["one", "parent"]);
   }));
 });
-
