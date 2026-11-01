@@ -132,8 +132,22 @@ function boundedText(value: unknown, limit: number): string | null {
   return normalized ? normalized.slice(0, limit) : null;
 }
 
+/**
+ * What a research step says. The keys are the names research's steps carry, live and stored (`toolActivityDescriptors`); this fixed list
+ * is the only place a name may hold a space. The plan's step runs while its card shows, so its line must read beside that card.
+ */
+const RESEARCH_STEP_COPY: Readonly<Record<string, Readonly<Record<"cancelled" | "failed" | "running" | "settled", string>>>> = Object.freeze({
+  Started: { cancelled: "Starting research stopped", failed: "Research could not start", running: "Starting research", settled: "Started research" },
+  Plan: { cancelled: "Finalizing the plan stopped", failed: "Could not finalize the plan", running: "Finalizing the plan", settled: "Finalized the plan" },
+  "Recording evidence": { cancelled: "Saving a finding stopped", failed: "Could not save a finding", running: "Saving a finding", settled: "Saved a finding" },
+  "Extending the matrix": { cancelled: "Extending the comparison stopped", failed: "Could not extend the comparison", running: "Extending the comparison",
+    settled: "Extended the comparison" },
+  "Checking the report": { cancelled: "Checking the report stopped", failed: "Could not check the report", running: "Checking the report", settled: "Checked the report" }
+});
+
 function safeToolName(value: unknown): string | null {
   if (typeof value !== "string" || privateActivityNamePattern.test(value)) return null;
+  if (Object.hasOwn(RESEARCH_STEP_COPY, value)) return value;
   const name = boundedText(value, 80);
   return name && safeToolNamePattern.test(name) ? name : null;
 }
@@ -417,6 +431,24 @@ export function toolActivityOriginV2(call: ToolActivityIdentity): ThreadToolActi
   return call.serverName ? "mcp" : "tool";
 }
 
+function researchStepCopyV2(call: ToolActivityIdentity) {
+  const name = call.toolName;
+  return toolActivityOriginV2(call) === "tool" && call.serverName === "Research" && typeof name === "string" && Object.hasOwn(RESEARCH_STEP_COPY, name)
+    ? RESEARCH_STEP_COPY[name] ?? null : null;
+}
+
+/** A saved finding of a research, which makes over a hundred of them, so the steps count them on one row (`groupToolCallsV2`). */
+export function researchFindingCallV2(call: ToolActivityIdentity): boolean {
+  return researchStepCopyV2(call) === RESEARCH_STEP_COPY["Recording evidence"];
+}
+
+/** That one row for more than one finding. */
+export function researchFindingsLabelV2(count: number, phase: "cancelled" | "failed" | "held" | "running" | "settled"): string {
+  if (phase === "failed") return `Could not save ${count} findings`;
+  if (phase === "cancelled") return `Saving ${count} findings stopped`;
+  return phase === "running" ? `Saving ${count} findings` : `Saved ${count} findings`;
+}
+
 /**
  * User-legible label for one tool call (FRONTEND contract: only user-legible
  * server/tool names). Built-in tools get a plain-language verb; MCP tools
@@ -430,6 +462,8 @@ export function describeToolCallV2(
 ): string {
   const running = phase === "running";
   const origin = toolActivityOriginV2(call);
+  const researchStep = researchStepCopyV2(call);
+  if (researchStep) return researchStep[phase === "held" ? "settled" : phase];
   // The main agent's sub-agents (`call_subagent`); their own steps nest under this one.
   if (origin === "tool" && (call.toolName === "call_subagent" || call.toolName === "stop_subagent")) {
     return describeSubagentCallV2(call, phase);

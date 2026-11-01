@@ -35,6 +35,13 @@ describe("native Memory search activity", () => {
     expect(toolActivityDescriptors({ workspace: { enabled: true } }).get("view_workspace_image")).toBeUndefined();
   });
 
+  it("names research's tools as their live steps do, on every run, so a reloaded step is the live one", () => {
+    const descriptors = toolActivityDescriptors({});
+    expect(["start_research", "propose_research_plan", "record_evidence", "change_research_frame", "submit_research_draft"].map((name) =>
+      descriptors.get(name))).toEqual(["Started", "Plan", "Recording evidence", "Extending the matrix", "Checking the report"].map((toolName) =>
+      ({ origin: "tool", serverName: "Research", toolName })));
+  });
+
   it("does not invent successful recall for an unrecognized completed result", () => {
     expect(memorySearchActivityEvent({ ordinal: 0, round: 1, state: "complete", result: {
       content: [{ type: "json", value: { version: "legacy", outcome: "results" } }]

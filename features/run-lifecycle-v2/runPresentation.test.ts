@@ -117,6 +117,43 @@ describe("the live line while sub-agents work", () => {
   });
 });
 
+describe("research's steps", () => {
+  const step = (toolName: string) => ({ origin: "tool", serverName: "Research", toolName });
+  const live = (toolName: string, status: string, ordinal = 0): RunEventView => ({ type: "artifact", data: { artifactType: "tool_call",
+    payload: { name: toolName, ordinal, origin: "tool", round: 1, serverName: "Research", status } } });
+  const label = (events: readonly RunEventView[]) =>
+    presentRunLifecycleV2(state({ events: [...events], runId: "run", status: "streaming" })).activity?.label;
+
+  it("read as plain words in every state, with no tool's name", () => {
+    expect(["Started", "Plan", "Recording evidence", "Extending the matrix", "Checking the report"].map((name) => (["running", "settled", "failed", "cancelled"] as const)
+      .map((phase) => describeToolCallV2(step(name), phase)))).toEqual([
+      ["Starting research", "Started research", "Research could not start", "Starting research stopped"],
+      ["Finalizing the plan", "Finalized the plan", "Could not finalize the plan", "Finalizing the plan stopped"],
+      ["Saving a finding", "Saved a finding", "Could not save a finding", "Saving a finding stopped"],
+      ["Extending the comparison", "Extended the comparison", "Could not extend the comparison", "Extending the comparison stopped"],
+      ["Checking the report", "Checked the report", "Could not check the report", "Checking the report stopped"]
+    ]);
+  });
+
+  it("put plain words on the live line, beside the plan's card too", () => {
+    expect(label([live("Plan", "requested")])).toBe("Finalizing the plan…");
+    expect(label([live("Recording evidence", "requested")])).toBe("Saving a finding…");
+  });
+
+  it("leave a tool of an MCP server that happens to be called Research as it is", () => {
+    expect(describeToolCallV2({ origin: "mcp", serverName: "Research", toolName: "Plan" }, "running")).toBe("Using Research: Plan");
+  });
+
+  it("are one row live and after a read of the stored run, a name with a space included", () => {
+    const stored: ThreadToolActivity = { calls: [{ ...step("Recording evidence"), origin: "tool", round: 1, status: "running" }] };
+    const settled = { durationMs: 12, name: "Recording evidence", ordinal: 0, origin: "tool", round: 1, serverName: "Research", status: "complete" };
+    const projected = presentToolActivityV2([live("Recording evidence", "requested"),
+      { type: "artifact", data: { artifactType: "tool_call", payload: settled } }], stored);
+    expect(projected?.calls).toHaveLength(1);
+    expect(projected?.calls[0]).toMatchObject({ durationMs: 12, status: "complete", toolName: "Recording evidence" });
+  });
+});
+
 describe("native Memory search activity", () => {
   const event = (payload: Record<string, unknown>): RunEventView => ({ type: "artifact",
     data: { artifactType: "memory_search_activity", payload: { call: 1, round: 1, ...payload } } });

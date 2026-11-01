@@ -20,6 +20,8 @@ import {
   fetchCallSkippedV2,
   memorySearchCallHiddenV2,
   planCallHiddenV2,
+  researchFindingCallV2,
+  researchFindingsLabelV2,
   toolActivityOriginV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";
@@ -74,7 +76,7 @@ function toolCallKey(call: ToolCallV2, index: number, runId: string | null): str
     ? `${runId}:${call.details.roundIndex}:${call.details.ordinal}` : `${call.round}:${index}:${call.toolName}`;
 }
 
-type ToolCallGroupV2 = { calls: { call: ToolCallV2; index: number }[]; label: string };
+type ToolCallGroupV2 = { calls: { call: ToolCallV2; index: number }[]; findings?: true; label: string };
 
 /** A call that carries its own control or notice keeps its own row. */
 function standsAloneV2(call: ToolCallV2): boolean {
@@ -87,6 +89,12 @@ function groupToolCallsV2(calls: readonly ToolCallV2[]): ToolCallGroupV2[] {
   const groups: ToolCallGroupV2[] = [];
   calls.forEach((call, index) => {
     const label = describeToolCallV2(call, toolCallState(call));
+    if (researchFindingCallV2(call)) {
+      const findings = groups.find((group) => group.findings && group.calls[0]?.call.status === call.status);
+      if (findings) findings.calls.push({ call, index });
+      else groups.push({ calls: [{ call, index }], findings: true, label });
+      return;
+    }
     const previous = groups.at(-1);
     const head = previous?.calls[0]?.call;
     if (previous && head && previous.label === label && head.status === call.status && !standsAloneV2(call) && !standsAloneV2(head)) {
@@ -95,7 +103,18 @@ function groupToolCallsV2(calls: readonly ToolCallV2[]): ToolCallGroupV2[] {
       groups.push({ calls: [{ call, index }], label });
     }
   });
-  return groups;
+  return groups.map((group) => {
+    const head = group.calls[0]?.call;
+    return group.findings && head && group.calls.length > 1
+      ? { ...group, label: researchFindingsLabelV2(group.calls.length, toolCallState(head)) } : group;
+  });
+}
+
+/** A group's one step: its first call, with the time of them all. */
+function groupStepV2(group: ToolCallGroupV2): ToolCallV2 {
+  const [first] = group.calls;
+  const total = group.calls.reduce((sum, { call }) => sum + (call.durationMs ?? 0), 0);
+  return { ...first.call, durationMs: total > 0 ? total : undefined };
 }
 
 function searchEngineOutcome(engine: ThreadSearchEngineActivity): string {
@@ -277,11 +296,9 @@ function SubagentStepV2({ call, label, nested, runId }: Readonly<{
         <ol className="v2-answer-process-steps" aria-label={`${label}: steps`}>
           {groupToolCallsV2(nested).map((group) => {
             const [first] = group.calls;
-            const total = group.calls.reduce((sum, { call: grouped }) => sum + (grouped.durationMs ?? 0), 0);
-            const step = group.calls.length === 1 ? first.call
-              : { ...first.call, durationMs: total > 0 ? total : undefined };
-            return <ToolCallRowV2 call={step} key={toolCallKey(first.call, first.index, runId)}
-              label={group.calls.length === 1 ? group.label : `${group.label} ×${group.calls.length}`} pinnedSkillIds={[]} runId={runId} />;
+            const whole = group.calls.length === 1 || group.findings;
+            return <ToolCallRowV2 call={group.calls.length === 1 ? first.call : groupStepV2(group)} key={toolCallKey(first.call, first.index, runId)}
+              label={whole ? group.label : `${group.label} ×${group.calls.length}`} pinnedSkillIds={[]} runId={runId} />;
           })}
         </ol>
       </details>
@@ -532,9 +549,9 @@ function AnswerProcessFoldV2({
                     return <SubagentStepV2 call={first.call} key={toolCallKey(first.call, first.index, runId)} label={group.label}
                       nested={nested} runId={runId} />;
                   }
-                  if (group.calls.length === 1) {
-                    return <ToolCallRowV2 call={first.call} key={toolCallKey(first.call, first.index, runId)} label={group.label}
-                      onPinSkill={onPinSkill} pinnedSkillIds={pinnedSkillIds} runId={runId} />;
+                  if (group.calls.length === 1 || group.findings) {
+                    return <ToolCallRowV2 call={group.calls.length === 1 ? first.call : groupStepV2(group)} key={toolCallKey(first.call, first.index, runId)}
+                      label={group.label} onPinSkill={onPinSkill} pinnedSkillIds={pinnedSkillIds} runId={runId} />;
                   }
                   const total = group.calls.reduce((sum, { call }) => sum + (call.durationMs ?? 0), 0);
                   const status = first.call.status;
