@@ -49,6 +49,11 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "measurements), owner_reviews (what owners and users report, complaints included), action_channel (where the user will buy or act, " +
       "with current prices, stock and terms).",
     "For each source class of your question, open real pages with fetch_url or the browser: a search snippet is not evidence.",
+    "Source quality: prefer primary documents and measured results with a stated method. A seller's own product claims remain claimed " +
+      "even when presented as an independent test. Owners' reviews on a shop page remain owner evidence; maker documents remain primary sources. " +
+      "Treat affiliate rating sites as weak evidence. Two pages of one site and " +
+      "copies of one press release are one source, not independent corroboration. For a claim that depends on time, use the page's " +
+      "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date.",
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
       `A candidate or an option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. A criterion only when the question needs it, with your reason.`,
