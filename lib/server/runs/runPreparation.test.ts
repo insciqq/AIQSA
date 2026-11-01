@@ -4533,7 +4533,7 @@ describe("page reader admission", () => {
       fetchUrlDigest("https://news.example/today"), fetchUrlDigest("https://earlier.example/a")
     // The scheduled prompt's link authorizes nothing; it only names the refusal.
     ], instructionUrlDigests: [fetchUrlDigest("https://prompt.example/c")] });
-    expect(reader(prepared)).toMatchObject({ capability: "web_fetch", strict: true });
+    expect(reader(prepared)).toMatchObject({ capability: "web_fetch", strict: false });
     expect(marks).toHaveBeenCalledWith({ chatId: "chat-1", messageIds: ["task-prompt", "earlier-user"], userId: "user-1" });
   });
 

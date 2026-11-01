@@ -418,7 +418,7 @@ describe("OpenAI Responses request builder", () => {
     const body = buildOpenAIResponsesRequest(request({ tools: [fetchUrlTool] }));
     expect(body.tools).toEqual([
       { type: "web_search" },
-      expect.objectContaining({ name: "fetch_url", strict: true, type: "function" })
+      expect.objectContaining({ name: "fetch_url", strict: false, type: "function" })
     ]);
     expect(body.include).toEqual(["web_search_call.action.sources"]);
   });

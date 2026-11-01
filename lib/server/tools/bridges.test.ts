@@ -360,7 +360,7 @@ describe("provider tool bridges", () => {
     const urlSchema = { additionalProperties: false, properties: { url: expect.objectContaining({ type: "string" }) },
       required: ["url"], type: "object" };
     expect(openAIResponsesToolBridge.serializeTool(fetchUrlTool).tool).toMatchObject({ name: "fetch_url", parameters: urlSchema,
-      strict: true, type: "function" });
+      strict: false, type: "function" });
     expect(openAICompatibleResponsesToolBridge.serializeTool(fetchUrlTool)).toMatchObject({ provider: "openai_compatible",
       tool: { name: "fetch_url", parameters: urlSchema } });
     expect(deepSeekResponsesToolBridge.serializeTool(fetchUrlTool).tool).not.toHaveProperty("strict");

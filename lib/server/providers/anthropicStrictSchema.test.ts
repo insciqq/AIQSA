@@ -7,7 +7,11 @@ import { memoryFactExtractionTool } from "../memory/learning/extraction/prompt";
 import { analyzeImageTool } from "../tools/analyzeImage";
 
 describe("Anthropic strict schema projection", () => {
-  it.each([fetchUrlTool])("projects the production $capability tool without changing its canonical schema", tool => {
+  // A strict tool with bounds Anthropic does not take; `fetch_url` left strict schemas when it gained an optional `proxy`.
+  const boundedStrictTool = { capability: "web_fetch" as const, description: "Read a page.", name: "bounded", strict: true,
+    inputSchema: { additionalProperties: false, properties: { url: { maxLength: 2_048, minLength: 1, type: "string" } }, required: ["url"], type: "object" } };
+
+  it.each([boundedStrictTool])("projects a bounded $capability tool without changing its canonical schema", tool => {
     const original = JSON.stringify(tool);
     const hash = createHash("sha256").update(original).digest("hex");
     const projected = anthropicMessagesToolBridge.serializeTool(tool).tool.input_schema as Record<string, unknown>;
@@ -40,8 +44,8 @@ describe("Anthropic strict schema projection", () => {
     const tool = { strict: true, inputSchema: { type: "object", additionalProperties: false,
       properties: Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`field${i}`, nullable])),
       required: Array.from({ length: 8 }, (_, i) => `field${i}`) } };
-    const projected = anthropicToolSchemas([tool, tool, tool, fetchUrlTool]);
-    expect(projected.map(tool => tool.strict)).toEqual([true, true, false, true]);
+    const projected = anthropicToolSchemas([tool, tool, tool, boundedStrictTool, fetchUrlTool]);
+    expect(projected.map(tool => tool.strict)).toEqual([true, true, false, true, false]);
     expect(projected[2]?.inputSchema).toBe(tool.inputSchema);
   });
 
