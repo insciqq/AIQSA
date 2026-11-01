@@ -1,4 +1,5 @@
 import { PROXY_BLOCKED_HTTP_STATUSES } from "../../contracts/proxies";
+import type { RunProxyConnection } from "../proxies/runProxies";
 import type { FetchUrlActivityOutcome, FetchUrlRefusalScope } from "../../contracts/fetchUrlActivity";
 import { isDocumentParserError } from "../parsing/errors";
 import { isPdfExtractionError } from "../uploads/pdf";
@@ -288,7 +289,7 @@ export type FetchUrlSessionDeps = FetchUrlProxyDeps & Readonly<{
   /** The pages the run read before this session, so a recovered run keeps its cache. */
   loadCalls?: () => Promise<readonly FetchUrlPersistedCall[]>;
   fetchPage?: (url: string, options: WebFetchOptions) => Promise<WebFetchResponse>;
-  fetchProxyPage?: typeof fetchThroughProxy;
+  fetchProxyPage?: (url: string, connection: RunProxyConnection, options: WebFetchOptions) => ReturnType<typeof fetchThroughProxy>;
   /** Fetched body to page text; production parses it in the disposable parser process. */
   extractPage?: (input: FetchedPageInput) => Promise<ExtractedPage | null>;
   /** Fetched PDF to page text; production extracts it in the isolated PDF worker. */

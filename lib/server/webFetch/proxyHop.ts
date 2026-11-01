@@ -160,7 +160,8 @@ export async function fetchProxyHop(url: URL, connection: ProxyHopConnection, he
     phase = "proxy_connect_failed";
     const tunnel = socket;
     agent = new Agent({ keepAlive: false });
-    agent.createConnection = () => tunnel;
+    // The request runs on the tunnel already open: its agent never dials.
+    (agent as Agent & { createConnection(): Socket }).createConnection = () => tunnel;
     return await new Promise<Response>((resolve, reject) => {
       const outgoing = request({ agent, headers: { ...headers, connection: "close", host: url.host },
         hostname: url.hostname, method: "GET", path: `${url.pathname}${url.search}`, signal,
