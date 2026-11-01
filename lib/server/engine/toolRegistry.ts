@@ -42,6 +42,7 @@ import { imageGenerationTool } from "../tools/imageGeneration";
 import { executeMonitoringVerdict, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { createChatFileTool, readChatFileTool, type ChatFileReader } from "../tools/readChatFile";
 import { executeReadSecret, readSecretTool } from "../tools/readSecret";
+import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
 import type { liveToolCallStatus } from "../runs/liveToolStatus";
 import { executeCreateScheduledTask, isScheduledTaskCreateCall, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
@@ -275,6 +276,8 @@ export type ToolRegistryInput = Readonly<{
    * and a background child's registry has a run of its own, so `buildRegistry` binds it (`execution.ts`). Absent, the tool is not offered.
    */
   researchEvidence?: RecordEvidenceTarget;
+  /** Where `change_research_frame` writes, bound as `researchEvidence` is. Absent, the tool is not offered. */
+  researchFrame?: ChangeResearchFrameTarget;
   runId: string;
   services: ToolRegistryServices;
   /** A Telegram turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
@@ -475,6 +478,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       } });
   }
   if (clientTools && input.researchEvidence) add(recordEvidenceEngineTool(input.researchEvidence, input.agent));
+  if (clientTools && input.researchFrame) add(changeResearchFrameEngineTool(input.researchFrame, input.agent));
   const secrets = input.services.secrets;
   if (clientTools && secrets) {
     add({ activity: listed(readSecretTool.name), definition: readSecretTool.tool, effects: readSecretTool.effects,

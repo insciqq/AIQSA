@@ -252,7 +252,7 @@ describe("no-op ports", () => {
   it("are called only where the run hands over: nothing reads or writes a store or composes while a report stands, and the plan goes through its window", async () => {
     const { calls, ports } = spied();
     await runOf(RUNS["a report accepted after a researcher"]!, { gates: [], ports });
-    expect([...new Set(calls)].sort()).toEqual(["planWindow.open", "time.planReleased", "time.researcherRefusal", "time.researcherSignal"]);
+    expect([...new Set(calls)].sort()).toEqual(["coverage.coverage", "coverage.frame", "planWindow.open", "time.planReleased", "time.researcherRefusal", "time.researcherSignal"]);
   });
 
   it("each answer as a true identity", async () => {

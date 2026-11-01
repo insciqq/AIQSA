@@ -15,6 +15,7 @@ import { fetchUrlTool } from "./fetchUrlPlan";
 import { HARNESS_TOOLS } from "./harnessTools";
 import { monitoringVerdictTool } from "./monitoringVerdict";
 import { readToolResultTool } from "./readToolResult";
+import { changeResearchFrameTool } from "./changeResearchFrame";
 import { recordEvidenceTool } from "./recordEvidence";
 import { createScheduledTaskTool } from "./scheduledTaskCreation";
 import { manageScheduledTaskTool } from "./scheduledTaskManagement";
@@ -75,7 +76,7 @@ function firstPartyTools(): RunTool[] {
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
     loadSkillTool, readSkillFileTool, artifactTool(), readArtifactTool(), checkpointOutputsTool, analyzeImageTool(),
     analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool,
-    recordEvidenceTool
+    recordEvidenceTool, changeResearchFrameTool
   ];
 }
 

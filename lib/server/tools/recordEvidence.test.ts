@@ -5,7 +5,8 @@ import {
   RESEARCH_RECORD_KINDS,
   RESEARCH_SOURCE_CLASSES,
   RESEARCH_STANDINGS,
-  type ResearchEvidenceRecord
+  type ResearchEvidenceRecord,
+  type ResearchFrame
 } from "../../contracts/research";
 import { SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import { subagentOffersTool } from "../engine/subagents/registry";
@@ -21,9 +22,10 @@ const stored = (quoteCheck: ResearchEvidenceRecord["quoteCheck"]) => ({ id: RECO
 
 const properties = recordEvidenceTool.inputSchema.properties as Record<string, Record<string, unknown>>;
 
-function targetOf(written: Awaited<ReturnType<RecordEvidenceTarget["evidence"]["record"]>> = { kind: "recorded", record: stored({ reason: null, status: "found" }) }, researching = true) {
+function targetOf(written: Awaited<ReturnType<RecordEvidenceTarget["evidence"]["record"]>> = { kind: "recorded", record: stored({ reason: null, status: "found" }) }, researching = true,
+  frame: ResearchFrame | null = null) {
   const record = vi.fn(async () => written);
-  return { record, target: { evidence: { record }, researching: () => researching } satisfies RecordEvidenceTarget };
+  return { record, target: { coverage: { frame: async () => frame }, evidence: { record }, researching: () => researching } satisfies RecordEvidenceTarget };
 }
 
 const signal = new AbortController().signal;
@@ -131,6 +133,61 @@ describe("a record_evidence call", () => {
     expect(value(result)).toEqual({ code: "research_records_full", message: "Nothing was recorded." });
     const failing = { evidence: { record: vi.fn(async () => { throw new Error("down"); }) }, researching: () => true };
     await expect(recordEvidenceEngineTool(failing, { kind: "main" }).execute(call(FINDING))).rejects.toThrow("down");
+  });
+
+  describe("and the matrix", () => {
+    const FRAME: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Firmness", key: "firmness", why: "It decides comfort." }], rows: [{ key: "x1", label: "X1" }] };
+    const at = (rowKey: string | null, criterionKey: string | null) => ({ ...stored({ reason: null, status: "found" }), criterionKey, kind: "finding", rowKey }) as ResearchEvidenceRecord;
+    const result = async (record: ResearchEvidenceRecord, frame: ResearchFrame | null = FRAME) =>
+      value(await recordEvidenceEngineTool(targetOf({ kind: "recorded", record }, true, frame).target, { kind: "main" }).execute(call(FINDING))) as { matrix?: string; record_id: string };
+
+    it("says nothing of a record at a known cell, or of a run with no frame", async () => {
+      expect(await result(at("x1", "firmness"))).not.toHaveProperty("matrix");
+      expect(await result(at("z9", "price"), null)).not.toHaveProperty("matrix");
+    });
+
+    it("keeps a record under a key the matrix lacks, and names the keys and how to add one", async () => {
+      const { matrix, record_id: id } = await result(at("z9", "firmness"));
+      expect(id).toBe(RECORD_ID);
+      expect(matrix).toContain("This record stands but fills no cell: the matrix does not know row_key z9.");
+      expect(matrix).toContain("Rows: x1. Criteria: firmness.");
+      expect(matrix).toContain("change_research_frame");
+      expect(matrix).toContain("supersedes");
+      expect((await result(at("x1", "price"))).matrix).toContain("criterion_key price");
+      expect((await result(at("z9", "price"))).matrix).toContain("row_key z9 or criterion_key price");
+    });
+
+    it("says a record with no key fills no cell, since nothing else would tell a researcher", async () => {
+      expect((await result(at(null, "firmness"))).matrix).toContain("it gives no row_key");
+      expect((await result(at("x1", null))).matrix).toContain("it gives no criterion_key");
+    });
+
+    it("counts a record at its criterion on a frame with no rows, and says how to add a row it names", async () => {
+      const rowless = { ...FRAME, rows: [] };
+      expect(await result(at(null, "firmness"), rowless)).not.toHaveProperty("matrix");
+      const named = (await result(at("z9", "firmness"), rowless)).matrix;
+      expect(named).toContain("This record counts for its criterion");
+      expect(named).toContain("add its row with change_research_frame");
+      expect((await result(at(null, "price"), rowless)).matrix).toContain("criterion_key price. Rows: none yet. Criteria: firmness.");
+    });
+
+    it("says nothing of an unreachable site, which belongs to no cell", async () => {
+      expect(await result({ ...stored(null), criterionKey: null, kind: "unreachable", rowKey: null } as ResearchEvidenceRecord)).not.toHaveProperty("matrix");
+    });
+
+    it("stays short with a long matrix: a few keys and how many more", async () => {
+      const rows = Array.from({ length: 60 }, (_value, index) => ({ key: `row-${index}`, label: "Row" }));
+      const { matrix } = await result(at("z9", "firmness"), { ...FRAME, rows });
+      expect(matrix).toContain("and 36 more");
+      expect(matrix!.length).toBeLessThan(700);
+    });
+
+    it("costs only the hint when the matrix cannot be read: the record is on file", async () => {
+      const target = { ...targetOf({ kind: "recorded", record: at("z9", "firmness") }).target, coverage: { frame: async () => { throw new Error("down"); } } };
+      const written = await recordEvidenceEngineTool(target, { kind: "main" }).execute(call(FINDING));
+      expect(written.status).toBe("complete");
+      expect(value(written)).toMatchObject({ record_id: RECORD_ID });
+    });
   });
 
   it("is never tried again by itself, and is the agent's own step", () => {

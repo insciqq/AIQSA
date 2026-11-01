@@ -832,7 +832,7 @@ describe("a draft and its notes stay together", () => {
       sources: { opened: async () => [] }, subagents: { run: async () => ({ code: "x", kind: "refused" as const }) },
       time: { remainingMs: () => 60_000, sendBackAllowed: () => true }, verifierModel: async () => ({ kind: "unavailable" as const }) };
     const draft = { findings: [], origin: "reserved_call" as const, report: "r", unreachable: [] };
-    expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ kind: "sent_back", message: "Again.", notes: ["Carried."] });
+    expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ gate: "first", kind: "sent_back", message: "Again.", notes: ["Carried."] });
     expect(await runResearchGates({ context, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: ["Its own."] });
     const broken: ResearchGate = { ...carrying, run: async () => { throw new Error("down"); } };
     expect(await runResearchGates({ context, draft, gates: [broken], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed", "r"), "Carried."] });
