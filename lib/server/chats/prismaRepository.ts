@@ -1215,19 +1215,19 @@ function toolBudgetWarning(
  * A call's place among the answer's sub-agents: a `call_subagent` or
  * `stop_subagent` step names the thread and turn it addressed, and a call a
  * foreground sub-agent made carries its thread and turn, so it nests under
- * exactly that step (`ThreadToolActivityCall`). Identifiers only, never a brief or report.
+ * exactly that step (`ThreadToolActivityCall`); a sub-agent's own such step does
+ * both. Identifiers only, never a brief or report.
  */
 function subagentActivityFacts(call: ToolActivityRun["toolCalls"][number]): Pick<ThreadToolActivityCall,
   "subagent" | "subagentThreadId" | "subagentTurnId"> {
-  if (call.subagentThreadId) {
-    return { subagentThreadId: call.subagentThreadId, ...(call.subagentTurnId ? { subagentTurnId: call.subagentTurnId } : {}) };
-  }
-  if (call.toolName !== CALL_SUBAGENT_TOOL_NAME && call.toolName !== STOP_SUBAGENT_TOOL_NAME) return {};
+  const made = call.subagentThreadId
+    ? { subagentThreadId: call.subagentThreadId, ...(call.subagentTurnId ? { subagentTurnId: call.subagentTurnId } : {}) } : {};
+  if (call.toolName !== CALL_SUBAGENT_TOOL_NAME && call.toolName !== STOP_SUBAGENT_TOOL_NAME) return made;
   const turn = call.subagentTurns?.[0];
   if (turn && (turn.mode === "foreground" || turn.mode === "background")) {
-    return { subagent: { mode: turn.mode, name: turn.thread.name, threadId: turn.thread.id, turnId: turn.id } };
+    return { ...made, subagent: { mode: turn.mode, name: turn.thread.name, threadId: turn.thread.id, turnId: turn.id } };
   }
-  return {};
+  return made;
 }
 
 /** Safe activity plus initiator-only MCP references; no arguments, results, or raw events. */

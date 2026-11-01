@@ -4,6 +4,7 @@ import { Prisma, type PrismaClient, type ToolObservation } from "@prisma/client"
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { resolveChatAccess } from "../chats/access";
 import { activeToolLoopRun, activeToolLoopRunSql, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
+import { TURN_ANSWER_SELECT, turnAnswerMessageId } from "../subagents/nesting";
 import { admitsToolObservationReservation, decodeToolObservationSourceBinding, ObservationStoreError, TOOL_OBSERVATION_LIMITS,
   type ToolObservationBudgetUsage, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
 import { OBSERVATION_READ_LIMITS } from "./byteReader";
@@ -42,9 +43,9 @@ export async function observationRunAuthority(tx: Prisma.TransactionClient, acto
   const run = await tx.modelRun.findFirst({ where: { id: actor.runId, userId: actor.userId }, select: {
     id: true, chatId: true, assistantMessageId: true, userMessageId: true, status: true, errorPayload: true,
     chat: { select: { archived: true, permanentDeletionAt: true } },
-    subagentTurn: { select: { parentRun: { select: { assistantMessageId: true } } } }
+    subagentTurn: { select: { parentRun: { select: TURN_ANSWER_SELECT } } }
   } });
-  const assistantMessageId = run?.assistantMessageId ?? run?.subagentTurn?.parentRun.assistantMessageId;
+  const assistantMessageId = run?.assistantMessageId ?? (run?.subagentTurn ? turnAnswerMessageId(run.subagentTurn.parentRun) : null);
   if (!run || !assistantMessageId || !activeToolLoopRun(run) ||
     run.chat.archived || run.chat.permanentDeletionAt ||
     !await tx.user.findFirst({ where: { id: actor.userId, status: "active" }, select: { id: true } }) ||
@@ -161,8 +162,10 @@ export function createToolObservationRepository(input: Readonly<{
             FROM "ToolObservation" o JOIN "ModelRun" r ON r."id" = o."modelRunId"
             LEFT JOIN "SubagentTurn" turn ON turn."id" = r."subagentTurnId"
             LEFT JOIN "ModelRun" parent ON parent."id" = turn."parentRunId"
+            LEFT JOIN "SubagentTurn" "parentTurn" ON "parentTurn"."id" = parent."subagentTurnId"
+            LEFT JOIN "ModelRun" main ON main."id" = "parentTurn"."parentRunId"
             WHERE r."chatId" = ${run.chatId} AND (r."id" = ${run.id} OR
-              COALESCE(r."assistantMessageId", parent."assistantMessageId") IN (SELECT "id" FROM path))
+              COALESCE(r."assistantMessageId", parent."assistantMessageId", main."assistantMessageId") IN (SELECT "id" FROM path))
               AND o."sourceKind" IN ('mcp', 'workspace', 'search')
               AND (o."state" = 'RESERVED' OR o."state" IN ('STORING', 'READY') AND o."storageMode" = 'OBJECT')`;
           // Exhaustion never refuses the business call: beginWrite refuses any

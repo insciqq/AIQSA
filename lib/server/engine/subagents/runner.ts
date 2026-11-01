@@ -9,7 +9,9 @@ import {
   SUBAGENT_FILES_TRUNCATED_NOTICE,
   SUBAGENT_USAGE_PURPOSE,
   SUBAGENT_WAIT_REASONS,
+  decodeSubagentCallResult,
   isSubagentCode,
+  subagentQuestionNonce,
   type EndedSubagentCallResult,
   type EndedSubagentState,
   type SubagentApprovalRequest,
@@ -30,11 +32,14 @@ import { reportedAnswerCost } from "../../runs/usagePricing";
 import type { WorkspaceAgent } from "../../subagents/guestProtocol";
 import type {
   BrowserAgentIdentity,
+  SubagentBackgroundControl,
   SubagentBinding,
   SubagentDeliveryOutcome,
   SubagentMessage,
   SubagentMessaging,
+  SubagentParentAgent,
   SubagentRunner,
+  SubagentTypeResolver,
   SubagentStopReason,
   SubagentTurnHandle,
   SubagentTurnInput
@@ -50,7 +55,15 @@ import { detachedCompactions } from "../detachedCompactions";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "../faults";
 import { ANSWER_NOW_INSTRUCTION, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type LoopToolChoice } from "../loop";
 import { callModel } from "../modelCall";
-import { SUBAGENT_ROLE_SECTION, subagentAgentMessageText, subagentFollowupText, subagentTurnText } from "../prompts";
+import {
+  SUBAGENT_CHILD_ROLE_SECTION,
+  SUBAGENT_ROLE_SECTION,
+  SUBAGENT_STARTER_ROLE_SECTION,
+  subagentAgentMessageText,
+  subagentChildQuestionText,
+  subagentFollowupText,
+  subagentTurnText
+} from "../prompts";
 import { createRunContext, type RunContext } from "../runContext";
 import { splitTurnGuidance, withNativeSystemPrompt } from "../systemPrompt";
 import {
@@ -76,10 +89,14 @@ import {
 import type { TranscriptRepository, TranscriptThreadKey } from "../transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "../transcriptWriter";
 import type { UnknownEffects } from "../unknownEffects";
-import { withSubagentTools } from "./callTools";
+import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
+import { withForegroundTurnStops } from "./backgroundRunner";
+import { subagentChildEngineTools, withSubagentDepthRefusals, withSubagentTools, type SubagentCallDeps } from "./callTools";
 import { subagentMessageTools, type AgentToolTurn } from "./messageTools";
+import type { FrozenSubagentModels, SubagentParentModel } from "./modelCatalog";
 import type { SubagentModelRoute, SubagentRouteResult } from "./modelRoutes";
 import { subagentToolRegistry } from "./registry";
+import type { SubagentThreadStore } from "./threadStore";
 
 /**
  * Foreground sub-agent turns on the native engine's loop (`runAgentLoop`,
@@ -97,7 +114,29 @@ import { subagentToolRegistry } from "./registry";
  * keeps what it recorded. A message reaches it in its mailbox, foreground or
  * background, and it reads them at its next step; a wait for one ends with the
  * message or the signal.
+ *
+ * With every tool it may start children (operator decision 2026-10-31), one
+ * level deep: a foreground child is a turn of this same host, a background one
+ * a run of its own that reports to this turn's mailbox. A turn that stops
+ * calling tools stays for the reports of the children it left running, and a
+ * turn's end takes its children with it, whatever ended it: they outlive
+ * nothing, so no path wakes a sub-agent. What a child handed back for approval
+ * climbs with its parent's result, by the server and not by the model, because
+ * the parent may lack the tool and only the main agent can ask the user.
  */
+
+/** What a host gives its sub-agents to start children with; absent, none of them can. */
+export type SubagentChildHost = Readonly<{
+  background?: SubagentBackgroundControl;
+  /** Whether a child may run in the background: the run's rule (`SubagentCallDeps.backgroundAllowed`). */
+  backgroundAllowed: boolean;
+  catalog: FrozenSubagentModels | null;
+  defaultType: FrozenSubagentDefault | null;
+  /** A turn's binding as the model its children inherit. */
+  modelOf(binding: SubagentBinding): SubagentParentModel;
+  store: SubagentCallDeps["store"] & Pick<SubagentThreadStore, "activeChildren" | "childResults">;
+  types?: SubagentTypeResolver;
+}>;
 
 /** What a sub-agent turn needs of the run that hosts it. */
 export type SubagentHost = Readonly<{
@@ -120,6 +159,7 @@ export type SubagentHost = Readonly<{
   /** The Workspace tool calls of this agent may start until then (`toolCallBounds`). */
   callTimeLeft(tool: Pick<RunTool, "capability" | "name">): boolean;
   chatId: string;
+  children?: SubagentChildHost;
   /** The turn's hard deadline: the parent's tool time ends it first. */
   deadlineAt: number;
   /** Aborted when the parent reached its deadline (rather than Stop). */
@@ -208,6 +248,8 @@ const OUTCOME_LINE = /^\s*\**\s*outcome\s*\**\s*:\s*\**\s*(done|partial|blocked)
 const SETTLE_ATTEMPTS = 3;
 /** How often a wait looks at the clock; a message ends it at once. */
 const MAIL_CHECK_MS = 1_000;
+/** Looks at a child that is gone from the record without its report, which may be on its way, before a turn goes on without it. */
+const CHILD_REPORT_LOOKS = 2;
 
 const boundLine = (value: string, max: number) => {
   const line = value.replace(/\s+/gu, " ").trim();
@@ -384,6 +426,10 @@ type ThreadState = {
 type TurnRecord = {
   /** Calls waiting for a message: a delivery wakes each. */
   readonly arrivals: Set<() => void>;
+  /** This turn's background children, by name, whose report it has not had. */
+  readonly awaitedChildren: Set<string>;
+  /** It called `call_subagent`, so it may have children to end and calls of theirs to hand on. */
+  calledChildren: boolean;
   readonly controller: AbortController;
   readonly input: SubagentTurnInput;
   readonly kind: "continue" | "start";
@@ -392,6 +438,22 @@ type TurnRecord = {
   result: EndedSubagentCallResult | null;
   stopReason: SubagentStopReason | null;
 };
+
+/** One look's wait: it ends with the next message, the signal or `MAIL_CHECK_MS`. */
+function nextMail(turn: TurnRecord, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      turn.arrivals.delete(done);
+      resolve();
+    };
+    const timer = setTimeout(done, MAIL_CHECK_MS);
+    (timer as { unref?: () => void }).unref?.();
+    signal.addEventListener("abort", done, { once: true });
+    turn.arrivals.add(done);
+  });
+}
 
 /**
  * Waits until a message that matches is in the turn's mailbox, for as long as `open` says. It stays in the mailbox for
@@ -403,19 +465,36 @@ async function mailArrived(turn: TurnRecord, matches: (message: SubagentMessage)
     signal.throwIfAborted();
     if (turn.mailbox.some(matches)) return true;
     if (!open()) return false;
-    await new Promise<void>((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", done);
-        turn.arrivals.delete(done);
-        resolve();
-      };
-      const timer = setTimeout(done, MAIL_CHECK_MS);
-      (timer as { unref?: () => void }).unref?.();
-      signal.addEventListener("abort", done, { once: true });
-      turn.arrivals.add(done);
-    });
+    await nextMail(turn, signal);
   }
+}
+
+/** A child's report taken off a turn's list of those it waits for. */
+function reportArrived(turn: TurnRecord, message: SubagentMessage): void {
+  if (message.origin === "subagent_callback" && message.from) turn.awaitedChildren.delete(message.from);
+}
+
+/**
+ * What a parent's result says of the calls its children handed back: they go up with it, once each, and a parent that
+ * calls itself done is still blocked on them, because they did not run. Nothing else of a child's result climbs: the
+ * parent has read that, and decides what its report says.
+ */
+export function withChildApprovals(result: EndedSubagentCallResult, childResults: readonly unknown[]): EndedSubagentCallResult {
+  const seen = new Set(result.approvals.map((approval) => JSON.stringify([approval.serverName, approval.toolName, approval.arguments])));
+  const added: SubagentApprovalRequest[] = [];
+  for (const value of childResults) {
+    const child = decodeSubagentCallResult(value);
+    for (const approval of child?.kind === "ended" ? child.approvals : []) {
+      const key = JSON.stringify([approval.serverName, approval.toolName, approval.arguments]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      added.push(approval);
+    }
+  }
+  if (added.length === 0) return result;
+  const blocked = result.state === "done" && result.outcome !== "blocked";
+  return { ...result, approvals: [...result.approvals, ...added],
+    ...(blocked ? { outcome: "blocked" as const, reason: SUBAGENT_BLOCKED_REASONS.needsApproval } : {}) };
 }
 
 /** The ended result of a turn, bounded as `decodeSubagentCallResult` accepts it. */
@@ -505,6 +584,49 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     return route;
   };
 
+  /** What a sub-agent's own `call_subagent` and `stop_subagent` work with: its binding, its time, its run. */
+  function childDeps(turn: TurnRecord, children: SubagentChildHost): SubagentCallDeps & Readonly<{ parentAgent: SubagentParentAgent }> {
+    const { input } = turn;
+    return {
+      ...(children.background ? { background: children.background } : {}),
+      backgroundAllowed: children.backgroundAllowed,
+      branchRunId: input.parentRunId,
+      branchRunIds: [...new Set([...host.branchRunIds, input.parentRunId])],
+      catalog: children.catalog,
+      chatId: host.chatId,
+      deadlineAt: () => new Date(host.deadlineAt),
+      defaultType: children.defaultType,
+      onChildStarted: (name) => { turn.awaitedChildren.add(name); },
+      parent: children.modelOf(input.binding),
+      parentAgent: { name: input.name, runId: input.hostRunId, threadId: input.threadId, toolState: host.toolState, turnId: input.turnId },
+      runId: input.hostRunId,
+      runner: listedRunner,
+      store: children.store,
+      ...(children.types ? { types: children.types } : {}),
+      userId: host.userId,
+      userMessage: input.userMessage,
+      ...(input.workspaceRefused ? { workspaceRefused: input.workspaceRefused } : {})
+    };
+  }
+
+  /**
+   * A turn's end takes its children with it, whatever ended it, before its own result is on record, so a parent is never
+   * reported ended with work of its own still running; then what they handed back goes up with it. Never fails the turn.
+   */
+  async function endChildren(record: TurnRecord, result: EndedSubagentCallResult): Promise<EndedSubagentCallResult> {
+    const { input } = record;
+    if (!record.calledChildren || !host.children) return result;
+    const scope = { chatId: host.chatId, userId: host.userId };
+    try {
+      await host.children.background?.stopChildren({ ...scope, threadId: input.threadId });
+      return withChildApprovals(result, await host.children.store.childResults({ ...scope, parentTurnId: input.turnId }));
+    } catch (error) {
+      logEvent("service_operation", { action: "degrade", code: "subagent_children_unsettled", error, outcome: "degraded", run_id: input.hostRunId,
+        stage: "write", subsystem: "database" });
+      return result;
+    }
+  }
+
   async function settleRow(input: SubagentTurnInput, result: EndedSubagentCallResult): Promise<void> {
     for (let attempt = 1; attempt <= SETTLE_ATTEMPTS; attempt += 1) {
       try {
@@ -544,8 +666,11 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       endedSubagentCallResult({ approvals, binding: input.binding, files: [...files], name: input.name, report: report || roundText,
         state, steps, ...(handBack.question ? { question: handBack.question } : {}), ...extra });
     const waits = createTurnWaits((activity) => host.setTurnState?.({ ...activity, turnId: input.turnId }) ?? Promise.resolve(false));
-    // Its parent is the main agent until sub-agents have children of their own.
-    const fromParent = (message: SubagentMessage) => message.origin === "main_agent";
+    const parentName = input.parentAgent?.name ?? MAIN_AGENT_NAME;
+    /** What that agent wrote: the main agent writes under no name, and a sub-agent under its own, its orders included. */
+    const writtenBy = (name: string) => (message: SubagentMessage) => name === MAIN_AGENT_NAME
+      ? message.origin === "main_agent" && message.from === undefined : message.from === name;
+    const fromParent = writtenBy(parentName);
     /** Messages of its parent an earlier question of this batch took: one stays in the mailbox until the turn's next step. */
     const answers = new Set<string>();
     const agentTurn: AgentToolTurn = {
@@ -560,7 +685,12 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         const wait = await waits.enter("answer");
         try {
           if (!wait.marked) return "unavailable";
-          host.messaging?.questionAsked({ chatId: host.chatId, userId: host.userId });
+          if (input.parentAgent) {
+            // Its parent runs, or it would have ended with it: the question goes to its mailbox, and the turn waits like any asker.
+            const sent = await host.messaging?.send({ chatId: host.chatId, from: input.name, nonce: subagentQuestionNonce(execution.persistedToolCallId),
+              parentRunId: input.parentRunId, question: true, text: question, to: input.parentAgent.name, userId: host.userId });
+            if (sent?.kind !== "delivered") return "unavailable";
+          } else host.messaging?.questionAsked({ chatId: host.chatId, userId: host.userId });
           const unanswered = (message: SubagentMessage) => fromParent(message) && !answers.has(message.nonce);
           if (!await mailArrived(turn, unanswered, execution.signal, host.toolTimeLeft)) return "no_answer";
           const answer = turn.mailbox.find(unanswered);
@@ -572,10 +702,9 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       },
       async waitForReply(from, execution) {
         // A foreground parent reads nothing until the turn ends: no wait can get its reply.
-        if (from === MAIN_AGENT_NAME && input.mode === "foreground") return false;
+        if (from === parentName && input.mode === "foreground") return false;
         const until = host.now() + SUBAGENT_FOLLOWUP_LIMITS.replyWaitMinutes * 60_000;
-        return mailArrived(turn, (message) => from === MAIN_AGENT_NAME ? fromParent(message) : message.from === from, execution.signal,
-          () => host.now() < until && host.toolTimeLeft());
+        return mailArrived(turn, writtenBy(from), execution.signal, () => host.now() < until && host.toolTimeLeft());
       }
     };
     try {
@@ -596,9 +725,13 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const filtered = subagentToolRegistry(await host.buildRegistry({ agent,
         followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request }), input.type?.toolGroups ?? null);
       // No tool group narrows them: they reach the agents of the chat, nothing outside it.
-      const registry = waitingDuringHandoff(host.messaging
-        ? withSubagentTools(filtered, subagentMessageTools({ chatId: host.chatId, messaging: host.messaging, parentRunId: input.parentRunId,
-          userId: host.userId }, agentTurn)) : filtered, waits);
+      const messages = host.messaging ? subagentMessageTools({ chatId: host.chatId, messaging: host.messaging, parentRunId: input.parentRunId,
+        userId: host.userId }, agentTurn) : [];
+      // Only a sub-agent with every tool starts children: a list narrows, and a child must not have what its parent was denied.
+      const starts = host.children && !input.parentAgent && !input.type?.toolGroups ? host.children : null;
+      const children = starts ? subagentChildEngineTools(childDeps(turn, starts), () => { turn.calledChildren = true; }) : [];
+      const offered = withSubagentTools(filtered, [...messages, ...children]);
+      const registry = waitingDuringHandoff(input.parentAgent ? withSubagentDepthRefusals(offered) : offered, waits);
       // A thread's earlier turns may have run in the background, in runs of their own that answer nothing.
       const runIds = [...new Set([...(host.threadRunIds ? await host.threadRunIds(input.threadId) : host.branchRunIds),
         input.hostRunId])];
@@ -608,14 +741,14 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         if (!turn.mailbox.some((entry) => entry.nonce === message.nonce)) turn.mailbox.push(message);
       }
       const history = runIds.flatMap((runId) => loaded.get(runId) ?? []);
-      const role = input.type?.instructions.trim()
-        ? `${SUBAGENT_ROLE_SECTION}\n\n# Your instructions\n${input.type.instructions.trim()}` : SUBAGENT_ROLE_SECTION;
+      const roleSection = input.parentAgent ? SUBAGENT_CHILD_ROLE_SECTION : starts ? SUBAGENT_STARTER_ROLE_SECTION : SUBAGENT_ROLE_SECTION;
+      const role = input.type?.instructions.trim() ? `${roleSection}\n\n# Your instructions\n${input.type.instructions.trim()}` : roleSection;
       const native = await withNativeSystemPrompt({ now: new Date(host.now()), request, scope: { runId: input.hostRunId, userId: host.userId },
         ...(host.secrets ? { secrets: host.secrets } : {}), selfService: role, snapshot: route.snapshot, tools: registry.definitions() });
       const base = native.request;
       const inputItem: TranscriptUserItem = { id: `sub-${input.turnId}`, kind: "user",
-        text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", name: input.name, userMessage: input.userMessage,
-          ...(workspaceRefused ? { workspaceRefused } : {}) }) };
+        text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", name: input.name, ...(input.parentAgent ? { parent: input.parentAgent.name } : {}),
+          userMessage: input.userMessage, ...(workspaceRefused ? { workspaceRefused } : {}) }) };
       // The run's one fence (`SubagentHost.unknownEffects`): only the user's own words count as them speaking, never the
       // main agent's brief or messages.
       const unknownEffects = host.unknownEffects(input.threadId);
@@ -630,6 +763,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           unknownEffects.userSpoke();
         }
         for (const message of turn.mailbox.splice(0)) {
+          reportArrived(turn, message);
           if (threadState.readMessages.has(message.nonce)) continue;
           threadState.readMessages.add(message.nonce);
           const id = randomUUID();
@@ -641,10 +775,15 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           } else if (message.origin === "subagent_message") {
             // Another agent's message is no user speech and no brief: it releases nothing, authorizes nothing and changes no task.
             added.push({ id, kind: "user", text: subagentAgentMessageText({ from: message.from ?? "unknown", text: message.text }) });
+          } else if (message.origin === "subagent_question") {
+            added.push({ id, kind: "user", text: subagentChildQuestionText({ from: message.from ?? "unknown", text: message.text }) });
+          } else if (message.origin === "subagent_callback") {
+            // Written by the server, with what a callback carries: the report inside stays its writer's own account.
+            added.push({ id, kind: "user", text: message.text });
           } else {
-            // The main agent's message is no user speech: it never releases an unknown effect or authorizes a link.
+            // Its parent's message is no user speech: it never releases an unknown effect or authorizes a link.
             added.push({ id, kind: "user", text: subagentTurnText({ brief: message.text, continued: true, name: input.name,
-              userMessage: input.userMessage }) });
+              ...(input.parentAgent ? { parent: input.parentAgent.name } : {}), userMessage: input.userMessage }) });
           }
         }
         return added;
@@ -748,6 +887,22 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         }
       };
       let pending: TranscriptUserItem[] = [];
+      /**
+       * A turn that stopped calling tools stays for the reports of the children it left running, whose reports are what it
+       * started them for, and goes on from each. Its tool time bounds this; a question it handed back ends it at once, and
+       * a child that left the record without a report does not hold it.
+       */
+      const childReports = async () => {
+        let gone = 0;
+        while (turn.awaitedChildren.size > 0 && turn.mailbox.length === 0 && handBack.question === null && host.toolTimeLeft() &&
+          gone < CHILD_REPORT_LOOKS) {
+          signal.throwIfAborted();
+          const running = await host.children?.store.activeChildren({ chatId: host.chatId, threadId: input.threadId, userId: host.userId })
+            .catch(() => 1) ?? 0;
+          gone = running > 0 ? 0 : gone + 1;
+          await nextMail(turn, signal);
+        }
+      };
       const outcome = await runAgentLoop({
         append,
         appendCalls,
@@ -755,6 +910,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           faults: host.faults ?? NO_ENGINE_TEST_FAULTS, now: host.now, onDiscard: async () => undefined, onEvent: async () => undefined,
           onUsage: recordUsage, routing: loopRouting, signal, timeoutMs: route.timeoutMs }, sent)),
         closeFollowups: async () => {
+          await childReports();
           pending.push(...await incoming());
           return pending.length === 0;
         },
@@ -864,12 +1020,13 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     const ready = new Promise<TurnRecord>((resolve) => { resolveRecord = resolve; });
     const promise = ready.then(async (record) => {
       const result = await saveBackgroundResult(input, AbortSignal.any([host.signal, input.signal, record.controller.signal]),
-        await executeTurn(record));
+        await endChildren(record, await executeTurn(record)));
       record.result = result;
       await settleRow(input, result);
       return result;
     });
-    const record: TurnRecord = { arrivals: new Set(), controller: new AbortController(), input, kind, mailbox: [], promise, result: null, stopReason: null };
+    const record: TurnRecord = { arrivals: new Set(), awaitedChildren: new Set(), calledChildren: false, controller: new AbortController(), input, kind,
+      mailbox: [], promise, result: null, stopReason: null };
     turns.set(input.turnId, record);
     resolveRecord(record);
     return { turnId: input.turnId };
@@ -881,7 +1038,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     return turn;
   };
 
-  return {
+  const runner: HostedSubagentRunner = {
     prepareRoute: routeFor,
     async start(input) {
       return begin(input, "start");
@@ -909,6 +1066,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const turn = turns.get(handle.turnId);
       if (!turn) return { kind: "not_found" };
       if (turn.result) return { kind: "ended", result: turn.result };
+      reportArrived(turn, message);
       if (!turn.mailbox.some((entry) => entry.nonce === message.nonce)) turn.mailbox.push(message);
       for (const arrived of turn.arrivals) arrived();
       return { kind: "delivered", state: "running" };
@@ -930,4 +1088,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       }));
     }
   };
+  // A foreground child runs here, and the thread Stop, Stop all and other agents' messages reach it like any other.
+  const listedRunner = withForegroundTurnStops(runner);
+  return runner;
 }

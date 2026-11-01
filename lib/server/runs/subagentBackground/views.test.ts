@@ -1,7 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SUBAGENT_LISTING_LIMITS } from "../../../contracts/subagents";
-import { decodeSubagentSummaryResponse, decodeSubagentThreadView } from "../../../contracts/subagentViews";
+import { SUBAGENT_LISTING_LIMITS, type SubagentThreadState } from "../../../contracts/subagents";
+import { decodeSubagentChatThreads, decodeSubagentSummaryResponse, decodeSubagentThreadView } from "../../../contracts/subagentViews";
+import { decodeThreadToolActivity } from "../../../contracts/chats";
+import { summarizeMessageRunToolActivity } from "../../chats/prismaRepository";
 import { toolActivityDescriptors, TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { runEndedToolCallResult } from "../toolLoopPersistence";
 import { createSubagentViews, subagentTurnWorkspaceActivity } from "./views";
@@ -22,7 +24,7 @@ function turn(id: string, state: string, overrides: Record<string, unknown> = {}
 }
 
 const thread = (id: string, turns: readonly unknown[]) => ({
-  anchorRun: { assistantMessageId: "answer-1" }, createdAt: at, id, name: id, turns, typeName: null, updatedAt: at
+  anchorRun: { assistantMessageId: "answer-1" }, createdAt: at, id, name: id, parentThread: null, turns, typeName: null, updatedAt: at
 });
 
 const runningCall = (turnId: string, overrides: Record<string, unknown> = {}) => ({
@@ -177,6 +179,67 @@ describe("subagentTurnWorkspaceActivity", () => {
   it("has nothing to show without Workspace calls", () => {
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [call("c1")], definitions: null, runId: "run-1" })).toBeNull();
     expect(subagentTurnWorkspaceActivity({ active: true, calls: [], definitions, runId: "run-1" })).toBeNull();
+  });
+});
+
+describe("a child in the chat's projections", () => {
+  it("names the child on its parent's own step, which stays that parent's", () => {
+    const activity = summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest: {}, status: "streaming", toolCalls: [{ arguments: {}, completedAt: null,
+      id: "call", ordinal: 0, providerCallId: "provider", result: null, roundIndex: 1, startedAt: at, state: "running", subagentThreadId: "parent", subagentTurnId: "turn-p",
+      subagentTurns: [{ id: "turn-c", mode: "background", thread: { id: "child", name: "left" } }], toolName: "call_subagent" }], userId: "user-1" }, "user-1");
+    expect(activity?.calls[0]).toMatchObject({ subagent: { mode: "background", name: "left", threadId: "child", turnId: "turn-c" }, subagentThreadId: "parent",
+      subagentTurnId: "turn-p" });
+    expect(decodeThreadToolActivity(activity)).toEqual(activity);
+  });
+
+  const parentThread = { id: "parent", name: "parent" };
+  /** A child's turn under a background parent: its parent run answers nothing, and that run's own turn leads to the answer. */
+  const childTurn = (id: string, state: SubagentThreadState, overrides: Record<string, unknown> = {}) => turn(id, state, {
+    parentRun: { assistantMessageId: null, status: "streaming", subagentTurn: { parentRun: { assistantMessageId: "answer-1" } } }, ...overrides });
+
+  it("stays on its parent's branch and names its parent", async () => {
+    const { client } = fakeClient({ threads: [{ ...thread("child", [childTurn("turn-c", "done")]), parentThread }, thread("parent", [turn("turn-p", "done")])] });
+    const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
+    expect(chat!.threads.find((row) => row.name === "child")).toMatchObject({ latestAnswerMessageId: "answer-1", parent: parentThread });
+    expect(chat!.threads.find((row) => row.name === "parent")).toMatchObject({ parent: null });
+    expect(decodeSubagentChatThreads(chat)).toEqual(chat);
+  });
+
+  it("leaves a child off a branch that does not hold its main-agent run's answer", async () => {
+    const off = childTurn("turn-c", "done", { parentRun: { assistantMessageId: null, status: "complete", subagentTurn: { parentRun: { assistantMessageId: "answer-elsewhere" } } } });
+    const { client } = fakeClient({ threads: [{ ...thread("child", [off]), parentThread }] });
+    const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
+    expect(chat!.threads).toEqual([]);
+  });
+
+  it("shows what agents wrote a parent as rows, a question as one, and leaves a child's report to the child's own thread", async () => {
+    const { client, tx } = fakeClient({ threads: [] });
+    const row = thread("parent", [turn("turn-p", "running")]);
+    Object.assign(tx.subagentThread, { findFirst: vi.fn(async () => row) });
+    const at2 = new Date("2026-10-30T10:02:00.000Z");
+    Object.assign(tx, {
+      modelRun: { findMany: vi.fn(async () => [{ errorPayload: null, id: "parent-1", status: "streaming", workspaceRunBinding: null }]) },
+      runFollowup: { findMany: vi.fn(async () => [
+        { authorName: "left", createdAt: at2, deliveredAt: null, modelRunId: "parent-1", origin: "subagent_question", subagentTurnId: "turn-p", text: "Which size?" },
+        { authorName: "left", createdAt: at2, deliveredAt: null, modelRunId: "parent-1", origin: "subagent_callback", subagentTurnId: "turn-p", text: "[Sub-agent callback] {}" },
+        { authorName: "Main agent", createdAt: at2, deliveredAt: null, modelRunId: "parent-1", origin: "main_agent", subagentTurnId: "turn-p", text: "Hurry." }
+      ]) } });
+    const view = await createSubagentViews(client).threadView({ chatId: "chat-1", threadId: "parent", userId: "user-1" });
+    expect(view!.turns[0]!.messages).toEqual([
+      { createdAt: at2.toISOString(), delivery: "accepted", from: "left", question: true, text: "Which size?" },
+      { createdAt: at2.toISOString(), delivery: "accepted", text: "Hurry." }]);
+  });
+
+  it("addresses what a child asks to its parent, by name", async () => {
+    const { client, tx } = fakeClient({ threads: [] });
+    const row = { ...thread("child", [childTurn("turn-c", "running")]), parentThread };
+    Object.assign(tx.subagentThread, { findFirst: vi.fn(async () => row) });
+    Object.assign(tx, { modelRun: { findMany: vi.fn(async () => [{ errorPayload: null, id: "parent-1", status: "streaming", workspaceRunBinding: null }]) },
+      runFollowup: { findMany: vi.fn(async () => []) } });
+    vi.mocked(tx.modelRunToolCall.findMany).mockResolvedValue([{ arguments: { question: "Which size?" }, completedAt: null, id: "ask", modelRunId: "run-turn-c", ordinal: 0,
+      providerCallId: "ask", result: null, roundIndex: 1, startedAt: at, state: "running", subagentTurnId: "turn-c", toolName: "ask_parent" }] as never);
+    const view = await createSubagentViews(client).threadView({ chatId: "chat-1", threadId: "child", userId: "user-1" });
+    expect(view!.turns[0]!.messages).toMatchObject([{ question: true, text: "Which size?", to: "parent" }]);
   });
 });
 

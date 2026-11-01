@@ -19,8 +19,11 @@ export {
   type TurnContextInput
 } from "./harness";
 export {
+  SUBAGENT_CHILD_ROLE_SECTION,
   SUBAGENT_ROLE_SECTION,
+  SUBAGENT_STARTER_ROLE_SECTION,
   subagentAgentMessageText,
+  subagentChildQuestionText,
   subagentFollowupText,
   subagentTurnText,
   subagentsPromptSection,

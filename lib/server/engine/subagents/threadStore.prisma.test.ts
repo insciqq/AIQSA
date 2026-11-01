@@ -54,6 +54,17 @@ const admission = (userId: string, chatId: string, runId: string, parentToolCall
   binding, branchRunIds, chatId, definitionId: null, definitionRevisionId: null, name, parentRunId: runId, parentToolCallId,
   typeName: null, userId });
 
+/** A background sub-agent of `runId`: what starts a child that runs in its run. */
+async function backgroundParent(userId: string, chatId: string, run: Readonly<{ questionId: string; runId: string }>, name = "parent") {
+  const call = await callRow(run.runId, 900);
+  const thread = await prisma.subagentThread.create({ data: { anchorRunId: run.runId, chatId, name, userId } });
+  const parentTurn = await prisma.subagentTurn.create({ data: { chatId, mode: "background", modelId: "fake-qsa", parentRunId: run.runId, parentToolCallId: call,
+    provider: "fake", threadId: thread.id, userId } });
+  const own = await prisma.modelRun.create({ data: { chatId, engine: "native", modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "streaming",
+    subagentThreadId: thread.id, subagentTurnId: parentTurn.id, userId, userMessageId: run.questionId } });
+  return { name, runId: own.id, threadId: thread.id, toolState: { calls: 0 }, turnId: parentTurn.id };
+}
+
 const origin = { model: "fake-qsa", provider: "connection-1" };
 const items = (text: string): TranscriptItem[] => [{ id: randomUUID(), kind: "assistant_text", origin, text }];
 
@@ -204,5 +215,80 @@ describe("sub-agent threads on PostgreSQL", () => {
     await expect(prisma.subagentThread.count({ where: { chatId } })).resolves.toBe(0);
     await expect(prisma.subagentTurn.count({ where: { chatId } })).resolves.toBe(0);
     await expect(prisma.runTranscriptItem.count({ where: { subagentThreadId: admitted.thread.id } })).resolves.toBe(0);
+  });
+
+  describe("a sub-agent's children", () => {
+    async function nested() {
+      const userId = await owner();
+      const { id: chatId } = await chat(userId);
+      const run = await turn(userId, chatId, { status: "streaming" });
+      const parentAgent = await backgroundParent(userId, chatId, run);
+      let ordinal = 0;
+      const child = async (name: string, by = parentAgent) => {
+        ordinal += 1;
+        const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: by.runId, ordinal, providerCallId: `child-${ordinal}`, roundIndex: 1,
+          startedAt: new Date(), state: "running", subagentThreadId: by.threadId, subagentTurnId: by.turnId, toolName: "call_subagent" } });
+        return store.admitForeground({ ...admission(userId, chatId, run.runId, call.id, name, [run.runId]), parentAgent: by });
+      };
+      return { chatId, child, parentAgent, run, userId };
+    }
+
+    it("runs a foreground child in the run that holds the call, on the branch of the main-agent run behind it", async () => {
+      const { chatId, child, parentAgent, run, userId } = await nested();
+      const admitted = await child("one");
+      if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+      expect(admitted.turn).toMatchObject({ branchRunId: run.runId, parentRunId: parentAgent.runId });
+      expect(admitted.thread).toMatchObject({ anchorRunId: run.runId, parentThreadId: parentAgent.threadId });
+      await expect(store.find({ branchRunIds: [run.runId], chatId, name: "one", userId })).resolves.toMatchObject({
+        active: { branchRunId: run.runId, parentRunId: parentAgent.runId }, latest: { id: admitted.turn.id }, thread: { parentThreadId: parentAgent.threadId } });
+      await expect(store.threadRunIds({ chatId, parentRunIds: [run.runId], threadId: admitted.thread.id, userId })).resolves.toEqual([parentAgent.runId]);
+      await expect(store.activeChildren({ chatId, threadId: parentAgent.threadId, userId })).resolves.toBe(1);
+      // Its browser handoff keeps its parent waiting; its question to that parent does not, since nothing else would move.
+      await store.setActiveState({ chatId, state: "waiting", turnId: admitted.turn.id, userId });
+      await expect(store.activeChildren({ chatId, threadId: parentAgent.threadId, userId })).resolves.toBe(1);
+      await store.setActiveState({ chatId, reason: "waiting_for_answer", state: "waiting", turnId: admitted.turn.id, userId });
+      await expect(store.activeChildren({ chatId, threadId: parentAgent.threadId, userId })).resolves.toBe(0);
+    });
+
+    it("refuses a third at once, a grandchild and another agent's name, and writes nothing", async () => {
+      const { chatId, child, parentAgent, run, userId } = await nested();
+      const one = await child("one");
+      await child("two");
+      await expect(child("three")).resolves.toEqual({ code: SUBAGENT_ERROR_CODES.childLimit, kind: "refused" });
+      if (one.kind !== "admitted") throw new Error("child_not_admitted");
+      await expect(child("grandchild", { ...parentAgent, name: "one", threadId: one.thread.id, turnId: one.turn.id }))
+        .resolves.toEqual({ code: SUBAGENT_ERROR_CODES.depthLimit, kind: "refused" });
+      await expect(prisma.subagentThread.count({ where: { chatId, name: { in: ["three", "grandchild"] } } })).resolves.toBe(0);
+      // The main agent's own call on a child's name.
+      const call = await callRow(run.runId, 901);
+      await expect(store.admitForeground(admission(userId, chatId, run.runId, call, "one", [run.runId])))
+        .resolves.toEqual({ code: SUBAGENT_ERROR_CODES.notOwnChild, kind: "refused" });
+    });
+
+    it("ends a foreground child orphaned by its background parent's run, keeps its result for the parent, and goes with it", async () => {
+      const { chatId, child, parentAgent, userId } = await nested();
+      const admitted = await child("one");
+      if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+      await prisma.modelRun.update({ data: { status: "cancelled" }, where: { id: parentAgent.runId } });
+      await expect(store.endOrphanedTurns({ chatId, userId })).resolves.toBe(1);
+      await expect(store.activeChildren({ chatId, threadId: parentAgent.threadId, userId })).resolves.toBe(0);
+      await expect(store.childResults({ chatId, parentTurnId: parentAgent.turnId, userId })).resolves.toEqual([expect.objectContaining({ reason: "restart", state: "interrupted" })]);
+      await expect(store.childResults({ chatId, parentTurnId: "another-turn", userId })).resolves.toEqual([]);
+      await prisma.subagentThread.delete({ where: { id: parentAgent.threadId } });
+      await expect(prisma.subagentThread.count({ where: { id: admitted.thread.id } })).resolves.toBe(0);
+    });
+
+    it("finds a background child's own run under the main-agent run, for the fence and the thread's history", async () => {
+      const { chatId, parentAgent, run, userId } = await nested();
+      const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: parentAgent.runId, ordinal: 50, providerCallId: "bg-child", roundIndex: 1,
+        state: "running", subagentThreadId: parentAgent.threadId, subagentTurnId: parentAgent.turnId, toolName: "call_subagent" } });
+      const thread = await prisma.subagentThread.create({ data: { anchorRunId: run.runId, chatId, name: "bg-child", parentThreadId: parentAgent.threadId, userId } });
+      const child = await prisma.subagentTurn.create({ data: { chatId, mode: "background", modelId: "fake-qsa", parentRunId: parentAgent.runId, parentToolCallId: call.id,
+        provider: "fake", threadId: thread.id, userId } });
+      const own = await prisma.modelRun.create({ data: { chatId, engine: "native", modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "streaming",
+        subagentThreadId: thread.id, subagentTurnId: child.id, userId, userMessageId: run.questionId } });
+      await expect(store.backgroundRunIds({ chatId, parentRunIds: [run.runId], userId })).resolves.toEqual([parentAgent.runId, own.id]);
+      await expect(store.threadRunIds({ chatId, parentRunIds: [run.runId], threadId: thread.id, userId })).resolves.toEqual([own.id]);
+    });
   });
 });

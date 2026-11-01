@@ -7,7 +7,7 @@ import {
   type SubagentThreadState,
   type SubagentTurnMode
 } from "@/lib/contracts/subagents";
-import type { SubagentCallbackClaim, SubagentChatScope } from "@/lib/server/subagents/ports";
+import type { SubagentCallbackClaim, SubagentChatScope, SubagentParentAgent } from "@/lib/server/subagents/ports";
 import {
   normalizedEndResult,
   type BackgroundOrphan,
@@ -34,12 +34,14 @@ export type MemoryTurn = {
   callbackRunId: string | null;
   chatId: string;
   endedAt: number | null;
-  mailbox: Array<{ delivered: boolean; from?: string; nonce: string; origin?: "subagent_message" | "user"; text: string }>;
+  mailbox: Array<{ delivered: boolean; from?: string; nonce: string; origin?: "subagent_callback" | "subagent_message" | "subagent_question" | "user"; text: string }>;
   mode: SubagentTurnMode;
   modelId: string;
   name: string;
   parentAnswerId: string;
   parentRunId: string;
+  /** The sub-agent that started it; absent: the main agent. */
+  parentThreadId?: string;
   /** While it waits for an answer: what its `ask_parent` call asks. */
   question?: string;
   /** That call's id, when a test tells two questions of a turn apart. */
@@ -78,7 +80,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
 
   private record(turn: MemoryTurn): SubagentTurnRecord {
     return { chatId: turn.chatId, mode: turn.mode, model: { effort: null, id: turn.modelId }, name: turn.name,
-      parentAnswerId: turn.parentAnswerId, parentRunId: turn.parentRunId, result: turn.result, runId: turn.runId, state: turn.state,
+      parentAnswerId: turn.parentAnswerId, parentRunId: turn.parentRunId, parentThreadId: turn.parentThreadId ?? null, result: turn.result, runId: turn.runId, state: turn.state,
       threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId };
   }
 
@@ -92,8 +94,8 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     return turn;
   }
 
-  async callerAvailable(input: SubagentChatScope & Readonly<{ parentRunId: string }>): Promise<boolean> {
-    return this.callers.has(input.parentRunId);
+  async callerAvailable(input: SubagentChatScope & Readonly<{ parentAgent?: SubagentParentAgent; parentRunId: string }>): Promise<boolean> {
+    return this.callers.has(input.parentAgent?.runId ?? input.parentRunId);
   }
 
   async admit(input: SubagentAdmissionInput): Promise<SubagentAdmission> {
@@ -101,10 +103,13 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     const active = this.turns.filter((turn) => turn.chatId === input.chatId && isActiveSubagentState(turn.state));
     if (active.some((turn) => turn.threadId === input.threadId)) return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" };
     if (active.length >= SUBAGENT_LIMITS.runningPerChat) return { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" };
+    if (input.parentAgent && active.filter((turn) => turn.parentThreadId === input.parentAgent?.threadId).length >= SUBAGENT_LIMITS.childrenPerSubagent) {
+      return { code: SUBAGENT_ERROR_CODES.childLimit, kind: "refused" };
+    }
     const turn: MemoryTurn = { callbackRunId: null, chatId: input.chatId, endedAt: null, mailbox: [], mode: "background",
       modelId: input.binding.modelId, name: this.threads.get(input.threadId) ?? input.threadId.replace(/^thread-/u, ""), parentAnswerId: "answer-1",
-      parentRunId: input.parentRunId, result: null, runActive: true, runId: input.runId, state: "running",
-      threadId: input.threadId, turnId: input.turnId, userId: input.userId };
+      parentRunId: input.parentAgent?.runId ?? input.parentRunId, ...(input.parentAgent ? { parentThreadId: input.parentAgent.threadId } : {}), result: null,
+      runActive: true, runId: input.runId, state: "running", threadId: input.threadId, turnId: input.turnId, userId: input.userId };
     this.turns.push(turn);
     // A test may hold the admission after it is visible, as a committed transaction would be (`admitGate`).
     await this.admitGate?.();
@@ -131,8 +136,9 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     return turn ? this.record(turn) : null;
   }
 
-  async activeTurns(input: SubagentChatScope & Readonly<{ threadId?: string; underMessageId?: string }>): Promise<readonly SubagentTurnRecord[]> {
+  async activeTurns(input: SubagentChatScope & Readonly<{ parentThreadId?: string; threadId?: string; underMessageId?: string }>): Promise<readonly SubagentTurnRecord[]> {
     return this.turns.filter((turn) => turn.chatId === input.chatId && isActiveSubagentState(turn.state) &&
+      (!input.parentThreadId || turn.parentThreadId === input.parentThreadId) &&
       (!input.threadId || turn.threadId === input.threadId) && (!input.underMessageId || turn.parentAnswerId === input.underMessageId))
       .map((turn) => this.record(turn));
   }
@@ -146,7 +152,9 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     if (!turn?.runActive && turn?.mode !== "foreground") return "closed";
     if (turn.mailbox.some((entry) => entry.nonce === input.nonce)) return "exists";
     const sent = turn.mailbox.filter((entry) => (entry.origin ?? "main_agent") === input.origin).length;
-    if (sent >= (input.origin !== "subagent_message" ? SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun : SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn)) return "full";
+    const bound = input.origin === "main_agent" || input.origin === "user" ? SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun
+      : input.origin === "subagent_message" ? SUBAGENT_FOLLOWUP_LIMITS.agentMessagesPerTurn : null;
+    if (bound !== null && sent >= bound) return "full";
     turn.mailbox.push({ delivered: false, nonce: input.nonce, ...(input.origin === "main_agent" ? {} : { from: input.authorName, origin: input.origin }),
       text: input.text });
     return "inserted";
@@ -177,9 +185,9 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
   async owedCallbacks(scope: SubagentChatScope): Promise<OwedCallbacks | null> {
     if (this.goneChats.has(scope.chatId)) return null;
     const owed = this.turns.filter((turn) => turn.chatId === scope.chatId && turn.mode === "background" && turn.endedAt !== null &&
-      turn.callbackRunId === null).sort((left, right) => left.endedAt! - right.endedAt!);
+      turn.callbackRunId === null && !turn.parentThreadId).sort((left, right) => left.endedAt! - right.endedAt!);
     const asking = this.turns.filter((turn) => turn.chatId === scope.chatId && turn.mode === "background" && turn.state === "waiting" &&
-      turn.callbackRunId === null && turn.question !== undefined);
+      turn.callbackRunId === null && turn.question !== undefined && !turn.parentThreadId);
     const main = this.mainRuns.find((run) => run.chatId === scope.chatId && run.status === "streaming");
     const moved = new Set(this.movedMessages.map((message) => message.followupId));
     return {

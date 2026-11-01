@@ -130,9 +130,11 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
           SELECT "permanentDeletionAt" FROM "Chat" WHERE "id" = ${scope.chatId} AND "userId" = ${scope.userId} FOR UPDATE
         `);
         if (!chat || chat.permanentDeletionAt !== null) return false;
-        // A background sub-agent run answers nothing: it is matched by the thread's turn it executes.
+        // A background sub-agent run answers nothing: it is matched by the thread's turn it executes, or a foreground child's it hosts.
         const owner = scope.assistantMessageId === SUBAGENT_RUN_NO_ANSWER
-          ? input.thread ? Prisma.sql`"assistantMessageId" IS NULL AND "subagentTurnId" = ${input.thread.turnId}` : null
+          ? input.thread ? Prisma.sql`"assistantMessageId" IS NULL AND ("subagentTurnId" = ${input.thread.turnId} OR EXISTS (
+            SELECT 1 FROM "SubagentTurn" child WHERE child."id" = ${input.thread.turnId} AND child."mode" = 'foreground'
+              AND child."parentRunId" = "ModelRun"."id"))` : null
           : Prisma.sql`"assistantMessageId" = ${scope.assistantMessageId}`;
         if (!owner) return false;
         const [run] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`

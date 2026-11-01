@@ -279,16 +279,15 @@ export function workspaceActiveRunExistsSql(session: Prisma.Sql): Prisma.Sql {
 }
 
 /**
- * The agent ids whose guest processes belong to a run: a sub-agent run's thread; for a main-agent run `main` and the
- * threads its foreground sub-agent turns ran, except a thread another attached run now runs (its processes are
- * that run's to stop).
+ * The agent ids whose guest processes belong to a run: its own agent (`main`, or a background sub-agent run's thread)
+ * and the threads its foreground sub-agent turns ran, a background sub-agent's foreground children included, except a
+ * thread another attached run now runs (its processes are that run's to stop).
  */
 export async function workspaceRunAgentIds(
   tx: Prisma.TransactionClient | PrismaClient, runId: string
 ): Promise<readonly string[]> {
   const run = await tx.modelRun.findUnique({ select: { chatId: true, subagentThreadId: true }, where: { id: runId } });
   if (!run) return [];
-  if (run.subagentThreadId) return [run.subagentThreadId];
   const turns = await tx.subagentTurn.findMany({
     distinct: ["threadId"], select: { threadId: true }, where: { mode: "foreground", parentRunId: runId }
   });
@@ -298,7 +297,7 @@ export async function workspaceRunAgentIds(
     where: { chatId: run.chatId, id: { not: runId }, subagentThreadId: { in: threads }, workspaceAttachment: { isNot: null } }
   });
   const taken = new Set(elsewhere.map((entry) => entry.subagentThreadId));
-  return [WORKSPACE_AGENT_PROTOCOL.MAIN_AGENT_ID, ...threads.filter((thread) => !taken.has(thread))];
+  return [run.subagentThreadId ?? WORKSPACE_AGENT_PROTOCOL.MAIN_AGENT_ID, ...threads.filter((thread) => !taken.has(thread))];
 }
 
 /**
