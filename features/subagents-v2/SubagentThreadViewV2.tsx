@@ -70,16 +70,16 @@ function turnWorkDurationMs(turn: SubagentTurnView): number | null {
   return Number.isFinite(duration) && duration >= 0 ? duration : null;
 }
 
-function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boolean; turn: SubagentTurnView }>) {
+function TurnV2({ chatId, latest, parentName, turn }: Readonly<{ chatId: string; latest: boolean; parentName: string | null; turn: SubagentTurnView }>) {
   const active = isActiveSubagentState(turn.state);
-  const state = subagentStatePresentation(turn.state, turn.outcome, turn.reason);
-  const reason = subagentReasonText(turn.reason);
+  const state = subagentStatePresentation(turn.state, turn.outcome, turn.reason, parentName);
+  const reason = subagentReasonText(turn.reason, parentName);
   const liveLabel = !active ? null : turn.state === "waiting" ? state.label
     : workspaceActiveLabelV2(turn.workspaceActivity) ?? runningStepLabel(turn.toolActivity) ?? runWaitingPhraseV2(turn.id);
   return (
     <article className="v2-subagent-turn" data-state={turn.state} data-turn-id={turn.id}>
       <div className="v2-subagent-brief">
-        <div className="v2-subagent-brief-label">Brief from the main agent</div>
+        <div className="v2-subagent-brief-label">Brief from {parentName ?? "the main agent"}</div>
         <p>{turn.brief}</p>
       </div>
       {turn.messages.map((message, index) => message.user ? (
@@ -215,7 +215,8 @@ export function SubagentThreadViewV2({
   const view = entry?.view ?? null;
   const unavailable = entry?.status === "unavailable";
   const thread = unavailable ? null : newer(view?.thread ?? null, listed);
-  const state = thread ? subagentStatePresentation(thread.state, thread.outcome, thread.reason) : null;
+  const parentName = thread?.parent?.name ?? null;
+  const state = thread ? subagentStatePresentation(thread.state, thread.outcome, thread.reason, parentName) : null;
   const active = thread ? isActiveSubagentState(thread.state) : false;
   const chatHref = formatChatRoutePath({ chatId: target.chatId });
 
@@ -270,7 +271,7 @@ export function SubagentThreadViewV2({
             ) : null}
             {view.truncated ? <p className="v2-subagent-thread-note">Earlier turns are not shown.</p> : null}
             {view.turns.map((turn, index) => (
-              <TurnV2 chatId={target.chatId} key={turn.id} latest={index === view.turns.length - 1} turn={turn} />
+              <TurnV2 chatId={target.chatId} key={turn.id} latest={index === view.turns.length - 1} parentName={parentName} turn={turn} />
             ))}
           </>
         )}
@@ -278,11 +279,11 @@ export function SubagentThreadViewV2({
       {view && thread ? <footer className="v2-subagent-thread-footer">
         {active ? <>
           {thread.state === "waiting" && thread.reason === "waiting_for_answer" ? <p className="v2-subagent-thread-note">
-            Waiting for the main agent’s answer. Your message will be read at the next step; it does not end this wait.
+            Waiting for {parentName ?? "the main agent"}’s answer. Your message will be read at the next step; it does not end this wait.
           </p> : null}
           {view.turns.at(-1) ? <ThreadComposer key={view.turns.at(-1)!.id} target={target}
             turnId={view.turns.at(-1)!.id} sendWithEnter={sendWithEnter} onSent={() => setSent((value) => value + 1)} /> : null}
-        </> : <p className="v2-subagent-thread-note">This sub-agent has finished. Write in the chat and ask the main agent to continue {thread.name} by name.</p>}
+        </> : <p className="v2-subagent-thread-note">This sub-agent has finished. Write in the chat and ask the main agent to continue {parentName ?? thread.name} by name.</p>}
       </footer> : null}
     </section>
   );

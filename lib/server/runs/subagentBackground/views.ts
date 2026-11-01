@@ -31,9 +31,10 @@ import {
 } from "../../../contracts/subagentViews";
 import { decodeThreadWorkspaceActivityEntry, type ThreadWorkspaceActivity, type ThreadWorkspaceActivityEntry } from "../../../contracts/workspace";
 import type { WorkspaceMcpToolName } from "../../../domain/workspace";
-import { summarizeMessageRunToolActivity } from "../../chats/prismaRepository";
+import { summarizeMessageRunToolActivity, toolCallSubagentSelect } from "../../chats/prismaRepository";
 import { TOOL_ACTIVITY_REQUEST_KEYS } from "../../tools/activityDescriptors";
 import { branchPathMessageIds } from "../../toolObservations/repository";
+import { TURN_ANSWER_SELECT, mailboxWriter, turnAnswerMessageId } from "../../subagents/nesting";
 import { foldWorkspaceActivityEntries, projectWorkspaceActivity } from "../../workspace/activityProjection";
 import { activeModelRunStatuses } from "../prismaRepositoryShared";
 import { isRunEndedToolCallResult } from "../toolLoopPersistence";
@@ -52,7 +53,7 @@ const turnSelect = {
   endedAt: true, id: true, mode: true, modelId: true, outcome: true, parentRunId: true, parentToolCallId: true,
   providerModelId: true, reasonCode: true, reasoningEffort: true, result: true, startedAt: true, state: true, updatedAt: true,
   executionRun: { select: { id: true, status: true } },
-  parentRun: { select: { assistantMessageId: true, status: true } }
+  parentRun: { select: { ...TURN_ANSWER_SELECT, status: true } }
 } satisfies Prisma.SubagentTurnSelect;
 
 type TurnRow = Prisma.SubagentTurnGetPayload<{ select: typeof turnSelect }>;
@@ -60,11 +61,13 @@ type TurnRow = Prisma.SubagentTurnGetPayload<{ select: typeof turnSelect }>;
 type ThreadRow = Readonly<{
   createdAt: Date; id: string; name: string; typeName: string | null; updatedAt: Date;
   anchorRun: Readonly<{ assistantMessageId: string | null }>;
+  parentThread: Readonly<{ id: string; name: string }> | null;
   turns: readonly TurnRow[];
 }>;
 
 const threadSelect = {
-  anchorRun: { select: { assistantMessageId: true } }, createdAt: true, id: true, name: true, typeName: true, updatedAt: true,
+  anchorRun: { select: { assistantMessageId: true } }, createdAt: true, id: true, name: true,
+  parentThread: { select: { id: true, name: true } }, typeName: true, updatedAt: true,
   turns: { orderBy: [{ startedAt: "asc" }, { id: "asc" }], select: turnSelect }
 } satisfies Prisma.SubagentThreadSelect;
 
@@ -72,7 +75,7 @@ const onPath = (path: ReadonlySet<string>, messageId: string | null) => messageI
 
 /** Turns of a thread on the branch, oldest first; the last is the thread's state there. */
 function branchTurns(thread: ThreadRow, path: ReadonlySet<string>): readonly TurnRow[] {
-  return thread.turns.filter((turn) => onPath(path, turn.parentRun.assistantMessageId));
+  return thread.turns.filter((turn) => onPath(path, turnAnswerMessageId(turn.parentRun)));
 }
 
 function outcomeOf(state: SubagentThreadState, outcome: string | null): SubagentOutcome | null {
@@ -192,11 +195,12 @@ function summarize(thread: ThreadRow, turns: readonly TurnRow[], facts: SummaryF
     currentStep: facts.steps.get(latest.id) ?? null,
     endedAt: isActiveSubagentState(state) ? null : (latest.endedAt ?? latest.updatedAt).toISOString(),
     id: thread.id,
-    latestAnswerMessageId: latest.parentRun.assistantMessageId,
+    latestAnswerMessageId: turnAnswerMessageId(latest.parentRun),
     mode: latest.mode,
     model: turnModel(latest, facts.modelNames),
     name: thread.name,
     outcome: outcomeOf(state, latest.outcome),
+    parent: thread.parentThread,
     reason: isSubagentCode(latest.reasonCode) ? latest.reasonCode : null,
     state,
     turnCount: turns.length,
@@ -209,13 +213,14 @@ function summarize(thread: ThreadRow, turns: readonly TurnRow[], facts: SummaryF
  * What a turn wrote to other agents, from its own calls: each is on record there whatever became of it, so a sent message
  * needs no second row. A refused call delivered nothing and shows as the failed step it was.
  */
-function sentMessages(calls: readonly Readonly<{ arguments: unknown; startedAt: Date | null; state: string; toolName: string }>[]): SubagentTurnMessage[] {
+function sentMessages(calls: readonly Readonly<{ arguments: unknown; startedAt: Date | null; state: string; toolName: string }>[],
+  parentName: string): SubagentTurnMessage[] {
   return calls.flatMap((call): SubagentTurnMessage[] => {
     if (call.state === "error" || !call.startedAt || typeof call.arguments !== "object" || call.arguments === null) return [];
     const args = call.arguments as { message?: unknown; question?: unknown; to?: unknown };
     const createdAt = call.startedAt.toISOString();
     if (call.toolName === ASK_PARENT_TOOL_NAME && typeof args.question === "string" && args.question.trim()) {
-      return [{ createdAt, delivery: "accepted", question: true, text: boundedText(args.question, SUBAGENT_LIMITS.messageCharacters), to: MAIN_AGENT_NAME }];
+      return [{ createdAt, delivery: "accepted", question: true, text: boundedText(args.question, SUBAGENT_LIMITS.messageCharacters), to: parentName }];
     }
     if (call.toolName !== SEND_AGENT_MESSAGE_TOOL_NAME || typeof args.message !== "string" || !args.message.trim() || typeof args.to !== "string") return [];
     const to = args.to.trim().toLowerCase();
@@ -406,8 +411,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
       entries.push({
         ...(brief.text ? { brief: brief.text } : {}), ...(brief.cut ? { briefTruncated: true as const } : {}),
         mode: latest.mode, name: thread.name, ...(outcome ? { outcome } : {}),
-        // The main agent starts every thread until sub-agents have children of their own.
-        parent: MAIN_AGENT_NAME,
+        parent: thread.parentThread?.name ?? MAIN_AGENT_NAME,
         ...(isSubagentCode(latest.reasonCode) ? { reason: latest.reasonCode } : {}),
         ...(report.text ? { report: report.text } : {}), ...(report.cut ? { reportTruncated: true as const } : {}),
         ...(ended?.resultHandle ? { resultHandle: ended.resultHandle } : {}),
@@ -459,7 +463,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
           tx.modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }], select: {
             arguments: true, completedAt: true, id: true, mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
             modelRunId: true, ordinal: true, providerCallId: true, result: true, roundIndex: true, startedAt: true, state: true,
-            subagentTurnId: true, toolName: true
+            ...toolCallSubagentSelect, toolName: true
           }, where: { modelRunId: { in: hostRunIds }, subagentTurnId: { in: shown.map((turn) => turn.id) } } }),
           tx.runFollowup.findMany({ orderBy: { ordinal: "asc" }, select: { authorName: true, createdAt: true, deliveredAt: true, modelRunId: true,
             origin: true, subagentTurnId: true, text: true }, where: { OR: [
@@ -490,14 +494,19 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
             ? result.files.filter((path): path is string => typeof path === "string" && path.trim().length > 0 &&
               path.length <= SUBAGENT_LIMITS.filePathCharacters).slice(0, SUBAGENT_LIMITS.files) : [];
           const turnCalls = calls.filter((entry) => entry.modelRunId === hostRunId && entry.subagentTurnId === turn.id);
-          const received = mailbox.filter((entry) => entry.subagentTurnId ? entry.subagentTurnId === turn.id : entry.modelRunId === turn.executionRun?.id)
+          // A child's report is its own thread's reply, which the tree links; here it would repeat as server-written JSON.
+          const received = mailbox.filter((entry) => entry.origin !== "subagent_callback" &&
+            (entry.subagentTurnId ? entry.subagentTurnId === turn.id : entry.modelRunId === turn.executionRun?.id))
             .flatMap((entry): SubagentTurnMessage[] => {
               const text = boundedText(entry.text, SUBAGENT_LIMITS.messageCharacters);
+              const from = mailboxWriter(entry.authorName);
               return text ? [{ createdAt: entry.createdAt.toISOString(),
                 delivery: entry.deliveredAt ? "delivered" : isActiveSubagentState(turn.state) ? "accepted" : "undelivered",
-                ...(entry.origin === "user" ? { user: true as const } : entry.origin === "subagent_message" ? { from: entry.authorName } : {}), text }] : [];
+                ...(entry.origin === "user" ? { user: true as const } : from ? { from } : {}),
+                ...(entry.origin === "subagent_question" ? { question: true as const } : {}), text }] : [];
             });
-          const messages = [...received, ...sentMessages(turnCalls)].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+          const messages = [...received, ...sentMessages(turnCalls, visible.thread.parentThread?.name ?? MAIN_AGENT_NAME)]
+            .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
             .slice(-SUBAGENT_VIEW_LIMITS.messagesPerTurn);
           const toolActivity = host && normalizedRequest !== undefined ? summarizeMessageRunToolActivity({
             errorPayload: host.errorPayload, normalizedRequest, status: host.status, toolCalls: turnCalls, userId: input.userId
@@ -511,7 +520,7 @@ export function createSubagentViews(client: PrismaClient): SubagentViews {
             mode: turn.mode,
             model: turnModel(turn, modelNames),
             outcome: outcomeOf(turn.state, turn.outcome),
-            parentMessageId: turn.parentRun.assistantMessageId!,
+            parentMessageId: turnAnswerMessageId(turn.parentRun)!,
             reason: isSubagentCode(turn.reasonCode) ? turn.reasonCode : null,
             report: result && typeof result.report === "string" ? result.report : null,
             startedAt: turn.startedAt.toISOString(),

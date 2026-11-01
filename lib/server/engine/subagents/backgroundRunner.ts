@@ -17,8 +17,9 @@ import type {
  * (by reference, read from `parentRunId`), with the turn's own run id,
  * signal, deadline, usage ledger and live-browser membership. The host
  * outlives its parent run, so a background turn keeps running after the
- * main agent answered; a restart ends it interrupted (its recovery), never
- * replayed. Without a host for its parent (a parent of another process, or
+ * main agent answered, and it stays for as long as one runs, because a turn may
+ * start a child of its own on it; a restart ends it interrupted (its recovery),
+ * never replayed. Without a host for its parent (a parent of another process, or
  * one gone longer than the grace below) the turn fails visibly.
  */
 
@@ -29,8 +30,11 @@ export type SubagentBackgroundHost = (turn: SubagentTurnInput) => SubagentRunner
 export const SUBAGENT_BACKGROUND_HOST_GRACE_MS = 10 * 60_000;
 const ENDED_TURN_KEPT_MS = 60_000;
 
-/** A host and whether a background start of its run has been asked for (only such a host is kept after its run). */
-type HostEntry = { host: SubagentBackgroundHost; used: boolean };
+/**
+ * A host, whether a background start of its run has been asked for (only such a host is kept after its run), how many
+ * of its turns run, and whether its grace passed while one did.
+ */
+type HostEntry = { expired: boolean; host: SubagentBackgroundHost; running: number; used: boolean };
 
 /** A foreground turn running in a main-agent run of this process, and how to reach it there. */
 type ForegroundEntry = Readonly<{
@@ -67,12 +71,14 @@ export function registerSubagentBackgroundHost(parentRunId: string, host: Subage
   const pending = state.timers.get(parentRunId);
   if (pending) clearTimeout(pending);
   state.timers.delete(parentRunId);
-  const entry: HostEntry = { host, used: false };
+  const entry: HostEntry = { expired: false, host, running: 0, used: false };
   state.hosts.set(parentRunId, entry);
   let released = false;
   const drop = () => {
     state.timers.delete(parentRunId);
-    if (state.hosts.get(parentRunId) === entry) state.hosts.delete(parentRunId);
+    // A turn still running may start a child here; the last to end drops it (`begin`).
+    if (entry.running > 0) entry.expired = true;
+    else if (state.hosts.get(parentRunId) === entry) state.hosts.delete(parentRunId);
   };
   return {
     release() {
@@ -132,11 +138,24 @@ async function begin(input: SubagentTurnInput, kind: "continue" | "start"): Prom
   const entry = state.hosts.get(input.parentRunId);
   if (!entry) throw new Error("subagent_parent_unavailable");
   entry.used = true;
-  const runner = entry.host(input);
-  const handle = kind === "start" ? await runner.start(input) : await runner.continue(input);
+  entry.running += 1;
+  const left = () => {
+    entry.running -= 1;
+    if (entry.running === 0 && entry.expired && state.hosts.get(input.parentRunId) === entry) state.hosts.delete(input.parentRunId);
+  };
+  let runner: SubagentRunner;
+  let handle: SubagentTurnHandle;
+  try {
+    runner = entry.host(input);
+    handle = kind === "start" ? await runner.start(input) : await runner.continue(input);
+  } catch (error) {
+    left();
+    throw error;
+  }
   state.turns.set(handle.turnId, runner);
   // The turn's runner is kept a while after it ended (the control's wait and a late stop read it), then dropped.
   void runner.wait(handle).catch(() => undefined).finally(() => {
+    left();
     const timer = setTimeout(() => {
       if (state.turns.get(handle.turnId) === runner) state.turns.delete(handle.turnId);
     }, ENDED_TURN_KEPT_MS);

@@ -10,6 +10,7 @@ import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } fr
 import type { ProviderAdapter, ProviderModelCapabilities, ProviderRunRequest } from "../../providers/types";
 import { json } from "../../runs/prismaRepositoryShared";
 import type { RunModelConfiguration } from "../../runs/runRepositoryContract";
+import { turnsOfMainRuns } from "../../subagents/nesting";
 import { supportsWorkspaceImageView } from "../../workspace/directImageView";
 import type { SubagentModelEntry } from "./modelCatalog";
 
@@ -176,10 +177,10 @@ export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: Catal
       try {
         const bindingKey = subagentBindingKey(entry);
         const background = hostRunId !== undefined && hostRunId !== runId;
-        // A background turn's own active run, started by this parent's call; the parent itself may have answered.
+        // A background turn's own active run, started by this parent's call or a sub-agent's under it; the parent itself may have answered.
         const owned = background
           ? await input.prisma.modelRun.findFirst({ select: { id: true }, where: { chatId, id: hostRunId, status: active,
-            subagentTurn: { is: { mode: "background", parentRunId: runId } }, userId } })
+            subagentTurn: { is: { mode: "background", ...turnsOfMainRuns([runId]) } }, userId } })
           : await input.prisma.modelRun.findFirst({ select: { id: true }, where: { id: runId, status: active, userId } });
         if (!owned) return unavailable;
         const stored = () => input.prisma.providerRunBinding.findUnique({ select: { executionSnapshot: true },

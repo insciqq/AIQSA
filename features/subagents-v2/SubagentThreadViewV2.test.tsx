@@ -83,6 +83,24 @@ describe("sub-agent thread view", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
+  it("names a child's parent where a sub-agent's thread names the main agent", async () => {
+    const asking = subagentThread("thread-researcher", "waiting", { parent: { id: "thread-research", name: "research" }, reason: "waiting_for_answer" });
+    const turn = subagentTurn("turn-1", "waiting", { reason: "waiting_for_answer" });
+    vi.stubGlobal("fetch", subagentFetch([{ path: threadPath, respond: () => jsonResponse(subagentView("chat-a", asking, [turn])) }]).fetch);
+    renderView();
+    expect(await screen.findByText("Brief from research")).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting for research").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Brief from the main agent")).toBeNull();
+    expect(screen.getByText(/Waiting for research’s answer/u)).toBeInTheDocument();
+  });
+
+  it("sends a finished child's follow-up through its parent, which alone continues it", async () => {
+    const ended = subagentThread("thread-researcher", "done", { parent: { id: "thread-research", name: "research" } });
+    vi.stubGlobal("fetch", subagentFetch([{ path: threadPath, respond: () => jsonResponse(subagentView("chat-a", ended)) }]).fetch);
+    renderView();
+    expect(await screen.findByText(/ask the main agent to continue research by name/u)).toBeInTheDocument();
+  });
+
   it("goes back to the chat from its back link", async () => {
     vi.stubGlobal("fetch", subagentFetch([{ path: threadPath, respond: () =>
       jsonResponse(subagentView("chat-a", subagentThread("thread-researcher", "done"))) }]).fetch);

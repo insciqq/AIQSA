@@ -30,6 +30,8 @@ type ThreadScript = {
   messages?: SubagentTurnView["messages"];
   mode?: "background" | "foreground";
   name: string;
+  /** The sub-agent that started it; absent: the main agent. */
+  parent?: SubagentThreadSummary["parent"];
   reason?: string;
   state: SubagentThreadState;
   step?: SubagentCurrentStep;
@@ -48,7 +50,7 @@ function threadSummary(id: string, script: ThreadScript): SubagentThreadSummary 
   return {
     createdAt: timestamp, currentStep: active ? script.step ?? null : null, endedAt: active ? null : script.updatedAt, id,
     latestAnswerMessageId: script.answer ?? "answer-1", mode: script.mode ?? "background", model: fakeModel, name: script.name,
-    outcome: script.state === "done" ? "done" : null, reason: script.state === "stopped" ? "user_stop" : script.reason ?? null,
+    outcome: script.state === "done" ? "done" : null, parent: script.parent ?? null, reason: script.state === "stopped" ? "user_stop" : script.reason ?? null,
     state: script.state, turnCount: 1, type: null, updatedAt: script.updatedAt
   };
 }
@@ -343,7 +345,41 @@ test.describe("each sub-agent state has one place · all sizes and themes", () =
   });
 });
 
+/** A sub-agent with two children, one of them long-named and waiting for it, and a sub-agent of the main agent's beside them. */
+const lead = { id: "thread-lead", name: "lead" };
+const family: readonly (readonly [string, ThreadScript])[] = [
+  ["thread-lead", script("lead", "running", { step: searching })],
+  ["thread-helper", script("helper", "running", { parent: lead, step: reading })],
+  ["thread-long-child", script(longName, "waiting", { parent: lead, reason: "waiting_for_answer" })],
+  ["thread-other", script("other", "done", { updatedAt: "2026-10-30T10:00:30.000Z" })]
+];
+
 test.describe("sub-agents · desktop and tablet", () => {
+  test("a child nests under the sub-agent that started it, and its thread names that parent", async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await installChat(page, { wakeUp: false });
+    await installSubagentRoutes(page, family);
+    await signInWithLocalToken(page, `/c/${chatId}`);
+    const list = await navigation(page);
+    const parent = list.getByRole("treeitem", { name: "lead, Running" });
+    const child = list.getByRole("treeitem", { name: "helper, Running" });
+    const waiting = list.getByRole("treeitem", { name: `${longName}, Waiting for lead` });
+    await expect(child).toBeVisible();
+    await expect(waiting).toBeVisible();
+    await expect(child).toHaveAttribute("aria-level", String(Number(await parent.getAttribute("aria-level")) + 1));
+    const [parentBox, childBox] = [await parent.boundingBox(), await child.boundingBox()];
+    expect(childBox!.x).toBeGreaterThan(parentBox!.x);
+    expect(childBox!.y).toBeGreaterThan(parentBox!.y);
+    await captureState(page, testInfo, "subagents-tree-child", { atEachSize: async () => expectNoHorizontalOverflow(page) });
+    await child.click();
+    const view = page.getByTestId("subagent-thread-view");
+    await expect(view.getByRole("heading", { name: "helper" })).toBeVisible();
+    await expect(view.getByText("Brief from lead")).toBeVisible();
+    await expect(view.getByRole("button", { name: "Stop" })).toBeVisible();
+    await captureState(page, testInfo, "subagents-thread-child", { atEachSize: async () => expectNoHorizontalOverflow(page) });
+  });
+
   test("the tree, the thread view with Stop, Stop all and the wake-up turn", async ({ page }, testInfo) => {
     // Three states captured at five sizes in both themes, plus live polling waits.
     test.setTimeout(180_000);
@@ -491,6 +527,30 @@ for (const viewport of [
       }, sizes });
       await answerRows(page).first().tap();
       await expect(page.getByTestId("subagent-thread-view").getByRole("heading", { name: longName })).toBeVisible();
+    });
+
+    test(`a child under its parent in the drawer is touch-safe and opens its thread (${viewport.label})`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ height: viewport.height, width: viewport.width });
+      await installChat(page, { wakeUp: false });
+      await installSubagentRoutes(page, family);
+      await signInWithLocalToken(page, `/c/${chatId}`);
+      const list = await navigation(page);
+      const parent = list.getByRole("treeitem", { name: "lead, Running" });
+      const child = list.getByRole("treeitem", { name: `${longName}, Waiting for lead` });
+      await expectTouchSafe(child);
+      const [parentBox, childBox, listBox] = [await parent.boundingBox(), await child.boundingBox(), await list.boundingBox()];
+      expect(childBox!.x).toBeGreaterThan(parentBox!.x);
+      // A long name ellipsizes: the indented row stays inside the drawer.
+      expect(childBox!.x + childBox!.width).toBeLessThanOrEqual(listBox!.x + listBox!.width);
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(`subagents-tree-child-${viewport.label}.png`) });
+      await child.tap();
+      await expect(list).toBeHidden();
+      const view = page.getByTestId("subagent-thread-view");
+      await expect(view.getByText("Brief from lead")).toBeVisible();
+      await expect(view.getByText("Waiting for lead").first()).toBeVisible();
+      await expectTouchSafe(view.getByRole("button", { name: "Stop" }));
+      await captureState(page, testInfo, `subagents-thread-child-${viewport.label}`, { atEachSize: async () => expectNoHorizontalOverflow(page), sizes });
     });
 
     test(`the phone drawer opens a thread and Stop is touch-safe (${viewport.label})`, async ({ page }, testInfo) => {

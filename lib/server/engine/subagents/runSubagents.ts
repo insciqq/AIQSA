@@ -37,16 +37,16 @@ import { subagentEngineTools, type SubagentCallDeps } from "./callTools";
 import { decodeSubagentModels, type FrozenSubagentModels, type SubagentParentModel } from "./modelCatalog";
 import { modelEffortOptions, parentSubagentRoute, type SubagentModelCatalog, type SubagentModelRoute, type SubagentRouteResult } from "./modelRoutes";
 import { registerSubagentBackgroundHost, withForegroundTurnStops } from "./backgroundRunner";
-import { createSubagentRunner, WORKSPACE_TURN_GUIDANCE_PREFIX, type HostedSubagentRunner, type SubagentHost } from "./runner";
+import { createSubagentRunner, WORKSPACE_TURN_GUIDANCE_PREFIX, type HostedSubagentRunner, type SubagentChildHost, type SubagentHost } from "./runner";
 import type { SubagentThreadStore } from "./threadStore";
 
 /**
  * Sub-agents of one native run: the `call_subagent` and `stop_subagent`
  * registry entries of its main agent and the runner of their foreground
  * turns, over the run's own frozen bindings, registry builder, stores and
- * ledger. A run gets none without the thread store (tests and entry points
- * that do not wire it), when its tools are off, or when it is a monitoring
- * check, which reports alone.
+ * ledger, which a sub-agent's children run on too. A run gets none without
+ * the thread store (tests and entry points that do not wire it), when its tools
+ * are off, or when it is a monitoring check, which reports alone.
  */
 
 /** The ports other slices implement, given to a run by its entry point; absent ones are unavailable (`callTools.ts`). */
@@ -219,12 +219,39 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
   const route = routeFor(null);
   const scopeOf = { chatId: input.chatId, userId: input.scope.userId };
   const messaging = input.ports?.messaging;
+  // Background turns this run admits run on a host of their own over the same frozen bindings (`backgroundRunner.ts`).
+  const parts = input.backgroundParts;
+  const port = input.ports?.background;
+  const host = parts && port && input.backgroundAllowed
+    ? registerSubagentBackgroundHost(input.runId, (turn) => backgroundSubagentRunner(input, { ...foregroundHost,
+      route: routeFor(turn.hostRunId) }, parts, turn))
+    : null;
+  // Only a run that asked for a background start keeps its host past its end (`SubagentBackgroundHostRegistration`).
+  const background: SubagentBackgroundControl | undefined = port && host ? { availability: port.availability.bind(port),
+    deliver: port.deliver.bind(port), start: (start) => {
+      host.use();
+      return port.start(start);
+    }, stop: port.stop.bind(port), stopChildren: port.stopChildren.bind(port) } : port;
+  const children: SubagentChildHost = {
+    ...(background ? { background } : {}),
+    backgroundAllowed: input.backgroundAllowed,
+    catalog,
+    defaultType,
+    // A child runs on its parent's model unless something names another: its efforts are that model's.
+    modelOf: (binding) => ({ connectionId: binding.provider, effort: binding.reasoningEffort,
+      efforts: binding.provider === parent.connectionId && binding.providerModelId === parent.providerModelId ? parent.efforts
+        : catalog?.models.find((entry) => entry.connectionId === binding.provider && entry.providerModelId === binding.providerModelId)?.reasoningEfforts ?? [],
+      providerModelId: binding.providerModelId ?? parent.providerModelId, upstreamModelId: binding.modelId }),
+    store,
+    ...(input.ports?.types ? { types: input.ports.types } : {})
+  };
   const foregroundHost: SubagentHost = {
     buildRegistry: input.buildRegistry,
     branchRunIds: input.branchRunIds,
     ...(input.ports?.browserIdentity ? { browserIdentity: input.ports.browserIdentity } : {}),
     callTimeLeft: input.callTimeLeft,
     chatId: input.chatId,
+    children,
     deadlineAt: input.deadlineAt,
     deadlineSignal: input.deadline,
     ...(input.faults ? { faults: input.faults } : {}),
@@ -258,19 +285,6 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
   };
   // Its foreground turns are listed for the thread Stop and Stop all, which reach them like background ones.
   const runner = withForegroundTurnStops(createSubagentRunner(foregroundHost));
-  // Background turns this run admits run on a host of their own over the same frozen bindings (`backgroundRunner.ts`).
-  const parts = input.backgroundParts;
-  const port = input.ports?.background;
-  const host = parts && port && input.backgroundAllowed
-    ? registerSubagentBackgroundHost(input.runId, (turn) => backgroundSubagentRunner(input, { ...foregroundHost,
-      route: routeFor(turn.hostRunId) }, parts, turn))
-    : null;
-  // Only a run that asked for a background start keeps its host past its end (`SubagentBackgroundHostRegistration`).
-  const background: SubagentBackgroundControl | undefined = port && host ? { availability: port.availability.bind(port),
-    deliver: port.deliver.bind(port), start: (start) => {
-      host.use();
-      return port.start(start);
-    }, stop: port.stop.bind(port) } : port;
   const releaseBackgroundHost = () => host?.release();
   const deps: SubagentCallDeps = {
     backgroundAllowed: input.backgroundAllowed,
@@ -338,8 +352,9 @@ export function backgroundSubagentRequest(request: ProviderRunRequest, runId: st
 /**
  * One background turn on its parent run's host: the parent's bindings, registry builder and routes, with the turn's
  * own run, signal, deadline, tool budget, usage ledger and live-browser membership. The control settles the turn
- * (`SubagentBackgroundControl`), so the runner's own settlement does nothing; the ledger is written and the
- * membership ends once the turn ended.
+ * (`SubagentBackgroundControl`), so the runner's own settlement does nothing for it; a foreground child running on
+ * this host is nobody else's to settle. The ledger is written and the membership ends once the turn ended. A child's
+ * calls count toward its parent's budget, in the background too.
  */
 function backgroundSubagentRunner(input: PrepareRunSubagentsInput, parent: SubagentHost, parts: SubagentBackgroundParts,
   turn: SubagentTurnInput): SubagentRunner {
@@ -365,11 +380,11 @@ function backgroundSubagentRunner(input: PrepareRunSubagentsInput, parent: Subag
     recordDetachedCompaction: (record) => parts.recordDetachedCompaction(runId, record),
     request: backgroundSubagentRequest(parent.request, runId),
     saveResult: parts.saveResult(runId),
-    settleTurn: async () => true,
+    settleTurn: async (settlement) => settlement.turnId === turn.turnId ? true : parent.settleTurn(settlement),
     settleUsage: async () => { await ledger.settle(); },
     signal: turn.signal,
     threadRunIds: parts.threadRunIds,
-    toolState: { calls: 0 },
+    toolState: turn.parentAgent?.toolState ?? { calls: 0 },
     toolTimeLeft,
     usage: (attribution) => ledger.add(attribution),
     userFollowups: async () => []

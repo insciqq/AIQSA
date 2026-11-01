@@ -144,6 +144,32 @@ describe("sub-agents in the chat list", () => {
     expect(screen.getByRole("button", { name: /Hide sub-agents of Chat a: 32 sub-agents, 20 active/u })).toBeInTheDocument();
   });
 
+  it("nests a child one step under the sub-agent that started it, one level down in the tree", () => {
+    const parent = { id: "thread-researcher", name: "researcher" };
+    renderSidebar({ subagents: subagentsProp({ a: subagentChat("a", [
+      subagentThread("thread-left", "running", { parent }),
+      subagentThread("thread-researcher"),
+      subagentThread("thread-other", "done")
+    ]) }) });
+    const group = screen.getByRole("group", { name: "Sub-agents of Chat a" });
+    const rows = within(group).getAllByRole("treeitem");
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["researcher, Running", "left, Running", "other, Done"]);
+    expect(rows.map((row) => row.getAttribute("aria-level"))).toEqual(["2", "3", "2"]);
+    expect(rows[1]!.closest("[data-depth]")).not.toBeNull();
+    expect(rows[0]!.closest("[data-depth]")).toBeNull();
+  });
+
+  it("keeps an active or open child listed under its parent past the ended limit", () => {
+    const parent = { id: "thread-old-parent", name: "old-parent" };
+    const ended = Array.from({ length: SUBAGENT_ROWS_ENDED_VISIBLE + 2 }, (_, index) => subagentThread(`thread-ended-${index}`, "done"));
+    renderSidebar({ subagents: subagentsProp({ a: subagentChat("a", [...ended, subagentThread("thread-old-parent", "done"),
+      subagentThread("thread-open-child", "done", { parent })]) }, { expanded: () => true, openThread: { chatId: "a", threadId: "thread-open-child" } }) });
+    const group = screen.getByRole("group", { name: "Sub-agents of Chat a" });
+    const names = within(group).getAllByRole("treeitem").map((row) => row.getAttribute("aria-label"));
+    expect(names).toContain("open-child, Done");
+    expect(names.indexOf("old-parent, Done")).toBe(names.indexOf("open-child, Done") - 1);
+  });
+
   it("keeps a long name on one line with the whole name as its title", () => {
     const name = `a${"b".repeat(46)}c`;
     renderSidebar({ subagents: subagentsProp({ a: subagentChat("a", [subagentThread(`thread-${name}`, "running", { name })]) }) });

@@ -37,6 +37,22 @@ describe("a sub-agent's steps in the answer", () => {
     expect(screen.getAllByText("Searched the web")).toHaveLength(1);
   });
 
+  it("shows a child as one step of its parent, and leaves the child's own steps to its thread", () => {
+    const nested: ThreadToolActivity["calls"] = [...calls,
+      { origin: "tool", round: 4, status: "complete", subagent: { mode: "foreground", name: "left", threadId: "thread-2", turnId: "turn-2" },
+        subagentThreadId: "thread-1", subagentTurnId: "turn-1", toolName: "call_subagent" },
+      { origin: "web_fetch", round: 1, status: "complete", subagentThreadId: "thread-2", subagentTurnId: "turn-2", toolName: "fetch_url" }];
+    const split = splitSubagentStepsV2(nested);
+    expect(split.own.map((call) => call.subagentThreadId)).toEqual([undefined, undefined]);
+    expect(split.nested.get("turn-1")).toHaveLength(4);
+    expect(split.nested.get("turn-2")).toHaveLength(1);
+    render(<AnswerProcessV2 toolActivity={{ calls: nested }} workDurationMs={50_000} />);
+    openProcess();
+    const list = within(screen.getByTestId("subagent-steps")).getByRole("list", { name: "Sub-agent shop finished: steps" });
+    expect(within(list).getByText("Sub-agent left finished")).toBeVisible();
+    expect(screen.queryByText(/Read a page|fetch_url/u)).toBeNull();
+  });
+
   it("keeps a sub-agent's calls whose step is not in the answer among the answer's own", () => {
     const orphan = calls.filter((call) => call.toolName !== "call_subagent");
     expect(splitSubagentStepsV2(orphan).own).toHaveLength(orphan.length);
