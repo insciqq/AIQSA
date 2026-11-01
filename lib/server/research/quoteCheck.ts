@@ -5,7 +5,7 @@ import { researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 
 /**
  * The check with no model in it: each finding's verbatim quote must be in text
- * an agent of this run really opened. It catches invented quotes and unread
+ * an agent of this research really opened. It catches invented quotes and unread
  * sources without anyone's opinion. It runs when a record is written, over what
  * the writing agent itself read (`evidenceStore.ts`), so the agent hears at once
  * while it still has the page, and over a whole run's text at its end.
