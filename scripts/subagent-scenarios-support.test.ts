@@ -905,6 +905,7 @@ describe("scenarios Q and R", () => {
     expect(oracleQ({ ...good, main: { fetch_url_not_in_conversation: 1, read: 3 } }).failed).toContain("other_agents_link_refused");
     expect(oracleQ({ ...good, main: { fetch_url_limit_reached: 2, read: 2 } }).failed).toEqual(expect.arrayContaining(["no_more_than_five_pages", "page_limit_still_applies"]));
     expect(oracleQ({ ...good, searches: 2 }).failed).toContain("searches_stopped_early");
+    expect(oracleQ({ ...good, searches: null }).failed).toEqual([]);
   });
 
   it("R compares each phrase with its direction, by index only", () => {

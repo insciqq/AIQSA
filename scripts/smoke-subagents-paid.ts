@@ -1358,7 +1358,8 @@ async function scenarioQ(ctx: Context, run: Run): Promise<Outcome> {
     const threadId = (await threadIdsByName(ctx.db, chat.id)).get(SUBAGENT_NAMES.reader)?.at(-1) ?? null;
     const tools = await toolRows(ctx.db, chat.id);
     const verdict = oracleQ({ main: await pageReads(ctx.db, chat.id, null), reader: threadId ? await pageReads(ctx.db, chat.id, threadId) : {},
-      searches: tools.filter((row) => row.threadId === threadId && row.state === "complete" && /^search_(?:selected_engines|engine_[1-3])$/u.test(row.toolName)).length,
+      searches: route.mode === "model_choice" ? null
+        : tools.filter((row) => row.threadId === threadId && row.state === "complete" && /^search_(?:selected_engines|engine_[1-3])$/u.test(row.toolName)).length,
       settled: evidence.settled, turn });
     if (verdict.failed.length > 0) failed = true;
     routes.push({ checksFailed: verdict.failed, oracleCounts: verdict.counts, route: route.name, terminal: terminal.status });

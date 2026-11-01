@@ -90,7 +90,9 @@ export type ResearchGatesOutcome =
   | Readonly<{ kind: "accepted"; notes: readonly string[] }>
   | Readonly<{ kind: "sent_back"; message: string }>;
 
-class GateTimedOut extends Error {}
+class GateTimedOut extends Error {
+  override name = "GateTimedOut";
+}
 
 /** A gate's work under its own signal: one that ignores the signal still lets the answer go. */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {

@@ -80,9 +80,9 @@ function researchPromptSection(): string {
   return [
     "# Research",
     `\`${START_RESEARCH_TOOL_NAME}\` starts the research method: parallel researchers, source classes assigned up front and a report the server checks before the user sees it. It takes much longer and costs much more than an ordinary answer, and the user sees it as a plan.`,
-    "- Start it when the user's goal is a thorough result: they ask to research, analyze or search carefully, or they will base a serious decision on the answer. Examples: \"поищи хорошо\", \"проведи исследование\", \"глубокий анализ\", \"проанализируй рынок роботов-пылесосов\", \"сравни эти ноутбуки, хочу купить один надолго\", \"do a deep dive on this\". The topic may be small; the wish for thoroughness decides.",
+    "- Start it when the user's goal is a thorough result: they ask to research, analyze or search carefully, or they will base a serious decision on the answer. Such words are enough on their own, whatever the topic and even when you could answer without it: \"поищи хорошо\", \"проведи исследование\", \"глубокий анализ тарифов\", \"проанализируй, какой телефон взять\", \"проанализируй рынок роботов-пылесосов\", \"сравни эти ноутбуки, хочу купить один надолго\", \"do a deep dive on this\".",
     "- Do not start it for a simple question or a quick lookup, however it is phrased, even when it needs a search. Examples: \"поищи, какие матрасы есть современные\", \"какой сейчас курс доллара\", \"найди сайт этого магазина\", \"what is the latest version of Node\". Answer those directly.",
-    "- When unsure, answer directly and offer to research it. If the user asks for research again in a later message, start it again; earlier findings in this conversation still count.",
+    "- When nothing in the message asks for thoroughness and you are unsure, answer directly and offer to research it. If the user asks for research again in a later message, start it again; earlier findings in this conversation still count.",
     `- Once it started, follow what it returns and finish with \`${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}\`: nothing else you write reaches the user.`
   ].join("\n");
 }
