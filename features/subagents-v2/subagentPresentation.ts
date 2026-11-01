@@ -41,14 +41,16 @@ export function subagentWaitsForUser(thread: Readonly<{ reason: string | null; s
 export function subagentStatePresentation(
   state: SubagentThreadState,
   outcome: SubagentOutcome | null = null,
-  reason: string | null = null
+  reason: string | null = null,
+  /** A child's parent: what it waits for, in place of the main agent. */
+  parentName: string | null = null
 ): SubagentStatePresentation {
   switch (state) {
     case "running":
       // A still ink dot, never an animation: running is a state, not progress.
       return { icon: null, label: "Running", tone: "neutral" };
     case "waiting":
-      return subagentWaitsForAgent({ reason, state }) ? { icon: "bot", label: "Waiting for the main agent", tone: "neutral" }
+      return subagentWaitsForAgent({ reason, state }) ? { icon: "bot", label: `Waiting for ${parentName ?? "the main agent"}`, tone: "neutral" }
         : { icon: "user", label: "Waiting for you", tone: "warn" };
     case "done":
       return outcome ? OUTCOME_PRESENTATION[outcome] : OUTCOME_PRESENTATION.done;
@@ -81,9 +83,20 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   [SUBAGENT_END_REASONS.workspaceStopUnproven]: "Interrupted by a restart; its Workspace work may not have stopped"
 };
 
+/** What differs for a child: its parent, not the main agent, did these. */
+function childReasonText(reason: string, parentName: string): string | null {
+  switch (reason) {
+    case SUBAGENT_BLOCKED_REASONS.needsAnswer: return `Asked ${parentName} a question`;
+    case SUBAGENT_END_REASONS.stoppedByAgent: return `Stopped by ${parentName}`;
+    case SUBAGENT_END_REASONS.parentStopped: return `Stopped with ${parentName}`;
+    default: return null;
+  }
+}
+
 /** Words for a known reason code; an unknown code shows nothing rather than an identifier. */
-export function subagentReasonText(reason: string | null): string | null {
-  return reason ? REASON_TEXT[reason] ?? null : null;
+export function subagentReasonText(reason: string | null, parentName: string | null = null): string | null {
+  if (!reason) return null;
+  return (parentName ? childReasonText(reason, parentName) : null) ?? REASON_TEXT[reason] ?? null;
 }
 
 /**
@@ -91,13 +104,15 @@ export function subagentReasonText(reason: string | null): string | null {
  * server's current step while it runs, or something neutral without one
  * (never an invented step); then the outcome, with its reason when that says more.
  */
-export function subagentDetailText(thread: Pick<SubagentThreadSummary, "currentStep" | "outcome" | "reason" | "state">): string {
+export function subagentDetailText(thread: Pick<SubagentThreadSummary, "currentStep" | "outcome" | "reason" | "state"> &
+  Partial<Pick<SubagentThreadSummary, "parent">>): string {
   if (thread.state === "running") {
     const step = thread.currentStep;
     return step && !planCallHiddenV2(step) ? `${describeToolCallV2(step, "running")}…` : "Working…";
   }
-  const { label } = subagentStatePresentation(thread.state, thread.outcome, thread.reason);
-  return thread.state === "waiting" ? label : subagentReasonText(thread.reason) ?? label;
+  const parentName = thread.parent?.name ?? null;
+  const { label } = subagentStatePresentation(thread.state, thread.outcome, thread.reason, parentName);
+  return thread.state === "waiting" ? label : subagentReasonText(thread.reason, parentName) ?? label;
 }
 
 const AGENT_MESSAGE_DELIVERY: Readonly<Record<SubagentTurnMessage["delivery"], string>> = {
@@ -111,7 +126,7 @@ const agentName = (name: string | undefined) => !name || name === MAIN_AGENT_NAM
 /** The label of a thread's message row: who wrote it or who it went to, and how far it got. */
 export function subagentMessageLabel(message: SubagentTurnMessage): string {
   if (message.to) return `${message.question ? "Question" : "Message"} to ${agentName(message.to)}`;
-  return `Message from ${agentName(message.from)} · ${AGENT_MESSAGE_DELIVERY[message.delivery]}`;
+  return `${message.question ? "Question" : "Message"} from ${agentName(message.from)} · ${AGENT_MESSAGE_DELIVERY[message.delivery]}`;
 }
 
 /** The model a sub-agent's latest turn ran on, with its effort; null when the row does not know it. */
@@ -173,6 +188,22 @@ export function orderedSubagentThreads(chat: SubagentChatThreads): SubagentThrea
   const active = chat.threads.filter((thread) => isActiveSubagentState(thread.state));
   const ended = chat.threads.filter((thread) => !isActiveSubagentState(thread.state));
   return [...active, ...ended];
+}
+
+/** One row of the tree: `depth` 1 is a child, under its parent's row. */
+export type SubagentTreeRow = Readonly<{ depth: 0 | 1; thread: SubagentThreadSummary }>;
+
+/**
+ * The chat's threads as the tree shows them, in `orderedSubagentThreads`' order with each child right under its parent.
+ * A child whose parent the list left out stands on its own, so no row is lost.
+ */
+export function subagentTreeRows(chat: SubagentChatThreads): SubagentTreeRow[] {
+  const ordered = orderedSubagentThreads(chat);
+  const listed = new Set(ordered.map((thread) => thread.id));
+  return ordered.flatMap((thread): SubagentTreeRow[] => {
+    if (thread.parent && listed.has(thread.parent.id)) return [];
+    return [{ depth: 0, thread }, ...ordered.filter((child) => child.parent?.id === thread.id).map((child): SubagentTreeRow => ({ depth: 1, thread: child }))];
+  });
 }
 
 /** Names beyond this many are counted, not listed, in the wake-up label. */

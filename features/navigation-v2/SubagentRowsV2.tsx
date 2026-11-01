@@ -3,15 +3,16 @@
 import { UiV2Icon } from "@/components/ui-v2";
 import { isActiveSubagentState } from "@/lib/contracts/subagents";
 import type { SubagentChatThreads, SubagentThreadSummary } from "@/lib/contracts/subagentViews";
-import { orderedSubagentThreads, subagentStatePresentation } from "@/features/subagents-v2/subagentPresentation";
+import { subagentStatePresentation, subagentTreeRows } from "@/features/subagents-v2/subagentPresentation";
 import type { SubagentThreadTarget } from "@/features/subagents-v2/subagentStore";
 import type { KeyboardEvent } from "react";
 
 /**
  * A chat's sub-agents as the chat list shows them (operator decision
  * 2026-10-29): rows nested under the chat, never chats of their own, so they
- * have no row menu and never appear in search results. The list owner passes
- * the server's projections and the disclosure; rows only render them.
+ * have no row menu and never appear in search results, and a child nested one
+ * step further, under the sub-agent that started it. The list owner passes the
+ * server's projections and the disclosure; rows only render them.
  */
 export type NavigationSubagentsV2 = Readonly<{
   chats: Readonly<Record<string, SubagentChatThreads>>;
@@ -84,26 +85,28 @@ export function SubagentDisclosureV2({
 }
 
 function SubagentRowV2({
+  depth,
   disabled,
   level,
   onOpen,
   selected,
   thread
 }: Readonly<{
+  depth: number;
   disabled?: boolean;
   level: number;
   onOpen(thread: SubagentThreadSummary): void;
   selected: boolean;
   thread: SubagentThreadSummary;
 }>) {
-  const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason);
+  const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason, thread.parent?.name ?? null);
   return (
-    <div className="v2-subagent-row-wrap" data-navigation-subagent-id={thread.id} data-v2-tree-row="true">
+    <div className="v2-subagent-row-wrap" data-depth={depth || undefined} data-navigation-subagent-id={thread.id} data-v2-tree-row="true">
       <button
         aria-current={selected ? "page" : undefined}
         // One name, "<name>, <state>": the icon alone never carries the state.
         aria-label={`${thread.name}, ${state.label}`}
-        aria-level={level}
+        aria-level={level + depth}
         aria-selected={selected}
         className="v2-subagent-row v2-focusable"
         data-selected={selected || undefined}
@@ -151,16 +154,19 @@ export function SubagentRowsV2({
   showAllEnded: boolean;
   title: string;
 }>) {
-  const ordered = orderedSubagentThreads(chat);
-  const activeCount = ordered.filter((thread) => isActiveSubagentState(thread.state)).length;
-  const limit = showAllEnded ? ordered.length : activeCount + SUBAGENT_ROWS_ENDED_VISIBLE;
-  // The open thread stays listed even when it is an older ended one.
-  const visible = ordered.filter((thread, index) => index < limit || thread.id === openThreadId);
-  const hidden = ordered.length - visible.length;
+  const rows = subagentTreeRows(chat);
+  const activeCount = rows.filter(({ thread }) => isActiveSubagentState(thread.state)).length;
+  const limit = showAllEnded ? rows.length : activeCount + SUBAGENT_ROWS_ENDED_VISIBLE;
+  // Active ones are always listed, and the open thread even when it is an older ended one, each under its parent.
+  const kept = new Set(rows.flatMap(({ thread }, index) => index < limit || isActiveSubagentState(thread.state) || thread.id === openThreadId
+    ? [thread.id, ...thread.parent ? [thread.parent.id] : []] : []));
+  const visible = rows.filter(({ thread }) => kept.has(thread.id));
+  const hidden = rows.length - visible.length;
   return (
     <div aria-label={`Sub-agents of ${title}`} className="v2-subagent-rows" id={id} role="group">
-      {visible.map((thread) => (
+      {visible.map(({ depth, thread }) => (
         <SubagentRowV2
+          depth={depth}
           disabled={disabled}
           key={thread.id}
           level={level}

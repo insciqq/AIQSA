@@ -60,7 +60,7 @@ function SubagentAnswerRow({ chatId, name, onOpen, thread, threadId }: Readonly<
   thread: SubagentThreadSummary | null;
   threadId: string;
 }>) {
-  const state = thread ? subagentStatePresentation(thread.state, thread.outcome, thread.reason) : null;
+  const state = thread ? subagentStatePresentation(thread.state, thread.outcome, thread.reason, thread.parent?.name ?? null) : null;
   const detail = thread ? subagentDetailText(thread) : null;
   const model = thread ? subagentModelText(thread.model) : null;
   const target = { chatId, threadId };
@@ -165,7 +165,7 @@ function SubagentListRow({ chatId, onOpen, thread }: Readonly<{
   const key = subagentThreadKey(target);
   const stopping = useSubagentStore((state) => Boolean(state.stopping[key]));
   const failed = useSubagentStore((state) => Boolean(state.stopErrors[key]));
-  const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason);
+  const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason, thread.parent?.name ?? null);
   const detail = subagentDetailText(thread);
   const model = subagentModelText(thread.model);
   return (
@@ -244,7 +244,7 @@ export function SubagentBackgroundChipV2({
   if (active.length === 1 && !open) {
     const thread = active[0]!;
     const target = { chatId, threadId: thread.id };
-    const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason);
+    const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason, thread.parent?.name ?? null);
     const detail = subagentDetailText(thread);
     const model = subagentModelText(thread.model);
     return (
