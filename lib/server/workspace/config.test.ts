@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { RESEARCH_TIME_MS } from "../../contracts/research";
 import {
   WORKSPACE_MCP_VERSION,
   WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES,
@@ -44,16 +45,18 @@ describe("Workspace configuration", () => {
     }
   });
 
-  it("keeps Microsandbox's own idle stop out of a turn, never shorter than the idle time", () => {
-    expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({}))).toBe(3_900);
-    expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "7200" }))).toBe(7_500);
+  it("keeps Microsandbox's own idle stop out of the longest turn, research included, never shorter than the idle time", () => {
+    const research = RESEARCH_TIME_MS.hardEnd / 1_000;
+    expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({}))).toBe(3_600 + research + 300);
+    expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "7200" }))).toBe(7_200 + research + 300);
     expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({ AIQSA_WORKSPACE_IDLE_TTL_SECONDS: "14400" }))).toBe(14_400);
   });
 
-  it("touches a run's guest every five minutes, more often under a short idle time, for a turn and its handoff", () => {
-    expect(workspaceIdleRefreshTiming(getWorkspaceConfig({}))).toEqual({ intervalMs: 300_000, lifetimeMs: 3_900_000 });
+  it("touches a run's guest every five minutes, more often under a short idle time, for the longest turn and its handoff", () => {
+    const lifetimeMs = workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({})) * 1_000;
+    expect(workspaceIdleRefreshTiming(getWorkspaceConfig({}))).toEqual({ intervalMs: 300_000, lifetimeMs });
     expect(workspaceIdleRefreshTiming(getWorkspaceConfig({ AIQSA_WORKSPACE_IDLE_TTL_SECONDS: "60" })))
-      .toEqual({ intervalMs: 20_000, lifetimeMs: 3_900_000 });
+      .toEqual({ intervalMs: 20_000, lifetimeMs });
   });
 
   it("bounds the guest-code MCP budgets separately from the model's tool budgets", () => {

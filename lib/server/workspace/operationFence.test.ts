@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { RESEARCH_TIME_MS } from "../../contracts/research";
+import { getWorkspaceConfig, workspaceIdleRefreshTiming, workspaceRuntimeIdleTimeoutSeconds } from "./config";
 import { WorkspaceOperationFence } from "./operationFence";
 
 const identity = { runtimeSandboxId: "runtime_fixture", sessionId: "session_fixture" };
@@ -143,6 +145,57 @@ describe("Workspace receiver idle refresh", () => {
       await running;
       await vi.advanceTimersByTimeAsync(900_000);
       expect(touch).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A guest stops by itself once this long passed since it was last touched, as Microsandbox's idle stop does. */
+  function guestOf(idleStopSeconds: number) {
+    let touchedAt = Date.now();
+    let stopped = false;
+    const check = () => { stopped ||= Date.now() - touchedAt >= idleStopSeconds * 1_000; };
+    return { check, stopped: () => stopped, touch: async () => {
+      check();
+      if (!stopped) touchedAt = Date.now();
+    } };
+  }
+
+  /** The longest quiet run: a whole ordinary turn before the plan's release, then all of the research, with one request at its start. */
+  async function quietResearch(env: Readonly<Record<string, string>>, idleStopSeconds: (config: ReturnType<typeof getWorkspaceConfig>) => number) {
+    const config = getWorkspaceConfig(env);
+    const guest = guestOf(idleStopSeconds(config));
+    const fence = new WorkspaceOperationFence({ idleRefresh: { ...workspaceIdleRefreshTiming(config), touch: guest.touch }, stop: async () => undefined });
+    await fence.claim({ ...identity, operation: operation(1) });
+    await fence.run({ ...identity, operation: operation(1) }, async () => undefined);
+    const longestTurnMs = config.turnTimeoutSeconds * 1_000 + RESEARCH_TIME_MS.hardEnd;
+    for (let elapsed = 0; elapsed < longestTurnMs; elapsed += 60_000) {
+      await vi.advanceTimersByTimeAsync(60_000);
+      guest.check();
+    }
+    await fence.retire({ ...identity, operation: operation(1) });
+    return guest.stopped();
+  }
+
+  it.each<Readonly<{ env: Readonly<Record<string, string>>; name: string }>>([
+    { env: {}, name: "the default turn" },
+    // Without the research in the idle time, this guest stops inside the run: touches end after 30 minutes and it idles 30 more.
+    { env: { AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "900" }, name: "a short turn" },
+    { env: { AIQSA_WORKSPACE_IDLE_TTL_SECONDS: "60" }, name: "a short idle time" }
+  ])("keeps a guest booted before the plan's release up through a quiet research run, under $name", async ({ env }) => {
+    vi.useFakeTimers();
+    try {
+      expect(await quietResearch(env, workspaceRuntimeIdleTimeoutSeconds)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a guest an earlier release created up too, with the shorter idle stop it was born with, as long as the runner touches it", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(await quietResearch({}, (config) => config.turnTimeoutSeconds + 300)).toBe(false);
+      expect(await quietResearch({}, () => 1_800)).toBe(false);
     } finally {
       vi.useRealTimers();
     }

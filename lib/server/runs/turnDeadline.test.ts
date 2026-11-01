@@ -1,12 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
+import { RESEARCH_TIME_MS } from "../../contracts/research";
 import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest, NormalizedSearchPlanOption } from "../providers/types";
 import { ANALYZE_IMAGE_TOOL_NAME } from "../tools/analyzeImage";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { getWorkspaceConfig } from "../workspace/config";
-import { toolCallBounds, turnSoftDeadlineMs } from "./turnDeadline";
+import { researchToolTimes, toolCallBounds, turnSoftDeadlineMs } from "./turnDeadline";
+
+describe("a research run's tool times", () => {
+  const released = 5 * 60_000;
+  const end = released + RESEARCH_TIME_MS.hardEnd;
+
+  it("closes the main agent's tools as the researchers stop, and leaves the checks theirs until one round before the gates end", () => {
+    expect(researchToolTimes(end, 300_000)).toEqual({ agents: released + RESEARCH_TIME_MS.notes - 300_000, main: released + RESEARCH_TIME_MS.stopRunningResearchers });
+  });
+
+  it("never closes the sub-agents' tools before the main agent's, however long the answer model may take", () => {
+    const main = released + RESEARCH_TIME_MS.stopRunningResearchers;
+    expect(researchToolTimes(end, RESEARCH_TIME_MS.hardEnd)).toEqual({ agents: main, main });
+  });
+});
 
 type Frozen = Parameters<typeof toolCallBounds>[0];
 const bare: Frozen = { searchPlan: { mode: "all_selected", options: [] } };

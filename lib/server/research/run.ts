@@ -9,7 +9,7 @@ import {
   type ResearchDraft,
   type ResearchPlan
 } from "../../contracts/research";
-import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_END_REASONS } from "../../contracts/subagents";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { LoopToolChoice } from "../engine/loop";
 import type { PrepareRunSubagentsInput } from "../engine/subagents/runSubagents";
@@ -25,7 +25,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { researcherBrief, researchMethodText, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
-import { researchPorts, type ResearchPortFactories, type ResearchReportEnding } from "./ports";
+import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchRunScope } from "./ports";
 import { createResearchSources } from "./sources";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -95,6 +95,9 @@ const STARTED_RESEARCH_RUN = /^\{"research_run":"([^"\\]{1,64})"/u;
 const resultOf = (call: ModelToolCall, value: { [key: string]: string }): ToolExecutionResult =>
   ({ callId: call.id, content: [{ type: "json", value }], name: call.name, status: "complete" });
 
+/** Beside what a researcher left when its time ended it, so the main agent reads a planned end and goes on, never a failure to retry. */
+export const RESEARCHER_TIME_ENDED = "Its research time ended, so it was stopped. What it recorded stays, and the report above is what it had so far. Go on with what you have.";
+
 export type RunResearchInput = Readonly<{
   chatId: string;
   deps: ResearchEngineDeps;
@@ -146,6 +149,8 @@ export function createRunResearch(input: RunResearchInput) {
   const isAccepted = () => accepted !== null;
   /** Researchers whose brief already holds the method. */
   const briefed = new Set<string>();
+  /** The researcher calls running now, one entry each: a second call of a name in one batch is refused, and must not take the first off. */
+  const running = new Set<Readonly<{ name: string }>>();
   const attempts: ResearchAttempt[] = [];
   // Frozen now, read at no cost to a run that never researches: the promise settles whatever happens and nothing waits for it.
   const verifierChoice = input.deps.verifier?.frozenChoice() ?? Promise.resolve({ kind: "not_set" as const });
@@ -154,8 +159,20 @@ export function createRunResearch(input: RunResearchInput) {
   const sources = createResearchSources({ chatId: input.chatId, items: input.items, runId: input.runId, savedResults: input.savedResults,
     threads: input.threads, userId: input.userId });
   const researchRunId = input.researchRunId ?? input.runId;
+  const messaging = input.subagentInput.ports?.messaging;
+  /**
+   * How the clock finds running researchers: the agents on the branch, narrowed to this run's calls still running. A gate's
+   * turn is no researcher, and a timer that outlives its run must find nobody, not a later run's agent of the same name.
+   */
+  const mailbox: ResearchRunScope["mailbox"] = messaging && {
+    agents: async (scope) => {
+      const listing = await messaging.agents(scope);
+      return listing && { ...listing, agents: listing.agents.filter((agent) => [...running].some(({ name }) => name === agent.name)) };
+    },
+    send: (message) => messaging.send(message)
+  };
   const ports = researchPorts(input.deps.ports, { branchRunIds: input.subagentInput.branchRunIds, chatId: input.chatId,
-    extendTurn: (endsAt) => input.extendTurn?.(endsAt), mailbox: input.subagentInput.ports?.messaging,
+    extendTurn: (endsAt) => input.extendTurn?.(endsAt), mailbox,
     now: input.now, researchRunId, runId: input.runId, sources, userFollowups: () => input.subagentInput.userFollowups(), userId: input.userId,
     userMessage: input.userMessage });
   const gates = [...ports.report.gates, ...input.deps.gates ?? RESEARCH_GATES];
@@ -217,6 +234,39 @@ export function createRunResearch(input: RunResearchInput) {
       sentBack = null;
     } else {
       sentBack = outcome.message;
+    }
+  }
+
+  /**
+   * What a researcher left when its time ended it, as a result of its call. A wait for the turn ends with the turn's signal,
+   * before the turn has settled, so its end is asked for here: the control waits a bounded time for the report and steps, and
+   * the turn ends on its own whatever comes back. A thread that settled is what lets the main agent continue it by name.
+   */
+  async function researcherEnded(execution: EngineToolExecution, call: ModelToolCall, name: string): Promise<ToolExecutionResult> {
+    const stopped = await input.subagentInput.ports?.background?.stop({ chatId: input.chatId, name, parentRunId: input.runId,
+      parentToolCallId: execution.persistedToolCallId, userId: input.userId }).catch(() => null);
+    const ended = stopped?.kind === "stopped" ? stopped.result : null;
+    if (ended?.state === "done") return { callId: call.id, content: [{ type: "json", value: ended }], name: call.name, status: "complete" };
+    const value = ended ? { ...ended, reason: SUBAGENT_END_REASONS.deadline } : { kind: "ended", name, reason: SUBAGENT_END_REASONS.deadline, report: "", state: "stopped" };
+    return { callId: call.id, content: [{ type: "json", value }, { text: RESEARCHER_TIME_ENDED, type: "text" }], name: call.name, status: "complete" };
+  }
+
+  /**
+   * A researcher's call under its time: its own limit, and the end of the research's. Time ends the researcher and not the
+   * run, so that is a result to go on from. Thrown, it would read as a failed call whose effect is unknown, and an equivalent
+   * call would wait for the user. Stop and the turn's deadline stay what they are.
+   */
+  async function underTime(tool: EngineTool, execution: EngineToolExecution, call: ModelToolCall): Promise<ToolExecutionResult> {
+    const signal = ports.time.researcherSignal(execution.signal);
+    const researcher = { name: typeof call.arguments.name === "string" ? call.arguments.name : "" };
+    running.add(researcher);
+    try {
+      return await tool.execute({ ...execution, call, signal });
+    } catch (error) {
+      if (execution.signal.aborted || !signal.aborted) throw error;
+      return await researcherEnded(execution, call, researcher.name);
+    } finally {
+      running.delete(researcher);
     }
   }
 
@@ -329,17 +379,16 @@ export function createRunResearch(input: RunResearchInput) {
         if (!plan) return tool.execute(execution);
         const closed = ports.time.researcherRefusal();
         if (closed !== null) return harnessToolError(call, "research_researchers_closed", closed);
-        const signal = ports.time.researcherSignal(execution.signal);
         const { background: _background, ...foreground } = call.arguments;
         void _background;
         const { message, name } = foreground;
         if (typeof message !== "string" || typeof name !== "string" || briefed.has(name)) {
-          return tool.execute({ ...execution, call: { ...call, arguments: foreground }, signal });
+          return underTime(tool, execution, { ...call, arguments: foreground });
         }
         const brief = researcherBrief(message, plan);
         if (brief === null) return harnessToolError(call, "research_brief_too_long", "Nothing started: this brief leaves no room for the research method. Shorten it and call again.");
         briefed.add(name);
-        return tool.execute({ ...execution, call: { ...call, arguments: { ...foreground, message: brief } }, signal });
+        return underTime(tool, execution, { ...call, arguments: { ...foreground, message: brief } });
       } });
     },
 
