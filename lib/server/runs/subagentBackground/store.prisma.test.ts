@@ -747,6 +747,38 @@ describe("a sub-agent's children on PostgreSQL", () => {
     expect(await prisma.subagentTurn.count({ where: { threadId: thread.threadId } })).toBe(0);
   }));
 
+  it("takes the user's message to a child of a background sub-agent in either mode, while its main answer stays on the branch", async () => fixture(async (f) => {
+    const parent = await backgroundParent(f);
+    const behind = await childThread(f, parent, "behind");
+    const admitted = await store.admit(childAdmission(f, parent, behind));
+    if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+    const inline = await childThread(f, parent, "inline");
+    const foreground = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: parent.runId,
+      parentToolCallId: inline.callId, provider: "fake", state: "running", threadId: inline.threadId, userId: f.userId } });
+    const handler = createSubagentUserMessageHandler({ control: control().control, views,
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.test", configured: true }) as unknown as AuthConfig,
+      resolveAuth: async () => ({ expiresAt: new Date(), id: "session", userId: f.userId,
+        user: { displayName: "Synthetic owner", email: null, id: f.userId, role: "admin", status: "active" } }) });
+    const text = "Only this helper may buy the synthetic item.";
+    const send = (threadId: string, turnId: string) => handler(new Request("https://aiqsa.test/api/messages", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nonce: "direct", text, turnId })
+    }), { params: { chatId: f.chatId, threadId } });
+    const reads = [{ runId: admitted.runId, threadId: behind.threadId, turnId: admitted.turnId },
+      { runId: parent.runId, threadId: inline.threadId, turnId: foreground.id }];
+    for (const { runId, threadId, turnId } of reads) {
+      expect((await send(threadId, turnId)).status).toBe(202);
+      expect(await prisma.runFollowup.findMany({ select: { authorUserId: true, origin: true, subagentTurnId: true, text: true }, where: { modelRunId: runId } }))
+        .toEqual([{ authorUserId: f.userId, origin: "user", subagentTurnId: turnId, text }]);
+      await expect(createSubagentThreadStore(prisma).unreadMessages({ chatId: f.chatId, runIds: [runId], threadId, userId: f.userId }))
+        .resolves.toEqual([{ nonce: "user:direct", origin: "user", text }]);
+    }
+    // The branch the user left takes nothing, the same for a child as for its parent.
+    await prisma.chat.update({ where: { id: f.chatId }, data: { activeLeafMessageId: f.main.userMessageId } });
+    for (const { turnId } of reads) {
+      expect(await store.insertMailbox({ authorName: "You", chatId: f.chatId, nonce: "off-branch", origin: "user", text, turnId, userId: f.userId })).toBe("closed");
+    }
+  }));
+
   it("refuses a parent's call on another agent's thread, under the lock", async () => fixture(async (f) => {
     const parent = await backgroundParent(f);
     const strangers = await f.thread("strangers");
