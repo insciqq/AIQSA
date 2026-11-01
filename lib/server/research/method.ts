@@ -2,6 +2,7 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchPlan, type ResearchQuestion } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { PlanUpdate } from "../tools/updatePlan";
+import { RESEARCH_REVIEWS_REFERENCE } from "./dataCollection";
 
 /**
  * The research method, owned by the server rather than left to the model's
@@ -43,6 +44,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "with current prices, stock and terms).",
     "For each source class of your question, open real pages with fetch_url or the browser: a search snippet is not evidence.",
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
+    RESEARCH_REVIEWS_REFERENCE,
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
       "claimed by a party or not verified.",
     "List what you could not reach and why. If a site the user named shows a CAPTCHA or asks to sign in, call browser_handoff so the user " +
