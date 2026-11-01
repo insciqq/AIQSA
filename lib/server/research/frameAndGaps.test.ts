@@ -9,7 +9,7 @@ import {
   type ResearchEvidenceRecord,
   type ResearchFrame
 } from "../../contracts/research";
-import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
 import { defaultNativeEngineDeps } from "../engine/defaultEngine";
@@ -23,6 +23,7 @@ import type { TranscriptRepository } from "../engine/transcriptRepository";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
+import type { SubagentTypeResolver } from "../subagents/ports";
 import type { StorageAdapter } from "../uploads/storage";
 import { gapCheckGate } from "./gapCheck";
 import type { ResearchGate, ResearchSubagentRequest } from "./gates";
@@ -61,6 +62,8 @@ const begin = [start, proposeCall(PLAN)];
 const submit = (id: string) => ({ arguments: { findings: [], report: `# Report ${id}\n\nIt holds up.`, unreachable: [] }, id, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
 const researcher = (name: string) => ({ arguments: { message: "Cover the cells.", name }, id: `call-${name}`, name: CALL_SUBAGENT_TOOL_NAME });
 const DONE: Step = { text: "Outcome: done\n\nNothing more." };
+/** A researcher's turn that answers nothing: it ran, and ends failed with `model_answer_empty`. */
+const EMPTY: Step = { text: "" };
 
 function engineOf(research: ResearchEngineDeps) {
   const rows = new Map<string, ToolCallRow>();
@@ -167,6 +170,12 @@ const finding = (rowKey: string, criterionKey: string): ResearchEvidenceRecord =
 
 const nothingFound = (rowKey: string, criterionKey: string): ResearchEvidenceRecord => ({ author: { name: null, threadId: null }, createdAt: "", criterionKey, id: `${rowKey}-${criterionKey}`, kind: "not_found", pageId: null,
   publishedOn: null, quoteCheck: null, reason: "Nowhere.", registrableDomain: null, rowKey, runId: "run-1", sequence: 0, sourceClass: null, supersedes: null, textGroupKey: null });
+
+const WEB_RESEARCHER_GROUPS = [SUBAGENT_TOOL_GROUPS.web_search, SUBAGENT_TOOL_GROUPS.web_fetch, SUBAGENT_TOOL_GROUPS.workspace];
+
+/** The user's custom researcher, the kind a research keeps, which narrows its tools to what a researcher reads with. */
+const webResearcherTypes: SubagentTypeResolver = { catalog: async () => [], resolve: async () => ({ kind: "found", type: { definitionId: "type", description: "", instructions: "Read the web.",
+  name: "web-researcher", providerModelId: null, reasoningEffort: null, revisionId: "rev", toolGroups: WEB_RESEARCHER_GROUPS } }) };
 
 /** The real coverage port on a frame and records held in memory. */
 function matrixPorts(initial: ResearchFrame = FRAME, records: ResearchEvidenceRecord[] = []) {
@@ -287,6 +296,53 @@ describe("rounds that fill no new cell end research", () => {
     expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b", "c", "d", "e", "f"]);
   });
 
+  it("stops researchers that keep ending empty by the same rule, rather than letting them run on until time ends", async () => {
+    const matrix = matrixPorts();
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("a")] }, EMPTY, { calls: [researcher("b")] }, EMPTY, { calls: [researcher("c")] }, { calls: [submit("one")] }]);
+    const memory = engineOf({ gates: [], ports: matrix.ports });
+    await run(adapter, memory);
+    expect(resultsOf(requests[3], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("model_answer_empty");
+    expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b"]);
+    expect(resultsOf(requests[6], CALL_SUBAGENT_TOOL_NAME).at(-1)).toContain("research_no_new_cell");
+  });
+
+  it("counts what a failed turn saved: a productive failure between two empty rounds starts the count again", async () => {
+    const matrix = matrixPorts();
+    const saves = () => { matrix.records.push(finding("x1", "durability")); };
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("a")] }, DONE, { calls: [researcher("b")] }, { ...EMPTY, onCall: saves }, { calls: [researcher("c")] }, DONE,
+      { calls: [researcher("d")] }, DONE, { calls: [researcher("e")] }, { calls: [submit("one")] }]);
+    const memory = engineOf({ gates: [], ports: matrix.ports });
+    await run(adapter, memory);
+    expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b", "c", "d"]);
+    expect(resultsOf(requests[5], CALL_SUBAGENT_TOOL_NAME).at(-1)).toContain("1 newly filled in this round so far");
+  });
+
+  it("counts nothing for an admission's refusal", async () => {
+    const matrix = matrixPorts();
+    const { adapter } = scripted([{ calls: begin }, { calls: [researcher("a")] }, { calls: [researcher("b")] }, { calls: [researcher("c")] }, { calls: [researcher("d")] }, DONE, { calls: [submit("one")] }]);
+    const memory = engineOf({ gates: [], ports: matrix.ports });
+    const refused = { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" as const };
+    memory.admitForeground.mockResolvedValueOnce(refused as never).mockResolvedValueOnce(refused as never).mockResolvedValueOnce(refused as never);
+    await run(adapter, memory);
+    expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("counts nothing for a message left in a running turn's mailbox", async () => {
+    const matrix = matrixPorts();
+    const message = (id: string) => ({ arguments: { message: `Also ${id}.`, name: "mail" }, id, name: CALL_SUBAGENT_TOOL_NAME });
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [message("first")] }, { calls: [message("second")] }, { calls: [message("third")] }, { calls: [researcher("a")] }, DONE, { calls: [submit("one")] }]);
+    const memory = engineOf({ gates: [], ports: matrix.ports });
+    const background = new FakeSubagentBackgroundControl();
+    const deliver = vi.spyOn(background, "deliver").mockResolvedValue({ kind: "delivered", state: "running" });
+    const thread = { anchorRunId: "run-1", definitionId: null, id: "thread-mail", name: "mail", parentThreadId: null, typeName: null };
+    const active = { branchRunId: "run-1", id: "turn-mail", mode: "background", parentRunId: "run-1", state: "running" };
+    vi.mocked(memory.deps.subagentThreads!.find).mockImplementation(async ({ name }) => (name === "mail" ? { active, latest: active, thread } : null) as never);
+    await run(adapter, memory, { subagents: { background } });
+    expect(deliver).toHaveBeenCalledTimes(3);
+    expect(resultsOf(requests[2], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("delivered");
+    expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a"]);
+  });
+
   it("does not count a round in which nothing ran", async () => {
     const matrix = matrixPorts();
     const invalid = { arguments: { message: "", name: "bad name!" }, id: "call-invalid", name: CALL_SUBAGENT_TOOL_NAME };
@@ -381,17 +437,39 @@ describe("change_research_frame through the real engine", () => {
     expect(edited.held.version).toBe(1);
   });
 
-  it("never reaches a gate's turn, the gap judge's or the verifier's", async () => {
+  it("never reaches a gate's turn, whatever groups it runs with, nor does record_evidence", async () => {
     const turn = (name: string, tools: ResearchSubagentRequest["tools"]): ResearchSubagentRequest => ({ brief: "Check it.", instructions: "Check.", model: "main", name, tools });
     const gate: ResearchGate = { name: "turns", run: async (_draft, context) => {
       await context.subagents.run(turn("gap-judge", []), context.signal);
       await context.subagents.run(turn("verifier", [SUBAGENT_TOOL_GROUPS.web_fetch]), context.signal);
+      await context.subagents.run(turn("skeptic", WEB_RESEARCHER_GROUPS), context.signal);
       return { kind: "pass" };
     } };
-    const { adapter, requests } = scripted([{ calls: begin }, { calls: [submit("one")] }, { text: "Outcome: done\n\nNo gaps." }, { text: "Outcome: done\n\nHolds." }]);
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [submit("one")] }, { text: "Outcome: done\n\nNo gaps." }, { text: "Outcome: done\n\nHolds." }, { text: "Outcome: done\n\nStands." }]);
     await run(adapter, engineOf({ gates: [gate], ports: matrixPorts().ports }));
-    expect(toolsOf(requests[2])).not.toContain(CHANGE_RESEARCH_FRAME_TOOL_NAME);
-    expect(toolsOf(requests[3])).not.toContain(CHANGE_RESEARCH_FRAME_TOOL_NAME);
+    expect(requests).toHaveLength(5);
+    for (const request of requests.slice(2)) {
+      expect(toolsOf(request)).not.toContain(CHANGE_RESEARCH_FRAME_TOOL_NAME);
+      expect(toolsOf(request)).not.toContain(RECORD_EVIDENCE_TOOL_NAME);
+    }
+  });
+
+  it("reaches a custom researcher whatever its groups: it is offered both tools, and what it records fills a cell", async () => {
+    const records: ResearchEvidenceRecord[] = [];
+    const matrix = matrixPorts(FRAME, records);
+    const record = { claim: null, criterion_key: "firmness", dataset: null, kind: "not_found", quote: null, reason: "Nowhere.", row_key: "x1", source_class: null, standing: null, supersedes: null, target: null, url: null };
+    const written = nothingFound("x1", "firmness");
+    const evidence = { ...NOOP_RESEARCH_PORTS.evidence, record: async () => {
+      records.push(written);
+      return { kind: "recorded" as const, record: written };
+    }, records: async () => records };
+    const web = { arguments: { message: "Read the shops.", name: "lab", type: "web-researcher" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME };
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [web] }, { calls: [{ arguments: record, id: "call-record", name: RECORD_EVIDENCE_TOOL_NAME }] }, DONE, { calls: [submit("one")] }]);
+    await run(adapter, engineOf({ gates: [], ports: { ...matrix.ports, evidence: () => evidence } }), { subagents: { background: new FakeSubagentBackgroundControl(), types: webResearcherTypes } });
+    expect(toolsOf(requests[2])).toEqual(expect.arrayContaining([CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME]));
+    expect(toolsOf(requests[2])).not.toContain("read_secret");
+    expect(resultsOf(requests[3], RECORD_EVIDENCE_TOOL_NAME)[0]).toContain("record_id");
+    expect(resultsOf(requests[4], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("1 of 2 cells empty, 1 newly filled in this round so far");
   });
 
   it("is offered only where research can run, to no agent elsewhere", async () => {

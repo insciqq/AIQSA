@@ -14,9 +14,9 @@ import type { RunTool } from "./types";
 
 /**
  * `change_research_frame`: the one way the matrix grows once the plan stands (`lib/server/research/matrix.ts`), for the main agent and every
- * researcher of a run that offers research, offered as `record_evidence` is. Who changed it comes from the registry that built the tool. A
- * tool of the `session` capability, so a turn whose tool groups narrow its tools, such as a gate's, is never offered it. `strict: false` like
- * the other research tools, though every field is required: `decodeResearchFrameChange` wants null where a change has no use for a field.
+ * researcher of a run that offers research, offered as `record_evidence` is, so whatever a researcher's tool groups and never to a gate's turn.
+ * Who changed it comes from the registry that built the tool. `strict: false` like the other research tools, though every field is required:
+ * `decodeResearchFrameChange` wants null where a change has no use for a field.
  */
 export { CHANGE_RESEARCH_FRAME_TOOL_NAME };
 
