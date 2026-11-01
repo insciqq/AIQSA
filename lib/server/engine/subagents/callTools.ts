@@ -1,6 +1,7 @@
 import {
   SUBAGENT_BUILT_IN_TYPE,
   SUBAGENT_ERROR_CODES,
+  SUBAGENT_LIMITS,
   decodeSubagentCallResult,
   normalizeSubagentName,
   type SubagentCallResult
@@ -11,13 +12,21 @@ import type {
   SubagentBinding,
   SubagentCallerScope,
   SubagentMessaging,
+  SubagentParentAgent,
   SubagentTypeResolver,
   SubagentTypeSnapshot
 } from "../../subagents/ports";
-import { callSubagentTool, parseCallSubagentArguments, parseStopSubagentArguments, stopSubagentTool } from "../../subagents/tools";
+import {
+  callChildSubagentTool,
+  callSubagentTool,
+  parseCallSubagentArguments,
+  parseStopSubagentArguments,
+  stopChildSubagentTool,
+  stopSubagentTool
+} from "../../subagents/tools";
 import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
-import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
-import type { EngineTool, EngineToolExecution } from "../toolRegistry";
+import type { ModelToolCall, RunTool, ToolExecutionResult } from "../../tools/types";
+import type { EngineTool, EngineToolExecution, ToolRegistry } from "../toolRegistry";
 import { listAgentsEngineTool } from "./messageTools";
 import {
   chooseSubagentModel,
@@ -30,8 +39,9 @@ import type { HostedSubagentRunner } from "./runner";
 import type { SubagentThreadStore, SubagentTurnRecord } from "./threadStore";
 
 /**
- * The main agent's `call_subagent` and `stop_subagent` on the native
- * registry (`lib/server/subagents/tools.ts` declares them). How a call on a
+ * `call_subagent` and `stop_subagent` on the native registry
+ * (`lib/server/subagents/tools.ts` declares them), of the main agent or, for its
+ * own children, of a sub-agent with every tool. How a call on a
  * name decides follows `SubagentBackgroundControl`'s rules: a new name
  * starts a thread, a visible thread with no active turn continues, a
  * running background turn of this branch takes the message in its mailbox,
@@ -49,6 +59,12 @@ import type { SubagentThreadStore, SubagentTurnRecord } from "./threadStore";
  * built-in. A `type` that matches nothing and a default that cannot run refuse,
  * and the refusal sends the model to the right name or to the user, because a
  * model told to drop `type` quietly runs another sub-agent than the one asked for.
+ *
+ * A thread stays with the agent that started it (operator decision 2026-10-31):
+ * only it continues the thread, and a sub-agent stops only its own. The main
+ * agent answers for all of them, so it may also write to a child that runs and
+ * stop one. A child has neither tool: a call of one is refused with its own
+ * code, so the model hears why (`withSubagentDepthRefusals`).
  */
 export type SubagentCallDeps = Readonly<{
   background?: SubagentBackgroundControl;
@@ -59,6 +75,8 @@ export type SubagentCallDeps = Readonly<{
   backgroundAllowed: boolean;
   /** The native runs of the branch's answers and this run: where a name's thread is visible. */
   branchRunIds: readonly string[];
+  /** The main-agent run behind a calling sub-agent, which places what it starts on its branch; absent: `runId`. */
+  branchRunId?: string;
   catalog: FrozenSubagentModels | null;
   chatId: string;
   /** When a foreground turn must end: the parent's tool time. */
@@ -67,7 +85,12 @@ export type SubagentCallDeps = Readonly<{
   defaultType: FrozenSubagentDefault | null;
   /** What gives the main agent `list_agents`; it writes to its sub-agents with `call_subagent`. */
   messaging?: SubagentMessaging;
+  /** Told what the calling sub-agent started in the background: its report is what it stays for. */
+  onChildStarted?(name: string): void;
   parent: SubagentParentModel;
+  /** The sub-agent that calls, for its own children; absent for the main agent. */
+  parentAgent?: SubagentParentAgent;
+  /** The run that holds this agent's calls, where a foreground turn runs. */
   runId: string;
   runner: HostedSubagentRunner;
   store: Pick<SubagentThreadStore, "admitForeground" | "endOrphanedTurns" | "ensureThread" | "find" | "result">;
@@ -75,6 +98,8 @@ export type SubagentCallDeps = Readonly<{
   /** The user's current message, verbatim: the authority a sub-agent's irreversible website actions need. */
   userMessage: string;
   userId: string;
+  /** The code the Workspace refused the calling sub-agent with: a foreground child runs in its run, so without it too. */
+  workspaceRefused?: string;
 }>;
 
 /** A thrown error's own stable code, if it carries one. */
@@ -198,6 +223,28 @@ function typeModelGoneMessage(resolved: Extract<TypeResolution, { ok: true }>, d
     "Tell the user; they can choose another model in Studio > Sub-agents. Do not start another sub-agent or model in its place unless they ask.";
 }
 
+const SUBAGENT_DEPTH_MESSAGE = "Helpers cannot start sub-agents of their own, so nothing started. Do this part yourself, or say in your report what is left.";
+
+const NOT_YOURS = (who: string) => `${who} Start your own under another name, or write to it with send_agent_message.`;
+
+const refusalOfAdmission = (call: ModelToolCall, code: string): ToolExecutionResult => {
+  switch (code) {
+    case SUBAGENT_ERROR_CODES.childLimit:
+      return refusal(call, code, `${SUBAGENT_LIMITS.childrenPerSubagent} helpers of yours already run, the most a sub-agent may run at once; ` +
+        "nothing started. Wait for one, stop one, or do this part yourself.");
+    case SUBAGENT_ERROR_CODES.depthLimit:
+      return refusal(call, code, SUBAGENT_DEPTH_MESSAGE);
+    case SUBAGENT_ERROR_CODES.notOwnChild:
+      return refusal(call, code, NOT_YOURS("That name is taken by another agent's sub-agent, so nothing started."));
+    case SUBAGENT_ERROR_CODES.limitReached:
+      return refusal(call, code, `${SUBAGENT_LIMITS.runningPerChat} sub-agents are already running in this chat; wait for one to finish.`);
+    case SUBAGENT_ERROR_CODES.busy:
+      return refusal(call, code, "This sub-agent is already running; wait for its result, or start another name.");
+    default:
+      return refusal(call, code, `The sub-agent did not start (${code}).`);
+  }
+};
+
 export async function executeCallSubagent(deps: SubagentCallDeps, execution: EngineToolExecution): Promise<ToolExecutionResult> {
   const call = execution.call;
   const parsed = parseCallSubagentArguments(call.arguments);
@@ -206,20 +253,29 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
       ? `${parsed.message} ${await customNamesLine(deps)}` : parsed.message);
   }
   const args = parsed.value;
-  const scope: SubagentCallerScope = { chatId: deps.chatId, parentRunId: deps.runId, parentToolCallId: execution.persistedToolCallId,
-    userId: deps.userId };
+  const caller = deps.parentAgent;
+  const branchRunId = deps.branchRunId ?? deps.runId;
+  const scope: SubagentCallerScope = { chatId: deps.chatId, ...(caller ? { parentAgent: caller } : {}), parentRunId: branchRunId,
+    parentToolCallId: execution.persistedToolCallId, userId: deps.userId };
   const lookup = await deps.store.find({ branchRunIds: deps.branchRunIds, chatId: deps.chatId, name: args.name, userId: deps.userId });
   const active = lookup?.active ?? null;
+  const own = !lookup || lookup.thread.parentThreadId === (caller?.threadId ?? null);
+  // A sub-agent reaches only its own. The main agent may write to a child that runs, which goes on working for its parent,
+  // but a turn of another agent's thread would run under the wrong parent.
+  if (!own && (caller || active?.mode !== "background")) {
+    return refusal(call, SUBAGENT_ERROR_CODES.notOwnChild, caller ? NOT_YOURS("That name is another agent's sub-agent, so nothing started.")
+      : "That is a helper of another sub-agent, and only its parent continues it. Continue its parent, or start another name.");
+  }
   if (lookup && active) {
-    const onBranch = deps.branchRunIds.includes(active.parentRunId);
+    const onBranch = deps.branchRunIds.includes(active.branchRunId);
     if (active.mode === "background" && onBranch && deps.background) {
       if (args.type !== undefined || args.model !== undefined || args.effort !== undefined) {
         return refusal(call, SUBAGENT_ERROR_CODES.busy, "This sub-agent is running with its own model and type; send only message, or start another name.");
       }
       let delivered: Awaited<ReturnType<SubagentBackgroundControl["deliver"]>>;
       try {
-        delivered = await deps.background.deliver({ ...scope, message: { nonce: call.id, origin: "main_agent", text: args.message },
-          name: args.name, threadId: lookup.thread.id });
+        delivered = await deps.background.deliver({ ...scope, message: { ...(caller ? { from: caller.name } : {}), nonce: call.id,
+          origin: "main_agent", text: args.message }, name: args.name, threadId: lookup.thread.id });
       } catch (error) {
         // A mailbox at its bound (`SubagentMailboxFullError`) refuses the message visibly; nothing was delivered.
         if (errorCode(error) !== SUBAGENT_ERROR_CODES.messageLimit) throw error;
@@ -272,27 +328,25 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
   if (args.background && deps.background) {
     // A new name's thread exists before its background turn is admitted, anchored to this answer like a foreground one.
     const thread = lookup?.thread ?? await deps.store.ensureThread({ branchRunIds: deps.branchRunIds, chatId: deps.chatId,
-      definitionId: type.type?.definitionId ?? null, name: args.name, parentRunId: deps.runId, typeName: type.type?.name ?? null,
-      userId: deps.userId });
-    const started = await deps.background.start({ ...scope, binding, brief: args.message, kind: lookup ? "continue" : "start",
-      name: args.name, threadId: thread.id, type: type.type, userMessage: deps.userMessage });
+      definitionId: type.type?.definitionId ?? null, name: args.name, parentRunId: branchRunId,
+      ...(caller ? { parentThreadId: caller.threadId } : {}), typeName: type.type?.name ?? null, userId: deps.userId });
+    const started = await deps.background.start({ ...scope, binding, brief: args.message, ...(caller ? { deadlineAt: deps.deadlineAt() } : {}),
+      kind: lookup ? "continue" : "start", name: args.name, threadId: thread.id, type: type.type, userMessage: deps.userMessage });
+    if (started.kind === "started") deps.onChildStarted?.(started.name);
     return started.kind === "started"
       ? resultOf(call, { continued: lookup !== null, kind: "started", name: started.name, state: started.state })
-      : refusal(call, started.code, `The sub-agent did not start (${started.code}).`);
+      : refusalOfAdmission(call, started.code);
   }
   const admitted = await deps.store.admitForeground({ binding, branchRunIds: deps.branchRunIds, chatId: deps.chatId,
     definitionId: type.type?.definitionId ?? null, definitionRevisionId: type.type?.revisionId ?? null, name: args.name,
-    parentRunId: deps.runId, parentToolCallId: execution.persistedToolCallId, typeName: type.type?.name ?? lookup?.thread.typeName ?? null,
-    userId: deps.userId });
-  if (admitted.kind === "refused") {
-    return refusal(call, admitted.code, admitted.code === SUBAGENT_ERROR_CODES.limitReached
-      ? "20 sub-agents are already running in this chat; wait for one to finish."
-      : "This sub-agent is already running; wait for its result, or start another name.");
-  }
+    ...(caller ? { parentAgent: caller } : {}), parentRunId: branchRunId, parentToolCallId: execution.persistedToolCallId,
+    typeName: type.type?.name ?? lookup?.thread.typeName ?? null, userId: deps.userId });
+  if (admitted.kind === "refused") return refusalOfAdmission(call, admitted.code);
   const input = { binding, brief: args.message, chatId: deps.chatId, deadlineAt: deps.deadlineAt(), hostRunId: deps.runId,
-    mode: "foreground" as const, name: args.name, parentRunId: deps.runId, parentToolCallId: execution.persistedToolCallId,
-    signal: execution.signal, threadId: admitted.thread.id, turnId: admitted.turn.id, type: type.type, userId: deps.userId,
-    userMessage: deps.userMessage };
+    mode: "foreground" as const, name: args.name, ...(caller ? { parentAgent: caller } : {}), parentRunId: branchRunId,
+    parentToolCallId: execution.persistedToolCallId, signal: execution.signal, threadId: admitted.thread.id, turnId: admitted.turn.id,
+    type: type.type, userId: deps.userId, userMessage: deps.userMessage,
+    ...(deps.workspaceRefused ? { workspaceRefused: deps.workspaceRefused } : {}) };
   const handle = admitted.continued ? await deps.runner.continue(input) : await deps.runner.start(input);
   return resultOf(call, await deps.runner.wait(handle, execution.signal));
 }
@@ -304,11 +358,15 @@ export async function executeStopSubagent(deps: SubagentCallDeps, execution: Eng
   const name = parsed.value.name;
   const notFound = () => refusal(call, SUBAGENT_ERROR_CODES.notFound, "No sub-agent of that name is in this conversation.");
   const lookup = await deps.store.find({ branchRunIds: deps.branchRunIds, chatId: deps.chatId, name, userId: deps.userId });
+  const caller = deps.parentAgent;
+  if (caller && lookup && lookup.thread.parentThreadId !== caller.threadId) {
+    return refusal(call, SUBAGENT_ERROR_CODES.notOwnChild, "That is not a helper you started: a sub-agent stops only its own.");
+  }
   // A foreground turn of this answer runs here, not in the background control, which cannot stop it.
   const ownForeground = lookup?.active && lookup.active.parentRunId === deps.runId && lookup.active.mode === "foreground";
   if (deps.background && !ownForeground) {
-    const stopped = await deps.background.stop({ chatId: deps.chatId, name, parentRunId: deps.runId,
-      parentToolCallId: execution.persistedToolCallId, userId: deps.userId });
+    const stopped = await deps.background.stop({ chatId: deps.chatId, ...(caller ? { parentAgent: caller } : {}), name,
+      parentRunId: deps.branchRunId ?? deps.runId, parentToolCallId: execution.persistedToolCallId, userId: deps.userId });
     return stopped.kind === "stopped" ? resultOf(call, stopped.result) : notFound();
   }
   if (!lookup) return notFound();
@@ -328,20 +386,46 @@ export async function executeStopSubagent(deps: SubagentCallDeps, execution: Eng
   return stored ? resultOf(call, stored) : notFound();
 }
 
-/** The registry entries of the two tools, for the main agent's registry only. */
+// The live step names the sub-agent it addressed (its server name), so the status says whose work runs.
+const addressedActivity = (toolName: string) => (call: ModelToolCall) => {
+  const name = normalizeSubagentName(call.arguments.name);
+  return { origin: "tool" as const, ...(name ? { serverName: name } : {}), toolName };
+};
+
+/** The registry entries of the two tools, for the main agent's registry. */
 export function subagentEngineTools(deps: SubagentCallDeps): readonly EngineTool[] {
-  // The live step names the sub-agent it addressed (its server name), so the status says whose work runs.
-  const activity = (toolName: string) => (call: ModelToolCall) => {
-    const name = normalizeSubagentName(call.arguments.name);
-    return { origin: "tool" as const, ...(name ? { serverName: name } : {}), toolName };
-  };
   return [
-    { activity: activity(callSubagentTool.name), definition: callSubagentTool.tool, effects: callSubagentTool.effects,
+    { activity: addressedActivity(callSubagentTool.name), definition: callSubagentTool.tool, effects: callSubagentTool.effects,
       observationSource: "workspace", execute: (execution) => executeCallSubagent(deps, execution) },
-    { activity: activity(stopSubagentTool.name), definition: stopSubagentTool.tool, effects: stopSubagentTool.effects,
+    { activity: addressedActivity(stopSubagentTool.name), definition: stopSubagentTool.tool, effects: stopSubagentTool.effects,
       observationSource: "workspace", execute: (execution) => executeStopSubagent(deps, execution) },
     ...(deps.messaging ? [listAgentsEngineTool({ chatId: deps.chatId, messaging: deps.messaging, parentRunId: deps.runId, userId: deps.userId })] : [])
   ];
+}
+
+/** The two tools for a sub-agent's own children, with their texts: its registry is otherwise the filtered one (`registry.ts`). */
+export function subagentChildEngineTools(deps: SubagentCallDeps & Readonly<{ parentAgent: SubagentParentAgent }>,
+  onCall: () => void): readonly EngineTool[] {
+  return [
+    { activity: addressedActivity(callChildSubagentTool.name), definition: callChildSubagentTool.tool, effects: callChildSubagentTool.effects,
+      observationSource: "workspace", execute: (execution) => {
+        onCall();
+        return executeCallSubagent(deps, execution);
+      } },
+    { activity: addressedActivity(stopChildSubagentTool.name), definition: stopChildSubagentTool.tool, effects: stopChildSubagentTool.effects,
+      observationSource: "workspace", execute: (execution) => executeStopSubagent(deps, execution) }
+  ];
+}
+
+/**
+ * A child's registry: the tools it is not offered, which still answer. Their schemas stay out of its requests, and a
+ * model that calls one anyway (it read the name in a brief) learns why, with the stable code, rather than an unknown tool.
+ */
+export function withSubagentDepthRefusals(registry: ToolRegistry): ToolRegistry {
+  const refused = (definition: RunTool): EngineTool => ({ activity: addressedActivity(definition.name), definition, effects: "none",
+    observationSource: "workspace", execute: async ({ call }) => refusal(call, SUBAGENT_ERROR_CODES.depthLimit, SUBAGENT_DEPTH_MESSAGE) });
+  const tools = new Map([callChildSubagentTool.tool, stopChildSubagentTool.tool].map((definition) => [definition.name, refused(definition)]));
+  return { ...registry, resolve: (name) => registry.resolve(name) ?? tools.get(name) };
 }
 
 /** The main agent's registry with the sub-agent tools: definitions and resolution, nothing else changed. */

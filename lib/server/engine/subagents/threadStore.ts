@@ -8,7 +8,8 @@ import {
   type SubagentErrorCode
 } from "../../../contracts/subagents";
 import { dispatchableModelRunStatuses, json } from "../../runs/prismaRepositoryShared";
-import type { SubagentBinding, SubagentMessage } from "../../subagents/ports";
+import { childAdmissionRefusal, mailboxWriter, turnMainRunId, turnsOfMainRuns } from "../../subagents/nesting";
+import type { SubagentBinding, SubagentMessage, SubagentParentAgent } from "../../subagents/ports";
 import type { TranscriptItem } from "../transcript";
 import { decodeTranscriptItem } from "../transcriptCodec";
 import { attemptFenced, durableAttemptTimes, withRecordedAt } from "../transcriptRepository";
@@ -16,10 +17,11 @@ import { attemptFenced, durableAttemptTimes, withRecordedAt } from "../transcrip
 /**
  * Sub-agent threads and turns of a chat (`SubagentThread`, `SubagentTurn`).
  * A thread is visible on a branch where its anchor run is (the main-agent run
- * whose call started it): `branchRunIds` are the native runs of the
- * branch's answers and the running one, so editing an earlier message or
- * regenerating an answer branches threads like the conversation. A foreground
- * turn runs inside its parent run; one whose parent run is no longer active
+ * whose call started it, or a child's parent's): `branchRunIds` are the native
+ * runs of the branch's answers and the running one, so editing an earlier
+ * message or regenerating an answer branches threads like the conversation. A
+ * foreground turn runs inside its parent run, which for a child of a background
+ * sub-agent is that sub-agent's run; one whose parent run is no longer active
  * (a restart ended it as interrupted, `agent_docs/RUN_CONTRACTS.md`) is ended
  * as interrupted the next time its chat admits a turn, never resumed. Every
  * query names the owner and chat.
@@ -30,16 +32,21 @@ export type SubagentThreadRecord = Readonly<{
   definitionId: string | null;
   id: string;
   name: string;
+  /** The sub-agent that started it; null: the main agent. */
+  parentThreadId: string | null;
   typeName: string | null;
 }>;
 
 export type SubagentTurnRecord = Readonly<{
+  /** The main-agent run behind the turn, which places it on a branch: `parentRunId`, or a child's parent's. */
+  branchRunId: string;
   definitionRevisionId: string | null;
   effortSource: SubagentBindingSource;
   id: string;
   mode: SubagentTurnMode;
   modelId: string;
   modelSource: SubagentBindingSource;
+  /** The run that holds the call that started it, which hosts it when it runs in the foreground. */
   parentRunId: string;
   provider: string;
   providerModelId: string | null;
@@ -64,7 +71,9 @@ export type SubagentForegroundAdmission = Readonly<{
   definitionId: string | null;
   definitionRevisionId: string | null;
   name: string;
-  /** The parent run, which anchors a new thread. */
+  /** The sub-agent that makes the call; absent for the main agent. */
+  parentAgent?: SubagentParentAgent;
+  /** The main-agent run, which anchors a new thread; without `parentAgent` it holds the call too. */
   parentRunId: string;
   /** The `call_subagent` call's `ModelRunToolCall` row. */
   parentToolCallId: string;
@@ -88,10 +97,17 @@ const ACTIVE: SubagentTurnState[] = ["running", "waiting"];
 const LIVE_TURN = { OR: [{ mode: "background" as const }, { parentRun: { status: { in: dispatchableModelRunStatuses } } }] };
 
 const turnSelect = {
-  definitionRevisionId: true, effortSource: true, id: true, mode: true, modelId: true, modelSource: true, parentRunId: true,
+  definitionRevisionId: true, effortSource: true, id: true, mode: true, modelId: true, modelSource: true,
+  parentRun: { select: { subagentTurn: { select: { parentRunId: true } } } }, parentRunId: true,
   provider: true, providerModelId: true, reasoningEffort: true, startedAt: true, state: true, threadId: true
 } as const;
-const threadSelect = { anchorRunId: true, definitionId: true, id: true, name: true, typeName: true } as const;
+const threadSelect = { anchorRunId: true, definitionId: true, id: true, name: true, parentThreadId: true, typeName: true } as const;
+
+type TurnRow = Prisma.SubagentTurnGetPayload<{ select: typeof turnSelect }>;
+
+function turnRecord({ parentRun, ...turn }: TurnRow): SubagentTurnRecord {
+  return { ...turn, branchRunId: turnMainRunId(turn.parentRunId, parentRun) };
+}
 
 type StoreClient = Pick<PrismaClient, "$transaction" | "modelRun" | "modelRunToolCall" | "runFollowup" | "runTranscriptItem" | "subagentThread" |
   "subagentTurn">;
@@ -107,7 +123,7 @@ export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, ch
 }
 
 /** The result of a turn its parent run left behind (a restart): interrupted, with nothing reported. */
-function interruptedResult(name: string, turn: Pick<SubagentTurnRecord, "modelId" | "reasoningEffort">): EndedSubagentCallResult {
+function interruptedResult(name: string, turn: Readonly<{ modelId: string; reasoningEffort: string | null }>): EndedSubagentCallResult {
   return { approvals: [], files: [], kind: "ended", model: { effort: turn.reasoningEffort, id: turn.modelId }, name,
     reason: SUBAGENT_END_REASONS.restart, report: "", state: "interrupted", steps: [] };
 }
@@ -157,22 +173,23 @@ export function createSubagentThreadStore(client: StoreClient) {
       if (!thread) return null;
       const [latest, active] = await Promise.all([
         client.subagentTurn.findFirst({ orderBy: { startedAt: "desc" }, select: turnSelect,
-          where: { chatId: input.chatId, parentRunId: { in: [...new Set(input.branchRunIds)] }, threadId: thread.id, userId: input.userId } }),
+          where: { chatId: input.chatId, threadId: thread.id, userId: input.userId, ...turnsOfMainRuns(input.branchRunIds) } }),
         // A foreground turn whose parent run ended (a restart) no longer runs: it is no active turn, and the next locked
         // admission ends it as interrupted.
         client.subagentTurn.findFirst({ orderBy: { startedAt: "desc" }, select: turnSelect,
           where: { chatId: input.chatId, state: { in: ACTIVE }, threadId: thread.id, userId: input.userId, ...LIVE_TURN } })
       ]);
-      return { active, latest, thread };
+      return { active: active && turnRecord(active), latest: latest && turnRecord(latest), thread };
     },
 
     /**
      * Admits a foreground turn of the name: a new thread anchored to the
      * parent run, or the branch's visible one. Under the chat's admission
      * lock it ends orphaned foreground turns, refuses a thread that runs a
-     * turn (`subagent_busy`) and a chat that already runs
-     * `SUBAGENT_LIMITS.runningPerChat` turns (`subagent_limit_reached`), then
-     * records the turn running with its binding. A refusal writes nothing.
+     * turn (`subagent_busy`), a chat that already runs
+     * `SUBAGENT_LIMITS.runningPerChat` turns (`subagent_limit_reached`) and what
+     * no agent may start (`childAdmissionRefusal`), then records the turn
+     * running with its binding. A refusal writes nothing.
      */
     async admitForeground(input: SubagentForegroundAdmission): Promise<SubagentAdmissionResult> {
       return client.$transaction(async (tx) => {
@@ -181,7 +198,8 @@ export function createSubagentThreadStore(client: StoreClient) {
         let thread = await visibleThread(tx, { branchRunIds: [...input.branchRunIds, input.parentRunId], chatId: input.chatId,
           name: input.name, userId: input.userId });
         const continued = thread !== null;
-        if (thread) {
+        const stranger = thread && thread.parentThreadId !== (input.parentAgent?.threadId ?? null);
+        if (thread && !stranger) {
           const active = await tx.subagentTurn.findFirst({ select: { id: true },
             where: { chatId: input.chatId, state: { in: ACTIVE }, threadId: thread.id, userId: input.userId } });
           if (active) return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" as const };
@@ -189,30 +207,36 @@ export function createSubagentThreadStore(client: StoreClient) {
         if (await runningTurns(tx, input.chatId, input.userId) >= SUBAGENT_LIMITS.runningPerChat) {
           return { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" as const };
         }
+        const refused = await childAdmissionRefusal(tx, { chatId: input.chatId, thread, userId: input.userId,
+          ...(input.parentAgent ? { parentAgent: input.parentAgent } : {}) });
+        if (refused) return { code: refused, kind: "refused" as const };
         thread ??= await tx.subagentThread.create({ data: { anchorRunId: input.parentRunId, chatId: input.chatId,
-          definitionId: input.definitionId, name: input.name, typeName: input.typeName, userId: input.userId }, select: threadSelect });
+          definitionId: input.definitionId, name: input.name, parentThreadId: input.parentAgent?.threadId ?? null, typeName: input.typeName,
+          userId: input.userId }, select: threadSelect });
         const turn = await tx.subagentTurn.create({ data: {
           chatId: input.chatId, definitionRevisionId: input.definitionRevisionId, effortSource: input.binding.effortSource,
-          mode: "foreground", modelId: input.binding.modelId, modelSource: input.binding.modelSource, parentRunId: input.parentRunId,
-          parentToolCallId: input.parentToolCallId, provider: input.binding.provider, providerModelId: input.binding.providerModelId,
+          mode: "foreground", modelId: input.binding.modelId, modelSource: input.binding.modelSource,
+          parentRunId: input.parentAgent?.runId ?? input.parentRunId, parentToolCallId: input.parentToolCallId,
+          provider: input.binding.provider, providerModelId: input.binding.providerModelId,
           reasoningEffort: input.binding.reasoningEffort, state: "running", threadId: thread.id, userId: input.userId
         }, select: turnSelect });
-        return { continued, kind: "admitted" as const, thread, turn };
+        return { continued, kind: "admitted" as const, thread, turn: turnRecord(turn) };
       });
     },
 
     /**
      * The branch's visible thread of the name, or a new one anchored to the
      * parent run: what a background turn's admission runs on. Two calls of one
-     * round that start one name meet one row (`(chatId, anchorRunId, name)`).
+     * round that start one name meet one row (`(chatId, anchorRunId, name)`), so
+     * a thread another agent started comes back as it is and its admission refuses.
      */
     async ensureThread(input: Readonly<{ branchRunIds: readonly string[]; chatId: string; definitionId: string | null; name: string;
-      parentRunId: string; typeName: string | null; userId: string }>): Promise<SubagentThreadRecord> {
+      parentRunId: string; parentThreadId?: string; typeName: string | null; userId: string }>): Promise<SubagentThreadRecord> {
       const visible = await visibleThread(client, { ...input, branchRunIds: [...input.branchRunIds, input.parentRunId] });
       if (visible) return visible;
       return client.subagentThread.upsert({
         create: { anchorRunId: input.parentRunId, chatId: input.chatId, definitionId: input.definitionId, name: input.name,
-          typeName: input.typeName, userId: input.userId },
+          parentThreadId: input.parentThreadId ?? null, typeName: input.typeName, userId: input.userId },
         select: threadSelect,
         update: {},
         where: { chatId_anchorRunId_name: { anchorRunId: input.parentRunId, chatId: input.chatId, name: input.name } }
@@ -243,10 +267,12 @@ export function createSubagentThreadStore(client: StoreClient) {
       const rows = await client.runFollowup.findMany({ orderBy: [{ createdAt: "asc" }, { ordinal: "asc" }],
         select: { authorName: true, nonce: true, origin: true, text: true },
         where: { chatId: input.chatId, deliveredAt: null, modelRunId: { in: [...new Set(input.runIds)] }, ordinal: { gt: RUN_FOLLOWUP_REVISION_MAX },
-          origin: { in: ["main_agent", "subagent_message"] }, subagentTurn: { threadId: input.threadId, userId: input.userId } } });
-      return rows.flatMap((row): SubagentMessage[] => row.origin === "subagent_message"
-        ? [{ from: row.authorName, nonce: row.nonce, origin: "subagent_message", text: row.text }]
-        : row.origin === "main_agent" ? [{ nonce: row.nonce, origin: "main_agent", text: row.text }] : []);
+          origin: { in: ["main_agent", "subagent_callback", "subagent_message", "subagent_question"] },
+          subagentTurn: { threadId: input.threadId, userId: input.userId } } });
+      return rows.flatMap((row): SubagentMessage[] => {
+        const from = mailboxWriter(row.authorName);
+        return row.origin === "user" ? [] : [{ ...(from ? { from } : {}), nonce: row.nonce, origin: row.origin, text: row.text }];
+      });
     },
 
     /** Ends an active turn with its result; a turn that already ended keeps how it ended. */
@@ -297,7 +323,8 @@ export function createSubagentThreadStore(client: StoreClient) {
 
     /**
      * The runs that hold one thread's items on a branch, in turn order: a foreground turn's parent run, a background
-     * turn's own run. `parentRunIds` are the branch's main-agent runs; a turn started elsewhere is not on it.
+     * turn's own run. `parentRunIds` are the branch's main-agent runs; a turn started elsewhere is not on it, and a child
+     * is where its parent was.
      */
     async threadRunIds(input: Readonly<{ chatId: string; parentRunIds: readonly string[]; threadId: string; userId: string }>):
       Promise<string[]> {
@@ -305,19 +332,35 @@ export function createSubagentThreadStore(client: StoreClient) {
       if (parentRunIds.length === 0) return [];
       const turns = await client.subagentTurn.findMany({ orderBy: [{ startedAt: "asc" }, { id: "asc" }],
         select: { executionRun: { select: { id: true } }, mode: true, parentRunId: true },
-        where: { chatId: input.chatId, parentRunId: { in: parentRunIds }, threadId: input.threadId, userId: input.userId } });
+        where: { chatId: input.chatId, threadId: input.threadId, userId: input.userId, ...turnsOfMainRuns(parentRunIds) } });
       return [...new Set(turns.flatMap((turn) => turn.mode === "foreground" ? [turn.parentRunId]
         : turn.executionRun ? [turn.executionRun.id] : []))];
     },
 
-    /** The background turns' own runs started by these main-agent runs, oldest first: their threads' records. */
+    /** The background turns' own runs under these main-agent runs, children's included, oldest first: their threads' records. */
     async backgroundRunIds(input: Readonly<{ chatId: string; parentRunIds: readonly string[]; userId: string }>): Promise<string[]> {
       const parentRunIds = [...new Set(input.parentRunIds)];
       if (parentRunIds.length === 0) return [];
       const runs = await client.modelRun.findMany({ orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
-        where: { chatId: input.chatId, subagentTurn: { is: { mode: "background", parentRunId: { in: parentRunIds } } },
+        where: { chatId: input.chatId, subagentTurn: { is: { mode: "background", ...turnsOfMainRuns(parentRunIds) } },
           userId: input.userId } });
       return runs.map((run) => run.id);
+    },
+
+    /**
+     * What the children this turn called ended with: the calls they hand back climb with their parent's report, whether
+     * it waited for them or not, because only the main agent can ask the user.
+     */
+    async childResults(input: Readonly<{ chatId: string; parentTurnId: string; userId: string }>): Promise<readonly unknown[]> {
+      const rows = await client.subagentTurn.findMany({ orderBy: [{ startedAt: "asc" }, { id: "asc" }], select: { result: true },
+        where: { chatId: input.chatId, parentToolCall: { is: { subagentTurnId: input.parentTurnId } }, state: { notIn: ACTIVE }, userId: input.userId } });
+      return rows.map((row) => row.result);
+    },
+
+    /** How many children of this sub-agent are active, on any branch: what its report waits for. */
+    async activeChildren(input: Readonly<{ chatId: string; threadId: string; userId: string }>): Promise<number> {
+      return client.subagentTurn.count({ where: { chatId: input.chatId, state: { in: ACTIVE }, thread: { parentThreadId: input.threadId },
+        userId: input.userId } });
     },
 
     /** The stored result of an ended turn of the chat; null while it runs or when it is not the chat's. */

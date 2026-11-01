@@ -3035,7 +3035,8 @@ model RunFollowup {
   origin          RunFollowupOrigin @default(user)
   /// The turn a run's own `subagent_callback` or `subagent_question` reports, the engine rendering a callback from that
   /// turn's result; or, on a row above the run's own ordinals (`RUN_FOLLOWUP_REVISION_MAX`), the turn whose mailbox holds
-  /// it, foreground or background: the run hosting that turn keeps the row and only that turn reads it.
+  /// it, foreground or background: the run hosting that turn keeps the row and only that turn reads it. There a
+  /// `subagent_callback` or `subagent_question` is a child's report or question for its parent.
   subagentTurnId  String?
   modelRun        ModelRun @relation(fields: [chatId, modelRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
   author          User?    @relation(fields: [authorUserId], references: [id], onDelete: SetNull, onUpdate: Restrict)
@@ -3049,7 +3050,8 @@ model RunFollowup {
 }
 
 /// A named sub-agent of a chat (`lib/contracts/subagents.ts`): the identity its turns, transcript items and tool
-/// calls share. It belongs to the branch of its anchor, the main-agent run whose `call_subagent` started it: it is
+/// calls share. It belongs to the branch of its anchor, the main-agent run whose `call_subagent` started it, or for a
+/// child the one behind its parent's turn: it is
 /// visible where that run's answer is on the branch, and a name resolves to the visible thread of that name, so
 /// `(chatId, anchorRunId, name)` is unique and two calls of one round that start one name meet one row. Its state
 /// on a branch is that of its latest turn whose parent run's answer is on the branch, so editing an earlier message
@@ -3064,27 +3066,36 @@ model SubagentThread {
   /// which `typeName` (kept) tells apart. The migration uses column-scoped SET NULL to clear only this column.
   definitionId    String?
   typeName        String?             @db.VarChar(48)
+  /// The sub-agent that started it, one level down (operator decision 2026-10-31); null when the main agent did. It
+  /// never changes: only that agent continues the thread. Its anchor is on the parent's branch, so it goes with it.
+  parentThreadId  String?
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   chat            Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   anchorRun       ModelRun            @relation("SubagentThreadAnchor", fields: [userId, chatId, anchorRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "SubagentThread_anchorRun_fkey")
   definition      SubagentDefinition? @relation(fields: [userId, definitionId], references: [ownerUserId, id], onDelete: SetNull, onUpdate: Restrict, map: "SubagentThread_definition_fkey")
+  parentThread    SubagentThread?     @relation("SubagentThreadChildren", fields: [userId, chatId, parentThreadId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "SubagentThread_parentThread_fkey")
+  childThreads    SubagentThread[]    @relation("SubagentThreadChildren")
   turns           SubagentTurn[]
 
   @@unique([chatId, anchorRunId, name])
   @@unique([userId, chatId, id])
   @@index([chatId, createdAt])
   @@index([userId, definitionId])
+  @@index([userId, chatId, parentThreadId])
 }
 
-/// One turn of a sub-agent thread: what one `call_subagent` call of a main-agent run (`parentRunId`,
-/// `parentToolCallId`) started or continued. A foreground turn runs inside its parent run, whose transcript items and
+/// One turn of a sub-agent thread: what one `call_subagent` call (`parentRunId`, `parentToolCallId`) started or
+/// continued. `parentRunId` is the run that holds that call: a main-agent run, or for a child of a background sub-agent
+/// that sub-agent's own run, whose turn then leads to the main-agent run that places the child on a branch. A foreground
+/// turn runs inside its parent run, whose transcript items and
 /// tool calls carry the thread key; a background turn runs as its own `ModelRun` (`ModelRun.subagentTurnId`). Either
 /// way its mailbox is the `RunFollowup` rows naming it on the run hosting it. The binding columns snapshot the resolved
 /// model and effort and where each came from, so a continuation keeps a model the call or the type chose. A background
 /// turn that ended owes its callback, and one waiting for an answer its question, until `callbackRunId` names the
 /// main-agent run that received it (a running answer, or the wake-up turn); deleting that run makes it owed again, and
-/// resuming clears the claim, so the turn's own end owes a callback of its own.
+/// resuming clears the claim, so the turn's own end owes a callback of its own. A child owes neither: its report and
+/// questions go to its parent's mailbox, and it ends with its parent.
 model SubagentTurn {
   id                   String                @id @default(uuid())
   userId               String

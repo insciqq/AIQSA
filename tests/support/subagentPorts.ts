@@ -190,6 +190,13 @@ export class FakeSubagentBackgroundControl implements SubagentBackgroundControl 
     return { kind: "stopped", result: turn.result! };
   }
 
+  async stopChildren(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number> {
+    const children = this.turns.filter((turn) => turn.input.chatId === input.chatId && turn.input.parentAgent?.threadId === input.threadId && !turn.result);
+    for (const child of children) this.finish(child.turnId, endedSubagentResult(child.input.name, { outcome: undefined, reason: SUBAGENT_END_REASONS.parentStopped,
+      state: "stopped" }));
+    return children.length;
+  }
+
   /** Ends a running background turn with this result, as its run would. */
   finish(turnId: string, result: EndedSubagentCallResult): void {
     const turn = this.turns.find((candidate) => candidate.turnId === turnId);

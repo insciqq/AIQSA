@@ -3,6 +3,7 @@ import {
   SUBAGENT_END_REASONS,
   SUBAGENT_ERROR_CODES,
   isActiveSubagentState,
+  subagentCallbackNonce,
   type EndedSubagentCallResult
 } from "../../../contracts/subagents";
 import { randomUUID } from "node:crypto";
@@ -28,9 +29,11 @@ import type {
   SubagentTurnHandle,
   WorkspaceAttachments
 } from "../../subagents/ports";
+import { MAIN_AGENT_AUTHOR } from "../../subagents/nesting";
 import type { UsageLimitsRepository } from "../../usageLimits/repository";
 import { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "../activeRunControllerRegistry";
-import { impliedResult, type SubagentBackgroundStore, type SubagentTurnRecord } from "./store";
+import { renderCallbackFollowup, SUBAGENT_CALLBACK_DEFAULT_RESERVE_TOKENS } from "./render";
+import { impliedResult, type MailboxInsertInput, type SubagentBackgroundStore, type SubagentTurnRecord } from "./store";
 
 /**
  * Background sub-agent runs (Claude Code's Agent with `run_in_background`,
@@ -39,7 +42,9 @@ import { impliedResult, type SubagentBackgroundStore, type SubagentTurnRecord } 
  * bindings and the usage limits, and returns at once; it runs in this
  * process until it ends, is stopped or reaches its own turn time, then
  * settles its turn and sends its callback to the main agent. Stopping the
- * main agent's answer never stops it: its signal is its own.
+ * main agent's answer never stops it: its signal is its own. A child of a
+ * sub-agent reports to its parent's mailbox instead, which needs no wake-up,
+ * because it never outlives its parent (`stopChildren`).
  */
 
 /** A background turn's own tool time (operator decision 2026-10-26: Workspace turns get an hour). */
@@ -71,6 +76,8 @@ type Execution = {
   interrupted: boolean;
   name: string;
   parentRunId: string;
+  /** The sub-agent that started it; null: the main agent. */
+  parentThreadId: string | null;
   /**
    * A Stop that did not see it settle in time retired its Workspace authority
    * (`execution: unknown`): a launch still attaching then detaches at once and
@@ -179,6 +186,25 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   }
 
   /**
+   * A child that ended reports to its parent's mailbox, where the parent reads it at its next step, like a callback in a
+   * running answer. One its parent ended itself has nobody to report to: its result stays on its turn, for `list_agents`
+   * and for the parent's next turn, which may continue it.
+   */
+  function reportToParent(child: SubagentChatScope & Readonly<{ name: string; parentThreadId: string; turnId: string }>,
+    result: EndedSubagentCallResult, runId: string | null): void {
+    if (result.reason === SUBAGENT_END_REASONS.parentStopped) return;
+    const scope = { chatId: child.chatId, userId: child.userId };
+    void deps.store.activeTurns({ ...scope, threadId: child.parentThreadId }).then(async ([parent]) => {
+      if (!parent) return;
+      await deliverToTurn(parent, { from: child.name, nonce: subagentCallbackNonce(child.turnId), origin: "subagent_callback",
+        text: renderCallbackFollowup({ name: child.name, result, turnId: child.turnId }, { tokens: SUBAGENT_CALLBACK_DEFAULT_RESERVE_TOKENS }) });
+    }).catch((error: unknown) => {
+      logEvent("run_recovery", { action: "retry", code: "subagent_callback_failed", error, outcome: "failed",
+        ...(runId ? { run_id: runId } : {}), stage: "dispatch", subsystem: "run_recovery" });
+    });
+  }
+
+  /**
    * The execution of a turn about to be admitted, registered before its
    * admission is visible, so a Stop that finds the admitted turn finds its
    * execution too: it marks it stopped and waits for `done`, and the launch
@@ -189,8 +215,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     let finish: () => void = () => undefined;
     const done = new Promise<void>((resolve) => { finish = resolve; });
     const execution: Execution = { done, finish, handle: null, interrupted: false, name: input.name, parentRunId: input.parentRunId,
-      retired: false, runId: ids.runId, scope: { chatId: input.chatId, userId: input.userId }, stopReason: null,
-      threadId: input.threadId, turnId: ids.turnId };
+      parentThreadId: input.parentAgent?.threadId ?? null, retired: false, runId: ids.runId,
+      scope: { chatId: input.chatId, userId: input.userId }, stopReason: null, threadId: input.threadId, turnId: ids.turnId };
     executions.set(ids.turnId, execution);
     return { abandon() {
       lease?.release();
@@ -204,11 +230,13 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const { execution, lease } = pending;
     const signal = lease?.signal ?? new AbortController().signal;
     const scope = execution.scope;
-    const deadlineAt = new Date(now() + turnTimeMs);
+    // A child ends by its parent's time too, with room for its report before its parent's own.
+    const ownTimeMs = input.deadlineAt ? Math.min(turnTimeMs, Math.max(0, input.deadlineAt.getTime() - now())) : turnTimeMs;
+    const deadlineAt = new Date(now() + ownTimeMs);
     void (async () => {
       // Its own tool time ends it through the same stop as the user's, so a runner that does not stop still settles.
       const deadline = setTimeout(() => void deps.store.findTurn({ ...scope, turnId: ids.turnId })
-        .then((turn) => turn ? stopTurn(turn, SUBAGENT_END_REASONS.deadline) : null).catch(() => null), turnTimeMs);
+        .then((turn) => turn ? stopTurn(turn, SUBAGENT_END_REASONS.deadline) : null).catch(() => null), ownTimeMs);
       (deadline as { unref?: () => void }).unref?.();
       let attached = false;
       let executionUnknown = false;
@@ -232,7 +260,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         }
         if (execution.stopReason) throw new Error("subagent_stopped_before_start");
         const turn = { ...scope, binding: input.binding, brief: input.brief, deadlineAt, hostRunId: ids.runId,
-          mode: "background" as const, name: input.name, parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
+          mode: "background" as const, name: input.name, ...(input.parentAgent ? { parentAgent: input.parentAgent } : {}),
+          parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
           signal, threadId: input.threadId, turnId: ids.turnId, type: input.type, userMessage: input.userMessage,
           ...(workspaceRefused ? { workspaceRefused } : {}) };
         const handle = input.kind === "start" ? await runner.start(turn) : await runner.continue(turn);
@@ -267,7 +296,9 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       }
       const ended = await settle(execution, ids.turnId, result);
       pending.abandon();
-      if (ended) callBack({ ...scope, name: input.name, parentRunId: input.parentRunId, result: ended, threadId: input.threadId,
+      if (!ended) return;
+      if (input.parentAgent) reportToParent({ ...scope, name: input.name, parentThreadId: input.parentAgent.threadId, turnId: ids.turnId }, ended, ids.runId);
+      else callBack({ ...scope, name: input.name, parentRunId: input.parentRunId, result: ended, threadId: input.threadId,
         turnId: ids.turnId }, ids.runId);
     })().catch(() => pending.abandon());
   }
@@ -316,8 +347,13 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const result = impliedResult({ modelId: turn.model.id, name: turn.name, reason, reasoningEffort: turn.model.effort, state: "stopped" });
     const settlement = await deps.store.settle({ chatId: turn.chatId, result, turnId: turn.turnId, userId: turn.userId });
     if (settlement.settled && settlement.result) {
-      callBack({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
-        threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }, turn.runId);
+      if (turn.parentThreadId) {
+        reportToParent({ chatId: turn.chatId, name: turn.name, parentThreadId: turn.parentThreadId, turnId: turn.turnId, userId: turn.userId },
+          settlement.result, turn.runId);
+      } else {
+        callBack({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
+          threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }, turn.runId);
+      }
     }
     return settlement.result;
   }
@@ -359,9 +395,9 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
    * transcript write stamps it delivered, so one whose turn never gets to read it stays unread for the thread's next turn,
    * and an execution of this process hears of it at once, which is what ends a wait.
    */
-  async function deliverToTurn(turn: SubagentTurnRecord, message: SubagentMessage & Readonly<{ origin: "main_agent" | "subagent_message" }>):
+  async function deliverToTurn(turn: SubagentTurnRecord, message: SubagentMessage & Readonly<{ origin: MailboxInsertInput["origin"] }>):
     Promise<SubagentDeliveryOutcome> {
-    const stored = await deps.store.insertMailbox({ authorName: message.from ?? "Main agent", chatId: turn.chatId, nonce: message.nonce,
+    const stored = await deps.store.insertMailbox({ authorName: message.from ?? MAIN_AGENT_AUTHOR, chatId: turn.chatId, nonce: message.nonce,
       origin: message.origin, text: message.text, turnId: turn.turnId, userId: turn.userId });
     if (stored === "full") throw new SubagentMailboxFullError();
     if (stored === "closed") {
@@ -379,7 +415,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     if (!turn) return { code: SUBAGENT_ERROR_CODES.notFound, kind: "refused" };
     if (!isActiveSubagentState(turn.state)) return { code: SUBAGENT_ERROR_CODES.notActive, kind: "refused", state: turn.state };
     try {
-      const outcome = await deliverToTurn(turn, { from: input.from, nonce: input.nonce, origin: "subagent_message", text: input.text });
+      const outcome = await deliverToTurn(turn, { from: input.from, nonce: input.nonce, origin: input.question ? "subagent_question" : "subagent_message",
+        text: input.text });
       if (outcome.kind === "delivered") return { kind: "delivered" };
       return outcome.kind === "ended" ? { code: SUBAGENT_ERROR_CODES.notActive, kind: "refused", state: outcome.result.state }
         : { code: SUBAGENT_ERROR_CODES.notFound, kind: "refused" };
@@ -408,7 +445,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       let admission: Awaited<ReturnType<SubagentBackgroundStore["admit"]>>;
       try {
         admission = await deps.store.admit({ binding: input.binding, chatId: input.chatId,
-          definitionRevisionId: input.type?.revisionId ?? null, parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
+          definitionRevisionId: input.type?.revisionId ?? null, ...(input.parentAgent ? { parentAgent: input.parentAgent } : {}),
+          parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
           runId: ids.runId, threadId: input.threadId, turnId: ids.turnId, userId: input.userId });
       } catch (error) {
         pending.abandon();
@@ -454,6 +492,12 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       const result = await stopTurn(turn, SUBAGENT_END_REASONS.stoppedByAgent);
       return { kind: "stopped", result: result ?? impliedResult({ modelId: turn.model.id, name: turn.name,
         reason: SUBAGENT_END_REASONS.stoppedByAgent, reasoningEffort: turn.model.effort, state: "stopped" }) };
+    },
+
+    async stopChildren(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number> {
+      const scope = { chatId: input.chatId, userId: input.userId };
+      return stopMany(scope, await deps.store.activeTurns({ ...scope, parentThreadId: input.threadId }), SUBAGENT_END_REASONS.parentStopped,
+        (execution) => execution.parentThreadId === input.threadId);
     },
 
     async stopThread(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number> {

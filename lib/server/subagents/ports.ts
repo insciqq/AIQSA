@@ -32,6 +32,20 @@ import type { WorkspaceAgent } from "./guestProtocol";
 export type SubagentChatScope = Readonly<{ chatId: string; userId: string }>;
 
 /**
+ * The sub-agent that starts a child (operator decision 2026-10-31); absent for what the main agent starts. Beside it
+ * `parentRunId` stays the main-agent run that places the caller on its branch.
+ */
+export type SubagentParentAgent = Readonly<{
+  name: string;
+  /** The run that holds its calls, a foreground child's turns included: the child's `SubagentTurn.parentRunId`. */
+  runId: string;
+  threadId: string;
+  /** What it has spent on tools, which its children's calls count toward (`ToolBatchState`). */
+  toolState: { calls: number };
+  turnId: string;
+}>;
+
+/**
  * The model binding a turn runs with, resolved at its admission from the
  * parent run's frozen catalog (precedence: the call, the type, the parent) and
  * snapshotted on `SubagentTurn`. Never current settings or browser claims.
@@ -80,6 +94,9 @@ export type SubagentTurnInput = SubagentChatScope & Readonly<{
   hostRunId: string;
   mode: SubagentTurnMode;
   name: string;
+  /** The sub-agent that started this child; absent when the main agent did. */
+  parentAgent?: SubagentParentAgent;
+  /** The main-agent run behind the turn, which places it on its branch and holds the bindings it inherits. */
   parentRunId: string;
   parentToolCallId: string;
   signal: AbortSignal;
@@ -99,15 +116,16 @@ export type SubagentTurnInput = SubagentChatScope & Readonly<{
 export type SubagentTurnHandle = Readonly<{ turnId: string }>;
 
 /**
- * A message for a running turn's mailbox: from the main agent, from another sub-agent, or a user follow-up the parent
- * received while it waited. Only `user` is the user's speech. Foreground and background turns take the same messages.
+ * A message for a running turn's mailbox: from its parent (`main_agent`, with `from` when that is a sub-agent), from
+ * another sub-agent, a child's report or question for its parent, or a user follow-up the parent received while it waited.
+ * Only `user` is the user's speech. Foreground and background turns take the same messages.
  */
 export type SubagentMessage = Readonly<{
-  /** The writer's name, for `subagent_message`. */
+  /** The writer's name: a sub-agent's, absent for the main agent and the user. */
   from?: string;
   /** Idempotency key: the sending tool call's id, or the follow-up's. */
   nonce: string;
-  origin: "main_agent" | "subagent_message" | "user";
+  origin: "main_agent" | "subagent_callback" | "subagent_message" | "subagent_question" | "user";
   text: string;
 }>;
 
@@ -144,8 +162,9 @@ export interface SubagentRunner {
   stop(handle: SubagentTurnHandle, reason: SubagentStopReason): Promise<EndedSubagentCallResult | null>;
 }
 
-/** The main-agent run whose call reaches a sub-agent, and that call (`ModelRunToolCall`). */
+/** The main-agent run whose call reaches a sub-agent, and that call (`ModelRunToolCall`); `parentAgent` when a sub-agent made it. */
 export type SubagentCallerScope = SubagentChatScope & Readonly<{
+  parentAgent?: SubagentParentAgent;
   parentRunId: string;
   parentToolCallId: string;
 }>;
@@ -159,6 +178,8 @@ export type SubagentBackgroundAvailability =
 export type SubagentBackgroundStartInput = SubagentCallerScope & Readonly<{
   binding: SubagentBinding;
   brief: string;
+  /** A child's: the turn ends by its parent's own time, since it never outlives its parent. */
+  deadlineAt?: Date;
   /** `start` for the first turn of a thread, `continue` for a later one (`SubagentRunner`). */
   kind: "continue" | "start";
   name: string;
@@ -173,7 +194,9 @@ export type SubagentBackgroundStartResult =
   /**
    * Nothing ran. `subagent_usage_limited` (usage limits refused the run),
    * `subagent_limit_reached` (20 running in the chat), `subagent_busy` (the
-   * thread got an active run meanwhile), `subagent_background_unavailable`.
+   * thread got an active run meanwhile), `subagent_background_unavailable`,
+   * and for a child `subagent_child_limit_reached`, `subagent_depth_limit_reached`
+   * or `subagent_not_own_child`.
    */
   | Readonly<{ code: SubagentErrorCode; kind: "refused" }>;
 
@@ -229,6 +252,8 @@ export interface SubagentBackgroundControl {
    * returns its last state; one that already ended returns how it ended.
    */
   stop(input: SubagentCallerScope & Readonly<{ name: string }>): Promise<SubagentBackgroundStopResult>;
+  /** A sub-agent's turn ends: its children still active end with it (`parent_stopped`), in any mode. Returns those that ended. */
+  stopChildren(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number>;
 }
 
 /** A background turn that ended, for the main agent of the branch it was started on. */
@@ -275,6 +300,8 @@ export type SubagentSendInput = SubagentChatScope & Readonly<{
   /** The sending call's id, so a repeat finds its row. */
   nonce: string;
   parentRunId: string;
+  /** A child's question for its parent, which it waits on (`ask_parent`), rather than something it tells. */
+  question?: true;
   text: string;
   /** A name on the caller's branch, or `MAIN_AGENT_NAME`. */
   to: string;
