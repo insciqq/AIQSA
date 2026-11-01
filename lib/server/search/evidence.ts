@@ -23,13 +23,10 @@ export type SearchSource = Readonly<{
 // what fits the persisted tool result (`fitDurableSearchToolResult`).
 export const MAX_SEARCH_FINDINGS_CHARACTERS = 1_024 * 1_024;
 export const MAX_SEARCH_FINDINGS_BYTES = 1_024 * 1_024;
-/** Sources one engine result keeps: the adapter ceiling and the durable bound. */
-export const MAX_SEARCH_ENGINE_SOURCES = 20;
 /** The only findings a complete engine result may carry without sources: a
  * raw results API's explicit empty answer, in these server-owned words. It
  * holds no provider text, so it needs no attribution. */
 export const SEARCH_NO_RESULTS_FINDINGS = "The search returned no results for this query.";
-const MAX_SEARCH_CITATION_NUMBER = 10_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -43,8 +40,7 @@ function text(value: unknown, max: number): string | undefined {
 }
 
 function citationNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 &&
-    value <= MAX_SEARCH_CITATION_NUMBER ? value : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : undefined;
 }
 
 function safeHttpHref(value: unknown): string | undefined {
@@ -80,16 +76,16 @@ export function normalizeSearchFindings(value: unknown): string {
 }
 
 /** Normalize only an explicit flat list of adapter-selected source candidates.
- * This deliberately does not crawl arbitrary provider payloads or previews. */
+ * This deliberately does not crawl arbitrary provider payloads or previews.
+ * Legacy adapters still pass a source ceiling; it no longer limits results. */
 export function normalizeSearchSources(
   value: unknown,
-  maximum = MAX_SEARCH_ENGINE_SOURCES
+  _legacyMaximum?: number
 ): SearchSource[] {
   const sources: SearchSource[] = [];
   const seenUrls = new Set<string>();
   if (!Array.isArray(value)) return sources;
   for (const candidate of value) {
-    if (sources.length >= maximum) break;
     if (!isRecord(candidate)) continue;
     const row = candidate;
     const safe = safeHttpHref(row.url) ?? safeHttpHref(row.href);
@@ -113,37 +109,34 @@ export function normalizeSearchSources(
   return sources;
 }
 
-/** The sources one engine result keeps: every cited source first, within the
- * adapter ceiling, then at most `maxBrowsed` sources the engine only browsed.
- * A reference in the findings must resolve to a kept source, so `maxResults`
- * never bounds cited sources. Ranks stay positional. */
-export function boundedEngineSearchSources(value: unknown, maxBrowsed: number): SearchSource[] {
-  const sources = normalizeSearchSources(value, Number.MAX_SAFE_INTEGER);
+/** Keep all normalized sources, with cited sources before browsed sources.
+ * Provider transport and durable byte bounds apply independently of count. */
+export function engineSearchSources(value: unknown): SearchSource[] {
+  const sources = normalizeSearchSources(value);
   return normalizeSearchSources([
     ...sources.filter((source) => source.citation !== undefined),
-    ...sources.filter((source) => source.citation === undefined).slice(0, Math.max(0, maxBrowsed))
+    ...sources.filter((source) => source.citation === undefined)
   ]);
 }
 
 /** Adapter-selected cited sources numbered by their position, for a provider
  * that cites sources without numbering them in its text. */
-export function citedSearchSources(value: unknown, maximum = MAX_SEARCH_ENGINE_SOURCES): SearchSource[] {
-  return normalizeSearchSources(value, maximum).map((source) => ({ ...source, citation: source.rank }));
+export function citedSearchSources(value: unknown): SearchSource[] {
+  return normalizeSearchSources(value).map((source) => ({ ...source, citation: source.rank }));
 }
 
 /** Citation artifacts are already provider-adapter allowlist projections.
  * Each source keeps the provider's citation number (`index`) when its
  * artifact carries one, otherwise its position among the cited sources. */
 export function searchSourcesFromCitationArtifacts(
-  artifacts: readonly import("../../domain/modelRunEvents").ModelRunSseEvent[],
-  maximum = MAX_SEARCH_ENGINE_SOURCES
+  artifacts: readonly import("../../domain/modelRunEvents").ModelRunSseEvent[]
 ): SearchSource[] {
   return normalizeSearchSources(artifacts.flatMap((event) =>
     event.type === "artifact" && event.data.artifactType === "citation" &&
       isRecord(event.data.payload)
       ? [{ ...event.data.payload, citation: event.data.payload.index }]
       : []
-  ), maximum).map((source) => source.citation === undefined
+  )).map((source) => source.citation === undefined
     ? { ...source, citation: source.rank }
     : source);
 }

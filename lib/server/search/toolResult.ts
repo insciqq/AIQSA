@@ -175,7 +175,7 @@ export function searchExecutionsFromToolResult(
     if (value.warning !== undefined && !warning) return [];
     const sourceValues = value.sources as unknown[];
     // Version 2 never carried citation numbers; it decodes exactly as before.
-    const sources = normalizeSearchSources(sourceValues, 20).map((source) =>
+    const sources = normalizeSearchSources(sourceValues).map((source) =>
       version === LEGACY_SEARCH_TOOL_RESULT_VERSION ? withoutCitation(source) : source);
     if (sources.length !== sourceValues.length) return [];
     const sourceAttribution = value.sourceAttribution === undefined ||
@@ -277,7 +277,7 @@ function findingsHeader(engine: RenderedEngine): string {
  * the number its findings use; the others follow the highest such number, so
  * an engine without citation numbers is numbered by position. */
 function engineSourcesText(engine: RenderedEngine): string {
-  let next = Math.max(0, ...engine.sources.map((source) => source.citation ?? 0));
+  let next = engine.sources.reduce((highest, source) => Math.max(highest, source.citation ?? 0), 0);
   return engine.sources.length
     ? `Sources for ${JSON.stringify(engine.displayName)}:\n${engine.sources.map((source) =>
         `[${source.citation ?? ++next}] ${source.title} — ${source.url}`).join("\n")}`

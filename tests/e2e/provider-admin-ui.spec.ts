@@ -1960,8 +1960,6 @@ test("administrator saves a versioned Search recommendation that grants no acces
         adapterKind: "provider_model_client",
         credentialMode: "provider_model",
         maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-        maxResults: 8,
-        maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
         protocol: "openai_responses_web_search",
         providerModelId: "search-model-1",
         queryMaxCharacters: 500,
@@ -2099,7 +2097,8 @@ test("administrator saves a versioned Search recommendation that grants no acces
   await expect(sheet.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await expect(sheet.getByRole("spinbutton", {
     name: /^Maximum requests to this source per answer/
-  })).toHaveValue(String(adminSearchExecutionDefaults.maxSearchCallsPerAnswer));
+  })).toHaveCount(0);
+  await expect(sheet.getByRole("spinbutton", { name: "Results per search" })).toHaveCount(0);
   await expect(sheet.getByRole("combobox", { name: /^Search reasoning/ }))
     .toHaveValue(adminSearchExecutionDefaults.reasoningPolicy);
   await expect(sheet).toContainText("If it fails, nothing changes.");
