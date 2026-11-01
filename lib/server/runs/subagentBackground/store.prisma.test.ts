@@ -812,6 +812,7 @@ describe("a sub-agent's children on PostgreSQL", () => {
     await store.settle({ ...scope, result: endedSubagentResult("behind", { outcome: undefined, reason: "parent_stopped", state: "stopped" }), turnId: admitted.turnId });
     expect(await runtime.markStarting({ fingerprint, generationId, now: new Date() })).toBe(false);
     expect(await runtime.deleteDrainedGeneration(generationId)).toBe(true);
+    await prisma.mcpRevision.deleteMany({ where: { serverId } });
     await prisma.mcpServer.delete({ where: { id: serverId } });
   }));
 
