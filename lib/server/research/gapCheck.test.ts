@@ -13,6 +13,7 @@ import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/
 import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
+import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchEngineDeps } from "./run";
@@ -578,8 +579,8 @@ describe("gap check through the real engine", () => {
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(4);
     expect(resultsOf(main.requests[2], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("sent_back");
-    // The gate supplied both notes, but the seam currently drops them when a
-    // later response ends the run without checking another draft.
+    // Both notes survive when a later response ends the run without
+    // checking another draft.
     expect({ namedGap: memory.published()?.includes("owner_reviews"), unreachableReason: memory.published()?.includes(reason) })
       .toEqual({ namedGap: true, unreachableReason: true });
   });
@@ -593,5 +594,77 @@ describe("gap check through the real engine", () => {
     // run.ts keeps the standing draft after this one correction opportunity.
     expect(memory.published()).toContain("Second report.");
     expect(memory.published()).toContain(researchNote("unresolved", "Second report."));
+  });
+});
+
+describe("gate notes survive draft recovery", () => {
+  const earlierNote = "The maker site was unavailable.";
+  const ownNote = "Independent testing covered only one year.";
+  const unresolvedNote = "Owner reviews remain unchecked.";
+  const before = { name: "before", run: async () => ({ kind: "pass" as const, notes: [earlierNote] }) };
+  const sendBack = { kind: "send_back" as const, message: "Find owner reviews.", notes: [earlierNote, ownNote], unresolvedNote };
+
+  it.each(["tools_closed", "text_ended", "empty_ended", "failed", "stopped", "timed_out"] as const)("preserves each note once through %s", async (ending) => {
+    if (ending === "timed_out") vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      let clock = 0;
+      const runId = `notes-${ending}`;
+      const endings: Record<typeof ending, readonly Step[]> = {
+        tools_closed: [
+          { calls: [{ arguments: { plan: [{ status: "pending", step: "Read owners" }] }, id: "slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
+          { calls: [{ arguments: {}, id: "other", name: "update_plan" }] }
+        ],
+        text_ended: [{ text: "Still looking." }, { text: "Still looking again." }],
+        empty_ended: [{}], failed: [{ fail: true }],
+        stopped: [{ onCall: () => { activeRunControllerRegistry.abort(runId); } }], timed_out: [{ hang: true }]
+      };
+      const main = scripted([{ calls: [start()] }, { calls: [submit("draft-1", DRAFT)] }, ...endings[ending]]);
+      const memory = engineOf({ gates: [before, { name: "back", run: async () => sendBack }] },
+        ending === "tools_closed" ? { now: () => clock } : {});
+      const repo = repository();
+      const finished = run(main.adapter, memory, { runId }, repo).text();
+      if (ending === "timed_out") await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
+      await finished;
+      const saved = (repo.appendAssistantText.mock.calls.at(-1) as unknown[] | undefined)?.[1];
+      const stopped = (vi.mocked(memory.runs.saveStoppedText).mock.calls.at(-1) as unknown[] | undefined)?.[1];
+      const shown = memory.published() ?? stopped ?? saved;
+      const generic = ending === "stopped" ? "stopped" : ending === "failed" ? "run_failed"
+        : ending === "tools_closed" || ending === "timed_out" ? "time_out" : "unresolved";
+      expect(shown).toBe(researchAnswerText(DRAFT.report, [earlierNote, ownNote, unresolvedNote, researchNote(generic, DRAFT.report)]));
+      expect(main.requests).toHaveLength(ending === "tools_closed" || ending === "text_ended" ? 4 : 3);
+    } finally {
+      if (ending === "timed_out") vi.useRealTimers();
+    }
+  });
+
+  it("replaces old remarks with the later accepted draft's own notes", async () => {
+    const corrected = { ...DRAFT, report: "The corrected report." };
+    const main = scripted([{ calls: [start()] }, { calls: [submit("draft-1", DRAFT)] }, { calls: [submit("draft-2", corrected)] }]);
+    const memory = engineOf({ gates: [before, { name: "back", run: async (_draft, ctx) => ctx.attempt === 1 ? sendBack
+      : { kind: "pass", notes: ["Owner reviews were checked."] } }] });
+    await run(main.adapter, memory).text();
+    expect(memory.published()).toBe(researchAnswerText(corrected.report, [earlierNote, "Owner reviews were checked."]));
+    expect(main.requests).toHaveLength(3);
+  });
+
+  it.each([false, true])("keeps a superseded draft's notes when the follow-up has no replacement (failure: %s)", async (failed) => {
+    let checked = false;
+    let handed = false;
+    const main = scripted([{ calls: [start()] }, { calls: [submit("draft-1", DRAFT)] }, { fail: failed }]);
+    const memory = engineOf({ gates: [before, { name: "back", run: async () => { checked = true; return sendBack; } }] });
+    const repo = repository();
+    const followups = {
+      close: vi.fn(async () => true), deliver: vi.fn(async () => true),
+      load: vi.fn(async () => {
+        const due = checked && !handed;
+        if (due) handed = true;
+        return { entries: due ? [{ delivery: "accepted" as const, id: "f1", origin: "user" as const, text: "Also check prices." }] : [], revision: 1 };
+      })
+    };
+    await run(main.adapter, memory, { prepared: { ...prepared(), followupAdmission: {} as never } }, { ...repo, followups } as never).text();
+    const shown = memory.published() ?? (repo.appendAssistantText.mock.calls.at(-1) as unknown[] | undefined)?.[1];
+    expect(shown).toBe(researchAnswerText(DRAFT.report, [earlierNote, ownNote, unresolvedNote,
+      ...failed ? [researchNote("run_failed", DRAFT.report)] : [], researchNote("followup_not_applied", DRAFT.report)]));
+    expect(main.requests).toHaveLength(3);
   });
 });
