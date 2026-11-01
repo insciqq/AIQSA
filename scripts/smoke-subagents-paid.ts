@@ -1432,9 +1432,10 @@ async function keepAnswers(ctx: Context, chatId: string, label: string, redact: 
 
 const S_TURN_MS = 12 * 60_000;
 
-async function resultsHold(db: PostgresClient, chatId: string, toolLike: string, urlPart: string, needle: string): Promise<boolean> {
-  const { rows } = await db.query<{ hit: boolean }>(`SELECT coalesce(bool_or(strpos(c."result"::text, $4) > 0), false) AS "hit" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
-    WHERE r."chatId" = $1 AND c."toolName" LIKE $2 AND strpos(c."arguments"::text, $3) > 0`, [chatId, toolLike, urlPart, needle]);
+/** Whether what a chat's agents got from tools holds this text, matched inside SQL. Tool results live in the transcript, whole or as their excerpt. */
+async function transcriptHolds(db: PostgresClient, chatId: string, needle: string): Promise<boolean> {
+  const { rows } = await db.query<{ hit: boolean }>(`SELECT coalesce(bool_or(strpos(t."body"::text, $2) > 0), false) AS "hit" FROM "RunTranscriptItem" t
+    WHERE t."chatId" = $1 AND t."kind"::text = 'tool_result'`, [chatId, needle]);
   return rows[0]?.hit === true;
 }
 
@@ -1465,7 +1466,9 @@ async function scenarioS(ctx: Context, run: Run): Promise<Outcome> {
     FROM "NetworkProxy" p WHERE lower(p."name") = $1`, [SCENARIO_S_NAME, proxy.host]);
   const row = saved[0];
   const { rows: inAnswer } = await ctx.db.query<{ hit: boolean }>(`SELECT coalesce(bool_or(strpos(m."content"::text, $2) > 0), false) AS "hit" FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."chatId" = $1`, [saveChat, proxy.password]);
-  const browseChat = await step("browse", SCENARIO_S_PROMPTS.browse());
+  await step("browse", SCENARIO_S_PROMPTS.browse());
+  const hintChat = await step("exitHint", SCENARIO_S_PROMPTS.exitHint());
+  const namedChat = await step("exitNamed", SCENARIO_S_PROMPTS.exitNamed());
   const readChat = await step("read", SCENARIO_S_PROMPTS.read());
   const { rows: through } = await ctx.db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
     WHERE r."chatId" = $1 AND c."toolName" = 'fetch_url' AND c."result"->'rawPreview'->'fetchUrl'->'proxy'->>'name' = $2 AND c."result"->'rawPreview'->'fetchUrl'->>'outcome' = 'read'`, [readChat, SCENARIO_S_NAME]);
@@ -1479,9 +1482,9 @@ async function scenarioS(ctx: Context, run: Run): Promise<Outcome> {
   // Switched off: naming it is refused. The route takes the version it last read.
   if (row) await json(ctx.session.api, `/api/me/proxies/${encodeURIComponent(row.id)}`, { body: { active: false, expectedVersion: (await ctx.db.query<{ version: number }>(`SELECT "version" FROM "NetworkProxy" WHERE "id" = $1`, [row.id])).rows[0]?.version }, method: "PATCH" });
   const offChat = await step("off", SCENARIO_S_PROMPTS.off());
-  const verdict = oracleS({ browserHintExit: await resultsHold(ctx.db, browseChat, "mcp_workspace%", "2ip.ru", proxy.host), browserNamedExit: await resultsHold(ctx.db, browseChat, "mcp_workspace%", "ipify", proxy.host),
+  const verdict = oracleS({ browserHintExit: await transcriptHolds(ctx.db, hintChat, proxy.host), browserNamedExit: await transcriptHolds(ctx.db, namedChat, proxy.host),
     checkOk: row?.ok === true, deadBrowserFailed: deadRows[0]?.failed === true, deadFetchCodes: await fetchCodes(ctx.db, deadChat), deadWentDirect: deadRows[0]?.direct === true, exitIsProxy: row?.exitIsProxy === true,
-    fetchExit: await resultsHold(ctx.db, readChat, "fetch_url", "ipify", proxy.host), fetchThroughProxy: through[0]?.count ?? 0, hintSaved: row?.hint === true, offFetchCodes: await fetchCodes(ctx.db, offChat),
+    fetchExit: await transcriptHolds(ctx.db, readChat, proxy.host), fetchThroughProxy: through[0]?.count ?? 0, hintSaved: row?.hint === true, offFetchCodes: await fetchCodes(ctx.db, offChat),
     passwordInAnswer: inAnswer[0]?.hit === true, saved: row?.sealed === true, terminals });
   const usage = usageByPurpose(await settledUsage(ctx.db, run.chats));
   for (const stored of (await ctx.db.query<{ id: string; version: number }>(`SELECT "id", "version" FROM "NetworkProxy"`)).rows) {

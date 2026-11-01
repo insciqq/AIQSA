@@ -1531,15 +1531,15 @@ export const SCENARIO_S_DEAD_HINT = "icanhazip.com";
 
 /** S's messages. The URL goes only into the first, as a user would paste it. */
 export const SCENARIO_S_PROMPTS = Object.freeze({
-  save: (url: string) => `Сохрани этот прокси для зоны .ru под именем ${SCENARIO_S_NAME}: ${url}. Потом проверь его и одним предложением скажи, сработал ли он.`,
+  save: (url: string) => `Сохрани этот прокси для зоны .ru и для сайта ifconfig.me под именем ${SCENARIO_S_NAME}: ${url}. Потом проверь его и одним предложением скажи, сработал ли он.`,
   browse: () => "Открой в браузере Workspace через aiqsa-browser, без своих настроек прокси, по очереди, каждую страницу отдельной командой и подожди загрузку каталога:\n" +
-    "1. https://2ip.ru/ — выпиши IP-адрес, который показывает страница.\n" +
-    "2. https://market.yandex.ru/search?text=матрас\n" +
-    "3. https://www.wildberries.ru/catalog/0/search.aspx?search=матрас\n" +
-    "4. https://www.ozon.ru/search/?text=матрас — один раз, без повторов.\n" +
-    `5. https://api.ipify.org/?format=text с опцией --proxy ${SCENARIO_S_NAME}\n` +
-    "Для страниц 2-4 ответь строкой: сколько товаров видно, первые два товара с ценой и рейтингом, или какая страница ошибки открылась. Без поиска и без fetch_url.",
-  read: () => `Прочитай инструментом fetch_url, только им, две страницы: https://2ip.ru/ и https://api.ipify.org/?format=text с параметром proxy "${SCENARIO_S_NAME}". Ответь одним предложением.`,
+    "1. https://market.yandex.ru/search?text=матрас\n" +
+    "2. https://www.wildberries.ru/catalog/0/search.aspx?search=матрас\n" +
+    "3. https://www.ozon.ru/search/?text=матрас — один раз, без повторов.\n" +
+    "Для каждой ответь строкой: сколько товаров видно, первые два товара с ценой и рейтингом, или какая страница ошибки открылась. Без поиска и без fetch_url.",
+  exitHint: () => "Открой в браузере Workspace через aiqsa-browser, без своих настроек прокси, https://ifconfig.me/ip и выпиши только адрес со страницы. Без поиска и без fetch_url.",
+  exitNamed: () => `Открой в браузере Workspace через aiqsa-browser https://api.ipify.org/?format=text с опцией --proxy ${SCENARIO_S_NAME} и выпиши только адрес со страницы. Без поиска и без fetch_url.`,
+  read: () => `Прочитай инструментом fetch_url, только им, две страницы: https://ifconfig.me/ip и https://api.ipify.org/?format=text с параметром proxy "${SCENARIO_S_NAME}". Ответь адресами.`,
   dead: () => `Прочитай инструментом fetch_url страницу https://${SCENARIO_S_DEAD_HINT}/ и открой её же в браузере через aiqsa-browser. Без поиска. Не указывай прокси сам и не повторяй. Ответь одним предложением, что вышло.`,
   off: () => `Прочитай инструментом fetch_url страницу https://api.ipify.org/?format=text с параметром proxy "${SCENARIO_S_NAME}", один раз, и ответь одним предложением, что вышло.`
 });

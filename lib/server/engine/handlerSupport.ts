@@ -179,6 +179,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     services: {
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
+      ...(tools?.runProxies ? { runProxies: tools.runProxies } : {}),
       ...(tools?.secrets ? { secrets: tools.secrets } : {}),
       ...(tools?.selfService && selfServiceTools.length > 0 ? { selfService: { ...tools.selfService, tools: selfServiceTools } } : {})
     },
