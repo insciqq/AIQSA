@@ -19,6 +19,9 @@ const RECORD_ID = "0b6f4a2e-7d1c-4c3b-9a55-1f2e3d4c5b6a";
 
 const stored = (quoteCheck: ResearchEvidenceRecord["quoteCheck"]) => ({ id: RECORD_ID, quoteCheck }) as ResearchEvidenceRecord;
 
+const dataset = (sampleSize: number, claim = "Owners report sagging.") => ({ claim, dataset: { counts: [{ count: 3, label: "sagging" }], sampleSize }, id: RECORD_ID, kind: "dataset",
+  quoteCheck: { reason: null, status: "found" } }) as unknown as ResearchEvidenceRecord;
+
 const properties = recordEvidenceTool.inputSchema.properties as Record<string, Record<string, unknown>>;
 
 function targetOf(written: Awaited<ReturnType<RecordEvidenceTarget["evidence"]["record"]>> = { kind: "recorded", record: stored({ reason: null, status: "found" }) }, researching = true) {
@@ -97,6 +100,21 @@ describe("a record_evidence call", () => {
     expect(value(result)).toEqual({ message: "Recorded. The quote is on the page.", quote_check: "found", record_id: RECORD_ID });
     const noQuote = targetOf({ kind: "recorded", record: stored(null) });
     expect(value(await recordEvidenceEngineTool(noQuote.target, { kind: "main" }).execute(call(FINDING)))).toEqual({ message: "Recorded.", record_id: RECORD_ID });
+  });
+
+  it("says at once that a dataset's sample is small, and to report it in counts", async () => {
+    const small = await recordEvidenceEngineTool(targetOf({ kind: "recorded", record: dataset(11) }).target, { kind: "main" }).execute(call(FINDING));
+    expect(value(small)).toMatchObject({ quote_check: "found", record_id: RECORD_ID, sample: "small" });
+    expect(value(small).message).toMatch(/^Recorded\. The quote is on the page\. Small sample: 11.*sagging: 3 of 11.*never as a percentage\.$/u);
+    expect(value(small).message).not.toContain("supersedes");
+    const large = await recordEvidenceEngineTool(targetOf({ kind: "recorded", record: dataset(120) }).target, { kind: "main" }).execute(call(FINDING));
+    expect(value(large)).toEqual({ message: "Recorded. The quote is on the page.", quote_check: "found", record_id: RECORD_ID });
+  });
+
+  it("asks for the claim in counts when a small sample's already gives a percentage", async () => {
+    const record = dataset(11, "27% report sagging.");
+    const result = await recordEvidenceEngineTool(targetOf({ kind: "recorded", record }).target, { kind: "main" }).execute(call(FINDING));
+    expect(value(result).message).toMatch(/This claim gives a percentage: call record_evidence again with supersedes set to this record's id and the claim in counts\.$/u);
   });
 
   it("says at once that a wrong quote is not on the page, and how to correct it", async () => {
