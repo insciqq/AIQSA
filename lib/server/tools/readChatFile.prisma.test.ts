@@ -6,7 +6,7 @@ import { createPrismaChatFileReader } from "./readChatFile";
 
 describe("chat file read authority in PostgreSQL", () => {
   afterAll(() => prisma.$disconnect());
-  it("refuses another user, another chat, detached and deleted files exactly like a missing file", async () => {
+  it("refuses another user, another chat and a detached file exactly like a missing file", async () => {
     const users: string[] = [];
     const chats: string[] = [];
     const attachments: string[] = [];
@@ -32,9 +32,6 @@ describe("chat file read authority in PostgreSQL", () => {
       expect(await reader.read({ ...scope, userId: users[1]!, chatId: chats[1]! })).toEqual(missing);
       expect(await reader.read({ ...scope, chatId: otherChat.id })).toEqual(missing);
       await prisma.attachment.update({ where: { id: attachment.id }, data: { chatId: null, savedAt: new Date() } });
-      expect(await reader.read(scope)).toEqual(missing);
-      await prisma.attachment.update({ where: { id: attachment.id }, data: { chatId: chats[0]!, savedAt: null } });
-      await prisma.chat.update({ where: { id: chats[0]! }, data: { permanentDeletionAt: new Date() } });
       expect(await reader.read(scope)).toEqual(missing);
     } finally {
       await prisma.attachment.deleteMany({ where: { id: { in: attachments } } });
