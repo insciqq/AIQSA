@@ -355,7 +355,10 @@ async function addRunFollowup(tx: Prisma.TransactionClient, run: ReceivingRun, i
   await tx.modelRun.update({ data: { followupRevision: { increment: 1 } }, where: { id: run.id } });
 }
 
-/** The questions these waiting turns are asking: each one's `ask_parent` call, which holds it until it is answered. */
+/**
+ * The questions these waiting turns are asking: each one's `ask_parent` call, which holds it until it is answered. A turn
+ * asks one at a time (`EngineTool.serial`), so the latest open call is its question: an older one is a record left unsettled.
+ */
 async function askedQuestions(tx: Prisma.TransactionClient, turns: readonly Readonly<{ id: string; runId: string | null }>[]):
   Promise<ReadonlyMap<string, Readonly<{ callId: string; text: string }>>> {
   const runIds = turns.flatMap((turn) => turn.runId ? [turn.runId] : []);
