@@ -147,8 +147,8 @@ describe("writing a record", () => {
     fetched(memory);
     const { port } = storeOf(memory);
     const record = await recorded(port, finding());
-    expect(record).toMatchObject({ author: RESEARCHER, claim: "The X1 holds up.", kind: "finding", publishedOn: null, quoteCheck: { reason: null, status: "found" }, registrableDomain: null, rowKey: "x1",
-      runId: "run-1", sequence: 0, textGroupKey: null });
+    expect(record).toMatchObject({ author: RESEARCHER, claim: "The X1 holds up.", kind: "finding", publishedOn: null, quoteCheck: { reason: null, status: "found" }, registrableDomain: "lab.example", rowKey: "x1",
+      runId: "run-1", sequence: 0, textGroupKey: expect.stringMatching(/^[0-9a-f]{1,64}$/u) });
     expect(memory.pages).toHaveLength(1);
     expect(memory.pages[0]).toMatchObject({ obtainedBy: "tool", text: PAGE, truncated: false, url: LINK });
     expect(record.pageId).toBe(memory.pages[0]!.id);

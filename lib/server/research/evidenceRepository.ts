@@ -17,6 +17,7 @@ import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
 import { fetchUrlDigest, normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchEvidenceWritten } from "./ports";
 import type { ResearchAgentCall, ResearchAgentCalls, ResearchAgentScope } from "./sources";
+import { researchTextGroupKey, type ResearchSourceQuality } from "./sourceQuality";
 
 /**
  * The evidence store's rows (`ResearchEvidence`, `ResearchPage`) and the read of an agent's own results. Parallel researchers write
@@ -40,6 +41,7 @@ export type ResearchEvidenceAppend = Readonly<{
   /** The check's word with the page kept, and without it. */
   quoteCheck: Readonly<{ kept: ResearchRecordedCheck | null; notKept: ResearchRecordedCheck | null }>;
   record: ResearchRecordInput;
+  sourceQuality: ResearchSourceQuality;
 }>;
 
 /** A row no writer here could have made. It fails the read, as a transcript's does (`transcriptCodec.ts`), rather than dropping a record unseen. */
@@ -148,7 +150,14 @@ export function createResearchEvidenceRepository(client: EvidenceClient) {
           }
           const pageId = write.page ? await keptPage(tx, keys, write.page) : null;
           const check = write.page && !pageId ? write.quoteCheck.notKept : write.quoteCheck.kept;
+          const quality = write.sourceQuality;
+          const earlier = quality.textGroupKey !== null ? await tx.researchEvidence.findMany({
+            distinct: ["textGroupKey"], orderBy: [{ createdAt: "asc" }, { sequence: "asc" }, { id: "asc" }], select: { textGroupKey: true }, take: RESEARCH_PAGE_LIMITS.pagesPerRun,
+            where: { chatId: scope.chatId, modelRunId: { in: [...write.chain] }, textGroupKey: { not: null }, userId: scope.userId }
+          }) : [];
           const row = await tx.researchEvidence.create({ data: { ...keys, ...recordColumns(write.record), authorName: write.author.name, authorThreadId: write.author.threadId,
+            publishedOn: quality.publishedOn, registrableDomain: quality.registrableDomain,
+            textGroupKey: researchTextGroupKey(quality.textGroupKey, earlier.map((entry) => entry.textGroupKey)),
             pageId, quoteCheck: check?.status ?? null, quoteCheckReason: check?.reason ?? null, sequence: (taken._max.sequence ?? -1) + 1 } });
           return { kind: "recorded", record: recordOf(row) };
         }, APPEND_TRANSACTION);

@@ -9,6 +9,7 @@ import type { ResearchOpenedSource } from "./gates";
 import type { ResearchEvidencePort, ResearchEvidenceWrite, ResearchRunScope } from "./ports";
 import { checkQuotes, quoteIsIn, type QuoteCheck, type QuoteSource } from "./quoteCheck";
 import { createResearchAgentSources, researchEvidenceKind, researchRunsOnBranch, type ResearchAgentScope } from "./sources";
+import { prepareResearchSourceQuality } from "./sourceQuality";
 
 /**
  * The evidence store (`ResearchEvidencePort`): a finding is a durable record the moment it is made, under the research run whichever
@@ -123,7 +124,8 @@ export function createResearchEvidenceStore(deps: ResearchEvidenceStoreDeps) {
         signal.throwIfAborted();
         // Read only when a page was to be kept and found no room: a wrong quote keeps its word, which the agent must hear, and any other word rested on that page.
         const notKept = held.check?.status === "not_verbatim" ? held.check : { reason: RESEARCH_CHECK_REASONS.pageNotStored, status: "not_checked" as const };
-        const written = await deps.repository.append(scope, { author: write.author, chain, page: held.page, quoteCheck: { kept: held.check, notKept }, record: write.record });
+        const written = await deps.repository.append(scope, { author: write.author, chain, page: held.page, quoteCheck: { kept: held.check, notKept }, record: write.record,
+          sourceQuality: prepareResearchSourceQuality(write.record, held.page) });
         const bound = written.kind === "refused" ? written.code : written.record.quoteCheck?.reason;
         if (bound === "research_records_full" || bound === RESEARCH_CHECK_REASONS.pageNotStored) {
           logEvent("service_operation", { action: "degrade", code: bound, outcome: "degraded", run_id: run.runId, stage: "write", subsystem: "database" });
