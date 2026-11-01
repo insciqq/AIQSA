@@ -629,7 +629,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           },
           // Only a web chat starts background turns: a Telegram turn or a scheduled occurrence waits for the sub-agents it starts.
           backgroundAllowed: !input.telegram && !input.scheduled,
-          ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
+          ports: input.subagents, recordSearchEvidence: (row) => input.repository.createSearchRun(row), runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
           runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
           unknownEffects: (threadId) => agentFences.agent(threadId), usage,
           userMessage: currentUserMessageText(contextMessages, subagentServerTurns)

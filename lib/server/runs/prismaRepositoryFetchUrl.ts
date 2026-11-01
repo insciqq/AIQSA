@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { turnsOfMainRuns } from "../subagents/nesting";
-import { FETCH_URL_LIMITS, FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
+import { FETCH_URL_LIMITS, FETCH_URL_TOOL_NAME, hostedSearchEvidenceUrls } from "../tools/fetchUrlPlan";
 import type { RunRepository } from "./runRepositoryContract";
 
 /**
@@ -46,12 +46,12 @@ export function createPrismaFetchUrlOperations(prisma: PrismaClient): FetchUrlOp
       const runIds = [...new Set([runId, ...agentRuns.map((row) => row.id)])];
       // Newest first at every bound, so what a bound hides is old and a fresh search always authorizes its results.
       const [searchRuns, events] = await Promise.all([
-        // Query-only Search routes: the sources of each executed engine.
+        // Query-only Search routes: the sources of each executed engine. Hosted routes: a sub-agent's evidence rows.
         prisma.searchRun.findMany({
           orderBy: { createdAt: "desc" }, select: { artifacts: true, createdAt: true }, take: SEARCH_RUN_LIMIT,
           where: { modelRunId: { in: runIds } }
         }),
-        // Hosted Search routes: the answer model's own search and citation output.
+        // Hosted Search routes: the main agent's own search and citation output.
         prisma.modelRunEvent.findMany({
           orderBy: [{ createdAt: "desc" }, { sequence: "asc" }], select: { createdAt: true, payload: true }, take: SEARCH_EVENT_LIMIT,
           where: { eventType: "artifact", modelRunId: { in: runIds }, OR: [
@@ -61,7 +61,7 @@ export function createPrismaFetchUrlOperations(prisma: PrismaClient): FetchUrlOp
         })
       ]);
       const found: { at: Date; urls: string[] }[] = searchRuns.map((row) => ({ at: row.createdAt,
-        urls: sourceUrls(isRecord(row.artifacts) ? row.artifacts.sources : null) }));
+        urls: [...sourceUrls(isRecord(row.artifacts) ? row.artifacts.sources : null), ...hostedSearchEvidenceUrls(row.artifacts)] }));
       for (const row of events) {
         const inner = isRecord(row.payload) && isRecord(row.payload.payload) ? row.payload.payload : null;
         if (!inner) continue;

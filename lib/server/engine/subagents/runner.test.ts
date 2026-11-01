@@ -41,7 +41,7 @@ import {
   type SubagentHost
 } from "./runner";
 
-type Step = Readonly<{ calls?: ModelToolCall[]; hang?: true; text?: string }>;
+type Step = Readonly<{ calls?: ModelToolCall[]; events?: ModelRunSseEvent[]; hang?: true; text?: string }>;
 
 function scriptedAdapter(steps: readonly Step[]) {
   const requests: ProviderRunRequest[] = [];
@@ -50,6 +50,7 @@ function scriptedAdapter(steps: readonly Step[]) {
     async *stream(request, options): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       requests.push(request);
       const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
+      for (const event of step.events ?? []) yield event;
       if (step.hang) {
         await new Promise<void>((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true }));
       }
@@ -88,7 +89,8 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
   providerModelId: "model-1", reasoningEffort: null };
 
 function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentChildHost; earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
-  followups?: () => { id: string; text: string }[]; handoff?: EngineTool["execute"]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging; request?: ProviderRunRequest;
+  followups?: () => { id: string; text: string }[]; handoff?: EngineTool["execute"]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging;
+  recordSearchEvidence?: SubagentHost["recordSearchEvidence"]; request?: ProviderRunRequest;
   toolTimeLeft?: () => boolean; tools?: EngineTool[]; workspaceImageView?: true }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
   const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
@@ -137,6 +139,7 @@ function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentCh
     now: Date.now,
     onWorkspaceLifecycle: vi.fn(async () => undefined),
     recordDetachedCompaction: vi.fn(async () => true),
+    recordSearchEvidence: options.recordSearchEvidence ?? vi.fn(async () => undefined),
     request: options.request ?? request,
     requestShape: subagentRequestShape,
     route: vi.fn(async () => ({ ok: true as const, route: { adapter, request: { modelCapabilities: request.modelCapabilities,
@@ -251,6 +254,44 @@ const backgroundControl = (extra: Partial<NonNullable<SubagentChildHost["backgro
 }) satisfies NonNullable<SubagentChildHost["background"]>;
 
 describe("sub-agent runner", () => {
+  describe("hosted Search evidence", () => {
+    const hostedRequest = { ...request, searchPlan: { mode: "all_selected", options: [{ adapterKind: "answer_provider_hosted",
+      modelId: "search-model", optionId: "hosted-option", provider: "fake", revisionId: "revision-1" }] } } as unknown as ProviderRunRequest;
+    const found: ModelRunSseEvent[] = [
+      { data: { artifactType: "search", payload: { action: { sources: [{ title: "Found", url: "https://found.example/a" }] }, type: "web_search_call" } }, type: "artifact" },
+      { data: { artifactType: "citation", payload: { index: 1, title: "Cited", url: "https://cited.example/b" } }, type: "artifact" },
+      { data: { artifactType: "citation", payload: { index: 2, title: "Again", url: "https://cited.example/b" } }, type: "artifact" }
+    ];
+
+    it("writes one row per model call for the agent's run, before the model's next call", async () => {
+      const order: string[] = [];
+      const recordSearchEvidence = vi.fn(async () => { order.push("row"); });
+      const lookup = engineTool("lookup", "mcp", vi.fn(async ({ call }: { call: ModelToolCall }) => { order.push("tool"); return ok(call, "done"); }));
+      const ctx = setup([{ calls: [{ arguments: {}, id: "c1", name: "lookup" }], events: found }, { text: "Done." }],
+        { recordSearchEvidence, request: hostedRequest, tools: [lookup] });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "background-run" })));
+      expect(recordSearchEvidence).toHaveBeenCalledTimes(1);
+      expect(recordSearchEvidence).toHaveBeenCalledWith({ artifacts: { hostedSearchEvidence: { urls: ["https://found.example/a", "https://cited.example/b"], version: 1 } },
+        modelId: "search-model", modelRunId: "background-run", provider: "fake", status: "complete", strategyId: "hosted-option" });
+      expect(order).toEqual(["row", "tool"]);
+    });
+
+    it("ends the turn as it would have when the write fails", async () => {
+      const recordSearchEvidence = vi.fn(async () => { throw new Error("database down"); });
+      const ctx = setup([{ events: found, text: "Outcome: done\nDone." }], { recordSearchEvidence, request: hostedRequest });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(recordSearchEvidence).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ kind: "ended", outcome: "done", state: "done" });
+    });
+
+    it("writes nothing on a route without a hosted option", async () => {
+      const recordSearchEvidence = vi.fn(async () => undefined);
+      const ctx = setup([{ events: found, text: "Done." }], { recordSearchEvidence });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(recordSearchEvidence).not.toHaveBeenCalled();
+    });
+  });
+
   it("delivers a 30,000-character foreground report through the ordinary tool excerpt and reads all of it later", async () => {
     const report = "x".repeat(30_000);
     const ctx = setup([{ text: report }]);

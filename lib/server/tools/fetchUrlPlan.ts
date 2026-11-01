@@ -27,6 +27,20 @@ export const FETCH_URL_LIMITS = Object.freeze({
   cachedPages: 64
 });
 
+/**
+ * The `SearchRun.artifacts` of a row that is only link evidence, a sub-agent's hosted Search output. Not `sources`, which
+ * the answer's Sources read, so that a sub-agent's row under the run it shares never lists there.
+ */
+export function hostedSearchEvidenceArtifacts(urls: readonly string[]) {
+  return { hostedSearchEvidence: { urls: [...urls], version: 1 } };
+}
+
+/** The links of such a row; none for any other. */
+export function hostedSearchEvidenceUrls(artifacts: unknown): string[] {
+  const evidence = isRecord(artifacts) ? artifacts.hostedSearchEvidence : null;
+  return isRecord(evidence) && Array.isArray(evidence.urls) ? evidence.urls.filter((url): url is string => typeof url === "string") : [];
+}
+
 /** The frozen admission marker (`NormalizedRunRequest.fetchUrl`). */
 export type FetchUrlPlan = Readonly<{
   version: 1;

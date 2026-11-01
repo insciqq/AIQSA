@@ -2085,6 +2085,7 @@
   "subagent_children_unsettled",
   "subagent_depth_limit_reached",
   "subagent_not_own_child",
+  "subagent_search_evidence_unsaved",
   "subagent_user_message_failed",
   "system_model_policy_image_models_invalid",
   "system_model_policy_update_invalid",
