@@ -35,14 +35,21 @@ const clock = (page: Page) => card(page).getByTestId("research-plan-clock");
 const button = (page: Page, name: string) => card(page).getByRole("button", { exact: true, name });
 
 /** A user of their own with the Search source chosen, one research turn sent, and everything removed afterwards. */
+async function stopAnswer(page: Page) {
+  await page.getByRole("button", { name: "Stop answer" }).click({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
+}
+
 async function withResearch(browser: Browser, options: Readonly<{ context?: BrowserContextOptions; scopingMs: number }>,
   body: (page: Page, chatId: string) => Promise<void>) {
   const people = createPeopleFixture(prisma);
   const source = await createCatalogOnlySearchSource(prisma, "research-plan");
+  let signedIn: Page | null = null;
   try {
     const user = await people.user("Research plan");
     await prepareFakeQsaChats(prisma, user.id);
     const { page } = await people.signIn(browser, user, options.context ?? DESKTOP);
+    signedIn = page;
     await selectFakeModel(page);
     await chooseSearchStrategy(page, escapeRegExp(source.displayName));
     const message = page.getByRole("textbox", { exact: true, name: "Message" });
@@ -50,12 +57,16 @@ async function withResearch(browser: Browser, options: Readonly<{ context?: Brow
     await message.press("Enter");
     const chatId = await activeChatId(page);
     await body(page, chatId);
-    await page.getByRole("button", { name: "Stop answer" }).click();
-    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
-  } finally {
-    await people.cleanup();
-    await source.cleanup();
+    await stopAnswer(page);
+  } catch (error) {
+    // A run left streaming fails cleanup with an error of its own, which must not replace the one that says what went wrong.
+    if (signedIn) await stopAnswer(signedIn).catch(() => undefined);
+    await people.cleanup().catch(() => undefined);
+    await source.cleanup().catch(() => undefined);
+    throw error;
   }
+  await people.cleanup();
+  await source.cleanup();
 }
 
 /** What closed the window and whether the user changed the plan, as the server recorded it. */
