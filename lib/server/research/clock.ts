@@ -1,5 +1,6 @@
 import { RESEARCH_TIME_MS, researchPhaseAt } from "../../contracts/research";
 import { isActiveSubagentState, MAIN_AGENT_NAME } from "../../contracts/subagents";
+import { SubagentTimeEnded } from "../engine/subagents/runner";
 import { logEvent } from "../observability";
 import type { ResearchRunScope, ResearchTimePort } from "./ports";
 
@@ -62,7 +63,7 @@ export function createResearchClock(run: ResearchRunScope): ResearchTimePort {
       releasedAt = run.now();
       run.extendTurn(releasedAt + RESEARCH_TIME_MS.hardEnd);
       unref(setTimeout(() => void tellResearchersToFinish(), RESEARCH_TIME_MS.stopStartingResearchers));
-      unref(setTimeout(() => stopRunning.abort(new Error("research_time_ended")), RESEARCH_TIME_MS.stopRunningResearchers));
+      unref(setTimeout(() => stopRunning.abort(new SubagentTimeEnded()), RESEARCH_TIME_MS.stopRunningResearchers));
     },
 
     researcherRefusal() {
@@ -72,7 +73,7 @@ export function createResearchClock(run: ResearchRunScope): ResearchTimePort {
 
     researcherSignal(signal) {
       const own = new AbortController();
-      const timer = setTimeout(() => own.abort(new Error("research_time_ended")), RESEARCH_TIME_MS.researcherTurn);
+      const timer = setTimeout(() => own.abort(new SubagentTimeEnded()), RESEARCH_TIME_MS.researcherTurn);
       unref(timer);
       signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
       return AbortSignal.any([signal, own.signal, stopRunning.signal]);
