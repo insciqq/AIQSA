@@ -191,11 +191,6 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   }
 
   /**
-   * A child that ended reports to its parent's mailbox, where the parent reads it at its next step, like a callback in a
-   * running answer. One its parent ended itself has nobody to report to: its result stays on its turn, for `list_agents`
-   * and for the parent's next turn, which may continue it.
-   */
-  /**
    * A report counts from before its child's row ends until it lands or fails, so a parent that sees the child gone also
    * sees its report coming, however long the mailbox write takes. Returns what ends the count.
    */
@@ -208,6 +203,11 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     };
   }
 
+  /**
+   * A child that ended reports to its parent's mailbox, where the parent reads it at its next step, like a callback in a
+   * running answer. One its parent ended itself has nobody to report to: its result stays on its turn, for `list_agents`
+   * and for the parent's next turn, which may continue it.
+   */
   function reportToParent(child: SubagentChatScope & Readonly<{ name: string; parentThreadId: string; turnId: string }>,
     result: EndedSubagentCallResult, runId: string | null, reported: () => void): void {
     if (result.reason === SUBAGENT_END_REASONS.parentStopped) {
