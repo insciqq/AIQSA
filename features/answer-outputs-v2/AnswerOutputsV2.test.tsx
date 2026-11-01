@@ -825,6 +825,17 @@ describe("AnswerOutputsV2 Workspace output status", () => {
     render(<AnswerOutputsV2 artifact={null} workspaceOutputStatus={{ state: "failed" }} />);
     expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("could not be prepared for download");
   });
+
+  it.each(["workspace_output_limit_exceeded", "workspace_output_export_failed", "workspace_execution_cleanup_failed"] as const)(
+    "keeps the reloaded answer visible with file recovery instructions for %s", (errorCode) => {
+      render(<RunAnswerV2 content="The finished answer." artifact={null} presentation={{ kind: "complete", runId: "run-1" }}
+        actionsSlot={<AnswerOutputsV2 artifact={null} workspaceOutputStatus={{ state: "failed", errorCode }} />} />);
+      expect(screen.getByText("The finished answer.")).toBeVisible();
+      expect(screen.getByTestId("workspace-output-status")).toHaveTextContent(/The answer is kept.*Ask the agent.*export them again/u);
+      expect(screen.getByTestId("workspace-output-status")).toHaveTextContent(errorCode === "workspace_output_limit_exceeded"
+        ? "reduce the output files" : "check the existing files");
+    }
+  );
 });
 
 
