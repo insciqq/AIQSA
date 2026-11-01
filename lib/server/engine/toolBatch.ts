@@ -22,6 +22,7 @@ import {
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
+import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "../tools/types";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineToolCallKind } from "./toolCallKind";
@@ -470,11 +471,12 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     };
     // The live step settles once the call's record and outputs have; an unknown effect never reads as success, and a
     // stopped call gets nothing here, since the run's end settles it.
+    let result: ToolExecutionResult;
     const finished = (item: TranscriptToolResultItem, status: "complete" | "error"): TranscriptToolResultItem => {
-      deps.onLiveEvent(liveToolCallStatus(call, activity, { ordinal, settled: { durationMs, status } }));
+      const facts = activity.origin === "web_fetch" ? fetchUrlActivityFacts(call.name, call.arguments, result) : {};
+      deps.onLiveEvent(liveToolCallStatus(call, { ...activity, ...facts }, { ordinal, settled: { durationMs, status } }));
       return item;
     };
-    let result: ToolExecutionResult;
     try {
       result = await executeWithRetries(deps, tool, execution);
     } catch (error) {

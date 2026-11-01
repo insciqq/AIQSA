@@ -1,5 +1,5 @@
 import { decodeMemorySearchActivity } from "@/lib/contracts/memorySearchActivity";
-import { decodeFetchUrlTarget } from "@/lib/contracts/fetchUrlActivity";
+import { decodeFetchUrlActivity, decodeFetchUrlTarget, decodeFetchUrlProxyName, isFetchUrlProxyCode, type FetchUrlProxyCode } from "@/lib/contracts/fetchUrlActivity";
 import { isRunProviderWait, type RunProviderWait } from "@/lib/contracts/runs";
 import { CHAT_PDF_READER_OUTPUT_LIMIT, isChatPdfReaderOutputLimitFailure, type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import {
@@ -111,6 +111,8 @@ type ActivitySignal = Readonly<{
   kind: Exclude<RunActivityKindV2, "preparing" | "queued">;
   budget?: ThreadToolBudgetWarning;
   fetchTarget?: string;
+  fetchProxyName?: string;
+  fetchProxyCode?: FetchUrlProxyCode;
   origin?: ThreadToolActivityOrigin;
   serverName?: string;
   toolName?: string;
@@ -152,10 +154,9 @@ function skillActivityMetadata(payload: Record<string, unknown>) {
 function toolActivityMetadata(payload: Record<string, unknown>) {
   const toolName = safeToolName(payload.name ?? payload.toolName);
   const serverName = safeServerName(payload.serverName);
-  const fetchTarget = payload.origin === "web_fetch" ? decodeFetchUrlTarget(payload.fetchTarget) : null;
   return {
     ...skillActivityMetadata(payload),
-    ...(fetchTarget ? { fetchTarget } : {}),
+    ...decodeFetchUrlActivity(payload),
     ...(isThreadToolActivityOrigin(payload.origin) ? { origin: payload.origin } : {}),
     ...(serverName ? { serverName } : {}),
     ...(toolName ? { toolName } : {})
@@ -295,6 +296,8 @@ type ToolActivityIdentity = Readonly<{
   serverName?: unknown;
   toolName?: unknown;
   memorySearchOutcome?: unknown;
+  fetchProxyName?: unknown;
+  fetchProxyCode?: unknown;
   fetchTarget?: unknown;
   fetchOutcome?: unknown;
   fetchHttpStatus?: unknown;
@@ -343,12 +346,31 @@ export function fetchCallSkippedV2(call: ToolActivityIdentity): boolean {
   return call.fetchOutcome === "fetch_url_not_in_conversation" || call.fetchOutcome === "fetch_url_limit_reached";
 }
 
+const proxyFailureCopy: Record<FetchUrlProxyCode, string> = {
+  proxy_address_check_unavailable: "the proxy address could not be checked",
+  proxy_address_forbidden: "the proxy address is not allowed",
+  proxy_dns_failed: "the proxy could not be found on the network",
+  proxy_host_invalid: "the proxy address is invalid",
+  proxy_port_invalid: "the proxy port is invalid",
+  proxy_auth_failed: "proxy sign-in failed",
+  proxy_connect_failed: "the proxy could not connect",
+  proxy_protocol_error: "the proxy returned an invalid response",
+  proxy_timeout: "the proxy took too long",
+  proxy_tls_failed: "the secure connection to the proxy failed",
+  proxy_all_failed: "all matching proxies failed",
+  proxy_inactive: "the proxy is turned off",
+  proxy_not_found: "the named proxy was not found",
+  proxy_unavailable: "the proxy is unavailable"
+};
+
 /** A page read's row: "Reading <host/path>", then its outcome in plain words. */
 function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "failed" | "running" | "settled"): string {
-  const target = decodeFetchUrlTarget(call.fetchTarget) ?? "web page";
+  const proxyName = decodeFetchUrlProxyName(call.fetchProxyName);
+  const target = (decodeFetchUrlTarget(call.fetchTarget) ?? "web page") + (proxyName ? ` via proxy “${proxyName}”` : "");
   const pdf = call.fetchContentKind === "pdf";
   if (phase === "running") return `Reading ${target}`;
   if (phase === "cancelled") return `Reading ${target} stopped`;
+  if (isFetchUrlProxyCode(call.fetchProxyCode)) return `Couldn't read ${target}: ${proxyFailureCopy[call.fetchProxyCode]}`;
   if (phase === "settled" && (call.fetchOutcome === undefined || call.fetchOutcome === "read")) {
     return pdf ? `Read PDF ${target}` : `Read ${target}`;
   }
@@ -933,7 +955,7 @@ export function presentToolActivityV2(
       const call = calls[index];
       // A persisted outcome stays authoritative.
       if (!call || call.status !== "running" || !sameCall(call)) continue;
-      calls[index] = { ...call, status: settlement.status,
+      calls[index] = { ...call, ...metadata, status: settlement.status,
         ...(settlement.durationMs !== undefined ? { durationMs: settlement.durationMs } : {}) };
       if (key !== null) live.delete(key);
       continue;

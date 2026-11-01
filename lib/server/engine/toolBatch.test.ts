@@ -631,6 +631,21 @@ describe("native tool batch", () => {
     expect(JSON.stringify(live)).not.toMatch(/PRIVATE_|"c\d+"/u);
   });
 
+  it("settles a page read's live step with its proxy facts and no connection details", async () => {
+    const { store } = fakeStore();
+    const batch = deps({ fetch_url: tool("fetch_url", "none", async ({ call }) => ({
+      ...ok(call, "PRIVATE_PAGE"), status: "error", rawPreview: { fetchUrl: { version: 1, dispatched: true,
+        outcome: "fetch_network_error", proxyCode: "proxy_auth_failed", url: "http://example.com/page?secret=PRIVATE_QUERY",
+        proxy: { id: "PRIVATE_ID", name: "Personal route", login: "PRIVATE_LOGIN", host: "PRIVATE_HOST" } } }
+    }), { activity: () => ({ origin: "web_fetch", fetchTarget: "example.com/page" }) }) }, store);
+    await runToolBatch(batch, { calls: 0 }, { round: 1, calls: [{ id: "call", name: "fetch_url", arguments: { url: "http://example.com/page" } }] });
+    const events = vi.mocked(batch.onLiveEvent).mock.calls.flatMap(([event]) =>
+      event.type === "artifact" && event.data.artifactType === "tool_call" ? [event.data.payload] : []);
+    expect(events).toMatchObject([{ status: "requested" }, { status: "error", fetchProxyName: "Personal route",
+      fetchProxyCode: "proxy_auth_failed", fetchOutcome: "fetch_network_error" }]);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_");
+  });
+
   it("sends no settled step for a call its run stopped", async () => {
     const controller = new AbortController();
     const { store } = fakeStore();

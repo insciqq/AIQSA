@@ -1,3 +1,8 @@
+import {
+  PROXY_ADDRESS_FAILURE_CODES, PROXY_CONNECTION_FAILURE_CODES, PROXY_LIMITS,
+  PROXY_SELECTION_FAILURE_CODES, PROXY_UNAVAILABLE_CODE
+} from "./proxies";
+
 /**
  * Browser-safe facts of one `fetch_url` call: the outcome codes an activity
  * row may carry and the bounds of its "host/path" target. The row never
@@ -71,4 +76,50 @@ export function decodeFetchUrlTarget(value: unknown): string | null {
 
 export function isFetchUrlHttpStatus(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 100 && Number(value) <= 599;
+}
+
+export const FETCH_URL_PROXY_FAILURE_CODES = [
+  ...PROXY_ADDRESS_FAILURE_CODES, ...PROXY_CONNECTION_FAILURE_CODES,
+  ...PROXY_SELECTION_FAILURE_CODES, PROXY_UNAVAILABLE_CODE
+] as const;
+export type FetchUrlProxyCode = (typeof FETCH_URL_PROXY_FAILURE_CODES)[number];
+
+export function isFetchUrlProxyCode(value: unknown): value is FetchUrlProxyCode {
+  return typeof value === "string" && (FETCH_URL_PROXY_FAILURE_CODES as readonly string[]).includes(value);
+}
+
+/** The user's display name, rendered as plain text only; never a connection or an endpoint. */
+export function decodeFetchUrlProxyName(value: unknown): string | null {
+  return typeof value === "string" && value.trim() && value.length <= PROXY_LIMITS.nameMaxLength &&
+    !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
+}
+
+export type FetchUrlActivityFacts = Readonly<{
+  fetchContentKind?: FetchUrlContentKind;
+  fetchHttpStatus?: number;
+  fetchOutcome?: FetchUrlActivityOutcome;
+  fetchProxyCode?: FetchUrlProxyCode;
+  fetchProxyName?: string;
+  fetchRefusalScope?: FetchUrlRefusalScope;
+  fetchTarget?: string;
+}>;
+
+/** The same allowlist for stored and live activity; older rows have no proxy fields. */
+export function decodeFetchUrlActivity(value: unknown): FetchUrlActivityFacts {
+  if (!value || typeof value !== "object" || !("origin" in value) || value.origin !== "web_fetch") return {};
+  const fields = value as Record<string, unknown>;
+  const target = decodeFetchUrlTarget(fields.fetchTarget);
+  const proxyName = decodeFetchUrlProxyName(fields.fetchProxyName);
+  return {
+    ...(target ? { fetchTarget: target } : {}),
+    ...(proxyName ? { fetchProxyName: proxyName } : {}),
+    ...(isFetchUrlProxyCode(fields.fetchProxyCode) ? { fetchProxyCode: fields.fetchProxyCode } : {}),
+    ...(isFetchUrlActivityOutcome(fields.fetchOutcome) ? { fetchOutcome: fields.fetchOutcome } : {}),
+    ...(isFetchUrlActivityOutcome(fields.fetchOutcome) && isFetchUrlContentKind(fields.fetchContentKind)
+      ? { fetchContentKind: fields.fetchContentKind } : {}),
+    ...(fields.fetchOutcome === "fetch_url_not_in_conversation" && isFetchUrlRefusalScope(fields.fetchRefusalScope)
+      ? { fetchRefusalScope: fields.fetchRefusalScope } : {}),
+    ...(fields.fetchOutcome === "fetch_http_status" && isFetchUrlHttpStatus(fields.fetchHttpStatus)
+      ? { fetchHttpStatus: fields.fetchHttpStatus } : {})
+  };
 }

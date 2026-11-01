@@ -1,5 +1,5 @@
 import { decodeThreadToolActivity, isThreadToolActivityOrigin, type ThreadToolActivity, type ThreadToolActivityOrigin } from "./chats";
-import { decodeFetchUrlTarget } from "./fetchUrlActivity";
+import { decodeFetchUrlTarget, decodeFetchUrlProxyName, isFetchUrlProxyCode, type FetchUrlProxyCode } from "./fetchUrlActivity";
 import {
   MAIN_AGENT_NAME,
   SUBAGENT_FOLLOWUP_LIMITS,
@@ -92,6 +92,8 @@ export const SUBAGENT_API_PATHS = Object.freeze({
 export type SubagentCurrentStep = Readonly<{
   /** `web_fetch` only: the page's "host/path". */
   fetchTarget?: string;
+  fetchProxyName?: string;
+  fetchProxyCode?: FetchUrlProxyCode;
   origin: ThreadToolActivityOrigin;
   serverName?: string;
   /** `skill` only. */
@@ -210,7 +212,7 @@ const text = (value: unknown, max: number, allowEmpty = false): value is string 
   typeof value === "string" && value.length <= max && (allowEmpty || value.trim().length > 0) && !value.includes("\0");
 const nullableCode = (value: unknown): value is string | null => value === null || isSubagentCode(value);
 
-const STEP_KEYS = ["fetchTarget", "origin", "serverName", "skillName", "skillPath", "toolName"];
+const STEP_KEYS = ["fetchProxyName", "fetchProxyCode", "fetchTarget", "origin", "serverName", "skillName", "skillPath", "toolName"];
 
 const optionalText = (value: unknown, max: number) => value === undefined || text(value, max);
 
@@ -219,8 +221,12 @@ export function decodeSubagentCurrentStep(value: unknown): SubagentCurrentStep |
     !optionalText(value.serverName, 160) || !optionalText(value.skillName, 160) || !optionalText(value.skillPath, 256)) return null;
   if (value.origin !== "skill" && (value.skillName !== undefined || value.skillPath !== undefined)) return null;
   if (value.fetchTarget !== undefined && (value.origin !== "web_fetch" || !decodeFetchUrlTarget(value.fetchTarget))) return null;
+  if (value.fetchProxyName !== undefined && (value.origin !== "web_fetch" || !decodeFetchUrlProxyName(value.fetchProxyName))) return null;
+  if (value.fetchProxyCode !== undefined && (value.origin !== "web_fetch" || !isFetchUrlProxyCode(value.fetchProxyCode))) return null;
   return {
     ...(value.fetchTarget !== undefined ? { fetchTarget: value.fetchTarget as string } : {}),
+    ...(decodeFetchUrlProxyName(value.fetchProxyName) ? { fetchProxyName: decodeFetchUrlProxyName(value.fetchProxyName)! } : {}),
+    ...(isFetchUrlProxyCode(value.fetchProxyCode) ? { fetchProxyCode: value.fetchProxyCode } : {}),
     origin: value.origin,
     ...(value.serverName !== undefined ? { serverName: value.serverName as string } : {}),
     ...(value.skillName !== undefined ? { skillName: value.skillName as string } : {}),

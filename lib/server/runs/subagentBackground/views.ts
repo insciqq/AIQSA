@@ -162,6 +162,8 @@ async function loadCurrentSteps(
     if (shown?.status !== "running") return [];
     const step = decodeSubagentCurrentStep({
       ...(shown.fetchTarget ? { fetchTarget: shown.fetchTarget } : {}),
+      ...(shown.fetchProxyName ? { fetchProxyName: shown.fetchProxyName } : {}),
+      ...(shown.fetchProxyCode ? { fetchProxyCode: shown.fetchProxyCode } : {}),
       origin: shown.origin,
       ...(shown.serverName ? { serverName: shown.serverName } : {}),
       ...(shown.skillName ? { skillName: shown.skillName } : {}),

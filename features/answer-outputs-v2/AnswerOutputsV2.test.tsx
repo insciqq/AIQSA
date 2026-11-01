@@ -333,6 +333,24 @@ describe("answer outputs v2", () => {
     expect(failed!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "error");
   });
 
+  it("renders a proxy's display name as text and gives a stable proxy failure reason", () => {
+    const name = '<img src=x onerror="alert(1)">';
+    const { container } = render(<AnswerProcessV2 toolActivity={{ calls: [
+      { fetchOutcome: "read", fetchProxyName: name, fetchTarget: "news.example/page",
+        origin: "web_fetch", round: 1, status: "complete", toolName: "fetch_url" },
+      { fetchOutcome: "fetch_network_error", fetchProxyName: "Personal route", fetchProxyCode: "proxy_auth_failed", fetchTarget: "news.example/page",
+        origin: "web_fetch", round: 1, status: "error", toolName: "fetch_url" },
+      { fetchOutcome: "read", fetchTarget: "news.example/legacy", origin: "web_fetch", round: 1, status: "complete", toolName: "fetch_url" }
+    ] }} />);
+    openProcess();
+    const [read, failed, legacy] = screen.getAllByRole("listitem");
+    expect(read).toHaveTextContent(`Read news.example/page via proxy “${name}”`);
+    expect(failed).toHaveTextContent("Couldn't read news.example/page via proxy “Personal route”: proxy sign-in failed");
+    expect(legacy).toHaveTextContent("Read news.example/legacy");
+    expect(legacy).not.toHaveTextContent("proxy");
+    expect(container.querySelector("img")).toBeNull();
+  });
+
   it("keeps search counts off the line and shows them, failures included, as one row in the fold", () => {
     render(<AnswerProcessV2 toolActivity={{ calls: [
       { origin: "web_search", round: 2, status: "complete", toolName: "search" }

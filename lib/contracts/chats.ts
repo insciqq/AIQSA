@@ -1,14 +1,5 @@
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "./memorySearchActivity";
-import {
-  decodeFetchUrlTarget,
-  isFetchUrlActivityOutcome,
-  isFetchUrlContentKind,
-  isFetchUrlHttpStatus,
-  isFetchUrlRefusalScope,
-  type FetchUrlActivityOutcome,
-  type FetchUrlContentKind,
-  type FetchUrlRefusalScope
-} from "./fetchUrlActivity";
+import { decodeFetchUrlActivity, type FetchUrlActivityFacts } from "./fetchUrlActivity";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { isRunProviderWait, type RunProviderWait } from "./runs";
@@ -331,20 +322,10 @@ export type ThreadMcpUnavailableServer = {
   reason: McpUnavailableServerReason;
 };
 
-export type ThreadToolActivityCall = {
+export type ThreadToolActivityCall = FetchUrlActivityFacts & {
   /** An MCP call refused for the user's approval: never sent; the answer's card decides it. */
   approvalRequired?: true;
   details?: { roundIndex: number; ordinal: number };
-  /** `web_fetch` only: the settled body was read as a PDF. */
-  fetchContentKind?: FetchUrlContentKind;
-  /** `web_fetch` only: the HTTP status of a `fetch_http_status` outcome. */
-  fetchHttpStatus?: number;
-  /** `web_fetch` only: the settled outcome (`read` or a refusal/failure code). */
-  fetchOutcome?: FetchUrlActivityOutcome;
-  /** `web_fetch` only: where a `fetch_url_not_in_conversation` link is allowed, when not by sending it in the chat. */
-  fetchRefusalScope?: FetchUrlRefusalScope;
-  /** `web_fetch` only: the page's "host/path", never its scheme, query or content. */
-  fetchTarget?: string;
   /** `discovery` only, for the run's initiator: servers the call reported unavailable, in rank order. */
   mcpUnavailable?: ThreadMcpUnavailableServer[];
   memorySearchCall?: number;
@@ -1270,16 +1251,7 @@ export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | n
       ...(candidate.origin === "skill" && typeof candidate.skillName === "string" && candidate.skillName.length <= 160 ? { skillName: candidate.skillName } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillPath === "string" && candidate.skillPath.length <= 256 ? { skillPath: candidate.skillPath } : {}),
       ...(typeof durationMs === "number" ? { durationMs } : {}),
-      ...(candidate.origin === "web_fetch" ? {
-        ...(decodeFetchUrlTarget(candidate.fetchTarget) ? { fetchTarget: decodeFetchUrlTarget(candidate.fetchTarget)! } : {}),
-        ...(isFetchUrlActivityOutcome(candidate.fetchOutcome) ? { fetchOutcome: candidate.fetchOutcome } : {}),
-        ...(isFetchUrlActivityOutcome(candidate.fetchOutcome) && isFetchUrlContentKind(candidate.fetchContentKind)
-          ? { fetchContentKind: candidate.fetchContentKind } : {}),
-        ...(candidate.fetchOutcome === "fetch_url_not_in_conversation" && isFetchUrlRefusalScope(candidate.fetchRefusalScope)
-          ? { fetchRefusalScope: candidate.fetchRefusalScope } : {}),
-        ...(candidate.fetchOutcome === "fetch_http_status" && isFetchUrlHttpStatus(candidate.fetchHttpStatus)
-          ? { fetchHttpStatus: candidate.fetchHttpStatus } : {})
-      } : {}),
+      ...decodeFetchUrlActivity(candidate),
       ...(candidate.origin !== undefined ? { origin: candidate.origin } : {}),
       round,
       ...(serverName ? { serverName } : {}),

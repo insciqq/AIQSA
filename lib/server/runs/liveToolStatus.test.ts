@@ -34,6 +34,16 @@ describe("live tool call status", () => {
     expect(JSON.stringify(event)).not.toMatch(/unexposed|mcp_repository/iu);
   });
 
+  it("carries validated proxy facts on the page reader only, without connection fields", () => {
+    const call = { arguments: { proxy: "PRIVATE_LOGIN" }, id: "private-call", name: "fetch_url" };
+    const fields = { origin: "web_fetch" as const, fetchProxyName: "Personal route", fetchProxyCode: "proxy_auth_failed" as const,
+      host: "PRIVATE_HOST", login: "PRIVATE_LOGIN", password: "PRIVATE_PASSWORD" };
+    const result = liveToolCallStatus(call, fields);
+    expect(result).toMatchObject({ data: { payload: { fetchProxyName: "Personal route", fetchProxyCode: "proxy_auth_failed" } } });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_");
+    expect(JSON.stringify(liveToolCallStatus(call, { ...fields, origin: "mcp" }))).not.toContain("fetchProxy");
+  });
+
   it("settles a call under its requested identity with a whole, non-negative duration", () => {
     const call = { arguments: { query: "unexposed argument" }, id: "unexposed call id", name: "search" };
     const activity = { origin: "mcp" as const, round: 2, serverName: "Repository Tools" };

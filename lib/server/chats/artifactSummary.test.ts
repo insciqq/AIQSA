@@ -562,6 +562,13 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(activity?.calls[0]).toEqual({ fetchHttpStatus: 404, fetchOutcome: "fetch_http_status", fetchTarget: "news.example/today",
       origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
     expect(JSON.stringify(activity)).not.toMatch(/private|token|https/u);
+    const proxiedCall = { ...pageCall, result: { ...pageCall.result, rawPreview: { fetchUrl: {
+      ...pageCall.result.rawPreview.fetchUrl, outcome: "fetch_network_error", proxyCode: "proxy_auth_failed",
+      proxy: { id: "private-id", name: "Personal route", host: "private-host", login: "private-login", password: "private-password" }
+    } } } };
+    const proxied = summarizeMessageRunToolActivity({ ...run, toolCalls: [proxiedCall] }, "initiator");
+    expect(proxied?.calls[0]).toMatchObject({ fetchProxyName: "Personal route", fetchProxyCode: "proxy_auth_failed" });
+    expect(JSON.stringify(proxied)).not.toMatch(/private|token|https/u);
     // A run without the page reader projects no page facts for a call of that name.
     expect(summarizeMessageRunToolActivity({ ...run, normalizedRequest: {}, toolCalls: [pageCall] }, "initiator")?.calls[0])
       .not.toHaveProperty("fetchTarget");
