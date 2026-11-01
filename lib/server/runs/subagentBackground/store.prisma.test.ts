@@ -239,7 +239,7 @@ describe("background sub-agent runs on PostgreSQL", () => {
     expect(await threads.unreadMessages(scope)).toEqual([]);
     // A repeat of the write that committed, its outcome lost, finds its own rows.
     await transcripts.append(written, 1, [message], read);
-    expect((await prisma.runFollowup.findFirstOrThrow({ where: { nonce: "m-1" } })).deliveredAt).not.toBeNull();
+    expect((await prisma.runFollowup.findFirstOrThrow({ where: { modelRunId: f.main.runId, nonce: "m-1" } })).deliveredAt).not.toBeNull();
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 

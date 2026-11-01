@@ -309,7 +309,7 @@ type TurnActivity = Readonly<{ reason?: string; state: "running" | "waiting" }>;
 
 type TurnWait = Readonly<{
   leave(): Promise<boolean>;
-  /** The row says so; false when it could not be written, which leaves nothing waiting on it. */
+  /** The row says so; false when it could not be written. */
   marked: boolean;
 }>;
 
