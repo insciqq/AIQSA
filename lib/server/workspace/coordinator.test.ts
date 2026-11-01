@@ -19,6 +19,7 @@ import { measureTransaction, transactionTimingOf } from "../observability/transa
 import {
   createPrismaWorkspaceCoordinatorRepository,
   createWorkspaceCoordinator,
+  workspaceRunProxyPlan,
   type WorkspaceCoordinatorRepository,
   type WorkspaceExecutionBinding
 } from "./coordinator";
@@ -3091,9 +3092,9 @@ describe("Workspace coordinator under a native engine run", () => {
 describe("a run's proxies reach its VM with the secrets", () => {
   const plan = { entries: [{ active: true, country: null, domainHints: [".ru"], host: "203.0.113.7", id: "proxy-1", name: "ru", owner: "personal" as const, port: 8080, protocol: "http" as const }] };
 
-  async function deliver(load: (() => Promise<never>) | null) {
+  async function deliver(load: (() => Promise<never>) | null, frozen: Awaited<ReturnType<WorkspaceCoordinatorRepository["runProxyPlan"]>> = { generation: 7, plan }) {
     const f = fixture();
-    vi.mocked(f.repository.runProxyPlan).mockResolvedValue(plan);
+    vi.mocked(f.repository.runProxyPlan).mockResolvedValue(frozen);
     const coordinator = createWorkspaceCoordinator({ ...f, repository: f.repository, runtime: f.runtime,
       ...(load ? { runProxies: { load } } : {}) });
     await coordinator.execute({ call: { arguments: { path: "/workspace/SECRETS.md" }, id: "first", name: namespacedWorkspaceToolName("sandbox_fs_read") },
@@ -3103,11 +3104,41 @@ describe("a run's proxies reach its VM with the secrets", () => {
 
   it("marks every proxy unavailable when the store fails, so a matching site fails visibly instead of going direct", async () => {
     const delivered = await deliver(async () => { throw new Error("store down"); });
-    expect(delivered?.proxies).toEqual([expect.objectContaining({ available: false, id: "proxy-1", password: null })]);
+    expect(delivered?.proxyPlan).toEqual({ generation: 7, proxies: [expect.objectContaining({ available: false, id: "proxy-1", password: null })] });
   });
 
   it("reads a proxy with no credentials store as unavailable too", async () => {
     const delivered = await deliver(null);
-    expect(delivered?.proxies).toEqual([expect.objectContaining({ available: false, id: "proxy-1" })]);
+    expect(delivered?.proxyPlan?.proxies).toEqual([expect.objectContaining({ available: false, id: "proxy-1" })]);
+  });
+
+  it("offers a run without proxies as an explicit empty plan, which is what replaces one the owner dropped", async () => {
+    expect((await deliver(null, { generation: 8, plan: null }))?.proxyPlan).toEqual({ generation: 8, proxies: [] });
+  });
+
+  it("has no say when the run cannot be found", async () => {
+    expect(await deliver(null, null)).not.toHaveProperty("proxyPlan");
+  });
+
+  describe("a plan's generation", () => {
+    const admitted = (ms: number) => new Date(ms);
+    const rows: Record<string, { createdAt: Date; normalizedRequest?: unknown; subagentTurn: { parentRunId: string } | null }> = {
+      main_old: { createdAt: admitted(1_000), normalizedRequest: { proxies: plan }, subagentTurn: null },
+      child: { createdAt: admitted(9_000), normalizedRequest: { proxies: plan }, subagentTurn: { parentRunId: "main_old" } },
+      grandchild: { createdAt: admitted(9_500), normalizedRequest: {}, subagentTurn: { parentRunId: "child" } },
+      main_new: { createdAt: admitted(5_000), normalizedRequest: {}, subagentTurn: null }
+    };
+    const db = { modelRun: { findUnique: (async ({ where }: { where: { id: string } }) => rows[where.id] ?? null) as never } };
+
+    it("is the admission that froze the plan: a sub-agent's run made later stays as old as its parent's", async () => {
+      expect(await workspaceRunProxyPlan(db, "main_old")).toEqual({ generation: 1_000, plan });
+      expect(await workspaceRunProxyPlan(db, "child")).toEqual({ generation: 1_000, plan });
+      expect(await workspaceRunProxyPlan(db, "grandchild")).toEqual({ generation: 1_000, plan: null });
+      expect(await workspaceRunProxyPlan(db, "main_new")).toEqual({ generation: 5_000, plan: null });
+    });
+
+    it("has no answer for a run that does not exist", async () => {
+      expect(await workspaceRunProxyPlan(db, "nobody")).toBeNull();
+    });
   });
 });

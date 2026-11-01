@@ -32,12 +32,18 @@ const WORKSPACE_RUN_PROXIES_MAX_COUNT = 200;
 /** Every bound of `PROXY_LIMITS` at once for each proxy would be far larger than a real plan; refused rather than cut. */
 const WORKSPACE_RUN_PROXIES_MAX_BYTES = 1024 * 1024;
 /**
- * Where a run's proxies live: a managed file, so it shares what keeps `/workspace/secrets/` out of output capture, project
- * archives, downloads and shares, and it travels as one more entry of the install, which replaces the directory every
- * time. A run without proxies therefore leaves none behind, with no second guest operation (`_paths.proxy_plan_path`).
+ * Where a run's proxies live: in the managed directory, so it shares what keeps `/workspace/secrets/` out of output
+ * capture, project archives, downloads and shares, and beside `files/`, which every install removes, because the install
+ * renames this file into place: a forwarder that rereads it never sees a moment without a plan (`_paths.proxy_plan_path`).
  */
-const WORKSPACE_PROXY_PLAN_ID = "aiqsa-proxies.json";
-export const WORKSPACE_PROXY_PLAN_PATH = `/workspace/secrets/files/${WORKSPACE_PROXY_PLAN_ID}`;
+export const WORKSPACE_PROXY_PLAN_PATH = "/workspace/secrets/.proxy-plan.json";
+
+/**
+ * What a run offers the VM's one plan. `generation` orders admissions: the guest takes it only over an equal or older one,
+ * so a sub-agent of an earlier answer, which starts later with its parent's frozen plan, cannot undo a newer run's. An
+ * empty `proxies` is an explicit "none", which is what replaces a plan the owner dropped.
+ */
+export type WorkspaceProxyPlanDelivery = Readonly<{ generation: number; proxies: readonly WorkspaceRunProxy[] }>;
 
 /** The plan joined with what `RunProxies` loaded: every plan entry once, in plan order, and a password only for one that loaded. */
 export function workspaceRunProxies(plan: ProxyRunPlan, loaded: RunProxyConnections): readonly WorkspaceRunProxy[] {
@@ -78,10 +84,14 @@ export function parseWorkspaceRunProxies(value: unknown): readonly WorkspaceRunP
   return proxies;
 }
 
-/** The plan as one more managed file of the install; nothing else reads it, and the secrets guide never mentions its values. */
-export function workspaceProxyPlanEntry(proxies: readonly WorkspaceRunProxy[]) {
-  const content = Buffer.from(JSON.stringify({ version: 1, proxies }), "utf8");
-  return { id: WORKSPACE_PROXY_PLAN_ID, value: { kind: "file" as const, base64: content.toString("base64") } };
+/** Absent means this install has no say over the VM's plan: an export's, or a VM with Internet Off. */
+export function parseWorkspaceProxyPlan(value: unknown): WorkspaceProxyPlanDelivery | undefined {
+  if (value === undefined) return undefined;
+  const entry = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  if (!Number.isSafeInteger(entry.generation) || (entry.generation as number) < 0 || !Array.isArray(entry.proxies) || Object.keys(entry).length !== 2) {
+    throw new WorkspaceSecretError("workspace_secret_invalid");
+  }
+  return { generation: entry.generation as number, proxies: parseWorkspaceRunProxies(entry.proxies) };
 }
 
 /** Ids, field names, name and a description whose JSON escaping is at most six bytes per character. */
@@ -94,7 +104,7 @@ export const WORKSPACE_SECRETS_REQUEST_MAX_BYTES = Math.ceil(WORKSPACE_BROWSER_S
   WORKSPACE_SECRET_TOTAL_MAX_BYTES + ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 64 * 1024 + WORKSPACE_RUN_PROXIES_MAX_BYTES;
 /** The guest bundle adds the environment map and a guide repeating names and descriptions, never values. */
 export const WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES = WORKSPACE_SECRETS_REQUEST_MAX_BYTES + WORKSPACE_SECRET_ENV_MAX_BYTES +
-  ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 256 * 1024 + Math.ceil(WORKSPACE_RUN_PROXIES_MAX_BYTES / 3) * 4;
+  ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 256 * 1024 + WORKSPACE_RUN_PROXIES_MAX_BYTES;
 
 export function parseAcceptedWorkspaceSecrets(value: unknown): readonly AcceptedWorkspaceSecret[] {
   if (!Array.isArray(value) || value.length > ENTRY_COUNT) throw new WorkspaceSecretError("workspace_secret_invalid");

@@ -70,6 +70,10 @@ MAX_STEPS = 500
 KEEP_SHOTS = 20
 #: Marks the forwarder's own answer among a site's headers; what it means is read from the forwarder, never the header.
 PROXY_CODE_HEADER = "x-aiqsa-proxy-code"
+#: How soon a browser with no forwarder notices that the VM's plan now has proxies, and stops opening pages directly.
+PROXY_PLAN_WATCH_SECONDS = 1.0
+PROXY_RESTART_RETRY_SECONDS = 5.0
+PROXY_RESTART_PENDING = "proxy_browser_restart_pending"
 #: Chromium's errors that read as a site or a network refusing this address, so the failure names proxies to try.
 REFUSAL_ERRORS = ("ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_EMPTY_RESPONSE", "ERR_TIMED_OUT",
                   "ERR_CONNECTION_TIMED_OUT", "ERR_TUNNEL_CONNECTION_FAILED", "ERR_SSL_PROTOCOL_ERROR", "ERR_HTTP2_PROTOCOL_ERROR")
@@ -207,6 +211,7 @@ class Host:
         self.shot_count = 0
         #: The local forwarder's port when this browser started on a plan; None means no forwarder and no flag.
         self.proxy_port: Optional[int] = None
+        self._proxy_restart_lock = asyncio.Lock()
 
     @staticmethod
     def _valid_agent_id(value: str) -> str:
@@ -438,13 +443,9 @@ class Host:
             await probe.close()
         self.user_agent = _identity.native_user_agent(headless_ua)
         self.metadata = _identity.user_agent_metadata(reported)
-        self.browser = await chromium.launch(channel="chromium", headless=True, ignore_default_args=_identity.IGNORED_DEFAULT_ARGS,
-                                             args=_identity.launch_args(self.locale, self.user_agent, self.proxy_port), env=env)
-        self.browser.on("disconnected", self._on_disconnected)
         state = self.store.load()
         self.local_storage = {origin["origin"]: origin["localStorage"] for origin in state["origins"]}
-        self.context = await self.browser.new_context(no_viewport=True, accept_downloads=True, storage_state=state)
-        self.context.on("page", self._on_page)
+        await self._launch(state)
         self._reset_steps()
         page = await self._new_page(self._state_for(self._start_agent_id, self._start_agent_name))
         await self._setup(page)
@@ -454,6 +455,16 @@ class Host:
                           f"saved sign-ins restored: {restored}.")
         if self.store.skipped:
             self.notes.append(f"Saved session files not loaded (invalid or over the limits): {', '.join(sorted(self.store.skipped))}.")
+
+    async def _launch(self, state: Dict[str, Any]) -> None:
+        """The browser of this host and its one context, from the build's identity read in `start`."""
+        self.browser = await self.playwright.chromium.launch(
+            channel="chromium", headless=True, ignore_default_args=_identity.IGNORED_DEFAULT_ARGS,
+            args=_identity.launch_args(self.locale, self.user_agent, self.proxy_port),
+            env=_identity.launch_env(self.environ, self.locale, self.timezone))
+        self.browser.on("disconnected", self._on_disconnected)
+        self.context = await self.browser.new_context(no_viewport=True, accept_downloads=True, storage_state=state)
+        self.context.on("page", self._on_page)
 
     def _on_disconnected(self, *_: Any) -> None:
         self.crashed = True
@@ -645,26 +656,99 @@ class Host:
         except _proxy.ProxyError as error:
             raise HostError(error.code, error.message) from None
 
-    def _no_forwarder(self, host: str, choice: Any) -> None:
-        """This browser has no forwarder: either the chat has no proxies, or they came after it started."""
-        wanted = choice is not None and choice != _proxy.AUTO and choice["kind"] == "proxy"
-        if not _proxy.has_plan():
-            if wanted:
-                raise HostError("proxy_not_found", "This chat has no proxies, so `--proxy` has nothing to name.")
+    def _no_forwarder(self, choice: Any) -> None:
+        """This browser has no forwarder. Proxies that arrived since its last check wait for the restart, like any other request."""
+        if _proxy.has_plan():
+            raise HostError(PROXY_RESTART_PENDING, "This chat's proxies have just arrived and the browser is restarting through them. Try again in a moment.")
+        if choice is not None and choice != _proxy.AUTO and choice["kind"] == "proxy":
+            raise HostError("proxy_not_found", "This chat has no proxies, so `--proxy` has nothing to name.")
+
+    def _raise_if_user_holds_browser(self) -> None:
+        if any(self._agent_held_by_user(agent) for agent in self._states):
+            raise HostError(PROXY_RESTART_PENDING, "This chat's proxies have arrived and the browser restarts through them once the user "
+                            "finishes in the live view, where they hold a tab. Nothing else opens until then; try again in a moment.")
+
+    async def _close_tabs_not_held_by_user(self) -> None:
+        """Pages already open would keep going directly, by scripts, redirects and workers: they stop now. A tab the user holds
+        (Take control or a handoff) stays with them, because closing it would lose what they typed, and its traffic stays direct until they give it back."""
+        for state in list(self._states.values()):
+            if self._agent_held_by_user(state.agent_id):
+                continue
+            tabs = [tab for tab in state.tabs if not tab.is_closed()]
+            if not tabs:
+                continue
+            addresses = ", ".join(state.hidden.text(_format.where(tab.url) or "blank page") for tab in tabs)
+            for tab in tabs:
+                try:
+                    await asyncio.wait_for(tab.close(), 5)
+                except Exception:  # noqa: BLE001 - the restart closes it if this cannot
+                    pass
+            state.notes.append(f"This chat's proxies have arrived, so the browser restarted through them and closed your open tabs: {addresses}. "
+                               "Sign-ins stay; open what you need again.")
+
+    async def _ensure_proxied(self) -> None:
+        """A plan with proxies has become active over a browser with no forwarder: restart Chromium through it, keeping sign-ins."""
+        if self.proxy_port is not None or not _proxy.has_plan():
             return
+        await self._close_tabs_not_held_by_user()
+        async with self._proxy_restart_lock:
+            if self.proxy_port is not None:
+                return
+            self._raise_if_user_holds_browser()
+            async with self.command_condition:
+                # No await between this check and closing admission: the live hub checks the gate before giving control.
+                self._raise_if_user_holds_browser()
+                self._closing = True
+                while self._active_commands > 0:
+                    await self.command_condition.wait()
+            try:
+                async with self.browser_lock:
+                    await self._restart_through_forwarder()
+            finally:
+                await self._end_browser_close()
+
+    async def _restart_through_forwarder(self) -> None:
         try:
-            plan = _proxy.load_plan()
+            port = await asyncio.to_thread(_proxy.ensure)
         except _proxy.ProxyError as error:
             raise HostError(error.code, error.message) from None
-        decision, _ = _proxy_selection.select(plan.proxies if plan else [], host, _proxy_selection.empty_state(),
-                                              None if choice == _proxy.AUTO else choice)
-        if decision["kind"] == "direct":
-            return
-        if decision["kind"] == "failed" and decision["code"] != "proxy_all_failed":
-            raise HostError(decision["code"], f"No proxy of this chat can be used for {_format.quoted(host, 80)}; `aiqsa-browser proxies` lists them.")
-        raise HostError("proxy_browser_restart_required", "This browser started before this chat had proxies, so this site would open "
-                        "without one. The main agent runs `aiqsa-browser close` and opens it again: saved sign-ins return, open tabs do not. "
-                        "`--proxy direct` opens it without a proxy now.")
+        await self._autosave()
+        try:
+            # Every cookie and known origin, not only saved sites': sign-ins made in this browser outlive this restart too.
+            state = await asyncio.wait_for(self.context.storage_state(), 20)
+        except (PlaywrightError, asyncio.TimeoutError):
+            state = await self._storage_state()
+        old = self.browser
+        old.remove_listener("disconnected", self._on_disconnected)
+        self.proxy_port = port
+        try:
+            await asyncio.wait_for(old.close(), 20)
+        except (PlaywrightError, asyncio.TimeoutError):
+            pass
+        self.local_storage.update({origin["origin"]: origin["localStorage"] for origin in state.get("origins", [])})
+        self._pages.clear()
+        self._setups.clear()
+        for agent in self._states.values():
+            agent.tabs, agent.current = [], None
+            agent.cdp, agent.snapshots, agent.activity, agent.masked = {}, {}, {}, {}
+        try:
+            await self._launch(state)
+        except Exception:  # noqa: BLE001 - with no browser the host ends; the next command starts one through the forwarder from the saved sessions
+            self.crashed = True
+            self.stopped.set()
+            raise HostError("browser_crashed", "The browser could not restart through this chat's proxies; the next command starts a new one.") from None
+
+    async def watch_proxy_plan(self) -> None:
+        """Requests are not the only traffic: open pages keep loading, so the plan is noticed without waiting for a command."""
+        while self.proxy_port is None and not self.stopped.is_set():
+            await asyncio.sleep(PROXY_PLAN_WATCH_SECONDS)
+            try:
+                await self._ensure_proxied()
+            except HostError as error:
+                if error.code != PROXY_RESTART_PENDING:
+                    await asyncio.sleep(PROXY_RESTART_RETRY_SECONDS)
+            except Exception:  # noqa: BLE001 - the next tick or command tries again, and only a command can report it
+                await asyncio.sleep(PROXY_RESTART_RETRY_SECONDS)
 
     async def _route_navigation(self, page: Any, url: str, value: Optional[str]) -> None:
         """Before a navigation: the agent's choice reaches the forwarder, and the page presents itself for the proxy it will use."""
@@ -673,7 +757,7 @@ class Host:
             return
         choice = _proxy.parse_choice(value)
         if self.proxy_port is None:
-            self._no_forwarder(host, choice)
+            self._no_forwarder(choice)
             return
         if choice is not None:
             routed = await self._proxy_call("route", host=host, choice=None if choice == _proxy.AUTO else choice)
@@ -1107,6 +1191,8 @@ class Host:
                     note = None if op in CONTROL_FREE_OPS else self.live.take_note(state.agent_id)
                     if note:
                         raise HostError("user_returned_control", note + " " + USER_RETURNED)
+                    if op not in CONTROL_FREE_OPS and op != "close":
+                        await self._ensure_proxied()
                     if op not in CONTROL_FREE_OPS:
                         await self._acquire_slot(state)
                     await self._enter_command()
@@ -1678,8 +1764,10 @@ async def _main() -> int:
                 await host.stop()
 
     watcher = asyncio.ensure_future(idle())
+    plan_watcher = asyncio.ensure_future(host.watch_proxy_plan())
     await host.stopped.wait()
     watcher.cancel()
+    plan_watcher.cancel()
     server.close()
     try:
         socket_path.unlink()

@@ -1,8 +1,9 @@
-"""The run's proxies as AIQSA delivered them (`workspaceProxyPlanFile` in `lib/server/workspace/secrets/manifest.ts`).
+"""The VM's proxies as AIQSA delivered them (`INSTALL_WORKSPACE_SECRETS` in `lib/server/workspace/secrets/guest.ts`).
 
 The file lives in the managed `/workspace/secrets/` directory: it stays out of output capture, project archives,
-downloads and shares, and every install replaces or removes it. It holds passwords, and the agent may read them
-(operator decision, `agent_docs/SECURITY.md`, Proxies); nothing here prints or logs one.
+downloads and shares. An install renames it into place, so it is never absent once it exists, and a plan with no
+proxies is written explicitly: "none" and "cannot tell" are never the same thing. It holds passwords, and the agent
+may read them (operator decision, `agent_docs/SECURITY.md`, Proxies); nothing here prints or logs one.
 """
 
 from __future__ import annotations
@@ -98,7 +99,8 @@ def load(path: Path) -> Optional[Plan]:
             data = json.loads(raw)
     except (OSError, ValueError):
         raise PlanInvalid("read") from None
-    if not isinstance(data, dict) or data.get("version") != PLAN_VERSION or not isinstance(data.get("proxies"), list):
+    if not isinstance(data, dict) or data.get("version") != PLAN_VERSION or not isinstance(data.get("proxies"), list) \
+            or isinstance(data.get("generation"), bool) or not isinstance(data.get("generation"), int):
         raise PlanInvalid("shape")
     proxies = [_entry(raw) for raw in data["proxies"]]
     if len({proxy["id"] for proxy in proxies}) != len(proxies):
