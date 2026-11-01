@@ -14,6 +14,7 @@ import { engineTestFaults } from "./faults";
 import type { NativeEngineHandlerDeps } from "./handlerSupport";
 import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } from "./recovery";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
+import { createPrismaRunProxies } from "../proxies/store";
 import { createResearchVerifierRole } from "../research/verifierRole";
 import { createNativeRunStore } from "./runStore";
 import { createPrismaSubagentModelCatalog } from "./subagents/modelRoutes";
@@ -120,9 +121,10 @@ function lazySubagentModels(client: PrismaClient): SubagentModelSource {
  * tools change secrets, Skills and Assistants through.
  */
 export function defaultNativeToolServices(storage: StorageAdapter, client: PrismaClient = prisma):
-  Required<Pick<ToolRegistryServices, "secrets" | "selfService">> {
+  Required<Pick<ToolRegistryServices, "runProxies" | "secrets" | "selfService">> {
   return {
     secrets: createRunSecretSource(client),
+    runProxies: createPrismaRunProxies(client),
     selfService: { assistants: lazyAssistantOwners(), db: client, storage,
       subagents: { db: client, models: lazySubagentModels(client) } }
   };
