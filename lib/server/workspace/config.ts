@@ -1,3 +1,5 @@
+import { RESEARCH_TIME_MS } from "../../contracts/research";
+
 export const WORKSPACE_RUNTIME_VERSION = "0.6.16";
 export const WORKSPACE_MCP_VERSION = "0.6.16";
 /** The guest version bundled with the runner image (its archive's own reference). */
@@ -84,14 +86,23 @@ type IntegerSetting = Readonly<{
 export const WORKSPACE_TURN_TIMEOUT_MAX_SECONDS = 7_200;
 
 /**
+ * The longest a turn may take: research starts inside an ordinary turn, and a plan released late in it moves the turn's end
+ * to the research's hard end from there (`lib/server/research/clock.ts`).
+ */
+function workspaceLongestTurnSeconds(config: Pick<WorkspaceConfig, "turnTimeoutSeconds">): number {
+  return config.turnTimeoutSeconds + RESEARCH_TIME_MS.hardEnd / 1_000;
+}
+
+/**
  * Microsandbox's own idle stop, a backstop behind the app's idle sweep (`cleanup.ts`), which stops a VM no run owns
  * once it was idle for `idleTtlSeconds`. It must not fire inside a turn: an answer may work longer than the idle time
  * without the VM (Search, MCP, saved results) and then use it again, and a stop there would restart the VM mid-answer
- * and lose the processes the turn started. So it waits at least a whole turn, plus a margin for the hand-off.
- * Microsandbox fixes it when it creates a VM, so a VM created earlier keeps the one it was created with.
+ * and lose the processes the turn started. So it waits at least the longest turn, plus a margin for the hand-off.
+ * That is every VM's, whatever its run does: Microsandbox fixes it when it creates a VM, before anyone knows the run
+ * will research, so a VM created earlier keeps the one it was created with.
  */
 export function workspaceRuntimeIdleTimeoutSeconds(config: Pick<WorkspaceConfig, "idleTtlSeconds" | "turnTimeoutSeconds">): number {
-  return Math.max(config.idleTtlSeconds, config.turnTimeoutSeconds + 300);
+  return Math.max(config.idleTtlSeconds, workspaceLongestTurnSeconds(config) + 300);
 }
 
 /**

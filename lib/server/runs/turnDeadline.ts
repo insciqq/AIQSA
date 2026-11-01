@@ -1,4 +1,5 @@
 import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
+import { RESEARCH_TIME_MS } from "../../contracts/research";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import type { NormalizedRunRequest } from "../providers/types";
 import { searchOptionTimeoutMs, searchToolRoutes } from "../search/toolExecutor";
@@ -35,6 +36,22 @@ export const TURN_HANDOFF_RESERVE_MS = 60_000;
  */
 export function turnSoftDeadlineMs(turnMs: number, workMs: number, answerMs: number): number {
   return turnMs - Math.min(workMs + answerMs + TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2));
+}
+
+/**
+ * When a research run's agents stop calling tools, from the end its plan's release gave the turn. `main` is the moment the
+ * running researchers stop, with no reserve of its own: `turnSoftDeadlineMs` keeps room for a last call and an answer before
+ * the turn's end, and research already has that in the phases after it, so the next round offers only the reserved draft.
+ * A call under way then finishes, as at any tool time.
+ *
+ * `agents` is the sub-agents': only the checks still run then, and a check that loses its tools at the moment the report
+ * arrives could check nothing. They stop when the gates' end leaves one round for a verdict, as a background turn's tool time
+ * leaves room for its report, and never before the main agent's. A researcher still running is ended by its signal instead.
+ */
+export function researchToolTimes(turnEndsAt: number, answerMs: number): Readonly<{ agents: number; main: number }> {
+  const releasedAt = turnEndsAt - RESEARCH_TIME_MS.hardEnd;
+  const main = releasedAt + RESEARCH_TIME_MS.stopRunningResearchers;
+  return { agents: Math.max(main, releasedAt + RESEARCH_TIME_MS.notes - answerMs), main };
 }
 
 /** The provider wait of one image generation: its model's response timeout, as the image adapter applies it. */

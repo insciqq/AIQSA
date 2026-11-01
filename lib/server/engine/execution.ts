@@ -25,7 +25,7 @@ import { reportedAnswerCost, usageAttributionsWithEstimatedCost } from "../runs/
 import { withPinnedHostedSearchIdentity } from "../runs/searchArtifactIdentity";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
-import { toolCallBounds, TURN_HANDOFF_RESERVE_MS, turnSoftDeadlineMs } from "../runs/turnDeadline";
+import { researchToolTimes, toolCallBounds, TURN_HANDOFF_RESERVE_MS, turnSoftDeadlineMs } from "../runs/turnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
@@ -324,7 +324,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   const snapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
   const workspace = normalizedRequest.workspace;
   const startedAt = now();
-  const turnMs = workspace ? workspace.turnTimeoutSeconds * 1_000 : NATIVE_TURN_LIMITS.turnMs;
+  // Fixed for a run, except that a research plan's release moves it once (`extendTurn`). Everything below reads it when it
+  // needs it, so nothing keeps the old end. An object literal that carries the end does so through a getter.
+  let turnMs = workspace ? workspace.turnTimeoutSeconds * 1_000 : NATIVE_TURN_LIMITS.turnMs;
   // A scheduled task's run is stopped at its occurrence's deadline after admission, which comes before a long turn's
   // own: its tool time ends that much earlier, so it answers before the scheduler stops it.
   const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
@@ -341,16 +343,36 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   // room for a common call or a round under way, then the answer; a call whose own bound is longer (a slow MCP server,
   // Search source or image model) must also fit before the deadline as it starts, so a slow source the run never
   // calls never shortens its tool time.
-  const toolTimeEndsAt = startsUntil(bounds.round);
+  let toolTimeEndsAt = startsUntil(bounds.round);
+  // The sub-agents' tool time is the main agent's, except past a research plan's release (`researchToolTimes`).
+  let agentToolTimeEndsAt = toolTimeEndsAt;
   // Asked before each round.
   const toolTimeLeft = () => now() < toolTimeEndsAt;
+  const agentToolTimeLeft = () => now() < agentToolTimeEndsAt;
   // Asked as each call of a batch starts, so a call queued behind slower ones, or one that would outlast the answer's
   // reserve, never starts.
   const callTimeLeft = (tool: Pick<RunTool, "capability" | "name">) => toolTimeLeft() && now() < startsUntil(bounds.call(tool));
+  const agentCallTimeLeft = (tool: Pick<RunTool, "capability" | "name">) => agentToolTimeLeft() && now() < startsUntil(bounds.call(tool));
   const deadline = new AbortController();
-  const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)),
-    turnMs);
-  deadlineTimer.unref?.();
+  const armDeadline = (ms: number) => {
+    const timer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)), ms);
+    timer.unref?.();
+    return timer;
+  };
+  let deadlineTimer = armDeadline(turnMs);
+  let turnExtended = false;
+  /**
+   * A research plan was released: this run's turn ends at `endsAt` and its tool times follow. The abort signal stays the same
+   * one, which every part of the run already holds; only its timer moves. It moves once, as the port's clock does (`ResearchRunScope`).
+   */
+  const extendTurn = (endsAt: number) => {
+    if (turnExtended) return;
+    turnExtended = true;
+    turnMs = endsAt - startedAt;
+    ({ agents: agentToolTimeEndsAt, main: toolTimeEndsAt } = researchToolTimes(endsAt, bounds.answer));
+    clearTimeout(deadlineTimer);
+    deadlineTimer = armDeadline(endsAt - now());
+  };
   const signal = AbortSignal.any([stop.signal, deadline.signal]);
 
   const stream = new ReadableStream<Uint8Array>({
@@ -625,7 +647,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
             services: { ...registryInput.services, ...(input.services.selfService
               ? { selfService: { ...input.services.selfService, tools: [READ_AIQSA_GUIDE_TOOL_NAME] } } : {}) } }),
-          budgets, callTimeLeft, chatId: scope.chatId, deadline: deadline.signal, deadlineAt: startedAt + turnMs, engine, faults,
+          budgets, callTimeLeft: agentCallTimeLeft, chatId: scope.chatId, deadline: deadline.signal,
+          get deadlineAt() { return startedAt + turnMs; }, engine, faults,
           followupTexts: () => delivered,
           modelConfiguration: input.prepared.providerAdmissionPlan.answer.modelConfiguration, now,
           onWorkspaceLifecycle: onWorkspaceActivity,
@@ -638,7 +661,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           // Only a web chat starts background turns: a Telegram turn or a scheduled occurrence waits for the sub-agents it starts.
           backgroundAllowed: !input.telegram && !input.scheduled,
           ports: input.subagents, recordSearchEvidence: (row) => input.repository.createSearchRun(row), runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
-          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft,
+          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft: agentToolTimeLeft,
           unknownEffects: (threadId) => agentFences.agent(threadId), usage,
           userMessage: currentUserMessageText(contextMessages, subagentServerTurns)
         };
@@ -647,7 +670,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // Research is the main agent's (`research/run.ts`): its tools ride beside the sub-agent tools, which its researchers run on.
         const runResearch = subagents && engine.research && engine.subagentThreads && researchOffered({ monitoring: normalizedRequest.monitoringVerdictTool === true,
           scheduled: input.scheduled === true, searchOptions: normalizedRequest.searchPlan.options.length, subagents: true, telegram: input.telegram === true })
-          ? createRunResearch({ chatId: scope.chatId, deps: engine.research, gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
+          ? createRunResearch({ chatId: scope.chatId, deps: engine.research, extendTurn, gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
             items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; },
             // An approval continuation is a new run of the research its turn started, and works on that run's rows.
             researchRunId: input.approvalContinuation ? researchRunOf(conversation.items, { branchRunIds, runId }) : runId, runId,

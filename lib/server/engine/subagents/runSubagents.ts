@@ -253,7 +253,8 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     callTimeLeft: input.callTimeLeft,
     chatId: input.chatId,
     children,
-    deadlineAt: input.deadlineAt,
+    // Read at each use: a research run's turn ends later once its plan is released (`execution.ts`).
+    get deadlineAt() { return input.deadlineAt; },
     deadlineSignal: input.deadline,
     ...(input.faults ? { faults: input.faults } : {}),
     followupTexts: input.followupTexts,
