@@ -197,6 +197,30 @@ describe("a proxy's address", () => {
       .toEqual({ code: "proxy_address_forbidden", ok: false });
   });
 
+  it("fails closed in a container while the installation's own name does not resolve, and is fine once it does", async () => {
+    const options = (lookupHostname: (host: string) => Promise<readonly McpResolvedAddress[]>) => ({
+      environment: () => buildPersonalMcpNetworkEnvironment({
+        detectContainer: () => true,
+        env: { AIQSA_APP_BASE_URL: "https://ai.installation.example", NODE_ENV: "production" },
+        interfaces: () => [{ address: "172.20.0.5", cidr: "172.20.0.5/16", internal: false, name: "eth0" }],
+        lookupHostname
+      })
+    });
+    const gateway = [{ address: "172.17.0.1", family: 4 }] as const;
+    const down = options(async (host) => {
+      if (host === "host.docker.internal") return gateway;
+      throw new Error("EAI_AGAIN");
+    });
+    expect(await checkProxyAddress({ host: INSTALLATION.address, port: 443 }, down))
+      .toEqual({ code: "proxy_address_check_unavailable", ok: false });
+    expect(await checkProxyAddress({ host: PUBLIC.address, port: 1080 }, down))
+      .toEqual({ code: "proxy_address_check_unavailable", ok: false });
+    const up = options(async (host) => host === "host.docker.internal" ? gateway : [INSTALLATION]);
+    expect(await checkProxyAddress({ host: INSTALLATION.address, port: 443 }, up))
+      .toEqual({ code: "proxy_address_forbidden", ok: false });
+    expect(await checkProxyAddress({ host: PUBLIC.address, port: 1080 }, up)).toMatchObject({ ok: true });
+  });
+
   it.each([
     ["no answers", async () => []],
     ["a failed lookup", async () => { throw new Error("SERVFAIL"); }],
