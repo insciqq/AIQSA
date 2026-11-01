@@ -7,7 +7,7 @@ import {
   type SubagentThreadState,
   type SubagentTurnMode
 } from "@/lib/contracts/subagents";
-import type { SubagentChatScope } from "@/lib/server/subagents/ports";
+import type { SubagentCallbackClaim, SubagentChatScope } from "@/lib/server/subagents/ports";
 import {
   normalizedEndResult,
   type BackgroundOrphan,
@@ -42,6 +42,8 @@ export type MemoryTurn = {
   parentRunId: string;
   /** While it waits for an answer: what its `ask_parent` call asks. */
   question?: string;
+  /** That call's id, when a test tells two questions of a turn apart. */
+  questionCallId?: string;
   result: EndedSubagentCallResult | null;
   runId: string | null;
   runActive: boolean;
@@ -184,7 +186,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
       activeBranch: [...owed.filter((turn) => !this.inactiveAnswers.has(turn.parentAnswerId))
         .map((turn) => ({ name: turn.name, result: turn.result!, turnId: turn.turnId })),
       ...asking.filter((turn) => !this.inactiveAnswers.has(turn.parentAnswerId))
-        .map((turn) => ({ name: turn.name, question: turn.question!, turnId: turn.turnId }))],
+        .map((turn) => ({ callId: turn.questionCallId ?? `ask-${turn.turnId}`, name: turn.name, question: turn.question!, turnId: turn.turnId }))],
       inactiveTurnIds: [...owed, ...asking].filter((turn) => this.inactiveAnswers.has(turn.parentAnswerId)).map((turn) => turn.turnId),
       mainRun: main ? { id: main.runId, status: main.status } : null,
       strandedMessageIds: this.strandedMessages.filter((message) => message.chatId === scope.chatId && !moved.has(message.id)).map((message) => message.id)
@@ -207,10 +209,15 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     return "delivered";
   }
 
-  /** What a wake-up admission's transaction does: claim every one or none. */
-  claim(runId: string, turnIds: readonly string[]): boolean {
-    const turns = turnIds.map((id) => this.turns.find((turn) => turn.turnId === id));
-    if (turns.some((turn) => !turn || turn.callbackRunId !== null)) return false;
+  /** What a wake-up admission's transaction does: claim every one or none, each only for what the wake-up rendered. */
+  claim(runId: string, claims: readonly SubagentCallbackClaim[]): boolean {
+    const turns = claims.map((claim) => {
+      const turn = this.turns.find((candidate) => candidate.turnId === claim.turnId);
+      if (!turn || turn.callbackRunId !== null) return null;
+      if (claim.kind === "callback") return turn.endedAt !== null ? turn : null;
+      return turn.endedAt === null && turn.state === "waiting" && (turn.questionCallId ?? `ask-${turn.turnId}`) === claim.callId ? turn : null;
+    });
+    if (turns.includes(null)) return false;
     for (const turn of turns) turn!.callbackRunId = runId;
     return true;
   }

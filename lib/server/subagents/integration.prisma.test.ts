@@ -361,7 +361,7 @@ describe("sub-agents across slices on PostgreSQL", () => {
     fixture(async (f) => {
       const owed: string[] = [];
       const callbacks = createSubagentCallbacks({ coalesceMs: 10, store, admitWakeUp: async (input) => {
-        owed.push(...input.turnIds);
+        owed.push(...input.turns.map((turn) => turn.turnId));
         return "usage_limited";
       } });
       const { background, runner } = control({ callbacks: callbacks.sink });

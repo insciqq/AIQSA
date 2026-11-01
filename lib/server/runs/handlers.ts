@@ -145,7 +145,7 @@ export type RunHandlerDeps = {
    * body's, its user message is a `subagent_callback` turn, it counts toward
    * budgets but no message limit, and its admission claims the callbacks.
    */
-  subagentWakeUp?: Readonly<{ text: string; turnIds: readonly string[] }>;
+  subagentWakeUp?: Readonly<{ text: string; turns: readonly import("../subagents/ports").SubagentCallbackClaim[] }>;
   /**
    * Server-only: the sends come from the Telegram bridge. Their native runs
    * take no self-service tools, whose confirmation cards and Undo the bridge
@@ -729,7 +729,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         } : {}),
         signal: request.signal,
         ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
-        ...(wakeUp ? { subagentCallbackClaim: { turnIds: wakeUp.turnIds }, systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND } : {}),
+        ...(wakeUp ? { subagentCallbackClaim: { turns: wakeUp.turns }, systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND } : {}),
         userId: auth.userId
       });
     } catch (error) {

@@ -240,6 +240,14 @@ export type SubagentCallback = SubagentChatScope & Readonly<{
   turnId: string;
 }>;
 
+/**
+ * What a wake-up turn rendered for one background turn, which its admission claims only while it still holds: the turn's
+ * end, or the question of this `ask_parent` call (`ModelRunToolCall.id`). A turn that ended or asks something else since
+ * refuses the claim, and the flush reads and renders what is owed again.
+ */
+export type SubagentCallbackClaim = Readonly<{ kind: "callback"; turnId: string }> |
+  Readonly<{ callId: string; kind: "question"; turnId: string }>;
+
 export type SubagentCallbackDisposition =
   /** Into the running main-agent answer, as a `subagent_callback` follow-up. */
   | "delivered"
@@ -324,6 +332,8 @@ export interface SubagentMessaging {
  *   thread view.
  * - A question: a background turn waiting for an answer owes its question the
  *   same way, under the same claim, until it resumes (`SUBAGENT_WAIT_REASONS`).
+ *   A claim names what its delivery rendered (`SubagentCallbackClaim`), so a
+ *   wake-up that carries a question never takes the place of the turn's end.
  * Owner: `20261029221046686-sub-agent-background-runs`.
  */
 export interface SubagentCallbackSink {

@@ -18,7 +18,7 @@ import {
   type SubagentThreadState,
   type SubagentTurnMode
 } from "../../../contracts/subagents";
-import type { SubagentBinding, SubagentChatScope } from "../../subagents/ports";
+import type { SubagentBinding, SubagentCallbackClaim, SubagentChatScope } from "../../subagents/ports";
 import { branchPathMessageIds } from "../../toolObservations/repository";
 import { activeModelRunStatuses, dispatchableModelRunStatuses, json, lockRunSettlementScope, mapActiveRunConflict } from "../prismaRepositoryShared";
 import { cancelPendingToolLoopCallsInTransaction, closeRunningToolLoopCallsInTransaction, recoveredRunErrorPayload } from "../prismaRepositoryToolLoop";
@@ -125,7 +125,7 @@ export type MainAgentMessageOutcome = "closed" | "delivered" | "full";
 
 /** A turn that ended and owes its callback, or one waiting for an answer that owes its question. */
 export type OwedSubagentCallback = Readonly<{ name: string; result: EndedSubagentCallResult; turnId: string }> |
-  Readonly<{ name: string; question: string; turnId: string }>;
+  Readonly<{ callId: string; name: string; question: string; turnId: string }>;
 
 export type OwedCallbacks = Readonly<{
   /** Owed callbacks of the chat's active branch, oldest end first, then its owed questions, oldest first. */
@@ -194,32 +194,41 @@ export class SubagentCallbackClaimConflictError extends Error {
  * Claims owed callbacks for a wake-up turn inside its admission transaction
  * (`createRun`, under its chat lock), after the run row exists: only turns
  * still unclaimed whose parent answer is on the receiving branch (the wake-up
- * message's own path) are taken, and the admission is refused unless it takes
- * every one it renders. A branch switch since the callbacks were read is
- * refused here and read again.
+ * message's own path) are taken, each only for what the wake-up rendered of
+ * it, and the admission is refused unless it takes every one. A branch switch,
+ * or a turn that ended or asks something else since they were read, is refused
+ * here and read again: a wake-up that held a question it no longer asks would
+ * take the place of the callback its end owes, where recovery cannot find it.
  */
 export async function claimSubagentCallbacksForRun(tx: Prisma.TransactionClient,
-  input: Readonly<{ chatId: string; runId: string; turnIds: readonly string[]; userMessageId: string }>): Promise<void> {
-  const turnIds = [...new Set(input.turnIds)];
-  if (turnIds.length === 0) throw new SubagentCallbackClaimConflictError();
+  input: Readonly<{ chatId: string; runId: string; turns: readonly SubagentCallbackClaim[]; userMessageId: string }>): Promise<void> {
+  const claims = [...new Map(input.turns.map((claim) => [claim.turnId, claim])).values()];
+  if (claims.length === 0) throw new SubagentCallbackClaimConflictError();
   const path = await branchPathMessageIds(tx, input.chatId, input.userMessageId);
-  const parents = await tx.subagentTurn.findMany({ select: { parentRun: { select: { assistantMessageId: true } } },
-    where: { chatId: input.chatId, id: { in: turnIds } } });
-  if (parents.length !== turnIds.length ||
-    parents.some((turn) => !turn.parentRun.assistantMessageId || !path.has(turn.parentRun.assistantMessageId))) {
+  const turns = await tx.subagentTurn.findMany({ select: { executionRun: { select: { id: true } }, id: true, parentRun: { select: { assistantMessageId: true } } },
+    where: { chatId: input.chatId, id: { in: claims.map((claim) => claim.turnId) } } });
+  if (turns.length !== claims.length ||
+    turns.some((turn) => !turn.parentRun.assistantMessageId || !path.has(turn.parentRun.assistantMessageId))) {
     throw new SubagentCallbackClaimConflictError();
   }
-  const claimed = await claimTurns(tx, { chatId: input.chatId, runId: input.runId, turnIds });
-  if (claimed !== turnIds.length) throw new SubagentCallbackClaimConflictError();
+  const questions = claims.filter((claim) => claim.kind === "question");
+  const asked = await askedQuestions(tx, turns.flatMap((turn) => questions.some((claim) => claim.turnId === turn.id)
+    ? [{ id: turn.id, runId: turn.executionRun?.id ?? null }] : []));
+  if (questions.some((claim) => asked.get(claim.turnId)?.callId !== claim.callId)) throw new SubagentCallbackClaimConflictError();
+  const claimed = await claimTurns(tx, { chatId: input.chatId, claims, runId: input.runId });
+  if (claimed !== claims.length) throw new SubagentCallbackClaimConflictError();
 }
 
-/** The compare-and-set every delivery of a callback or a question goes through. */
-function claimTurns(tx: Prisma.TransactionClient, input: Readonly<{ chatId: string; runId: string; turnIds: readonly string[] }>): Promise<number> {
-  return tx.$executeRaw(Prisma.sql`
-    UPDATE "SubagentTurn" SET "callbackRunId" = ${input.runId}, "updatedAt" = CURRENT_TIMESTAMP
-    WHERE "chatId" = ${input.chatId} AND "id" IN (${Prisma.join(input.turnIds)}) AND "callbackRunId" IS NULL
-      AND "mode" = 'background' AND ("endedAt" IS NOT NULL OR ("state" = 'waiting' AND "reasonCode" = ${SUBAGENT_WAIT_REASONS.answer}))
-  `);
+/**
+ * The compare-and-set every delivery of a callback or a question goes through, for what that delivery rendered: a
+ * callback only of a turn that ended, a question only of a turn that still waits for its answer.
+ */
+async function claimTurns(tx: Prisma.TransactionClient, input: Readonly<{ chatId: string; claims: readonly SubagentCallbackClaim[]; runId: string }>): Promise<number> {
+  const turnIds = (kind: SubagentCallbackClaim["kind"]) => input.claims.flatMap((claim) => claim.kind === kind ? [claim.turnId] : []);
+  const { count } = await tx.subagentTurn.updateMany({ data: { callbackRunId: input.runId }, where: { callbackRunId: null, chatId: input.chatId,
+    mode: "background", OR: [{ endedAt: { not: null }, id: { in: turnIds("callback") } },
+      { endedAt: null, id: { in: turnIds("question") }, reasonCode: SUBAGENT_WAIT_REASONS.answer, state: "waiting" }] } });
+  return count;
 }
 
 async function lockChatScope(tx: Prisma.TransactionClient, scope: SubagentChatScope) {
@@ -623,7 +632,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
           const record = turnRecord(row);
           if (!question) continue;
           if (record.parentAnswerId && path.has(record.parentAnswerId)) {
-            activeBranch.push({ name: record.name, question: question.text, turnId: record.turnId });
+            activeBranch.push({ callId: question.callId, name: record.name, question: question.text, turnId: record.turnId });
           } else inactiveTurnIds.push(record.turnId);
         }
         const mainRun = await tx.modelRun.findFirst({ orderBy: { createdAt: "desc" }, select: { id: true, status: true },
@@ -646,7 +655,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
         if (received.length >= SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun) return "closed";
         if (turn.state === "waiting" && turn.reasonCode === SUBAGENT_WAIT_REASONS.answer) {
           const question = (await askedQuestions(tx, [{ id: turnId, runId: turn.executionRun?.id ?? null }])).get(turnId);
-          if (!question || await claimTurns(tx, { chatId, runId, turnIds: [turnId] }) !== 1) return "claimed";
+          if (!question || await claimTurns(tx, { chatId, claims: [{ callId: question.callId, kind: "question", turnId }], runId }) !== 1) return "claimed";
           await addRunFollowup(tx, run, { authorName: turn.thread.name, chatId, nonce: subagentQuestionNonce(question.callId),
             origin: "subagent_question", subagentTurnId: turnId, text: renderQuestionFollowup({ name: turn.thread.name, question: question.text }) });
           return "delivered";
@@ -659,7 +668,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
         const spent = received.reduce((sum, entry) => sum + followupTokenCost(entry.text), 0);
         const text = renderCallbackFollowup({ name: turn.thread.name, result: ended, turnId },
           { tokens: Math.max(SUBAGENT_CALLBACK_MIN_TOKENS, reserve - spent) });
-        if (await claimTurns(tx, { chatId, runId, turnIds: [turnId] }) !== 1) return "claimed";
+        if (await claimTurns(tx, { chatId, claims: [{ kind: "callback", turnId }], runId }) !== 1) return "claimed";
         await addRunFollowup(tx, run, { authorName: "Sub-agent", chatId, nonce: subagentCallbackNonce(turnId), origin: "subagent_callback",
           subagentTurnId: turnId, text });
         return "delivered";
