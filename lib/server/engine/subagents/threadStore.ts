@@ -357,10 +357,13 @@ export function createSubagentThreadStore(client: StoreClient) {
       return rows.map((row) => row.result);
     },
 
-    /** How many children of this sub-agent are active, on any branch: what its report waits for. */
+    /**
+     * How many children of this sub-agent are at work, a browser handoff included: what its report waits for. One waiting
+     * for its own answer is not: the parent read the question and stopped, and neither would ever move again.
+     */
     async activeChildren(input: Readonly<{ chatId: string; threadId: string; userId: string }>): Promise<number> {
-      return client.subagentTurn.count({ where: { chatId: input.chatId, state: { in: ACTIVE }, thread: { parentThreadId: input.threadId },
-        userId: input.userId } });
+      return client.subagentTurn.count({ where: { chatId: input.chatId, OR: [{ state: "running" }, { reasonCode: null, state: "waiting" }],
+        thread: { parentThreadId: input.threadId }, userId: input.userId } });
     },
 
     /** The stored result of an ended turn of the chat; null while it runs or when it is not the chat's. */

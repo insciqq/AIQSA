@@ -15,10 +15,10 @@ import {
   mainImageToolEvidence, notaryValue, stableCode,
   stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
   oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, peakConcurrency, peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence,
-  restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
+  oracleO, restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern, scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioOFacts, scenarioNUploadChecks, selectedSubagentScenarios, sendRefusal, sessionStopEvidence,
   stateCounts, stopChecks, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
-  type LWorkspaceCall, type MEvidence, type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
+  type LWorkspaceCall, type MEvidence, type OEvidence, type SessionSample, type ToolRow, type TurnRow, type WakeUpRow
 } from "./subagent-scenarios-support";
 
 const at = (seconds: number) => new Date(Date.UTC(2026, 9, 30, 12, 0, seconds));
@@ -49,7 +49,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(16);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(17);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
@@ -160,6 +160,71 @@ describe("files and images across agents (K)", () => {
   it("recognizes a PNG by its signature", () => {
     expect(pngBytes(Buffer.from(SCENARIO_J_PNG_BASE64, "base64"))).toBe(true);
     expect(pngBytes(new Uint8Array([1, 2, 3]))).toBe(false);
+  });
+});
+
+describe("a sub-agent's children (O)", () => {
+  const facts = scenarioOFacts("0123456789abcdef");
+  const nest = SUBAGENT_NAMES.nest;
+  const stopped = turn({ outcome: null, reasonCode: "parent_stopped", state: "stopped" });
+  const blocked = turn({ outcome: "blocked", reasonCode: "needs_approval" });
+  const evidence = {
+    approval: { approvalsOnMainRun: 1, childTurn: blocked, dispatchedAfterAllow: 1, dispatchedBeforeAllow: 0, parentTurn: blocked, unavailable: null },
+    depth: { grandchildren: 0, refused: 1 },
+    limit: { calls: 3, children: [turn(), turn(), null], leadEndedLast: true, leadNamedCode: true, refused: 1 },
+    parents: { [nest.approver]: nest.clerk, [nest.inner]: nest.holder, [nest.lead]: null, [nest.left]: nest.lead, [nest.right]: nest.lead, [nest.side]: nest.holder },
+    reports: { children: [turn(), turn()], leadHoldsBoth: true },
+    settled: true,
+    stop: { running: true, secondsToEnd: 4, turns: [stopped, stopped, stopped] }
+  };
+
+  it("derives what a child must compute, which no brief states, and keeps the run's own record", () => {
+    expect(facts.expected.left).toBe(createHash("sha256").update(facts.inputs.left).digest("hex").slice(0, 16));
+    expect(facts.expected.left).not.toBe(facts.expected.right);
+    const reports = SUBAGENT_PROMPTS.O.reports(facts);
+    for (const input of Object.values(facts.inputs)) expect(reports).toContain(input);
+    for (const value of Object.values(facts.expected)) expect(reports).not.toContain(value);
+    expect(SUBAGENT_PROMPTS.O.approval(facts)).toContain(facts.recordId);
+    expect(SUBAGENT_PROMPTS.O.limit()).toContain("тремя вызовами call_subagent с background: true");
+    expect(SUBAGENT_PROMPTS.O.stop()).toContain("sleep 900");
+  });
+
+  it("runs only when named", () => {
+    expect(SUBAGENT_SCENARIO_IDS).toContain("O");
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("O");
+    expect(selectedSubagentScenarios("o")).toEqual(["O"]);
+  });
+
+  it("passes when every acceptance line held, a grandchild never asked for included", () => {
+    expect(oracleO(evidence).failed).toEqual([]);
+    expect(oracleO({ ...evidence, depth: { grandchildren: 0, refused: 0 } }).failed).toEqual([]);
+    expect(oracleO(evidence).counts).toMatchObject({ depthRefused: 1, dispatchedAfterAllow: 1, limitRefused: 1 });
+  });
+
+  it("names each line that failed", () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ reports: { ...evidence.reports, leadHoldsBoth: false } }, "children_reports_not_used"],
+      [{ reports: { ...evidence.reports, children: [turn(), stopped] } }, "children_did_not_finish"],
+      [{ parents: { ...evidence.parents, [nest.left]: null } }, "child_not_under_parent"],
+      [{ parents: { ...evidence.parents, [nest.lead]: nest.holder } }, "parent_not_at_top"],
+      [{ limit: { ...evidence.limit, refused: 0 } }, "third_child_not_refused"],
+      [{ limit: { ...evidence.limit, calls: 2 } }, "third_child_not_refused"],
+      [{ limit: { ...evidence.limit, leadNamedCode: false } }, "third_child_code_not_reported"],
+      [{ limit: { ...evidence.limit, children: [turn(), stopped, null] } }, "background_children_not_awaited"],
+      [{ limit: { ...evidence.limit, leadEndedLast: false } }, "parent_ended_before_children"],
+      [{ depth: { grandchildren: 1, refused: 0 } }, "grandchild_started"],
+      [{ stop: { ...evidence.stop, running: false } }, "stop_levels_not_running"],
+      [{ stop: { ...evidence.stop, turns: [stopped, stopped, turn()] } }, "stop_missed_a_level"],
+      [{ stop: { ...evidence.stop, turns: [stopped, stopped] } }, "stop_missed_a_level"],
+      [{ approval: { ...evidence.approval, unavailable: "bulk_mcp_publish_500" } }, "approval_step_unavailable"],
+      [{ approval: { ...evidence.approval, childTurn: turn() } }, "child_not_blocked_on_approval"],
+      [{ approval: { ...evidence.approval, parentTurn: turn() } }, "approval_did_not_climb"],
+      [{ approval: { ...evidence.approval, approvalsOnMainRun: 0 } }, "approval_not_on_main_agent"],
+      [{ approval: { ...evidence.approval, dispatchedBeforeAllow: 1 } }, "approval_call_sent_unapproved"],
+      [{ approval: { ...evidence.approval, dispatchedAfterAllow: 2 } }, "approved_call_not_sent_once"],
+      [{ settled: false }, "callbacks_owed"]
+    ];
+    for (const [change, code] of cases) expect(oracleO({ ...evidence, ...change } as unknown as OEvidence).failed, code).toContain(code);
   });
 });
 

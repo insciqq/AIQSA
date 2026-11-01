@@ -44,9 +44,9 @@ import type { SubagentThreadStore } from "./threadStore";
  * Sub-agents of one native run: the `call_subagent` and `stop_subagent`
  * registry entries of its main agent and the runner of their foreground
  * turns, over the run's own frozen bindings, registry builder, stores and
- * ledger, which a sub-agent's children run on too. A run gets none without the thread store (tests and entry points
- * that do not wire it), when its tools are off, or when it is a monitoring
- * check, which reports alone.
+ * ledger, which a sub-agent's children run on too. A run gets none without
+ * the thread store (tests and entry points that do not wire it), when its tools
+ * are off, or when it is a monitoring check, which reports alone.
  */
 
 /** The ports other slices implement, given to a run by its entry point; absent ones are unavailable (`callTools.ts`). */

@@ -2,7 +2,7 @@
  * Pure parts of `scripts/smoke-subagents-paid.ts`: the sub-agent scenarios
  * A–I of the acceptance task (scenarios 1–9), J (two production defects), K
  * (files and images across agents), L (a document the parser refuses, read in
- * the Workspace), M (agents talking) and N (an earlier file read without a Workspace) with their Russian prompts, the oracles over `browser-result.json` and the run's stored rows, and the
+ * the Workspace), M (agents talking), N (an earlier file read without a Workspace) and O (a sub-agent's children) with their Russian prompts, the oracles over `browser-result.json` and the run's stored rows, and the
  * content-free evidence computed from read-only rows (turn bindings, usage
  * per purpose, callbacks and wake-ups, concurrency from the tool-call
  * timeline, thread-state progression). Stand guard, setup, cleanup ports and
@@ -17,7 +17,8 @@ import { createHash } from "node:crypto";
 import { utils, write } from "xlsx";
 import { writeZip } from "../lib/server/artifacts/zip";
 import {
-  ACTIVE_SUBAGENT_STATES, SUBAGENT_END_REASONS, SUBAGENT_FOLLOWUP_LIMITS, SUBAGENT_THREAD_STATES, SUBAGENT_WAIT_REASONS, type SubagentThreadState
+  ACTIVE_SUBAGENT_STATES, SUBAGENT_BLOCKED_REASONS, SUBAGENT_END_REASONS, SUBAGENT_FOLLOWUP_LIMITS, SUBAGENT_THREAD_STATES, SUBAGENT_WAIT_REASONS,
+  type SubagentThreadState
 } from "../lib/contracts/subagents";
 import {
   BLOCKED_AFTER_USER_SIGN_IN, BROWSER_SCENARIOS, BrowserScenarioError, S5_CHECKOUT_FIELDS, SAFETY, amazonProductKey, blockedCodes,
@@ -58,7 +59,7 @@ const flag = (value: boolean) => value ? 1 : 0;
  * sub-agent that waits. N: a DOCX attached in one turn and answered from in the
  * next, with the Workspace off for the installation.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -76,7 +77,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -173,7 +174,9 @@ export const SUBAGENT_NAMES = Object.freeze({
   capture: { quiet: "quiet", viewer: "viewer" },
   files: { blind: "blind", chart: "chart-bg", left: "file-left", right: "file-right" },
   talk: { asker: "m-asker", forger: "m-forger", front: "m-front", hold: "m-hold", late: "m-late", left: "m-left", ping: "m-ping", pong: "m-pong",
-    right: "m-right", target: "m-target", worker: "m-worker" }
+    right: "m-right", target: "m-target", worker: "m-worker" },
+  nest: { approver: "o-approver", clerk: "o-clerk", deep: "o-deep", deeper: "o-deeper", first: "o-first", holder: "o-holder", inner: "o-inner", lead: "o-lead",
+    left: "o-left", right: "o-right", second: "o-second", side: "o-side", third: "o-third" }
 } as const);
 
 /** The result instruction for an answer that will receive sub-agent results later, not the one being written. */
@@ -295,6 +298,19 @@ export function scenarioMFacts(nonce: string): ScenarioMFacts {
     halves: { left: `LEFT-${nonce.slice(0, 4)}`, right: `RIGHT-${nonce.slice(4, 8)}` }, paymentFile, workFile: `/workspace/project/m-work-${nonce.slice(0, 8)}.txt` };
 }
 
+/**
+ * O's per-run facts: what each child must work out with a Workspace command, so a value in its parent's report can only
+ * have come from the child's, and the record of the call a child hands back. Kept in memory; matched inside SQL.
+ */
+export type ScenarioOFacts = Readonly<{ expected: Readonly<{ left: string; right: string }>; inputs: Readonly<{ left: string; right: string }>; recordId: string }>;
+
+export function scenarioOFacts(nonce: string): ScenarioOFacts {
+  const inputs = { left: `o-left-${nonce.slice(0, 8)}`, right: `o-right-${nonce.slice(0, 8)}` };
+  const digest = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+  return { expected: { left: digest(inputs.left), right: digest(inputs.right) }, inputs, recordId: `o-record-${nonce.slice(0, 8)}` };
+}
+
+const nest = SUBAGENT_NAMES.nest;
 const talk = SUBAGENT_NAMES.talk;
 const KEEP_OUT_OF_WORKSPACE = "Workspace им не нужен, если в задании не сказано иное.";
 
@@ -490,6 +506,39 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       `этого столбца. Суб-агентов не запускай, файлов для скачивания не создавай. ${NO_WEB}`,
     "Ответь одной строкой: только сумма цифрами, без пробелов и разделителей."
   ].join("\n\n"),
+  O: Object.freeze({
+    // Each step tells the main agent what to brief, so what a sub-agent does with its helpers comes from its brief and its tools.
+    reports: (facts: ScenarioOFacts) => [
+      `Запусти одного суб-агента ${nest.lead} и дождись его отчёта (не в фоне). ${NO_WEB}`,
+      `Передай ему в брифе дословно: «Запусти своих помощников одним ответом, двумя вызовами call_subagent без background: ${nest.left} и ${nest.right}. ` +
+        `Помощник ${nest.left} выполняет в Workspace команду \`printf %s ${facts.inputs.left} | sha256sum | cut -c1-16\` и сообщает её вывод дословно; помощник ` +
+        `${nest.right} делает то же с \`printf %s ${facts.inputs.right} | sha256sum | cut -c1-16\`. Сам эти команды не выполняй. Когда оба отчитаются, напиши оба значения в своём отчёте.»`,
+      "Потом ответь мне одной короткой фразой."
+    ].join("\n\n"),
+    limit: () => [
+      `Продолжи суб-агента ${nest.lead} по имени и дождись его отчёта (не в фоне). ${NO_WEB}`,
+      `Передай ему дословно: «Запусти одним ответом, тремя вызовами call_subagent с background: true, помощников ${nest.first}, ${nest.second} и ${nest.third}. Задание каждого: ` +
+        "выполнить в Workspace `sleep 30` и отчитаться одним словом готово. Если какой-то вызов отказан, не повторяй его. Закончи только после отчётов тех, кто запустился, и напиши " +
+        "в своём отчёте точный код отказа.»",
+      "Потом ответь мне одной короткой фразой."
+    ].join("\n\n"),
+    depth: () => [
+      `Продолжи суб-агента ${nest.lead} по имени и дождись его отчёта (не в фоне). ${NO_WEB}`,
+      `Передай ему дословно: «Запусти без background помощника ${nest.deep}. Его задание: попробовать вызвать инструмент call_subagent с name ${nest.deeper} и сообщением проверка, ` +
+        "а если инструмента нет или вызов отказан, не обходить это и написать в отчёте, что получилось.»",
+      "Потом ответь мне одной короткой фразой."
+    ].join("\n\n"),
+    stop: () => [
+      `Запусти суб-агента ${nest.holder} (не в фоне) и дождись его отчёта. ${NO_WEB}`,
+      `Передай ему дословно: «Запусти одним ответом двух помощников: ${nest.inner} без background и ${nest.side} с background: true. Задание каждого: выполнить в Workspace ` +
+        "`sleep 900` и только потом отчитаться.»"
+    ].join("\n\n"),
+    approval: (facts: ScenarioOFacts) => [
+      `Запусти суб-агента ${nest.clerk} (не в фоне) и дождись его отчёта. ${NO_WEB}`,
+      `Передай ему дословно: «Запусти без background помощника ${nest.approver}. Его задание: вызвать MCP-инструмент удаления записи delete_record с id ${facts.recordId} и отчитаться.»`,
+      "Если в результате будут MCP-вызовы, которым нужно моё подтверждение, сделай их сам ровно как указано. Я подтверждаю запрос на удаление этой записи и разрешу его на карточке."
+    ].join("\n\n")
+  }),
   M: Object.freeze({
     // A sub-agent gets the user's current message verbatim, so what one must learn from another stays out of the later ones.
     remember: (facts: ScenarioMFacts) => [
@@ -1329,6 +1378,53 @@ export type MEvidence = Readonly<{
   /** Stop on a sub-agent in `waiting`. */
   stop: Readonly<{ reasonBefore: string | null; stateBefore: string | null; turn: TurnRow | null }>;
 }>;
+
+export type OEvidence = Readonly<{
+  /** The MCP call a child handed back; `unavailable` when the stand could not reach the harness's server. */
+  approval: Readonly<{ approvalsOnMainRun: number; childTurn: TurnRow | null; dispatchedAfterAllow: number; dispatchedBeforeAllow: number; parentTurn: TurnRow | null;
+    unavailable: string | null }>;
+  /** A child told to start its own: threads under it, and any refusal it got. */
+  depth: Readonly<{ grandchildren: number; refused: number }>;
+  /** Three background children asked for at once. */
+  limit: Readonly<{ calls: number; children: readonly (TurnRow | null)[]; leadEndedLast: boolean; leadNamedCode: boolean; refused: number }>;
+  /** The tree as the chat's projection gives it: each named child's parent. */
+  parents: Readonly<Record<string, string | null>>;
+  /** Two foreground children and their parent's report. */
+  reports: Readonly<{ children: readonly (TurnRow | null)[]; leadHoldsBoth: boolean }>;
+  settled: boolean;
+  /** Stop on the main agent with a parent and its foreground and background children running. */
+  stop: Readonly<{ running: boolean; secondsToEnd: number | null; turns: readonly (TurnRow | null)[] }>;
+}>;
+
+/** O's verdict: every acceptance line of the task, each with a name of its own when it fails. */
+export function oracleO(input: OEvidence): OracleVerdict {
+  const { approval, depth, limit, parents, reports, stop } = input;
+  const failed: string[] = [];
+  if (reports.children.some((turn) => turn?.state !== "done")) failed.push("children_did_not_finish");
+  if (!reports.leadHoldsBoth) failed.push("children_reports_not_used");
+  for (const [child, parent] of [[nest.left, nest.lead], [nest.right, nest.lead], [nest.inner, nest.holder], [nest.side, nest.holder], [nest.approver, nest.clerk]] as const) {
+    if (parents[child] !== parent) failed.push("child_not_under_parent");
+  }
+  if (parents[nest.lead] !== null) failed.push("parent_not_at_top");
+  if (limit.refused !== 1 || limit.calls !== 3) failed.push("third_child_not_refused");
+  if (!limit.leadNamedCode) failed.push("third_child_code_not_reported");
+  if (limit.children.filter((turn) => turn?.state === "done").length !== 2) failed.push("background_children_not_awaited");
+  if (!limit.leadEndedLast) failed.push("parent_ended_before_children");
+  if (depth.grandchildren > 0) failed.push("grandchild_started");
+  if (!stop.running) failed.push("stop_levels_not_running");
+  if (stop.turns.length !== 3 || stop.turns.some((turn) => turn?.state !== "stopped" || turn.reasonCode !== SUBAGENT_END_REASONS.parentStopped)) failed.push("stop_missed_a_level");
+  if (approval.unavailable !== null) failed.push("approval_step_unavailable");
+  else {
+    if (approval.childTurn?.outcome !== "blocked" || approval.childTurn.reasonCode !== SUBAGENT_BLOCKED_REASONS.needsApproval) failed.push("child_not_blocked_on_approval");
+    if (approval.parentTurn?.outcome !== "blocked" || approval.parentTurn.reasonCode !== SUBAGENT_BLOCKED_REASONS.needsApproval) failed.push("approval_did_not_climb");
+    if (approval.approvalsOnMainRun !== 1) failed.push("approval_not_on_main_agent");
+    if (approval.dispatchedBeforeAllow !== 0) failed.push("approval_call_sent_unapproved");
+    if (approval.dispatchedAfterAllow !== 1) failed.push("approved_call_not_sent_once");
+  }
+  if (!input.settled) failed.push("callbacks_owed");
+  return { counts: { approvalsOnMainRun: approval.approvalsOnMainRun, depthRefused: depth.refused, dispatchedAfterAllow: approval.dispatchedAfterAllow,
+    limitCalls: limit.calls, limitRefused: limit.refused, stopSeconds: stop.secondsToEnd ?? -1 }, failed };
+}
 
 /** M's verdict: every acceptance line of the task, each with a name of its own when it fails. */
 export function oracleM(input: MEvidence): OracleVerdict {
