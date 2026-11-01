@@ -1,4 +1,4 @@
-import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import { ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, SEND_AGENT_MESSAGE_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import { HARNESS_SEARCH_TOOL } from "../engine/prompts/harness";
@@ -15,7 +15,7 @@ import type { ResearchOpenedSource } from "./gates";
  * whole where a saved copy can be read. What agents wrote themselves is no
  * evidence, so a report's or a brief's words never count as opened text.
  */
-const AGENT_WRITTEN: ReadonlySet<string> = new Set([ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, READ_SECRET_TOOL_NAME,
+const AGENT_WRITTEN: ReadonlySet<string> = new Set([ASK_PARENT_TOOL_NAME, CALL_SUBAGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, READ_SECRET_TOOL_NAME,
   READ_TOOL_RESULT_NAME, SEND_AGENT_MESSAGE_TOOL_NAME, START_RESEARCH_TOOL_NAME, STOP_SUBAGENT_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   UPDATE_PLAN_TOOL_NAME]);
 

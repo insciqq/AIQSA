@@ -698,7 +698,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           maxToolCalls: budgets.maxToolCalls,
           onEvent: (event) => sink.publish(event),
           onLiveEvent: sink.send,
-          registry,
+          registry: runResearch?.withScopingLimit(registry) ?? registry,
           ...(reserved ? { reservedToolName: reserved.name } : {}),
           runId,
           saveResult,
