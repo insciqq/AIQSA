@@ -62,8 +62,16 @@ const RESEARCHER_REPORT = "End with a report of at most about 1,500 characters: 
   "empty and why, and the options you noted, never each record again.";
 
 const RESEARCHER_ROWS = `A task to find the options adds each option its sources name as a row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. In any other task, an option ` +
-  `you saw that the matrix lacks is noted with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate, its name as written as the label and where you saw it ` +
-  "as the reason, and the main agent decides on its row.";
+  `you saw that the matrix lacks, such as a model a listing or a ranking names, is noted with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate: its exact ` +
+  "name as the page writes it, the model and not only its brand or line, as the label, and where you saw it as the reason. The main agent decides on its row.";
+
+/**
+ * The main agent's part in candidates (`candidates.ts`): on acceptance run 1 (2026-11-02) the researcher that saw the option a reference answer picked
+ * first had no task to add rows and never named it, so the server now lists what agents noted and the gap check holds a draft that leaves one open.
+ */
+const LEAD_CANDIDATES = `Researchers note options they saw that the matrix lacks with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate, and the line after each ` +
+  "report lists those still open: before you hand in the draft, add each as a row and send researchers for its cells, or set it aside with set_aside, its key " +
+  "and your reason. Only you set one aside, and the report names each one you set aside among the options it does not recommend, with that reason.";
 
 /** What a purchase is bought by: a real run named two options and no offer, so its reader could not act on it. Any shop counts. */
 const OFFERS = "An offer is an action_channel finding from the shop's page you opened, with its link, the seller and the price in the claim and the quote; the record's date is the day it " +
@@ -111,6 +119,7 @@ export function researchMethodText(plan: ResearchPlan): string {
     "After each researcher's report you read what is still empty in the matrix. Send more researchers only for empty cells and for the confirmations the matrix line names, " +
       `never for one more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
       `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} ${READER_WORDS}`,
+    LEAD_CANDIDATES,
     KEY_SPECIFICATIONS,
     `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the summary, the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
