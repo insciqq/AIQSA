@@ -40,6 +40,8 @@ const statusReads = (calls: { method: string; url: string }[]) =>
 
 function useClock() {
   // Real timeouts keep Testing Library's waits working; the poll interval and the clock are driven by the test.
+  // A faked setInterval also stops waitFor's own polling: it then re-checks only on DOM mutations, so a focus
+  // that is not part of the same commit is never seen. Focus is asserted directly after the render instead.
   vi.useFakeTimers({ now: START, toFake: ["setInterval", "clearInterval", "Date"] });
 }
 
@@ -76,7 +78,11 @@ describe("TelegramConnectionSection", () => {
 
     await waitFor(() => expect(screen.getByTestId("settings-telegram-state")).toHaveTextContent("Not connected"));
     expect(screen.getByTestId("settings-telegram")).not.toHaveTextContent(/privacy|Telegram servers|stored by Telegram/iu);
-    fireEvent.click(screen.getByRole("button", { name: "Connect Telegram" }));
+    const connect = screen.getByRole("button", { name: "Connect Telegram" });
+    connect.focus();
+    fireEvent.click(connect);
+    expect(screen.getByRole("status")).toHaveTextContent("Creating a link…");
+    expect(screen.getByRole("heading", { name: "Connect Telegram" })).toHaveFocus();
 
     const open = await screen.findByRole("link", { name: "Open Telegram" });
     expect(open).toHaveAttribute("href", DEEP_LINK);
@@ -84,7 +90,7 @@ describe("TelegramConnectionSection", () => {
     expect(open).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByTestId("settings-telegram-deep-link")).toHaveTextContent(DEEP_LINK);
     expect(screen.getByTestId("settings-telegram-link")).toHaveTextContent("It works once and expires at");
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Connect Telegram" })).toHaveFocus());
+    expect(screen.getByRole("heading", { name: "Connect Telegram" })).toHaveFocus();
     expect(screen.queryByRole("button", { name: "Connect Telegram" })).not.toBeInTheDocument();
 
     await tick(TELEGRAM_LINK_POLL_MS);
@@ -96,7 +102,7 @@ describe("TelegramConnectionSection", () => {
     await waitFor(() => expect(screen.getByTestId("settings-telegram-state")).toHaveTextContent(/^Connected as @alex since .+$/u));
     expect(screen.queryByTestId("settings-telegram-link")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Connected as @alex since");
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Telegram" })).toHaveFocus());
+    expect(screen.getByRole("heading", { name: "Telegram" })).toHaveFocus();
 
     await tick(TELEGRAM_LINK_POLL_MS * 3);
     expect(statusReads(calls)).toBe(4);
@@ -169,6 +175,7 @@ describe("TelegramConnectionSection", () => {
     render(<TelegramConnectionSection />);
     fireEvent.click(await screen.findByRole("button", { name: "Connect Telegram" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Too many links were created. Try again in a few minutes.");
+    expect(screen.getByRole("heading", { name: "Connect Telegram" })).toHaveFocus();
   });
 
   it("disconnects after a confirmation and restores focus", async () => {
