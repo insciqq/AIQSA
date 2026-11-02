@@ -4,7 +4,7 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { runResearchGates, type ResearchAttempt, type ResearchGateContext } from "./gates";
 import type { ResearchMatrix } from "./matrix";
 import { dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, RECORDS, SUMMARY, TABLE, unreachable } from "./report.testFixtures";
-import { REPORT_CHECK_GATE, reportCheckGate, researchReportFindings } from "./reportCheck";
+import { REPORT_CHECK_GATE, reportCheckGate, researchDraftWithLinkedRecords, researchReportFindings } from "./reportCheck";
 
 const check = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[] = RECORDS, matrix: ResearchMatrix | null = MATRIX) => researchReportFindings(draft, records, matrix);
 const messages = (draft: ResearchDraft, records?: readonly ResearchEvidenceRecord[], matrix?: ResearchMatrix | null) => check(draft, records, matrix).troubles.map(({ message }) => message).join("\n");
@@ -266,10 +266,48 @@ describe("advice without facts", () => {
 describe("the report's links", () => {
   const linked = (...links: readonly string[]) => ({ ...DRAFT, report: `${DRAFT.report}\n\n${links.join(" ")}` });
 
-  it("sends back a link of a record the draft did not cite, with the id to add", () => {
-    const text = messages(linked("[магазин](https://shop.example/x2)."));
-    expect(text).toContain(`https://shop.example/x2 (record ${id(5)})`);
-    expect(text).toContain("add their ids");
+  it("adds one uncited record behind a report or summary link before checking the draft", () => {
+    for (const draft of [linked("[магазин](https://shop.example/x2)."), { ...DRAFT, summary: { ...SUMMARY, text: `${SUMMARY.text} https://shop.example/x2` } }]) {
+      const cited = researchDraftWithLinkedRecords(draft, RECORDS);
+      expect(cited.recordIds).toEqual([...DRAFT.recordIds!, id(5)]);
+      expect(messages({ ...cited, report: `${cited.report}\nhttps://maker.example/x1 https://shop.example/x1` })).toBe("");
+      expect(draft.recordIds).toEqual(DRAFT.recordIds);
+      expect(researchDraftWithLinkedRecords(cited, RECORDS)).toBe(cited);
+    }
+  });
+
+  it("still sends back a link with two records, naming both choices", () => {
+    const records = [...RECORDS, finding(6, "x2", "price", { url: "https://shop.example/x2#offer" })];
+    const draft = linked("[магазин](https://shop.example/x2).");
+    expect(researchDraftWithLinkedRecords(draft, records)).toBe(draft);
+    const text = messages(draft, records);
+    expect(text).toContain(`https://shop.example/x2 (records ${id(5)}, ${id(6)})`);
+    expect(text).toContain("add the matching ids");
+  });
+
+  it("uses fetch_url normalization without conflating queries, schemes, subdomains or trailing slashes", () => {
+    const records = [finding(1, null, null, { url: "https://xn--bcher-kva.example/%ab?q=1" })];
+    const draft = { ...ADVICE, report: "[source](HTTPS://BÜCHER.example:443/%ab?q=1#part)" };
+    expect(researchDraftWithLinkedRecords(draft, records).recordIds).toEqual([id(1)]);
+    for (const report of ["https://xn--bcher-kva.example/%ab?q=2", "http://xn--bcher-kva.example/%ab?q=1", "https://www.xn--bcher-kva.example/%ab?q=1",
+      "https://xn--bcher-kva.example/%ab/?q=1"]) {
+      const different = { ...draft, report };
+      expect(researchDraftWithLinkedRecords(different, records)).toBe(different);
+      expect(messages(different, records, null)).toContain("no record of this research");
+    }
+  });
+
+  it("counts a dataset once when its URL and examples repeat the same normalized link", () => {
+    const record = dataset(1, "x1", "reviews", { examples: [{ quote: "Words.", url: "https://shop.example/1#review" }] });
+    expect(researchDraftWithLinkedRecords({ ...ADVICE, report: "https://shop.example/1" }, [record]).recordIds).toEqual([id(1)]);
+  });
+
+  it("keeps corrected citations, plain text, invalid references and legacy typed findings intact", () => {
+    const records = [finding(6, null, null, { supersedes: id(5), url: "https://shop.example/x2" })];
+    for (const draft of [{ ...linked("https://shop.example/x2"), recordIds: [id(5)] }, { ...linked("https://shop.example/x2"), origin: "plain_text" as const },
+      { ...linked("https://shop.example/x2"), invalidReferences: "Bad ids." }, { ...linked("https://shop.example/x2"), recordIds: undefined }]) {
+      expect(researchDraftWithLinkedRecords(draft, records)).toBe(draft);
+    }
   });
 
   it("sends back a link that is no record at all", () => {
