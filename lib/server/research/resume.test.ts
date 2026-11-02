@@ -66,7 +66,11 @@ const keyOf = (runId: string) => ({ chatId: "chat", runId, userId: "user" });
 describe("what the store gives a Continue", () => {
   it("copies the row beside the link, with the phases counting from now, and says what it picked up", async () => {
     const store = storeOf();
-    await expect(createResearchResume({ store })(scopeOf()).load("run-a", running)).resolves.toEqual({ answer: ANSWER, frame: FRAME, fromRunId: "run-a", goal: GOAL });
+    const port = createResearchResume({ store })(scopeOf());
+    const state = await port.load("run-a", running);
+    expect(state).toMatchObject({ answer: ANSWER, frame: FRAME, fromRunId: "run-a", goal: GOAL });
+    expect(store.link).not.toHaveBeenCalled();
+    await port.link(state!, running);
     expect(store.link).toHaveBeenCalledExactlyOnceWith(keyOf("run-b"), { answer: SOURCE.answer, frame: SOURCE.frame, fromRunId: "run-a", goal: GOAL, proposal: SOURCE.proposal,
       releasedAt: new Date(NOW), version: 3, windowEndsAt: SOURCE.windowEndsAt });
   });
@@ -120,8 +124,11 @@ describe("what the store gives a Continue", () => {
 
   it("stops at Stop, before the link", async () => {
     const stop = new AbortController();
-    const store = storeOf({ recorded: async () => { stop.abort(new Error("stopped")); return true; } });
-    await expect(createResearchResume({ store })(scopeOf()).load("run-a", stop.signal)).rejects.toThrow("stopped");
+    const store = storeOf();
+    const port = createResearchResume({ store })(scopeOf());
+    const state = await port.load("run-a", stop.signal);
+    stop.abort(new Error("stopped"));
+    await expect(port.link(state!, stop.signal)).rejects.toThrow("stopped");
     expect(store.link).not.toHaveBeenCalled();
   });
 });
@@ -170,11 +177,13 @@ const COVERAGE: ResearchMatrixCoverage = { cells: [
   { criterionKey: "price", recordIds: [], rowKey: "", state: "empty" }
 ], empty: 1, filled: 1 };
 
-const STATE: ResearchResumeState = { answer: ANSWER, frame: FRAME, fromRunId: "run-a", goal: GOAL };
+const STATE: ResearchResumeState = { answer: ANSWER, frame: FRAME, fromRunId: "run-a", goal: GOAL,
+  row: { answer: SOURCE.answer, frame: SOURCE.frame, proposal: SOURCE.proposal, version: 3, windowEndsAt: SOURCE.windowEndsAt! } };
 const RECORD = { id: "record-1", runId: "run-a" } as unknown as ResearchEvidenceRecord;
 
 function portsOf(load: () => Promise<ResearchResumeState | null> = async () => STATE, records: readonly ResearchEvidenceRecord[] = [RECORD]) {
   const resume = vi.fn(load);
+  const link = vi.fn(async (_state: ResearchResumeState, _signal: AbortSignal) => undefined as void);
   const planReleased = vi.fn();
   const open = vi.fn(NOOP_RESEARCH_PORTS.planWindow.open);
   let scope: ResearchRunScope | null = null;
@@ -185,10 +194,10 @@ function portsOf(load: () => Promise<ResearchResumeState | null> = async () => S
       return { ...NOOP_RESEARCH_PORTS.evidence, records: async () => records };
     },
     planWindow: () => ({ open }),
-    resume: () => ({ load: resume }),
+    resume: () => ({ link, load: resume }),
     time: () => ({ ...NOOP_RESEARCH_PORTS.time, planReleased })
   };
-  return { open, planReleased, ports, resume, scope: () => scope! };
+  return { link, open, planReleased, ports, resume, scope: () => scope! };
 }
 
 function runOn(items: readonly TranscriptItem[], ports: ResearchPortFactories, extra: Partial<RunResearchInput> = {}) {
@@ -218,6 +227,7 @@ describe("a Continue's start", () => {
     const run = runOn(turn(), parts.ports);
     const { text } = await startOn(run);
     expect(parts.resume).toHaveBeenCalledExactlyOnceWith("run-a", running);
+    expect(parts.link).toHaveBeenCalledExactlyOnceWith(STATE, running);
     expect(text).toMatch(/^\{"research_run":"run-b","status":"resumed"/u);
     expect(text).toContain("1 of 2 cells empty");
     expect(text).toContain("1 records stand");
@@ -284,6 +294,17 @@ describe("a report the interruption caught", () => {
     expect(shown).not.toBe(REPORT);
   });
 
+  it("says what the checks came to on it, since a report they sent back or passed did not stop in them", async () => {
+    const said = async (output: string) => (await startOn(runOn(turn(submitted(output)), portsOf().ports))).text;
+    const sentBack = await said(JSON.stringify({ status: "sent_back", gate: "verifier", message: "Not shown to the user yet. Fix the price." }));
+    expect(sentBack).toContain("The checks sent back the report");
+    expect(sentBack).toContain("what they said of it stands");
+    expect(sentBack).not.toContain("never finished");
+    const passed = await said(JSON.stringify({ message: "Shown.", status: "accepted" }));
+    expect(passed).toContain("never reached the user");
+    expect(passed).not.toContain("never finished");
+  });
+
   it("carries what the gates said, as across an approval", async () => {
     const sent = JSON.stringify({ status: "sent_back", gate: "verifier", message: "Not shown to the user yet. Fix the price. Then call submit_research_draft again with the whole report." });
     const seen: unknown[] = [];
@@ -347,12 +368,28 @@ describe("what is no Continue, or has nothing to pick up", () => {
     log.mockRestore();
   });
 
-  it("asks the store once, however many ask", async () => {
+  it("asks the store once and writes the row once, however many ask", async () => {
     const parts = portsOf();
     const run = runOn(turn(), parts.ports);
     await Promise.all([startOn(run), startOn(run)]);
     expect(parts.resume).toHaveBeenCalledOnce();
+    expect(parts.link).toHaveBeenCalledOnce();
     expect(parts.planReleased).toHaveBeenCalledOnce();
+  });
+
+  it("starts over, logged, when the row cannot be written, and the plan step goes on", async () => {
+    const log = vi.spyOn(observability, "logEvent").mockImplementation(() => undefined);
+    const parts = portsOf();
+    parts.link.mockRejectedValue(new Error("write failed"));
+    const run = runOn(turn(), parts.ports);
+    const { text } = await startOn(run);
+    expect(text).toMatch(/"status":"scoping"/u);
+    expect(text).toContain("research starts over with the plan");
+    expect(parts.planReleased).not.toHaveBeenCalled();
+    expect(run.research.holding()).toBe(true);
+    expect(run.research.outstanding()).toBe(false);
+    expect(log).toHaveBeenCalledWith("service_operation", expect.objectContaining({ code: "research_resume_failed", stage: "write" }));
+    log.mockRestore();
   });
 });
 
@@ -376,6 +413,16 @@ describe("a model that goes round the start", () => {
     await expect(research.responseEnded(ended)).resolves.toMatchObject({ kind: "user", text: expect.stringContaining(START_RESEARCH_TOOL_NAME) });
     await expect(research.responseEnded(ended)).resolves.toBeNull();
     expect(research.finish(false)).toBeNull();
+  });
+
+  it("writes no row by asking: only a start does, as a run that answers in text or starts a sub-agent ran no research", async () => {
+    const parts = portsOf();
+    const { research } = runOn(turn(), parts.ports);
+    await research.responseEnded({ round: 1, runDraftCall: vi.fn(), text: "Продолжаю.", toolsClosed: false });
+    const [refused] = research.withResearcherBriefs([researcherTool(async () => { throw new Error("unreached"); })]);
+    await execute(refused!, call);
+    expect(parts.resume).toHaveBeenCalledOnce();
+    expect(parts.link).not.toHaveBeenCalled();
   });
 
   it("is asked nothing where nothing can be picked up", async () => {
