@@ -20,7 +20,7 @@ import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { runResearchGates, type ResearchGate, type ResearchGateContext } from "./gates";
-import { researchNote } from "./notes";
+import { researchAnswerText, researchNote } from "./notes";
 import { createResearchClock } from "./clock";
 import { createResearchPlanHandlers } from "./planHandlers";
 import { createResearchPlanWindow, RESEARCH_PLAN_WINDOW_LIMITS, ResearchPlanWindows, type ResearchPlanStore } from "./planWindow";
@@ -288,6 +288,21 @@ describe("a draft reaches the user", () => {
     // The next turn reads what was said as the answer's text, not only as a call's arguments.
     expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: REPORT });
     expect(memory.runs.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the answer with the draft's summary, then the report, as the server places them, and the gates read both", async () => {
+    const summary = "For your needs take the X1, at 300 in the shop; cheaper, the X2.\n\nBoth were in stock on the day.";
+    const answer = `${summary}\n\n${REPORT}`;
+    const drafts: ResearchDraft[] = [];
+    const { adapter } = scripted([{ calls: begin() },
+      { calls: [submit("call-draft", { record_ids: [], report: REPORT, summary: { row_keys: [], text: summary }, unreachable: [] })] }]);
+    const memory = engineOf({ gates: [gate("spy", async (draft) => { drafts.push(draft); return { kind: "pass" }; })] });
+    const seen = await events(run(adapter, memory));
+    expect(drafts).toEqual([expect.objectContaining({ report: REPORT, summary: { rowKeys: [], text: summary } })]);
+    // It cites no record, so its plain word that nothing was checked against a source follows the report.
+    expect(memory.published()).toBe(researchAnswerText(answer, [researchNote("no_findings")]));
+    expect(tokens(seen).at(-1)).toBe(memory.published());
+    expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: memory.published() });
   });
 
   it("refuses a draft before research started, and an ordinary answer goes on as one", async () => {

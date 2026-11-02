@@ -3,13 +3,14 @@ import { RESEARCH_ROUND_LIMITS, type ResearchDraft, type ResearchEvidenceRecord,
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { runResearchGates, type ResearchAttempt, type ResearchGateContext } from "./gates";
 import type { ResearchMatrix } from "./matrix";
-import { dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, RECORDS, TABLE, unreachable } from "./report.testFixtures";
+import { dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, RECORDS, SUMMARY, TABLE, unreachable } from "./report.testFixtures";
 import { REPORT_CHECK_GATE, reportCheckGate, researchReportFindings } from "./reportCheck";
 
 const check = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[] = RECORDS, matrix: ResearchMatrix | null = MATRIX) => researchReportFindings(draft, records, matrix);
 const messages = (draft: ResearchDraft, records?: readonly ResearchEvidenceRecord[], matrix?: ResearchMatrix | null) => check(draft, records, matrix).troubles.map(({ message }) => message).join("\n");
 
-const ADVICE: ResearchDraft = { branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "Measure the bed first, then try two firmness levels.", unreachable: [] };
+const ADVICE: ResearchDraft = { branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "Measure the bed first, then try two firmness levels.",
+  summary: { rowKeys: [], text: "Measure first." }, unreachable: [] };
 /** Three of the fixtures' five pages, so a draft citing all of them can be traced and a test can be about something else. */
 const LINKED = "https://maker.example/x1 https://shop.example/x1 https://maker.example/x2";
 const withBranches: ResearchFrame ={ ...FRAME, branches: [{ cases: [{ key: "light", label: "до 70 кг" }, { key: "heavy", label: "тяжелее" }], key: "weight", unknown: "Вес спящего" }] };
@@ -31,7 +32,7 @@ describe("what the pick rests on", () => {
   });
 
   it("asks one record of a cell, however many it holds", () => {
-    const records = [...RECORDS, finding(6, "x1", "price", { url: "https://shop.example/x1b" })];
+    const records = [...RECORDS, finding(6, "x1", "price", { sourceClass: "action_channel", url: "https://shop.example/x1b" })];
     expect(messages({ ...DRAFT, recordIds: [id(1), id(6), id(3)] }, records, matrixOf(FRAME, records))).toBe("");
   });
 
@@ -49,7 +50,7 @@ describe("what the pick rests on", () => {
   });
 
   it("never needs a record for a cell nothing filled", () => {
-    expect(messages({ ...DRAFT, pickRowKey: "x2", recordIds: [id(4), id(5)] })).toBe("");
+    expect(messages({ ...DRAFT, pickRowKey: "x2", recordIds: [id(4), id(5)], summary: { rowKeys: ["x2"], text: `Берите ${FRAME.rows[1]!.label}.` } })).toBe("");
   });
 
   it("does not ask a record of a quote that did not check out, which fills no cell", () => {
@@ -124,6 +125,86 @@ describe("what the draft names", () => {
 
   it("takes no branch for granted when the draft picks nothing", () => {
     expect(messages({ ...ADVICE }, RECORDS, matrixOf(withBranches, RECORDS))).toBe("");
+  });
+});
+
+describe("the summary the reader reads first", () => {
+  /** Two more options, so the summary has alternatives to recommend: synthetic, with an offer each in a cell and one outside the matrix. */
+  const ladder: ResearchFrame = { ...FRAME, rows: [...FRAME.rows, { key: "kappa", label: "Kappa Firm" }, { key: "sigma", label: "Sigma Duo" }] };
+  const ladderRecords = [...RECORDS, finding(11, "kappa", "price", { sourceClass: "action_channel", url: "https://shop.example/kappa" }),
+    finding(12, "sigma", null, { sourceClass: "action_channel", url: "https://dealer.example/sigma" }), finding(13, "sigma", "firmness", { url: "https://maker.example/sigma" })];
+  const ladderMatrix = matrixOf(ladder, ladderRecords);
+  const ladderTable = `${TABLE}\n| Kappa Firm | 20 000 ₽ | нет данных | жёсткая |\n| Sigma Duo | 40 000 ₽ | нет данных | мягкая |`;
+  const recommending = (rowKeys: readonly string[], text: string, recordIds = [...DRAFT.recordIds!, id(11), id(12), id(13)]): ResearchDraft =>
+    ({ ...DRAFT, recordIds, report: `# Отчёт\n\n${ladderTable}\n\nhttps://maker.example/x1 https://shop.example/x1 https://shop.example/kappa https://maker.example/sigma\n`, summary: { rowKeys, text } });
+  const LADDER_TEXT = `Берите ${FRAME.rows[0]!.label} за 30 000 ₽. Дешевле — Kappa Firm за 20 000 ₽; мягче — Sigma Duo за 40 000 ₽.`;
+
+  it("passes with the pick first and each option it lists named in its text", () => {
+    expect(messages(recommending(["x1", "kappa", "sigma"], LADDER_TEXT), ladderRecords, ladderMatrix)).toBe("");
+  });
+
+  it("sends back a draft without one, picking or not, saying what it holds", () => {
+    for (const draft of [{ ...DRAFT, summary: null }, { ...ADVICE, summary: null }]) {
+      const text = messages(draft);
+      expect(text).toContain("The draft has no summary.");
+      expect(text).toContain("two to four short paragraphs");
+      expect(text).toContain("the pick first");
+    }
+  });
+
+  it("sends back a summary that names no row while the draft picks one", () => {
+    expect(messages({ ...DRAFT, summary: { rowKeys: [], text: "Берите лучший." } })).toContain("The summary names no row of the matrix while the draft picks x1");
+    const inseparable: ResearchDraft = { ...DRAFT, doesNotSeparate: { rowKeys: ["x1", "x2"], statement: "Оба.", wouldDecide: "Полежать." }, pickRowKey: null, summary: { rowKeys: [], text: "Оба." } };
+    expect(messages(inseparable)).toContain("while the draft picks x1, x2");
+  });
+
+  it("sends back a summary that does not start with the pick, or leaves out a case's pick", () => {
+    expect(messages(recommending(["kappa", "x1"], LADDER_TEXT), ladderRecords, ladderMatrix)).toContain("The summary starts with kappa, while pick_row_key is x1");
+    const frame: ResearchFrame = { ...ladder, branches: [{ cases: [{ key: "light", label: "до 70 кг" }, { key: "heavy", label: "тяжелее" }], key: "weight", unknown: "Вес" }] };
+    const picks = [{ branchKey: "weight", caseKey: "light", rowKey: "x1" }, { branchKey: "weight", caseKey: "heavy", rowKey: "kappa" }];
+    const text = messages({ ...recommending(["x1"], LADDER_TEXT), branchPicks: picks }, ladderRecords, matrixOf(frame, ladderRecords));
+    expect(text).toContain("The summary leaves out rows branch_picks chooses: kappa");
+  });
+
+  it("sends back a text that does not name a row it lists, since the reader sees words, not keys", () => {
+    const text = messages(recommending(["x1", "sigma"], `Берите ${FRAME.rows[0]!.label}; есть и мягче.`), ladderRecords, ladderMatrix);
+    expect(text).toContain("The summary's text does not name Sigma Duo (sigma)");
+    expect(text).not.toContain(`not name ${FRAME.rows[0]!.label}`);
+  });
+
+  it("sends back a row it lists that the matrix lacks", () => {
+    expect(messages(recommending(["x1", "omega"], LADDER_TEXT), ladderRecords, ladderMatrix)).toContain("Outside the matrix: row omega.");
+  });
+
+  it("asks the evidence of every option it recommends, as of a pick, so their prices and sellers reach the checks", () => {
+    const text = messages(recommending(["x1", "kappa", "sigma"], LADDER_TEXT, [...DRAFT.recordIds!, id(13)]), ladderRecords, ladderMatrix);
+    expect(text).toContain(`kappa / price: ${id(11)}`);
+    // An offer the matrix holds in no cell is asked for by itself, once.
+    expect(text).toContain(`whose current offers you did not cite: add at least one id of each, so the checks read the price and the seller you state. sigma: ${id(12)}.`);
+    expect(text).not.toContain(`kappa: ${id(11)}`);
+  });
+
+  it("asks an offer even where another record fills its cell: the cell is cited, the offer is not", () => {
+    const records = [...ladderRecords, finding(14, "kappa", "price", { url: "https://maker.example/kappa-price" })];
+    const text = messages(recommending(["x1", "kappa", "sigma"], LADDER_TEXT, [...DRAFT.recordIds!, id(12), id(13), id(14)]), records, matrixOf(ladder, records));
+    expect(text).toContain(`kappa: ${id(11)}`);
+    expect(text).not.toContain("kappa / price");
+  });
+
+  it("checks a link in the summary as one in the report: the reader reads both", () => {
+    const linked = recommending(["x1", "kappa", "sigma"], `${LADDER_TEXT} Цена: https://elsewhere.example/offer`);
+    expect(messages(linked, ladderRecords, ladderMatrix)).toContain("https://elsewhere.example/offer");
+  });
+
+  it("sends back what could not be read of it, and keeps what could", () => {
+    const text = messages({ ...DRAFT, invalidSummary: "summary.row_keys must list at most 64 keys of the matrix's rows.", summary: { rowKeys: [], text: SUMMARY.text } });
+    expect(text).toContain("summary.row_keys must list");
+    expect(messages({ ...DRAFT, invalidSummary: "summary.text must be 1 to 4000 characters: two to four short paragraphs.", summary: null })).toContain("summary.text must be");
+  });
+
+  it("goes unchecked on rows where the matrix could not be read, but still wants the pick first", () => {
+    expect(messages({ ...DRAFT, summary: { rowKeys: ["x1"], text: "Берите лучший." } }, RECORDS, null)).toBe("");
+    expect(messages({ ...DRAFT, summary: { rowKeys: ["x2", "x1"], text: SUMMARY.text } }, RECORDS, null)).toContain("The summary starts with x2");
   });
 });
 
@@ -273,7 +354,7 @@ describe("the comparison", () => {
     const records = RECORDS.slice(0, 3);
     expect(messages({ ...DRAFT, report: "Lonax Memory." }, records, matrixOf(frame, records))).toBe("");
     const knowledge = { ...FRAME, rows: [] };
-    expect(messages({ ...DRAFT, pickRowKey: null, report: "An answer." }, RECORDS, matrixOf(knowledge, RECORDS))).toBe("");
+    expect(messages({ ...DRAFT, pickRowKey: null, report: "An answer.", summary: { rowKeys: [], text: "The answer in short." } }, RECORDS, matrixOf(knowledge, RECORDS))).toBe("");
   });
 
   it("names the criteria a table leaves out, with why they matter", () => {
@@ -292,6 +373,8 @@ describe("the comparison", () => {
 
   describe("a criterion in another script than the report's", () => {
     const ENGLISH = "Independent test results for a specific candidate model";
+    /** A summary is in the report's language. */
+    const inEnglish = (report: string): ResearchDraft => ({ ...DRAFT, report, summary: { ...SUMMARY, text: `Take ${FRAME.rows[0]!.label}.` } });
     const added = (criterion: string): ResearchFrame => ({ ...FRAME, changes: [{ at: "2026-11-01T10:00:00.000Z", by: { name: "lab", threadId: "thread-1" }, change: "add_criterion", key: "tests", reason: "It separates the rows." }],
       criteria: [...FRAME.criteria, { criterion, key: "tests", why: "It separates the rows." }] });
 
@@ -301,7 +384,7 @@ describe("the comparison", () => {
 
     it("passes the other way round", () => {
       const english = "# Report\n\n| Option | Price | Reviews | Firmness |\n| --- | --- | --- | --- |\n| Lonax Memory | 30 000 | 3 of 11 | medium |\n| Optima Classic | 25 000 | none | firm |\n";
-      expect(messages({ ...DRAFT, report: english }, RECORDS, matrixOf(added("Шумность"), RECORDS))).toBe("");
+      expect(messages(inEnglish(english), RECORDS, matrixOf(added("Шумность"), RECORDS))).toBe("");
     });
 
     it("still goes back in the report's own script", () => {
@@ -311,7 +394,7 @@ describe("the comparison", () => {
     it("still goes back for an English criterion an English report leaves out", () => {
       const frame = added("Noise level");
       const english = "# Report\n\n| Option | Price |\n| --- | --- |\n| Lonax Memory | 30 000 |\n| Optima Classic | 25 000 |\n";
-      expect(messages({ ...DRAFT, report: english }, RECORDS, matrixOf({ ...frame, criteria: frame.criteria.slice(3) }, RECORDS))).toContain("Noise level");
+      expect(messages(inEnglish(english), RECORDS, matrixOf({ ...frame, criteria: frame.criteria.slice(3) }, RECORDS))).toContain("Noise level");
     });
 
     it("is about criteria only: a row's name is not translated, so a Latin name stays wanted in a Russian table", () => {
@@ -382,7 +465,7 @@ describe("what it leaves alone", () => {
 
   it("still checks ids where only the matrix could not be read", () => {
     expect(messages({ ...DRAFT, recordIds: [id(99)] }, RECORDS, null)).toContain(id(99));
-    expect(messages({ ...DRAFT, pickRowKey: "x9" }, RECORDS, null)).toBe("");
+    expect(messages({ ...DRAFT, pickRowKey: "x9", summary: { ...SUMMARY, rowKeys: ["x9"] } }, RECORDS, null)).toBe("");
   });
 });
 

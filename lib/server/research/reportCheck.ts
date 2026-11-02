@@ -1,4 +1,4 @@
-import type { ResearchDraft, ResearchEvidenceRecord, ResearchFrame } from "../../contracts/research";
+import { researchDraftText, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFrame } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchGate } from "./gates";
@@ -9,17 +9,18 @@ import { researchRegistrableDomain } from "./sourceQuality";
 /**
  * A draft against the records and the matrix (`agent_docs/RUN_CONTRACTS.md`, Research), the first gate a draft meets. It reads only fields, so it
  * says only what those can prove:
- * - every id names a live record or one corrected by a live one, and a pick, a branch's pick and rows called inseparable are rows of the matrix;
+ * - every id names a live record or one corrected by a live one, and a pick, a branch's pick, the summary's rows and rows called inseparable are rows of the matrix;
  * - a row the draft leans on has a record cited in each cell that holds evidence, which is what makes the prices, sellers and reviews behind a pick
  *   reach the checks after it: a real run cited 9 of 56 records, and three checks read the maker's specifications while the pick went unread;
  * - a link in the report is a record the draft cites, since a link is what a report's prose claims to rest on that a field can show;
  * - a report resting on several pages links at least half of them, so its reader can trace what it says;
- * - a comparison has its table, naming every criterion, and a criterion added on the way is named.
+ * - a comparison has its table, naming every criterion, and a criterion added on the way is named;
+ * - the summary the reader reads first is there, starts with the pick, names in its text the rows it lists, and the offers of the options it recommends are cited.
  *
  * What stays the model's word: that the prose says what the cited records say (the verifier reads the records, not the prose), that the pick follows
- * from the comparison, why each criterion matters, a statement that rows do not separate, and any pick written only in prose. Advice that cites nothing,
- * picks nothing and links nothing passes, as does a text draft, which has no ids. Names are matched generously: a false alarm costs a paid rewrite of the
- * whole report, a missed one a table column, so only a report that holds no word of a criterion goes back.
+ * from the comparison, why each criterion matters, a statement that rows do not separate, any pick written only in prose, and the summary's prices, shops and
+ * length. Advice with its summary that cites nothing, picks nothing and links nothing passes, as does a text draft, which has no ids. Names are matched
+ * generously: a false alarm costs a paid rewrite of the whole report, a missed one a table column, so only a report that holds no word of a criterion goes back.
  */
 export const REPORT_CHECK_GATE = "report_check";
 
@@ -146,9 +147,11 @@ function unknownRecords(ids: ReadonlySet<string>, records: readonly ResearchEvid
 
 const rowLabel = (frame: ResearchFrame, key: string) => frame.rows.find((row) => row.key === key)?.label ?? key;
 
-/** What the draft picks or calls inseparable, row by row. */
-const leanedOn = ({ branchPicks, doesNotSeparate, pickRowKey }: ResearchDraft) => [...new Set([...pickRowKey ? [pickRowKey] : [], ...branchPicks?.map(({ rowKey }) => rowKey) ?? [],
-  ...doesNotSeparate?.rowKeys ?? []])];
+/** The rows the draft picks: its pick and each case's. */
+const pickedRows = ({ branchPicks, pickRowKey }: ResearchDraft) => [...new Set([...pickRowKey ? [pickRowKey] : [], ...branchPicks?.map(({ rowKey }) => rowKey) ?? []])];
+
+/** What the draft picks, recommends in its summary or calls inseparable, row by row. */
+const leanedOn = (draft: ResearchDraft) => [...new Set([...pickedRows(draft), ...draft.summary?.rowKeys ?? [], ...draft.doesNotSeparate?.rowKeys ?? []])];
 
 const MATRIX_RULE = "The pick is a row of the matrix: name one of its keys, add the row with change_research_frame and record its evidence, or pass null and say in does_not_separate that the data does not tell the rows apart.";
 
@@ -194,6 +197,56 @@ function uncitedRows(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: Res
   return { message: `${noEvidence}${uncited}`.trim() };
 }
 
+const SUMMARY_FORM = "Pass summary with its text, two to four short paragraphs in the user's language that the server puts above the report: the option to take for the user's " +
+  "criteria, then the alternatives for their other likely priorities, each named as the matrix names it and, for a purchase, with its price and where to buy it; and its row_keys, " +
+  "the rows it recommends in that order, the pick first.";
+
+/**
+ * The summary the reader reads first, and most readers stop at (operator decision 2026-11-02). It goes back missing, naming no row while the draft picks one, not
+ * starting with the pick or leaving out a case's pick, or with a text that does not name a row it lists, since a reader sees its words and not its keys. Names are
+ * matched as generously as the table's, so only a text holding no word of a row's label goes back.
+ */
+function summaryTrouble(draft: ResearchDraft, frame: ResearchFrame | null): Trouble | null {
+  const { summary } = draft;
+  if (!summary) return { message: `${draft.invalidSummary ?? "The draft has no summary."} ${SUMMARY_FORM}` };
+  const problems: string[] = draft.invalidSummary === undefined ? [] : [draft.invalidSummary];
+  const picked = pickedRows(draft);
+  const leaning = [...new Set([...picked, ...draft.doesNotSeparate?.rowKeys ?? []])];
+  if (summary.rowKeys.length === 0 && leaning.length > 0) {
+    problems.push(`The summary names no row of the matrix while the draft picks ${listed(leaning)}: list in row_keys the rows it recommends, the pick first, and name each in its text.`);
+  } else if (summary.rowKeys.length > 0) {
+    if (draft.pickRowKey && summary.rowKeys[0] !== draft.pickRowKey) {
+      problems.push(`The summary starts with ${summary.rowKeys[0]}, while pick_row_key is ${draft.pickRowKey}: the pick comes first, in row_keys and in its text.`);
+    }
+    const left = picked.filter((key) => key !== draft.pickRowKey && !summary.rowKeys.includes(key));
+    if (left.length > 0) problems.push(`The summary leaves out rows branch_picks chooses: ${listed(left)}. Name each case's pick in it and say who it is for.`);
+  }
+  const text = folded(summary.text);
+  const unnamed = frame ? summary.rowKeys.filter((key) => frame.rows.some((row) => row.key === key) && !namesLabel(text, rowLabel(frame, key))) : [];
+  if (unnamed.length > 0) {
+    problems.push(`The summary's text does not name ${listed(unnamed.map((key) => `${plain(rowLabel(frame!, key))} (${key})`))}: its reader sees its words, not its keys, so name each option as the matrix names it.`);
+  }
+  return problems.length > 0 ? { message: `${problems.join(" ")} ${SUMMARY_FORM}` } : null;
+}
+
+const quoteHolds = (record: ClaimRecord) => record.quoteCheck?.status === "found" || record.quoteCheck?.status === "not_checked";
+
+/**
+ * The options the summary recommends whose recorded offers the draft cites none of: an offer is what a purchase is bought by, and the checks read only cited records.
+ * An offer named under a cell the pick's check already lists (`uncitedRows`) is asked for there. An option with no offer recorded is not this check's to send back,
+ * since only the report can say no shop was reached: the gap judge asks for one.
+ */
+function uncitedOffers(draft: ResearchDraft, ids: ReadonlySet<string>, records: readonly ResearchEvidenceRecord[], matrix: ResearchMatrix | null): Trouble | null {
+  const asked = new Set(matrix?.coverage.cells.filter((cell) => cell.state === "filled" && !cell.recordIds.some((id) => ids.has(id))).flatMap(({ recordIds }) => recordIds.slice(0, IDS_PER_CELL)) ?? []);
+  const missing = (draft.summary?.rowKeys ?? []).flatMap((rowKey) => {
+    const offers = records.filter((record): record is ClaimRecord => isClaim(record) && record.rowKey === rowKey && record.sourceClass === "action_channel" && quoteHolds(record));
+    if (offers.length === 0 || offers.some(({ id }) => ids.has(id) || asked.has(id))) return [];
+    return [`${rowKey}: ${offers.slice(0, IDS_PER_CELL).map(({ id }) => id).join(", ")}`];
+  });
+  if (missing.length === 0) return null;
+  return { message: `The summary recommends options whose current offers you did not cite: add at least one id of each, so the checks read the price and the seller you state. ${listed(missing, "; ")}.` };
+}
+
 /**
  * Links of the report that no cited record stands behind: a live record's id goes back with it, and for the rest it is a record or no link. A link to the root of a site
  * a cited record is on passes: it claims nothing to rest on.
@@ -202,7 +255,7 @@ function unbackedLinks(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
   const allowed = new Set([...records.filter(({ id, kind }) => ids.has(id) || kind === "unreachable").flatMap(pagesOf),
     ...draft.unreachable.flatMap(({ target }) => pageOf(target) ?? [])]);
   const citedSites = new Set(records.filter((record) => isClaim(record) && ids.has(record.id)).flatMap(linksOf).flatMap((link) => researchRegistrableDomain(link) ?? []));
-  const links = reportLinks(draft.report).filter((link) => {
+  const links = reportLinks(report).filter((link) => {
     const page = pageOf(link);
     if (page === null || allowed.has(page)) return false;
     return !isSiteRoot(link) || !citedSites.has(researchRegistrableDomain(link) ?? "");
@@ -230,7 +283,7 @@ function unlinkedPages(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
     const page = pagesOf(record)[0];
     if (ids.has(record.id) && page !== undefined) pages.set(page, [...pages.get(page) ?? [], record]);
   }
-  const linked = new Set(reportLinks(draft.report).flatMap((link) => pageOf(link) ?? []));
+  const linked = new Set(reportLinks(report).flatMap((link) => pageOf(link) ?? []));
   const unlinked = [...pages.values()].filter((held) => !held.some((record) => pagesOf(record).some((page) => linked.has(page))));
   const reached = pages.size - unlinked.length;
   if (pages.size < TRACEABLE_PAGES || reached * 2 >= pages.size) return null;
@@ -246,13 +299,13 @@ function comparison(draft: ResearchDraft, matrix: ResearchMatrix, records: reado
     const criterion = frame.criteria.find((entry) => entry.key === key);
     return criterion ? [{ criterion, reason }] : [];
   });
-  const text = folded(draft.report);
+  const text = folded(report);
   const unnamed = added.filter(({ criterion }) => !namesCriterion(text, criterion.criterion, report));
   const troubles: Trouble[] = unnamed.length > 0 ? [{
     message: `Criteria were added during research, and the report must name each with its reason. Name: ${listed(unnamed.map(({ criterion, reason }) => `${plain(criterion.criterion)} (${plain(reason)})`), "; ")}.` }] : [];
   const held = new Set(records.filter(isClaim).flatMap(({ rowKey }) => rowKey ?? []));
   if (frame.rows.filter(({ key }) => held.has(key)).length < 2) return troubles;
-  const table = folded(tableText(draft.report));
+  const table = folded(tableText(report));
   const wanted = "Put one comparison table in the report, as a Markdown table with the rows against all of the matrix's criteria, and write no data for a cell nothing filled.";
   if (!table) return [...troubles, { message: `The report has no comparison table. ${wanted}` }];
   const leftOut = frame.criteria.filter(({ criterion }) => !namesCriterion(table, criterion, report)).map(({ criterion, why }) => ({ criterion: plain(criterion), why: plain(why) }));
@@ -270,7 +323,8 @@ export type ResearchReportFindings = Readonly<{ troubles: readonly Trouble[] }>;
  * server adds it nowhere.
  */
 export function researchReportFindings(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[], matrix: ResearchMatrix | null): ResearchReportFindings {
-  const report = draft.report;
+  /** What the reader reads, the summary above the report: its links are the report's too. */
+  const report = researchDraftText(draft);
   if (draft.origin === "plain_text" || (records.length === 0 && !matrix)) return { troubles: [] };
   if (draft.invalidReferences !== undefined) return { troubles: [{ message: `${draft.invalidReferences} Nothing else of this draft was checked.` }] };
   if (draft.recordIds === undefined && draft.findings.length > 0) {
@@ -284,7 +338,8 @@ export function researchReportFindings(draft: ResearchDraft, records: readonly R
   const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
-  return { troubles: [unknown, ...rows ?? [], links, unlinkedPages(draft, ids, records, report), ...table].flatMap((trouble) => trouble ?? []) };
+  const summary = [summaryTrouble(draft, matrix?.frame ?? null), uncitedOffers(draft, ids, records, matrix)];
+  return { troubles: [unknown, ...summary, ...rows ?? [], links, unlinkedPages(draft, ids, records, report), ...table].flatMap((trouble) => trouble ?? []) };
 }
 
 const bounded = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;

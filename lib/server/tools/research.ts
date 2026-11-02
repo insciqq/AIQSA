@@ -1,4 +1,4 @@
-import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_LIMITS, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import type { RunTool } from "./types";
 
@@ -62,12 +62,15 @@ export const proposeResearchPlanTool: RunTool = {
         type: "array"
       },
       criteria: {
-        description: "What the answer is judged by, at least one, found in the guides and standards you read while scoping and not from memory. For a knowledge question: its outcomes or sub-questions.",
+        description: "What the answer is judged by, at least one, found in the guides and standards you read while scoping and not from memory. For a knowledge question: its outcomes or sub-questions. " +
+          "For a purchase, the current offer (where to buy, the seller, the price) and owners' reviews are criteria too, so every option found gets them as cells to fill.",
         items: keyed({ criterion: { description: "In plain words, in the user's language.", type: "string" }, why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
         type: "array"
       },
       questions: {
-        description: "The questions that together answer the goal, each small enough for one researcher. Every source class goes to a question or into skipped_source_classes.",
+        description: "The questions that together answer the goal, each small enough for one researcher. Every source class goes to a question or into skipped_source_classes. " +
+          "They run at once, so none may need another's answer: what needs the options found, such as their owners' reviews, current offers or key specifications, is no question but " +
+          "a criterion, whose cells the next round fills once the rows exist.",
         items: {
           additionalProperties: false,
           properties: {
@@ -105,7 +108,7 @@ export const proposeResearchPlanTool: RunTool = {
 export const submitResearchDraftTool: RunTool = {
   capability: "session",
   description: "Hand in the research report once the researchers finished. Nothing you write while research runs reaches the user " +
-    "except this report: the server checks it and either shows it to the user exactly as written, so do not write it again, or " +
+    "except this report: the server checks it and either shows it to the user exactly as written, its summary above the report, so do not write it again, or " +
     "tells you what to do before you submit again. Pass the whole report each time. The report rests on records: you pass their ids, never " +
     "their text, and every check reads each claim from its record. Refused until the plan stands.",
   inputSchema: {
@@ -139,8 +142,21 @@ export const submitResearchDraftTool: RunTool = {
         items: { type: "string" },
         type: "array"
       },
-      report: { description: "The report in Markdown, in the user's language, exactly as the user should read it: a comparison table on the matrix's criteria, why each criterion matters, " +
-        "any criterion added during research with its reason, confirmed, claimed by a party and not verified kept apart, each figure and named claim linked to its page where it is stated, and what could not be reached said plainly.", type: "string" },
+      report: { description: "The report in Markdown, in the user's language, exactly as the user should read it below the summary, which it does not repeat: the comparison table on the matrix's criteria first, " +
+        "why each criterion matters, any criterion added during research with its reason, for a purchase each recommended option's current offers and the options kept in reserve with one reason each, " +
+        "confirmed, claimed by a party and not verified kept apart compactly, each figure and named claim linked to its page where it is stated, and what could not be reached said plainly.", type: "string" },
+      summary: {
+        additionalProperties: false,
+        description: "What the user reads first: the server puts it above the report, and most readers stop there.",
+        properties: {
+          row_keys: { description: "The rows of the matrix the summary recommends, in its order: the pick first, then the alternatives. Empty only when it recommends no row, as for a knowledge question.",
+            items: { type: "string" }, type: "array" },
+          text: { description: `Two to four short paragraphs in the user's language, at most ${RESEARCH_LIMITS.summaryCharacters} characters, no heading and no table: the option to take for the user's ` +
+            "criteria, then the alternatives for their other likely priorities, such as cheaper or a different feel, each named as the matrix names it and, for a purchase, with its price and where to buy it.", type: "string" }
+        },
+        required: ["row_keys", "text"],
+        type: "object"
+      },
       unreachable: {
         description: "Sources that could not be reached; empty when none.",
         items: {
@@ -156,7 +172,7 @@ export const submitResearchDraftTool: RunTool = {
         type: "array"
       }
     },
-    required: ["report", "record_ids", "pick_row_key", "branch_picks", "does_not_separate", "unreachable"],
+    required: ["summary", "report", "record_ids", "pick_row_key", "branch_picks", "does_not_separate", "unreachable"],
     type: "object"
   },
   name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
@@ -165,7 +181,7 @@ export const submitResearchDraftTool: RunTool = {
 
 /** The ephemeral last provider message of a round that offers only the reserved draft. */
 export function researchDraftReservedInstruction(): string {
-  return `The time for research is up. Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} now with the whole report from what you have, taking in ` +
+  return `The time for research is up. Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} now with the summary and the whole report from what you have, taking in ` +
     "anything the user just wrote and naming what could not be checked, and call no other tool.";
 }
 

@@ -48,6 +48,8 @@ export const RESEARCH_LIMITS = Object.freeze({
   reportCharacters: 200_000,
   sitesPerQuestion: 8,
   siteCharacters: 256,
+  /** A summary is two to four short paragraphs read before the report: past this it is no summary. */
+  summaryCharacters: 4_000,
   targetCharacters: 512,
   unreachable: 64,
   urlCharacters: 2_048
@@ -369,6 +371,12 @@ export type ResearchDraftReferences = Readonly<{
 }>;
 
 /**
+ * What the user reads first, which the server puts above the report (operator decision 2026-11-02: most readers stop there). `rowKeys` are the
+ * rows it recommends in its order, the pick first, so the checks can hold its words to the matrix.
+ */
+export type ResearchDraftSummary = Readonly<{ rowKeys: readonly string[]; text: string }>;
+
+/**
  * The references are there on a draft that refers to records, and absent on a text draft or one stored from before. `findings` are what
  * every gate reads: a model types none, and the server fills them from the records its ids name (`researchDraftWithRecords`).
  */
@@ -376,15 +384,24 @@ export type ResearchDraft = Partial<ResearchDraftReferences> & Readonly<{
   findings: readonly ResearchFinding[];
   /** What is wrong with references that could not be read: the report stands, and the report check sends it back with this. */
   invalidReferences?: string;
+  /** What is wrong with a summary that could not be read whole: what of it could be read stands, and the report check sends it back with this. */
+  invalidSummary?: string;
   /**
    * `reserved_call`: the model called `submit_research_draft`. `plain_text`: it wrote a final message instead, twice
    * or with its tools closed, so the draft has its text and no findings.
    */
   origin: "plain_text" | "reserved_call";
-  /** The report as the user will read it: an accepted draft is published as it is, with no further model call. */
+  /** The report as the user will read it, below the summary: an accepted draft is published as it is, with no further model call. */
   report: string;
+  /** Null when the model passed none, which the report check sends back; absent on a draft stored from before summaries. */
+  summary?: ResearchDraftSummary | null;
   unreachable: readonly ResearchUnreachable[];
 }>;
+
+/** The answer's text of a draft: its summary above the report, as the server places it, with no words of the server's own between them. */
+export function researchDraftText(draft: Pick<ResearchDraft, "report" | "summary">): string {
+  return draft.summary ? `${draft.summary.text.trim()}\n\n${draft.report}` : draft.report;
+}
 
 /** A gate's word on one draft. A gate that fails or runs out of time never loses the answer (`lib/server/research/gates.ts`). */
 export type ResearchGateResult =
@@ -816,6 +833,23 @@ export function decodeResearchDraftReferences(value: unknown): DecodedResearch<R
   return { ok: true, value: { branchPicks, doesNotSeparate, pickRowKey, recordIds } };
 }
 
+/**
+ * A draft's summary, read apart from its references, so a mistyped row key costs neither the pick nor the summary's words. A text alone is a summary naming no
+ * row, and the report check says what is missing; so does a missing one, which never refuses the draft (Answer first).
+ */
+function decodeResearchSummary(value: unknown): Readonly<{ invalid?: string; summary: ResearchDraftSummary | null }> {
+  if (value === undefined || value === null) return { summary: null };
+  const entry: Readonly<Record<string, unknown>> = typeof value === "string" ? { row_keys: [], text: value } : isRecord(value) ? value : {};
+  const { row_keys: rowKeys = [], text } = entry;
+  if (!storableText(text, RESEARCH_LIMITS.summaryCharacters)) {
+    return { invalid: `summary.text must be 1 to ${RESEARCH_LIMITS.summaryCharacters} characters: two to four short paragraphs.`, summary: null };
+  }
+  if (!Array.isArray(rowKeys) || rowKeys.length > RESEARCH_FRAME_LIMITS.rows || !rowKeys.every(isResearchKey)) {
+    return { invalid: `summary.row_keys must list at most ${RESEARCH_FRAME_LIMITS.rows} keys of the matrix's rows.`, summary: { rowKeys: [], text } };
+  }
+  return { summary: { rowKeys: [...new Set(rowKeys)], text } };
+}
+
 /** The findings typed into a draft stored before drafts referred to records. */
 function decodeTypedFindings(value: unknown): DecodedResearch<readonly ResearchFinding[]> {
   const limits = RESEARCH_LIMITS;
@@ -863,5 +897,7 @@ export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDra
     unreachable.push({ reason: entry.reason, sourceClass, target: entry.target });
   }
   const referred = !references ? {} : references.ok ? references.value : { invalidReferences: references.message };
-  return { ok: true, value: { ...referred, findings: findings?.value ?? [], origin: "reserved_call", report: value.report, unreachable } };
+  const summary = stored ? null : decodeResearchSummary(value.summary);
+  const summarized = !summary ? {} : { summary: summary.summary, ...summary.invalid === undefined ? {} : { invalidSummary: summary.invalid } };
+  return { ok: true, value: { ...referred, ...summarized, findings: findings?.value ?? [], origin: "reserved_call", report: value.report, unreachable } };
 }

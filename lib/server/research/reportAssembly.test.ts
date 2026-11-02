@@ -8,7 +8,7 @@ import { composeResearchReport, createResearchReport, PICKED_UP_RECORD_LIST_CHAR
 import { reportCheckGate } from "./reportCheck";
 import { verifierGate } from "./verifier";
 
-const draftOf = (recordIds: readonly string[], extra: Partial<ResearchDraft> = {}): ResearchDraft => ({ ...DRAFT, pickRowKey: null, recordIds, ...extra });
+const draftOf = (recordIds: readonly string[], extra: Partial<ResearchDraft> = {}): ResearchDraft => ({ ...DRAFT, pickRowKey: null, recordIds, summary: null, ...extra });
 
 describe("a draft's findings from its records", () => {
   it("fills them from the ids, each with its record", () => {
@@ -68,6 +68,9 @@ describe("a draft's findings from its records", () => {
     expect(findings.map(({ recordId }) => recordId)).toEqual([id(1), id(2), id(4), id(5)]);
     const branch = researchDraftWithRecords(draftOf([id(1), id(4)], { branchPicks: [{ branchKey: "weight", caseKey: "light", rowKey: "x2" }] }), RECORDS);
     expect(branch.findings.map(({ recordId }) => recordId)).toEqual([id(4), id(1)]);
+    // What the summary recommends is what the reader buys by, so it comes first beside the pick.
+    const recommended = researchDraftWithRecords(draftOf([id(1), id(4)], { summary: { rowKeys: ["x2"], text: "Take the second." } }), RECORDS);
+    expect(recommended.findings.map(({ recordId }) => recordId)).toEqual([id(4), id(1)]);
   });
 
   it("reads a corrected id as its correction, once however it is named", () => {
