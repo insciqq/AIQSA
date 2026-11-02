@@ -233,6 +233,55 @@ describe("the frame", () => {
     void _why;
     expect(refusal(decodeResearchFrameChange(omitted))).toBe("why must be given: pass null when it does not apply.");
   });
+
+  it("takes a candidate noted by its name as written and one set aside by its key, each with its reason", () => {
+    const note = { cases: null, change: "note_candidate", key: null, label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it at 59 521 ₽.", why: null };
+    expect(value(decodeResearchFrameChange(note))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason });
+    // The server makes a candidate's key, so one a model passes is not read.
+    expect(value(decodeResearchFrameChange({ ...note, key: "anything" }))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason });
+    expect(refusal(decodeResearchFrameChange({ ...note, label: null }))).toContain("label must name the option");
+    const aside = { ...note, change: "set_aside", key: "dreamline-sleep-dream-medium-s1000", label: null, reason: "Sold out in every shop." };
+    expect(value(decodeResearchFrameChange(aside))).toEqual({ change: "set_aside", key: aside.key, reason: aside.reason });
+    expect(refusal(decodeResearchFrameChange({ ...aside, key: null }))).toContain("key must name the noted candidate");
+    expect(refusal(decodeResearchFrameChange({ ...aside, reason: "" }))).toContain("reason must say");
+  });
+});
+
+describe("a frame's candidates", () => {
+  const frame: ResearchFrame = researchFrameFromPlan(value(decodeResearchPlanProposal(PROPOSAL)));
+  const note = (name: string | null) => ({ at: "2026-11-03T10:00:00.000Z", by: name === null ? { name: null, threadId: null } : { name, threadId: `thread-${name}` }, reason: "A listing shows it." });
+  const candidate = { key: "dreamline-sleep-dream-medium-s1000", label: "Dreamline SleepDream Medium S1000", notes: [note("marketplaces"), note("brands")] };
+  const aside = { at: "2026-11-03T10:05:00.000Z", key: "askona-balance", reason: "Same as a row, in another size." };
+
+  it("reads a frame stored before candidates as it was written, with neither field", () => {
+    const stored = JSON.parse(JSON.stringify(frame)) as Record<string, unknown>;
+    const decoded = value(decodeResearchFrame(stored));
+    expect(decoded).toEqual(stored);
+    expect(decoded).not.toHaveProperty("candidates");
+    expect(decoded).not.toHaveProperty("setAside");
+  });
+
+  it("reads back what was noted and set aside, who noted each and why", () => {
+    const grown = { ...frame, candidates: [candidate, { key: "askona-balance", label: "Askona Balance", notes: [note(null)] }], setAside: [aside] };
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(grown))))).toEqual(grown);
+    expect(value(decodeResearchFrame({ ...frame, candidates: [], setAside: [] }))).toMatchObject({ candidates: [], setAside: [] });
+  });
+
+  it("refuses a candidate no writer here could have made, naming the field", () => {
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: {} }))).toContain("candidates must list 0 to");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, key: "two words" }] }))).toContain("candidates[0].key");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [] }] }))).toContain("candidates[0].notes must list 1 to");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [{ ...note("lab"), by: { name: "lab", threadId: null } }] }] }))).toContain("candidates[0].notes[0].by");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [candidate, candidate] }))).toContain("candidates[1].key repeats");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: Array.from({ length: RESEARCH_FRAME_LIMITS.candidates + 1 }, (_entry, index) => ({ ...candidate, key: `c${index}` })) })))
+      .toContain("candidates must list 0 to");
+    expect(refusal(decodeResearchFrame({ ...frame, setAside: [{ ...aside, reason: "" }] }))).toContain("setAside[0].reason");
+  });
+
+  it("keeps candidates out of the change log, which holds only what changed the matrix", () => {
+    const logged = { at: "2026-11-01T10:00:00.000Z", by: { name: null, threadId: null }, change: "set_aside", key: "x2", reason: "Why." };
+    expect(refusal(decodeResearchFrame({ ...frame, changes: [logged] }))).toBe("changes[0].change must be one of add_branch, add_criterion, add_row.");
+  });
 });
 
 describe("a draft's references", () => {

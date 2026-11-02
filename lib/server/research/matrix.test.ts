@@ -210,6 +210,21 @@ describe("what may change the frame", () => {
     expect(changedResearchFrame({ ...FRAME, branches: numbered(limits.branches, (index) => ({ cases: [], key: `b${index}`, unknown: "U" })) }, addBranch(), STAMP)).toMatchObject({ ok: false });
     expect(changedResearchFrame({ ...FRAME, changes: numbered(limits.changes, () => ({ ...STAMP, change: "add_row" as const, key: "r", reason: "R" })) }, addRow(), STAMP)).toMatchObject({ ok: false });
   });
+
+  it("notes a candidate beside the matrix, out of its log, and counts candidates toward its bound on changes", () => {
+    const limits = RESEARCH_FRAME_LIMITS;
+    const noted = changedResearchFrame(FRAME, { change: "note_candidate", label: "Sealy Hybrid", reason: "A ranking names it." }, STAMP);
+    expect(noted).toMatchObject({ ok: true, value: { candidates: [{ key: "sealy-hybrid", label: "Sealy Hybrid", notes: [{ ...STAMP, reason: "A ranking names it." }] }], changes: [], rows: FRAME.rows } });
+    const changes = Array.from({ length: limits.changes - 1 }, () => ({ ...STAMP, change: "add_row" as const, key: "r", reason: "R" }));
+    const crowded: ResearchFrame = { ...FRAME, candidates: [{ key: "sealy-hybrid", label: "Sealy Hybrid", notes: [{ ...STAMP, reason: "R." }] }], changes };
+    expect(changedResearchFrame(crowded, addRow(), STAMP)).toMatchObject({ message: expect.stringContaining(`its ${limits.changes} changes`), ok: false });
+    expect(changedResearchFrame({ ...FRAME, changes }, addRow(), STAMP)).toMatchObject({ ok: true });
+    // A researcher cannot set one aside: that is the main agent's decision.
+    if (!noted.ok) throw new Error("Expected a note");
+    expect(changedResearchFrame(noted.value, { change: "set_aside", key: "sealy-hybrid", reason: "Over budget." }, STAMP)).toMatchObject({ message: expect.stringContaining("only the main agent"), ok: false });
+    expect(changedResearchFrame(noted.value, { change: "set_aside", key: "sealy-hybrid", reason: "Over budget." }, { ...STAMP, by: { name: null, threadId: null } }))
+      .toMatchObject({ ok: true, value: { setAside: [{ at: STAMP.at, key: "sealy-hybrid", reason: "Over budget." }] } });
+  });
 });
 
 describe("the coverage port", () => {

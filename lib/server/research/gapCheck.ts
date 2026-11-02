@@ -1,9 +1,10 @@
 import {
-  RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchGateResult,
+  CHANGE_RESEARCH_FRAME_TOOL_NAME, RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchGateResult,
   type ResearchPlan, type ResearchSourceClass
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
+import { researchOpenCandidates } from "./candidates";
 import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
 import { researchEmptyByRow, researchKeySpecs, researchLeadingRows, researchMatrix, researchUnconfirmedKeyCells, type ResearchMatrix } from "./matrix";
 import { researchNote } from "./notes";
@@ -139,10 +140,38 @@ const GAP_CHECK_GATE = "gap_check";
 /** How a confirmation's next step names its cells, which is how an earlier send back says what it asked, an approval's or a Continue's rebuilt one included. */
 const CONFIRMATION_STEP = /the key specifications of row ([a-z0-9][a-z0-9_-]{0,47}): ([a-z0-9][a-z0-9_-]{0,47}(?:, [a-z0-9][a-z0-9_-]{0,47})*)\./gu;
 
+/** What this research's earlier send backs of this gate said. */
+const sentBackBefore = (earlier: ResearchGateContext["earlier"]): readonly string[] =>
+  earlier.flatMap(({ gate, message }) => gate === GAP_CHECK_GATE && message !== null ? [message] : []);
+
 /** The confirmations this research's earlier send backs of this gate asked for, as `row/criterion`. */
 function askedConfirmations(earlier: ResearchGateContext["earlier"]): ReadonlySet<string> {
-  return new Set(earlier.filter(({ gate, message }) => gate === GAP_CHECK_GATE && message !== null).flatMap(({ message }) =>
-    [...message!.matchAll(CONFIRMATION_STEP)].flatMap(([, row, criteria]) => criteria!.split(", ").map((criterion) => `${row}/${criterion}`))));
+  return new Set(sentBackBefore(earlier).flatMap((message) =>
+    [...message.matchAll(CONFIRMATION_STEP)].flatMap(([, row, criteria]) => criteria!.split(", ").map((criterion) => `${row}/${criterion}`))));
+}
+
+/** How a candidate's next step names it, which is how an earlier send back says it asked of it: a key cut short in a long send back ends in no colon, and is asked again. */
+const CANDIDATE_STEP = /Candidate ([\p{L}\p{M}\p{N}+]+(?:-[\p{L}\p{M}\p{N}+]+)*): add it as a row/gu;
+
+/** The candidates this research's earlier send backs of this gate asked about, by key. */
+const askedCandidates = (earlier: ResearchGateContext["earlier"]): ReadonlySet<string> =>
+  new Set(sentBackBefore(earlier).flatMap((message) => [...message.matchAll(CANDIDATE_STEP)].map(([, key]) => key!)));
+
+/**
+ * The candidates agents noted that are still neither a row nor set aside, one gap each, for the main agent to decide on: what it does needs no new page.
+ * Each is asked once, so one an earlier send back asked about is left out, decided or not. Only where the frame has rows: a knowledge question's frame has
+ * no options to add.
+ */
+function candidateGaps(matrix: ResearchMatrix, asked: ReadonlySet<string>): Gap[] {
+  if (matrix.frame.rows.length === 0) return [];
+  const limit = RESEARCH_LIMITS.questionCharacters;
+  return researchOpenCandidates(matrix.frame).filter(({ key }) => !asked.has(key)).map(({ key, label, notes }) => {
+    const [first] = notes;
+    const noted = `noted by ${[...new Set(notes.map(({ by }) => by.name ?? "you"))].join(", ")}${first ? `: ${space(first.reason)}` : ""}`;
+    return { issue: line(`${label}: a candidate neither a row nor set aside, ${noted}`, limit),
+      next_step: line(`Candidate ${key}: add it as a row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} add_row and send researchers for its cells, or set it aside with ` +
+        `${CHANGE_RESEARCH_FRAME_TOOL_NAME} set_aside, its key and your reason.`, limit) };
+  });
 }
 
 /**
@@ -359,7 +388,9 @@ export const gapCheckGate: ResearchGate = {
 
     // A source class whose opening cannot be told stays neither covered nor missing.
     const confirmations = matrix ? confirmationGaps(matrix, await confirmationRecords(context, matrix, draft), draft, askedConfirmations(context.earlier)) : [];
-    const missing = matrix ? [...matrixGaps(matrix), ...confirmations] : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
+    // With researchers closed nobody could fill a candidate's row.
+    const candidates = matrix && !closed ? candidateGaps(matrix, askedCandidates(context.earlier)) : [];
+    const missing = matrix ? [...matrixGaps(matrix), ...confirmations, ...candidates] : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
     // An unfinished judgment costs the check, never the answer, and the answer says only that it is not fully checked, and whether time is why. Evidence that
     // did not change pays for no new judgment, so the last one's word stands, an unfinished one included, until a judgment completes.
     const said = (cause: Unfinished): ResearchGateResult => ({ kind: "pass", notes: [researchNote(cause === "time" ? "time_out" : "gate_failed")] });
@@ -369,9 +400,11 @@ export const gapCheckGate: ResearchGate = {
     };
     const asBefore = (): ResearchGateResult => progress?.unfinished ? said(progress.unfinished) : { kind: "pass" };
     // An option the draft newly recommends needs its key specifications confirmed however few pages are new or findings changed: what the draft leans on changed,
-    // not its evidence. Only these go back then; each is asked once, and the caps hold.
-    if (confirmations.length > 0 && (noNewPages || addedNothing(draft, context))) {
-      return gapsResult(draft, context, { gaps: confirmations, kind: "mechanical", limits: previous?.limits ?? [], pages }, closed, true);
+    // not its evidence. Only these go back then, with the candidates still open, which need a decision and no page; each is asked once, and the caps hold. The
+    // candidates go back so alone only with no cell open: with cells open they ride with the cells, and never spend a send back of their own.
+    const owed = confirmations.length > 0 || (candidates.length > 0 && matrix?.coverage.empty === 0);
+    if (owed && (noNewPages || addedNothing(draft, context))) {
+      return gapsResult(draft, context, { gaps: [...confirmations, ...candidates], kind: "mechanical", limits: previous?.limits ?? [], pages }, closed, true);
     }
     if (noNewPages) return asBefore();
     if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, closed);
