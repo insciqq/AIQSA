@@ -321,6 +321,61 @@ describe("a draft's references", () => {
   });
 });
 
+describe("edits to a draft sent back", () => {
+  const fields = { branch_picks: [], does_not_separate: null, pick_row_key: null, record_ids: [], unreachable: [] };
+  const previous = value(decodeResearchDraft({ ...fields, pick_row_key: "x1", record_ids: [RECORD_ID], report: "Alpha.\nBeta.\nAgain again.",
+    summary: { row_keys: ["x1"], text: "Take X1." } }));
+  const edit = (edits: unknown, extra = {}) => decodeResearchDraft({ ...fields, edits, ...extra }, previous);
+
+  it("matches all edits in the previous report, keeps literal replacement text and replaces references in full", () => {
+    const result = value(edit([{ old: "Beta.", new: "Alpha." }, { old: "Alpha.", new: "$& $1\n" }, { old: "Again again.", new: "" }]));
+    expect(result).toMatchObject({ report: "$& $1\n\nAlpha.\n", recordIds: [], pickRowKey: null, branchPicks: [], doesNotSeparate: null, summary: previous.summary });
+    expect(previous.report).toBe("Alpha.\nBeta.\nAgain again.");
+  });
+
+  it("allows reference-only and summary-only changes, carrying a summary error until it is replaced", () => {
+    expect(value(edit([])).report).toBe(previous.report);
+    expect(value(edit([], { summary: { row_keys: [], text: "Try both." } })).summary).toEqual({ rowKeys: [], text: "Try both." });
+    const invalid = { ...previous, invalidSummary: "Bad row key." };
+    expect(value(decodeResearchDraft({ ...fields, edits: [] }, invalid)).invalidSummary).toBe("Bad row key.");
+    expect(value(decodeResearchDraft({ ...fields, edits: [], summary: { row_keys: [], text: "Fixed." } }, invalid)).invalidSummary).toBeUndefined();
+  });
+
+  it.each([
+    [[{ old: "Alpha.", new: "Changed." }, { old: "absent", new: "" }], "edits[1].old was not found"],
+    [[{ old: "Alpha.", new: "Changed." }, { old: "a", new: "" }], "edits[1].old was found more than once"],
+    [[{ old: "Alpha.", new: "Changed." }, { old: "Alpha", new: "" }], "edits[1] overlaps edits[0]"],
+    [[{ old: "Alpha.", new: "Changed." }, { old: "Changed.", new: "" }], "edits[1].old was not found"],
+    [[{ old: "", new: "Added." }], "edits[0].old must be"],
+    [[{ old: "Alpha.", new: "\u0000" }], "edits[0].new must be"]
+  ])("refuses the whole set with the failing edit and reason: %j", (edits, message) => {
+    expect(refusal(edit(edits))).toContain(message);
+    expect(previous.report).toBe("Alpha.\nBeta.\nAgain again.");
+  });
+
+  it("counts overlapping occurrences as ambiguous too", () => {
+    expect(refusal(decodeResearchDraft({ ...fields, edits: [{ old: "aa", new: "b" }] }, { ...previous, report: "aaa" }))).toContain("found more than once");
+  });
+
+  it("requires a previous draft and exactly one report form", () => {
+    expect(refusal(decodeResearchDraft({ ...fields, edits: [] }))).toContain("previous draft");
+    expect(refusal(edit([], { report: "Whole." }))).toContain("either report or edits");
+  });
+
+  it("bounds edit count, each text, their total and the resulting report", () => {
+    expect(refusal(edit(Array.from({ length: RESEARCH_LIMITS.draftEdits + 1 }, () => ({ old: "Alpha.", new: "A" }))))).toContain("edits must list at most");
+    for (const field of ["old", "new"]) {
+      expect(refusal(edit([{ old: "Alpha.", new: "A", [field]: "x".repeat(RESEARCH_LIMITS.draftEditCharacters + 1) }]))).toContain(`edits[0].${field} must be`);
+    }
+    const parts = Array.from({ length: 6 }, (_, index) => String(index).repeat(RESEARCH_LIMITS.draftEditCharacters));
+    const edits = parts.map((old) => ({ old, new: "x".repeat(RESEARCH_LIMITS.draftEditCharacters) }));
+    expect(refusal(decodeResearchDraft({ ...fields, edits }, { ...previous, report: parts.join("") }))).toContain("edits[5] exceeds the edits total");
+    expect(refusal(decodeResearchDraft({ ...fields, edits: [{ old: "A", new: "AA" }] }, { ...previous, report: `A${"x".repeat(RESEARCH_LIMITS.reportCharacters - 1)}` })))
+      .toContain("edited report exceeds");
+    expect(refusal(edit([{ old: previous.report, new: "" }]))).toContain("edited report is empty");
+  });
+});
+
 describe("the start", () => {
   it("takes only the goal as the target contract, while the plan the live tool takes stays as it was", () => {
     expect(value(decodeResearchStart({ goal: "Choose a mattress.", questions: [] }))).toEqual({ goal: "Choose a mattress." });

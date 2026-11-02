@@ -113,7 +113,9 @@ export const submitResearchDraftTool: RunTool = {
   capability: "session",
   description: "Hand in the research report once the researchers finished. Nothing you write while research runs reaches the user " +
     "except this report: the server checks it and either shows it to the user exactly as written, its summary above the report, so do not write it again, or " +
-    "tells you what to do before you submit again. Pass the whole report each time. The report rests on records: you pass their ids, never " +
+    "tells you what to do before you submit again. Pass the whole report with its summary, or after a send back pass edits against the latest draft the checks saw. " +
+    "With edits, omit report and omit summary to keep it, or give its full replacement. Always give record_ids, pick_row_key, branch_picks, does_not_separate and unreachable " +
+    "in full each time; they are never inherited. The report rests on records: you pass their ids, never " +
     "their text, and every check reads each claim from its record. Refused until the plan stands.",
   inputSchema: {
     additionalProperties: false,
@@ -139,6 +141,23 @@ export const submitResearchDraftTool: RunTool = {
         required: ["row_keys", "statement", "would_decide"],
         type: "object"
       }, { type: "null" }] },
+      edits: {
+        description: `Instead of report after a send back: at most ${RESEARCH_LIMITS.draftEdits} exact old/new pairs, at most ${RESEARCH_LIMITS.draftEditCharacters} characters per text and ` +
+          `${RESEARCH_LIMITS.draftEditsCharacters} characters total. Each old must occur exactly once in the previous report, edits cannot overlap, and all apply or none do. ` +
+          `The resulting report stays within ${RESEARCH_LIMITS.reportCharacters} characters. [] keeps the report while replacing references or summary.`,
+        items: {
+          additionalProperties: false,
+          properties: {
+            new: { description: "Exact replacement text; empty deletes the old text.", maxLength: RESEARCH_LIMITS.draftEditCharacters, type: "string" },
+            old: { description: "Exact text in the previous report, including whitespace; never text from the summary or from another edit's replacement.",
+              maxLength: RESEARCH_LIMITS.draftEditCharacters, minLength: 1, type: "string" }
+          },
+          required: ["old", "new"],
+          type: "object"
+        },
+        maxItems: RESEARCH_LIMITS.draftEdits,
+        type: "array"
+      },
       pick_row_key: { anyOf: [{ description: "The row of the matrix the report picks, for every user alike.", type: "string" }, { type: "null" }] },
       record_ids: {
         description: "The ids of the records the report rests on, as listed after each researcher's report and returned by record_evidence: every record behind a figure, a price, " +
@@ -176,7 +195,8 @@ export const submitResearchDraftTool: RunTool = {
         type: "array"
       }
     },
-    required: ["summary", "report", "record_ids", "pick_row_key", "branch_picks", "does_not_separate", "unreachable"],
+    // The non-strict tool keeps both forms optional here; the decoder enforces report or edits and the report check requires the summary.
+    required: ["record_ids", "pick_row_key", "branch_picks", "does_not_separate", "unreachable"],
     type: "object"
   },
   name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME,

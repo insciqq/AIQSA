@@ -64,10 +64,10 @@ describe("the plan and the draft", () => {
     expect(proposeResearchPlanTool.capability).toBe("session");
   });
 
-  it("requires every field of a draft, which takes record ids and never findings, and stays out of strict mode", () => {
+  it("requires full references for either draft form, takes no typed findings, and stays out of strict mode", () => {
     const schema = submitResearchDraftTool.inputSchema as { properties: Record<string, unknown>; required: readonly string[] };
-    expect([...schema.required].sort()).toEqual(Object.keys(schema.properties).sort());
-    expect(Object.keys(schema.properties).sort()).toEqual(["branch_picks", "does_not_separate", "pick_row_key", "record_ids", "report", "summary", "unreachable"]);
+    expect([...schema.required].sort()).toEqual(["branch_picks", "does_not_separate", "pick_row_key", "record_ids", "unreachable"]);
+    expect(Object.keys(schema.properties).sort()).toEqual(["branch_picks", "does_not_separate", "edits", "pick_row_key", "record_ids", "report", "summary", "unreachable"]);
     expect(schema.properties.summary).toMatchObject({ required: ["row_keys", "text"], type: "object" });
     expect(submitResearchDraftTool.strict).toBe(false);
     expect(schema.properties.does_not_separate).toMatchObject({ anyOf: [{ required: ["row_keys", "statement", "would_decide"], type: "object" }, { type: "null" }] });

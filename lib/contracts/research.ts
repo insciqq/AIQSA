@@ -14,9 +14,9 @@
  * property is optional, so a tool on these decoders lists every field as
  * required and gives one that does not apply as null. The decoders of the
  * system expect exactly that: a field that may not apply is required and
- * nullable, never optional. Keep it so when a field is added. A draft's
- * references alone also read a left-out field as one that does not apply: their
- * tool is not strict, and a report must not hinge on a field with nothing to say.
+ * nullable, never optional. Keep it so when a field is added to a strict tool. The draft's
+ * tool is not strict: its references also read a left-out field as one that does not apply,
+ * and an edit submission may omit the summary to keep the previous one.
  */
 
 export const START_RESEARCH_TOOL_NAME = "start_research";
@@ -39,6 +39,9 @@ export type ResearchRole = (typeof RESEARCH_ROLES)[number];
 
 export const RESEARCH_LIMITS = Object.freeze({
   claimCharacters: 2_000,
+  draftEditCharacters: 20_000,
+  draftEdits: 32,
+  draftEditsCharacters: 200_000,
   findings: 300,
   goalCharacters: 2_000,
   questionCharacters: 1_000,
@@ -885,10 +888,22 @@ function decodeTypedFindings(value: unknown): DecodedResearch<readonly ResearchF
  * It takes a finding to be that form: an empty list says nothing, a stored draft with one loses nothing by reading as a live one, and a live one sent beside a pick
  * would lose the pick and the check with it. A model that sends findings now goes back at the report check, not here, where nothing could say why. The same goes
  * for references that cannot be read: refused here, a key mistyped on the last call would cost the whole report, and past the send-back cap too (Answer first).
+ * Edits need the latest draft the checks sent back, supplied by the run or by transcript replay; only its report and an omitted summary carry forward.
  */
-export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDraft> {
+export function decodeResearchDraft(value: unknown, previous?: ResearchDraft | null): DecodedResearch<ResearchDraft> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
   const limits = RESEARCH_LIMITS;
+  if (value.edits !== undefined) {
+    if (value.report !== undefined) return refused("Pass either report or edits, not both.");
+    if (!previous) return refused("edits needs a previous draft sent back by the checks; pass the whole report first.");
+    const edited = editResearchReport(previous.report, value.edits);
+    if (!edited.ok) return edited;
+    const { edits: _edits, ...fields } = value;
+    const decoded = decodeResearchDraft({ ...fields, report: edited.value });
+    if (!decoded.ok || value.summary !== undefined) return decoded;
+    return { ok: true, value: { ...decoded.value, summary: previous.summary,
+      ...previous.invalidSummary === undefined ? {} : { invalidSummary: previous.invalidSummary } } };
+  }
   if (!boundedText(value.report, limits.reportCharacters)) return refused(`report must be 1 to ${limits.reportCharacters} characters.`);
   const stored = Array.isArray(value.findings) && value.findings.length > 0 && value.record_ids === undefined;
   const findings = stored ? decodeTypedFindings(value.findings) : null;
@@ -911,4 +926,36 @@ export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDra
   const summary = stored ? null : decodeResearchSummary(value.summary);
   const summarized = !summary ? {} : { summary: summary.summary, ...summary.invalid === undefined ? {} : { invalidSummary: summary.invalid } };
   return { ok: true, value: { ...referred, ...summarized, findings: findings?.value ?? [], origin: "reserved_call", report: value.report, unreachable } };
+}
+
+/** All matches belong to the previous report, never text another edit inserted. Nothing is applied until every edit is valid. */
+function editResearchReport(report: string, value: unknown): DecodedResearch<string> {
+  const limits = RESEARCH_LIMITS;
+  if (!Array.isArray(value) || value.length > limits.draftEdits) return refused(`edits must list at most ${limits.draftEdits} old/new pairs; [] keeps the report.`);
+  const replacements: { end: number; index: number; start: number; text: string }[] = [];
+  let characters = 0;
+  for (const [index, entry] of value.entries()) {
+    const at = `edits[${index}]`;
+    if (!isRecord(entry) || typeof entry.old !== "string" || entry.old.length === 0 || entry.old.length > limits.draftEditCharacters || entry.old.includes("\u0000")) {
+      return refused(`${at}.old must be 1 to ${limits.draftEditCharacters} characters of exact report text, without NUL.`);
+    }
+    if (typeof entry.new !== "string" || entry.new.length > limits.draftEditCharacters || entry.new.includes("\u0000")) {
+      return refused(`${at}.new must be 0 to ${limits.draftEditCharacters} characters, without NUL; empty deletes the old text.`);
+    }
+    characters += entry.old.length + entry.new.length;
+    if (characters > limits.draftEditsCharacters) return refused(`${at} exceeds the edits total of ${limits.draftEditsCharacters} characters (old and new combined).`);
+    const start = report.indexOf(entry.old);
+    if (start < 0) return refused(`${at}.old was not found in the previous draft's report. No edits were applied.`);
+    if (report.indexOf(entry.old, start + 1) >= 0) return refused(`${at}.old was found more than once in the previous draft's report. No edits were applied.`);
+    const end = start + entry.old.length;
+    const overlap = replacements.find((other) => start < other.end && end > other.start);
+    if (overlap) return refused(`${at} overlaps edits[${overlap.index}] in the previous draft's report. No edits were applied.`);
+    replacements.push({ end, index, start, text: entry.new });
+  }
+  const length = report.length + replacements.reduce((change, edit) => change + edit.text.length - (edit.end - edit.start), 0);
+  if (length > limits.reportCharacters) return refused(`The edited report exceeds ${limits.reportCharacters} characters. No edits were applied.`);
+  let edited = report;
+  for (const edit of replacements.sort((one, other) => other.start - one.start)) edited = edited.slice(0, edit.start) + edit.text + edited.slice(edit.end);
+  if (!boundedText(edited, limits.reportCharacters)) return refused("The edited report is empty. No edits were applied.");
+  return { ok: true, value: edited };
 }
