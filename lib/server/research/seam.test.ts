@@ -317,7 +317,7 @@ describe("a draft reaches the user", () => {
     expect(requests).toHaveLength(3);
     expect(drafts).toEqual([expect.objectContaining({ findings: [], origin: "plain_text", report: "Отчёт текстом, ещё раз." })]);
     expect(memory.published()).toContain("Отчёт текстом, ещё раз.");
-    expect(memory.published()).toContain(researchNote("no_findings", "Отчёт"));
+    expect(memory.published()).toContain(researchNote("no_findings"));
     // The call the server made for it is on record, and in no conversation.
     expect(memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ toolName: SUBMIT_RESEARCH_DRAFT_TOOL_NAME }));
     expect(memory.appended.filter((item) => item.kind === "tool_call" && item.name === SUBMIT_RESEARCH_DRAFT_TOOL_NAME)).toEqual([]);
@@ -388,7 +388,7 @@ describe("the gap check's needs", () => {
     const memory = engineOf({ gates: [passes] }, { now: () => clock });
     await run(adapter, memory).text();
     expect(requests).toHaveLength(4);
-    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("time_out", REPORT)}*`);
+    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("time_out")}*`);
   });
 
   it("past the tool time with no draft at all, the reserved round's message is the draft, and a round that is not asked for is not paid", async () => {
@@ -403,7 +403,7 @@ describe("the gap check's needs", () => {
     expect(requests).toHaveLength(3);
     expect(requests[2]!.history?.at(-1)).toMatchObject({ text: expect.stringContaining(SUBMIT_RESEARCH_DRAFT_TOOL_NAME), type: "user" });
     expect(memory.published()).toContain("Whatever I have.");
-    expect(memory.published()).toContain(researchNote("no_findings", "Whatever I have."));
+    expect(memory.published()).toContain(researchNote("no_findings"));
   });
 
   it("does not spend a round on a draft that the repeat guard blocks: the standing draft goes out with a note", async () => {
@@ -413,7 +413,7 @@ describe("the gap check's needs", () => {
     await run(adapter, memory).text();
     expect(requests.length).toBeLessThanOrEqual(5);
     expect(memory.published()).toContain(REPORT);
-    expect(memory.published()).toContain(researchNote("unresolved", REPORT));
+    expect(memory.published()).toContain(researchNote("unresolved"));
   });
 });
 
@@ -551,7 +551,7 @@ describe("the verifier's needs", () => {
     const memory = engineOf({ gates: [gate("broken", async () => { throw new Error("verifier down"); }), gate("after", after)] });
     await run(main.adapter, memory).text();
     expect(after).toHaveBeenCalledTimes(1);
-    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("gate_failed", REPORT)}*`);
+    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("gate_failed")}*`);
   });
 
   it("delivers the answer with a visible note when a gate outlasts its time, ignoring its signal or not", async () => {
@@ -567,7 +567,7 @@ describe("the verifier's needs", () => {
       await vi.advanceTimersByTimeAsync(60 * 60_000 - 60_000 + 1_000);
       await finished;
       expect(aborted).toBe(true);
-      expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("time_out", REPORT)}*`);
+      expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("time_out")}*`);
     } finally {
       vi.useRealTimers();
     }
@@ -607,7 +607,7 @@ describe("review findings", () => {
       const seen = await finished;
       expect(spy).not.toHaveBeenCalled();
       expect(memory.toolCalls.begin).not.toHaveBeenCalledWith(expect.objectContaining({ toolName: SUBMIT_RESEARCH_DRAFT_TOOL_NAME }));
-      const shown = `${REPORT}\n\n---\n\n*${researchNote("run_failed", REPORT)}*`;
+      const shown = `${REPORT}\n\n---\n\n*${researchNote("run_failed")}*`;
       expect(tokens(seen).at(-1)).toBe(shown);
       expect(repo.failRun).toHaveBeenCalledTimes(1);
       expect(lastSaved(repo)).toBe(shown);
@@ -651,7 +651,7 @@ describe("review findings", () => {
     const memory = engineOf({});
     const repo = repository();
     const seen = await events(run(main.adapter, memory, {}, repo));
-    const shown = `# Partial report\n\n---\n\n*${researchNote("incomplete", "report")}*`;
+    const shown = `# Partial report\n\n---\n\n*${researchNote("incomplete")}*`;
     expect(tokens(seen).at(-1)).toBe(shown);
     expect(lastSaved(repo)).toBe(shown);
     expect(repo.failRun).toHaveBeenCalledTimes(1);
@@ -666,7 +666,7 @@ describe("review findings", () => {
       const finished = run(main.adapter, engineOf({}), {}, repo).text();
       await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
       await finished;
-      expect(lastSaved(repo)).toBe(`# Hanging report\n\n---\n\n*${researchNote("incomplete", "report")}*`);
+      expect(lastSaved(repo)).toBe(`# Hanging report\n\n---\n\n*${researchNote("incomplete")}*`);
     } finally {
       vi.useRealTimers();
     }
@@ -684,7 +684,7 @@ describe("review findings", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await finished;
       expect(main.requests).toHaveLength(3);
-      expect(lastSaved(repo)).toBe(`Kept attempt\n\n---\n\n*${researchNote("incomplete", "report")}*`);
+      expect(lastSaved(repo)).toBe(`Kept attempt\n\n---\n\n*${researchNote("incomplete")}*`);
     } finally {
       vi.useRealTimers();
     }
@@ -695,7 +695,7 @@ describe("review findings", () => {
     const memory = engineOf({ gates: [gate("gap", async () => ({ kind: "send_back", message: "Again." }))] });
     const repo = repository();
     await run(main.adapter, memory, {}, repo).text();
-    expect(lastSaved(repo)).toBe(`${REPORT}\n\n---\n\n*${researchNote("run_failed", REPORT)}*`);
+    expect(lastSaved(repo)).toBe(`${REPORT}\n\n---\n\n*${researchNote("run_failed")}*`);
   });
 
   /** A report in the reserved round past the tool time, then a user correction delivered at its end. */
@@ -745,7 +745,7 @@ describe("review findings", () => {
     await late.response().text();
     // The reserved round, a tool-free one, and the one that asks for the answer: then it ends.
     expect(late.main.requests.length).toBeLessThanOrEqual(6);
-    expect(late.memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("followup_not_applied", REPORT)}*`);
+    expect(late.memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("followup_not_applied")}*`);
   });
 
   it("recovers the earlier report at the hard deadline when the model never answers the follow-up", async () => {
@@ -757,7 +757,7 @@ describe("review findings", () => {
       await finished;
       expect(late.main.requests).toHaveLength(4);
       expect(late.repo.failRun).toHaveBeenCalledTimes(1);
-      expect(lastSaved(late.repo)).toBe(`${REPORT}\n\n---\n\n*${researchNote("time_out", REPORT)}*\n\n*${researchNote("followup_not_applied", REPORT)}*`);
+      expect(lastSaved(late.repo)).toBe(`${REPORT}\n\n---\n\n*${researchNote("time_out")}*\n\n*${researchNote("followup_not_applied")}*`);
     } finally {
       vi.useRealTimers();
     }
@@ -781,7 +781,7 @@ describe("a draft and its notes stay together", () => {
       return attempts === 1 ? firstDraft.run(draft, context) : hangs.run(draft, context);
     })] });
     await run(main.adapter, memory, { runId }, repository()).text();
-    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.anything(), `second\n\n---\n\n*${researchNote("stopped", "second")}*`);
+    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.anything(), `second\n\n---\n\n*${researchNote("stopped")}*`);
   });
 
   it("a recording failure on the next draft shows it with the generic note, never the last draft's counts", async () => {
@@ -797,7 +797,7 @@ describe("a draft and its notes stay together", () => {
       const finished = run(main.adapter, memory, {}, repo).text();
       await vi.advanceTimersByTimeAsync(5_000);
       await finished;
-      expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", `second\n\n---\n\n*${researchNote("run_failed", "second")}*`, { runId: "run-1" });
+      expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", `second\n\n---\n\n*${researchNote("run_failed")}*`, { runId: "run-1" });
     } finally {
       vi.useRealTimers();
     }
@@ -827,7 +827,7 @@ describe("a draft and its notes stay together", () => {
     ]);
     const memory = engineOf({ gates: [firstDraft] }, { now: () => clock });
     await run(main.adapter, memory).text();
-    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${counts(REPORT)}*\n\n*${researchNote("time_out", REPORT)}*`);
+    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${counts(REPORT)}*\n\n*${researchNote("time_out")}*`);
   });
 
   it("a gate that did not finish on a draft adds what it carries, and one that did adds only what it said", async () => {
@@ -840,9 +840,9 @@ describe("a draft and its notes stay together", () => {
     expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ gate: "first", kind: "sent_back", message: "Again.", notes: ["Carried."] });
     expect(await runResearchGates({ context, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: ["Its own."] });
     const broken: ResearchGate = { ...carrying, run: async () => { throw new Error("down"); } };
-    expect(await runResearchGates({ context, draft, gates: [broken], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed", "r"), "Carried."] });
+    expect(await runResearchGates({ context, draft, gates: [broken], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed"), "Carried."] });
     const late = { ...context, time: { remainingMs: () => 0, sendBackAllowed: () => false } };
-    expect(await runResearchGates({ context: late, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("time_out", "r"), "Carried."] });
+    expect(await runResearchGates({ context: late, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("time_out"), "Carried."] });
   });
 });
 
@@ -999,7 +999,7 @@ describe("what ends research", () => {
     expect(main.requests).toHaveLength(3);
     expect(seen.at(-1)).toMatchObject({ data: { status: "cancelled" }, type: "done" });
     expect(memory.published()).toBeNull();
-    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.anything(), `${REPORT}\n\n---\n\n*${researchNote("stopped", REPORT)}*`);
+    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.anything(), `${REPORT}\n\n---\n\n*${researchNote("stopped")}*`);
     expect(memory.threads.settle).toHaveBeenCalledWith(expect.objectContaining({ result: expect.objectContaining({ state: "stopped" }) }));
     expect(activeRunControllerRegistry.executing()).not.toContain(runId);
   });
@@ -1024,7 +1024,7 @@ describe("what ends research", () => {
     await run(main.adapter, memory, {}, repo).text();
     expect(memory.published()).toBeNull();
     expect(repo.failRun).toHaveBeenCalledTimes(1);
-    expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", `${REPORT}\n\n---\n\n*${researchNote("run_failed", REPORT)}*`, { runId: "run-1" });
+    expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", `${REPORT}\n\n---\n\n*${researchNote("run_failed")}*`, { runId: "run-1" });
   });
 
   it("the turn's hard deadline with a report in hand keeps it with a note", async () => {
@@ -1037,7 +1037,7 @@ describe("what ends research", () => {
       await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
       await finished;
       expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "run_time_limit" }), expect.anything());
-      expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", `${REPORT}\n\n---\n\n*${researchNote("time_out", REPORT)}*`, { runId: "run-1" });
+      expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", `${REPORT}\n\n---\n\n*${researchNote("time_out")}*`, { runId: "run-1" });
     } finally {
       vi.useRealTimers();
     }
@@ -1306,7 +1306,7 @@ describe("the plan window through the real engine", () => {
       expect(open.rows.closed).toHaveBeenCalledOnce();
       // The line at once, the card as the window opens, and the ordinary plan after it.
       const plans = planActivity(seen);
-      expect(plans[0]).toMatchObject({ items: [{ text: "Составляю план перед началом исследования" }], researchPlan: { runId: "run-1", state: "scoping" } });
+      expect(plans[0]).toMatchObject({ items: [{ text: "Making a plan before research starts" }], researchPlan: { runId: "run-1", state: "scoping" } });
       expect(plans[1]).toMatchObject({ researchPlan: { runId: "run-1", state: "window" } });
       expect(plans[1]!.items?.map((item) => item.text)).toEqual(proposalArguments(PLAN).steps);
       expect(plans.at(-1)!.researchPlan).toBeUndefined();
@@ -1433,7 +1433,7 @@ describe("the plan window through the real engine", () => {
       { ...repository(), appendRunOutputEvent: store.appendRunOutputEvent } as never);
     await open.post({ action: "save", plan: { assumptions: [], steps: ["Только тесты"], understood: "Матрас на дачу." } });
     const rows = expectPlanRows(await open.finished, store);
-    expect(rows.map((entry) => entry.items?.[0]?.text)).toEqual(["Составляю план перед началом исследования", proposalArguments(PLAN).steps[0], "Только тесты", "Что говорят тесты?"]);
+    expect(rows.map((entry) => entry.items?.[0]?.text)).toEqual(["Making a plan before research starts", proposalArguments(PLAN).steps[0], "Только тесты", "Что говорят тесты?"]);
     expect(rows.map((entry) => entry.researchPlan?.state)).toEqual(["scoping", "window", undefined, undefined]);
   });
 
@@ -1522,7 +1522,7 @@ describe("the plan window through the real engine", () => {
 
 describe("a model that never proposes", () => {
   const fetchCall = (id: string) => ({ arguments: { plan: [{ status: "pending", step: id }] }, id, name: "update_plan" });
-  const unknownNote = (text: string) => researchNote("not_submitted", text);
+  const unknownNote = (text: string) => researchNote("not_submitted");
 
   it("is sent back once for a final message, and its plan then goes on as usual", async () => {
     const main = scripted([{ calls: [start()] }, { text: "A question for you?" }, { calls: [propose()] }, { calls: [submit()] }]);

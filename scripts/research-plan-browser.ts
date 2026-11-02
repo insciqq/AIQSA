@@ -43,7 +43,7 @@ export function planInBrowser(act: "edit" | "start"): ScenarioInteraction {
         await step.fill(`${await step.inputValue()}${STEP_ADDITION}`);
         evidence.edited = true;
       }
-      await card.getByRole("button", { exact: true, name: "Начать поиск" }).click();
+      await card.getByRole("button", { exact: true, name: "Start research" }).click();
       evidence.pressed = true;
       stage = "gone";
       await card.waitFor({ state: "hidden", timeout: CARD_GONE_WAIT_MS });

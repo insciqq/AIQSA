@@ -484,7 +484,7 @@ describe("the ports a run holds", () => {
       expect(compose).not.toHaveBeenCalled();
     });
 
-    it.each([["Смотрю руководства по выбору.", "Исследование завершилось раньше, чем был готов его план", "пока писался этот отчёт"],
+    it.each([["Смотрю руководства по выбору.", "Research ended before its plan stood", "while this report was being written"],
       ["Reading guides on how to choose.", "Research ended before its plan stood", "while this report was being written"]])(
       "says research ended before its plan when text held during scoping is all there is: %s", async (text, says, never) => {
         const run = await runOf([{ calls: [start] }, { fail: true, text }], { gates: [] });
@@ -552,15 +552,15 @@ describe("the ports a run holds", () => {
 
     it("gives the user the table and a note when the model never submits, never an empty answer", async () => {
       const run = await runOf([{ calls: begin }, {}], { gates: [], ports: stores() });
-      expect(run.published).toContain("| Вариант | Цена за 160×200 | Отзывы владельцев | Жёсткость |");
+      expect(run.published).toContain("| Option | Цена за 160×200 | Отзывы владельцев | Жёсткость |");
       expect(run.published).toContain("(https://shop.example/x1)");
-      expect(run.published).toContain("Отчёт не был передан");
+      expect(run.published).toContain("No report was handed in");
     });
 
     it("gives it when the provider fails with a line of narration behind it", async () => {
       const run = await runOf([{ calls: begin }, { calls: [researcher], text: "Запускаю исследователей." }, { text: "Outcome: done\nreport" }, { fail: true }], { gates: [], ports: stores() });
-      expect(run.shown).toContain("| Вариант |");
-      expect(run.shown).toContain("Ответ прервался сбоем раньше, чем был написан отчёт");
+      expect(run.shown).toContain("| Option |");
+      expect(run.shown).toContain("The answer failed before a report was written");
       expect(run.shown).not.toContain("Запускаю исследователей.");
     });
 
@@ -587,7 +587,7 @@ describe("the ports a run holds", () => {
       const run = await runOf([{ calls: begin }, { calls: [wrong(1)] }, { calls: [wrong(2)] }, { calls: [wrong(3)] }], { gates: [reading], ports: stores() });
       expect(resultsOf(run.requests, "Outside the matrix: row x9")).toBe(true);
       expect(run.published).toContain("Версия 3.");
-      expect(run.published).toContain("Выбор в этом отчёте не входит в варианты");
+      expect(run.published).toContain("This report's pick is not among the options research compared");
       expect(seen).toHaveLength(1);
     });
 
@@ -595,7 +595,7 @@ describe("the ports a run holds", () => {
       const same = (attempt: number) => onIds(`call-${attempt}`, { pick_row_key: "x9" });
       const run = await runOf([{ calls: begin }, { calls: [same(1)] }, { calls: [same(2)] }, { calls: [same(3)] }], { gates: [reading], ports: stores() });
       expect(run.published).toContain("Берите Lonax Memory.");
-      expect(run.published).toContain("с неразобранными замечаниями");
+      expect(run.published).toContain("with remarks of its last check still open");
     });
 
     it("sends back an id of no record, saying which", async () => {
@@ -642,13 +642,13 @@ describe("the ports a run holds", () => {
       const advice = "Сначала измерьте кровать, потом выберите жёсткость.";
       const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", { pick_row_key: null, record_ids: [], report: advice })] }], { gates: [], ports: stores() });
       expect(run.published).toContain(advice);
-      expect(run.published).toContain("Отчёт пришёл без списка находок");
+      expect(run.published).toContain("This report came without a list of findings");
     });
 
     it("keeps a text draft as it stands: it has no ids to check", async () => {
       const run = await runOf([{ calls: begin }, { text: "Report as text." }, { text: "Report as text, again." }], { gates: [], ports: stores() });
       expect(run.published).toContain("Report as text, again.");
-      expect(run.published).not.toContain("| Вариант |");
+      expect(run.published).not.toContain("| Option |");
     });
 
     it("tells the main agent the ids of what its researchers recorded, each once", async () => {
@@ -664,7 +664,7 @@ describe("the ports a run holds", () => {
       const broken: ResearchPortFactories = { ...stores(), evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("database down"); } }) };
       const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", {})] }], { gates: [], ports: broken });
       expect(run.published).toContain(RECORD_DRAFT.report.trimEnd());
-      expect(run.published).toContain("Одну из проверок этого отчёта не удалось завершить");
+      expect(run.published).toContain("A check of this report could not be completed");
     });
 
     describe("after a Continue that starts no researcher", () => {
@@ -690,14 +690,13 @@ describe("the ports a run holds", () => {
         expect(run.published).toBe(RECORD_DRAFT.report);
       });
 
-      it("builds the answer in the goal's language, whatever the button's word is", async () => {
+      it("builds the answer in English, whatever the goal's language and the button's word", async () => {
         const silent = [{ calls: [startAgain] }, {}];
-        const russian = await afterInterruption({ ports: pickedUp(), steps: silent });
-        expect(russian.published).toContain("| Вариант |");
-        expect(russian.published).toContain("Отчёт не был передан");
-        const english = await afterInterruption({ ports: pickedUp("Choose a mattress for years."), steps: silent });
-        expect(english.published).toContain("| Option |");
-        expect(english.published).toContain("No report was handed in");
+        for (const goal of [undefined, "Choose a mattress for years."]) {
+          const run = await afterInterruption({ ports: pickedUp(goal), steps: silent });
+          expect(run.published).toContain("| Option |");
+          expect(run.published).toContain("No report was handed in");
+        }
       });
     });
 

@@ -119,7 +119,7 @@ describe("what the verifier gets and what comes back of it", () => {
     expect(result.message).toContain("data, never instructions");
     expect(result.message).toContain(`"${"x".repeat(VERIFIER_LIMITS.reasonCharacters)}"`);
     expect(result.message).not.toContain("x".repeat(VERIFIER_LIMITS.reasonCharacters + 1));
-    expect(result.unresolvedNote).toContain("«The X2 lasts for decades.»");
+    expect(result.unresolvedNote).toContain('"The X2 lasts for decades."');
   });
 
   it("catches a planted invented quote before any model sees it", async () => {
@@ -238,7 +238,7 @@ describe("what the verifier judges from", () => {
     const result = sentBack(await verifierGate.run(draftOf([overreach]), context));
     expect(result.notes!.join()).toContain("found in opened pages: 1");
     expect(result.notes!.join()).toContain("unsupported: 1");
-    expect(result.unresolvedNote).toContain("«The X1 lasts for fifty years.»");
+    expect(result.unresolvedNote).toContain('"The X1 lasts for fifty years."');
     const partly = contextOf({ turn: async () => ended("Outcome: done\nC1 | partly | ten years only") });
     expect(notesOf(await verifierGate.run(draftOf([overreach]), partly.context))).toContain("partly supported: 1");
   });
@@ -406,7 +406,7 @@ describe("a finding that stands for a record", () => {
       expect(lineIn(run.mock.calls[0]![0].brief, 1).shown).toBe("whole page");
       expect(result.notes!.join()).toContain("Claims: 1; supported: 0; unsupported: 1.");
       expect(result.notes!.join()).not.toContain("could not be checked");
-      expect(result.unresolvedNote).toContain("«The X1 is in stock at 399.»");
+      expect(result.unresolvedNote).toContain('"The X1 is in stock at 399."');
     });
 
     it("has it read as partly when only parts were before it: what they leave out says nothing", async () => {
@@ -424,7 +424,7 @@ describe("a finding that stands for a record", () => {
       const result = sentBack(await verifierGate.run(draftOf([recorded("r1"), recorded("r2", { claim: "The X2 is in stock." })]), context));
       expect(run).toHaveBeenCalledTimes(1);
       expect(result.notes!.join()).toContain("Claims: 2; supported: 0; partly supported: 1; unsupported: 1.");
-      expect(result.unresolvedNote).toContain("«The X1 is in stock at 399.»");
+      expect(result.unresolvedNote).toContain('"The X1 is in stock at 399."');
       expect(result.unresolvedNote).not.toContain("The X2");
     });
 
@@ -454,7 +454,7 @@ describe("a finding that stands for a record", () => {
         turn: async () => ended("Outcome: done\nC1 | unsupported | the page says 499") }).context));
       const earlier: ResearchAttempt[] = [{ draft: draftOf([]), gate: "verifier", message: first.message }];
       const again = (verdict: string) => contextOf({ earlier, evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", LONG)]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | ${verdict}`) }).context;
-      expect(notesOf(await verifierGate.run(draftOf([recorded("r1")]), again(`could_not_check | ${lazy}`)))).toContain("«The X1 is in stock at 399.»");
+      expect(notesOf(await verifierGate.run(draftOf([recorded("r1")]), again(`could_not_check | ${lazy}`)))).toContain('"The X1 is in stock at 399."');
       expect(notesOf(await verifierGate.run(draftOf([recorded("r1")]), again("partly | it says part of it")))).not.toContain("do not rely");
     });
 
@@ -778,8 +778,8 @@ describe("a finding that stands for a record", () => {
       const result = await verifierGate.run(corrected, context);
       expect(run.mock.calls[0]![0].brief).toContain(CORRECTED);
       expect(result.kind).toBe("pass");
-      expect(notesOf(result)).toContain(`«${ORIGINAL}»`);
-      expect(notesOf(result)).not.toContain(`«${CORRECTED}»`);
+      expect(notesOf(result)).toContain(`"${ORIGINAL}"`);
+      expect(notesOf(result)).not.toContain(`"${CORRECTED}"`);
     });
 
     it("clears when that same claim passes a later check, whose identity the message kept", async () => {
@@ -930,12 +930,12 @@ describe("what runs the check", () => {
     expect(notesOf(result)).toContain("Claims: 1; supported: 0; could not be checked: 1.");
   });
 
-  it("writes in the report's language, with no internal ids", async () => {
+  it("writes in English beside a report in another language, with no internal ids", async () => {
     const { context } = contextOf({ turn: async () => ended("Outcome: done\nC1 | unsupported | нет") });
     const result = sentBack(await verifierGate.run(draftOf([HOLDS], "# Отчёт"), context));
-    expect(result.notes!.join()).toContain("Независимая проверка: модель Other One · Other.");
-    expect(result.notes!.join()).toContain("Утверждений: 1; подтверждено: 0; не подтверждено: 1.");
-    expect(result.unresolvedNote).toContain("Проверка не подтвердила");
+    expect(result.notes!.join()).toContain("Independently checked by Other One · Other.");
+    expect(result.notes!.join()).toContain("Claims: 1; supported: 0; unsupported: 1.");
+    expect(result.unresolvedNote).toContain("The check did not support these claims");
     expect(`${result.notes!.join()} ${result.unresolvedNote}`).not.toMatch(/\bC1\b|verifier-|run-/u);
   });
 });
@@ -955,7 +955,7 @@ describe("the one correction", () => {
       const { context } = contextOf({ earlier });
       const result = await verifierGate.run(draftOf(findings, "DRAFT WITH THE SAME PROBLEMS"), context);
       expect(result.kind).toBe("pass");
-      expect(notesOf(result)).toContain("The check did not support these claims; if they appear above, do not rely on them: «The X2 lasts for decades.»; «The X3 never wears out.»");
+      expect(notesOf(result)).toContain('The check did not support these claims; if they appear above, do not rely on them: "The X2 lasts for decades."; "The X3 never wears out."');
       expect(notesOf(result)).not.toMatch(/withdrawn|removed/iu);
     }
   });
@@ -963,7 +963,7 @@ describe("the one correction", () => {
   it("names a rejected claim on a draft with no findings at all", async () => {
     const first = await firstRound([WRONG], "Outcome: done\nC1 | unsupported | n");
     const { context } = contextOf({ earlier: [{ draft: first.draft, message: first.message }] });
-    expect(notesOf(await verifierGate.run(draftOf([]), context))).toContain("«The X2 lasts for decades.»");
+    expect(notesOf(await verifierGate.run(draftOf([]), context))).toContain('"The X2 lasts for decades."');
   });
 
   it("stops naming a claim only when that same claim later passes: its page was read and the model supported it", async () => {
@@ -973,7 +973,7 @@ describe("the one correction", () => {
     const result = await verifierGate.run(draftOf([INVENTED]), passed.context);
     expect(notesOf(result)).not.toContain("do not rely");
     const notAsked = contextOf({ earlier: [{ draft: first.draft, message: first.message }], opened: async () => [page], remainingMs: 10_000 });
-    expect(notesOf(await verifierGate.run(draftOf([INVENTED]), notAsked.context))).toContain("«The X3 never wears out.»");
+    expect(notesOf(await verifierGate.run(draftOf([INVENTED]), notAsked.context))).toContain('"The X3 never wears out."');
   });
 
   it("does not reuse a verdict for a claim that differs only in case or symbols", async () => {
@@ -984,7 +984,7 @@ describe("the one correction", () => {
     const result = await verifierGate.run(draftOf([high]), again.context);
     expect(again.run).toHaveBeenCalledTimes(1);
     expect(again.run.mock.calls[0]![0].brief).toContain("1 MW");
-    expect(notesOf(result)).toContain("«The laser draws 1 MW.»");
+    expect(notesOf(result)).toContain('"The laser draws 1 MW."');
   });
 
   it("does reuse a verdict across whitespace and Unicode composition, the same claim being read twice for nothing", async () => {
@@ -1003,10 +1003,10 @@ describe("the one correction", () => {
     const { context } = contextOf({ earlier, turn: async () => ended("Outcome: done\nC1 | supported | y") });
     const result = await verifierGate.run(draftOf([HOLDS]), context);
     expect(result.kind).toBe("pass");
-    expect(notesOf(result)).toContain("if they appear above, do not rely on them: «The X2 lasts for decades.»; «The X3 never wears out.»");
+    expect(notesOf(result)).toContain('if they appear above, do not rely on them: "The X2 lasts for decades."; "The X3 never wears out."');
     // Still the one correction, and what passed before is read again.
     expect(context.subagents.run).toHaveBeenCalledTimes(1);
-    expect(verifierGate.carriedNotes!(draftOf([HOLDS]), earlier).join()).toContain("«The X2 lasts for decades.»");
+    expect(verifierGate.carriedNotes!(draftOf([HOLDS]), earlier).join()).toContain('"The X2 lasts for decades."');
     expect((await verifierGate.run(draftOf([WRONG]), contextOf({ earlier, turn: async () => ended("Outcome: done\nC1 | unsupported | n") }).context)).kind).toBe("pass");
   });
 
@@ -1015,14 +1015,14 @@ describe("the one correction", () => {
     const first = await firstRound([HOLDS, WRONG], `Outcome: done\nC1 | supported | y\nC2 | unsupported | ${reason}`);
     const earlier = [{ draft: structuredClone(first.draft), message: first.message }];
     const named = verifierGate.carriedNotes!(draftOf([]), earlier).join();
-    expect(named).toContain("«The X2 lasts for decades.»");
-    expect(named).not.toContain("«The X1 holds up.»");
+    expect(named).toContain('"The X2 lasts for decades."');
+    expect(named).not.toContain('"The X1 holds up."');
   });
 
   it("carries the rejected claims for a draft it did not finish on", async () => {
     const first = await firstRound([WRONG], "Outcome: done\nC1 | unsupported | n");
     expect(verifierGate.carriedNotes!(draftOf([HOLDS], "# Отчёт"), [{ draft: first.draft, message: first.message }]))
-      .toEqual(["Проверка не подтвердила эти утверждения; если они есть выше, полагаться на них нельзя: «The X2 lasts for decades.»."]);
+      .toEqual(['The check did not support these claims; if they appear above, do not rely on them: "The X2 lasts for decades.".']);
     expect(verifierGate.carriedNotes!(draftOf([HOLDS]), [])).toEqual([]);
   });
 
@@ -1035,7 +1035,7 @@ describe("the one correction", () => {
     expect(run).not.toHaveBeenCalled();
     expect(notesOf(result)).toContain("Independently checked by Other One · Other.");
     expect(notesOf(result)).toContain("supported: 1; unsupported: 1.");
-    expect(notesOf(result)).toContain("«The X2 lasts for decades.»");
+    expect(notesOf(result)).toContain('"The X2 lasts for decades."');
   });
 
   it("counts a marked claim as listed, not as checked", async () => {
@@ -1063,7 +1063,7 @@ describe("the one correction", () => {
     expect(noTime.run).not.toHaveBeenCalled();
     expect(unchecked.kind).toBe("pass");
     expect(notesOf(unchecked)).toContain("Claims changed after that were not checked again by it.");
-    expect(notesOf(unchecked)).toContain("«The X3 never wears out.»");
+    expect(notesOf(unchecked)).toContain('"The X3 never wears out."');
   });
 
   it("is not fooled by the gap check's send backs, in either direction", async () => {
@@ -1091,7 +1091,7 @@ describe("the one correction", () => {
     expect(result.kind).toBe("pass");
     expect(run).not.toHaveBeenCalled();
     expect(notesOf(result)).toContain("listed as not verified: 1");
-    expect(notesOf(result)).toContain("«The X3 never wears out.»");
+    expect(notesOf(result)).toContain('"The X3 never wears out."');
   });
 });
 
@@ -1111,7 +1111,7 @@ describe("answer first", () => {
     const back = sentBack(result);
     expect(back.notes!.join()).toContain("The independent check failed.");
     expect(back.notes!.join()).toContain("Quotes: found in opened pages: 1; not found: 1.");
-    expect(back.unresolvedNote).toContain("«The X3 never wears out.»");
+    expect(back.unresolvedNote).toContain('"The X3 never wears out."');
   });
 
   it("says the check failed when the verifier's report has no verdict in it", async () => {
@@ -1160,7 +1160,7 @@ describe("answer first", () => {
     const result = sentBack(await verifierGate.run(draftOf([HOLDS, INVENTED]), context));
     expect(run).not.toHaveBeenCalled();
     expect(result.notes!.join()).toContain("too little time was left");
-    expect(result.unresolvedNote).toContain("«The X3 never wears out.»");
+    expect(result.unresolvedNote).toContain('"The X3 never wears out."');
   });
 
   it("returns what it has before the gate's time ends when the turn hangs, even one that ignores its signal", async () => {
@@ -1175,7 +1175,7 @@ describe("answer first", () => {
     const result = sentBack(await pending);
     expect(aborted).toBe(true);
     expect(result.notes!.join()).toContain("Time ran out during the independent check.");
-    expect(result.unresolvedNote).toContain("«The X3 never wears out.»");
+    expect(result.unresolvedNote).toContain('"The X3 never wears out."');
   });
 
   it("never lets one turn hold the answer past its own bound", async () => {
@@ -1369,7 +1369,7 @@ describe("through the engine", () => {
     expect(answer).toContain("Independently checked by Other One · Other.");
     expect(answer).toContain("Claims: 2; supported: 1; listed as not verified: 1.");
     // The report's prose is not read, so the rejected claims stay named however the list changed.
-    expect(answer).toContain("if they appear above, do not rely on them: «The X2 lasts for decades.»; «The X3 never wears out.»");
+    expect(answer).toContain('if they appear above, do not rely on them: "The X2 lasts for decades."; "The X3 never wears out."');
     expect(stream).not.toContain("DRAFT WITH PROBLEMS");
   });
 
@@ -1381,7 +1381,7 @@ describe("through the engine", () => {
     expect(main.requests).toHaveLength(3);
     expect(other.requests).toHaveLength(1);
     expect(memory.published()).toContain("# Unchanged");
-    expect(memory.published()).toContain("The check did not support these claims; if they appear above, do not rely on them: «The X2 lasts for decades.»");
+    expect(memory.published()).toContain('The check did not support these claims; if they appear above, do not rely on them: "The X2 lasts for decades."');
   });
 
   it("falls back to the main model visibly when the role is not set", async () => {
@@ -1421,7 +1421,7 @@ describe("through the engine", () => {
     expect(other.requests).toHaveLength(0);
     expect(main.requests).toHaveLength(2);
     expect(memory.published()).toContain("too little time was left");
-    expect(memory.published()).toContain("«The X3 never wears out.»");
+    expect(memory.published()).toContain('"The X3 never wears out."');
   });
 
   it("keeps a rejected claim named when the gap check sends the next draft back and time then ends the run", async () => {
@@ -1445,7 +1445,7 @@ describe("through the engine", () => {
     const answer = memory.published()!;
     expect(answer.startsWith("# Second")).toBe(true);
     expect(answer).toContain("Owner reviews stayed open.");
-    expect(answer).toContain("«The X2 lasts for decades.»");
+    expect(answer).toContain('"The X2 lasts for decades."');
     // That was the first draft's check, and no one read this one.
     expect(answer).not.toContain("Independently checked");
     expect(answer).toContain("Time ran out");
@@ -1510,7 +1510,7 @@ describe("through the engine", () => {
       await run(main.adapter, memory);
       expect(resultOf(main.requests[2])[0]).toContain(VERIFIER_MARKER.slice(1, -1));
       expect(memory.published()).toContain("# Corrected");
-      expect(memory.published()).toContain("«The X1 is in stock at 399.»");
+      expect(memory.published()).toContain('"The X1 is in stock at 399."');
     });
 
     it("runs several turns of one attempt through the real host, each with its own thread and call, and they read as one check", async () => {
@@ -1559,7 +1559,7 @@ describe("through the engine", () => {
       expect(correction).toContain("record_evidence with supersedes");
       expect(correction).not.toContain("from findings");
       expect(memory.published()!.startsWith("# Second")).toBe(true);
-      expect(memory.published()).toContain("«The X1 is in stock at 399.»");
+      expect(memory.published()).toContain('"The X1 is in stock at 399."');
     });
 
     it("keeps the rejected claim named as itself when a correction replaced it and an approval rebuilds the research", async () => {
@@ -1594,8 +1594,8 @@ describe("through the engine", () => {
       records.splice(0, 1, corrected);
       const continued = research();
       continued.resume(structuredClone(transcript));
-      await vi.waitFor(() => expect(continued.finish(false)).toContain("«The original claim.»"));
-      expect(continued.finish(false)).not.toContain("«The corrected claim.»");
+      await vi.waitFor(() => expect(continued.finish(false)).toContain('"The original claim."'));
+      expect(continued.finish(false)).not.toContain('"The corrected claim."');
     });
 
     it("says could not check only when the record has no stored page", async () => {
@@ -1625,7 +1625,7 @@ describe("through the engine", () => {
       expect(resultOf(main.requests[2])[0]).toContain(SKEPTIC_MARKER.slice(1, -1));
       const answer = memory.published()!;
       expect(answer.startsWith("# Second")).toBe(true);
-      expect(answer).toContain(`${SAGS} («The X2 sagged within a year»), ${LAB}`);
+      expect(answer).toContain(`${SAGS} ("The X2 sagged within a year"), ${LAB}`);
     });
 
     it("gets none of the user's words or the chat's instructions, and has no bookkeeping tool", async () => {
@@ -1764,11 +1764,11 @@ describe("through the engine", () => {
     const next = await execute(continued.tools[1]!, submit("call-2", [HOLDS], "# First"));
     expect(next).toMatchObject({ content: [{ value: { status: "accepted" } }] });
     const answer = continued.finish(false)!;
-    expect(answer).toContain("«The X3 never wears out.»");
+    expect(answer).toContain('"The X3 never wears out."');
     // The draft that stands while the approval waits names it as well, before any new draft.
     const waiting = research(() => []);
     waiting.resume(structuredClone(transcript));
-    expect(waiting.finish(false)).toContain("«The X3 never wears out.»");
+    expect(waiting.finish(false)).toContain('"The X3 never wears out."');
   });
 
   it("publishes a plain-text draft with only the note the run already adds", async () => {
@@ -1776,6 +1776,6 @@ describe("through the engine", () => {
     const memory = engineOf({});
     await run(main.adapter, memory);
     expect(memory.threads.admitForeground).not.toHaveBeenCalled();
-    expect(memory.published()).toBe("Отчёт текстом, ещё раз.\n\n---\n\n*Отчёт пришёл без списка находок, поэтому его утверждения не удалось сверить с источниками.*");
+    expect(memory.published()).toBe("Отчёт текстом, ещё раз.\n\n---\n\n*This report came without a list of findings, so its claims could not be checked against their sources.*");
   });
 });

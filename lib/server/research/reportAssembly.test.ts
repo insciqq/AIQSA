@@ -144,33 +144,33 @@ describe("the ids the main agent cites from", () => {
 
 describe("the answer built from the records", () => {
   const compose = (input: Partial<Parameters<typeof composeResearchReport>[0]> = {}) => composeResearchReport({ ended: "no_report", matrix: MATRIX, now: new Date("2026-11-02T00:00:00Z"), records: RECORDS,
-    userWords: "Проведи исследование матрасов.", ...input })!;
+    ...input })!;
   /** The table's lines, each split on its bars. */
   const tableOf = (text: string) => text.split("\n").filter((line) => line.startsWith("|")).map((line) => line.slice(1, -1).split(" | ").map((cell) => cell.trim()));
 
   it("holds a table on the frame's criteria, with its links and an honest note", () => {
     const text = compose();
     const [header, delimiter, first, second] = tableOf(text);
-    expect(header).toEqual(["Вариант", "Цена за 160×200", "Отзывы владельцев", "Жёсткость"]);
+    expect(header).toEqual(["Option", "Цена за 160×200", "Отзывы владельцев", "Жёсткость"]);
     expect(delimiter).toEqual(["---", "---", "---", "---"]);
     expect(first![0]).toBe("Lonax Memory");
     expect(first![1]).toContain("Claim 2.");
     expect(first![1]).toContain("(https://shop.example/x1)");
     expect(second![0]).toBe("Optima Classic");
-    expect(second![2]).toBe("нет данных");
-    expect(text).toContain("Отчёт не был передан, поэтому сервер собрал этот текст из записей исследования.");
+    expect(second![2]).toBe("no data");
+    expect(text).toContain("No report was handed in, so the server built this from what research recorded.");
   });
 
   it("says why each criterion matters and names an added one with its reason", () => {
     const frame: ResearchFrame = { ...FRAME, changes: [{ at: "2026-11-01T10:00:00.000Z", by: { name: "lab", threadId: "thread-1" }, change: "add_criterion", key: "firmness", reason: "Покупатели спорят о ней." }] };
     const text = compose({ matrix: matrixOf(frame, RECORDS) });
     expect(text).toContain("**Цена за 160×200**: Бюджет решает выбор.");
-    expect(text).toContain("**Жёсткость**: От неё зависит спина. (добавлен в ходе исследования: Покупатели спорят о ней.)");
+    expect(text).toContain("**Жёсткость**: От неё зависит спина. (added during research: Покупатели спорят о ней.)");
   });
 
   it.each([["no_report", "No report was handed in"], ["timed_out", "Time ran out before a report was written"], ["failed", "The answer failed before a report was written"]] as const)(
-    "writes the note of %s in the user's language", (ended, words) => {
-      const text = compose({ ended, userWords: "Research mattresses." });
+    "writes the note of %s in English, as all the product's own words are", (ended, words) => {
+      const text = compose({ ended });
       expect(text).toContain(words);
       expect(text).toContain("It draws no conclusion and picks nothing");
       expect(text).toContain("| Option |");
@@ -178,44 +178,44 @@ describe("the answer built from the records", () => {
     });
 
   it("picks nothing: a conclusion is the model's to draw", () => {
-    expect(compose()).toContain("Здесь нет вывода и выбора");
-    expect(compose()).not.toMatch(/рекоменд|лучший/iu);
+    expect(compose()).toContain("It draws no conclusion and picks nothing");
+    expect(compose()).not.toMatch(/recommend|\bbest\b|рекоменд|лучший/iu);
   });
 
   it("is null only when nothing was recorded", () => {
-    expect(composeResearchReport({ ended: "failed", matrix: MATRIX, now: new Date(), records: [], userWords: "q" })).toBeNull();
+    expect(composeResearchReport({ ended: "failed", matrix: MATRIX, now: new Date(), records: [] })).toBeNull();
     expect(compose({ matrix: matrixOf(FRAME, [unreachable(1, "ozon.ru", "Blocked.")]), records: [unreachable(1, "ozon.ru", "Blocked.")] })).toContain("ozon.ru: Blocked.");
-    expect(compose({ matrix: null, records: [notFound(1, "x1", "price")] })).toContain("не найдено: x1 / price");
+    expect(compose({ matrix: null, records: [notFound(1, "x1", "price")] })).toContain("not found: x1 / price");
   });
 
   it("gives a frame with no rows one cell per criterion", () => {
     const frame = { ...FRAME, rows: [] };
     const table = tableOf(compose({ matrix: matrixOf(frame, RECORDS) }));
-    expect(table[0]).toEqual(["Критерий", "Что найдено"]);
+    expect(table[0]).toEqual(["Criterion", "What was found"]);
     expect(table[2]![0]).toBe("Цена за 160×200");
     expect(table[2]![1]).toContain("Claim 2.");
   });
 
   it("lists everything when no matrix could be read", () => {
     const text = compose({ matrix: null });
-    expect(text).toContain("### Что записано");
+    expect(text).toContain("### What was recorded");
     expect(text).toContain("Claim 1.");
     expect(text).toContain("Dataset 3.");
-    expect(text).not.toContain("| Вариант |");
+    expect(text).not.toContain("| Option |");
   });
 
   it("lists what fills no cell below the table", () => {
     const records = [...RECORDS, finding(6, "x9", "price")];
     const text = compose({ matrix: matrixOf(FRAME, records), records });
-    expect(text).toContain("### Другие записи\n- Claim 6.");
+    expect(text).toContain("### Other records\n- Claim 6.");
   });
 
   it("shows what was not found, what could not be reached and how a cell's records rate", () => {
     const records = [finding(1, "x1", "price", { claim: "Second best.", standing: "claimed" }), finding(2, "x1", "price", { claim: "Confirmed.", standing: "confirmed" }), notFound(3, "x1", "firmness"),
       unreachable(4, "ozon.ru", "Нужен вход.")];
     const text = compose({ matrix: matrixOf(FRAME, records), records });
-    expect(text).toContain("не найдено: Looked at the maker");
-    expect(text).toContain("### Не удалось открыть\n- ozon.ru: Нужен вход.");
+    expect(text).toContain("not found: Looked at the maker");
+    expect(text).toContain("### Could not be reached\n- ozon.ru: Нужен вход.");
     const [, , row] = tableOf(text);
     expect(row![1]).toContain("Confirmed.");
     expect(row![1]).toContain("(+1)");
@@ -225,8 +225,8 @@ describe("the answer built from the records", () => {
   it("keeps apart what a party claims and what is not verified", () => {
     const records = [finding(1, "x1", "price", { standing: "claimed" }), finding(2, "x1", "firmness", { standing: "not_verified" })];
     const text = compose({ matrix: matrixOf(FRAME, records), records });
-    expect(text).toContain("Claim 1. (заявлено)");
-    expect(text).toContain("Claim 2. (не проверено)");
+    expect(text).toContain("Claim 1. (claimed)");
+    expect(text).toContain("Claim 2. (not verified)");
   });
 
   it("states no quote that did not check out, and says how many were left out", () => {
@@ -234,21 +234,20 @@ describe("the answer built from the records", () => {
     const text = compose({ matrix: matrixOf(FRAME, records), records });
     expect(text).not.toContain("Bad quote.");
     expect(text).not.toContain("Also bad.");
-    expect(text).toContain("Не вошло, потому что цитаты не подтвердились: 2.");
+    expect(text).toContain("Left out, as their quotes did not check out: 2.");
   });
 
-  it("gives a dataset's tally in the report's language, and never a share of a small sample", () => {
-    expect(compose()).toContain("Малая выборка: 11. sagging: 3 из 11.");
-    expect(compose({ userWords: "Research." })).toContain("Small sample of 11. sagging: 3 of 11.");
+  it("gives a dataset's tally, and never a share of a small sample", () => {
+    expect(compose()).toContain("Small sample of 11. sagging: 3 of 11.");
     const large = [dataset(1, "x1", "reviews", { counts: [{ count: 30, label: "sagging" }], sampleSize: 120 })];
-    expect(compose({ matrix: matrixOf(FRAME, large), records: large })).toContain("Выборка: 120. sagging: 30 из 120 (25%).");
+    expect(compose({ matrix: matrixOf(FRAME, large), records: large })).toContain("Sample of 120. sagging: 30 of 120 (25%).");
   });
 
   it("counts sources as the source check does, and dates what the page dated", () => {
     const records = [finding(1, "x1", "price", { publishedOn: "2025-05-01", registrableDomain: "lab.example", sourceClass: "independent_tests" }), finding(2, "x1", "firmness", { registrableDomain: "lab.example", sourceClass: "independent_tests" })];
     const text = compose({ matrix: matrixOf(FRAME, records), records });
-    expect(text).toContain("Данные на 2026-11-02. Независимых источников: 1 (тесты: 1).");
-    expect(text).toContain("[lab.example, 18 мес. назад](https://source.example/1)");
+    expect(text).toContain("Data as of 2026-11-02. Independent sources: 1 (tests: 1).");
+    expect(text).toContain("[lab.example, 18 mo. old](https://source.example/1)");
   });
 
   it("lets nothing of a page become a link, an image, a cell or markup", () => {
@@ -274,7 +273,7 @@ describe("the answer built from the records", () => {
     const all = [...records, ...others, ...Array.from({ length: 164 }, (_, index) => unreachable(200_000 + index, "t".repeat(512), "r".repeat(1_000)))];
     expect(all).toHaveLength(RESEARCH_EVIDENCE_LIMITS.recordsPerRun);
     // Nothing can stop work that never yields: this test's own time limit is what guards it, and it took seconds before `sourceWitnesses`.
-    const text = compose({ matrix: matrixOf(frame, all), records: all, userWords: "Research." });
+    const text = compose({ matrix: matrixOf(frame, all), records: all });
     expect(text.length).toBeLessThanOrEqual(RESEARCH_LIMITS.reportCharacters);
     expect(text).toMatch(/and \d+ more/u);
     expect(text).toContain("No report was handed in");
@@ -292,8 +291,8 @@ describe("the report port", () => {
     expect(createResearchReport(scope, parts([])).gates).toEqual([reportCheckGate]);
   });
 
-  it("builds from the matrix and the records, in the user's language", async () => {
-    await expect(createResearchReport(scope, parts(RECORDS)).compose({ ended: "timed_out", signal })).resolves.toContain("Время вышло раньше");
+  it("builds from the matrix and the records, in English whatever the user wrote in", async () => {
+    await expect(createResearchReport(scope, parts(RECORDS)).compose({ ended: "timed_out", signal })).resolves.toContain("Time ran out before a report was written");
   });
 
   it("is null with no record, and asks the matrix nothing then", async () => {
@@ -303,18 +302,10 @@ describe("the report port", () => {
     expect(frame).not.toHaveBeenCalled();
   });
 
-  it("takes the language from the goal it is given: on a Continue the user's words are the button's", async () => {
-    const button = { ...scope, userMessage: "Continue" };
-    const russian = await createResearchReport(button, parts(RECORDS)).compose({ ended: "no_report", goal: "Выбрать матрас на много лет.", signal });
-    expect(russian).toContain("| Вариант |");
-    expect(russian).toContain("Здесь нет вывода и выбора");
-    await expect(createResearchReport(button, parts(RECORDS)).compose({ ended: "no_report", signal })).resolves.toContain("| Option |");
-  });
-
   it("still answers from the records when the matrix cannot be read", async () => {
     const broken = parts(RECORDS);
     broken.coverage.frame = async () => { throw new Error("database down"); };
-    await expect(createResearchReport(scope, broken).compose({ ended: "failed", signal })).resolves.toContain("### Что записано");
+    await expect(createResearchReport(scope, broken).compose({ ended: "failed", signal })).resolves.toContain("### What was recorded");
   });
 
   it("lets a failed read of the records go to the run, which logs it and keeps what it has", async () => {

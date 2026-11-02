@@ -81,10 +81,10 @@ describe("what the draft names", () => {
     expect(troubles[0]!.message).toContain("Nothing else of this draft was checked.");
   });
 
-  it("says references could not be read, never that records do not stand, in the report's language", () => {
+  it("says references could not be read, never that records do not stand, in English beside any report", () => {
     const unreadable: ResearchDraft = { ...ADVICE, invalidReferences: "pick_row_key must be null or the key of the row picked.", pickRowKey: undefined, recordIds: undefined };
     expect(said(unreadable)).toBe("The references of this report could not be read, so the checks did not read the records behind it.");
-    expect(said({ ...unreadable, report: "Отчёт." })).toBe("Ссылки этого отчёта на записи исследования не удалось прочитать, поэтому проверки не читали записи, на которых он стоит.");
+    expect(said({ ...unreadable, report: "Отчёт." })).toBe("The references of this report could not be read, so the checks did not read the records behind it.");
   });
 
   describe("a corrected id", () => {
@@ -107,7 +107,7 @@ describe("what the draft names", () => {
 
   it("sends back a pick outside the matrix, and one on a matrix with no rows", () => {
     expect(messages({ ...DRAFT, pickRowKey: "x9" })).toContain("Outside the matrix: row x9. Rows: x1, x2.");
-    expect(said({ ...DRAFT, pickRowKey: "x9" })).toContain("не входит в варианты");
+    expect(said({ ...DRAFT, pickRowKey: "x9" })).toContain("is not among the options research compared");
     const noRows = { ...FRAME, rows: [] };
     expect(messages({ ...DRAFT, pickRowKey: "x1" }, RECORDS, matrixOf(noRows, RECORDS))).toContain("The matrix has no rows yet.");
   });
@@ -163,7 +163,7 @@ describe("the report's links", () => {
   it("sends back a link that is no record at all", () => {
     const text = messages(linked("https://elsewhere.example/page"));
     expect(text).toContain("no record of this research");
-    expect(said(linked("https://elsewhere.example/page"))).toContain("ссылками");
+    expect(said(linked("https://elsewhere.example/page"))).toContain("Some links in this report have no research record");
   });
 
   it("reads a link as its page, whatever surrounds or follows it", () => {
@@ -265,8 +265,8 @@ describe("what a reader can trace", () => {
     expect(messages({ ...draftOn(records, linking(2)), recordIds: [id(1), id(2), id(3), id(4)] }, records, null)).toBe("");
   });
 
-  it("carries a note for the cap in the report's language", () => {
-    expect(said(draftOn(onPages(4), "Отчёт."), onPages(4), null)).toBe("Часть источников этого отчёта не имеет ссылок в тексте.");
+  it("carries a note for the cap in English beside any report", () => {
+    expect(said(draftOn(onPages(4), "Отчёт."), onPages(4), null)).toBe("Some sources of this report are not linked in its text.");
     expect(said(draftOn(onPages(4), "The report."), onPages(4), null)).toBe("Some sources of this report are not linked in its text.");
   });
 
@@ -280,7 +280,7 @@ describe("the comparison", () => {
 
   it("sends back a draft with no table where rows have evidence to compare", () => {
     expect(messages({ ...DRAFT, report: "# Отчёт\n\nБерите Lonax Memory." })).toContain("The report has no comparison table.");
-    expect(said({ ...DRAFT, report: "Лонакс | Оптима" })).toContain("нет таблицы сравнения");
+    expect(said({ ...DRAFT, report: "Лонакс | Оптима" })).toContain("has no comparison table");
     expect(said({ ...DRAFT, report: "Lonax | Optima" })).toContain("has no comparison table");
   });
 
@@ -382,7 +382,7 @@ describe("when the data does not separate", () => {
   it("reaches the user in the server's note when the report does not say it, with no rewrite", () => {
     const { notes, troubles } = check(draft);
     expect(troubles).toEqual([]);
-    expect(notes).toEqual(["Данные не разделяют эти варианты: Lonax Memory, Optima Classic. Данные не разделяют эти матрасы. Что решит: Полежать на обоих в салоне."]);
+    expect(notes).toEqual(["The data does not separate these options: Lonax Memory, Optima Classic. Данные не разделяют эти матрасы. What would decide: Полежать на обоих в салоне."]);
   });
 
   it("adds nothing when the report says it", () => {
@@ -443,20 +443,20 @@ describe("the gate", () => {
   it("sends a draft back under its own name, with what the answer says if nothing comes of it", async () => {
     const outcome = await run({ ...DRAFT, pickRowKey: "x9" });
     expect(outcome).toMatchObject({ gate: REPORT_CHECK_GATE, kind: "sent_back", message: expect.stringContaining("Outside the matrix") });
-    expect(outcome.notes?.join("\n")).toContain("не входит в варианты");
+    expect(outcome.notes?.join("\n")).toContain("is not among the options research compared");
   });
 
   it("stops sending back at the cap, and the answer carries what stayed wrong", async () => {
     const earlier = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: DRAFT, gate: REPORT_CHECK_GATE, message: "Again." }));
     const outcome = await run({ ...DRAFT, pickRowKey: "x9" }, earlier);
     expect(outcome.kind).toBe("accepted");
-    expect(outcome.notes?.join("\n")).toContain("не входит в варианты");
+    expect(outcome.notes?.join("\n")).toContain("is not among the options research compared");
   });
 
   it("costs its check and leaves a note when the store cannot be read, never the answer", async () => {
     const outcome = await run(DRAFT, [], async () => { throw new Error("database down"); });
     expect(outcome.kind).toBe("accepted");
-    expect(outcome.notes?.join("\n")).toContain("не удалось завершить");
+    expect(outcome.notes?.join("\n")).toContain("could not be completed");
   });
 
   it("reads no store for a text draft", async () => {

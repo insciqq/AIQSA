@@ -23,7 +23,7 @@ import { activeChatId, lastAnswer, lastActivity, selectFakeModel } from "./suppo
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
 
-const START = "Начать поиск";
+const START = "Start research";
 const DESKTOP: BrowserContextOptions = { viewport: { height: 900, width: 1440 } };
 const PHONE_TOUCH: BrowserContextOptions = { hasTouch: true, isMobile: true, viewport: { height: 844, width: 390 } };
 const LIGHT: readonly CaptureTheme[] = ["light"];
@@ -147,7 +147,7 @@ test("the plan is made, keeps its time over a reload, and an edit holds the time
   });
 });
 
-test("Начать поиск starts research at once", async ({ browser }) => {
+test("Start research starts research at once", async ({ browser }) => {
   test.setTimeout(120_000);
   await withResearch(browser, { scopingMs: 0 }, async (page, chatId) => {
     await windowOpen(page);

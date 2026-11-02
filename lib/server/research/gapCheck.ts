@@ -19,19 +19,19 @@ const space = (text: string) => text.replace(/\s+/gu, " ").trim();
 const bounded = (text: string, limit: number) => text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 const line = (text: string, limit: number) => bounded(space(text), limit);
 
-const SOURCE_NAMES: Readonly<Record<ResearchSourceClass, Readonly<{ en: string; ru: string }>>> = {
-  primary_official: { en: "official sources", ru: "официальные источники" },
-  independent_tests: { en: "independent tests", ru: "независимые испытания" },
-  owner_reviews: { en: "owner reviews", ru: "отзывы владельцев" },
-  action_channel: { en: "purchase options and terms", ru: "варианты и условия покупки" }
+/** The product's own words, English like all of them (operator decision 2026-11-02). */
+const SOURCE_NAMES: Readonly<Record<ResearchSourceClass, string>> = {
+  primary_official: "official sources",
+  independent_tests: "independent tests",
+  owner_reviews: "owner reviews",
+  action_channel: "purchase options and terms"
 };
 
-/** Plans and model text can still contain identifiers; none belong in a report note. */
-function readerText(text: string, russian: boolean): string {
-  return space(text).replace(/primary_official|independent_tests|owner_reviews|action_channel/giu,
-    (id) => SOURCE_NAMES[id.toLowerCase() as ResearchSourceClass][russian ? "ru" : "en"])
-    .replace(/класс(?:ы|ов|а|у|ом|е)?\s+источник(?:ов|а|и)?/giu, russian ? "источники" : "sources")
-    .replace(/source[_ ]class(?:es)?/giu, russian ? "источники" : "sources");
+/** Plans and model text can still contain identifiers; none belong in a report note. A model's own phrase for them stays in its own language. */
+function readerText(text: string): string {
+  return space(text).replace(/primary_official|independent_tests|owner_reviews|action_channel/giu, (id) => SOURCE_NAMES[id.toLowerCase() as ResearchSourceClass])
+    .replace(/класс(?:ы|ов|а|у|ом|е)?\s+источник(?:ов|а|и)?/giu, "источники")
+    .replace(/source[_ ]class(?:es)?/giu, "sources");
 }
 
 type Gap = Readonly<{ issue: string; next_step: string }>;
@@ -104,20 +104,15 @@ function sourceCoverage(draft: ResearchDraft, opened: readonly ResearchOpenedSou
   return coverage;
 }
 
-function coverageGaps(plan: ResearchPlan, coverage: ReadonlyMap<ResearchSourceClass, Coverage>, status: Coverage,
-  russian: boolean): Gap[] {
-  const planRussian = CYRILLIC.test(plan.goal);
+function coverageGaps(plan: ResearchPlan, coverage: ReadonlyMap<ResearchSourceClass, Coverage>, status: Coverage): Gap[] {
   return plan.questions.slice(0, RESEARCH_LIMITS.questions).flatMap((question, index) => {
     const classes = question.sourceClasses.filter((sourceClass) => coverage.get(sourceClass) === status);
     if (classes.length === 0) return [];
-    const names = (ru: boolean) => classes.map((sourceClass) => SOURCE_NAMES[sourceClass][ru ? "ru" : "en"]).join(", ");
-    const target = readerText(question.question, russian);
+    const names = classes.map((sourceClass) => SOURCE_NAMES[sourceClass]).join(", ");
+    const target = readerText(question.question);
     const sites = question.sites.slice(0, RESEARCH_LIMITS.sitesPerQuestion).map((site) => line(site, RESEARCH_LIMITS.siteCharacters)).join(", ");
-    return [{ issue: `${index + 1}. ${names(russian)}: ${line(target, RESEARCH_LIMITS.questionCharacters)}`,
-      next_step: line(planRussian
-        ? `Найдите и откройте страницы: ${names(true)}. Ответьте на вопрос: ${question.question}.${sites ? ` Проверьте: ${sites}.` : ""}`
-        : `Search for and open pages with ${names(false)} to answer: ${question.question}.${sites ? ` Check: ${sites}.` : ""}`,
-      RESEARCH_LIMITS.questionCharacters) }];
+    return [{ issue: `${index + 1}. ${names}: ${line(target, RESEARCH_LIMITS.questionCharacters)}`,
+      next_step: line(`Search for and open pages with ${names} to answer: ${question.question}.${sites ? ` Check: ${sites}.` : ""}`, RESEARCH_LIMITS.questionCharacters) }];
   });
 }
 
@@ -125,14 +120,13 @@ function coverageGaps(plan: ResearchPlan, coverage: ReadonlyMap<ResearchSourceCl
  * The matrix's holes as gaps, one per row: the row and its criteria in words for a note, their keys in the next step for researchers. Where a
  * frame exists this is the mechanical check: a cell holds evidence or says nothing was found, which says more than a source class opened.
  */
-function matrixGaps(matrix: ResearchMatrix, planRussian: boolean): Gap[] {
+function matrixGaps(matrix: ResearchMatrix): Gap[] {
   const limit = RESEARCH_LIMITS.questionCharacters;
   return researchEmptyByRow(matrix).map(({ criteria, row }) => {
     const words = criteria.map(({ criterion }) => space(criterion)).join(", ");
     const keys = criteria.map(({ key }) => key).join(", ");
-    return { issue: line(row ? `${row.label}: ${words}` : words, limit), next_step: line(planRussian
-      ? `Заполните ячейки${row ? ` строки ${row.key}` : ""}: ${keys}. Если сведений нет, запишите not_found.`
-      : `Fill the cells${row ? ` of row ${row.key}` : ""}: ${keys}. If nothing can be found, record not_found.`, limit) };
+    return { issue: line(row ? `${row.label}: ${words}` : words, limit),
+      next_step: line(`Fill the cells${row ? ` of row ${row.key}` : ""}: ${keys}. If nothing can be found, record not_found.`, limit) };
   });
 }
 
@@ -144,15 +138,14 @@ function issueText(heading: string, issues: readonly string[], max = RUN_FOLLOWU
 
 function unreachableNotes(draft: ResearchDraft): string[] {
   const report = space(draft.report);
-  const russian = CYRILLIC.test(draft.report);
   const entries = draft.unreachable.slice(0, RESEARCH_LIMITS.unreachable).filter((entry) => entry.target.trim() && entry.reason.trim() &&
     !(report.includes(space(entry.target)) && report.includes(space(entry.reason))));
   if (entries.length === 0) return [];
-  const heading = russian ? "Недоступные источники:" : "Sources that could not be reached:";
+  const heading = "Sources that could not be reached:";
   const perSource = Math.floor((RUN_FOLLOWUP_MAX_CHARS - heading.length) / entries.length) - 1;
   const lines = entries.map((entry) => {
-    const target = line(readerText(entry.target, russian), Math.min(RESEARCH_LIMITS.targetCharacters, Math.floor(perSource / 3)));
-    const reason = line(readerText(entry.reason, russian), Math.min(RESEARCH_LIMITS.reasonCharacters, perSource - target.length - 5));
+    const target = line(readerText(entry.target), Math.min(RESEARCH_LIMITS.targetCharacters, Math.floor(perSource / 3)));
+    const reason = line(readerText(entry.reason), Math.min(RESEARCH_LIMITS.reasonCharacters, perSource - target.length - 5));
     return `- ${target} — ${reason}`;
   });
   return [`${heading}\n${lines.join("\n")}`];
@@ -175,53 +168,39 @@ function addedNothing(draft: ResearchDraft, context: ResearchGateContext): boole
   return draft.findings.every((finding) => earlier.has(findingKey(finding)));
 }
 
-const JUDGE_HEADING = { en: "Research questions still open:", ru: "Открытые вопросы исследования:" };
-const MISSING_HEADING = { en: "Missing evidence from opened pages:", ru: "Не хватает сведений с открытых страниц:" };
-function gapNote(gaps: readonly Gap[], russian: boolean, kind: SentBack["kind"]): string {
-  const heading = kind === "judged" ? JUDGE_HEADING : MISSING_HEADING;
-  return issueText(heading[russian ? "ru" : "en"], gaps.map((gap) => readerText(gap.issue, russian)));
+const JUDGE_HEADING = "Research questions still open:";
+const MISSING_HEADING = "Missing evidence from opened pages:";
+function gapNote(gaps: readonly Gap[], kind: SentBack["kind"]): string {
+  return issueText(kind === "judged" ? JUDGE_HEADING : MISSING_HEADING, gaps.map((gap) => readerText(gap.issue)));
 }
 
-function previousJudgeNotes(context: ResearchGateContext, russian: boolean, previous: SentBack | undefined): string[] {
-  if (previous) return previous.kind === "judged" && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, "judged")] : [];
+function previousJudgeNotes(context: ResearchGateContext, previous: SentBack | undefined): string[] {
+  if (previous) return previous.kind === "judged" && previous.gaps.length > 0 ? [gapNote(previous.gaps, "judged")] : [];
   const message = endedOn(context).at(-1)?.message ?? "";
-  if (!Object.values(JUDGE_HEADING).some((heading) => message.startsWith(heading))) return [];
-  const issues = message.split("\n\n")[0]!.split("\n").slice(1).map((issue) => readerText(issue, russian));
-  return [issueText(JUDGE_HEADING[russian ? "ru" : "en"], issues)];
+  if (!message.startsWith(JUDGE_HEADING)) return [];
+  return [issueText(JUDGE_HEADING, message.split("\n\n")[0]!.split("\n").slice(1).map(readerText))];
 }
 
-const SEND_RESEARCHERS = {
-  en: "Send researchers with call_subagent for exactly these next steps. Keep in record_ids every record that still holds. Never drop records or shorten the report to satisfy this check. If research cannot settle something, state the limit in the report and submit it. For an unreachable source, keep its target and reason in unreachable.",
-  ru: "Отправьте исследователей через call_subagent ровно для следующих шагов. Сохраните в record_ids все записи, которые остаются верными. Никогда не убирайте записи и не сокращайте отчёт ради этой проверки. Если исследование не может разрешить вопрос, укажите ограничение в отчёте и передайте его. Для недоступного источника сохраните цель и причину в unreachable."
-};
-
-const NO_NEW_CELL_NOTE = {
-  en: "Research ended here: several rounds in a row found nothing new.",
-  ru: "Исследование завершилось здесь: несколько кругов подряд не дали ничего нового."
-};
+const SEND_RESEARCHERS = "Send researchers with call_subagent for exactly these next steps. Keep in record_ids every record that still holds. Never drop records or shorten the report to satisfy this check. If research cannot settle something, state the limit in the report and submit it. For an unreachable source, keep its target and reason in unreachable.";
 
 /** Why what follows stayed open, when that is the rounds running dry: time has its own notes. */
-const closedNote = (closed: ResearchersClosed, russian: boolean) => closed === "no_new_cell" ? [NO_NEW_CELL_NOTE[russian ? "ru" : "en"]] : [];
+const closedNote = (closed: ResearchersClosed) => closed === "no_new_cell" ? ["Research ended here: several rounds in a row found nothing new."] : [];
 
 function gapsResult(draft: ResearchDraft, context: ResearchGateContext, feedback: SentBack, notes: readonly string[], closed: ResearchersClosed): ResearchGateResult {
-  const russian = CYRILLIC.test(draft.report);
-  const details = gapNote(feedback.gaps, russian, feedback.kind);
+  const details = gapNote(feedback.gaps, feedback.kind);
   // The seam checks again after the gate returns, so a deadline race still
   // publishes these exact gaps through unresolvedNote. With researchers closed
   // nobody could act on this, so the model goes on to its report.
-  if (addedNothing(draft, context) || !context.time.sendBackAllowed() || closed) return { kind: "pass", notes: [...notes, ...closedNote(closed, russian), details] };
-  const language = CYRILLIC.test(context.plan.goal) ? "ru" : "en";
+  if (addedNothing(draft, context) || !context.time.sendBackAllowed() || closed) return { kind: "pass", notes: [...notes, ...closedNote(closed), details] };
   const heading = feedback.kind === "judged" ? JUDGE_HEADING : MISSING_HEADING;
-  const instruction = SEND_RESEARCHERS[language];
-  const limits = [...new Set(feedback.limits.map((limit) => readerText(limit, language === "ru")))];
-  const budget = Math.floor((RUN_FOLLOWUP_MAX_CHARS - instruction.length - 6) / (limits.length > 0 ? 3 : 2));
-  const issues = issueText(heading[language], feedback.gaps.map((gap) => readerText(gap.issue, language === "ru")), budget);
-  const steps = issueText(language === "ru" ? "Следующие шаги:" : "Next steps:", feedback.gaps.map((gap, index) =>
-    `${index + 1}. ${readerText(gap.next_step, language === "ru")}`), budget);
+  const limits = [...new Set(feedback.limits.map(readerText))];
+  const budget = Math.floor((RUN_FOLLOWUP_MAX_CHARS - SEND_RESEARCHERS.length - 6) / (limits.length > 0 ? 3 : 2));
+  const issues = issueText(heading, feedback.gaps.map((gap) => readerText(gap.issue)), budget);
+  const steps = issueText("Next steps:", feedback.gaps.map((gap, index) => `${index + 1}. ${readerText(gap.next_step)}`), budget);
   pageProgress.set(context.plan, { pages: feedback.pages, feedback });
   // Limits reach only the report's author, who states them in the report: a note of them repeated the report.
-  const stated = limits.length > 0 ? `\n\n${issueText(language === "ru" ? "Ограничения, которые нужно указать в отчёте, если их там ещё нет:" : "Limits to state in the report, if it does not yet:", limits, budget)}` : "";
-  return { kind: "send_back", message: `${issues}\n\n${instruction}\n\n${steps}${stated}`, notes, unresolvedNote: details };
+  const stated = limits.length > 0 ? `\n\n${issueText("Limits to state in the report, if it does not yet:", limits, budget)}` : "";
+  return { kind: "send_back", message: `${issues}\n\n${SEND_RESEARCHERS}\n\n${steps}${stated}`, notes, unresolvedNote: details };
 }
 
 const JUDGE_INSTRUCTIONS = `Check the research plan against the supplied findings, using only this brief. Do not open pages or call tools.
@@ -342,7 +321,6 @@ export const gapCheckGate: ResearchGate = {
   name: "gap_check",
   async run(draft, context) {
     const notes = unreachableNotes(draft);
-    const russian = CYRILLIC.test(draft.report);
     const matrix = await researchMatrix(researchGatePorts(context).coverage, context.signal);
     const closed = matrix ? context.researchersClosed?.() ?? null : null;
     const ended = endedOn(context);
@@ -356,35 +334,33 @@ export const gapCheckGate: ResearchGate = {
       // responseEnded already asked for the reserved call once; run.ts owns
       // the final no-findings note. Rewriting after a send-back buys no round.
       if (noNewPages) return { kind: "pass", notes: [...notes,
-        ...previous && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, previous.kind)] : []] };
+        ...previous && previous.gaps.length > 0 ? [gapNote(previous.gaps, previous.kind)] : []] };
       if (!context.time.sendBackAllowed() || context.earlier.some((attempt) => attempt.draft.origin === "plain_text")) return { kind: "pass", notes };
-      return { kind: "send_back", notes, message: CYRILLIC.test(context.plan.goal)
-        ? "Передайте отчёт через submit_research_draft и укажите в record_ids записи, на которых он стоит: их id перечислены после отчётов исследователей. Сохраните все записи, которые остаются верными; не сокращайте отчёт ради проверки."
-        : "Submit the report through submit_research_draft with record_ids, the ids of the records it rests on, as listed after each researcher's report. Keep every record that still holds; do not shorten the report to satisfy this check." };
+      return { kind: "send_back", notes, message: "Submit the report through submit_research_draft with record_ids, the ids of the records it rests on, as listed after each researcher's report. Keep every record that still holds; do not shorten the report to satisfy this check." };
     }
 
     let missing: Gap[];
     if (matrix) {
-      missing = matrixGaps(matrix, CYRILLIC.test(context.plan.goal));
+      missing = matrixGaps(matrix);
     } else {
       const coverage = sourceCoverage(draft, opened);
-      const unknown = coverageGaps(context.plan, coverage, "unknown", russian);
-      if (unknown.length) notes.push(issueText(russian ? "Не удалось проверить открытие источников:" : "Source opening could not be checked:",
+      const unknown = coverageGaps(context.plan, coverage, "unknown");
+      if (unknown.length) notes.push(issueText("Source opening could not be checked:",
         unknown.map((gap) => gap.issue)));
-      missing = coverageGaps(context.plan, coverage, "missing", russian);
+      missing = coverageGaps(context.plan, coverage, "missing");
     }
     if (noNewPages) return { kind: "pass", notes: [...notes,
-      ...missing.length > 0 ? [...closedNote(closed, russian), gapNote(missing, russian, "mechanical")] : [], ...previousJudgeNotes(context, russian, previous)] };
+      ...missing.length > 0 ? [...closedNote(closed), gapNote(missing, "mechanical")] : [], ...previousJudgeNotes(context, previous)] };
     if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, notes, closed);
 
     if (addedNothing(draft, context)) {
       // Keep the previous judge's named issues if no new evidence could address
       // them. Mechanical gaps are recomputed above, so a newly opened page can
       // close them even when the finding itself did not change.
-      return { kind: "pass", notes: [...notes, ...previousJudgeNotes(context, russian, previous)] };
+      return { kind: "pass", notes: [...notes, ...previousJudgeNotes(context, previous)] };
     }
-    const unfinished = (): ResearchGateResult => ({ kind: "pass", notes: [...notes, researchNote("gap_judge_unfinished", draft.report),
-      ...previousJudgeNotes(context, russian, previous)] });
+    const unfinished = (): ResearchGateResult => ({ kind: "pass", notes: [...notes, researchNote("gap_judge_unfinished"),
+      ...previousJudgeNotes(context, previous)] });
     if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) return unfinished();
     try {
       const outcome = await context.subagents.run({ brief: judgeBrief(draft, context.plan, matrix), instructions: matrix ? JUDGE_MATRIX_INSTRUCTIONS : JUDGE_INSTRUCTIONS,

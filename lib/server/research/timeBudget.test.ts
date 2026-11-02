@@ -272,7 +272,7 @@ describe.each([{ label: "without a Workspace", workspace: false }, { label: "wit
     expect(seen.main.at(-1)?.request.history?.at(-1)).toEqual({ text: researchDraftReservedInstruction(), type: "user" });
     expect(gate.at! - startedAt).toBe(released + time.notes);
     expect(run.published()?.at).toBe(startedAt + released + time.notes);
-    expect(run.published()?.text).toContain(researchNote("time_out", REPORT));
+    expect(run.published()?.text).toContain(researchNote("time_out"));
     expect(run.repository.failRun).not.toHaveBeenCalled();
     expect(run.runStore.complete).toHaveBeenCalledOnce();
     if (workspace) expect(run.coordinator.handoff).toHaveBeenCalledOnce();
@@ -642,7 +642,7 @@ describe("what a researcher was writing when its time ended", () => {
     await vi.advanceTimersByTimeAsync(time.hardEnd);
     await answer;
     expect(run.settled).toEqual([expect.objectContaining({ report: "", state: "stopped" })]);
-    expect(run.published()?.text).toContain(researchNote("time_out", REPORT));
+    expect(run.published()?.text).toContain(researchNote("time_out"));
   });
 });
 

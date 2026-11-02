@@ -198,9 +198,8 @@ describe("the method", () => {
     expect(researchTurnName("v".repeat(80), 1).length).toBeLessThanOrEqual(48);
   });
 
-  it("notes in the report's language and keeps the report as written", () => {
-    expect(researchNote("time_out", "Отчёт")).toMatch(/^Время вышло/u);
-    expect(researchNote("time_out", "Report")).toMatch(/^Time ran out/u);
+  it("notes in English, as every word of the product's own is, and keeps the report as written", () => {
+    expect(researchNote("time_out")).toMatch(/^Time ran out/u);
     expect(researchAnswerText("Report.", [])).toBe("Report.");
     expect(researchAnswerText("Report.\n", ["A.", "A.", " "])).toBe("Report.\n\n---\n\n*A.*");
   });
@@ -310,7 +309,7 @@ describe("running the gates", () => {
     const asked = { draft, gate: "a", message: "Again." };
     const gate = { name: "a", run: async () => ({ kind: "send_back" as const, message: "Again." }) };
     const earlier = new Array<typeof asked>(RESEARCH_ROUND_LIMITS.sendBacksPerCheck).fill(asked);
-    expect(await runResearchGates({ context: context({ earlier }), draft, gates: [gate], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("unresolved", draft.report)] });
+    expect(await runResearchGates({ context: context({ earlier }), draft, gates: [gate], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("unresolved")] });
   });
 
   it("stops at the first send back, so a draft goes back before anything checks it further", async () => {
@@ -327,7 +326,7 @@ describe("running the gates", () => {
   it("gives up on the rest with a note once no time is left", async () => {
     const run = vi.fn();
     expect(await runResearchGates({ context: context({ time: { remainingMs: () => 0, sendBackAllowed: () => false } }), draft, gates: [{ name: "a", run }], runId: "r" }))
-      .toEqual({ kind: "accepted", notes: [researchNote("time_out", draft.report)] });
+      .toEqual({ kind: "accepted", notes: [researchNote("time_out")] });
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -352,7 +351,7 @@ describe("running the gates", () => {
       gateContext.signal.addEventListener("abort", () => { aborted = true; });
     }) };
     const outcome = await runResearchGates({ context: context({ time: { remainingMs: () => 5, sendBackAllowed: () => true } }), draft, gates: [hung], runId: "r" });
-    expect(outcome).toEqual({ kind: "accepted", notes: [researchNote("time_out", draft.report)] });
+    expect(outcome).toEqual({ kind: "accepted", notes: [researchNote("time_out")] });
     expect(aborted).toBe(true);
   });
 });
