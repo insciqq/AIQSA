@@ -42,13 +42,25 @@ const SHORT_TASKS = `Researchers work in short tasks: each has ${RESEARCH_TASK_L
   "response, so they work in parallel and you get their reports together. Name in each brief its task and the matrix cells it is to fill. The server adds the " +
   "method, the source classes and the matrix to each brief; do not repeat them.";
 
-const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start one or two enumeration tasks that find them. Each searches what the market tests, " +
-  "ranks, recommends and reviews most, never only makers' own sites: independent tests and rankings, the options with the most owners' reviews on marketplaces or " +
-  "large shops that can be reached, and recommendation and bestseller lists. Rows are added from what those sources name, by the rule for rows below.";
+/**
+ * Round 1 builds a pool, and the rows come from its top (2026-11-03). On acceptance run 2 one enumeration task searched with brands already in its queries,
+ * opened five pages and added six rows in about a minute from what they showed first; later tasks took two rows each and their cells stayed thin. Shopping
+ * research elsewhere finds candidates from official pages, spec pages, reviews and review aggregators (SafeGEO, arXiv 2606.28356), and a planner splits a
+ * candidate pool among research agents (APeB, arXiv 2607.03162). So each kind of source gets its own task, every option it names is noted with its page,
+ * and the server counts the sites that named each (`candidates.ts`).
+ */
+const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start two or three enumeration tasks in parallel, one per kind of source, never only " +
+  "makers' own sites: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
+  "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews; (c) owners' reviews and discussions. Each task notes " +
+  `every option its sources name with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate and the page's link, and adds no rows. Then you add the rows from that ` +
+  "pool, the options named on the most sites first, by the rule for rows below: at least five across price tiers for a purchase. The report's line on that rule " +
+  "says the rows are the options most sites named.";
 
-const LATER_ROUNDS = "Later rounds: one task for one row, or for the empty cells of two or three rows, each under a fresh researcher name. Never give a new task " +
-  "to a researcher name already used in this research: a continued researcher keeps its whole old context, so it is no short task. The one exception is a " +
-  "researcher whose call waited for the user's approval: continue that one, since only it can make the call it was allowed.";
+const LATER_ROUNDS = "Later rounds: one task per row, each under a fresh researcher name; a task takes the empty cells of two or three rows only once the matrix has " +
+  "more than eight rows. Never give a new task to a researcher name already used in this research: a continued researcher keeps its whole old context, so it is no " +
+  "short task. The one exception is a researcher whose call waited for the user's approval: continue that one, since only it can make the call it was allowed. " +
+  "Once the leading options are clear, one offers task finds their current offers: their cards in marketplaces and shops that can be reached and the maker's own " +
+  "store, opened through the run's browser and proxies where fetch_url is refused.";
 
 /**
  * A researcher's own task, in these three sentences (operator-approved plan, 2026-11-03): the budget its results count down, searches that run at once, a short
@@ -62,17 +74,21 @@ const RESEARCHER_TASK = `Your task has ${RESEARCH_TASK_LIMITS.toolCalls} tool ca
 const RESEARCHER_REPORT = "End with a report of at most about 1,500 characters: the server lists your records under it, so say what you covered, which cells stayed " +
   "empty and why, and the options you noted, never each record again.";
 
-const RESEARCHER_ROWS = `A task to find the options adds each option its sources name as a row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. In any other task, an option ` +
-  `you saw that the matrix lacks, such as a model a listing or a ranking names, is noted with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate: its exact ` +
-  "name as the page writes it, the model and not only its brand or line, as the label, and where you saw it as the reason. The main agent decides on its row.";
+/** On acceptance run 2 (2026-11-03) the one enumeration task made every row itself from its first pages, and nobody noted a candidate. */
+const RESEARCHER_ROWS = `A task to find the options notes each one with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate: its exact name as the page writes ` +
+  "it, the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason. One note per option and page, " +
+  "from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from adds nothing. It adds no rows. In any other task, " +
+  "an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted the same way. The main agent decides on the rows.";
 
 /**
  * The main agent's part in candidates (`candidates.ts`): on acceptance run 1 (2026-11-02) the researcher that saw the option a reference answer picked
- * first had no task to add rows and never named it, so the server now lists what agents noted and the gap check holds a draft that leaves one open.
+ * first had no task to add rows and never named it, so the server lists what agents noted, by how many sites named each, and the gap check holds a
+ * draft that leaves a frequent one open; one named once stays in the pool, since a pool of every option a source names holds many.
  */
-const LEAD_CANDIDATES = `Researchers note options they saw that the matrix lacks with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate, and the line after each ` +
-  "report lists those still open: before you hand in the draft, add each as a row and send researchers for its cells, or set it aside with set_aside, its key " +
-  "and your reason. Only you set one aside; name each one you set aside in the report among the options you do not recommend, with that reason.";
+const LEAD_CANDIDATES = `Researchers note the options they see with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate and the page's link, and the line after each ` +
+  "report lists the pool still open, ordered by how many sites named each. Add rows from its top. Before you hand in the draft, set aside with set_aside, its key " +
+  "and your reason, any one named on two sites or by two agents or more that you do not take, and leave those named once as they are. Only you set one aside; " +
+  "name each one you set aside in the report among the options you do not recommend, with that reason.";
 
 /** What a purchase is bought by: a real run named two options and no offer, so its reader could not act on it. Any shop counts. */
 const OFFERS = "An offer is an action_channel finding from the shop's page you opened, with its link, the seller and the price in the claim and the quote; the record's date is the day it " +
@@ -192,7 +208,8 @@ const emptyCounts = (rows: readonly ResearchEmptyRow[], criteria: number) => row
 export function researcherMatrixFooter(matrix: ResearchMatrix, room: number): string | null {
   const { coverage, frame } = matrix;
   const empty = researchEmptyByRow(matrix);
-  const noRows = `Rows: none yet. Add each option the user could choose with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
+  const noRows = `Rows: none yet. Note each option the user could choose with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate and its page's link; the main agent ` +
+    `adds the rows. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
   const rowKeys = frame.rows.length > 0 ? `Rows: ${frame.rows.map(({ key }) => key).join(", ")}.` : noRows;
   const keySpecs = researchKeySpecs(frame);
   const keySpecKeys = keySpecs.length > 0 ? ` Key specifications: ${keySpecs.map(({ key }) => key).join(", ")}.` : "";
