@@ -12,9 +12,11 @@ import {
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
   TOOL_BATCH_LIMITS,
+  TOOL_CALL_LIMIT_OUTPUT,
   ToolBatchInactiveError,
   TOOL_TIME_EXHAUSTED_OUTPUT,
   transcriptRecord,
+  TURN_TOOL_CALL_LIMIT_OUTPUT,
   UNKNOWN_OUTCOME_APPROVAL_OUTPUT,
   UNKNOWN_OUTCOME_REPEAT_OUTPUT,
   type ToolBatchDeps
@@ -268,6 +270,67 @@ describe("native tool batch", () => {
       { arguments: { id: 2 }, id: "c2", name: "lookup" }], round: 1 });
     expect(outcome.budgetExhausted).toBe(true);
     expect(outcome.results.map((item) => item.outcome)).toEqual(["complete", "error"]);
+  });
+
+  describe("a turn's own budget", () => {
+    const budget = (limit: number) => ({ exempt: new Set(["record"]), limit, spent: { calls: 0 } });
+
+    it("counts the turn's calls but its exempt tools, refuses past them as a budget refusal and ends each counted result with what is left", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, `page ${String(call.arguments.page)}`));
+      const record = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
+      const { store } = fakeStore();
+      const turnBudget = budget(2);
+      const state = { calls: 0 };
+      const outcome = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup), record: tool("record", "local", record) }, store,
+        { maxToolCalls: null, turnBudget }), state, { round: 1, calls: [
+        { arguments: { page: 1 }, id: "c1", name: "lookup" },
+        { arguments: { claim: "a" }, id: "r1", name: "record" },
+        { arguments: { page: 2 }, id: "c2", name: "lookup" },
+        { arguments: { page: 3 }, id: "c3", name: "lookup" },
+        { arguments: { claim: "b" }, id: "r2", name: "record" }
+      ] });
+      expect(outcome.results.map((item) => [item.callId, item.outcome, item.output])).toEqual([
+        ["c1", "complete", "page 1\n\nCalls left in this task: 1."],
+        ["r1", "complete", "recorded"],
+        ["c2", "complete", "page 2\n\nCalls left in this task: 0."],
+        ["c3", "error", TURN_TOOL_CALL_LIMIT_OUTPUT(2)],
+        // Recording is never what a spent budget refuses.
+        ["r2", "complete", "recorded"]
+      ]);
+      expect(outcome.budgetExhausted).toBe(true);
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(record).toHaveBeenCalledTimes(2);
+      expect(turnBudget.spent.calls).toBe(2);
+      // The run's own count goes on as before: every call that ran, records included.
+      expect(state.calls).toBe(4);
+      const refused = store.refuse.mock.calls.at(-1)![0] as { providerCallId: string; result: unknown };
+      expect(refused.providerCallId).toBe("c3");
+      expect(JSON.stringify(refused.result)).toContain("turn_tool_call_limit_reached");
+    });
+
+    it("keeps counting across the turn's batches, and the run's budget still refuses first when it is the smaller", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+      const turnBudget = budget(3);
+      const batch = deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store, { maxToolCalls: null, turnBudget });
+      const state = { calls: 0 };
+      const first = await runToolBatch(batch, state, { round: 1, calls: [{ arguments: { id: 1 }, id: "a", name: "lookup" }, { arguments: { id: 2 }, id: "b", name: "lookup" }] });
+      expect(first.budgetExhausted).toBe(false);
+      const second = await runToolBatch(batch, state, { round: 2, calls: [{ arguments: { id: 3 }, id: "c", name: "lookup" }, { arguments: { id: 4 }, id: "d", name: "lookup" }] });
+      expect(second.results.map((item) => item.output)).toEqual(["done\n\nCalls left in this task: 0.", TURN_TOOL_CALL_LIMIT_OUTPUT(3)]);
+      expect(second.budgetExhausted).toBe(true);
+
+      const run = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store, { maxToolCalls: 1, turnBudget: budget(5) }), { calls: 0 },
+        { round: 1, calls: [{ arguments: { id: 5 }, id: "e", name: "lookup" }, { arguments: { id: 6 }, id: "f", name: "lookup" }] });
+      expect(run.results.map((item) => item.output)).toEqual(["done\n\nCalls left in this task: 4.", TOOL_CALL_LIMIT_OUTPUT(1)]);
+    });
+
+    it("adds no line and refuses nothing without a turn budget", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+      const calls = Array.from({ length: 20 }, (_, index) => ({ arguments: { id: index }, id: `c${index}`, name: "lookup" }));
+      const outcome = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store, { maxToolCalls: null }), { calls: 0 }, { round: 1, calls });
+      expect(outcome.results.every((item) => item.output === "done")).toBe(true);
+      expect(outcome.budgetExhausted).toBe(false);
+    });
   });
 
   it("refuses no call for a count without a call budget, and still blocks an identical repeat", async () => {

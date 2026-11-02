@@ -136,17 +136,34 @@ export const RESEARCH_ROUND_LIMITS = Object.freeze({
 });
 
 /**
- * When a researcher's context sheds its oldest pages (`lib/server/engine/compaction/clearing.ts`), in tokens of the measured
- * context. Measured on nine runs of 2026-11-02: a research makes 200–350 researcher responses, each reading 85–120 thousand input
- * tokens while a researcher's first reads about 14 thousand, because every page it opened stayed in its context.
+ * One researcher's turn is one short task (operator-approved plan, 2026-11-03). On acceptance run 1 (2026-11-02) research took 51 of 61
+ * minutes in two 25-minute rounds, both ended by the turn's time rather than by work done, and model responses took 87 of 120
+ * researcher-minutes. `toolCalls`: the calls one turn may make, the upper end of Anthropic's published 5–15 per subagent; past them its
+ * next round writes the report without tools. `record_evidence` and `change_research_frame` never count, so recording is never what a
+ * spent budget discourages. `RESEARCH_TIME_MS.researcherTurn` stays the outer net.
+ */
+export const RESEARCH_TASK_LIMITS = Object.freeze({
+  toolCalls: 15
+});
+
+/**
+ * When a researcher's context sheds its oldest pages (`lib/server/engine/compaction/clearing.ts`), in tokens of the measured context.
+ * Measured on nine runs of 2026-11-02: a research makes 200–350 researcher responses, each reading 85–120 thousand input tokens while a
+ * researcher's first reads about 14 thousand, because every page it opened stayed in its context.
+ *
+ * The marks are the shape of the documented default of Anthropic's context editing, which clears past 100,000 input tokens and keeps the
+ * newest 3 tool results, here every older page in one step, so a clearing costs one miss of the provider's prompt cache (2026-11-03). They
+ * replace a planning guess of 60,000 down to 25,000, which did not hold: on acceptance run 1 (2026-11-02) a researcher's responses still
+ * read 80–100 thousand tokens, and most of that floor was the thread's replayed reasoning and its calls' arguments, which clearing never
+ * removes. Short tasks keep a thread small (`RESEARCH_TASK_LIMITS`); this is the safety net for a long one.
  */
 export const RESEARCHER_CONTEXT_CLEARING = Object.freeze({
   /** Past this the oldest page results become stubs that name their handle. */
-  clearAboveTokens: 60_000,
+  clearAboveTokens: 100_000,
   /** Less than this to free and the clearing waits, since each clearing costs one miss of the provider's prompt cache. */
   clearAtLeastTokens: 10_000,
-  /** Down to this in one step, as far as the pages it may clear allow. */
-  clearToTokens: 25_000,
+  /** Nothing but the newest pages stays: every older one becomes a stub in the same step. */
+  clearToTokens: 0,
   /** The newest page results, which stay whole: a researcher records from the page it has just read. */
   keepRecentResults: 3
 });
