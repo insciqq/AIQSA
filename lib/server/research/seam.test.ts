@@ -249,7 +249,7 @@ describe("starting research", () => {
     expect(brief).toContain("# Research method (from the server)");
     expect(brief).toContain("Which mattress holds up? [primary_official, independent_tests]");
     expect(brief).toContain("verbatim quote");
-    expect(brief).toContain("browser_handoff");
+    expect(brief).toContain("never wait for a person");
     expect(memory.published()).toBe(REPORT);
   });
 });
