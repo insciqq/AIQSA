@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchGateResult,
   type ResearchStoredPage } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
-import { SUBAGENT_ERROR_CODES, type EndedSubagentCallResult } from "../../contracts/subagents";
+import { SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, type EndedSubagentCallResult } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "../engine/execution";
 import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
@@ -564,7 +564,7 @@ describe("a finding that stands for a record", () => {
       const { context, run } = contextOf({ evidence, opened: refused, turn: allSupported });
       const result = await verifierGate.run(draftOf(findings), context);
       expect(run).toHaveBeenCalledTimes(VERIFIER_LIMITS.turnsPerAttempt);
-      expect(run.mock.calls.map(([request]) => request.name)).toEqual(["verifier", "verifier-2", "verifier-3", "verifier-4", "verifier-5", "verifier-6"]);
+      expect(run.mock.calls.map(([request]) => request.name)).toEqual(["verifier", ...Array.from({ length: VERIFIER_LIMITS.turnsPerAttempt - 1 }, (_, index) => `verifier-${index + 2}`)]);
       for (const [request] of run.mock.calls) {
         expect(request.brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
         expect(request.tools).toEqual([]);
@@ -572,6 +572,22 @@ describe("a finding that stands for a record", () => {
       }
       expect(notesOf(result)).toContain("Claims: 50; supported: 50.");
       expect(notesOf(result)).not.toContain("Left out");
+    });
+
+    it("gives four claims a turn, so a long page keeps over 3,000 characters beside each: at eight a real run read 25 of 27 claims as only partly shown", async () => {
+      expect(VERIFIER_LIMITS.storedClaimsPerTurn).toBe(4);
+      const { evidence, findings } = many(8);
+      const { context, run } = contextOf({ evidence, opened: refused, turn: allSupported });
+      await verifierGate.run(draftOf(findings), context);
+      expect(run).toHaveBeenCalledTimes(2);
+      for (const [request] of run.mock.calls) {
+        for (const [, id] of request.brief.matchAll(/^C(\d+) /gmu)) expect(String(lineIn(request.brief, Number(id)).page_text).length).toBeGreaterThan(3_000);
+      }
+    });
+
+    it("stays at half of what a chat may run at once: gates run in turn, so this is the most gates ever hold together", () => {
+      expect(VERIFIER_LIMITS.turnsPerAttempt).toBe(10);
+      expect(VERIFIER_LIMITS.turnsPerAttempt * 2).toBeLessThanOrEqual(SUBAGENT_LIMITS.runningPerChat);
     });
 
     it("runs its turns at once, so the answer waits for the slowest and not for their sum", async () => {
@@ -599,7 +615,7 @@ describe("a finding that stands for a record", () => {
       } });
       const result = await verifierGate.run(draftOf(findings), context);
       expect(notesOf(result)).toContain("It did not answer for every claim.");
-      expect(notesOf(result)).toContain("Claims: 20; supported: 13; could not be checked: 7.");
+      expect(notesOf(result)).toContain("Claims: 20; supported: 16; could not be checked: 4.");
       expect(notesOf(result)).not.toContain("Left out");
     });
 
