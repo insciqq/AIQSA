@@ -164,7 +164,7 @@ const sendingBack = (name: string, seen: string[] = []): ResearchGate => ({ name
 const FRAME: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Durability", key: "durability", why: "It is bought for years." }, { criterion: "Firmness", key: "firmness", why: "It decides comfort." }],
   rows: [{ key: "x1", label: "Lonax X1" }] };
 
-const finding = (rowKey: string, criterionKey: string): ResearchEvidenceRecord => ({ author: { name: null, threadId: null }, claim: "It holds.", createdAt: "", criterionKey, id: `${rowKey}-${criterionKey}`, kind: "finding",
+const finding = (rowKey: string, criterionKey: string): Extract<ResearchEvidenceRecord, { kind: "finding" }> => ({ author: { name: null, threadId: null }, claim: "It holds.", createdAt: "", criterionKey, id: `${rowKey}-${criterionKey}`, kind: "finding",
   pageId: null, publishedOn: null, quote: "It holds.", quoteCheck: { reason: null, status: "found" }, registrableDomain: null, rowKey, runId: "run-1", sequence: 0, sourceClass: "independent_tests",
   standing: "confirmed", supersedes: null, textGroupKey: null, url: "https://lab.example/x1" });
 
