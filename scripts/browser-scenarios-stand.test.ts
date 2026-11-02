@@ -1,6 +1,52 @@
 import { types as pgTypes } from "pg";
-import { describe, expect, it } from "vitest";
-import { STAND_DATABASE_TYPES, TIMESTAMP_WITHOUT_TIME_ZONE_OID, parseUtcTimestamp } from "./browser-scenarios-stand";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { STAND_DATABASE_TYPES, TIMESTAMP_WITHOUT_TIME_ZONE_OID, ensureProductionSearch, parseUtcTimestamp, perplexitySearchConnection } from "./browser-scenarios-stand";
+
+describe("production Search setup and OpenRouter", () => {
+  const api = { baseUrl: new URL("http://stand.invalid"), cookie: "session=synthetic" };
+  const model = (upstreamModelId: string, adapterKind = "openrouter_chat_completions", enabled = true) => {
+    const config = { adapterKind, capabilities: {}, upstreamModelId };
+    return { activeConfig: config, activeVersion: 1, displayName: upstreamModelId, draftConfig: config, draftVersion: 1, enabled, id: `model-${upstreamModelId}`,
+      updatedAt: "2026-11-02T00:00:00Z" };
+  };
+  const connection = (id: string, family: string, models: unknown[], live = true) => ({ activeConfig: live ? { apiRoot: "https://openrouter.invalid/api/v1" } : null,
+    activeVersion: live ? 1 : 0, credentials: [{ activeVersion: { id: "version-1", revokedAt: null }, enabled: true, id: "key-1" }], defaultCredentialId: "key-1",
+    draftConfig: { apiRoot: "https://openrouter.invalid/api/v1" }, enabled: true, family, id, models });
+  const stand = (connections: unknown[]) => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: URL, init: RequestInit) => {
+      calls.push(`${init.method ?? "GET"} ${url.pathname}`);
+      return url.pathname === "/api/admin/providers" && (init.method ?? "GET") === "GET"
+        ? Response.json({ connections }) : Response.json({ error: "unexpected_call" }, { status: 500 });
+    }));
+    return calls;
+  };
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("stops before any setup when no live OpenRouter connection holds Perplexity's model, and never runs Quick Setup", async () => {
+    for (const connections of [
+      [],
+      [connection("router", "openrouter", [model("openai/gpt-6-astra")])],
+      [connection("router", "openrouter", [model("perplexity/sonar-pro-search", "openrouter_chat_completions", false)])],
+      [connection("router", "openrouter", [model("perplexity/sonar-pro-search")], false)],
+      [connection("compatible", "openai_compatible", [model("perplexity/sonar-pro-search", "openai_chat_completions_compatible")])]
+    ]) {
+      const calls = stand(connections);
+      await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", deepseekKey: "synthetic", searchModel: "search-model-1",
+        secret: "synthetic", report: () => undefined })).rejects.toThrow("research_search_perplexity_perplexity_connection_missing");
+      expect(calls).toEqual(["GET /api/admin/providers"]);
+      expect(calls.some((call) => call.includes("quick-setup"))).toBe(false);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reuses only a live OpenRouter connection with a key and the exact model on OpenRouter's adapter", async () => {
+    const calls = stand([connection("other", "openrouter", [model("openai/gpt-6-astra")]),
+      connection("router", "openrouter", [model("openai/gpt-6-astra"), model("perplexity/sonar-pro-search")])]);
+    await expect(perplexitySearchConnection(api, "perplexity/sonar-pro-search")).resolves.toBe("router");
+    expect(calls).toEqual(["GET /api/admin/providers"]);
+  });
+});
 
 describe("stand database timestamps", () => {
   it("reads Prisma's timestamp without time zone as UTC whatever the host's zone", () => {

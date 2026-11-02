@@ -1,9 +1,10 @@
 /** Scenario T's evaluation of synthetic answers. Content belongs only in the operator's private files. */
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync, type Stats } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AdminProviderModelConfiguration } from "../lib/contracts/adminProviders";
 import { RESEARCH_PLAN_RELEASES, RESEARCH_TIME_MS } from "../lib/contracts/research";
+import { extractFetchUrls, normalizeFetchUrl } from "../lib/server/webFetch/urls";
 import type { PurposeUsageRow } from "./subagent-scenarios-support";
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -67,9 +68,84 @@ export function researchEvalOptions(env: Readonly<Record<string, string | undefi
   if (!answersDir) return fail("research_answers_dir_required");
   const checks = role("CHECKS");
   if (checks.model && env.AIQSA_SUBAGENTS_VERIFIER_FAMILY?.trim()) fail("research_checks_role_ambiguous");
-  return { acts, answersDir, answersFile, checks, concurrency: integer(env.AIQSA_SUBAGENTS_T_CONCURRENCY, 3, 8, "research_concurrency_invalid"),
-    jobs: T_KINDS.filter((kind) => kinds.includes(kind)).flatMap((kind) => Array.from({ length: repeats[kind] }, (_, index) => ({ kind, repeat: index + 1 }))),
-    researcher: role("RESEARCHER") };
+  const search = env.AIQSA_SUBAGENTS_T_SEARCH?.trim() || null;
+  if (search !== null && search !== "production") fail("research_search_invalid");
+  const searchModel = env.AIQSA_SUBAGENTS_SEARCH_MODEL?.trim() || null;
+  if (searchModel !== null && (search === null || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(searchModel))) fail("research_search_model_invalid");
+  if (search === "production" && searchModel === null) fail("research_search_model_required");
+  if (search === "production" && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
+  const jobs = T_KINDS.filter((kind) => kinds.includes(kind)).flatMap((kind) => Array.from({ length: repeats[kind] }, (_, index) => ({ kind, repeat: index + 1 })));
+  const questionFile = env.AIQSA_SUBAGENTS_T_QUESTION_FILE?.trim() || null;
+  if (questionFile !== null && !jobs.some((job) => job.kind === "purchase")) fail("research_question_file_unused");
+  return { acts, adminProxyFile: env.AIQSA_SUBAGENTS_ADMIN_PROXY_FILE?.trim() || null, answersDir, answersFile, checks,
+    concurrency: integer(env.AIQSA_SUBAGENTS_T_CONCURRENCY, 3, 8, "research_concurrency_invalid"), jobs, questionFile,
+    researcher: role("RESEARCHER"), search: search === "production" ? { model: searchModel!, plan: "production" as const } : null };
+}
+
+/** The question file's bound: a long purchase brief fits, a pasted document does not. */
+export const RESEARCH_QUESTION_MAX_BYTES = 16_384;
+export const RESEARCH_ADMIN_PROXY_MAX_BYTES = 4_096;
+
+/**
+ * A private file's text: a regular file (no link), mode exactly 0600, owned by this user, not empty, within the bound.
+ * Refusals are `<prefix>_invalid`, `_mode`, `_empty` and `_too_large`; neither the path nor the text leaves this function.
+ */
+export function readPrivateFile(path: string, maxBytes: number, prefix: string): string {
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return fail(`${prefix}_invalid`); }
+  try {
+    let stat: Stats;
+    try { stat = fstatSync(fd); } catch { return fail(`${prefix}_invalid`); }
+    if (!stat.isFile() || (typeof process.getuid === "function" && stat.uid !== process.getuid())) fail(`${prefix}_invalid`);
+    if ((stat.mode & 0o777) !== 0o600) fail(`${prefix}_mode`);
+    if (stat.size > maxBytes) fail(`${prefix}_too_large`);
+    let bytes: Uint8Array;
+    try { bytes = readFileSync(fd); } catch { return fail(`${prefix}_invalid`); }
+    if (bytes.length > maxBytes) fail(`${prefix}_too_large`);
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return fail(`${prefix}_invalid`); }
+    if (!text.trim()) fail(`${prefix}_empty`);
+    return text;
+  } finally { closeSync(fd); }
+}
+
+/** The purchase question's text for this invocation: the operator's file, else the built-in synthetic one. */
+export function researchQuestionText(kind: TKind, builtIn: string, override: string | null): string {
+  return kind === "purchase" && override !== null ? override.trim() : builtIn;
+}
+
+/** An administrator proxy for one acceptance run, as the admin proxy API takes it. Values stay in memory; nothing prints them. */
+export type ResearchAdminProxy = Readonly<{ country: string; domainHints: readonly string[]; host: string; login: string; password: string;
+  port: number; protocol: "http" | "https" | "socks5"; url: string }>;
+
+/** `{ "url": "http://host:port", "username", "password", "country": "RU", "hints": [".ru"] }`, exactly these keys. */
+export function parseResearchAdminProxy(text: string): ResearchAdminProxy {
+  const invalid = () => fail("research_admin_proxy_file_invalid");
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return invalid(); }
+  if (!record(value) || !exact(value, ["country", "hints", "password", "url", "username"])) return invalid();
+  const { country, hints, password, url, username } = value;
+  if (typeof url !== "string" || typeof username !== "string" || typeof password !== "string" || typeof country !== "string" || !Array.isArray(hints)) return invalid();
+  let parsed: URL;
+  try { parsed = new URL(url.trim()); } catch { return invalid(); }
+  const protocol = parsed.protocol.slice(0, -1);
+  const port = Number(parsed.port);
+  if ((protocol !== "http" && protocol !== "https" && protocol !== "socks5") || !parsed.hostname || parsed.username || parsed.password ||
+    !Number.isSafeInteger(port) || port < 1 || port > 65_535 || (parsed.pathname !== "/" && parsed.pathname !== "") || parsed.search || parsed.hash) return invalid();
+  const bounded = (field: string, max: number) => field.length > 0 && field.length <= max && !/[\u0000-\u001f\u007f]/u.test(field);
+  if (!bounded(username, 255) || !bounded(password, 255) || !/^[A-Z]{2}$/u.test(country)) return invalid();
+  if (hints.length < 1 || hints.length > 50 || !hints.every((hint) => typeof hint === "string" && bounded(hint.trim(), 253))) return invalid();
+  return { country, domainHints: hints.map((hint: string) => hint.trim()), host: parsed.hostname.replace(/^\[|\]$/gu, ""), login: username, password, port,
+    protocol: protocol as ResearchAdminProxy["protocol"], url: url.trim() };
+}
+
+/** Every form a proxy value may take in text the harness keeps: the redaction list for its answers. */
+export const researchAdminProxySecrets = (proxy: ResearchAdminProxy | null): string[] => proxy ? [proxy.url, proxy.host, proxy.login, proxy.password] : [];
+
+/** The admin check's answer as a code: `ok`, the check's own stable status, or `invalid`. */
+export function researchProxyCheckStatus(value: unknown): string {
+  const status = record(value) && record(value.check) ? value.check.status : null;
+  return typeof status === "string" && /^[a-z0-9_]{1,64}$/u.test(status) ? status : "invalid";
 }
 
 /** One explicit level makes the setup probes exercise that level instead of a cheaper default. */
@@ -374,7 +450,11 @@ export function researchRoleUsage(rows: readonly ResearchTranscriptRow[], timing
       const start = instant(turn.startedAt), end = instant(turn.endedAt);
       return start !== null && end !== null && end >= start ? (end - start) / 60_000 : null;
     });
-    return [role, { responses: own.length, turns: turns.length, inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
+    const knownInput = own.filter((response) => response.inputTokens !== null).length;
+    const input = sum("inputTokens");
+    return [role, { responses: own.length, turns: turns.length, inputTokens: input, outputTokens: sum("outputTokens"),
+      // The mean over responses whose input the provider reported; `missingInput` says how many it leaves out.
+      inputPerResponse: input !== null && knownInput > 0 ? Math.round(input / knownInput) : null,
       missing: own.filter((response) => response.inputTokens === null || response.outputTokens === null).length,
       missingInput: own.filter((response) => response.inputTokens === null).length, missingOutput: own.filter((response) => response.outputTokens === null).length,
       minutes: durations.length > 0 && durations.every((duration) => duration !== null) ? durations.reduce<number>((total, duration) => total + duration!, 0) : null }];
@@ -425,4 +505,92 @@ export function researchEvaluationSummary(input: Readonly<{ job: ResearchJob; an
       tokens: input.grade.tokens, minutes: input.grade.minutes, limitations: input.grade.value?.limitations.length ?? 0 },
     extraction: { status: input.extraction.status, tokens: input.extraction.tokens, minutes: input.extraction.minutes,
       candidates: input.extraction.value?.candidates.length ?? 0, criteria: input.extraction.value?.criteria.length ?? 0, facts: input.extraction.value?.facts.length ?? 0 } };
+}
+
+/** One Search call's row as the harness reads it: the plan option that ran and the sources it returned. */
+export type ResearchSearchRow = Readonly<{ strategyId: string; sources: unknown }>;
+/** A draft call's arguments and the run's records, as T already reads them. */
+export type ResearchCitationInput = Readonly<{ lastDraft: unknown; evidence: readonly Readonly<{ id: string; url: string | null; dataset: unknown }>[]; answer: string }>;
+
+const recordUrls = (row: ResearchCitationInput["evidence"][number]) => {
+  const examples: readonly unknown[] = record(row.dataset) && Array.isArray(row.dataset.examples) ? row.dataset.examples : [];
+  return [row.url, ...examples.map((example) => record(example) ? example.url : null)]
+    .flatMap((url) => { const normalized = normalizeFetchUrl(url); return normalized ? [normalized] : []; });
+};
+
+/**
+ * The records the final answer cites: those the last draft names by id (its typed findings' links for a draft from before
+ * drafts referred to records), and every record whose link the answer's text carries. Links are `fetch_url`'s form.
+ */
+export function researchCitedUrls(input: ResearchCitationInput): Readonly<{ records: number; urls: readonly string[] }> {
+  const draft = record(input.lastDraft) ? input.lastDraft : {};
+  const cited = new Set<string>();
+  const typed: string[] = [];
+  if (Array.isArray(draft.record_ids)) for (const id of draft.record_ids) if (typeof id === "string") cited.add(id);
+  if (!Array.isArray(draft.record_ids) && Array.isArray(draft.findings)) {
+    for (const finding of draft.findings) if (record(finding)) { const url = normalizeFetchUrl(finding.url); if (url) typed.push(url); }
+  }
+  const linked = new Set(extractFetchUrls(input.answer));
+  for (const row of input.evidence) if (recordUrls(row).some((url) => linked.has(url))) cited.add(row.id);
+  const rows = input.evidence.filter((row) => cited.has(row.id));
+  return { records: rows.length, urls: [...new Set([...rows.flatMap(recordUrls), ...typed])].sort() };
+}
+
+/**
+ * Which Search source surfaced each cited link: per labelled source, the cited links among its results and how many no other
+ * source returned. `labels` maps a plan option id to its source; an unknown option counts as `other`. The full projection
+ * (links included) is for the private answers directory; `researchAttributionCounts` is what stdout may show.
+ */
+export function researchCitationAttribution(cited: readonly string[], searches: readonly ResearchSearchRow[], labels: ReadonlyMap<string, string>) {
+  const surfacedBy = new Map<string, Set<string>>();
+  for (const search of searches) {
+    const label = labels.get(search.strategyId) ?? "other";
+    for (const source of Array.isArray(search.sources) ? search.sources : []) {
+      const url = record(source) ? normalizeFetchUrl(source.url) : null;
+      if (!url) continue;
+      const own = surfacedBy.get(url) ?? new Set<string>();
+      own.add(label);
+      surfacedBy.set(url, own);
+    }
+  }
+  const names = [...new Set([...labels.values(), ...[...surfacedBy.values()].flatMap((set) => [...set])])].sort();
+  const sources = Object.fromEntries(names.map((name) => {
+    const urls = cited.filter((url) => surfacedBy.get(url)?.has(name));
+    return [name, { urls, only: urls.filter((url) => surfacedBy.get(url)!.size === 1).length }];
+  }));
+  return { cited: [...cited], sources, unsurfaced: cited.filter((url) => !surfacedBy.has(url)) };
+}
+
+/** The attribution in counts only. */
+export function researchAttributionCounts(attribution: ReturnType<typeof researchCitationAttribution>, records: number) {
+  return { citedRecords: records, citedUrls: attribution.cited.length, unsurfaced: attribution.unsurfaced.length,
+    sources: Object.fromEntries(Object.entries(attribution.sources).map(([name, entry]) => [name, { cited: entry.urls.length, only: entry.only }])) };
+}
+
+/** The model production's Perplexity source searches with through OpenRouter. */
+export const RESEARCH_PERPLEXITY_SEARCH_MODEL = "perplexity/sonar-pro-search";
+/** Production's Search plan for the acceptance run: each source, its protocol, and the upstream model its client route searches with. */
+export const RESEARCH_PRODUCTION_SEARCH = Object.freeze([
+  { label: "openai", kind: "web_search", protocol: "openai_responses_web_search" },
+  { label: "perplexity", kind: "perplexity_search", protocol: "openrouter_perplexity_chat", upstreamModelId: RESEARCH_PERPLEXITY_SEARCH_MODEL },
+  { label: "deepseek", kind: "deepseek_search_api", protocol: "deepseek_search_api" }
+] as const);
+
+/**
+ * Whether an Admin Search source is fit to start research on, as a code: `ok` only when it is live, published, on the
+ * expected client route, and its latest check searched for real and returned sources.
+ */
+export function researchSearchSourceStatus(integration: unknown, expected: Readonly<{ protocol: string; providerModelId?: string }>): string {
+  if (!record(integration)) return "missing";
+  if (integration.archivedAt !== null) return "archived";
+  if (integration.enabled !== true) return "disabled";
+  if (integration.ready !== true) return "not_ready";
+  if (integration.configurationActive !== true || integration.draftDirty === true) return "not_published";
+  const configuration = record(integration.configuration) ? integration.configuration : null;
+  if (!configuration || configuration.adapterKind !== "provider_model_client" || configuration.protocol !== expected.protocol ||
+    (expected.providerModelId !== undefined && configuration.providerModelId !== expected.providerModelId)) return "configuration_mismatch";
+  const evidence = record(integration.draftTestEvidence) ? integration.draftTestEvidence : null;
+  if (!evidence || evidence.method !== "provider_search" || evidence.protocol !== expected.protocol) return "not_checked";
+  if (evidence.status !== "available") return "check_unavailable";
+  return typeof evidence.normalizedSourceCount === "number" && evidence.normalizedSourceCount > 0 ? "ok" : "check_empty";
 }
