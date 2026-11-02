@@ -72,6 +72,12 @@ export const RESEARCH_PLAN_LIMITS = Object.freeze({
 /** Keys stay stable for the run: records, cells and picks refer to them whatever a label says. */
 export const RESEARCH_FRAME_LIMITS = Object.freeze({
   branches: 8,
+  /**
+   * Notes of candidates in all, a second agent's of one included, and candidates noted. With one set-aside at most per candidate they and the
+   * matrix's own additions (64 rows, 24 criteria, 8 branches) stay within `changes`, so no note can cost a row.
+   */
+  candidateNotes: 64,
+  candidates: 32,
   casesPerBranch: 6,
   changes: 200,
   criteria: 24,
@@ -219,25 +225,52 @@ export type ResearchBranch = Readonly<{ cases: readonly ResearchBranchCase[]; ke
 /** Who wrote a record or changed the frame: a sub-agent's thread, or both null for the main agent. */
 export type ResearchAgentRef = Readonly<{ name: string | null; threadId: string | null }>;
 
-export const RESEARCH_FRAME_CHANGES = ["add_branch", "add_criterion", "add_row"] as const;
+/** What changes the matrix itself: each is logged in `ResearchFrame.changes`. */
+const RESEARCH_MATRIX_CHANGES = ["add_branch", "add_criterion", "add_row"] as const;
+
+/**
+ * What `change_research_frame` takes: the matrix's own changes, and the candidates beside it. `note_candidate`: any agent names an option it saw
+ * that the matrix may lack, since on a real run a researcher saw whole the option a better answer picked, made no row of it, and nobody named it again.
+ * `set_aside`: the main agent decides a noted one is no option, with its reason. Neither changes the matrix, so neither is in its log.
+ */
+export const RESEARCH_FRAME_CHANGES = [...RESEARCH_MATRIX_CHANGES, "note_candidate", "set_aside"] as const;
 export type ResearchFrameChangeKind = (typeof RESEARCH_FRAME_CHANGES)[number];
 
 /** One entry of the frame's change log; a report names added criteria with their reasons from here. */
-export type ResearchFrameChange = Readonly<{ at: string; by: ResearchAgentRef; change: ResearchFrameChangeKind; key: string; reason: string }>;
+export type ResearchFrameChange = Readonly<{ at: string; by: ResearchAgentRef; change: (typeof RESEARCH_MATRIX_CHANGES)[number]; key: string; reason: string }>;
 
-/** A change an agent asks for (`change_research_frame`); the server stamps who and when. */
+/** A change an agent asks for (`change_research_frame`); the server stamps who and when. A candidate's key is the server's to make from its label. */
 export type ResearchFrameChangeRequest = Readonly<{ reason: string }> & (
   | Readonly<{ branch: ResearchBranch; change: "add_branch" }>
   | Readonly<{ change: "add_criterion"; criterion: ResearchCriterion }>
   | Readonly<{ change: "add_row"; row: ResearchMatrixRow }>
+  | Readonly<{ change: "note_candidate"; label: string }>
+  | Readonly<{ change: "set_aside"; key: string }>
 );
 
-/** The matrix of a run with its change log, as `ResearchFrame.frame` keeps it. It only grows while the run lives. */
+/** One agent's note of a candidate: who, when, and where it was seen and why it may be an option. */
+export type ResearchCandidateNote = Readonly<{ at: string; by: ResearchAgentRef; reason: string }>;
+
+/**
+ * An option an agent saw that the matrix may lack, with one note per agent that noted it. `key` is the server's normal form of the name
+ * (`lib/server/research/candidates.ts`), which merges one option written two ways; `label` is the name as the first agent wrote it.
+ */
+export type ResearchCandidate = Readonly<{ key: string; label: string; notes: readonly ResearchCandidateNote[] }>;
+
+/** A noted candidate the main agent decided is no option, and why: the report keeps it with the options it does not recommend. */
+export type ResearchSetAside = Readonly<{ at: string; key: string; reason: string }>;
+
+/**
+ * The matrix of a run with its change log, as `ResearchFrame.frame` keeps it. It only grows while the run lives. `candidates` and `setAside` are
+ * absent on a frame stored before them, which reads as none noted.
+ */
 export type ResearchFrame = Readonly<{
   branches: readonly ResearchBranch[];
+  candidates?: readonly ResearchCandidate[];
   changes: readonly ResearchFrameChange[];
   criteria: readonly ResearchCriterion[];
   rows: readonly ResearchMatrixRow[];
+  setAside?: readonly ResearchSetAside[];
 }>;
 
 /**
@@ -707,13 +740,42 @@ function decodeFrameChange(value: unknown, place: string): DecodedResearch<Resea
   if (!isTimestamp(value.at)) return refused(`${place}.at must be a time.`);
   const by = decodeAgentRef(value.by);
   if (!by) return refused(`${place}.by must name the agent.`);
-  if (!isOneOf(RESEARCH_FRAME_CHANGES, value.change)) return refused(`${place}.change must be one of ${RESEARCH_FRAME_CHANGES.join(", ")}.`);
+  if (!isOneOf(RESEARCH_MATRIX_CHANGES, value.change)) return refused(`${place}.change must be one of ${RESEARCH_MATRIX_CHANGES.join(", ")}.`);
   if (!isResearchKey(value.key)) return refused(`${place}.key must be ${KEY_RULE}.`);
   if (!storableText(value.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`${place}.reason must be 1 to ${RESEARCH_LIMITS.reasonCharacters} characters.`);
   return { ok: true, value: { at: value.at, by, change: value.change, key: value.key, reason: value.reason } };
 }
 
-/** A frame as `ResearchFrame.frame` keeps it: it holds at least the plan's criteria. */
+/** A candidate's key, which the server makes from a label: no matrix key, since a name may be long and of any script. */
+const isCandidateKey = (value: unknown): value is string => storableText(value, RESEARCH_FRAME_LIMITS.labelCharacters) && !/\s/u.test(value);
+
+function decodeCandidate(value: unknown, place: string): DecodedResearch<ResearchCandidate> {
+  const limits = RESEARCH_FRAME_LIMITS;
+  if (!isRecord(value)) return refused(`${place} must be one object.`);
+  if (!isCandidateKey(value.key)) return refused(`${place}.key must be 1 to ${limits.labelCharacters} characters without spaces.`);
+  if (!storableText(value.label, limits.labelCharacters)) return refused(`${place}.label must be 1 to ${limits.labelCharacters} characters.`);
+  if (!Array.isArray(value.notes) || value.notes.length < 1 || value.notes.length > limits.candidateNotes) return refused(`${place}.notes must list 1 to ${limits.candidateNotes} entries.`);
+  const notes: ResearchCandidateNote[] = [];
+  for (const [index, entry] of value.notes.entries()) {
+    const at = `${place}.notes[${index}]`;
+    if (!isRecord(entry) || !isTimestamp(entry.at)) return refused(`${at}.at must be a time.`);
+    const by = decodeAgentRef(entry.by);
+    if (!by) return refused(`${at}.by must name the agent.`);
+    if (!storableText(entry.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`${at}.reason must be 1 to ${RESEARCH_LIMITS.reasonCharacters} characters.`);
+    notes.push({ at: entry.at, by, reason: entry.reason });
+  }
+  return { ok: true, value: { key: value.key, label: value.label, notes } };
+}
+
+function decodeSetAside(value: unknown, place: string): DecodedResearch<ResearchSetAside> {
+  if (!isRecord(value)) return refused(`${place} must be one object.`);
+  if (!isTimestamp(value.at)) return refused(`${place}.at must be a time.`);
+  if (!isCandidateKey(value.key)) return refused(`${place}.key must be 1 to ${RESEARCH_FRAME_LIMITS.labelCharacters} characters without spaces.`);
+  if (!storableText(value.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`${place}.reason must be 1 to ${RESEARCH_LIMITS.reasonCharacters} characters.`);
+  return { ok: true, value: { at: value.at, key: value.key, reason: value.reason } };
+}
+
+/** A frame as `ResearchFrame.frame` keeps it: it holds at least the plan's criteria. One stored before candidates reads as it was written, with none. */
 export function decodeResearchFrame(value: unknown): DecodedResearch<ResearchFrame> {
   if (!isRecord(value)) return refused("The frame must be one object.");
   const limits = RESEARCH_FRAME_LIMITS;
@@ -730,12 +792,20 @@ export function decodeResearchFrame(value: unknown): DecodedResearch<ResearchFra
     if (!change.ok) return change;
     changes.push(change.value);
   }
-  return { ok: true, value: { branches: branches.value, changes, criteria: criteria.value, rows: rows.value } };
+  const candidates = value.candidates === undefined ? null : decodeKeyed(value.candidates, "candidates", { max: limits.candidates, min: 0 }, decodeCandidate);
+  if (candidates && !candidates.ok) return candidates;
+  const setAside = value.setAside === undefined ? null : decodeKeyed(value.setAside, "setAside", { max: limits.candidates, min: 0 }, decodeSetAside);
+  if (setAside && !setAside.ok) return setAside;
+  return { ok: true, value: { branches: branches.value, ...candidates ? { candidates: candidates.value } : {}, changes, criteria: criteria.value, rows: rows.value,
+    ...setAside ? { setAside: setAside.value } : {} } };
 }
 
 const FRAME_CHANGE_FIELDS = ["cases", "change", "key", "label", "reason", "why"] as const;
 
-/** A change of the frame as `change_research_frame` takes it: `label` is a row's name, a criterion or what is unknown, and `why` and `cases` are null where they do not apply. */
+/**
+ * A change of the frame as `change_research_frame` takes it: `label` is a row's name, a criterion, what is unknown or a candidate's name, `key` is unread for
+ * a candidate noted and names the candidate set aside, and `why` and `cases` are null where they do not apply.
+ */
 export function decodeResearchFrameChange(value: unknown): DecodedResearch<ResearchFrameChangeRequest> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
   const missing = missingField(value, FRAME_CHANGE_FIELDS);
@@ -743,6 +813,14 @@ export function decodeResearchFrameChange(value: unknown): DecodedResearch<Resea
   if (!isOneOf(RESEARCH_FRAME_CHANGES, value.change)) return refused(`change must be one of ${RESEARCH_FRAME_CHANGES.join(", ")}.`);
   if (!storableText(value.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`reason must say in 1 to ${RESEARCH_LIMITS.reasonCharacters} characters why the frame changes.`);
   const reason = value.reason;
+  if (value.change === "note_candidate") {
+    if (!storableText(value.label, RESEARCH_FRAME_LIMITS.labelCharacters)) return refused(`label must name the option in 1 to ${RESEARCH_FRAME_LIMITS.labelCharacters} characters, as the page writes it.`);
+    return { ok: true, value: { change: "note_candidate", label: value.label, reason } };
+  }
+  if (value.change === "set_aside") {
+    if (!storableText(value.key, RESEARCH_FRAME_LIMITS.labelCharacters)) return refused("key must name the noted candidate, as the server listed it.");
+    return { ok: true, value: { change: "set_aside", key: value.key, reason } };
+  }
   if (value.change === "add_row") {
     const row = decodeRow({ key: value.key, label: value.label }, "");
     return row.ok ? { ok: true, value: { change: "add_row", reason, row: row.value } } : row;

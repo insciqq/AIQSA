@@ -38,6 +38,7 @@ import { harnessToolError } from "../tools/harnessTool";
 import { proposeResearchPlanTool, researchDraftReservedInstruction, researchScopingInstructions, researchScopingOverMessage, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { PlanUpdate } from "../tools/updatePlan";
+import { researchCandidatesLine } from "./candidates";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { createResearchRounds, researchFilledCells, researchKeySpecs, researchLeadingRows, researchMatrix, researchProgressCells, researchUnconfirmedKeyCells } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
@@ -514,8 +515,11 @@ export function createRunResearch(input: RunResearchInput) {
     if (!matrix) return result;
     const records = await liveRecords(execution.signal);
     const line = researchCoverageLine(matrix, await rounds.newCells(researchFilledCells(matrix.coverage)), researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft));
+    // Beside it, the options agents noted that are neither a row nor set aside: the main agent decides on each before a draft.
+    const candidates = researchCandidatesLine(matrix.frame);
     const list = records && researchRecordList(records, listedRecords);
-    return { ...result, content: [...result.content, { text: line, type: "text" }, ...list ? [{ text: list, type: "text" as const }] : []] };
+    return { ...result, content: [...result.content, { text: line, type: "text" }, ...candidates ? [{ text: candidates, type: "text" as const }] : [],
+      ...list ? [{ text: list, type: "text" as const }] : []] };
   }
 
   /** A Continue's start: the plan stands as its row keeps it, its phases start afresh, and the model reads what is filled before it plans a round. */
@@ -542,10 +546,11 @@ export function createRunResearch(input: RunResearchInput) {
     const { questions, skipped_source_classes } = researchPlanProposalDocument(state.answer.plan);
     // No researcher need follow, so this is where the ids a draft cites come from. It rides behind the server's fields, whatever its length.
     const list = records && researchRecordList(records, listedRecords, PICKED_UP_RECORD_LIST_CHARACTERS);
+    const candidates = matrix && researchCandidatesLine(matrix.frame);
     // The server's fields, first and in this order: a later approval or Continue reads them back (`researchOfTurn`).
     const result = resultOf(call, { research_run: researchRunId, status: "resumed", opened_from: openedFrom, plan: { goal: state.goal, questions, skipped_source_classes },
       instructions: [PICKED_UP, ...records ? [`${records.length} records stand.${list ? " The ids a draft cites them by end this result." : ""}`] : [],
-        ...matrix ? [researchCoverageLine(matrix, null, researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft))] : [],
+        ...matrix ? [researchCoverageLine(matrix, null, researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft)), ...candidates ? [candidates] : []] : [],
         ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
       ...rebuildOwed ? {} : { method: researchMethodText(stands) } });
     return list ? { ...result, content: [...result.content, { text: list, type: "text" }] } : result;
