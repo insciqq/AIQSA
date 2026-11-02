@@ -91,6 +91,12 @@ export function researchRunsOnBranch(run: ResearchRunPlace): readonly string[] {
   return [...new Set([...from < 0 ? [] : run.branchRunIds.slice(from), run.runId])];
 }
 
+/**
+ * A gate's own turn, by the name `researchTurnName` gives it. What a check read is no research: it opens no new round of the gap check, and it does not make a page one a
+ * researcher read. A researcher a model happens to name this way goes uncounted too, which only makes the checks stricter, and such a name already meets a gate's thread.
+ */
+const GATE_TURN = /^(?:gap-judge|skeptic|verifier(?:-\d+)?)-\d+$/u;
+
 export function createResearchSources(input: Readonly<{
   chatId: string;
   /** The main agent's items as the run holds them. */
@@ -102,13 +108,14 @@ export function createResearchSources(input: Readonly<{
 }>) {
   const scope = { chatId: input.chatId, userId: input.userId };
   return {
-    async opened(signal: AbortSignal): Promise<readonly ResearchOpenedSource[]> {
+    async opened(signal: AbortSignal, whose?: "researchers"): Promise<readonly ResearchOpenedSource[]> {
       const runIds = researchRunsOnBranch(input.run);
       const background = await input.threads.backgroundRunIds({ ...scope, parentRunIds: runIds });
       const threads = await input.threads.threadEffectItems({ ...scope, runIds: [...runIds, ...background] });
+      const read = whose === "researchers" ? threads.filter(({ name }) => !GATE_TURN.test(name ?? "")) : threads;
       const opened: ResearchOpenedSource[] = [];
       let characters = 0;
-      for (const list of [input.items(), ...threads.map((thread) => thread.items)]) {
+      for (const list of [input.items(), ...read.map((thread) => thread.items)]) {
         const calls = new Map(list.flatMap((item) => item.kind === "tool_call" ? [[item.callId, item] as const] : []));
         for (const item of list) {
           if (item.kind !== "tool_result" || item.outcome !== "complete" || AGENT_WRITTEN.has(item.name)) continue;

@@ -372,6 +372,14 @@ describe("the ports a run holds", () => {
     const researcherSignal = vi.fn((signal: AbortSignal) => signal);
     await runOf(RUNS["a report accepted after a researcher"]!, { gates: [], ports: { time: () => ({ ...NOOP_RESEARCH_PORTS.time, researcherSignal }) } });
     expect(researcherSignal).toHaveBeenCalledOnce();
+    let endedByTheDraft = false;
+    const later: ResearchGate = { name: "later", run: async () => {
+      endedByTheDraft = researcherSignal.mock.lastCall![0].aborted;
+      return { kind: "pass" };
+    } };
+    // The signal the clock's limit hangs on ends with the call, so no timer outlives it, while the run goes on.
+    await runOf(RUNS["a report accepted after a researcher"]!, { gates: [later], ports: { time: () => ({ ...NOOP_RESEARCH_PORTS.time, researcherSignal }) } });
+    expect(endedByTheDraft).toBe(true);
   });
 
   it("tells the clock when the plan stands, once", async () => {
@@ -475,6 +483,15 @@ describe("the ports a run holds", () => {
       expect(run.published).toContain(REPORT);
       expect(compose).not.toHaveBeenCalled();
     });
+
+    it.each([["Смотрю руководства по выбору.", "Исследование завершилось раньше, чем был готов его план", "пока писался этот отчёт"],
+      ["Reading guides on how to choose.", "Research ended before its plan stood", "while this report was being written"]])(
+      "says research ended before its plan when text held during scoping is all there is: %s", async (text, says, never) => {
+        const run = await runOf([{ calls: [start] }, { fail: true, text }], { gates: [] });
+        expect(run.shown).toContain(text);
+        expect(run.shown).toContain(says);
+        expect(run.shown).not.toContain(never);
+      });
 
     describe("when that text is a whole report", () => {
       const LINE = 2_000;

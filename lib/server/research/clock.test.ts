@@ -135,6 +135,16 @@ describe("a run's research clock", () => {
     expect((signal.reason as Error).message).toBe("stopped");
   });
 
+  it("lets a researcher's limit go with the signal it hangs on, so no timer outlives the call", () => {
+    const clock = createResearchClock(scope().run);
+    const pending = vi.getTimerCount();
+    const call = new AbortController();
+    clock.researcherSignal(call.signal);
+    expect(vi.getTimerCount()).toBe(pending + 1);
+    call.abort();
+    expect(vi.getTimerCount()).toBe(pending);
+  });
+
   it("differs from the no-op in everything a run asks of it", () => {
     const clock = createResearchClock(scope().run);
     clock.planReleased();

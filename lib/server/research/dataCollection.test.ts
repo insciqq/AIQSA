@@ -188,6 +188,27 @@ describe("where a researcher reads the method", () => {
     for (const agentKind of ["main", "subagent"] as const) expect(workspaceGuideInput({ agentKind }).toString("utf8")).toContain("## Owners' reviews as counts");
   });
 
+  describe("in an ordinary run", () => {
+    // One guide per VM serves every run of a chat, written at boot, so it cannot vary by run: it says who has the tool.
+    const guide = (JSON.parse(workspaceGuideInput().toString("utf8")) as { guides: { content: string; name: string }[] }).guides.find(({ name }) => name === "browser.md")!.content;
+    const section = guide.slice(guide.indexOf("## Owners' reviews as counts"));
+
+    it("names the tool only where a research run offers it", () => {
+      const lines = section.split("\n").filter((line) => line.includes(RECORD_EVIDENCE_TOOL_NAME));
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines) expect(line).toContain(`Only a research run offers ${RECORD_EVIDENCE_TOOL_NAME}: if this one does, call it`);
+      expect(section).not.toMatch(new RegExp(`(?:^|- )Call ${RECORD_EVIDENCE_TOOL_NAME}`, "mu"));
+    });
+
+    it("says what to do without it, so a count still reaches the user", () => {
+      expect(section).toContain("give the sample, the counts, what you dropped and a few reviews word for word in your answer");
+    });
+
+    it("keeps what only a record has to research too", () => {
+      for (const word of ["`not_found`", "`unreachable`"]) expect(section.split("\n").find((line) => line.includes(word))).toMatch(/in research/iu);
+    });
+  });
+
   it("is named at the end of every brief", () => {
     const plan = { goal: "Choose.", questions: [{ question: "Which one?", sites: [], sourceClasses: [] }], skipped: [] };
     expect(researcherMethodFooter(plan)).toContain(RESEARCH_REVIEWS_REFERENCE);
