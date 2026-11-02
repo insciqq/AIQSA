@@ -96,6 +96,33 @@ describe("the method", () => {
     expect(text).toContain("shop.example");
   });
 
+  it("says a row is an option the user could choose, and a test, a source or a method is evidence", () => {
+    // A real run's frame held rows for a lab's comparison and a testing method.
+    for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
+      expect(text).toContain("A row is an option the user could choose");
+      expect(text).toContain("a test, a source or a method is evidence");
+    }
+    expect(researcherMatrixFooter({ coverage: { cells: [], empty: 0, filled: 0 }, frame: { branches: [], changes: [], criteria: [{ criterion: "Price", key: "price", why: "Budget." }], rows: [] } }, 3_000))
+      .toContain("Add each option the user could choose");
+  });
+
+  it("asks for a default when evidence does not separate rows, marked as one, beside what would decide and without inventing a difference", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain("which of them it would take by default today and why, such as the cheapest among those with the same evidence");
+    expect(text).toContain("marked plainly as a default and not as a finding");
+    expect(text).toContain("what would decide");
+    expect(text).toContain("instead of inventing a difference");
+  });
+
+  it("asks labels and reasons in the goal's language, for a reader, naming no tool", () => {
+    // A real run's English label and a reason naming fetch_url reached a Russian answer.
+    for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
+      expect(text).toContain("in the language of the goal, for a reader, naming no tool and no error");
+    }
+    expect(researcherMethodFooter({ ...plan, goal: "Выбрать матрас на двоих." })).toContain("The goal: Выбрать матрас на двоих.");
+    expect(researcherMethodFooter({ ...plan, goal: `Выбрать ${"матрас ".repeat(300)}` }).length).toBeLessThan(researcherMethodFooter(plan).length + 400);
+  });
+
   it("ends every brief with the source classes, the finding's form, and one handoff before leaving an unreachable site", () => {
     const footer = researcherMethodFooter(plan);
     expect(footer).toContain("verbatim quote");

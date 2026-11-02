@@ -8,6 +8,7 @@ import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpen
 import { researchEmptyByRow, researchMatrix, type ResearchMatrix } from "./matrix";
 import { researchNote } from "./notes";
 import { researchGatePorts } from "./ports";
+import { REPORT_CHECK_GATE } from "./reportCheck";
 import { researchEvidenceKind } from "./sources";
 
 const CYRILLIC = /\p{Script=Cyrillic}/u;
@@ -161,9 +162,16 @@ const findingKey = (finding: ResearchFinding) => JSON.stringify([
   space(finding.claim.normalize("NFKC")).toLowerCase(), normalizeFetchUrl(finding.url) ?? space(finding.url)
 ]);
 
+/**
+ * The drafts this gate ended on. The report check runs ahead of it, so a draft it sent back never got here: a real run's two such send backs read as drafts the judge had seen, and
+ * no judge turn was paid for when most cells were recorded as not found. A later gate's send back is of a draft this one did end on, and a stored attempt naming no gate counts as it always did.
+ */
+const endedOn = ({ earlier }: Pick<ResearchGateContext, "earlier">) => earlier.filter((attempt) => attempt.gate !== REPORT_CHECK_GATE);
+
 function addedNothing(draft: ResearchDraft, context: ResearchGateContext): boolean {
-  if (context.earlier.length === 0) return false;
-  const earlier = new Set(context.earlier.flatMap((attempt) => attempt.draft.findings.map(findingKey)));
+  const ended = endedOn(context);
+  if (ended.length === 0) return false;
+  const earlier = new Set(ended.flatMap((attempt) => attempt.draft.findings.map(findingKey)));
   return draft.findings.every((finding) => earlier.has(findingKey(finding)));
 }
 
@@ -176,7 +184,7 @@ function gapNote(gaps: readonly Gap[], russian: boolean, kind: SentBack["kind"])
 
 function previousJudgeNotes(context: ResearchGateContext, russian: boolean, previous: SentBack | undefined): string[] {
   if (previous) return previous.kind === "judged" && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, "judged")] : [];
-  const message = context.earlier.at(-1)?.message ?? "";
+  const message = endedOn(context).at(-1)?.message ?? "";
   if (!Object.values(JUDGE_HEADING).some((heading) => message.startsWith(heading))) return [];
   const issues = message.split("\n\n")[0]!.split("\n").slice(1).map((issue) => readerText(issue, russian));
   return [issueText(JUDGE_HEADING[russian ? "ru" : "en"], issues)];
@@ -337,11 +345,12 @@ export const gapCheckGate: ResearchGate = {
     const russian = CYRILLIC.test(draft.report);
     const matrix = await researchMatrix(researchGatePorts(context).coverage, context.signal);
     const closed = matrix ? context.researchersClosed?.() ?? null : null;
-    const progress = context.earlier.length > 0 ? pageProgress.get(context.plan) : undefined;
+    const ended = endedOn(context);
+    const progress = ended.length > 0 ? pageProgress.get(context.plan) : undefined;
     const previous = progress?.feedback;
     const opened = await context.sources.opened(context.signal);
     const pages = opened.filter((source) => researchEvidenceKind(source) === "page").length;
-    const noNewPages = progress !== undefined && context.earlier.at(-1)?.message !== null && pages <= progress.pages;
+    const noNewPages = progress !== undefined && ended.at(-1)?.message !== null && pages <= progress.pages;
     pageProgress.set(context.plan, { pages, feedback: previous });
     if (draft.origin === "plain_text" && draft.findings.length === 0) {
       // responseEnded already asked for the reserved call once; run.ts owns
