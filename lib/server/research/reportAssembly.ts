@@ -83,12 +83,17 @@ const oneLine = (text: string) => text.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace
 
 const RECORD_LIST_CHARACTERS = 8_000;
 const LISTED_CLAIM_CHARACTERS = 120;
+/**
+ * The list a Continue's start hands over at once: no researcher need follow, so no next result can be counted on, and it holds as many of the longest lines as a draft may cite.
+ * It stands after the start's own fields, so past what one result shows inline the model reads the rest by the result's reference, and those fields stay where `researchOfTurn` finds them.
+ */
+export const PICKED_UP_RECORD_LIST_CHARACTERS = RESEARCH_LIMITS.findings * 300;
 
 /**
  * What the main agent cites from: `record_evidence` gives a record's id only to the agent that wrote it, so without this list it has no ids of its researchers' records.
  * It gives the records not listed yet, moving them to `listed`, as many as its bound holds: the next result takes the rest, and a send back names what a draft needs.
  */
-export function researchRecordList(records: readonly ResearchEvidenceRecord[], listed: Set<string>): string | null {
+export function researchRecordList(records: readonly ResearchEvidenceRecord[], listed: Set<string>, characters = RECORD_LIST_CHARACTERS): string | null {
   const lines: string[] = [];
   let size = 0;
   let left = 0;
@@ -96,7 +101,7 @@ export function researchRecordList(records: readonly ResearchEvidenceRecord[], l
     if (!isClaim(record) || listed.has(record.id)) continue;
     const cell = [record.rowKey, record.criterionKey].filter((key) => key !== null).join(" / ") || "no cell";
     const line = `${record.id} | ${cell} | ${cut(oneLine(record.claim), LISTED_CLAIM_CHARACTERS)}${quoteHolds(record) ? "" : " | its quote did not check out"}`;
-    if (size + line.length + 1 > RECORD_LIST_CHARACTERS) {
+    if (size + line.length + 1 > characters) {
       left += 1;
       continue;
     }
@@ -263,11 +268,11 @@ export function composeResearchReport(input: Readonly<{ ended: ResearchReportEnd
 /** The port of one run (`ResearchPortFactories.report`). */
 export function createResearchReport(run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">): ResearchReportPort {
   return {
-    async compose({ ended, signal }) {
+    async compose({ ended, goal, signal }) {
       const records = await parts.evidence.records(signal);
       if (records.length === 0) return null;
       const matrix = await researchMatrix(parts.coverage, signal);
-      return composeResearchReport({ ended, matrix, now: new Date(run.now()), records, userWords: run.userMessage });
+      return composeResearchReport({ ended, matrix, now: new Date(run.now()), records, userWords: goal ?? run.userMessage });
     },
     gates: [reportCheckGate]
   };

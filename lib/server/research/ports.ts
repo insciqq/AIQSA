@@ -127,8 +127,9 @@ export type ResearchReportPort = Readonly<{
   /**
    * The answer the server builds from the records, in the report's language, with its note. Null when there is nothing to build
    * from. It runs as the run ends, at most once: `signal` ends with Stop and `RESEARCH_TIME_MS.composeReport`, and the run stops waiting then.
+   * `goal` is there when the user's last words are the Continue button's, which say nothing of their language, so the goal's language stands for it.
    */
-  compose(input: Readonly<{ ended: ResearchReportEnding; signal: AbortSignal }>): Promise<string | null>;
+  compose(input: Readonly<{ ended: ResearchReportEnding; goal?: string; signal: AbortSignal }>): Promise<string | null>;
   /** Checks of a draft against the records and the matrix: ordinary gates, run before the others, under the same send-back cap. */
   gates: readonly ResearchGate[];
 }>;
