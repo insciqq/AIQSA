@@ -88,9 +88,9 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * spent on tool-free text: the turn ends with that draft and a note. Whatever ends
  * the run, what it held reaches the answer (Answer first): the report as soon as the
  * response that holds it completed, before any record of it, and with no report what the
- * server builds from the records. Only with nothing recorded does the text of the
- * provider's last attempt stand in: nearly every run has a line of narration by then,
- * which must not take the place of what research found. A delivered follow-up makes the
+ * server builds from the records. The text of the provider's last attempt stands in only
+ * with nothing recorded, or at report length: nearly every run has a line of narration by
+ * then, which must not take the place of what research found. A delivered follow-up makes the
  * report in hand no longer the answer until the model has read it, and it stays only for recovery.
  *
  * What ends the going round is the matrix and the gates' own cap (`matrix.ts`, `gates.ts`): a round's researchers read its empty cells, the
@@ -119,6 +119,12 @@ export function researchOffered(input: Readonly<{ monitoring: boolean; scheduled
 const researchActivity = (toolName: string) => () => ({ origin: "tool" as const, serverName: "Research", toolName });
 
 const TEXT_DRAFT_CALL = "research_text_draft_";
+
+/**
+ * From this length what the model last wrote is taken for a report written as a message, not narration: a line beside a call is a sentence or two. A report outranks a table
+ * of what it drew on (Answer first), and below this the table says more. Length is all the server can tell them by, so a very long narration stands too.
+ */
+const REPORT_AS_TEXT_CHARACTERS = 2_000;
 
 /** The line the user sees as soon as research starts, in the language they wrote in (`notes.ts` reads a report the same way). */
 const PLANNING_LINE = { en: "Making a plan before research starts", ru: "Составляю план перед началом исследования" };
@@ -310,6 +316,7 @@ export function createRunResearch(input: RunResearchInput) {
     if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote("incomplete", attemptText)]);
     return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
   };
+  const wroteReport = () => Math.max(attemptText.trim().length, lastHeld.trim().length) >= REPORT_AS_TEXT_CHARACTERS;
   /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
   const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: researchCarriedNotes(gates, draft, attempts) });
   /** The plan stands: research proper starts, and its phases count from here. */
@@ -849,12 +856,13 @@ export function createRunResearch(input: RunResearchInput) {
     },
 
     /**
-     * The answer the server builds from the records when `finish` or `afterEnding` had no report, never for a stopped run or one
-     * waiting for the user, and with nothing recorded what the model last wrote. Apart from them because it reads a store, and they answer at once. `stop`
-     * is what ends the run's Stop, not its deadline: the deadline may be what ended it. A second end, such as a failure to publish, gets the first one's result.
+     * The answer the server builds from the records when `finish` or `afterEnding` had no report, never for a stopped run or one waiting for the user. What the model last
+     * wrote takes its place at report length, or with nothing recorded. Apart from them because it reads a store, and they answer at once. `stop` is what ends the
+     * run's Stop, not its deadline: the deadline may be what ended it. A second end, such as a failure to publish, gets the first one's result.
      */
     composed(ended: ResearchReportEnding, stop: AbortSignal): Promise<string | null> {
       if (!plan) return Promise.resolve(null);
+      if (!stop.aborted && wroteReport()) return Promise.resolve(lastWords());
       composing ??= compose(ended, stop);
       return composing.then((built) => built ?? (stop.aborted ? null : lastWords()));
     },
