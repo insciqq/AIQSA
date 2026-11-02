@@ -20,10 +20,13 @@ import type { ResearchEngineDeps } from "./run";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { proposeCall } from "./planWindow.testFixtures";
 import { gapCheckGate } from "./gapCheck";
-import { runResearchGates, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome } from "./gates";
+import { runResearchGates, type ResearchAttempt, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome } from "./gates";
 import { researchMatrixCoverage } from "./matrix";
 import { researchAnswerText, researchNote } from "./notes";
 import type { ResearchCoveragePort } from "./ports";
+import { DRAFT as RECORD_DRAFT, FRAME as RECORD_FRAME, matrixOf, notFound, RECORDS } from "./report.testFixtures";
+import { researchDraftWithRecords } from "./reportAssembly";
+import { REPORT_CHECK_GATE, reportCheckGate } from "./reportCheck";
 
 const LABELS: Record<ResearchSourceClass, string> = {
   primary_official: "official sources", independent_tests: "independent tests", owner_reviews: "owner reviews", action_channel: "purchase options and terms"
@@ -591,6 +594,71 @@ describe("bounded messages", () => {
     // The decoder's total bound is independent of the individual field bounds.
     const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ gaps: issues.map((issue) => gap(issue, issue)), limits: issues })) } });
     expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished", DRAFT.report)] });
+  });
+});
+
+describe("what this gate ended on", () => {
+  // As a real run left it: every cell is filled or recorded as not found, so only the judge could still ask anything.
+  const RECORDED = [...RECORDS, notFound(6, "x2", "reviews")];
+  const MATRIX = matrixOf(RECORD_FRAME, RECORDED);
+  const READY = researchDraftWithRecords(RECORD_DRAFT, RECORDED);
+  const WRONG = { ...READY, pickRowKey: "x9" };
+  const OPEN = JSON.stringify({ ...CLEAN, gaps: [gap("Comfort was not found for any mattress.", "Open owners' reviews of comfort.")] });
+  const gates = [reportCheckGate, gapCheckGate];
+  const ofRecords = (overrides: Partial<ResearchGateContext> = {}) => context({ coverage: { change: vi.fn(), coverage: async () => MATRIX.coverage, frame: async () => MATRIX.frame },
+    evidence: { page: vi.fn(), record: vi.fn(), records: async () => RECORDED }, ...overrides });
+  const attemptOf = (draft: ResearchDraft, outcome: Awaited<ReturnType<typeof runResearchGates>>): ResearchAttempt =>
+    outcome.kind === "sent_back" ? { draft, gate: outcome.gate, message: outcome.message } : { draft, message: null };
+
+  it("is never a draft the report check sent back: the judge gets its turn on the next one, whose findings are the same", async () => {
+    const run = vi.fn(async (): Promise<ResearchSubagentOutcome> => judged(OPEN));
+    const ctx = ofRecords({ subagents: { run } });
+    const first = await runResearchGates({ context: ctx, draft: WRONG, gates, runId: "run" });
+    expect(first).toMatchObject({ gate: REPORT_CHECK_GATE, kind: "sent_back" });
+    const second = await runResearchGates({ context: { ...ctx, attempt: 2, earlier: [attemptOf(WRONG, first)] }, draft: { ...WRONG }, gates, runId: "run" });
+    expect(second).toMatchObject({ gate: REPORT_CHECK_GATE, kind: "sent_back" });
+    expect(run).not.toHaveBeenCalled();
+    const third = await runResearchGates({ context: { ...ctx, attempt: 3, earlier: [attemptOf(WRONG, first), attemptOf(WRONG, second)] }, draft: READY, gates, runId: "run" });
+    expect(run).toHaveBeenCalledOnce();
+    expect(third).toMatchObject({ gate: gapCheckGate.name, kind: "sent_back", message: expect.stringContaining("Comfort was not found") });
+  });
+
+  it("keeps its word over a report check's send back: no new page buys no second judge turn", async () => {
+    const run = vi.fn(async (): Promise<ResearchSubagentOutcome> => judged(OPEN));
+    const ctx = ofRecords({ subagents: { run } });
+    const asked = await gapCheckGate.run(READY, ctx);
+    const earlier = [{ draft: READY, gate: gapCheckGate.name, message: messageOf(asked) }, { draft: WRONG, gate: REPORT_CHECK_GATE, message: "Outside the matrix." }];
+    const again = await gapCheckGate.run(READY, { ...ctx, attempt: 3, earlier });
+    expect(again.kind).toBe("pass");
+    expect(again.notes?.join()).toContain("Comfort was not found");
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("finds what the judge said across a report check's send back, after an approval rebuilt the run", async () => {
+    const asked = await gapCheckGate.run(READY, ofRecords({ subagents: { run: async () => judged(OPEN) } }));
+    const earlier = [{ draft: READY, gate: gapCheckGate.name, message: messageOf(asked) }, { draft: WRONG, gate: REPORT_CHECK_GATE, message: "Outside the matrix." }];
+    const rebuilt = ofRecords({ attempt: 3, earlier, subagents: { run: vi.fn(async () => judged()) } });
+    const result = await gapCheckGate.run(READY, rebuilt);
+    expect(result.notes?.join()).toContain("Comfort was not found");
+    expect(rebuilt.subagents.run).not.toHaveBeenCalled();
+  });
+
+  it("reads an accepted draft as the last it ended on, whatever the report check did since, so a changed draft is judged", async () => {
+    const run = vi.fn(async (): Promise<ResearchSubagentOutcome> => judged());
+    const ctx = ofRecords({ subagents: { run } });
+    await gapCheckGate.run(READY, ctx);
+    const changed = { ...READY, findings: [...READY.findings, { ...READY.findings[0]!, claim: "A new claim." }] };
+    await gapCheckGate.run(changed, { ...ctx, attempt: 3, earlier: [{ draft: READY, message: null }, { draft: WRONG, gate: REPORT_CHECK_GATE, message: "Outside the matrix." }] });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("still counts a draft a later gate sent back, which it did read: the judge is paid for no second reading", async () => {
+    const run = vi.fn(async (): Promise<ResearchSubagentOutcome> => judged());
+    const ctx = ofRecords({ subagents: { run } });
+    await gapCheckGate.run(READY, ctx);
+    const result = await gapCheckGate.run({ ...READY }, { ...ctx, attempt: 2, earlier: [{ draft: READY, gate: "verifier", message: "[Independent check] One claim fell." }] });
+    expect(result.kind).toBe("pass");
+    expect(run).toHaveBeenCalledOnce();
   });
 });
 

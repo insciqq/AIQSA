@@ -36,6 +36,13 @@ describe("a draft's findings from its records", () => {
     expect(draft.unreachable).toEqual([{ reason: "Blocked.", sourceClass: "action_channel", target: "ozon.ru" }]);
   });
 
+  it("leaves the model's list of what could not be reached as it wrote it, since that one is curated and in the report's language", () => {
+    // From a real run: the record's raw words reached the answer beside the model's own line for the same site, under another target.
+    const records = [unreachable(1, "https://www.askona.ru/upload/doc.pdf", "Official Askona PDF opened as a browser viewer with no extractable text; fetch_url direct returned fetch_network_error.")];
+    const curated = [{ reason: "Документ не читается.", sourceClass: null, target: "askona.ru" }];
+    expect(researchDraftWithRecords(draftOf([id(1)], { unreachable: curated }), records).unreachable).toEqual(curated);
+  });
+
   it("does not list a cited unreachable site twice", () => {
     const records = [unreachable(1, "ozon.ru", "Blocked.")];
     const draft = researchDraftWithRecords(draftOf([id(1)], { unreachable: [{ reason: "A CAPTCHA.", sourceClass: null, target: "ozon.ru" }] }), records);
