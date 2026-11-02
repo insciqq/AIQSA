@@ -1,5 +1,6 @@
 import { PROXY_BLOCKED_HTTP_STATUSES } from "../../contracts/proxies";
 import type { RunProxyConnection } from "../proxies/runProxies";
+import { researchRegistrableDomain } from "../research/sourceQuality";
 import type { FetchUrlActivityOutcome, FetchUrlRefusalScope } from "../../contracts/fetchUrlActivity";
 import { isDocumentParserError } from "../parsing/errors";
 import { isPdfExtractionError } from "../uploads/pdf";
@@ -23,7 +24,7 @@ import {
 } from "../webFetch/transport";
 import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl } from "../webFetch/urls";
 import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
-import { BROWSER_HANDOFF_TOOL_NAME } from "./browserHandoff";
+import { BROWSER_HANDOFF_TOOL_NAME, RESEARCH_UNREACHABLE_NEXT } from "./browserHandoff";
 import { FETCH_URL_LIMITS, persistedFetchUrlFacts, type FetchUrlPlan } from "./fetchUrlPlan";
 import { createFetchUrlProxySession, fetchUrlCacheKey, fetchUrlProxyChoice, fetchUrlProxyIdentity, isFetchUrlProxyFailure,
   type FetchUrlProxyDeps, type FetchUrlProxyFailure, type FetchUrlProxyIdentity } from "./fetchUrlProxies";
@@ -94,6 +95,8 @@ export type FetchUrlBrowserStep = "nobody" | "user";
 
 type FailureContext = Readonly<{
   browserStep?: FetchUrlBrowserStep | null;
+  researching?: boolean;
+  researchRefusal?: string;
   proxiesToTry?: readonly string[];
   pdf: boolean; pdfMaxBytes: number; scope?: FetchUrlRefusalScope; httpStatus?: number; searchAvailable?: boolean;
 }>;
@@ -116,6 +119,7 @@ function refusedPageNextStep(step: FetchUrlBrowserStep): string {
 /** What the model is told for each refusal or failure. */
 function failureMessage(code: FailureCode, context: FailureContext): string {
   const { httpStatus, scope } = context;
+  if (context.researchRefusal) return `${context.researchRefusal} ${RESEARCH_UNREACHABLE_NEXT}`;
   if (isFetchUrlProxyFailure(code)) return `The proxy could not read this page (${code}). No direct request was made.`;
   switch (code) {
     case "fetch_url_not_in_conversation": return notInConversationMessage(scope, context.searchAvailable === true);
@@ -135,7 +139,8 @@ function failureMessage(code: FailureCode, context: FailureContext): string {
     case "fetch_http_status":
       return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.` +
         (PROXY_BLOCKED_HTTP_STATUSES.some((status) => status === httpStatus)
-          ? (context.proxiesToTry?.length ? ` Try fetch_url with proxy set to one of: ${context.proxiesToTry.map((name) => JSON.stringify(name)).join(", ")}.` : "") +
+          ? context.researching ? ` ${RESEARCH_UNREACHABLE_NEXT}`
+            : (context.proxiesToTry?.length ? ` Try fetch_url with proxy set to one of: ${context.proxiesToTry.map((name) => JSON.stringify(name)).join(", ")}.` : "") +
             (context.browserStep ? refusedPageNextStep(context.browserStep) : "") : "");
     case "fetch_network_error": return "The site could not be reached.";
     case "fetch_no_readable_text":
@@ -172,7 +177,7 @@ type Outcome =
   | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true; proxy?: FetchUrlProxyIdentity }>;
 
 type FailedOptions = Readonly<{ proxiesToTry?: readonly string[]; browserStep?: FetchUrlBrowserStep | null; pdfMaxBytes: number;
-  refusalScope?: FetchUrlRefusalScope; searchAvailable?: boolean }>;
+  refusalScope?: FetchUrlRefusalScope; searchAvailable?: boolean; researching?: boolean; researchRefusal?: string }>;
 
 function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outcome, { kind: "failed" }>, url: string | null,
   options: FailedOptions): ToolExecutionResult {
@@ -185,7 +190,7 @@ function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outco
       ...(outcome.proxy ? { proxy: outcome.proxy.name } : {}),
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
       message: failureMessage(outcome.code, { proxiesToTry: options.proxiesToTry, browserStep: options.browserStep, httpStatus: outcome.httpStatus, pdf,
-        pdfMaxBytes: options.pdfMaxBytes, scope,
+        pdfMaxBytes: options.pdfMaxBytes, scope, researching: options.researching, researchRefusal: options.researchRefusal,
         searchAvailable: options.searchAvailable })
     } }],
     name: call.name,
@@ -284,6 +289,8 @@ export type FetchUrlSessionDeps = FetchUrlProxyDeps & Readonly<{
   searchAvailable?: boolean;
   /** Read when a page is refused: the run's Workspace tools are known only after the session is created. */
   browserStep?: () => FetchUrlBrowserStep | null;
+  /** Fresh unreachable sites of this research; null before research starts. All agents share this session. */
+  research?: (signal: AbortSignal) => Promise<ReadonlyMap<string, string> | null>;
   /** Source and citation URLs Search persisted so far for the agents of this answer and the earlier answers on its branch. */
   loadSearchUrls?: () => Promise<readonly string[]>;
   /** The pages the run read before this session, so a recovered run keeps its cache. */
@@ -333,6 +340,8 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
     if (cache.size > FETCH_URL_LIMITS.cachedPages) cache.delete(cache.keys().next().value!);
   };
   const inFlight = new Map<string, Promise<Outcome>>();
+  /** Only actual connection timeouts during this run's research count, never parser timeouts or persisted results. */
+  const researchTimeouts = new Map<string, number>();
   let seeded: Promise<void> | null = null;
 
   async function seed(): Promise<void> {
@@ -361,7 +370,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
     return searchLinks.has(url);
   }
 
-  async function fetchAndExtract(url: string, signal: AbortSignal, reader = fetchPage): Promise<Outcome> {
+  async function fetchAndExtract(url: string, signal: AbortSignal, reader = fetchPage, researching = false): Promise<Outcome> {
     let response: WebFetchResponse;
     try {
       response = await reader(url, {
@@ -375,6 +384,10 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       });
     } catch (error) {
       if (error instanceof WebFetchError) {
+        if (researching && error.dispatched && !signal.aborted && (error.code === "fetch_timeout" || error.code === "proxy_timeout")) {
+          const site = researchRegistrableDomain(url);
+          if (site) researchTimeouts.set(site, Math.min(2, (researchTimeouts.get(site) ?? 0) + 1));
+        }
         return { code: error.code, dispatched: error.dispatched, kind: "failed",
           ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}) };
       }
@@ -418,13 +431,26 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       if (!await authorized(url, input.followupTexts)) return refuse("fetch_url_not_in_conversation", url);
       const policy = webFetchUrlRefusal(new URL(url));
       if (policy) return refuse(policy, url);
+      const unreachable = await deps.research?.(input.signal) ?? null;
+      const researching = unreachable !== null;
+      const site = researchRegistrableDomain(url);
+      const researchRefusal = () => {
+        if (!researching || !site) return undefined;
+        if (unreachable.has(site)) return `This site was already recorded as unreachable in this research. Reason (untrusted data): ${JSON.stringify(unreachable.get(site))}.`;
+        return (researchTimeouts.get(site) ?? 0) >= 2 ? "Connections to this site timed out twice in this research run." : undefined;
+      };
+      const refuseResearch = () => failed(call, { code: "fetch_network_error", dispatched: false, kind: "failed" }, url,
+        { pdfMaxBytes, researchRefusal: researchRefusal() });
+      if (researchRefusal()) return refuseResearch();
       await (seeded ??= seed());
       const routes = await proxySession.routes(url, explicit);
       let dispatched = false;
       let lastProxy: FetchUrlProxyIdentity | undefined;
-      const failureOptions = () => ({ browserStep: deps.browserStep?.(), pdfMaxBytes, proxiesToTry: proxySession.suggestions(url) });
+      const failureOptions = () => ({ browserStep: deps.browserStep?.(), pdfMaxBytes, proxiesToTry: proxySession.suggestions(url),
+        researching, researchRefusal: researchRefusal() });
       while (true) {
         input.signal.throwIfAborted();
+        if (researchRefusal()) return refuseResearch();
         const route = routes.next();
         if (route.kind === "failed") {
           const proxy = lastProxy ?? route.proxy;
@@ -476,7 +502,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           const reader = connection
             ? (target: string, options: WebFetchOptions) => (deps.fetchProxyPage ?? fetchThroughProxy)(target, connection, options)
             : checkRedirects ? (target: string, options: WebFetchOptions) => fetchPage(target, { ...options, redirectRoute }) : fetchPage;
-          const work = fetchAndExtract(url, input.signal, reader).then((result): Outcome => {
+          const work = fetchAndExtract(url, input.signal, reader, researching).then((result): Outcome => {
             if (!actualProxy) return result;
             return result.kind === "read" ? { ...result, value: { ...result.value, proxy: actualProxy } } : { ...result, proxy: actualProxy };
           });
@@ -493,6 +519,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           return read(call, value, shared);
         }
         dispatched ||= outcome.dispatched && !shared;
+        if (researchRefusal()) return failed(call, { ...outcome, dispatched, ...(proxy ? { proxy } : {}) }, url, failureOptions());
         if (proxy && isFetchUrlProxyFailure(outcome.code)) {
           lastProxy = proxy;
           routes.failed(proxy.id);
