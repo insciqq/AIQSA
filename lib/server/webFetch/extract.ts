@@ -339,15 +339,54 @@ function htmlText(html: string, finalUrl: string, budget: number): Readonly<{ te
   }
 }
 
+/**
+ * Readability removes hidden nodes and can score short specification panels
+ * out of an article. Detach recognizable content tabs first and render them
+ * once after the article, under the same text budget. Their visibility is a
+ * UI state, not evidence that the HTML's content is boilerplate.
+ */
+function detachPageTabs(document: Document): Element[] {
+  const elements = Array.from(document.body?.querySelectorAll("*") ?? []);
+  const controlled = new Set<string>();
+  for (const element of elements) {
+    if (element.getAttribute("role") !== "tab") continue;
+    const controls = element.getAttribute("aria-controls");
+    for (const id of controls?.split(/\s+/u) ?? []) if (id) controlled.add(id);
+    const href = element.getAttribute("href");
+    if (href?.startsWith("#") && href.length > 1) controlled.add(href.slice(1));
+  }
+  // Remove explicit UI boilerplate before collecting panels, including tabs
+  // inside a cookie dialog and dialogs nested inside a specification panel.
+  for (const element of elements) {
+    const role = element.getAttribute("role") ?? "";
+    const identity = `${element.getAttribute("class") ?? ""} ${element.id}`;
+    if (["NAV", "MENU", "DIALOG"].includes(element.nodeName) ||
+      /^(?:navigation|menu|menubar|dialog|alertdialog|tablist)$/u.test(role) ||
+      /(?:^|[\s_-])(?:menu|navigation|cookies?|consent|gdpr|modal|popup|popover)(?:$|[\s_-])/iu.test(identity)) element.remove();
+  }
+  const candidates = new Set(elements.filter((element) => document.body.contains(element) && (
+    element.getAttribute("role") === "tabpanel" || controlled.has(element.id) ||
+    /(?:^|\s)tab(?:-pane|-panel|panel)(?:\s|$)/u.test(element.getAttribute("class") ?? "")
+  )));
+  const panels = [...candidates].filter((element) => {
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      if (candidates.has(parent)) return false;
+    }
+    return true;
+  });
+  for (const panel of panels) panel.remove();
+  return panels;
+}
+
 function readableText(document5: string, finalUrl: string, budget: number): Readonly<{ text: string; title: string | null; stopped: boolean }> {
-  const parse = () => new DOMParser().parseFromString(document5, "text/html") as unknown as Document;
-  const document = parse();
+  const document = new DOMParser().parseFromString(document5, "text/html") as unknown as Document;
   const documentTitle = collapseTitle(document.title);
+  const panels = detachPageTabs(document);
   const context: RenderContext = { base: baseUrl(finalUrl), budget, produced: 0 };
   let root: DomNode | null = null;
   let title = documentTitle;
   try {
-    const article = new Readability(document, {
+    const article = new Readability(document.cloneNode(true) as Document, {
       maxElemsToParse: READABILITY_MAX_ELEMENTS,
       serializer: (element: Node) => element
     }).parse() as { content?: unknown; title?: unknown } | null;
@@ -360,11 +399,16 @@ function readableText(document5: string, finalUrl: string, budget: number): Read
   }
   let text = root ? tidy(render(root, context, 0, false)) : "";
   if (!text) {
-    // Readability changes the document it reads, so the fallback reads a fresh parse.
+    // Readability changes its clone; the fallback keeps the prepared body.
     context.produced = 0;
-    const body = parse().body as unknown as DomNode | null;
+    const body = document.body as unknown as DomNode | null;
     text = body ? tidy(render(body, context, 0, false)) : "";
   }
+  for (const panel of panels) {
+    if (context.produced > budget) break;
+    text += `\n\n${render(panel, context, 0, false)}`;
+  }
+  text = tidy(text);
   return { stopped: context.produced > budget, text, title };
 }
 
