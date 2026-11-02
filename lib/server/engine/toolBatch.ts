@@ -107,6 +107,13 @@ export const AUTO_TOOL_NOT_LOADED_OUTPUT = (name: string, query: string) =>
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
 
+/** A call past its turn's own budget (`ToolBatchDeps.turnBudget`): the turn's next round is its report. */
+export const TURN_TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
+  `Not run: this task's ${limit} tool calls are spent. Write your report now with what you found, and say what is left to check.`;
+
+/** The line that ends the result of each call a turn's own budget counted. */
+export const turnCallsLeftLine = (left: number) => `Calls left in this task: ${left}.`;
+
 /** A call that would have started after the turn's time for tools ran out. */
 export const TOOL_TIME_EXHAUSTED_OUTPUT =
   "Not run: this answer's time for tools has run out. Answer with what you have and say what you could not check.";
@@ -156,6 +163,12 @@ export type ToolBatchDeps = Readonly<{
    * reserve, is refused like one past the call budget; calls already running settle. Absent: no time check here.
    */
   toolTimeLeft?(tool: RunTool): boolean;
+  /**
+   * A turn's own call budget beside the run's (`SubagentHost.turnToolCalls`): absent, no turn counts its own calls. It counts what
+   * the run's budget counts, but its `exempt` tools, as each call starts, so the response's order decides; past `limit` a call is
+   * refused as a budget refusal, and the result of each counted call that ran ends with what is left (`turnCallsLeftLine`).
+   */
+  turnBudget?: ToolTurnBudget;
   /** Effects of the chat's earlier calls that are still unknown; the batch adds its own. */
   unknownEffects: UnknownEffects;
   userId: string;
@@ -169,6 +182,9 @@ export type ApprovedToolCall = Readonly<{ approvalId: string; callId: string; un
 
 /** What the run has spent on tools so far; `reservedCalled`: the reserved report's first call ran. */
 export type ToolBatchState = { calls: number; reservedCalled?: boolean };
+
+/** One turn's call budget: `spent` belongs to the turn, so each turn counts afresh. */
+export type ToolTurnBudget = Readonly<{ exempt: ReadonlySet<string>; limit: number; spent: { calls: number } }>;
 
 export type ToolBatchOutcome = Readonly<{
   /** Approval card ids of calls that wait for the initiator. */
@@ -257,6 +273,12 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     if (!exempt && deps.maxToolCalls !== null && state.calls >= deps.maxToolCalls) {
       const message = TOOL_CALL_LIMIT_OUTPUT(deps.maxToolCalls);
       return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
+        toolName: call.name };
+    }
+    const turn = deps.turnBudget;
+    if (!exempt && turn && !turn.exempt.has(call.name) && turn.spent.calls >= turn.limit) {
+      const message = TURN_TOOL_CALL_LIMIT_OUTPUT(turn.limit);
+      return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "turn_tool_call_limit_reached", message }),
         toolName: call.name };
     }
     // A read of a saved result is never a loop to stop: after a compaction it is the only way back to that text.
@@ -417,6 +439,13 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     }
     const tool = before.tool;
     if (!before.exempt) state.calls += 1;
+    // Counted before anything awaits, as the run's count is, so the calls of one response take what is left in their order.
+    const turn = deps.turnBudget;
+    let left: number | null = null;
+    if (!before.exempt && turn && !turn.exempt.has(call.name)) {
+      turn.spent.calls += 1;
+      left = turn.limit - turn.spent.calls;
+    }
     const links = tool.links ? tool.links(call) : {};
     if (links === null) {
       const message = "This tool's connection is no longer available to this answer, so nothing was sent.";
@@ -472,10 +501,11 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     // The live step settles once the call's record and outputs have; an unknown effect never reads as success, and a
     // stopped call gets nothing here, since the run's end settles it.
     let result: ToolExecutionResult;
+    // A call that ran ends its result with what its turn has left; a refusal keeps its exact words, which other code reads.
     const finished = (item: TranscriptToolResultItem, status: "complete" | "error"): TranscriptToolResultItem => {
       const facts = activity.origin === "web_fetch" ? fetchUrlActivityFacts(call.name, call.arguments, result) : {};
       deps.onLiveEvent(liveToolCallStatus(call, { ...activity, ...facts }, { ordinal, settled: { durationMs, status } }));
-      return item;
+      return left === null ? item : { ...item, output: `${item.output}\n\n${turnCallsLeftLine(left)}` };
     };
     try {
       result = await executeWithRetries(deps, tool, execution);
