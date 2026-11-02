@@ -139,7 +139,7 @@ export const submitResearchDraftTool: RunTool = {
         type: "array"
       },
       report: { description: "The report in Markdown, in the user's language, exactly as the user should read it: a comparison table on the matrix's criteria, why each criterion matters, " +
-        "any criterion added during research with its reason, confirmed, claimed by a party and not verified kept apart, sources linked, and what could not be reached said plainly.", type: "string" },
+        "any criterion added during research with its reason, confirmed, claimed by a party and not verified kept apart, each figure and named claim linked to its page where it is stated, and what could not be reached said plainly.", type: "string" },
       unreachable: {
         description: "Sources that could not be reached; empty when none.",
         items: {
