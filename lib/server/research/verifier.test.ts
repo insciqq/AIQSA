@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft, type ResearchFinding, type ResearchGateResult } from "../../contracts/research";
+import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchGateResult,
+  type ResearchStoredPage } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { SUBAGENT_ERROR_CODES, type EndedSubagentCallResult } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -15,10 +16,12 @@ import type { NativeRunStore } from "../engine/runStore";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
-import type { ResearchAttempt, ResearchGateContext, ResearchOpenedSource, ResearchSubagentOutcome, ResearchSubagentRequest, ResearchVerifierModel } from "./gates";
+import type { ResearchAttempt, ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource, ResearchSubagentOutcome, ResearchSubagentRequest, ResearchVerifierModel } from "./gates";
+import { NOOP_RESEARCH_PORTS, type ResearchEvidencePort } from "./ports";
 import { createRunResearch, type ResearchEngineDeps } from "./run";
 import { checkQuotes, QUOTE_EXCERPT_LIMITS, type QuoteCheck } from "./quoteCheck";
 import { proposeCall } from "./planWindow.testFixtures";
+import { skepticGate, SKEPTIC_MARKER } from "./skeptic";
 import { decodeVerifierReport, VERIFIER_INSTRUCTIONS, verifierBrief, verifierGate, VERIFIER_LIMITS, VERIFIER_MARKER } from "./verifier";
 import type { ResearchVerifierRole } from "./verifierRole";
 
@@ -42,7 +45,9 @@ function ended(report: string, extra: Partial<EndedSubagentCallResult> = {}): Re
 const ROLE: ResearchVerifierModel = { kind: "role", label: "Other One · Other" };
 
 function contextOf(options: Readonly<{
+  closed?: ResearchersClosed;
   earlier?: readonly ResearchAttempt[];
+  evidence?: ResearchEvidencePort;
   model?: ResearchVerifierModel;
   opened?: () => Promise<readonly ResearchOpenedSource[]>;
   remainingMs?: number;
@@ -56,7 +61,9 @@ function contextOf(options: Readonly<{
   const context: ResearchGateContext = {
     attempt: (options.earlier?.length ?? 0) + 1,
     earlier: options.earlier ?? [],
+    ...options.evidence ? { evidence: options.evidence } : {},
     plan: { goal: "Choose.", questions: [{ question: "Which?", sites: [], sourceClasses: ["independent_tests"] }], skipped: [] },
+    ...options.closed ? { researchersClosed: () => options.closed! } : {},
     signal: options.signal ?? new AbortController().signal,
     sources: { opened: options.opened ?? (async () => [fetched]) },
     subagents: { run },
@@ -330,6 +337,245 @@ describe("what the verifier judges from", () => {
       expect(brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
       expect(ids.slice(0, 15).every((id) => id > 15)).toBe(true);
     });
+  });
+});
+
+/** What the evidence store holds: a record per finding, each on the page it names. */
+const CARD = "https://shop.example/x1";
+const pageOf = (id: string, text: string, extra: Partial<ResearchStoredPage> = {}): ResearchStoredPage => ({ capturedAt: "2026-11-01T10:00:00.000Z", contentHash: id, id, obtainedBy: "browser",
+  sizeBytes: text.length, text, truncated: false, url: CARD, ...extra });
+
+function recordOf(id: string, quote: string, pageId: string | null, extra: Partial<Extract<ResearchEvidenceRecord, { kind: "finding" }>> = {}): ResearchEvidenceRecord {
+  return { author: { name: "lab", threadId: "t" }, claim: "The X1 is in stock at 399.", createdAt: "2026-11-01T10:00:00.000Z", criterionKey: null, id, kind: "finding", pageId, publishedOn: null, quote,
+    quoteCheck: { reason: null, status: "found" }, registrableDomain: "shop.example", rowKey: null, runId: "run-1", sequence: 1, sourceClass: "action_channel", standing: "confirmed", supersedes: null,
+    textGroupKey: null, url: CARD, ...extra };
+}
+
+function evidenceOf(records: readonly ResearchEvidenceRecord[], pages: readonly ResearchStoredPage[]) {
+  const port = { ...NOOP_RESEARCH_PORTS.evidence, page: vi.fn(async (id: string) => pages.find((page) => page.id === id) ?? null), records: vi.fn(async () => records) };
+  return port satisfies ResearchEvidencePort;
+}
+
+const recorded = (recordId: string, extra: Partial<ResearchFinding> = {}): ResearchFinding => finding("The X1 is in stock at 399.", "in stock at 399", { recordId, url: CARD, ...extra });
+const lineIn = (brief: string, id: number) => JSON.parse(brief.split("\n").find((line) => line.startsWith(`C${id} `))!.slice(`C${id} `.length)) as Record<string, unknown>;
+const refused = async (): Promise<readonly ResearchOpenedSource[]> => { throw new Error("no need to read the run's opened text"); };
+
+describe("a finding that stands for a record", () => {
+  const CARD_TEXT = "Filtered listing. The X1 is in stock at 399 today, delivery on Monday.";
+
+  it("is judged against its stored page, with no tool and no read of the run's opened text, whatever a link would have said", async () => {
+    const evidence = evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", CARD_TEXT)]);
+    const { context, run } = contextOf({ evidence, opened: refused, turn: async () => ended("Outcome: done\nC1 | supported | the stored page says so") });
+    const result = await verifierGate.run(draftOf([recorded("r1")]), context);
+    const request = run.mock.calls[0]![0];
+    expect(request).toMatchObject({ model: "verifier", name: "verifier", tools: [] });
+    expect(lineIn(request.brief, 1)).toMatchObject({ claim: "The X1 is in stock at 399.", from: "cited", link: CARD, page_text: CARD_TEXT, quote: "in stock at 399", shown: "whole page" });
+    expect(request.instructions).toContain("Judge it against that text alone and do not open its link");
+    expect(evidence.page).toHaveBeenCalledWith("p1", expect.anything());
+    expect(result.kind).toBe("pass");
+    expect(notesOf(result)).toContain("Claims: 1; supported: 1.");
+    expect(notesOf(result)).toContain("Quotes: found in opened pages: 1.");
+    expect(notesOf(result)).toContain("the model had the opened text for 1 and only the page for 0");
+  });
+
+  it("never stays could not check while its page is stored: a model that says so has not settled it, and that is at best partly", async () => {
+    const { context } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", CARD_TEXT)]), opened: refused,
+      turn: async () => ended("Outcome: done\nC1 | could_not_check | fetching the cited link was refused") });
+    const result = await verifierGate.run(draftOf([recorded("r1")]), context);
+    expect(notesOf(result)).toContain("Claims: 1; supported: 0; partly supported: 1.");
+    expect(notesOf(result)).not.toContain("could not be checked");
+  });
+
+  it("stays could not check only for a record with no stored page, which goes the way of any finding", async () => {
+    const browserOnly: ResearchOpenedSource = { partial: false, text: "[browser #1] open @ shop.example/x1", toolName: "mcp__workspace__sandbox_shell", url: null };
+    const { context, run } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", null)], []), opened: async () => [browserOnly], turn: async () => ended("Outcome: done\nC1 | could_not_check | the link was refused") });
+    const result = await verifierGate.run(draftOf([recorded("r1")]), context);
+    expect(run.mock.calls[0]![0].tools).toEqual(["web_fetch"]);
+    expect(lineIn(run.mock.calls[0]![0].brief, 1)).not.toHaveProperty("page_text");
+    expect(notesOf(result)).toContain("could not be checked: 1");
+  });
+
+  it("leaves a finding with no record, and a draft from before records, exactly as they were: the store is not read", async () => {
+    const evidence = evidenceOf([], []);
+    const { context, run } = contextOf({ evidence });
+    await verifierGate.run(draftOf([HOLDS]), context);
+    expect(evidence.records).not.toHaveBeenCalled();
+    expect(run.mock.calls[0]![0].tools).toEqual(["web_fetch"]);
+    expect(lineIn(run.mock.calls[0]![0].brief, 1)).toHaveProperty("before_quote");
+  });
+
+  it("falls back to the opened text for a record the store does not name, or a store that cannot be read", async () => {
+    const gone = contextOf({ evidence: evidenceOf([], []), opened: async () => [fetched] });
+    await verifierGate.run(draftOf([{ ...HOLDS, recordId: "r9" }]), gone.context);
+    expect(lineIn(gone.run.mock.calls[0]![0].brief, 1)).toHaveProperty("before_quote");
+    const broken = contextOf({ evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("database down"); } }, opened: async () => [fetched] });
+    expect((await verifierGate.run(draftOf([{ ...HOLDS, recordId: "r1" }]), broken.context)).kind).toBe("pass");
+    expect(lineIn(broken.run.mock.calls[0]![0].brief, 1)).toHaveProperty("before_quote");
+  });
+
+  it("shows as much of a long page as the brief holds, around the quote, and says it is only part of it", async () => {
+    const long = `${"Other goods. ".repeat(4_000)}The X1 is in stock at 399 today.${" More goods.".repeat(4_000)}`;
+    const { context, run } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", long)]), opened: refused });
+    await verifierGate.run(draftOf([recorded("r1")]), context);
+    const { brief } = run.mock.calls[0]![0];
+    const line = lineIn(brief, 1);
+    expect(brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+    expect(line.shown).toBe("parts of the page");
+    expect(line.page_text).toContain("The X1 is in stock at 399 today.");
+    // Far more than the passage a quote check keeps.
+    expect(String(line.page_text).length).toBeGreaterThan(QUOTE_EXCERPT_LIMITS.sideCharacters * 10);
+  });
+
+  it("takes a quote not word for word on its own page to the model at the stretch most like it, and never for an invention", async () => {
+    const page = `${"Terms of delivery and returns. ".repeat(400)}Durable foam: the X1 lasted ten full years in testing.${" Unrelated text.".repeat(400)}`;
+    const reworded = recordOf("r1", "the X1 lasted for ten years of testing", "p1", { quoteCheck: { reason: null, status: "not_verbatim" } });
+    const { context, run } = contextOf({ evidence: evidenceOf([reworded], [pageOf("p1", page, { obtainedBy: "tool" })]), opened: refused, turn: async () => ended("Outcome: done\nC1 | supported | the page says it") });
+    const result = await verifierGate.run(draftOf([recorded("r1", { quote: reworded.kind === "finding" ? reworded.quote : "" })]), context);
+    expect(lineIn(run.mock.calls[0]![0].brief, 1).page_text).toContain("lasted ten full years in testing");
+    expect(notesOf(result)).toContain("not word for word on the opened page: 1");
+    expect(notesOf(result)).toContain("Claims: 1; supported: 1.");
+  });
+
+  it("does not read another page's words as the cited page's: its passage is capped as any other", async () => {
+    const other = pageOf("p1", "Shop B: in stock at 399 for all.", { url: "https://shop-b.example/x" });
+    const { context, run } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [other]), opened: async () => [], turn: async () => ended("Outcome: done\nC1 | supported | says so") });
+    const result = await verifierGate.run(draftOf([recorded("r1")]), context);
+    expect(lineIn(run.mock.calls[0]![0].brief, 1).from).toBe("other: https://shop-b.example/x");
+    expect(notesOf(result)).toContain("Claims: 1; supported: 0; partly supported: 1.");
+  });
+
+  describe("a dataset, the owners' reviews", () => {
+    const dataset: ResearchDataset = { counts: [{ count: 3, label: "sagging" }], examples: [{ quote: "просел за год", url: CARD }, { quote: "через месяц появилась яма", url: CARD }], leftOut: "5 of other sizes.",
+      method: "All reviews of the card, read by size.", sampleSize: 11 };
+    const reviews = `${"Обзор карточки. ".repeat(300)}Матрас просел за год, жаль.${" Другие отзывы.".repeat(600)} Увы, через месяц появилась яма посередине.${" Ещё отзывы.".repeat(600)}`;
+    const record = { ...recordOf("r1", "", "p1"), claim: "Sagging: 3 of 11 owners report it.", dataset, kind: "dataset", rowKey: "x1" } as unknown as ResearchEvidenceRecord;
+
+    it("is judged against its stored page, around each example, with what was counted", async () => {
+      const { context, run } = contextOf({ evidence: evidenceOf([record], [pageOf("p1", reviews)]), opened: refused, turn: async () => ended("Outcome: done\nC1 | supported | the examples are there") });
+      const result = await verifierGate.run(draftOf([recorded("r1", { claim: "Sagging: 3 of 11 owners report it.", quote: "просел за год" })]), context);
+      const line = lineIn(run.mock.calls[0]![0].brief, 1);
+      expect(line).toMatchObject({ dataset: { counted: "Small sample of 11. sagging: 3 of 11.", left_out: "5 of other sizes.", method: "All reviews of the card, read by size." }, from: "cited", shown: "parts of the page" });
+      expect(line.page_text).toContain("просел за год");
+      expect(line.page_text).toContain("через месяц появилась яма");
+      expect(line.page_text).toContain(" … ");
+      expect(run.mock.calls[0]![0].tools).toEqual([]);
+      expect(notesOf(result)).toContain("Claims: 1; supported: 1.");
+    });
+
+    it("rests on the examples that are on the page, even when one is not", async () => {
+      const partly = { ...record, dataset: { ...dataset, examples: [{ quote: "такого на странице нет", url: CARD }, dataset.examples[0]!] } } as unknown as ResearchEvidenceRecord;
+      const { context, run } = contextOf({ evidence: evidenceOf([partly], [pageOf("p1", reviews)]), opened: refused });
+      const result = await verifierGate.run(draftOf([recorded("r1")]), context);
+      expect(lineIn(run.mock.calls[0]![0].brief, 1).page_text).toContain("просел за год");
+      expect(notesOf(result)).toContain("Quotes: found in opened pages: 1.");
+    });
+  });
+
+  describe("across a draft of all a run's records", () => {
+    const many = (count: number) => {
+      const claims = Array.from({ length: count }, (_, index) => ({ id: `r${index}`, quote: `in stock at ${index + 100}`, url: `https://shop.example/items/${index}` }));
+      const records = claims.map(({ id, quote, url }) => recordOf(id, quote, `p-${id}`, { claim: `Item ${id} is in stock.`, url }));
+      const pages = claims.map(({ id, quote, url }) => pageOf(`p-${id}`, `${"Описание товара на странице магазина. ".repeat(60)}Сейчас ${quote} рублей.${" Условия доставки на этой странице.".repeat(60)}`, { url }));
+      return { evidence: evidenceOf(records, pages), findings: claims.map(({ id, quote, url }) => recorded(id, { claim: `Item ${id} is in stock.`, quote, url })) };
+    };
+    const allSupported = async (request: ResearchSubagentRequest) => ended(`Outcome: done\n${[...request.brief.matchAll(/^C(\d+) /gmu)].map((match) => `C${match[1]} | supported | yes`).join("\n")}`);
+
+    it("gives 50 findings turns of their own side by side, each brief within its bound, with room for every page, and leaves none out", async () => {
+      const { evidence, findings } = many(50);
+      const { context, run } = contextOf({ evidence, opened: refused, turn: allSupported });
+      const result = await verifierGate.run(draftOf(findings), context);
+      expect(run).toHaveBeenCalledTimes(VERIFIER_LIMITS.turnsPerAttempt);
+      expect(run.mock.calls.map(([request]) => request.name)).toEqual(["verifier", "verifier-2", "verifier-3", "verifier-4", "verifier-5", "verifier-6"]);
+      for (const [request] of run.mock.calls) {
+        expect(request.brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+        expect(request.tools).toEqual([]);
+        for (const [, id] of request.brief.matchAll(/^C(\d+) /gmu)) expect(String(lineIn(request.brief, Number(id)).page_text).length).toBeGreaterThan(QUOTE_EXCERPT_LIMITS.sideCharacters);
+      }
+      expect(notesOf(result)).toContain("Claims: 50; supported: 50.");
+      expect(notesOf(result)).not.toContain("Left out");
+    });
+
+    it("runs its turns at once, so the answer waits for the slowest and not for their sum", async () => {
+      const { evidence, findings } = many(20);
+      let running = 0;
+      let most = 0;
+      const { context } = contextOf({ evidence, opened: refused, turn: async (request) => {
+        running += 1;
+        most = Math.max(most, running);
+        await Promise.resolve();
+        running -= 1;
+        return allSupported(request);
+      } });
+      await verifierGate.run(draftOf(findings), context);
+      expect(most).toBeGreaterThan(1);
+    });
+
+    it("keeps what the other turns said when one fails, and counts its claims as unchecked, not as left out", async () => {
+      const { evidence, findings } = many(20);
+      let turns = 0;
+      const { context } = contextOf({ evidence, opened: refused, turn: async (request) => {
+        turns += 1;
+        if (turns === 1) throw new Error("provider down");
+        return allSupported(request);
+      } });
+      const result = await verifierGate.run(draftOf(findings), context);
+      expect(notesOf(result)).toContain("It did not answer for every claim.");
+      expect(notesOf(result)).toContain("Claims: 20; supported: 13; could not be checked: 7.");
+      expect(notesOf(result)).not.toContain("Left out");
+    });
+
+    it("reads each page once, however many claims rest on it", async () => {
+      const records = [recordOf("r1", "in stock at 399", "p1"), recordOf("r2", "delivery on Monday", "p1", { claim: "It ships Monday." })];
+      const evidence = evidenceOf(records, [pageOf("p1", CARD_TEXT)]);
+      const { context, run } = contextOf({ evidence, opened: refused, turn: allSupported });
+      const result = await verifierGate.run(draftOf([recorded("r1"), recorded("r2", { claim: "It ships Monday.", quote: "delivery on Monday" })]), context);
+      expect(evidence.page).toHaveBeenCalledTimes(1);
+      expect(lineIn(run.mock.calls[0]![0].brief, 2).quote).toBe("delivery on Monday");
+      expect(notesOf(result)).toContain("Claims: 2; supported: 2.");
+    });
+
+    it("past the last turn leaves out what fits no turn, the most important kept, and says how many", async () => {
+      const { evidence, findings } = many(VERIFIER_LIMITS.turnsPerAttempt * VERIFIER_LIMITS.claimsPerTurn + 5);
+      const { context, run } = contextOf({ evidence, opened: refused, turn: allSupported });
+      const result = await verifierGate.run(draftOf(findings), context);
+      expect(run).toHaveBeenCalledTimes(VERIFIER_LIMITS.turnsPerAttempt);
+      expect(notesOf(result)).toContain("Left out of the check for size: 5.");
+      expect(run.mock.calls.every(([request]) => request.brief.length <= RUN_FOLLOWUP_MAX_CHARS)).toBe(true);
+    });
+
+    it("keeps a stored claim's turn apart from one that may open pages", async () => {
+      const { evidence, findings } = many(2);
+      const { context, run } = contextOf({ evidence, opened: async () => [fetched], turn: allSupported });
+      await verifierGate.run(draftOf([...findings, HOLDS]), context);
+      expect(run.mock.calls.map(([request]) => request.tools)).toEqual([[], ["web_fetch"]]);
+    });
+  });
+
+  describe("past the main agent's tool time", () => {
+    it("still checks a stored claim, which needs no tool, and the rest without their reason being size", async () => {
+      const { context, run } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", CARD_TEXT)]), opened: async () => [fetched], sendBack: false, turn: async () => ended("Outcome: done\nC1 | supported | yes") });
+      const result = await verifierGate.run(draftOf([recorded("r1"), HOLDS]), context);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(run.mock.calls[0]![0].tools).toEqual([]);
+      expect(notesOf(result)).toContain("Claims: 2; supported: 1; could not be checked: 1.");
+      expect(notesOf(result)).toContain("It did not answer for every claim.");
+      expect(notesOf(result)).not.toContain("Left out");
+    });
+
+    it("under the research clock checks the rest too, since the checks keep their tools for their phase", async () => {
+      for (const closed of ["time", "no_new_cell"] as const) {
+        const { context, run } = contextOf({ closed, sendBack: false });
+        expect(notesOf(await verifierGate.run(draftOf([HOLDS]), context))).toContain("Claims: 1; supported: 1.");
+        expect(run.mock.calls[0]![0].tools).toEqual(["web_fetch"]);
+      }
+    });
+  });
+
+  it("names a rejected finding's record in the correction, which is what a draft of records can drop", async () => {
+    const { context } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", CARD_TEXT)]), opened: refused, turn: async () => ended("Outcome: done\nC1 | unsupported | the page says 499") });
+    const result = sentBack(await verifierGate.run(draftOf([recorded("r1")]), context));
+    expect(result.message).toContain("Finding 1 \"The X1 is in stock at 399.\" (record r1)");
+    expect(result.unresolvedNote).toContain("«The X1 is in stock at 399.»");
   });
 });
 
@@ -736,7 +982,7 @@ describe("through the engine", () => {
       modelId: "fake-qsa", params: { temperature: 0.3 }, prompt: { developer: null, system: "Be brief." }, provider: "fake", reasoningEffort: null,
       searchPlan: { mode: "all_selected" as const, options: [{ adapterKind: "openai_hosted", config: {}, credentialMode: "answer", executionModes: ["all_selected"],
         modelId: "fake-qsa", optionId: "hosted", protocol: "hosted", provider: "fake", providerModelId: "model-1", revisionId: "rev", searchStrategyRowId: "strategy" }] },
-      toolMode: "auto" as const
+      toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null }, toolMode: "auto" as const
     } as unknown as ProviderRunRequest;
     return {
       contextTruncation: null, defaults: null, expectedActiveLeafId: null, mcpBindings: [], normalizedRequest: request,
@@ -755,8 +1001,18 @@ describe("through the engine", () => {
     markRunAnswerStarted: vi.fn(async () => undefined)
   });
 
-  const run = (adapter: ProviderAdapter, memory: ReturnType<typeof engineOf>) => createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" },
-    engine: memory.deps, prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }).text();
+  const run = (adapter: ProviderAdapter, memory: ReturnType<typeof engineOf>, plan: MaterializedPreparedRunData = prepared()) => createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" },
+    engine: memory.deps, prepared: plan, repository: repository() as unknown as RunRepository, services: {}, userId: "user" }).text();
+
+  /** A run whose Search is a client source, which is a tool the turn is offered, and not one a model runs in its own call. */
+  function withClientSearch(): MaterializedPreparedRunData {
+    const plan = prepared();
+    const searchPlan = { mode: "all_selected", options: [{ adapterKind: "provider_model_client", config: { queryMaxCharacters: 100, timeoutMs: 5_000 }, credentialMode: "provider_model", displayName: "Engine",
+      executionModes: ["all_selected"], modelId: "engine-model", optionId: "engine", protocol: "openai_responses_web_search", provider: "openai", providerModelId: "provider-model", revisionId: "revision",
+      searchStrategyRowId: "integration" }] };
+    const request = { ...plan.normalizedRequest, searchPlan } as unknown as ProviderRunRequest;
+    return { ...plan, normalizedRequest: request, providerRequest: request };
+  }
 
   function role(adapter: ProviderAdapter): ResearchVerifierRole {
     const route: SubagentModelRoute = { adapter, request: { modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -911,6 +1167,190 @@ describe("through the engine", () => {
     expect(JSON.stringify(other.requests[0]!.history)).toContain("Filtered page: The X1 is ");
     expect(memory.published()).toContain("Claims: 1; supported: 1.");
     expect(memory.published()).toContain("the model had the opened text for 1 and only the page for 0");
+  });
+
+  describe("what a run's records hold", () => {
+    const shop = "https://shop.example/x1";
+    const claim = finding("The X1 is in stock at 399.", "in stock at 399", { url: shop });
+    const page = "Marketplace card. The X1 is in stock at 399 today, the page says.";
+    const evidence = (pageId: string | null) => evidenceOf([recordOf("record-1", "in stock at 399", pageId)], [pageOf("page-1", page)]);
+    /** What `research-report-from-records` does when it expands `record_ids`: the draft's findings name their records. */
+    const ofRecords: ResearchGate = { ...verifierGate, run: (draft, context) => verifierGate.run({ ...draft, findings: draft.findings.map((entry) => ({ ...entry, recordId: "record-1" })) }, context) };
+
+    it("checks a claim only a browser reached against its stored text, with no tool, nothing of it in the run's transcripts and its link never opened", async () => {
+      const other = scripted([{ text: "Outcome: done\nC1 | supported | the stored page says so" }]);
+      const main = scripted([{ calls: begin }, { calls: [submit("call-1", [claim])] }]);
+      const memory = engineOf({ gates: [ofRecords], ports: { evidence: () => evidence("page-1") }, verifier: role(other.adapter) });
+      vi.mocked(memory.threads.threadEffectItems).mockResolvedValue([]);
+      await run(main.adapter, memory);
+      expect(other.requests).toHaveLength(1);
+      expect(JSON.stringify(other.requests[0]!.history)).toContain("Marketplace card. The X1 is in stock at 399 today");
+      expect(other.requests[0]!.tools?.map((tool) => tool.name) ?? []).not.toContain("fetch_url");
+      expect(memory.published()).toContain("Claims: 1; supported: 1.");
+      expect(memory.published()).toContain("Quotes: found in opened pages: 1.");
+      expect(memory.published()).not.toContain("could not be checked");
+    });
+
+    it("sends a claim its stored page does not bear out back to the main agent, however its link reads", async () => {
+      const other = scripted([{ text: "Outcome: done\nC1 | unsupported | the stored page says 499" }]);
+      const main = scripted([{ calls: begin }, { calls: [submit("call-1", [claim])] }, { calls: [submit("call-2", [{ ...claim, standing: "not_verified" }], "# Corrected")] }]);
+      const memory = engineOf({ gates: [ofRecords], ports: { evidence: () => evidence("page-1") }, verifier: role(other.adapter) });
+      vi.mocked(memory.threads.threadEffectItems).mockResolvedValue([]);
+      await run(main.adapter, memory);
+      expect(resultOf(main.requests[2])[0]).toContain(VERIFIER_MARKER.slice(1, -1));
+      expect(memory.published()).toContain("# Corrected");
+      expect(memory.published()).toContain("«The X1 is in stock at 399.»");
+    });
+
+    it("runs several turns of one attempt through the real host, each with its own thread and call, and they read as one check", async () => {
+      const count = VERIFIER_LIMITS.storedClaimsPerTurn + 2;
+      const claims = Array.from({ length: count }, (_, index) => finding(`Item ${index} is in stock at 399.`, "in stock at 399", { recordId: "record-1", url: shop }));
+      const stored = { ...verifierGate, run: (draft: ResearchDraft, context: ResearchGateContext) => verifierGate.run({ ...draft, findings: claims }, context) };
+      const other = scripted([{ text: `Outcome: done\n${claims.map((_, index) => `C${index + 1} | supported | yes`).join("\n")}` }]);
+      const main = scripted([{ calls: begin }, { calls: [submit("call-1", [claim])] }]);
+      const memory = engineOf({ gates: [stored], ports: { evidence: () => evidence("page-1") }, verifier: role(other.adapter) });
+      vi.mocked(memory.threads.threadEffectItems).mockResolvedValue([]);
+      await run(main.adapter, memory);
+      expect(vi.mocked(memory.threads.admitForeground).mock.calls.map(([input]) => input.name)).toEqual(["verifier-1", "verifier-2-1"]);
+      expect(new Set(vi.mocked(memory.threads.admitForeground).mock.calls.map(([input]) => input.parentToolCallId)).size).toBe(2);
+      expect(other.requests).toHaveLength(2);
+      expect(memory.published()).toContain(`Claims: ${count}; supported: ${count}.`);
+    });
+
+    it("says could not check only when the record has no stored page", async () => {
+      const other = scripted([{ text: "Outcome: done\nC1 | could_not_check | no excerpt, and the link was refused" }]);
+      const main = scripted([{ calls: begin }, { calls: [submit("call-1", [claim])] }]);
+      const memory = engineOf({ gates: [ofRecords], ports: { evidence: () => evidence(null) }, verifier: role(other.adapter) });
+      const steps: TranscriptItem[] = [{ arguments: "{}", callId: "b1", id: "b1c", kind: "tool_call", name: "mcp__workspace__sandbox_shell" },
+        { callId: "b1", id: "b1r", kind: "tool_result", name: "mcp__workspace__sandbox_shell", outcome: "complete", output: "[browser #1] open @ shop.example/x1" }];
+      vi.mocked(memory.threads.threadEffectItems).mockResolvedValue([{ items: steps, threadId: "researcher" }]);
+      await run(main.adapter, memory);
+      expect(memory.published()).toContain("could not be checked: 1");
+    });
+  });
+
+  describe("the skeptic behind the verifier", () => {
+    const against = (claim: string, quote = "The X2 sagged within a year") => `Outcome: done\nAGAINST ${JSON.stringify({ claim, quote, url: LAB })}`;
+    const SAGS = "The X2 sags within a year.";
+    const searched = [{ arguments: { url: LAB }, id: "s1", name: "fetch_url" }];
+
+    it("reaches the user when it survives: sent back once, not answered by the report, named in the answer", async () => {
+      const other = scripted([{ calls: searched }, { text: against(SAGS) }, { calls: searched }, { text: "Outcome: done\nNONE" }]);
+      const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS], "# First")] }, { calls: [submit("call-2", [HOLDS], "# Second")] }]);
+      const memory = engineOf({ gates: [skepticGate], verifier: role(other.adapter) });
+      await run(main.adapter, memory);
+      expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "skeptic-1" }));
+      expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "skeptic-2" }));
+      expect(resultOf(main.requests[2])[0]).toContain(SKEPTIC_MARKER.slice(1, -1));
+      const answer = memory.published()!;
+      expect(answer.startsWith("# Second")).toBe(true);
+      expect(answer).toContain(`${SAGS} («The X2 sagged within a year»), ${LAB}`);
+    });
+
+    it("gets none of the user's words or the chat's instructions, and has no bookkeeping tool", async () => {
+      const other = scripted([{ text: "Outcome: done\nNONE" }]);
+      const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS])] }]);
+      const memory = engineOf({ gates: [skepticGate], verifier: role(other.adapter) });
+      await run(main.adapter, memory, withClientSearch());
+      expect(JSON.stringify(other.requests[0]!.history)).not.toContain("Проведи исследование");
+      expect(other.requests[0]!.prompt.system).not.toContain("Be brief.");
+      const tools = other.requests[0]!.tools?.map((tool) => tool.name) ?? [];
+      expect(tools).toContain("search_selected_engines");
+      expect(tools).not.toContain("record_evidence");
+      expect(tools).not.toContain("change_research_frame");
+      expect(tools).not.toContain(SUBMIT_RESEARCH_DRAFT_TOOL_NAME);
+    });
+
+    it("runs last in the order, and holds every gate to its cap across the three with no paid round after the last", async () => {
+      const open = (name: string): ResearchGate => ({ name, run: async () => ({ kind: "send_back", message: `${name} wants more.`, unresolvedNote: `${name} left this open.` }) });
+      const reports = ["one", "two", "three", "four", "five", "six", "seven", "eight"];
+      const other = scripted([{ calls: searched }, { text: against("First against.") }, { calls: searched }, { text: against("Second against.", "The X1 held up after 10 years") }, { calls: searched },
+        { text: against("Third against.", "held up after 10 years") }]);
+      const main = scripted([{ calls: begin }, ...reports.map((id) => ({ calls: [submit(`call-${id}`, [HOLDS], `# Report ${id}`)] }))]);
+      const memory = engineOf({ gates: [open("gap_check"), open("verifier"), skepticGate], verifier: role(other.adapter) });
+      await run(main.adapter, memory);
+      // Six send backs, two each, in order, and the seventh draft is the answer.
+      expect(main.requests).toHaveLength(8);
+      expect(resultOf(main.requests[7]).map((output) => (JSON.parse(output) as { gate: string }).gate)).toEqual(["gap_check", "gap_check", "verifier", "verifier", "skeptic", "skeptic"]);
+      const answer = memory.published()!;
+      expect(answer.startsWith("# Report seven")).toBe(true);
+      expect(answer).toContain("gap_check left this open.");
+      expect(answer).toContain("verifier left this open.");
+      for (const claim of ["First against.", "Second against.", "Third against."]) expect(answer).toContain(claim);
+    });
+
+    it("keeps a finding named when the next draft's first gate sends it back and time then ends the run", async () => {
+      let clock = 0;
+      let attempts = 0;
+      const other = scripted([{ calls: searched }, { text: against(SAGS) }]);
+      const gapGate = { name: "gap_check", run: async () => {
+        attempts += 1;
+        return attempts === 2 ? { kind: "send_back" as const, message: "Owner reviews are missing.", unresolvedNote: "Owner reviews stayed open." } : { kind: "pass" as const };
+      } };
+      const main = scripted([
+        { calls: begin },
+        { calls: [submit("call-1", [HOLDS], "# First")] },
+        { calls: [submit("call-2", [HOLDS], "# Second")] },
+        { calls: [{ arguments: { plan: [{ status: "pending", step: "x" }] }, id: "call-slow", name: "update_plan" }], onCall: () => { clock = 55 * 60_000; } },
+        { text: "I would still like to look further." }
+      ]);
+      const memory = engineOf({ gates: [gapGate, skepticGate], verifier: role(other.adapter) }, { now: () => clock });
+      await run(main.adapter, memory);
+      const answer = memory.published()!;
+      expect(answer.startsWith("# Second")).toBe(true);
+      expect(answer).toContain("Owner reviews stayed open.");
+      expect(answer).toContain(SAGS);
+    });
+
+    it("does not lose the answer when its provider fails, and says the check failed", async () => {
+      const other = scripted([{ fail: true }]);
+      const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS])] }]);
+      const memory = engineOf({ gates: [skepticGate], verifier: role(other.adapter) });
+      await run(main.adapter, memory);
+      expect(memory.published()).toContain("# Report");
+      expect(memory.published()).toContain("The check that looks for evidence against the conclusion failed.");
+    });
+
+    it("stays named through an approval continuation, which rebuilds the research from the transcript, and the cap counts on", async () => {
+      /** The real gate, on a model scripted here: this research has no sub-agent host. */
+      const gate = (text: string): ResearchGate => ({ ...skepticGate, run: (draft, context) => skepticGate.run(draft, { ...context, subagents: { run: async () => ended(text, { steps: [{ outcome: "complete", summary: "", tool: "Web" }] }) } }) });
+      const research = (gates: readonly ResearchGate[]) => createRunResearch({ chatId: "chat", deps: { gates }, gatesEndAt: Date.now() + 30 * 60_000, items: () => [], now: () => Date.now(),
+        onPlan: async () => undefined, rearmReservedCall: () => undefined, runId: "run-1", savedResults: { read: async () => null },
+        subagentInput: { admittedRequest: { modelId: "main-model" }, branchRunIds: [], engine: {}, snapshot: {} } as never,
+        threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [{ items: researcherItems, threadId: "researcher" }] } as never, toolTimeLeft: () => true, userId: "user", userMessage: "q" });
+      const signal = new AbortController().signal;
+      const execute = (tool: EngineTool, call: { arguments: unknown; id: string; name: string }) => tool.execute({ call, persistedToolCallId: `row-${call.id}`, round: 1, signal } as never);
+      const first = research([gate(against(SAGS))]);
+      await execute(first.tools[0]!, start);
+      const planned = begin[1]!;
+      const stood = await execute(first.tools[2]!, planned);
+      const sent = submit("call-1", [HOLDS], "# First");
+      const result = await execute(first.tools[1]!, sent);
+      expect(toolResultOutputText(result)).toContain("\"gate\":\"skeptic\"");
+      const transcript: TranscriptItem[] = [
+        { id: "msg-q", kind: "user", text: "q" },
+        { arguments: JSON.stringify(start.arguments), callId: start.id, id: "i1", kind: "tool_call", name: start.name },
+        { arguments: JSON.stringify(planned.arguments), callId: planned.id, id: "i1b", kind: "tool_call", name: planned.name },
+        { callId: planned.id, id: "i1c", kind: "tool_result", name: planned.name, outcome: "complete", output: toolResultOutputText(stood) },
+        { arguments: JSON.stringify(sent.arguments), callId: sent.id, id: "i2", kind: "tool_call", name: sent.name },
+        { callId: sent.id, id: "i3", kind: "tool_result", name: sent.name, outcome: "complete", output: toolResultOutputText(result) },
+        { arguments: "{}", callId: "held", id: "i4", kind: "tool_call", name: "mcp__shop__buy" }
+      ];
+      // The draft that stands while the approval waits names it, before any new draft.
+      const waiting = research([gate("Outcome: done\nNONE")]);
+      waiting.resume(structuredClone(transcript));
+      expect(waiting.finish(false)).toContain(SAGS);
+      // The next draft keeps it named unless the check itself finds it answered.
+      const continued = research([gate("Outcome: done\nNONE")]);
+      continued.resume(structuredClone(transcript));
+      expect(await execute(continued.tools[1]!, submit("call-2", [HOLDS], "# Second"))).toMatchObject({ content: [{ value: { status: "accepted" } }] });
+      expect(continued.finish(false)).toContain(SAGS);
+      const answered = research([gate("Outcome: done\nANSWERED E1\nNONE")]);
+      answered.resume(structuredClone(transcript));
+      await execute(answered.tools[1]!, submit("call-3", [HOLDS], "# Third"));
+      expect(answered.finish(false)).not.toContain(SAGS);
+      expect(answered.finish(false)).toContain("found nothing that outweighs it");
+    });
   });
 
   it("keeps a rejected claim named after an approval continuation rebuilds the research from the transcript", async () => {

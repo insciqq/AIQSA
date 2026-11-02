@@ -4,6 +4,7 @@ import { logEvent } from "../observability";
 import { gapCheckGate } from "./gapCheck";
 import { researchNote } from "./notes";
 import type { ResearchCoveragePort, ResearchEvidencePort } from "./ports";
+import { skepticGate } from "./skeptic";
 import { verifierGate } from "./verifier";
 
 /**
@@ -13,6 +14,11 @@ import { verifierGate } from "./verifier";
  * `run.ts`), so no prompt can skip them. Each gate gets the draft and the plan
  * and answers pass or send back. A gate fills its own file and never touches
  * the engine.
+ *
+ * The order is gap check, verifier, skeptic: what a report covers, then whether
+ * its claims hold, and only then whether its conclusion survives an attempt to
+ * refute it, since a conclusion is not worth that attempt while its evidence
+ * may still change. The first send back stops the rest for that draft.
  *
  * What a gate can rely on:
  * - It runs inside the run: `signal` ends with Stop, the turn's deadline and the
@@ -107,7 +113,7 @@ export type ResearchGate = Readonly<{
   run(draft: ResearchDraft, context: ResearchGateContext): Promise<ResearchGateResult>;
 }>;
 
-export const RESEARCH_GATES: readonly ResearchGate[] = [gapCheckGate, verifierGate];
+export const RESEARCH_GATES: readonly ResearchGate[] = [gapCheckGate, verifierGate, skepticGate];
 
 /** What the gates carry for a draft they have not finished on. */
 export function researchCarriedNotes(gates: readonly ResearchGate[], draft: ResearchDraft, earlier: readonly ResearchAttempt[]): readonly string[] {

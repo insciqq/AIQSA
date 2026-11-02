@@ -249,6 +249,8 @@ export type ResearchFinding = Readonly<{
   claim: string;
   /** Copied verbatim from the page an agent opened. */
   quote: string;
+  /** The evidence record this finding stands for, which only the server sets: a check reads that record and its stored page. */
+  recordId?: string;
   sourceClass: ResearchSourceClass;
   standing: ResearchStanding;
   url: string;
