@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RESEARCH_LIMITS, RESEARCH_PAGE_LIMITS, RESEARCH_QUOTE_CHECKS, RESEARCH_RECORD_KINDS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS,
-  START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchPlanProposal } from "../../contracts/research";
+  START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft, type ResearchEvidenceRecord, type ResearchPlanProposal } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
@@ -17,9 +17,13 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchGate } from "./gates";
+import { researchMatrixCoverage } from "./matrix";
 import { NOOP_RESEARCH_PORTS, researchGatePorts, researchPorts, type ResearchPortFactories, type ResearchPorts, type ResearchRunScope } from "./ports";
 import { proposeCall } from "./planWindow.testFixtures";
+import { DRAFT as RECORD_DRAFT, FRAME, id, RECORDS } from "./report.testFixtures";
+import { createResearchReport } from "./reportAssembly";
 import { createRunResearch, researchOfTurn, researchRunOf, type ResearchEngineDeps, type RunResearchInput } from "./run";
+import { VERIFIER_MARKER, verifierGate } from "./verifier";
 
 /**
  * Every no-op port leaves a run as it was: the same scripted runs through the real engine with no ports, with every no-op named,
@@ -409,6 +413,170 @@ describe("the ports a run holds", () => {
     compose.mockClear();
     await expect(late.composed("failed", stop.signal)).resolves.toBeNull();
     expect(compose).not.toHaveBeenCalled();
+  });
+
+  describe("over what the model last wrote", () => {
+    const BUILT = "# Built from the records\n\n*Note.*";
+    const report = (compose: ResearchPorts["report"]["compose"]): ResearchEngineDeps => ({ gates: [], ports: { report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) } });
+    const narrated = { calls: [researcher], text: "Sending the researchers now." };
+
+    it("wins over a line of narration when the provider fails, which nearly every run has by then", async () => {
+      const run = await runOf([{ calls: begin }, narrated, { text: "Outcome: done\nreport" }, { fail: true }], report(async () => BUILT));
+      expect(run.shown).toContain(BUILT);
+      expect(run.shown).not.toContain("Sending the researchers now.");
+    });
+
+    it("wins over a line of narration when the model stops with nothing to say", async () => {
+      const run = await runOf([{ calls: begin }, narrated, { text: "Outcome: done\nreport" }, {}], report(async () => BUILT));
+      expect(run.published).toBe(BUILT);
+    });
+
+    it("leaves that text as the answer when there is nothing to build from", async () => {
+      const run = await runOf([{ calls: begin }, narrated, { text: "Outcome: done\nreport" }, { fail: true }], report(async () => null));
+      expect(run.shown).toContain("Sending the researchers now.");
+    });
+
+    it("never replaces a report the model handed in", async () => {
+      const compose = vi.fn(async () => BUILT);
+      const run = await runOf([{ calls: begin }, { calls: [submit] }, { fail: true }], report(compose));
+      expect(run.published).toContain(REPORT);
+      expect(compose).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("on the real port, over a real run's records", () => {
+    /** The fakes of the two stores a report reads: the matrix and the records. */
+    const stores = (records: () => readonly ResearchEvidenceRecord[] = () => RECORDS, frame = FRAME): ResearchPortFactories => ({
+      coverage: () => ({ ...NOOP_RESEARCH_PORTS.coverage, coverage: async () => researchMatrixCoverage(frame, records()), frame: async () => frame }),
+      evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, records: async () => records() }), report: createResearchReport });
+    const seen: ResearchDraft[] = [];
+    const reading: ResearchGate = { name: "reading", run: async (draft) => { seen.push(draft); return { kind: "pass" }; } };
+    const onIds = (callId: string, fields: Readonly<Record<string, unknown>>) => ({ arguments: { branch_picks: [], does_not_separate: null, pick_row_key: "x1", record_ids: [id(1), id(2), id(3)], report: RECORD_DRAFT.report, unreachable: [], ...fields },
+      id: callId, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
+    const resultsOf = (requests: string, part: string) => requests.includes(part);
+
+    afterEach(() => { seen.length = 0; });
+
+    it("gives the user the table and a note when the model never submits, never an empty answer", async () => {
+      const run = await runOf([{ calls: begin }, {}], { gates: [], ports: stores() });
+      expect(run.published).toContain("| Вариант | Цена за 160×200 | Отзывы владельцев | Жёсткость |");
+      expect(run.published).toContain("(https://shop.example/x1)");
+      expect(run.published).toContain("Отчёт не был передан");
+    });
+
+    it("gives it when the provider fails with a line of narration behind it", async () => {
+      const run = await runOf([{ calls: begin }, { calls: [researcher], text: "Запускаю исследователей." }, { text: "Outcome: done\nreport" }, { fail: true }], { gates: [], ports: stores() });
+      expect(run.shown).toContain("| Вариант |");
+      expect(run.shown).toContain("Ответ прервался сбоем раньше, чем был написан отчёт");
+      expect(run.shown).not.toContain("Запускаю исследователей.");
+    });
+
+    it("lets every later gate read the prices and reviews the pick rests on, as findings with their records", async () => {
+      const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", {})] }], { gates: [reading], ports: stores() });
+      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(seen[0]!.findings.map(({ recordId }) => recordId)).toEqual([id(1), id(2), id(3)]);
+      expect(seen[0]!.findings[2]).toMatchObject({ quote: "Просел за год.", sourceClass: "owner_reviews" });
+      expect(seen[0]!.findings[2]!.claim).toContain("Small sample of 11. sagging: 3 of 11.");
+      expect(seen[0]!.pickRowKey).toBe("x1");
+    });
+
+    it("sends back a draft that cites only the specifications, names what to add, and accepts it once it does", async () => {
+      const run = await runOf([{ calls: begin }, { calls: [onIds("call-one", { record_ids: [id(1)] })] }, { calls: [onIds("call-two", {})] }], { gates: [reading], ports: stores() });
+      // `run.requests` holds every id as <id>: which one each is, the check's own tests prove.
+      expect(resultsOf(run.requests, "x1 / price: <id>")).toBe(true);
+      expect(resultsOf(run.requests, "\\\"gate\\\":\\\"report_check\\\"")).toBe(true);
+      expect(seen).toHaveLength(1);
+      expect(run.published).toBe(RECORD_DRAFT.report);
+    });
+
+    it("sends back a pick outside the matrix, and at the cap the answer says so rather than going round", async () => {
+      const wrong = (attempt: number) => onIds(`call-${attempt}`, { pick_row_key: "x9", report: `${RECORD_DRAFT.report}\nВерсия ${attempt}.` });
+      const run = await runOf([{ calls: begin }, { calls: [wrong(1)] }, { calls: [wrong(2)] }, { calls: [wrong(3)] }], { gates: [reading], ports: stores() });
+      expect(resultsOf(run.requests, "Outside the matrix: row x9")).toBe(true);
+      expect(run.published).toContain("Версия 3.");
+      expect(run.published).toContain("Выбор в этом отчёте не входит в варианты");
+      expect(seen).toHaveLength(1);
+    });
+
+    it("ends a draft repeated word for word with the report and a note: the engine's repeat guard stops the call before any gate", async () => {
+      const same = (attempt: number) => onIds(`call-${attempt}`, { pick_row_key: "x9" });
+      const run = await runOf([{ calls: begin }, { calls: [same(1)] }, { calls: [same(2)] }, { calls: [same(3)] }], { gates: [reading], ports: stores() });
+      expect(run.published).toContain("Берите Lonax Memory.");
+      expect(run.published).toContain("с неразобранными замечаниями");
+    });
+
+    it("sends back an id of no record, saying which", async () => {
+      const run = await runOf([{ calls: begin }, { calls: [onIds("call-one", { record_ids: [id(1), id(2), id(3), id(99)] })] }, { calls: [onIds("call-two", {})] }], { gates: [], ports: stores() });
+      expect(resultsOf(run.requests, "These record_ids name no live record of this research: <id>")).toBe(true);
+      expect(run.published).toBe(RECORD_DRAFT.report);
+    });
+
+    it("sends back a mistyped key under the cap, and a run that ends there keeps the report", async () => {
+      const mistyped = onIds("call-one", { pick_row_key: "Лонакс" });
+      const fixed = await runOf([{ calls: begin }, { calls: [mistyped] }, { calls: [onIds("call-two", {})] }], { gates: [reading], ports: stores() });
+      expect(resultsOf(fixed.requests, "pick_row_key must be null or the key of the row picked.")).toBe(true);
+      expect(fixed.published).toBe(RECORD_DRAFT.report);
+      const ended = await runOf([{ calls: begin }, { calls: [mistyped] }, { fail: true }], { gates: [], ports: stores() });
+      expect(ended.shown).toContain("Берите Lonax Memory.");
+    });
+
+    it("passes advice that states no fact, and says it came with nothing to check", async () => {
+      const advice = "Сначала измерьте кровать, потом выберите жёсткость.";
+      const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", { pick_row_key: null, record_ids: [], report: advice })] }], { gates: [], ports: stores() });
+      expect(run.published).toContain(advice);
+      expect(run.published).toContain("Отчёт пришёл без списка находок");
+    });
+
+    it("keeps a text draft as it stands: it has no ids to check", async () => {
+      const run = await runOf([{ calls: begin }, { text: "Report as text." }, { text: "Report as text, again." }], { gates: [], ports: stores() });
+      expect(run.published).toContain("Report as text, again.");
+      expect(run.published).not.toContain("| Вариант |");
+    });
+
+    it("tells the main agent the ids of what its researchers recorded, each once", async () => {
+      const second = { ...researcher, arguments: { message: "And this.", name: "shop" }, id: "call-shop" };
+      const run = await runOf([{ calls: begin }, { calls: [researcher] }, { text: "Outcome: done\nreport" }, { calls: [second] }, { text: "Outcome: done\nreport" }, { calls: [onIds("call-draft", {})] }],
+        { gates: [], ports: stores() });
+      const listing = /Records to cite by id in record_ids/gu;
+      expect(run.requests.match(listing)?.length).toBeGreaterThan(0);
+      expect(run.requests).toContain("| x1 / price | Claim 2.");
+    });
+
+    it("gives a store that cannot be read a note, and the report still goes out", async () => {
+      const broken: ResearchPortFactories = { ...stores(), evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("database down"); } }) };
+      const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", {})] }], { gates: [], ports: broken });
+      expect(run.published).toContain(RECORD_DRAFT.report.trimEnd());
+      expect(run.published).toContain("Одну из проверок этого отчёта не удалось завершить");
+    });
+
+    it("reads a transcript stored before drafts referred to records, typed findings and all", () => {
+      const stored = { findings: [{ claim: "It holds.", quote: "held up", source_class: "independent_tests", standing: "confirmed", url: "https://lab.example/x1" }], report: "# Older report", unreachable: [] };
+      const found = researchOfTurn([...started(startResult("run-1")),
+        { arguments: JSON.stringify(stored), callId: "d", id: "d1", kind: "tool_call", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },
+        { callId: "d", id: "d2", kind: "tool_result", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME, outcome: "complete", output: JSON.stringify({ message: "Not shown to the user yet. Again.", status: "sent_back" }) }]);
+      expect(found.draft).toMatchObject({ findings: [{ claim: "It holds.", sourceClass: "independent_tests" }], report: "# Older report" });
+      expect(found.attempts).toHaveLength(1);
+      expect(found.draft?.recordIds).toBeUndefined();
+    });
+
+    it("keeps a rejected claim named across an approval, from the record the stored ids name", async () => {
+      const arguments_ = onIds("d", { pick_row_key: null, record_ids: [id(1), id(4)] }).arguments;
+      const message = `Not shown to the user yet. ${VERIFIER_MARKER} Not supported.\nFindings the check did not support: 2. Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`;
+      const research = direct({ gates: [verifierGate], ports: stores() });
+      research.resume([...started(startResult("run-1")),
+        { arguments: JSON.stringify(arguments_), callId: "d", id: "d1", kind: "tool_call", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },
+        { callId: "d", id: "d2", kind: "tool_result", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME, outcome: "complete", output: JSON.stringify({ status: "sent_back", gate: "verifier", message: message.replace(`. Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`, ".") }) }]);
+      await vi.waitFor(() => expect(research.finish(false)).toContain("Claim 4."));
+    });
+
+    it("stops no run on a failed read when an approval rebuilds its drafts", async () => {
+      const arguments_ = onIds("d", { pick_row_key: null, record_ids: [id(1)] }).arguments;
+      const records = vi.fn(async () => { throw new Error("database down"); });
+      const research = direct({ gates: [], ports: { ...stores(), evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, records }) } });
+      research.resume([...started(startResult("run-1")), { arguments: JSON.stringify(arguments_), callId: "d", id: "d1", kind: "tool_call", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME }]);
+      await vi.waitFor(() => expect(records).toHaveBeenCalled());
+      expect(research.finish(false)).toContain(RECORD_DRAFT.report.trimEnd());
+    });
   });
 
   it("composes nothing for a run that never researched", async () => {
