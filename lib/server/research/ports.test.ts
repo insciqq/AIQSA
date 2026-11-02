@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RESEARCH_LIMITS, RESEARCH_PAGE_LIMITS, RESEARCH_QUOTE_CHECKS, RESEARCH_RECORD_KINDS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS,
+import { decodeResearchPlanProposal, RESEARCH_LIMITS, RESEARCH_PAGE_LIMITS, RESEARCH_QUOTE_CHECKS, RESEARCH_RECORD_KINDS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS,
   START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft, type ResearchEvidenceRecord, type ResearchPlanProposal } from "../../contracts/research";
 import { CONTINUE_TURN_TEXT } from "../../contracts/runs";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
@@ -20,7 +20,7 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchGate } from "./gates";
 import { researchMatrixCoverage } from "./matrix";
 import { NOOP_RESEARCH_PORTS, researchGatePorts, researchPorts, type ResearchPortFactories, type ResearchPorts, type ResearchRunScope } from "./ports";
-import { proposeCall } from "./planWindow.testFixtures";
+import { proposalArguments, proposeCall } from "./planWindow.testFixtures";
 import { DRAFT as RECORD_DRAFT, FRAME, id, RECORDS } from "./report.testFixtures";
 import { createResearchReport } from "./reportAssembly";
 import { createRunResearch, researchOfTurn, researchRunOf, type ResearchEngineDeps, type RunResearchInput } from "./run";
@@ -216,6 +216,38 @@ const direct = (deps: ResearchEngineDeps, extra: Partial<RunResearchInput> = {})
   onPlan: async () => undefined, rearmReservedCall: () => undefined, runId: "run-1", savedResults: { read: async () => null },
   subagentInput: { admittedRequest: { modelId: "main-model" }, engine: {}, snapshot: {} } as never,
   threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [] } as never, toolTimeLeft: () => true, userId: "user", userMessage: "q", ...extra });
+
+/**
+ * The run after run-0's interrupted turn, through the real engine: the user's `text`, or with `approved` the approval of `call-held` in a turn that `runId` left after the user's
+ * Continue, whose items are `later`.
+ */
+async function afterInterruption(input: Readonly<{ approved?: Readonly<{ later: readonly TranscriptItem[]; runId: string }>; ports: ResearchPortFactories; steps: readonly Step[]; text?: string }>) {
+  const { approved, text = CONTINUE_TURN_TEXT } = input;
+  const stored = [...started(startResult("run-0")), ...held("call-first")];
+  const { adapter, requests } = scripted(input.steps);
+  const memory = engineOf({ gates: [], ports: input.ports });
+  vi.mocked(memory.deps.approvedCall).mockResolvedValue(approved ? { providerCallId: "call-held", toolName: "mcp_shop_buy" } : null);
+  const answers = new Map([["answer-0", "run-0"]]);
+  const runItems = new Map<string, TranscriptItem[]>([["run-0", stored]]);
+  if (approved) {
+    answers.set("answer-1", approved.runId);
+    runItems.set(approved.runId, [...approved.later]);
+  }
+  vi.mocked(memory.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(answers);
+  vi.mocked(memory.deps.transcripts.loadRuns).mockResolvedValue(runItems);
+  const content = (words: string) => ({ blocks: [{ text: words, type: "text" as const }] });
+  const messages = [{ content: content("Проведи исследование."), id: "question", role: "user" as const }, { content: content(""), id: "answer-0", role: "assistant" as const },
+    ...approved ? [{ content: content(text), id: "continue", role: "user" as const }, { content: content(""), id: "answer-1", role: "assistant" as const }] : [],
+    { content: content(approved ? "The user approved it." : text), id: "current-user-message", role: "user" as const }];
+  const base = prepared();
+  const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
+  await createNativeRunExecutionResponse({ adapter, ...approved ? { approvalContinuation: { approvalId: "approval-1" } } : {},
+    created: { assistantMessageId: "answer-c", runId: approved ? "run-d" : "run-c", userMessageId: "current-user-message" }, engine: memory.deps,
+    prepared: { ...base, normalizedRequest: request, providerRequest: request }, repository: repository() as unknown as RunRepository, services: {},
+    subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" }).text();
+  return { appended: memory.appended, calls: memory.toolCalls.begin.mock.calls.map(([call]) => call.toolName), published: memory.published(),
+    requests: JSON.stringify(requests.map((sent) => sent.history)) };
+}
 
 const execute = (tool: EngineTool, call: typeof start) => tool.execute({ call, persistedToolCallId: `row-${call.id}`, round: 1, signal: new AbortController().signal } as never);
 
@@ -550,6 +582,40 @@ describe("the ports a run holds", () => {
       expect(run.published).toContain("Одну из проверок этого отчёта не удалось завершить");
     });
 
+    describe("after a Continue that starts no researcher", () => {
+      const decoded = decodeResearchPlanProposal(proposalArguments(PLAN));
+      if (!decoded.ok) throw new Error(decoded.message);
+      const answer = { changed: false, plan: decoded.value, releasedBy: "timer" as const };
+      const pickedUp = (goal = "Выбрать матрас на много лет."): ResearchPortFactories =>
+        ({ ...stores(), resume: () => ({ load: async () => ({ answer, frame: FRAME, fromRunId: "run-0", goal }) }) });
+      const startAgain = { ...start, arguments: { goal: "Выбрать матрас." } };
+
+      it("gives the model the ids in the start's result, and a draft on them passes the report check", async () => {
+        const run = await afterInterruption({ ports: pickedUp(), steps: [{ calls: [startAgain] }, { calls: [onIds("call-draft", {})] }] });
+        expect(run.requests).toContain(`${id(2)} | x1 / price | Claim 2.`);
+        expect(run.calls).toEqual([START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME]);
+        expect(run.published).toBe(RECORD_DRAFT.report);
+      });
+
+      it("keeps them through an approval of that run, whose plan and rows are the start's", async () => {
+        const first = await afterInterruption({ ports: pickedUp(), steps: [{ calls: [startAgain] }, { calls: [onIds("call-draft", {})] }] });
+        const later = [...first.appended.filter((item) => (item.kind === "tool_call" || item.kind === "tool_result") && item.name === START_RESEARCH_TOOL_NAME), ...held("call-held")];
+        const run = await afterInterruption({ approved: { later, runId: "run-c" }, ports: stores(), steps: [{ calls: [onIds("call-after", {})] }] });
+        expect(run.requests).toContain(`${id(2)} | x1 / price | Claim 2.`);
+        expect(run.published).toBe(RECORD_DRAFT.report);
+      });
+
+      it("builds the answer in the goal's language, whatever the button's word is", async () => {
+        const silent = [{ calls: [startAgain] }, {}];
+        const russian = await afterInterruption({ ports: pickedUp(), steps: silent });
+        expect(russian.published).toContain("| Вариант |");
+        expect(russian.published).toContain("Отчёт не был передан");
+        const english = await afterInterruption({ ports: pickedUp("Choose a mattress for years."), steps: silent });
+        expect(english.published).toContain("| Option |");
+        expect(english.published).toContain("No report was handed in");
+      });
+    });
+
     it("reads a transcript stored before drafts referred to records, typed findings and all", () => {
       const stored = { findings: [{ claim: "It holds.", quote: "held up", source_class: "independent_tests", standing: "confirmed", url: "https://lab.example/x1" }], report: "# Older report", unreachable: [] };
       const found = researchOfTurn([...started(startResult("run-1")),
@@ -628,28 +694,16 @@ describe("the run research belongs to", () => {
   });
 
   it("hands a Continue's run its own rows and the turn's research run to pick up, through the engine; any other message asks nothing", async () => {
-    async function afterInterruption(text: string) {
-      const stored = [...started(startResult("run-0")), ...held("call-first")];
-      const { adapter } = scripted([{ calls: [start] }, { calls: [submit] }]);
+    const after = async (text: string) => {
       const scopes: ResearchRunScope[] = [];
       const load = vi.fn(NOOP_RESEARCH_PORTS.resume.load);
-      const memory = engineOf({ gates: [], ports: { resume: (run) => { scopes.push(run); return { load }; } } });
-      vi.mocked(memory.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map([["answer-0", "run-0"]]));
-      vi.mocked(memory.deps.transcripts.loadRuns).mockResolvedValue(new Map([["run-0", stored]]));
-      const content = (words: string) => ({ blocks: [{ text: words, type: "text" as const }] });
-      const messages = [{ content: content("Проведи исследование."), id: "question", role: "user" as const }, { content: content(""), id: "answer-0", role: "assistant" as const },
-        { content: content(text), id: "current-user-message", role: "user" as const }];
-      const base = prepared();
-      const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
-      await createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-c", runId: "run-c", userMessageId: "current-user-message" }, engine: memory.deps,
-        prepared: { ...base, normalizedRequest: request, providerRequest: request }, repository: repository() as unknown as RunRepository, services: {},
-        subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" }).text();
+      await afterInterruption({ ports: { resume: (run) => { scopes.push(run); return { load }; } }, steps: [{ calls: [start] }, { calls: [submit] }], text });
       return { load, scope: scopes[0]! };
-    }
-    const continued = await afterInterruption(CONTINUE_TURN_TEXT);
+    };
+    const continued = await after(CONTINUE_TURN_TEXT);
     expect(continued.scope).toMatchObject({ branchRunIds: ["run-0"], researchRunId: "run-c", runId: "run-c" });
     expect(continued.load).toHaveBeenCalledExactlyOnceWith("run-0", expect.any(AbortSignal));
-    expect((await afterInterruption("Продолжай исследование.")).load).not.toHaveBeenCalled();
+    expect((await after("Продолжай исследование.")).load).not.toHaveBeenCalled();
   });
 
   it("keeps the run's own id for an older stored start, one that was refused, and one of an earlier turn", () => {
