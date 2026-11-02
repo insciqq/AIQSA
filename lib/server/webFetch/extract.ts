@@ -339,11 +339,24 @@ function htmlText(html: string, finalUrl: string, budget: number): Readonly<{ te
   }
 }
 
+/** Page chrome that may hold tabs of its own: menus, dialogs and cookie notices. */
+const CHROME_ELEMENTS = new Set(["NAV", "MENU", "DIALOG"]);
+const CHROME_ROLE = /^(?:navigation|menu|menubar|dialog|alertdialog|tablist)$/u;
+const CHROME_CLASS = /(?:^|[\s_-])(?:cookies?|consent|gdpr)(?:$|[\s_-])/iu;
+/** Inside a panel also what only its class names: a panel's own menus and pop-ups are no specification. */
+const PANEL_CHROME_CLASS = /(?:^|[\s_-])(?:menu|navigation|cookies?|consent|gdpr|modal|popup|popover)(?:$|[\s_-])/iu;
+
+function chrome(element: Element, classes: RegExp): boolean {
+  return CHROME_ELEMENTS.has(element.nodeName) || CHROME_ROLE.test(element.getAttribute("role") ?? "") ||
+    classes.test(`${element.getAttribute("class") ?? ""} ${element.id}`);
+}
+
 /**
  * Readability removes hidden nodes and can score short specification panels
  * out of an article. Detach recognizable content tabs first and render them
  * once after the article, under the same text budget. Their visibility is a
- * UI state, not evidence that the HTML's content is boilerplate.
+ * UI state, not evidence that the HTML's content is boilerplate. A page with
+ * no tabs is read exactly as before: nothing is removed from it.
  */
 function detachPageTabs(document: Document): Element[] {
   const elements = Array.from(document.body?.querySelectorAll("*") ?? []);
@@ -355,26 +368,24 @@ function detachPageTabs(document: Document): Element[] {
     const href = element.getAttribute("href");
     if (href?.startsWith("#") && href.length > 1) controlled.add(href.slice(1));
   }
-  // Remove explicit UI boilerplate before collecting panels, including tabs
-  // inside a cookie dialog and dialogs nested inside a specification panel.
+  const tabLike = elements.filter((element) => element.getAttribute("role") === "tabpanel" || controlled.has(element.id) ||
+    /(?:^|\s)tab(?:-pane|-panel|panel)(?:\s|$)/u.test(element.getAttribute("class") ?? ""));
+  if (tabLike.length === 0) return [];
+  // Chrome that holds tabs goes with them, such as a cookie dialog's own tabs; other chrome stays for Readability, as before.
   for (const element of elements) {
-    const role = element.getAttribute("role") ?? "";
-    const identity = `${element.getAttribute("class") ?? ""} ${element.id}`;
-    if (["NAV", "MENU", "DIALOG"].includes(element.nodeName) ||
-      /^(?:navigation|menu|menubar|dialog|alertdialog|tablist)$/u.test(role) ||
-      /(?:^|[\s_-])(?:menu|navigation|cookies?|consent|gdpr|modal|popup|popover)(?:$|[\s_-])/iu.test(identity)) element.remove();
+    if (chrome(element, CHROME_CLASS) && tabLike.some((panel) => panel !== element && element.contains(panel))) element.remove();
   }
-  const candidates = new Set(elements.filter((element) => document.body.contains(element) && (
-    element.getAttribute("role") === "tabpanel" || controlled.has(element.id) ||
-    /(?:^|\s)tab(?:-pane|-panel|panel)(?:\s|$)/u.test(element.getAttribute("class") ?? "")
-  )));
+  const candidates = new Set(tabLike.filter((element) => document.body.contains(element) && !chrome(element, CHROME_CLASS)));
   const panels = [...candidates].filter((element) => {
     for (let parent = element.parentElement; parent; parent = parent.parentElement) {
       if (candidates.has(parent)) return false;
     }
     return true;
   });
-  for (const panel of panels) panel.remove();
+  for (const panel of panels) {
+    for (const inner of Array.from(panel.querySelectorAll("*"))) if (chrome(inner, PANEL_CHROME_CLASS)) inner.remove();
+    panel.remove();
+  }
   return panels;
 }
 

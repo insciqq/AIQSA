@@ -103,7 +103,7 @@ describe("HTML main content", () => {
     });
 
   it("reads nested tabs once even when the page has no other article, and keeps the text bound", () => {
-    const body = encoder.encode(`<html><body><div class="dropdown-menu"><div role="tabpanel">MENU_BOILERPLATE</div></div>
+    const body = encoder.encode(`<html><body><nav><div role="tabpanel">MENU_BOILERPLATE</div></nav>
       <section role="tabpanel" hidden><h2>Specifications</h2><div role="tabpanel" hidden><p>Nested specification.</p></div>
       <p>${paragraph.repeat(10)}</p></section></body></html>`);
     const page = extractPage({ body, contentType: "text/html", finalUrl: "https://example.com/product", maxCharacters: 1000 })!;
@@ -111,6 +111,14 @@ describe("HTML main content", () => {
     expect(page.text).not.toContain("MENU_BOILERPLATE");
     expect(page.text.length).toBeLessThanOrEqual(1000);
     expect(page.truncated).toBe(true);
+  });
+
+  it("reads a page with no tabs as before: content whose class names a menu or a pop-up stays", () => {
+    const page = extractPage({ body: encoder.encode(`<html><body><div class="menu-items"><h2>Dishes</h2><p>Borscht with sour cream, 450 roubles.</p></div>
+      <div class="popup-note"><p>Open daily from noon.</p></div></body></html>`),
+    contentType: "text/html", finalUrl: "https://example.com/menu" })!;
+    expect(page.text).toContain("Borscht with sour cream, 450 roubles.");
+    expect(page.text).toContain("Open daily from noon.");
   });
 
   it("does not promote unrelated hidden nodes or script-only specifications into article content", () => {
