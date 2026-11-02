@@ -226,13 +226,21 @@ describe("the method", () => {
     expect(footer).toContain("End with a report of at most about 1,500 characters: the server lists your records under it");
     expect(footer).toContain("never each record again");
     expect(footer).toContain("A task to find the options adds each option its sources name as a row with change_research_frame.");
-    expect(footer).toContain("an option you saw that the matrix lacks is noted with change_research_frame change note_candidate, its name as written as the label and " +
-      "where you saw it as the reason, and the main agent decides on its row.");
+    expect(footer).toContain("an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted with change_research_frame change " +
+      "note_candidate: its exact name as the page writes it, the model and not only its brand or line, as the label, and where you saw it as the reason.");
+    expect(footer).toContain("The main agent decides on its row.");
     // The record's form stays: a quote the checks can find.
     expect(footer).toContain("a verbatim quote copied from the page you opened, its source class, and whether it is confirmed, claimed by a party or not verified");
     expect(footer).not.toContain("Report every finding as");
     // It still fits a brief with room for the matrix.
     expect(footer.length).toBeLessThan(RUN_FOLLOWUP_MAX_CHARS / 2);
+  });
+
+  it("tells the main agent to decide on every noted candidate before the draft, and that only it sets one aside", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain("Researchers note options they saw that the matrix lacks with change_research_frame note_candidate");
+    expect(text).toContain("before you hand in the draft, add each as a row and send researchers for its cells, or set it aside with set_aside, its key and your reason.");
+    expect(text).toContain("Only you set one aside");
   });
 
   it("does not tell a researcher to add a row as it finds one, which is what the rule replaces", () => {
