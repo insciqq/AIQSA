@@ -311,6 +311,21 @@ describe("native tool batch", () => {
       expect(JSON.stringify(refused.result)).toContain("turn_tool_call_limit_reached");
     });
 
+    it("gives the count back for a call that never runs, so the budget pays for work done", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "page"));
+      const turnBudget = budget(2);
+      const outcome = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup), unbound: tool("unbound", "none", vi.fn(), { links: () => null }) },
+        fakeStore().store, { maxToolCalls: null, turnBudget }), { calls: 0 }, { round: 1, calls: [
+        { arguments: {}, id: "u1", name: "unbound" },
+        { arguments: { page: 1 }, id: "c1", name: "lookup" },
+        { arguments: { page: 2 }, id: "c2", name: "lookup" }
+      ] });
+      expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["u1", "error"], ["c1", "complete"], ["c2", "complete"]]);
+      expect(outcome.results[0]!.output).not.toContain("Calls left in this task");
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(turnBudget.spent.calls).toBe(2);
+    });
+
     it("keeps counting across the turn's batches, and the run's budget still refuses first when it is the smaller", async () => {
       const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
       const turnBudget = budget(3);

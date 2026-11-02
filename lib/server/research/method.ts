@@ -47,7 +47,8 @@ const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start 
   "large shops that can be reached, and recommendation and bestseller lists. Rows are added from what those sources name, by the rule for rows below.";
 
 const LATER_ROUNDS = "Later rounds: one task for one row, or for the empty cells of two or three rows, each under a fresh researcher name. Never give a new task " +
-  "to a researcher name already used in this research: a continued researcher keeps its whole old context, so it is no short task.";
+  "to a researcher name already used in this research: a continued researcher keeps its whole old context, so it is no short task. The one exception is a " +
+  "researcher whose call waited for the user's approval: continue that one, since only it can make the call it was allowed.";
 
 /**
  * A researcher's own task, in these three sentences (operator-approved plan, 2026-11-03): the budget its results count down, searches that run at once, a short
@@ -71,7 +72,7 @@ const RESEARCHER_ROWS = `A task to find the options adds each option its sources
  */
 const LEAD_CANDIDATES = `Researchers note options they saw that the matrix lacks with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate, and the line after each ` +
   "report lists those still open: before you hand in the draft, add each as a row and send researchers for its cells, or set it aside with set_aside, its key " +
-  "and your reason. Only you set one aside, and the report names each one you set aside among the options it does not recommend, with that reason.";
+  "and your reason. Only you set one aside; name each one you set aside in the report among the options you do not recommend, with that reason.";
 
 /** What a purchase is bought by: a real run named two options and no offer, so its reader could not act on it. Any shop counts. */
 const OFFERS = "An offer is an action_channel finding from the shop's page you opened, with its link, the seller and the price in the claim and the quote; the record's date is the day it " +

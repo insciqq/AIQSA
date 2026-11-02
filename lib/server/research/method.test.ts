@@ -212,6 +212,7 @@ describe("the method", () => {
     expect(text).toContain("Later rounds: one task for one row, or for the empty cells of two or three rows, each under a fresh researcher name.");
     // A continued researcher keeps its whole old context: on acceptance run 1 its input grew with its new brief.
     expect(text).toContain("Never give a new task to a researcher name already used in this research: a continued researcher keeps its whole old context");
+    expect(text).toContain("The one exception is a researcher whose call waited for the user's approval: continue that one");
     expect(text).not.toContain("one call per question");
     // Round 1 and the questions it starts beside the enumeration come before the later rounds.
     expect(text.indexOf("Round 1:")).toBeLessThan(text.indexOf("Start now only the questions that need no other's answer"));

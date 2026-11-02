@@ -163,7 +163,7 @@ describe("candidates through change_research_frame", () => {
     expect(value(refused)).toMatchObject({ code: "research_frame_change_refused", message: expect.stringContaining("only the main agent sets a noted candidate aside") });
     expect(state.frame.setAside).toBeUndefined();
     const aside = value(await changeResearchFrameEngineTool(target, { kind: "main" }).execute(call(ASIDE)));
-    expect(aside).toEqual({ message: "Set aside: dreamline-sleep-dream-medium-s1000. The report keeps it among the options it does not recommend, with your reason.", status: "changed" });
+    expect(aside).toEqual({ message: "Set aside: dreamline-sleep-dream-medium-s1000. Name it in the report among the options you do not recommend, with your reason.", status: "changed" });
     expect(state.frame.setAside).toEqual([{ at: "2026-11-03T10:00:00.000Z", key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." }]);
   });
 
