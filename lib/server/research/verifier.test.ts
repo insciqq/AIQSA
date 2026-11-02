@@ -52,7 +52,7 @@ function contextOf(options: Readonly<{
   earlier?: readonly ResearchAttempt[];
   evidence?: ResearchEvidencePort;
   model?: ResearchVerifierModel;
-  opened?: () => Promise<readonly ResearchOpenedSource[]>;
+  opened?: ResearchGateContext["sources"]["opened"];
   remainingMs?: number;
   sendBack?: boolean;
   signal?: AbortSignal;
@@ -548,6 +548,17 @@ describe("a finding that stands for a record", () => {
       expect(lineIn(run.mock.calls[0]![0].brief, 1).page_text).toContain("просел за год");
       expect(notesOf(result)).toContain("Quotes: found in opened pages: 1.");
     });
+  });
+
+  it("takes no page only an earlier attempt's verifier opened for one a researcher read", async () => {
+    const cited = "https://shop.example/card";
+    const elsewhere: ResearchOpenedSource = { partial: false, text: "The X1 is in stock at 399.", toolName: "fetch_url", url: "https://other.example/page" };
+    const ownVerifier: ResearchOpenedSource = { partial: false, text: "A card that says something else.", toolName: "fetch_url", url: cited };
+    const opened = vi.fn(async (_signal: AbortSignal, whose?: "researchers") => whose === "researchers" ? [elsewhere] : [elsewhere, ownVerifier]);
+    const { context } = contextOf({ opened, turn: async () => ended("Outcome: done\nC1 | supported | the passage says so") });
+    const result = await verifierGate.run(draftOf([finding("The X1 is in stock at 399.", "in stock at 399", { url: cited })]), context);
+    expect(opened.mock.calls.every(([, whose]) => whose === "researchers")).toBe(true);
+    expect(notesOf(result)).toContain("Claims: 1; supported: 0; partly supported: 1.");
   });
 
   describe("across a draft of all a run's records", () => {

@@ -504,7 +504,7 @@ async function withOtherPagesCapped(context: ResearchGateContext, draft: Researc
     return answer.verdict === "supported" && quote?.status === "found" && quote.excerpt.source.kind === "other";
   });
   if (fromOther.length === 0) return round;
-  const opened = await boundedGateStep(context, timeLeft(context), (signal) => context.sources.opened(signal));
+  const opened = await boundedGateStep(context, timeLeft(context), (signal) => context.sources.opened(signal, "researchers"));
   const answers = new Map(round.answers);
   for (const [id] of fromOther) {
     if (!opened.ok || !citedPageRead(opened.value, draft.findings[id - 1]!.url)) answers.set(id, { reason: "only another page shows this", verdict: "partly" });
@@ -702,7 +702,7 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
 
   const { records, stored } = await recordedClaims(draft, context);
   const notStored = draft.findings.filter((_, index) => !stored.has(index));
-  const opened = notStored.length > 0 ? await boundedGateStep(context, timeLeft(context), (signal) => context.sources.opened(signal)) : null;
+  const opened = notStored.length > 0 ? await boundedGateStep(context, timeLeft(context), (signal) => context.sources.opened(signal, "researchers")) : null;
   const elsewhere = notStored.length > 0 ? checkQuotes(notStored, opened?.ok ? opened.value : null) : [];
   let nextOpened = 0;
   const quotes = draft.findings.map((_, index) => stored.get(index)?.quote ?? elsewhere[nextOpened++]!);

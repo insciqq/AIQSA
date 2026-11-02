@@ -310,7 +310,7 @@ export function createSubagentThreadStore(client: StoreClient) {
      * model's context.
      */
     async threadEffectItems(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>):
-      Promise<Readonly<{ items: TranscriptItem[]; threadId: string }>[]> {
+      Promise<Readonly<{ items: TranscriptItem[]; name?: string; threadId: string }>[]> {
       const runIds = [...new Set(input.runIds)];
       if (runIds.length === 0) return [];
       if (runIds.length > EFFECT_RUN_LIMIT) throw new Error("transcript_load_too_large");
@@ -322,10 +322,13 @@ export function createSubagentThreadStore(client: StoreClient) {
       });
       // A call without a result is fenced from its durable attempt, as the main agent's are (`durableAttemptTimes`).
       const attempts = new Map<string, ReadonlyMap<string, Date>>();
-      for (const threadId of new Set(rows.flatMap((row) => row.subagentThreadId ? [row.subagentThreadId] : []))) {
+      const threadIds = [...new Set(rows.flatMap((row) => row.subagentThreadId ? [row.subagentThreadId] : []))];
+      for (const threadId of threadIds) {
         attempts.set(threadId, await durableAttemptTimes(client, { callIds: rows.flatMap((row) => row.subagentThreadId === threadId &&
           row.callId && attemptFenced(decodeTranscriptItem(row)) ? [row.callId] : []), runIds, threadId }));
       }
+      const threads = threadIds.length > 0 ? await client.subagentThread.findMany({ select: { id: true, name: true }, where: { chatId: input.chatId, id: { in: threadIds }, userId: input.userId } }) : [];
+      const names = new Map(threads.map(({ id, name }) => [id, name] as const));
       const lists = new Map<string, TranscriptItem[]>();
       for (const row of rows) {
         const key = `${row.modelRunId}\n${row.subagentThreadId ?? ""}`;
@@ -334,7 +337,10 @@ export function createSubagentThreadStore(client: StoreClient) {
         lists.set(key, [...lists.get(key) ?? [], recorded]);
       }
       return runIds.flatMap((runId) => [...lists].filter(([key]) => key.startsWith(`${runId}\n`))
-        .map(([key, items]) => ({ items, threadId: key.slice(runId.length + 1) })));
+        .map(([key, items]) => {
+          const threadId = key.slice(runId.length + 1);
+          return { items, name: names.get(threadId), threadId };
+        }));
     },
 
     /**

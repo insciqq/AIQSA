@@ -15,8 +15,10 @@ import { verifierGate } from "./verifier";
  * and answers pass or send back. A gate fills its own file and never touches
  * the engine.
  *
- * The order is gap check, verifier, skeptic: what a report covers, then whether
- * its claims hold, and only then whether its conclusion survives an attempt to
+ * The order is report check, gap check, verifier, skeptic: whether a draft stands
+ * on the records and the matrix, which takes no model and comes from the report
+ * port ahead of `RESEARCH_GATES`, then what a report covers, then whether its
+ * claims hold, and only then whether its conclusion survives an attempt to
  * refute it, since a conclusion is not worth that attempt while its evidence
  * may still change. The first send back stops the rest for that draft.
  *
@@ -36,7 +38,10 @@ import { verifierGate } from "./verifier";
  *   chat refuses it (`kind: "refused"`); `model: "verifier"` runs on the
  *   administrator's verifier model as this run froze it (`verifierModel`).
  * - `sources.opened` reads what agents of this research really opened. A browser page
- *   read but not stored is not in it: that is "not checked", not a failure.
+ *   read but not stored is not in it: that is "not checked", not a failure. With
+ *   `"researchers"` it leaves out what gates' own turns opened, as a gate reading
+ *   for research's progress or for a page a researcher saw must: only the skeptic
+ *   needs the rest, to find the pages it opened itself.
  */
 export type ResearchVerifierModel =
   /** The administrator's model, or the main model when the role is not set: the answer must say so (operator decision 2026-11-01). */
@@ -91,7 +96,7 @@ export type ResearchGateContext = Readonly<{
   /** Absent, as for a gate's own test, researchers can start. */
   researchersClosed?(): ResearchersClosed;
   signal: AbortSignal;
-  sources: Readonly<{ opened(signal: AbortSignal): Promise<readonly ResearchOpenedSource[]> }>;
+  sources: Readonly<{ opened(signal: AbortSignal, whose?: "researchers"): Promise<readonly ResearchOpenedSource[]> }>;
   subagents: Readonly<{ run(request: ResearchSubagentRequest, signal: AbortSignal): Promise<ResearchSubagentOutcome> }>;
   time: Readonly<{
     /** How long the gates may still take; past it the answer goes out. */

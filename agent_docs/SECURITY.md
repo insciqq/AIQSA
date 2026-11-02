@@ -56,6 +56,11 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 - Through a proxy, page readers share rotation for one answer; the proxy resolves targets, and the app checks and pins the proxy at every hop and refuses private literals first (`lib/server/webFetch/transport.ts`).
 - Parsing happens only in the disposable parser process, never in the application.
 
+## Research
+
+- A research run keeps the text its agents saw, signed-in pages included, and sends it to the administrator's checks model. Who reads that store and how long it lasts is in `agent_docs/ARCHITECTURE.md` (Research pages).
+- Accepted risk: what the skeptic finds is a model's words after reading web pages, and they reach the user in the answer's note. Each item stands on a quote found on a page an agent opened and is plain, bounded text (`lib/server/research/skeptic.ts`), but a page that steered the model can still choose those words.
+
 ## Automation webhooks
 
 - Webhook runs are not restricted (operator decision 2026-10-24): they carry a scheduled task's standing authority (Workspace, below). Accepted risk: whoever holds the token can steer the agent through the body with the owner's tools and secrets, and the body stays in the automation's chat, so it travels wherever that chat's results go. The token is the only boundary; Rotate replaces it, and turning the webhook off or pausing drops every event whose run has not started, for good, even if undone before it would start.

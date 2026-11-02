@@ -348,7 +348,7 @@ export const gapCheckGate: ResearchGate = {
     const ended = endedOn(context);
     const progress = ended.length > 0 ? pageProgress.get(context.plan) : undefined;
     const previous = progress?.feedback;
-    const opened = await context.sources.opened(context.signal);
+    const opened = await context.sources.opened(context.signal, "researchers");
     const pages = opened.filter((source) => researchEvidenceKind(source) === "page").length;
     const noNewPages = progress !== undefined && ended.at(-1)?.message !== null && pages <= progress.pages;
     pageProgress.set(context.plan, { pages, feedback: previous });
