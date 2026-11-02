@@ -166,10 +166,19 @@ export function createResearchTurns(input: ResearchTurnsInput) {
     return null;
   };
 
+  /** A message to a background sub-agent already running on the branch goes to its mailbox as in any run: it starts no researcher. */
+  const toRunningBackground = async (execution: EngineToolExecution): Promise<boolean> => {
+    const name = normalizeSubagentName(execution.call.arguments.name);
+    if (!store || name === null) return false;
+    const found = await store.find({ branchRunIds: [...base.branchRunIds, base.runId], chatId: base.chatId, name, userId: base.scope.userId });
+    return found?.active?.mode === "background";
+  };
+
   return {
     startRefusal,
     async researcherCall(tool: EngineTool, execution: EngineToolExecution) {
       if (execution.call.name !== CALL_SUBAGENT_TOOL_NAME && !researcherNames.has(normalizeSubagentName(execution.call.arguments.name) ?? "")) return tool.execute(execution);
+      if (execution.call.name === CALL_SUBAGENT_TOOL_NAME && await toRunningBackground(execution)) return tool.execute(execution);
       const refused = await startRefusal();
       if (refused) return harnessToolError(execution.call, refused.code, refused.message);
       const route = await researcherRoute();
