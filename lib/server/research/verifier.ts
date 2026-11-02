@@ -633,7 +633,7 @@ const TYPED_CORRECTION = "For each finding below, either remove the claim from t
  * What can be done with a finding that stands for a record, which only these can be. The server fills findings from `record_ids`, so a model has no list to edit and
  * no standing to set. `record_evidence` checks a quote against what its own writer read and keeps only that agent's page (`evidenceStore.ts`), and a quote that fails fills no
  * cell, so a correction from an agent that never read the page empties the cell it corrects. The report check wants a record cited in each filled cell of a row the draft
- * leans on, and refuses a corrected id, which is what the first two ways run into.
+ * leans on, which is what the first way runs into.
  */
 const recordCorrection = (researchersClosed: boolean) => ["For each finding below that names a record, the server read it from your record_ids, so there is no list of findings or standing for you to change. Do one of these:",
   "1. Take the claim out of the report and its id out of record_ids. Where that leaves a filled cell of a row you pick with no cited record, the report check sends the draft back, so use 2 or 3 there.",
