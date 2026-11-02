@@ -402,7 +402,10 @@ export type ResearchDraft = Partial<ResearchDraftReferences> & Readonly<{
   origin: "plain_text" | "reserved_call";
   /** The report as the user will read it, below the summary: an accepted draft is published as it is, with no further model call. */
   report: string;
-  /** Null when the model passed none, which the report check sends back; absent on a draft stored from before summaries. */
+  /**
+   * Null when the call passed none, which the report check sends back; a draft stored with record_ids from before summaries reads so too, which is harmless,
+   * since only the draft being checked is sent back and a stored one is only read. Absent on a draft with typed findings, stored before records.
+   */
   summary?: ResearchDraftSummary | null;
   unreachable: readonly ResearchUnreachable[];
 }>;

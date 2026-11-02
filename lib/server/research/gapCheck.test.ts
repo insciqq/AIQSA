@@ -800,6 +800,25 @@ describe("where a frame exists", () => {
       expect(judge(ctx).instructions).toContain("except two sites' figures for one key specification, which the report names as they stand");
     });
 
+    it("asks a newly recommended option's second site with no new page and the same findings, once, within the cap", async () => {
+      const records = [...ONE_SITE, at(5, "x1", "durability", "shop.example")];
+      const ctx = keyed(records);
+      expect(await gapCheckGate.run(leading, ctx)).toEqual({ kind: "pass" });
+      // A later gate sent the draft back, and the model now picks Dreamline, whose durability one site alone holds; nothing new was opened.
+      const switched: ResearchDraft = { ...DRAFT, pickRowKey: "y2", summary: { rowKeys: ["y2"], text: "Take Dreamline Y2." } };
+      const earlier: ResearchAttempt[] = [{ draft: leading, gate: "verifier", message: "[Independent check] A check did not support some of them." }];
+      const result = await gapCheckGate.run(switched, { ...ctx, attempt: 2, earlier });
+      expect(messageOf(result)).toContain("the key specifications of row y2: durability.");
+      expect(messageOf(result)).not.toContain("row x1");
+      // Asked once: the same obligation is not asked again, answered or not.
+      const asked = [...earlier, { draft: switched, gate: gapCheckGate.name, message: messageOf(result) }];
+      expect(await gapCheckGate.run(switched, { ...ctx, attempt: 3, earlier: asked })).toEqual({ kind: "pass" });
+      // Past the cap nothing goes back.
+      const capped = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: leading, gate: gapCheckGate.name, message: "Missing." }));
+      expect(await runResearchGates({ context: { ...ctx, attempt: 4, earlier: [...capped, ...earlier] }, draft: switched, gates: [gapCheckGate], runId: "r" }))
+        .toEqual({ kind: "accepted", notes: [] });
+    });
+
     it("costs only the confirmations when the records cannot be read", async () => {
       const ctx = keyed(ONE_SITE, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("down"); } } });
       expect(await gapCheckGate.run(leading, ctx)).toEqual({ kind: "pass" });
