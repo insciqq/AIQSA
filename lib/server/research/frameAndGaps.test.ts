@@ -340,6 +340,8 @@ describe("rounds that fill no new cell end research", () => {
     vi.mocked(memory.deps.subagentThreads!.find).mockImplementation(async ({ name }) => (name === "mail" ? { active, latest: active, thread } : null) as never);
     await run(adapter, memory, { subagents: { background } });
     expect(deliver).toHaveBeenCalledTimes(3);
+    // The mailbox gets the model's words as written: no research brief, matrix or unreachable list rides on a message.
+    expect(deliver.mock.calls.map(([input]) => input.message.text)).toEqual(["Also first.", "Also second.", "Also third."]);
     expect(resultsOf(requests[2], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("delivered");
     expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a"]);
   });

@@ -176,8 +176,10 @@ export function createResearchTurns(input: ResearchTurnsInput) {
 
   return {
     startRefusal,
+    runningInBackground: toRunningBackground,
     async researcherCall(tool: EngineTool, execution: EngineToolExecution) {
       if (execution.call.name !== CALL_SUBAGENT_TOOL_NAME && !researcherNames.has(normalizeSubagentName(execution.call.arguments.name) ?? "")) return tool.execute(execution);
+      // The research wrapper sends these the ordinary way before its gating (`run.ts`); this holds for any other caller.
       if (execution.call.name === CALL_SUBAGENT_TOOL_NAME && await toRunningBackground(execution)) return tool.execute(execution);
       const refused = await startRefusal();
       if (refused) return harnessToolError(execution.call, refused.code, refused.message);

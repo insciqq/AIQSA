@@ -197,6 +197,22 @@ describe("record_evidence through the real engine", () => {
     expect(fetchPage).not.toHaveBeenCalled();
   });
 
+  it("reads a page when the records cannot be read for it: a store's hiccup fails no fetch", async () => {
+    let reads = 0;
+    const evidence: ResearchEvidencePort = { page: async () => null, record: async () => { throw new Error("Not written here."); }, records: async () => {
+      reads += 1;
+      // The brief reads first; the page read's own read fails.
+      if (reads === 2) throw new Error("Store unavailable.");
+      return [];
+    } };
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher] }, { calls: [fetch(0)] }, { text: "Outcome: done\n\nRead." }, { calls: [submit] }]);
+    const fetchPage = vi.fn(async () => { throw new WebFetchError("fetch_timeout", { dispatched: true }); });
+    await run(adapter, engineOf({ gates: [], ports: { evidence: () => evidence } }), { prepared: withFetch(), services: { fetchPage } }).text();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(resultsOf(requests[3], "fetch_url")[0]).not.toContain("already recorded as unreachable");
+  });
+
   it("shares the run's two connection timeouts with later researchers", async () => {
     const next = { ...researcher, arguments: { message: "Check more sources.", name: "second" }, id: "next" };
     const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher] }, { calls: [fetch(0)] }, { calls: [fetch(1)] },
