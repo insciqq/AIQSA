@@ -16,21 +16,25 @@ const STEP_ADDITION = " (только независимые источники 
 
 export function planInBrowser(act: "edit" | "start"): ScenarioInteraction {
   return async ({ baseUrl, chatId, cookie, signal }): Promise<InteractionEvidence> => {
-    const evidence = { cardGone: false, cardShown: false, clockShown: false, edited: false, pressed: false };
+    const evidence: Record<string, boolean | string> = { cardGone: false, cardShown: false, clockShown: false, edited: false, failedAt: false, pressed: false };
+    let stage = "launch";
     if (signal.aborted) return evidence;
     const channel = browserChannel();
     const browser = await chromium.launch({ headless: true, ...channel ? { channel } : {} });
     const close = () => { void browser.close().catch(() => undefined); };
     signal.addEventListener("abort", close, { once: true });
     try {
+      stage = "open";
       const context = await browser.newContext({ baseURL: baseUrl, viewport: { height: 900, width: 1440 } });
       await context.addCookies(sessionCookies(cookie, baseUrl));
       const page = await context.newPage();
       page.setDefaultTimeout(30_000);
-      await page.goto(`/c/${encodeURIComponent(chatId)}`, { waitUntil: "domcontentloaded" });
+      await page.goto(`/c/${encodeURIComponent(chatId)}`, { timeout: 90_000, waitUntil: "domcontentloaded" });
+      stage = "card";
       const card = page.getByTestId("research-plan-card").last();
       await card.waitFor({ state: "visible", timeout: CARD_WAIT_MS });
       evidence.cardShown = true;
+      stage = "act";
       evidence.clockShown = await card.getByTestId("research-plan-clock").isVisible();
       if (act === "edit") {
         await card.getByRole("button", { exact: true, name: "Edit" }).click();
@@ -40,9 +44,12 @@ export function planInBrowser(act: "edit" | "start"): ScenarioInteraction {
       }
       await card.getByRole("button", { exact: true, name: "Начать поиск" }).click();
       evidence.pressed = true;
+      stage = "gone";
       await card.waitFor({ state: "hidden", timeout: CARD_GONE_WAIT_MS });
       evidence.cardGone = true;
       return evidence;
+    } catch (error) {
+      return { ...evidence, failedAt: `${stage}:${error instanceof Error ? error.name : "unknown"}` };
     } finally {
       signal.removeEventListener("abort", close);
       await browser.close().catch(() => undefined);
