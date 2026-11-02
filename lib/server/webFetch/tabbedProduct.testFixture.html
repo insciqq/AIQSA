@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Матрас «Пример» — синтетическая страница</title></head>
+<body>
+  <nav hidden><div role="tabpanel">MENU_BOILERPLATE</div></nav>
+  <main>
+    <h1>Матрас «Пример»</h1>
+    <p>Это вымышленная карточка товара для проверки чтения страницы. Описание рассказывает о матрасе,
+      его назначении и размерах. Все сведения придуманы для теста; они не описывают настоящий товар.</p>
+    <div role="tablist">
+      <button role="tab" aria-controls="overview">Описание</button>
+      <button role="tab" aria-controls="composition">Состав</button>
+      <a role="tab" href="#cover">Чехол</a>
+    </div>
+    <section id="overview" role="tabpanel" class="tab-pane active">
+      <h2>Описание</h2><p>Обе стороны матраса предназначены для сна.</p>
+    </section>
+    <section id="composition" role="tabpanel" class="tab-pane" style="display:none">
+      <h2>Состав</h2>
+      <table><tr><th>Слой</th><th>Толщина</th></tr><tr><td>Латекс</td><td>30 мм</td></tr></table>
+      <div hidden><p>Кокосовая койра: 10 мм.</p></div>
+      <div role="dialog"><div role="tabpanel">MODAL_BOILERPLATE</div></div>
+      <div class="cookie-banner" hidden>COOKIE_BOILERPLATE</div>
+    </section>
+    <section class="tab-panel" hidden><h2>Высота</h2><p>Общая высота: 240 мм.</p></section>
+    <section role="tabpanel" aria-hidden="true"><h2>Нагрузка</h2><p>До 120 кг на спальное место.</p></section>
+    <section role="tabpanel" class="tab-pane"><h2>Основа</h2><p>Независимые пружины: 512 на м².</p></section>
+    <div id="cover" hidden><h2>Чехол</h2><p>Съёмный хлопковый чехол.</p></div>
+  </main>
+  <div class="cookie-consent" hidden><div role="tabpanel">CONSENT_BOILERPLATE</div></div>
+  <div role="dialog" hidden><div role="tabpanel">DIALOG_BOILERPLATE</div></div>
+  <script>/* SCRIPT_ONLY_SPECIFICATION: this text is not a rendered specification. */</script>
+</body>
+</html>

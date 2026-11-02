@@ -153,6 +153,55 @@ describe("GET through a checked proxy", () => {
     expect(redirectRoute).not.toHaveBeenCalled();
   });
 
+  it.each(["http", "socks5"] as const)("scopes redirect cookies by site and call through a %s proxy", async (protocol) => {
+    const server = await proxy({ protocol, response: (request) => {
+      if (request.includes("GET /page ")) return pageResponse("", 302,
+        "Location: /next\r\nSet-Cookie: host=synthetic-host; Path=/\r\nSet-Cookie: site=synthetic-site; Domain=example.com; Path=/\r\n");
+      if (request.includes("GET /next ")) return pageResponse("", 302, "Location: http://sub.example.com/final\r\n");
+      if (request.includes("GET /final ")) return pageResponse("", 302, "Location: http://another.example.org/last\r\n");
+      return pageResponse();
+    } });
+    const connection = proxyConnection(server.port, protocol);
+    await fetchThroughProxy(url, connection, options);
+    await fetchThroughProxy("http://example.com/probe", connection, options);
+    expect(server.requests).toHaveLength(5);
+    expect(server.requests[0]).not.toMatch(/^cookie:/imu);
+    expect(server.requests[1]).toMatch(/^cookie: host=synthetic-host; site=synthetic-site\r?$/imu);
+    expect(server.requests[2]).toMatch(/^cookie: site=synthetic-site\r?$/imu);
+    expect(server.requests[3]).not.toMatch(/^cookie:/imu);
+    expect(server.requests[4]).not.toMatch(/^cookie:/imu);
+    expect(lookup).toHaveBeenCalledTimes(5);
+  });
+
+  it("carries site cookies across a direct-to-proxy handoff, then clears them", async () => {
+    const start = "http://example.com/start";
+    const target = "http://shop.example.com/page";
+    const server = await proxy({ response: (request) => request.includes("GET /page ")
+      ? pageResponse("", 302, "Location: /final\r\nSet-Cookie: hop=synthetic-hop; Path=/\r\n") : pageResponse() });
+    const connection = { ...proxyConnection(server.port), domainHints: ["shop.example.com"] };
+    const records: unknown[] = [];
+    setRecordObserver((record) => records.push(record));
+    const session = createFetchUrlSession({
+      plan: { userUrlDigests: [fetchUrlDigest(start)], version: 1 }, scheduled: false,
+      proxyPlan: { entries: [connection] }, runProxies: runProxiesFromRows([connection]), userId: "owner",
+      fetchPage: (requested, options) => fetchWebPage(requested, { ...options,
+        lookupHostname: async () => [PUBLIC], dispatch: async () => {
+          const headers = new Headers({ location: target });
+          headers.append("set-cookie", "site=synthetic-site; Domain=example.com; Path=/");
+          headers.append("set-cookie", "host=synthetic-host; Path=/");
+          return new Response(null, { status: 302, headers });
+        } }),
+      extractPage: async ({ body }) => ({ kind: "text", text: Buffer.from(body).toString(), title: null, truncated: false })
+    });
+    const result = await session.execute({ arguments: { url: start }, id: "call", name: "fetch_url" }, { signal: new AbortController().signal });
+    expect(result).toMatchObject({ status: "complete" });
+    expect(server.requests[0]).toMatch(/^cookie: site=synthetic-site\r?$/imu);
+    expect(server.requests[1]).toMatch(/^cookie: site=synthetic-site; hop=synthetic-hop\r?$/imu);
+    await fetchThroughProxy("http://shop.example.com/probe", connection, options);
+    expect(server.requests[2]).not.toMatch(/^cookie:/imu);
+    expect(JSON.stringify([result, records])).not.toMatch(/synthetic-site|synthetic-host|synthetic-hop/u);
+  });
+
   it("refuses a redirect to a private literal without asking the proxy", async () => {
     const server = await proxy({ response: () => pageResponse("", 302, "Location: http://10.0.0.1/secret\r\n") });
     await expect(fetchThroughProxy(url, proxyConnection(server.port), options)).rejects.toMatchObject({ code: "fetch_blocked_address", dispatched: true });
