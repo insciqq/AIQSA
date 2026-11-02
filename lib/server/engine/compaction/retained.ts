@@ -60,7 +60,8 @@ const GENERIC_COMMANDS = /^(?:run_command|run_shell|shell|bash|exec|execute_comm
 const WRITE_VERB = /(?:^|_)(?:add|approve|archive|assign|book|cancel|change|close|comment|create|delete|deploy|disable|edit|enable|grant|import|insert|invite|mark|merge|modify|move|patch|pay|post|publish|put|reject|remove|rename|reply|reset|restore|revoke|save|schedule|send|set|share|start|stop|submit|transfer|trigger|update|upload|upsert|write)(?:_|$)/u;
 const MCP_TOOL = /^mcp_([a-z0-9_-]+?)_([a-z0-9_-]+)_[a-z0-9]{10}$/u;
 
-function workspaceOperation(name: string): string | null {
+/** The Workspace operation a tool name stands for, by its provider-facing alias or its original name; null for any other tool. */
+export function workspaceOperation(name: string): string | null {
   const operation = WORKSPACE_TOOL.exec(name)?.[1];
   return operation && (WORKSPACE_MCP_TOOL_ALLOWLIST as readonly string[]).includes(operation) ? operation : null;
 }
@@ -227,7 +228,8 @@ type Called = Readonly<{
 
 function calls(items: readonly TranscriptItem[], classify: CompactionToolClassifier, rules: CompactionItemRules): Called[] {
   const results = new Map<string, TranscriptToolResultItem>();
-  for (const item of items) if (item.kind === "tool_result") results.set(item.callId, item);
+  // The record tells what a call returned, so a stub that cleared its result from the context (`./clearing.ts`) is no result here.
+  for (const item of items) if (item.kind === "tool_result" && item.cleared !== true) results.set(item.callId, item);
   const seen = new Set<string>();
   const out: Called[] = [];
   for (const item of items) {

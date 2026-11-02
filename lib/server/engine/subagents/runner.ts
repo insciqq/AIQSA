@@ -48,7 +48,7 @@ import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
 import type { ModelToolCall, RunTool } from "../../tools/types";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
-import { engineItemRules } from "../compaction";
+import { engineItemRules, type ToolResultClearingPolicy } from "../compaction";
 import { compactionModelCall } from "../compactionCalls";
 import { turnContextItem } from "../conversation";
 import { detachedCompactions } from "../detachedCompactions";
@@ -191,6 +191,8 @@ export type SubagentHost = Readonly<{
   request: ProviderRunRequest;
   /** How a route's requests render and size (`nativeRequestParams`, the replay target). */
   requestShape(route: SubagentModelRoute): Readonly<{ maxOutputTokens: number; params: Record<string, unknown>; target: TranscriptTarget }>;
+  /** A turn clears its oldest page results past the policy's mark (`compaction/clearing.ts`): a research run's researchers only. */
+  resultClearing?: ToolResultClearingPolicy;
   /** The model route of a binding: the parent's own, or a frozen model's (`modelRoutes.ts`). */
   route(binding: SubagentBinding, signal?: AbortSignal): Promise<SubagentRouteResult>;
   /** The run's context items (Skills index, pinned Skills): rebuilt per run, never recorded. */
@@ -872,6 +874,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         ? { contextWindow: route.request.modelCapabilities.contextWindow, maxOutputTokens: shape.maxOutputTokens } : null;
       const activeContext = createRunContext({
         append,
+        // Its stubs go on record with the thread through `append`, so a later turn of it reads the same context.
+        ...(host.resultClearing ? { clearing: host.resultClearing } : {}),
         compactionCall: (latest) => compactionModelCall({ adapter: route.adapter, deadlineAt: host.deadlineAt, now: host.now,
           onUsage: recordUsage, routing: compactionRouting, timeoutMs: route.timeoutMs }, latest),
         // A compaction still running when the turn ends goes on detached under the thread's own key, and the thread's
