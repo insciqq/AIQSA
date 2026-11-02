@@ -85,6 +85,7 @@ import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
 import { createRunResearch, researchOffered, researchRunOf, type ResearchEngineDeps, type RunResearch } from "../research/run";
+import { researchUnreachableSites } from "../research/method";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -574,7 +575,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           : input.scheduled ? { kind: "unattended" }
             : input.telegram ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
               : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now(),
-                waitMs: () => research?.holding() ? research.handoffWaitMs : undefined };
+                researching: () => research?.holding() ?? false };
         const registryInput = {
           ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,
@@ -598,6 +599,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const mainRegistry = await buildToolRegistry({ ...registryInput, agent: { kind: "main" },
           // A scheduled run's context is flat: an earlier occurrence's search is none of its evidence.
           fetchUrlEarlierRunIds: input.scheduled ? [] : branchRunIds,
+          fetchUrlResearch: async (signal) => research?.holding() ? researchUnreachableSites(await research.ports.evidence.records(signal)) : null,
           followupTexts: () => delivered,
           onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base });
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
