@@ -104,7 +104,7 @@ describe("a tally's words", () => {
       `Small sample: 11, below ${RESEARCH_SMALL_SAMPLE_BELOW}. Report it as small and in counts (sagging: 3 of 11), never as a percentage.`);
     expect(researchSmallSampleNote({ counts: [], sampleSize: 11 })).toBe(`Small sample: 11, below ${RESEARCH_SMALL_SAMPLE_BELOW}. Report it as small and in counts, never as a percentage.`);
     expect(researchSmallSampleNote({ counts: [{ count: 3, label: "sagging" }], sampleSize: RESEARCH_SMALL_SAMPLE_BELOW })).toBeNull();
-    for (const claim of ["27% report sagging.", "27 % жалуются.", "27 процентов жалуются.", "27 percent report sagging."]) expect(researchClaimGivesRate(claim)).toBe(true);
+    for (const claim of ["27% report sagging.", "27 % жалуются.", "27 процентов жалуются.", "27 percent report sagging.", "27 por ciento se queja."]) expect(researchClaimGivesRate(claim)).toBe(true);
     expect(researchClaimGivesRate("3 of 11 report sagging.")).toBe(false);
   });
 });

@@ -72,6 +72,13 @@ describe("answerSpeech", () => {
     });
   });
 
+  it("speaks a Spanish answer's placeholders in Spanish when the fallback voice is Spanish", () => {
+    expect(answerSpeech("Aquí tienes el código:\n\n```ts\nconst value = 1;\n```", "es-ES")).toEqual({
+      lang: "es-ES",
+      sentences: ["Aquí tienes el código:", "Bloque de código omitido."]
+    });
+  });
+
   it("returns nothing to read when only punctuation or citations remain", () => {
     expect(answerSpeech("[K1] — …", "en").sentences).toEqual([]);
     expect(answerSpeech("   ", "en").sentences).toEqual([]);

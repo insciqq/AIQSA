@@ -31,6 +31,7 @@ const SOURCE_NAMES: Readonly<Record<ResearchSourceClass, string>> = {
 function readerText(text: string): string {
   return space(text).replace(/primary_official|independent_tests|owner_reviews|action_channel/giu, (id) => SOURCE_NAMES[id.toLowerCase() as ResearchSourceClass])
     .replace(/класс(?:ы|ов|а|у|ом|е)?\s+источник(?:ов|а|и)?/giu, "источники")
+    .replace(/clases?\s+de\s+fuentes?/giu, "fuentes")
     .replace(/source[_ ]class(?:es)?/giu, "sources");
 }
 

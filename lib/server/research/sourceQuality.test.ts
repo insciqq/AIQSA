@@ -147,7 +147,8 @@ describe("seller evidence", () => {
     expect(supposedlyIndependent.standing).toBe("confirmed");
   });
 
-  it.each(["Price: $249\nAdd to cart", "Price: EUR 249\n- button \"Order now\" [ref=e5]", "Цена: 29 990 ₽\nВ корзину", "Цена: 29990 руб.\nКупить"])(
+  it.each(["Price: $249\nAdd to cart", "Price: EUR 249\n- button \"Order now\" [ref=e5]", "Цена: 29 990 ₽\nВ корзину", "Цена: 29990 руб.\nКупить",
+    "Precio: 499,00 €\nAñadir al carrito", "499 €\n- button \"Comprar ahora\" [ref=e7]"])(
     "keeps shop signals from page text outside the quote: %s", (text) => {
       const seller = record(URL, `${RELEASE}\n${text}`);
       expect(seller.kind === "finding" && seller.quote).toBe(QUOTE);
@@ -196,7 +197,7 @@ describe("seller evidence", () => {
       byClass: { action_channel: 0, independent_tests: 0, owner_reviews: 1, primary_official: 0 } });
   });
 
-  it.each(["The tested mattress costs $249.", "Add to cart", 'The review says "Add to cart" beside a $249 price.', "Order statistics from 2024"])(
+  it.each(["The tested mattress costs $249.", "Add to cart", 'The review says "Add to cart" beside a $249 price.', "Order statistics from 2024", "El colchón cuesta 499 € y se puede comprar en tiendas."])(
     "does not mistake a price, prose or a control alone for a shop: %s", (text) => {
       expect(quality.researchShopText(text)).toBe(false);
       expect(quality.countIndependentSources([record(URL, text)])).toBe(1);
@@ -216,6 +217,7 @@ describe("publication dates and ages", () => {
   it.each<[string, string | null]>([
     ["Published: 2024", "2024"], ["Published on 2024-03", "2024-03"], ["Publication date: 2024-02-29", "2024-02-29"],
     ["Published: March 5, 2024", "2024-03-05"], ["Опубликовано: 5 марта 2024", "2024-03-05"], ["Published: March 2024", "2024-03"],
+    ["Publicado el 5 de marzo de 2024", "2024-03-05"], ["Fecha de publicación: marzo de 2024", "2024-03"], ["Referencias\nPublicado: 2024-01-01", null],
     ["Published: 2024\nPublished: 2024-03-05", "2024-03-05"],
     ["The study was published in 2024.\nUpdated: 2026-11-02\nCopyright 2026", null],
     ["Published: 03/04/2024", null], ["Published: 2023-02-29", null], ["Published: 2024-13", null], ["Published: 2024-04-31", null],
