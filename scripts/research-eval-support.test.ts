@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdminProviderModelConfiguration } from "../lib/contracts/adminProviders";
+import { researchAnswerText, researchCounterEvidenceNote, researchNote, type ResearchNoteKey } from "../lib/server/research/notes";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, T_QUESTION_MS, comparePicks, compareResearchAnswers, configureResearchEvalRoles, conflictingFacts, createResearchArchive,
@@ -327,6 +328,12 @@ describe("content-free stdout, role accounting and plan window", () => {
       "Source could", "Время вышло", "Time ran out", "Отчёт пришёл", "This report came", "Research ended", "Исследование завершилось"];
     expect(researchServerNotes(prefixes.map((prefix) => `*${prefix} note.*`).join("\n"))).toEqual(prefixes.map((prefix) => `${prefix} note.`));
     expect(researchServerNotes("ordinary private answer *Unrelated note*")).toEqual([]);
+    // Every note the answer carries since 2026-11-02 reads as one, the checks' two of content included.
+    const keys = { before_plan: true, composed_failed: true, composed_no_report: true, composed_timed_out: true, followup_not_applied: true, gate_failed: true, incomplete: true,
+      no_findings: true, not_submitted: true, run_failed: true, stopped: true, time_out: true } satisfies Record<ResearchNoteKey, true>;
+    const current = [...Object.keys(keys).map((key) => researchNote(key as ResearchNoteKey)), researchCounterEvidenceNote([{ claim: "It sags.", quote: null, url: "https://lab.example/x" }, { claim: "It smells.", quote: null, url: "https://lab.example/y" }])!,
+      "The checks did not confirm these facts this report cites, so do not rely on them: Lonax — price."];
+    expect(researchServerNotes(researchAnswerText("# Report", current))).toEqual(current);
   });
 
   it("reads what a person does on a kind's run", () => {

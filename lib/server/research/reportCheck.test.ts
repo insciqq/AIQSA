@@ -8,7 +8,6 @@ import { REPORT_CHECK_GATE, reportCheckGate, researchReportFindings } from "./re
 
 const check = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[] = RECORDS, matrix: ResearchMatrix | null = MATRIX) => researchReportFindings(draft, records, matrix);
 const messages = (draft: ResearchDraft, records?: readonly ResearchEvidenceRecord[], matrix?: ResearchMatrix | null) => check(draft, records, matrix).troubles.map(({ message }) => message).join("\n");
-const said = (draft: ResearchDraft, records?: readonly ResearchEvidenceRecord[], matrix?: ResearchMatrix | null) => check(draft, records, matrix).troubles.map(({ note }) => note).join("\n");
 
 const ADVICE: ResearchDraft = { branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "Measure the bed first, then try two firmness levels.", unreachable: [] };
 /** Three of the fixtures' five pages, so a draft citing all of them can be traced and a test can be about something else. */
@@ -17,7 +16,7 @@ const withBranches: ResearchFrame ={ ...FRAME, branches: [{ cases: [{ key: "ligh
 
 describe("a draft that holds up", () => {
   it("passes with nothing to say", () => {
-    expect(check(DRAFT)).toEqual({ notes: [], troubles: [] });
+    expect(check(DRAFT)).toEqual({ troubles: [] });
   });
 });
 
@@ -29,7 +28,6 @@ describe("what the pick rests on", () => {
     expect(text).toContain(`x1 / reviews: ${id(3)}`);
     expect(text).not.toContain("x1 / firmness");
     expect(text).toContain("The checks read only what record_ids names");
-    expect(said({ ...DRAFT, recordIds: [id(1)] })).toContain("Lonax Memory: Цена за 160×200");
   });
 
   it("asks one record of a cell, however many it holds", () => {
@@ -81,21 +79,15 @@ describe("what the draft names", () => {
     expect(troubles[0]!.message).toContain("Nothing else of this draft was checked.");
   });
 
-  it("says references could not be read, never that records do not stand, in English beside any report", () => {
-    const unreadable: ResearchDraft = { ...ADVICE, invalidReferences: "pick_row_key must be null or the key of the row picked.", pickRowKey: undefined, recordIds: undefined };
-    expect(said(unreadable)).toBe("The references of this report could not be read, so the checks did not read the records behind it.");
-    expect(said({ ...unreadable, report: "Отчёт." })).toBe("The references of this report could not be read, so the checks did not read the records behind it.");
-  });
-
   describe("a corrected id", () => {
     const corrected = [...RECORDS.slice(1), finding(7, "x1", "firmness", { supersedes: id(1), url: "https://maker.example/x1" })];
 
     it("is cited, since the server reads its correction: nothing goes back and no note rests on it", () => {
-      expect(check(DRAFT, corrected, matrixOf(FRAME, corrected))).toEqual({ notes: [], troubles: [] });
+      expect(check(DRAFT, corrected, matrixOf(FRAME, corrected))).toEqual({ troubles: [] });
     });
 
     it("cites its correction's link as well", () => {
-      expect(check({ ...DRAFT, report: `${DRAFT.report}\n\nhttps://maker.example/x1` }, corrected, matrixOf(FRAME, corrected))).toEqual({ notes: [], troubles: [] });
+      expect(check({ ...DRAFT, report: `${DRAFT.report}\n\nhttps://maker.example/x1` }, corrected, matrixOf(FRAME, corrected))).toEqual({ troubles: [] });
     });
 
     it("does not hide an id of no record beside it", () => {
@@ -107,7 +99,6 @@ describe("what the draft names", () => {
 
   it("sends back a pick outside the matrix, and one on a matrix with no rows", () => {
     expect(messages({ ...DRAFT, pickRowKey: "x9" })).toContain("Outside the matrix: row x9. Rows: x1, x2.");
-    expect(said({ ...DRAFT, pickRowKey: "x9" })).toContain("is not among the options research compared");
     const noRows = { ...FRAME, rows: [] };
     expect(messages({ ...DRAFT, pickRowKey: "x1" }, RECORDS, matrixOf(noRows, RECORDS))).toContain("The matrix has no rows yet.");
   });
@@ -127,7 +118,6 @@ describe("what the draft names", () => {
     const matrix = matrixOf(withBranches, RECORDS);
     const light = { branchKey: "weight", caseKey: "light", rowKey: "x1" };
     expect(messages({ ...DRAFT, branchPicks: [light] }, RECORDS, matrix)).toContain("weight/heavy");
-    expect(said({ ...DRAFT, branchPicks: [light] }, RECORDS, matrix)).toContain("Вес спящего: тяжелее");
     const both = { ...DRAFT, branchPicks: [light, { branchKey: "weight", caseKey: "heavy", rowKey: "x1" }] };
     expect(messages(both, RECORDS, matrix)).toBe("");
   });
@@ -139,11 +129,11 @@ describe("what the draft names", () => {
 
 describe("advice without facts", () => {
   it("passes: it names no pick and cites no record, however much the store holds", () => {
-    expect(check(ADVICE)).toEqual({ notes: [], troubles: [] });
+    expect(check(ADVICE)).toEqual({ troubles: [] });
   });
 
   it("passes on a matrix that holds nothing yet", () => {
-    expect(check(ADVICE, [], matrixOf(FRAME, []))).toEqual({ notes: [], troubles: [] });
+    expect(check(ADVICE, [], matrixOf(FRAME, []))).toEqual({ troubles: [] });
   });
 
   it("goes back as soon as it links a source, which is a claim to rest on it", () => {
@@ -163,7 +153,6 @@ describe("the report's links", () => {
   it("sends back a link that is no record at all", () => {
     const text = messages(linked("https://elsewhere.example/page"));
     expect(text).toContain("no record of this research");
-    expect(said(linked("https://elsewhere.example/page"))).toContain("Some links in this report have no research record");
   });
 
   it("reads a link as its page, whatever surrounds or follows it", () => {
@@ -265,13 +254,8 @@ describe("what a reader can trace", () => {
     expect(messages({ ...draftOn(records, linking(2)), recordIds: [id(1), id(2), id(3), id(4)] }, records, null)).toBe("");
   });
 
-  it("carries a note for the cap in English beside any report", () => {
-    expect(said(draftOn(onPages(4), "Отчёт."), onPages(4), null)).toBe("Some sources of this report are not linked in its text.");
-    expect(said(draftOn(onPages(4), "The report."), onPages(4), null)).toBe("Some sources of this report are not linked in its text.");
-  });
-
   it("leaves a text draft alone, which has no ids", () => {
-    expect(check({ findings: [], origin: "plain_text", report: "Отчёт.", unreachable: [] }, onPages(5), null)).toEqual({ notes: [], troubles: [] });
+    expect(check({ findings: [], origin: "plain_text", report: "Отчёт.", unreachable: [] }, onPages(5), null)).toEqual({ troubles: [] });
   });
 });
 
@@ -280,8 +264,8 @@ describe("the comparison", () => {
 
   it("sends back a draft with no table where rows have evidence to compare", () => {
     expect(messages({ ...DRAFT, report: "# Отчёт\n\nБерите Lonax Memory." })).toContain("The report has no comparison table.");
-    expect(said({ ...DRAFT, report: "Лонакс | Оптима" })).toContain("has no comparison table");
-    expect(said({ ...DRAFT, report: "Lonax | Optima" })).toContain("has no comparison table");
+    expect(messages({ ...DRAFT, report: "Лонакс | Оптима" })).toContain("has no comparison table");
+    expect(messages({ ...DRAFT, report: "Lonax | Optima" })).toContain("has no comparison table");
   });
 
   it("wants no table from one row or none, where nothing compares", () => {
@@ -296,7 +280,7 @@ describe("the comparison", () => {
     const table = ["| Вариант | Цена за 160×200 | Отзывы владельцев |", "| --- | --- | --- |", "| Lonax Memory | 30 000 ₽ | 3 из 11 |"].join("\n");
     const text = messages(without(table));
     expect(text).toContain("Жёсткость (От неё зависит спина.)");
-    expect(said(without(table))).toContain("Жёсткость");
+    expect(messages(without(table))).toContain("Жёсткость");
   });
 
   it("takes a shortened heading, another case of a word and a table on its side", () => {
@@ -312,7 +296,7 @@ describe("the comparison", () => {
       criteria: [...FRAME.criteria, { criterion, key: "tests", why: "It separates the rows." }] });
 
     it("passes, added or not: no word match can see a translation, and a real run's model pasted the English in to get past it", () => {
-      expect(check(DRAFT, RECORDS, matrixOf(added(ENGLISH), RECORDS))).toEqual({ notes: [], troubles: [] });
+      expect(check(DRAFT, RECORDS, matrixOf(added(ENGLISH), RECORDS))).toEqual({ troubles: [] });
     });
 
     it("passes the other way round", () => {
@@ -364,13 +348,13 @@ describe("the comparison", () => {
     expect(messages({ ...DRAFT, report: "Lonax | Optima\n---\nNothing else." })).toContain("no comparison table");
   });
 
-  it("asks an added criterion to be named, and its reason reaches the answer if it never is", () => {
+  it("asks an added criterion to be named with its reason", () => {
     const frame: ResearchFrame = { ...FRAME, changes: [{ at: "2026-11-01T10:00:00.000Z", by: { name: "lab", threadId: "thread-1" }, change: "add_criterion", key: "smell", reason: "Покупатели жалуются на запах." }],
       criteria: [...FRAME.criteria, { criterion: "Запах", key: "smell", why: "Мешает спать." }] };
     const matrix = matrixOf(frame, RECORDS);
     const table = (extra: string, cell: string) => DRAFT.report.replace("| Жёсткость |", `| Жёсткость |${extra}`).replace("| средняя |", `| средняя |${cell}`).replace("| --- | --- | --- | --- |", "| --- | --- | --- | --- | --- |");
     expect(messages(DRAFT, RECORDS, matrix)).toContain("Запах (Покупатели жалуются на запах.)");
-    expect(said(DRAFT, RECORDS, matrix)).toContain("Запах: Покупатели жалуются на запах.");
+    expect(messages(DRAFT, RECORDS, matrix)).toContain("Запах (Покупатели жалуются на запах.)");
     expect(messages({ ...DRAFT, report: `${table(" Запах |", " нет |")}\n\nЗапах добавлен: покупатели жалуются.` }, RECORDS, matrix)).toBe("");
   });
 });
@@ -379,37 +363,21 @@ describe("when the data does not separate", () => {
   const stated = { rowKeys: ["x1", "x2"], statement: "Данные не разделяют эти матрасы.", wouldDecide: "Полежать на обоих в салоне." };
   const draft: ResearchDraft = { ...DRAFT, doesNotSeparate: stated, pickRowKey: null, recordIds: [id(1), id(2), id(3), id(4), id(5)], report: `${DRAFT.report}\n\n${LINKED}` };
 
-  it("reaches the user in the server's note when the report does not say it, with no rewrite", () => {
-    const { notes, troubles } = check(draft);
-    expect(troubles).toEqual([]);
-    expect(notes).toEqual(["The data does not separate these options: Lonax Memory, Optima Classic. Данные не разделяют эти матрасы. What would decide: Полежать на обоих в салоне."]);
-  });
-
-  it("adds nothing when the report says it", () => {
-    expect(check({ ...draft, report: `${draft.report}\n\n${stated.statement}   ${stated.wouldDecide}` }).notes).toEqual([]);
-  });
-
-  it("lets nothing a model wrote become a link or an image in the answer", () => {
-    const { notes } = check({ ...draft, doesNotSeparate: { ...stated, statement: "Оба ![x](https://evil.example/?q=1) хороши.", wouldDecide: "[Жмите](https://evil.example)." } });
-    expect(notes.join("")).not.toContain("](");
-    expect(notes.join("")).not.toContain("![");
-  });
-
-  it("speaks the report's language and leaves it a plain note", () => {
-    const { notes } = check({ ...draft, doesNotSeparate: { ...stated, statement: "The data *does not* tell them apart.", wouldDecide: "Trying them." }, report: "The report, in English only." });
-    expect(notes).toEqual(["The data does not separate these options: Lonax Memory, Optima Classic. The data does not tell them apart. What would decide: Trying them."]);
+  it("leaves saying so to the report: nothing goes back, and the server adds nothing whether the report says it or not", () => {
+    expect(check(draft)).toEqual({ troubles: [] });
+    expect(check({ ...draft, report: `${draft.report}\n\n${stated.statement}   ${stated.wouldDecide}` })).toEqual({ troubles: [] });
   });
 });
 
 describe("what it leaves alone", () => {
   it("passes a text draft as it stands: it has no ids", () => {
-    expect(check({ findings: [], origin: "plain_text", report: "See https://elsewhere.example/page.", unreachable: [] })).toEqual({ notes: [], troubles: [] });
+    expect(check({ findings: [], origin: "plain_text", report: "See https://elsewhere.example/page.", unreachable: [] })).toEqual({ troubles: [] });
   });
 
   it("passes a run with no frame and no records, which goes on as it always did", () => {
     const stored = { findings: [{ claim: "It holds.", quote: "It holds.", sourceClass: "independent_tests" as const, standing: "confirmed" as const, url: "https://lab.example/x" }],
       origin: "reserved_call" as const, report: "It holds.", unreachable: [] };
-    expect(check(stored, [], null)).toEqual({ notes: [], troubles: [] });
+    expect(check(stored, [], null)).toEqual({ troubles: [] });
   });
 
   it("still checks ids where only the matrix could not be read", () => {
@@ -440,17 +408,14 @@ describe("the gate", () => {
     await expect(run(DRAFT)).resolves.toEqual({ kind: "accepted", notes: [] });
   });
 
-  it("sends a draft back under its own name, with what the answer says if nothing comes of it", async () => {
+  it("sends a draft back under its own name, and leaves nothing of it for the answer", async () => {
     const outcome = await run({ ...DRAFT, pickRowKey: "x9" });
-    expect(outcome).toMatchObject({ gate: REPORT_CHECK_GATE, kind: "sent_back", message: expect.stringContaining("Outside the matrix") });
-    expect(outcome.notes?.join("\n")).toContain("is not among the options research compared");
+    expect(outcome).toEqual({ gate: REPORT_CHECK_GATE, kind: "sent_back", message: expect.stringContaining("Outside the matrix") });
   });
 
-  it("stops sending back at the cap, and the answer carries what stayed wrong", async () => {
+  it("stops sending back at the cap, and the answer says nothing of what its form missed", async () => {
     const earlier = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: DRAFT, gate: REPORT_CHECK_GATE, message: "Again." }));
-    const outcome = await run({ ...DRAFT, pickRowKey: "x9" }, earlier);
-    expect(outcome.kind).toBe("accepted");
-    expect(outcome.notes?.join("\n")).toContain("is not among the options research compared");
+    expect(await run({ ...DRAFT, pickRowKey: "x9" }, earlier)).toEqual({ kind: "accepted", notes: [] });
   });
 
   it("costs its check and leaves a note when the store cannot be read, never the answer", async () => {

@@ -406,14 +406,14 @@ describe("the gap check's needs", () => {
     expect(memory.published()).toContain(researchNote("no_findings"));
   });
 
-  it("does not spend a round on a draft that the repeat guard blocks: the standing draft goes out with a note", async () => {
+  it("does not spend a round on a draft that the repeat guard blocks: the standing draft goes out, marked not fully checked", async () => {
     const stubborn = gate("gap", async () => ({ kind: "send_back", message: "Still open." }));
     const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }, { calls: [submit("call-3")] }, { calls: [submit("call-4")] }]);
     const memory = engineOf({ gates: [stubborn] });
     await run(adapter, memory).text();
     expect(requests.length).toBeLessThanOrEqual(5);
-    expect(memory.published()).toContain(REPORT);
-    expect(memory.published()).toContain(researchNote("unresolved"));
+    // The draft the guard held back is one no gate finished on; that the send back went unanswered is no news to the reader.
+    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("gate_failed")}*`);
   });
 });
 
@@ -837,7 +837,7 @@ describe("a draft and its notes stay together", () => {
       sources: { opened: async () => [] }, subagents: { run: async () => ({ code: "x", kind: "refused" as const }) },
       time: { remainingMs: () => 60_000, sendBackAllowed: () => true }, verifierModel: async () => ({ kind: "unavailable" as const }) };
     const draft = { findings: [], origin: "reserved_call" as const, report: "r", unreachable: [] };
-    expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ gate: "first", kind: "sent_back", message: "Again.", notes: ["Carried."] });
+    expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ gate: "first", kind: "sent_back", message: "Again.", notes: [researchNote("gate_failed"), "Carried."] });
     expect(await runResearchGates({ context, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: ["Its own."] });
     const broken: ResearchGate = { ...carrying, run: async () => { throw new Error("down"); } };
     expect(await runResearchGates({ context, draft, gates: [broken], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed"), "Carried."] });

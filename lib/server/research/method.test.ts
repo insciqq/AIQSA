@@ -352,18 +352,23 @@ describe("running the gates", () => {
     expect(await runResearchGates({ context: context({ earlier: older }), draft, gates: [gate], runId: "r" })).toMatchObject({ gate: "a", kind: "sent_back" });
   });
 
-  it("says plainly that a gate with no note of its own left something open, never that time ran out", async () => {
+  it("adds nothing for a gate past its cap with no note of its own: a note that only says a send back was missed tells the reader nothing", async () => {
     const asked = { draft, gate: "a", message: "Again." };
     const gate = { name: "a", run: async () => ({ kind: "send_back" as const, message: "Again." }) };
     const earlier = new Array<typeof asked>(RESEARCH_ROUND_LIMITS.sendBacksPerCheck).fill(asked);
-    expect(await runResearchGates({ context: context({ earlier }), draft, gates: [gate], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("unresolved")] });
+    expect(await runResearchGates({ context: context({ earlier }), draft, gates: [gate], runId: "r" })).toEqual({ kind: "accepted", notes: [] });
+    const late = { name: "a", run: async () => ({ kind: "send_back" as const, message: "Again." }) };
+    expect(await runResearchGates({ context: context({ time: { remainingMs: () => 1_000, sendBackAllowed: () => false } }), draft, gates: [late], runId: "r" })).toEqual({ kind: "accepted", notes: [] });
   });
 
-  it("stops at the first send back, so a draft goes back before anything checks it further", async () => {
+  it("stops at the first send back, so a draft goes back before anything checks it further, and says so if it goes out uncorrected", async () => {
     const later = vi.fn(async () => ({ kind: "pass" as const }));
     const outcome = await runResearchGates({ context: context(), draft, gates: [{ name: "a", run: async () => ({ kind: "send_back", message: "Again." }) }, { name: "b", run: later }], runId: "r" });
-    expect(outcome).toEqual({ gate: "a", kind: "sent_back", message: "Again." });
+    expect(outcome).toEqual({ gate: "a", kind: "sent_back", message: "Again.", notes: [researchNote("gate_failed")] });
     expect(later).not.toHaveBeenCalled();
+    // The last gate leaves no check unread behind it.
+    const last = await runResearchGates({ context: context(), draft, gates: [passing, { name: "a", run: async () => ({ kind: "send_back", message: "Again." }) }], runId: "r" });
+    expect(last).toEqual({ gate: "a", kind: "sent_back", message: "Again.", notes: ["Passed."] });
   });
 
   it("collects the gates' notes", async () => {

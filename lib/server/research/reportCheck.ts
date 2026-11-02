@@ -3,7 +3,6 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchGate } from "./gates";
 import { researchMatrix, type ResearchMatrix } from "./matrix";
-import { researchNote } from "./notes";
 import { researchGatePorts } from "./ports";
 import { researchRegistrableDomain } from "./sourceQuality";
 
@@ -33,10 +32,13 @@ const TRACEABLE_PAGES = 4;
 /** A claim beside its page in a send back: enough to find it in the report. */
 const CLAIM_WORDS_CHARACTERS = 80;
 
-/** What is wrong: what the model reads, and what the answer says when it cannot go back. */
-type Trouble = Readonly<{ message: string; note: string }>;
+/**
+ * What is wrong, as the model reads it. Nothing of it reaches the answer, even when it cannot go back (operator decision 2026-11-02: the answer carries no process
+ * notes): a report that misses its form says what it says, and a note that it missed its form tells the reader nothing they can act on.
+ */
+type Trouble = Readonly<{ message: string }>;
 
-/** A label or a model's words in a note, which sits in the answer: nothing of it may become a link, an image or markup. */
+/** A label or a model's words in a send back: nothing of it may become a link, an image or markup. */
 const plain = (text: string) => text.replace(/[\p{Cc}\p{Cf}*`[\]<>]+/gu, " ").replace(/\s+/gu, " ").trim();
 
 const listed = (entries: readonly string[], separator = ", ") => entries.length > LISTED
@@ -139,7 +141,7 @@ function unknownRecords(ids: ReadonlySet<string>, records: readonly ResearchEvid
   const unknown = [...ids].filter((id) => !live.has(id));
   if (unknown.length === 0) return null;
   return { message: `These record_ids name no live record of this research: ${listed(unknown)}. Use the record's id as it was listed after a researcher's report or returned by ` +
-    "record_evidence. Where no record holds what you wrote, take it out of the report, or record it first.", note: researchNote("report_unknown_records") };
+    "record_evidence. Where no record holds what you wrote, take it out of the report, or record it first." };
 }
 
 const rowLabel = (frame: ResearchFrame, key: string) => frame.rows.find((row) => row.key === key)?.label ?? key;
@@ -165,7 +167,7 @@ function outsideMatrix(draft: ResearchDraft, frame: ResearchFrame, report: strin
   const wrong = [...unknownRows.map((key) => `row ${key}`), ...wrongPicks, ...twice];
   if (wrong.length === 0) return null;
   const known = frame.rows.length > 0 ? `Rows: ${listed(frame.rows.map(({ key }) => key))}.` : "The matrix has no rows yet.";
-  return { message: `Outside the matrix: ${listed([...new Set(wrong)])}. ${known} ${MATRIX_RULE}`, note: researchNote("report_pick_outside") };
+  return { message: `Outside the matrix: ${listed([...new Set(wrong)])}. ${known} ${MATRIX_RULE}` };
 }
 
 /** The cases of each branch with no pick, once the draft picks at all: what is unknown about the user changes the result. */
@@ -173,10 +175,10 @@ function openBranches(draft: ResearchDraft, frame: ResearchFrame, report: string
   const picks = draft.branchPicks ?? [];
   if (!draft.pickRowKey && picks.length === 0) return null;
   const open = frame.branches.flatMap((branch) => branch.cases.filter(({ key }) => !picks.some((pick) => pick.branchKey === branch.key && pick.caseKey === key))
-    .map(({ key, label }) => ({ key: `${branch.key}/${key}`, words: `${plain(branch.unknown)}: ${plain(label)}` })));
+    .map(({ key }) => `${branch.key}/${key}`));
   if (open.length === 0) return null;
-  return { message: `branch_picks leaves these cases of what is unknown about the user without a row: ${listed(open.map(({ key }) => key))}. Give each case its row in branch_picks, the same row ` +
-    "where the case changes nothing, and say in the report who each pick is for.", note: `${researchNote("report_branches_open")} ${listed(open.map(({ words }) => words), "; ")}.` };
+  return { message: `branch_picks leaves these cases of what is unknown about the user without a row: ${listed(open)}. Give each case its row in branch_picks, the same row ` +
+    "where the case changes nothing, and say in the report who each pick is for." };
 }
 
 /** Cells of the rows the draft leans on whose evidence it does not cite, which is how a pick's prices and reviews stayed out of a real run's checks. */
@@ -186,12 +188,10 @@ function uncitedRows(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: Res
   const bare = leaning.filter((key) => !records.some((record) => isClaim(record) && record.rowKey === key));
   const cells = matrix.coverage.cells.filter((cell) => cell.state === "filled" && leaning.includes(cell.rowKey) && !cell.recordIds.some((id) => ids.has(id)));
   if (bare.length === 0 && cells.length === 0) return null;
-  const criterionOf = (key: string) => plain(matrix.frame.criteria.find((criterion) => criterion.key === key)?.criterion ?? key);
   const missing = cells.map((cell) => `${cell.rowKey} / ${cell.criterionKey}: ${cell.recordIds.slice(0, IDS_PER_CELL).join(", ")}`);
   const noEvidence = bare.length > 0 ? `No record holds evidence for ${listed(bare)}, so nothing can stand behind it: send a researcher for it, or pick another row. ` : "";
   const uncited = cells.length > 0 ? `The checks read only what record_ids names, and your pick rests on these cells: add at least one id of each. ${listed(missing, "; ")}.` : "";
-  const named = [...bare.map((key) => plain(rowLabel(matrix.frame, key))), ...new Set(cells.map((cell) => `${plain(rowLabel(matrix.frame, cell.rowKey))}: ${criterionOf(cell.criterionKey)}`))];
-  return { message: `${noEvidence}${uncited}`.trim(), note: `${researchNote("report_pick_unbacked")} ${listed(named, "; ")}.` };
+  return { message: `${noEvidence}${uncited}`.trim() };
 }
 
 /**
@@ -216,7 +216,7 @@ function unbackedLinks(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
   const unrecorded = links.filter((link) => !holders.has(pageOf(link)!));
   const parts = [...uncited.length > 0 ? [`These links of the report are records you did not cite: add their ids to record_ids. ${listed(uncited)}.`] : [],
     ...unrecorded.length > 0 ? [`These links of the report are no record of this research: record what they show with record_evidence, then cite it, or take them out. ${listed(unrecorded)}.`] : []];
-  return { message: parts.join(" "), note: researchNote("report_links_unrecorded") };
+  return { message: parts.join(" ") };
 }
 
 /**
@@ -236,7 +236,7 @@ function unlinkedPages(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
   if (pages.size < TRACEABLE_PAGES || reached * 2 >= pages.size) return null;
   const entries = unlinked.map(([first, ...rest]) => `${first!.url} (${bounded(plain(first!.claim), CLAIM_WORDS_CHARACTERS)}${rest.length > 0 ? `, and ${rest.length} more` : ""})`);
   return { message: `The report links ${reached} of the ${pages.size} pages it rests on, so its reader cannot trace what it says. Link each figure, price, study and named claim to the page it ` +
-    `came from, where it is stated. Not linked: ${listed(entries, "; ")}.`, note: researchNote("report_unlinked_sources") };
+    `came from, where it is stated. Not linked: ${listed(entries, "; ")}.` };
 }
 
 /** A comparison's table and its criteria. Only where there is a comparison: rows with evidence to compare, and a draft that states something. */
@@ -249,52 +249,42 @@ function comparison(draft: ResearchDraft, matrix: ResearchMatrix, records: reado
   const text = folded(draft.report);
   const unnamed = added.filter(({ criterion }) => !namesCriterion(text, criterion.criterion, report));
   const troubles: Trouble[] = unnamed.length > 0 ? [{
-    message: `Criteria were added during research, and the report must name each with its reason. Name: ${listed(unnamed.map(({ criterion, reason }) => `${plain(criterion.criterion)} (${plain(reason)})`), "; ")}.`,
-    note: `${researchNote("report_added_criteria")} ${listed(unnamed.map(({ criterion, reason }) => `${plain(criterion.criterion)}: ${plain(reason)}`), "; ")}.` }] : [];
+    message: `Criteria were added during research, and the report must name each with its reason. Name: ${listed(unnamed.map(({ criterion, reason }) => `${plain(criterion.criterion)} (${plain(reason)})`), "; ")}.` }] : [];
   const held = new Set(records.filter(isClaim).flatMap(({ rowKey }) => rowKey ?? []));
   if (frame.rows.filter(({ key }) => held.has(key)).length < 2) return troubles;
   const table = folded(tableText(draft.report));
   const wanted = "Put one comparison table in the report, as a Markdown table with the rows against all of the matrix's criteria, and write no data for a cell nothing filled.";
-  if (!table) return [...troubles, { message: `The report has no comparison table. ${wanted}`, note: researchNote("report_no_table") }];
+  if (!table) return [...troubles, { message: `The report has no comparison table. ${wanted}` }];
   const leftOut = frame.criteria.filter(({ criterion }) => !namesCriterion(table, criterion, report)).map(({ criterion, why }) => ({ criterion: plain(criterion), why: plain(why) }));
   const picks = leanedOn(draft).filter((key) => !namesLabel(table, rowLabel(frame, key))).map((key) => plain(rowLabel(frame, key)));
   if (leftOut.length === 0 && picks.length === 0) return troubles;
   const message = [...leftOut.length > 0 ? [`The comparison table leaves out these criteria of the matrix: ${listed(leftOut.map(({ criterion, why }) => `${criterion} (${why})`), "; ")}.`] : [],
     ...picks.length > 0 ? [`The comparison table leaves out what you pick: ${listed(picks)}.`] : []];
-  return [...troubles, { message: `${message.join(" ")} ${wanted}`, note: `${researchNote("report_criteria_missing")} ${listed([...leftOut.map(({ criterion }) => criterion), ...picks])}.` }];
+  return [...troubles, { message: `${message.join(" ")} ${wanted}` }];
 }
 
-/** A statement that rows do not separate reaches the user: the server's words carry it when the report's own do not. It costs no rewrite. */
-function separationNotes(draft: ResearchDraft, frame: ResearchFrame | null, report: string): readonly string[] {
-  const stated = draft.doesNotSeparate;
-  if (!stated) return [];
-  const text = folded(draft.report).replace(/\s+/gu, " ");
-  const said = (words: string) => text.includes(folded(words).replace(/\s+/gu, " ").trim());
-  if (said(stated.statement) && said(stated.wouldDecide)) return [];
-  const rows = stated.rowKeys.map((key) => plain(frame ? rowLabel(frame, key) : key));
-  return [`${researchNote("report_not_separated")} ${listed(rows)}. ${plain(stated.statement)} ${researchNote("report_would_decide")} ${plain(stated.wouldDecide)}`];
-}
+export type ResearchReportFindings = Readonly<{ troubles: readonly Trouble[] }>;
 
-export type ResearchReportFindings = Readonly<{ notes: readonly string[]; troubles: readonly Trouble[] }>;
-
-/** The whole check, with no port: what goes back, and what the answer says either way. */
+/**
+ * The whole check, with no port: what goes back. A statement that the rows do not separate, with what would decide, is the report's own to make, and the
+ * server adds it nowhere.
+ */
 export function researchReportFindings(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[], matrix: ResearchMatrix | null): ResearchReportFindings {
   const report = draft.report;
-  if (draft.origin === "plain_text" || (records.length === 0 && !matrix)) return { notes: [], troubles: [] };
-  if (draft.invalidReferences !== undefined) return { notes: [], troubles: [{ message: `${draft.invalidReferences} Nothing else of this draft was checked.`, note: researchNote("report_unreadable_references") }] };
+  if (draft.origin === "plain_text" || (records.length === 0 && !matrix)) return { troubles: [] };
+  if (draft.invalidReferences !== undefined) return { troubles: [{ message: `${draft.invalidReferences} Nothing else of this draft was checked.` }] };
   if (draft.recordIds === undefined && draft.findings.length > 0) {
-    return { notes: [], troubles: [{ message: "findings are no longer taken: the checks read each claim from its record. Pass record_ids, the ids listed after each researcher's report and " +
-      "returned by record_evidence.", note: researchNote("report_typed_findings") }] };
+    return { troubles: [{ message: "findings are no longer taken: the checks read each claim from its record. Pass record_ids, the ids listed after each researcher's report and " +
+      "returned by record_evidence." }] };
   }
   const named = draft.recordIds ?? [];
   const ids = citedRecords(named, records);
-  const notes = separationNotes(draft, matrix?.frame ?? null, report);
   const unknown = unknownRecords(ids, records, report);
   const links = unbackedLinks(draft, ids, records, report);
   const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
-  return { notes, troubles: [unknown, ...rows ?? [], links, unlinkedPages(draft, ids, records, report), ...table].flatMap((trouble) => trouble ?? []) };
+  return { troubles: [unknown, ...rows ?? [], links, unlinkedPages(draft, ids, records, report), ...table].flatMap((trouble) => trouble ?? []) };
 }
 
 const bounded = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -311,8 +301,7 @@ export const reportCheckGate: ResearchGate = {
     if (draft.origin === "plain_text") return { kind: "pass" };
     const { coverage, evidence } = researchGatePorts(context);
     const [records, matrix] = await Promise.all([evidence.records(context.signal), researchMatrix(coverage, context.signal)]);
-    const { notes, troubles } = researchReportFindings(draft, records, matrix);
-    if (troubles.length === 0) return { kind: "pass", notes };
-    return { kind: "send_back", message: sendBackMessage(troubles), notes, unresolvedNote: bounded(troubles.map(({ note }) => note).join(" "), RUN_FOLLOWUP_MAX_CHARS) };
+    const { troubles } = researchReportFindings(draft, records, matrix);
+    return troubles.length === 0 ? { kind: "pass" } : { kind: "send_back", message: sendBackMessage(troubles) };
   }
 };
