@@ -217,3 +217,200 @@ export function checkQuotes(findings: readonly Pick<ResearchFinding, "quote" | "
     return { reason: snippets.some((text) => holds(text, parts)) ? "search_snippet_only" : "not_in_opened_text", status: "unsupported" };
   });
 }
+
+/**
+ * A figure a claim gives: a number with its unit, as the claim writes it (`3 см`, `59 732 ₽`, `160×200 см`, `7 зон`). On a real run the
+ * verifier found most claims only partly supported because their figures were in no quote, so `record_evidence` names each one its quote
+ * lacks while the agent still has the page, with no model. `parts` are a dimension's or a range's numbers, each with every value its writing
+ * may mean; `scale` lets another unit of its dimension match (`1,5 м` is `150 см`).
+ */
+export type ClaimFigure = Readonly<{ parts: readonly (readonly number[])[]; scale: UnitScale | null; text: string }>;
+
+type UnitScale = Readonly<{ dimension: string; factor: number }>;
+
+/** A thousands group is split by a space of any width (normalized to one by then) or an apostrophe; a point or a comma may split it too. */
+const NUMBER_SOURCE = "\\d+(?:[.,]\\d+|[ '\\u2019]\\d{3}(?!\\d))*";
+const NUMBER = new RegExp(NUMBER_SOURCE, "gu");
+/**
+ * A number, a dimension or a range in a claim: `160×200`, `160 x 200`, `160 х 200` (Cyrillic), `3-5`. A number glued to a letter on its
+ * left is a name (`S24`, `COVID-19`), and one after `/` or `:` is part of a ratio or a time.
+ */
+const CLAIM_NUMBERS = new RegExp(`(?<![\\p{L}\\p{N}.,/:])(?<!\\p{L}[-/])${NUMBER_SOURCE}(?:\\s?[x×хX-]\\s?${NUMBER_SOURCE})*`, "gu");
+const JOINER = /\s?[x×хX-]\s?(?=\d)/u;
+const CURRENCY_BEFORE = /[$€£¥₽] ?$/u;
+/** What may follow a number as its unit, glued, after a space or a hyphen (`7-зонный`). */
+const UNIT_AT = /(?:\s|-)?(%|‰|°\s?[CFС]?|[$€£¥₽]|[\p{L}µ°]+[²³]?(?:\/\p{L}+[²³]?)?\.?)/uy;
+
+/** Words after a number that are no unit of it: `4,8 из 5`, `3 of 11`, `2 de 5`. */
+const NOT_UNITS: ReadonlySet<string> = new Set([
+  "а", "без", "в", "во", "для", "до", "же", "за", "и", "из", "или", "к", "ко", "как", "между", "на", "над", "не", "ни", "но", "о", "об", "около", "от", "перед", "по",
+  "под", "после", "при", "против", "с", "со", "то", "у", "чем", "что", "это",
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "if", "in", "is", "of", "on", "or", "out", "per", "than", "that", "the", "to", "vs", "was",
+  "were", "which", "with",
+  "al", "con", "de", "del", "e", "el", "en", "es", "la", "las", "lo", "los", "más", "menos", "o", "para", "por", "que", "se", "sin", "son", "u", "un", "una", "y"
+]);
+
+/** Units written with a capital, which an ordinary word after a number (`15 Pro`) is not. */
+const CAPITAL_UNITS: ReadonlySet<string> = new Set(["A", "Ah", "ARS", "CLP", "COP", "EUR", "GB", "Gb", "Gbps", "GHz", "GBP", "Hz", "K", "KB", "MB", "Mb", "Mbps", "MHz",
+  "MP", "MPa", "MW", "MXN", "N", "Pa", "RUB", "TB", "USD", "V", "W", "Wh", "В", "Вт", "Гб", "ГБ", "Гц", "ГГц", "Мб", "МБ", "МГц", "МП", "Мп", "МПа", "Н", "Па", "ТБ"]);
+
+/**
+ * Units and counted things in the research languages that count after a name too: `Flex 20 стоит` gives no figure `20 стоит`, while
+ * `Flex 20 имеет 7 зон` gives `7 зон`. After any other word, any word that is no function word counts something.
+ */
+const KNOWN_UNIT = new RegExp("^(?:" + [
+  "мм", "см", "дм", "м", "км", "мг", "г", "гр", "кг", "т", "мл", "л", "шт", "штук\\p{L}*", "руб\\p{L}*", "р", "коп\\p{L}*", "долл\\p{L}*", "евро", "тыс\\p{L}*", "млн",
+  "млрд", "вт", "квт\\p{L}*", "ватт\\p{L}*", "ч", "час\\p{L}*", "мин", "минут\\p{L}*", "сек", "секунд\\p{L}*", "дн\\p{L}*", "день", "сут\\p{L}*", "недел\\p{L}*", "мес",
+  "месяц\\p{L}*", "год\\p{L}*", "лет", "раз", "раза", "зон\\p{L}*", "сло[йяеёю]\\p{L}*", "пружин\\p{L}*", "отзыв\\p{L}*", "оцен\\p{L}*", "звезд\\p{L}*", "звёзд\\p{L}*",
+  "балл\\p{L}*", "процент\\p{L}*", "человек", "градус\\p{L}*", "литр\\p{L}*", "метр\\p{L}*", "сантиметр\\p{L}*", "миллиметр\\p{L}*", "километр\\p{L}*", "грамм\\p{L}*",
+  "килограмм\\p{L}*", "тонн\\p{L}*", "миллион\\p{L}*", "миллиард\\p{L}*", "кв", "куб",
+  "mm", "cm", "m", "km", "mg", "g", "kg", "t", "ml", "l", "lb", "lbs", "oz", "ft", "pcs", "kw", "kwh", "w", "h", "hrs?", "min", "mins", "s", "sec", "k", "bn",
+  "dollars?", "euros?", "pounds?", "cents?", "rubles?", "thousands?", "millions?", "billions?", "percent", "zones?", "layers?", "years?", "months?", "weeks?", "days?",
+  "hours?", "minutes?", "seconds?", "times", "pieces?", "reviews?", "ratings?", "stars?", "points?", "springs?", "coils?", "people", "persons?", "degrees?",
+  "meters?", "metres?", "inch(?:es)?", "feet", "foot", "grams?", "kilograms?", "kilos?", "tons?", "tonnes?", "liters?", "litres?", "watts?", "volts?",
+  "zonas?", "capas?", "años?", "meses", "mes", "semanas?", "días?", "horas?", "minutos?", "segundos?", "veces", "piezas?", "unidades", "reseñas?", "opiniones",
+  "estrellas?", "puntos?", "muelles?", "resortes?", "personas?", "grados?", "metros?", "centímetros?", "milímetros?", "kilómetros?", "gramos?", "kilogramos?",
+  "toneladas?", "litros?", "pesos?", "dólares?", "mil", "millones", "millón"
+].join("|") + ")$", "u");
+
+/** Units a figure may be written in another of: a claim's `1,5 м` is a page's `150 см`, and `1,2 млн` its `1 200 000`. */
+const SCALES: readonly Readonly<{ dimension: string; factor: number; unit: RegExp }>[] = [
+  { dimension: "length", factor: 0.001, unit: /^(?:мм|mm|миллиметр\p{L}*|millimet\p{L}*|milímetros?)$/u },
+  { dimension: "length", factor: 0.01, unit: /^(?:см|cm|сантиметр\p{L}*|centimet\p{L}*|centímetros?)$/u },
+  { dimension: "length", factor: 1, unit: /^(?:м|m|метр|метра|метров|метрах|meters?|metres?|metros?)$/u },
+  { dimension: "length", factor: 1000, unit: /^(?:км|km|километр\p{L}*|kilomet\p{L}*|kilómetros?)$/u },
+  { dimension: "mass", factor: 0.000001, unit: /^(?:мг|mg)$/u },
+  { dimension: "mass", factor: 0.001, unit: /^(?:г|гр|g|грамм\p{L}*|grams?|gramos?)$/u },
+  { dimension: "mass", factor: 1, unit: /^(?:кг|kg|килограмм\p{L}*|kilograms?|kilogramos?|kilos?)$/u },
+  { dimension: "mass", factor: 1000, unit: /^(?:т|t|тонн\p{L}*|tons?|tonnes?|toneladas?)$/u },
+  { dimension: "volume", factor: 0.001, unit: /^(?:мл|ml|миллилитр\p{L}*|millilit\p{L}*|mililitros?)$/u },
+  { dimension: "volume", factor: 1, unit: /^(?:л|l|литр\p{L}*|liters?|litres?|litros?)$/u },
+  { dimension: "number", factor: 1000, unit: /^(?:тыс\p{L}*|k|thousands?|mil)$/iu },
+  { dimension: "number", factor: 1_000_000, unit: /^(?:млн|миллион\p{L}*|millions?|millón|millones|mln)$/iu },
+  { dimension: "number", factor: 1_000_000_000, unit: /^(?:млрд|миллиард\p{L}*|billions?|bn)$/iu }
+];
+
+/** Small numbers a page may spell out, so `7 зон` is on a page that says `семь зон` or `семизонный`. */
+const NUMBER_WORDS: Readonly<Record<string, number>> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12,
+  один: 1, одна: 1, одно: 1, одного: 1, одной: 1, два: 2, две: 2, двух: 2, три: 3, трёх: 3, трех: 3, четыре: 4, четырёх: 4, четырех: 4, пять: 5, пяти: 5, шесть: 6,
+  шести: 6, семь: 7, семи: 7, восемь: 8, восьми: 8, девять: 9, девяти: 9, десять: 10, десяти: 10
+};
+const NUMBER_PREFIXES: readonly (readonly [string, number])[] = [["одно", 1], ["двух", 2], ["дву", 2], ["трёх", 3], ["трех", 3], ["четырёх", 4], ["четырех", 4],
+  ["пяти", 5], ["шести", 6], ["семи", 7], ["восьми", 8], ["девяти", 9], ["десяти", 10]];
+
+const canonical = (value: number) => Number(value.toPrecision(12));
+
+/** Whether these groups are thousands: one to three digits, then threes. */
+const thousands = (groups: readonly string[]) => groups.length > 1 && groups[0]!.length <= 3 && groups.slice(1).every((group) => group.length === 3);
+
+/**
+ * What a written number may mean. A space or an apostrophe only groups thousands; a lone point or comma before three digits may be
+ * either (`1.500` is 1500 in Spanish and 1.5 in English), so both count; a last separator unlike the others is the decimal one
+ * (`59 732,50`, `1,234.56`). Nothing for a writing no number has, such as a date.
+ */
+function valuesOf(token: string): readonly number[] {
+  const groups = token.split(/\D/u);
+  const separators = (token.match(/\D/gu) ?? []).map((separator) => /[.,]/u.test(separator) ? separator : " ");
+  if (separators.length === 0) return [Number(token)];
+  const values: number[] = [];
+  const last = separators.at(-1)!;
+  const before = separators.slice(0, -1);
+  if (last !== " " && !before.includes(last) && new Set(before).size <= 1 && (before.length === 0 || thousands(groups.slice(0, -1)))) {
+    values.push(Number(`${groups.slice(0, -1).join("")}.${groups.at(-1)!}`));
+  }
+  if (new Set(separators).size === 1 && thousands(groups)) values.push(Number(groups.join("")));
+  return values.map(canonical);
+}
+
+function scaleOf(unit: string): UnitScale | null {
+  const bare = unit.replace(/\.$/u, "");
+  const found = SCALES.find(({ unit: pattern }) => pattern.test(bare));
+  return found ? { dimension: found.dimension, factor: found.factor } : null;
+}
+
+/**
+ * The unit right after a number at `at`, with where it ends, if what follows is one: a symbol, a unit, or a word that counts something
+ * (`зон`, `layers`, `capas`). `named`: the number follows a name, after which only a known unit counts.
+ */
+function unitAt(text: string, at: number, named: boolean): Readonly<{ end: number; unit: string }> | null {
+  UNIT_AT.lastIndex = at;
+  const match = UNIT_AT.exec(text);
+  if (!match) return null;
+  const unit = match[1]!;
+  const found = { end: at + match[0].length, unit };
+  if (!/^[\p{L}µ]/u.test(unit)) return found;
+  const bare = unit.replace(/\.$/u, "");
+  if (NOT_UNITS.has(bare)) return null;
+  if (CAPITAL_UNITS.has(bare) || KNOWN_UNIT.test(bare.toLowerCase())) return found;
+  return !named && /^\p{Ll}/u.test(bare) ? found : null;
+}
+
+/** A capitalized word or one with a digit just before a number names a thing: `Flex 20`, `iPhone 15`, `Galaxy S24 5`. */
+const NAME_BEFORE = /(?:^|\s)(?:\p{Lu}|\S*\d)\S*\s$/u;
+
+/** At most this many figures of one claim: a claim is a sentence, and the result stays short. */
+const CLAIM_FIGURE_LIMIT = 16;
+
+/**
+ * The figures a claim gives. Only a number with a unit or a currency is one, so a model's name, a rating's `из 5` and a number
+ * no number reads as (`12.05.2024`) are left out: the check stays quiet rather than ask for what is no figure.
+ */
+export function claimFigures(claim: string): readonly ClaimFigure[] {
+  const text = normalizeQuotedText(claim);
+  const figures: ClaimFigure[] = [];
+  for (const match of text.matchAll(CLAIM_NUMBERS)) {
+    const start = match.index;
+    const leading = text.slice(Math.max(0, start - 2), start);
+    const currency = CURRENCY_BEFORE.exec(leading);
+    const from = currency ? start - currency[0].length : start;
+    const unit = unitAt(text, start + match[0].length, NAME_BEFORE.test(text.slice(Math.max(0, from - 40), from)));
+    if (!unit && !currency) continue;
+    const parts = match[0].split(JOINER).map(valuesOf);
+    if (parts.some((values) => values.length === 0)) continue;
+    const shown = text.slice(from, unit?.end ?? start + match[0].length).replace(/\.$/u, "");
+    if (figures.some((figure) => figure.text === shown)) continue;
+    figures.push({ parts, scale: unit ? scaleOf(unit.unit) : null, text: shown });
+    if (figures.length >= CLAIM_FIGURE_LIMIT) break;
+  }
+  return figures;
+}
+
+/**
+ * Every value a text writes a number for, read leniently, so that a figure there is rarely called missing: each meaning of an
+ * ambiguous number, each group of a spaced one as well as the whole, small numbers in words, and a scaled unit's value in its
+ * dimension. No unit is required beside a number, since a table puts it in the header.
+ */
+function textValues(text: string): ReadonlySet<string> {
+  const normalized = normalizeQuotedText(text);
+  const keys = new Set<string>();
+  for (const match of normalized.matchAll(NUMBER)) {
+    const token = match[0];
+    const read = valuesOf(token);
+    const values = /[ '’]/u.test(token) || read.length === 0 ? [...read, ...token.split(/\D/u).map((group) => canonical(Number(group)))] : read;
+    const unit = unitAt(normalized, match.index + token.length, false);
+    const scale = unit ? scaleOf(unit.unit) : null;
+    for (const value of values) {
+      keys.add(`number:${value}`);
+      if (scale) keys.add(`${scale.dimension}:${canonical(value * scale.factor)}`);
+    }
+  }
+  for (const [word] of normalized.toLowerCase().matchAll(/\p{L}+/gu)) {
+    const value = NUMBER_WORDS[word] ?? NUMBER_PREFIXES.find(([prefix]) => word.startsWith(prefix) && word.length > prefix.length + 2)?.[1];
+    if (value !== undefined) keys.add(`number:${value}`);
+  }
+  return keys;
+}
+
+function figureIn(figure: ClaimFigure, keys: ReadonlySet<string>): boolean {
+  const { scale } = figure;
+  return figure.parts.every((values) => values.some((value) => keys.has(`number:${value}`) || (scale !== null && keys.has(`${scale.dimension}:${canonical(value * scale.factor)}`))));
+}
+
+/** The figures this text does not write, in their order: a quote's, or a stored page's. */
+export function figuresNotIn(figures: readonly ClaimFigure[], text: string): readonly ClaimFigure[] {
+  if (figures.length === 0) return [];
+  const keys = textValues(text);
+  return figures.filter((figure) => !figureIn(figure, keys));
+}
