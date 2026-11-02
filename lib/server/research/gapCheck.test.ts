@@ -226,6 +226,25 @@ describe("independent gap judgment", () => {
     expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 
+  it("keeps the word that the report is not fully checked when a later gate's send back changes no evidence, until a judgment completes", async () => {
+    const run = vi.fn(async (): Promise<ResearchSubagentOutcome> => judged()).mockImplementationOnce(async () => { throw new Error("provider failed"); });
+    const ctx = context({ subagents: { run } });
+    const skeptic = { name: "skeptic", run: vi.fn(async (_draft: ResearchDraft, gateContext: ResearchGateContext) => gateContext.attempt === 1
+      ? { kind: "send_back" as const, message: "[Skeptic] Weigh it." } : { kind: "pass" as const }) };
+    const gates = [gapCheckGate, skeptic];
+    const first = await runResearchGates({ context: ctx, draft: DRAFT, gates, runId: "run" });
+    expect(first).toMatchObject({ gate: "skeptic", kind: "sent_back", notes: [researchNote("gate_failed")] });
+    const earlier: ResearchAttempt[] = [{ draft: DRAFT, gate: "skeptic", message: "[Skeptic] Weigh it." }];
+    const rewritten = { ...DRAFT, report: "# Report\nThe mattress is durable, though one lab disagrees." };
+    expect(await runResearchGates({ context: { ...ctx, attempt: 2, earlier }, draft: rewritten, gates, runId: "run" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed")] });
+    expect(run).toHaveBeenCalledOnce();
+    // A new finding buys a judgment, and one that completes clears it.
+    const added = { ...rewritten, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] };
+    expect(await runResearchGates({ context: { ...ctx, attempt: 3, earlier: [...earlier, { draft: rewritten, message: null }] }, draft: added, gates, runId: "run" }))
+      .toEqual({ kind: "accepted", notes: [] });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
   it("says only that the report is not fully checked when a later judge fails, and names nothing the earlier one raised", async () => {
     const ctx = context({ subagents: { run: async () => { throw new Error("provider failed"); } } });
     expect(await runResearchGates({ context: ctx, draft: DRAFT, gates: [gapCheckGate], runId: "run" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed")] });

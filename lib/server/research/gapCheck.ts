@@ -43,7 +43,9 @@ type SentBack = Judgment & Readonly<{ kind: "mechanical" | "judged"; pages: numb
 // evidence; only a larger count of page results after a send-back permits another
 // round. Track clean checks too, since a later gate can send the same draft back.
 // Weak keys do not keep completed runs alive.
-const pageProgress = new WeakMap<ResearchPlan, Readonly<{ pages: number; feedback?: SentBack }>>();
+// `unfinished`: the last judgment this research needed did not complete, and why, which holds until one does.
+type Unfinished = "failed" | "time";
+const pageProgress = new WeakMap<ResearchPlan, Readonly<{ pages: number; feedback?: SentBack; unfinished?: Unfinished }>>();
 
 /**
  * Saved results can be JSON envelopes whose stdout is itself stringified JSON.
@@ -172,7 +174,9 @@ function gapsResult(draft: ResearchDraft, context: ResearchGateContext, feedback
   const budget = Math.floor((RUN_FOLLOWUP_MAX_CHARS - SEND_RESEARCHERS.length - 6) / (limits.length > 0 ? 3 : 2));
   const issues = issueText(heading, feedback.gaps.map((gap) => readerText(gap.issue)), budget);
   const steps = issueText("Next steps:", feedback.gaps.map((gap, index) => `${index + 1}. ${readerText(gap.next_step)}`), budget);
-  pageProgress.set(context.plan, { pages: feedback.pages, feedback });
+  // Only a judgment that completed clears an unfinished one: mechanical gaps say nothing of what the judge would have.
+  const unfinished = feedback.kind === "mechanical" ? pageProgress.get(context.plan)?.unfinished : undefined;
+  pageProgress.set(context.plan, { pages: feedback.pages, feedback, ...unfinished ? { unfinished } : {} });
   // Limits reach only the report's author, who states them in the report.
   const stated = limits.length > 0 ? `\n\n${issueText("Limits to state in the report, if it does not yet:", limits, budget)}` : "";
   return { kind: "send_back", message: `${issues}\n\n${SEND_RESEARCHERS}\n\n${steps}${stated}` };
@@ -304,7 +308,7 @@ export const gapCheckGate: ResearchGate = {
     const opened = await context.sources.opened(context.signal, "researchers");
     const pages = opened.filter((source) => researchEvidenceKind(source) === "page").length;
     const noNewPages = progress !== undefined && ended.at(-1)?.message !== null && pages <= progress.pages;
-    pageProgress.set(context.plan, { pages, feedback: previous });
+    pageProgress.set(context.plan, { pages, feedback: previous, ...progress?.unfinished ? { unfinished: progress.unfinished } : {} });
     if (draft.origin === "plain_text" && draft.findings.length === 0) {
       // responseEnded already asked for the reserved call once; run.ts owns
       // the final no-findings note. Rewriting after a send-back buys no round.
@@ -314,13 +318,19 @@ export const gapCheckGate: ResearchGate = {
 
     // A source class whose opening cannot be told stays neither covered nor missing.
     const missing = matrix ? matrixGaps(matrix) : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
-    if (noNewPages) return { kind: "pass" };
+    // An unfinished judgment costs the check, never the answer, and the answer says only that it is not fully checked, and whether time is why. Evidence that
+    // did not change pays for no new judgment, so the last one's word stands, an unfinished one included, until a judgment completes.
+    const said = (cause: Unfinished): ResearchGateResult => ({ kind: "pass", notes: [researchNote(cause === "time" ? "time_out" : "gate_failed")] });
+    const unfinished = (cause: Unfinished = "failed"): ResearchGateResult => {
+      pageProgress.set(context.plan, { ...pageProgress.get(context.plan) ?? { pages }, unfinished: cause });
+      return said(cause);
+    };
+    const asBefore = (): ResearchGateResult => progress?.unfinished ? said(progress.unfinished) : { kind: "pass" };
+    if (noNewPages) return asBefore();
     if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, closed);
 
     // Mechanical gaps are recomputed above, so a newly opened page can close them even when the finding itself did not change.
-    if (addedNothing(draft, context)) return { kind: "pass" };
-    // An unfinished judgment costs the check, never the answer, and the answer says only that it is not fully checked, and whether time is why.
-    const unfinished = (cause: "failed" | "time" = "failed"): ResearchGateResult => ({ kind: "pass", notes: [researchNote(cause === "time" ? "time_out" : "gate_failed")] });
+    if (addedNothing(draft, context)) return asBefore();
     if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) return unfinished("time");
     try {
       const outcome = await context.subagents.run({ brief: judgeBrief(draft, context.plan, matrix), instructions: matrix ? JUDGE_MATRIX_INSTRUCTIONS : JUDGE_INSTRUCTIONS,
@@ -332,7 +342,8 @@ export const gapCheckGate: ResearchGate = {
       pageProgress.set(context.plan, { pages, feedback: { ...judgment, kind: "judged", pages } });
       return { kind: "pass" };
     } catch {
-      // The mechanical check already ran and the verifier comes next.
+      // The mechanical check already ran and the verifier comes next. The gate's own time ending is `gates.ts`'s to say, and it stays unfinished here too.
+      if (context.signal.aborted) unfinished("time");
       context.signal.throwIfAborted();
       return unfinished();
     }
