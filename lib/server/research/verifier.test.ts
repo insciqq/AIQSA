@@ -182,8 +182,18 @@ describe("what the verifier gets and what comes back of it", () => {
   it("says so when the verifier answers for only some claims, and they stay could not be checked", async () => {
     const { context } = contextOf({ turn: async () => ended("Outcome: done\nC1 | supported | yes") });
     const result = await check(draftOf([HOLDS, finding("Another.", "The X2 sagged")]), context);
-    expect(result.kind).toBe("pass");
+    // The reader learns nothing of counts, only that the report is not fully checked.
+    expect(result).toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
     expect(tally(result)).toContain("Claims: 2; supported: 1; could not be checked: 1.");
+  });
+
+  it("does not read as checked when the model answered one of two stored claims", async () => {
+    const records = [recordOf("r1", "in stock at 399", "p1"), recordOf("r2", "delivery on Monday", "p1", { claim: "It ships Monday." })];
+    const { context } = contextOf({ evidence: evidenceOf(records, [pageOf("p1", "The X1 is in stock at 399, delivery on Monday.")]), turn: async () => ended("Outcome: done\nC1 | supported | yes") });
+    const draft = draftOf([recorded("r1"), recorded("r2", { claim: "It ships Monday.", quote: "delivery on Monday" })]);
+    const result = await check(draft, context);
+    expect(verifiedClaims(draft)?.[1]?.verdict).toBeNull();
+    expect(result.notes ?? []).toContain(researchNote("gate_failed"));
   });
 
   it("keeps a brief within its bound with the claims stated as confirmed first, and says how many were left out", async () => {
@@ -198,6 +208,7 @@ describe("what the verifier gets and what comes back of it", () => {
       ended(`Outcome: done\n${[...request.brief.matchAll(/^C(\d+) /gmu)].map((match) => `C${match[1]} | supported | yes`).join("\n")}`));
     const result = await check(draftOf(findings), { ...context, subagents: { run: answered } });
     expect(tally(result)).toContain(`supported: ${VERIFIER_LIMITS.claimsPerTurn}; could not be checked: 3.`);
+    expect(result.notes).toEqual([researchNote("gate_failed")]);
     expect(answered).toHaveBeenCalledTimes(1);
   });
 
@@ -651,6 +662,7 @@ describe("a finding that stands for a record", () => {
       } });
       const result = await check(draftOf(findings), context);
       expect(tally(result)).toContain("Claims: 20; supported: 16; could not be checked: 4.");
+      expect(result.notes).toEqual([researchNote("gate_failed")]);
     });
 
     it("reads each page once, however many claims rest on it", async () => {
@@ -669,6 +681,8 @@ describe("a finding that stands for a record", () => {
       const result = await check(draftOf(findings), context);
       expect(run).toHaveBeenCalledTimes(VERIFIER_LIMITS.turnsPerAttempt);
       expect(run.mock.calls.every(([request]) => request.brief.length <= RUN_FOLLOWUP_MAX_CHARS)).toBe(true);
+      // What fit no turn has no verdict, so the report is not fully checked.
+      expect(result.notes).toEqual([researchNote("gate_failed")]);
     });
 
     it("keeps a stored claim's turn apart from one that may open pages", async () => {
@@ -686,6 +700,7 @@ describe("a finding that stands for a record", () => {
       expect(run).toHaveBeenCalledTimes(1);
       expect(run.mock.calls[0]![0].tools).toEqual([]);
       expect(tally(result)).toContain("Claims: 2; supported: 1; could not be checked: 1.");
+      expect(result.notes).toEqual([researchNote("gate_failed")]);
     });
 
     it("under the research clock checks the rest too, since the checks keep their tools for their phase", async () => {
@@ -801,6 +816,19 @@ describe("a finding that stands for a record", () => {
       const result = await check(corrected, context);
       expect(run.mock.calls[0]![0].brief).toContain(CORRECTED);
       expect(result).toEqual({ kind: "pass" });
+    });
+
+    it("keeps two records of the same words and link apart, so the one the final draft cites stays named", async () => {
+      const records = [reportFinding(1, "x1", "price"), reportFinding(2, "x2", "price", { claim: "Claim 1.", url: "https://source.example/1" })];
+      const draft = researchDraftWithRecords({ ...reportDraft, recordIds: records.map(({ id }) => id) }, records);
+      const { context } = contextOf({ coverage, evidence: evidenceOf(records, []) });
+      const first = sentBack(await check(draft, context));
+      expect(verifiedClaims(draft)?.map((claim) => claim.rejected)).toEqual([true, true]);
+      const finalDraft = researchDraftWithRecords({ ...reportDraft, recordIds: [records[0]!.id] }, records);
+      const named = researchCarriedNotes([verifierGate], finalDraft, [{ draft, gate: "verifier", message: first.message }]);
+      expect(named).toEqual(["The checks did not confirm these facts this report cites, so do not rely on them: Lonax Memory — Цена за 160×200."]);
+      // So does an approval's rebuilt draft, from the message alone.
+      expect(researchCarriedNotes([verifierGate], finalDraft, [{ draft: structuredClone(draft), gate: "verifier", message: first.message }])).toEqual(named);
     });
 
     it("names several in one line, each by its cell once, and what has no cell only as others", async () => {
@@ -1030,7 +1058,8 @@ describe("the one correction", () => {
     const earlier = [{ draft: structuredClone(first.draft), message: first.message }];
     const { context } = contextOf({ earlier, turn: async () => ended("Outcome: done\nC1 | supported | y") });
     const result = await check(draftOf([HOLDS, WRONG, INVENTED]), context);
-    expect(result).toEqual({ kind: "pass", notes: [SOME_REJECTED] });
+    // The model answered only for the first claim, so the second has no verdict this time.
+    expect(result).toEqual({ kind: "pass", notes: [researchNote("gate_failed"), SOME_REJECTED] });
     // Still the one correction, and what passed before is read again.
     expect(context.subagents.run).toHaveBeenCalledTimes(1);
     expect(tally(result)).toContain("Claims: 3; supported: 1; unsupported: 1; could not be checked: 1.");
@@ -1636,7 +1665,8 @@ describe("through the engine", () => {
     const searched = [{ arguments: { url: LAB }, id: "s1", name: "fetch_url" }];
 
     it("reaches the user when it survives: sent back once, not answered by the report, named in the answer", async () => {
-      const other = scripted([{ calls: searched }, { text: against(SAGS) }, { calls: searched }, { text: "Outcome: done\nNONE" }]);
+      // This host has no fetch_url for a gate's turn, so a second turn that tried to open a page could not look: it searches with the model's own tool here.
+      const other = scripted([{ calls: searched }, { text: against(SAGS) }, { text: "Outcome: done\nNONE" }]);
       const main = scripted([{ calls: begin }, { calls: [submit("call-1", [HOLDS], "# First")] }, { calls: [submit("call-2", [HOLDS], "# Second")] }]);
       const memory = engineOf({ gates: [skepticGate], verifier: role(other.adapter) });
       await run(main.adapter, memory);

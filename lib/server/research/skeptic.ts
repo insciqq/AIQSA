@@ -255,13 +255,15 @@ async function seekCounterEvidence(draft: ResearchDraft, context: ResearchGateCo
   }
   // With nothing to look a quote up in, nothing can be said of what it raised.
   if (opened && !opened.ok) return { kind: "pass", notes: [researchNote("gate_failed"), ...named(stands)] };
-  if (stands.length > 0) return { kind: "pass", notes: named(stands) };
-  // What it named and could not show on a page is left out, which is no news to the reader: it looked.
-  if (unbacked > 0) return { kind: "pass" };
-  // Nothing found counts only from a turn that finished and could look. A model's own search leaves no step, so only steps that all failed tell.
+  // A turn counts as a whole check only when it finished and could look. A model's own search leaves no step, so only steps that all failed tell. A turn that
+  // ended early still keeps what it found, and the report is then not fully checked.
   const couldNotLook = result.steps.length > 0 && result.steps.every((step) => step.outcome !== "complete");
-  const looked = result.state === "done" && result.outcome === "done" && decoded.none && !couldNotLook;
-  return looked ? { kind: "pass" } : unfinished("failed");
+  const finished = result.state === "done" && result.outcome === "done" && !couldNotLook;
+  const partial = finished ? [] : [researchNote("gate_failed")];
+  if (stands.length > 0) return { kind: "pass", notes: [...partial, ...named(stands)] };
+  // Nothing stands, as it found nothing or the report answered what it raised before. What it named and could not show on a page is left out, which is
+  // no news to the reader; nothing found counts only from a whole check.
+  return finished && (unbacked > 0 || decoded.none) ? { kind: "pass" } : { kind: "pass", notes: [researchNote("gate_failed")] };
 }
 
 export const skepticGate: ResearchGate = {
