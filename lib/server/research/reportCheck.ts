@@ -14,6 +14,7 @@ import { researchRegistrableDomain } from "./sourceQuality";
  * - a row the draft leans on has a record cited in each cell that holds evidence, which is what makes the prices, sellers and reviews behind a pick
  *   reach the checks after it: a real run cited 9 of 56 records, and three checks read the maker's specifications while the pick went unread;
  * - a link in the report is a record the draft cites, since a link is what a report's prose claims to rest on that a field can show;
+ * - a report resting on several pages links at least half of them, so its reader can trace what it says;
  * - a comparison has its table, naming every criterion, and a criterion added on the way is named.
  *
  * What stays the model's word: that the prose says what the cited records say (the verifier reads the records, not the prose), that the pick follows
@@ -27,6 +28,10 @@ export const REPORT_CHECK_GATE = "report_check";
 const LISTED = 24;
 const IDS_PER_CELL = 3;
 const LINKS_READ = 200;
+/** Cited pages from which a report must link its sources: under this there is too little to tell a habit by. */
+const TRACEABLE_PAGES = 4;
+/** A claim beside its page in a send back: enough to find it in the report. */
+const CLAIM_WORDS_CHARACTERS = 80;
 
 /** What is wrong: what the model reads, and what the answer says when it cannot go back. */
 type Trouble = Readonly<{ message: string; note: string }>;
@@ -115,7 +120,9 @@ const linksOf = (record: ResearchEvidenceRecord): readonly string[] => record.ki
 
 const pagesOf = (record: ResearchEvidenceRecord) => linksOf(record).flatMap((link) => pageOf(link) ?? []);
 
-const isClaim = (record: ResearchEvidenceRecord) => record.kind === "finding" || record.kind === "dataset";
+type ClaimRecord = Extract<ResearchEvidenceRecord, Readonly<{ kind: "dataset" | "finding" }>>;
+
+const isClaim = (record: ResearchEvidenceRecord): record is ClaimRecord => record.kind === "finding" || record.kind === "dataset";
 
 /**
  * The ids as the records they stand for. A corrected id reads as its correction, as it does in `researchDraftWithRecords`: the checks read that record, so it is cited, and
@@ -212,6 +219,26 @@ function unbackedLinks(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
   return { message: parts.join(" "), note: researchNote("report_links_unrecorded", report) };
 }
 
+/**
+ * Whether its reader can trace a report: a real one cited 30 records and carried two links, so no figure could be followed though every fact was recorded. A page counts as linked from
+ * anywhere in the report, a list at the end included, since the point is that the reader can reach it, and a record is reached through any page it stands for. Pages, not records, so
+ * many records on one page count once.
+ */
+function unlinkedPages(draft: ResearchDraft, ids: ReadonlySet<string>, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
+  const pages = new Map<string, ClaimRecord[]>();
+  for (const record of records.filter(isClaim)) {
+    const page = pagesOf(record)[0];
+    if (ids.has(record.id) && page !== undefined) pages.set(page, [...pages.get(page) ?? [], record]);
+  }
+  const linked = new Set(reportLinks(draft.report).flatMap((link) => pageOf(link) ?? []));
+  const unlinked = [...pages.values()].filter((held) => !held.some((record) => pagesOf(record).some((page) => linked.has(page))));
+  const reached = pages.size - unlinked.length;
+  if (pages.size < TRACEABLE_PAGES || reached * 2 >= pages.size) return null;
+  const entries = unlinked.map(([first, ...rest]) => `${first!.url} (${bounded(plain(first!.claim), CLAIM_WORDS_CHARACTERS)}${rest.length > 0 ? `, and ${rest.length} more` : ""})`);
+  return { message: `The report links ${reached} of the ${pages.size} pages it rests on, so its reader cannot trace what it says. Link each figure, price, study and named claim to the page it ` +
+    `came from, where it is stated. Not linked: ${listed(entries, "; ")}.`, note: researchNote("report_unlinked_sources", report) };
+}
+
 /** A comparison's table and its criteria. Only where there is a comparison: rows with evidence to compare, and a draft that states something. */
 function comparison(draft: ResearchDraft, matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], report: string): readonly Trouble[] {
   const { frame } = matrix;
@@ -267,7 +294,7 @@ export function researchReportFindings(draft: ResearchDraft, records: readonly R
   const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
-  return { notes, troubles: [unknown, ...rows ?? [], links, ...table].flatMap((trouble) => trouble ?? []) };
+  return { notes, troubles: [unknown, ...rows ?? [], links, unlinkedPages(draft, ids, records, report), ...table].flatMap((trouble) => trouble ?? []) };
 }
 
 const bounded = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;

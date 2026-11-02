@@ -106,6 +106,10 @@ describe("the method", () => {
       .toContain("Add each option the user could choose");
   });
 
+  it("asks every figure and named claim to link its page where it is stated, since a real report cited 30 records and carried two links", () => {
+    expect(researchMethodText(plan)).toContain("Every figure, price, study and named claim in the report links the page it came from where it is stated, not in a list at the end only.");
+  });
+
   it("asks for a default when evidence does not separate rows, marked as one, beside what would decide and without inventing a difference", () => {
     const text = researchMethodText(plan);
     expect(text).toContain("which of them it would take by default today and why, such as the cheapest among those with the same evidence");
