@@ -24,8 +24,8 @@ const nullableText = (description: string) => ({ description, type: ["string", "
 
 export const changeResearchFrameTool: RunTool = {
   capability: "session",
-  description: "Add to the research matrix while research runs. add_row: an option the user could choose, found along the way, so its cells can be filled; a test, a source or a " +
-    "method is evidence, recorded under the row it is about. add_criterion: something " +
+  description: "Add to the research matrix while research runs. add_row: an option the user could choose, by the rule the research states, never by what a search showed first, so its cells " +
+    "can be filled; a test, a source or a method is evidence, recorded under the row it is about. add_criterion: something " +
     "that turned out to matter, which is a rarer thing: the report names every added criterion with your reason. add_branch: something unknown about the user that changes " +
     "the result, with its cases. Nothing in the matrix is ever changed or removed, and a record already written under a new key counts as soon as the key is added. Every " +
     "field is required: pass null where a change has no use for it. Refused until the plan stands, for a key the matrix already has, and once it holds as much as it may.",

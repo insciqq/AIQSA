@@ -17,6 +17,11 @@ import { researchEmptyByRow, type ResearchEmptyRow, type ResearchMatrix } from "
 /** A real run's frame held rows for a lab's comparison and a testing method, which no reader can choose. */
 const ROWS_ARE_OPTIONS = "A row is an option the user could choose; a test, a source or a method is evidence, recorded under the row it is about.";
 
+/** Five real runs of one question gave five different shortlists, each what a search showed first: a rule is what a second run can repeat. */
+const ROWS_BY_RULE = "Rows come from a rule you can state, never from what a search showed first: first what independent tests and rankings name, then the options within the question's limits with " +
+  "the most owners' reviews, taken in order from the top of the marketplace's own listing sorted by reviews with its filters set to those limits, or, where there is no marketplace, what authoritative " +
+  "sources list, in their order. The report states that rule in one line, so a reader sees why these rows.";
+
 /** A real run's English label and a reason naming a tool reached a Russian answer: these reach the report as they are written. */
 const READER_WORDS = "Write labels and reasons in the language of the goal, for a reader, naming no tool and no error: the user reads them as you write them.";
 
@@ -38,7 +43,7 @@ export function researchMethodText(plan: ResearchPlan): string {
     "Do not write the report as a message: nothing you write while research runs reaches the user, and search snippets are not evidence.",
     "After each researcher's report you read what is still empty in the matrix. Send more researchers for empty cells only, never for one " +
       `more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
-      `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${READER_WORDS}`,
+      `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} ${READER_WORDS}`,
     `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
       "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
@@ -72,7 +77,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date.",
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
-      `An option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} A criterion only when the question needs it, with your reason.`,
+      `An option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} A criterion only when the question needs it, with your reason.`,
     `The goal: ${cut(plain(plan.goal), GOAL_CHARACTERS)} ${READER_WORDS}`,
     RESEARCH_REVIEWS_REFERENCE,
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
@@ -95,7 +100,7 @@ const emptyCounts = (rows: readonly ResearchEmptyRow[], criteria: number) => row
 export function researcherMatrixFooter(matrix: ResearchMatrix, room: number): string | null {
   const { coverage, frame } = matrix;
   const empty = researchEmptyByRow(matrix);
-  const noRows = `Rows: none yet. Add each option the user could choose with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} as you find it. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
+  const noRows = `Rows: none yet. Add each option the user could choose with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
   const rowKeys = frame.rows.length > 0 ? `Rows: ${frame.rows.map(({ key }) => key).join(", ")}.` : noRows;
   const criterionKeys = `Criteria: ${frame.criteria.map(({ key }) => key).join(", ")}.`;
   const total = `${coverage.empty} of ${coverage.cells.length} cells are still empty.`;

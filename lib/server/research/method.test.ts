@@ -107,6 +107,29 @@ describe("the method", () => {
       .toContain("Add each option the user could choose");
   });
 
+  it("gives rows a rule a second run would repeat, since five real runs of one question gave five different shortlists", () => {
+    for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
+      expect(text).toContain("Rows come from a rule you can state, never from what a search showed first");
+      expect(text).toContain("first what independent tests and rankings name");
+      expect(text).toContain("then the options within the question's limits with the most owners' reviews, taken in order from the top of the marketplace's own listing sorted by reviews with its filters set to those limits");
+      expect(text).toContain("The report states that rule in one line, so a reader sees why these rows.");
+    }
+  });
+
+  it("reaches the plan's first rows too, which are written before the method is read and never change", () => {
+    const { rows } = proposeResearchPlanTool.inputSchema.properties as { rows: { description: string } };
+    expect(rows.description).toContain("Chosen by a rule you can state, not by what a search showed first: leave it empty if you have not applied it yet, and researchers add them.");
+  });
+
+  it("words that rule so it reads sensibly with no marketplace", () => {
+    expect(researchMethodText(plan)).toContain("where there is no marketplace, what authoritative sources list, in their order");
+  });
+
+  it("does not tell a researcher to add a row as it finds one, which is what the rule replaces", () => {
+    const empty = researcherMatrixFooter({ coverage: { cells: [], empty: 0, filled: 0 }, frame: { branches: [], changes: [], criteria: [{ criterion: "Price", key: "price", why: "Budget." }], rows: [] } }, 3_000);
+    expect(empty).not.toContain("as you find it");
+  });
+
   it("asks every figure and named claim to link its page where it is stated, since a real report cited 30 records and carried two links", () => {
     expect(researchMethodText(plan)).toContain("Every figure, price, study and named claim in the report links the page it came from where it is stated, not in a list at the end only.");
   });
