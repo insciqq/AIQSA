@@ -19,6 +19,7 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { ResearchGate } from "./gates";
 import { researchMatrixCoverage } from "./matrix";
+import { researchNote } from "./notes";
 import { NOOP_RESEARCH_PORTS, researchGatePorts, researchPorts, type ResearchPortFactories, type ResearchPorts, type ResearchRunScope } from "./ports";
 import { proposalArguments, proposeCall } from "./planWindow.testFixtures";
 import { DRAFT as RECORD_DRAFT, finding, FRAME, id, RECORDS } from "./report.testFixtures";
@@ -582,12 +583,12 @@ describe("the ports a run holds", () => {
       expect(run.published).toBe(RECORD_DRAFT.report);
     });
 
-    it("sends back a pick outside the matrix, and at the cap the answer says so rather than going round", async () => {
+    it("sends back a pick outside the matrix, and at the cap the answer is the report rather than going round", async () => {
       const wrong = (attempt: number) => onIds(`call-${attempt}`, { pick_row_key: "x9", report: `${RECORD_DRAFT.report}\nВерсия ${attempt}.` });
       const run = await runOf([{ calls: begin }, { calls: [wrong(1)] }, { calls: [wrong(2)] }, { calls: [wrong(3)] }], { gates: [reading], ports: stores() });
       expect(resultsOf(run.requests, "Outside the matrix: row x9")).toBe(true);
-      expect(run.published).toContain("Версия 3.");
-      expect(run.published).toContain("This report's pick is not among the options research compared");
+      // What its form missed is no news to the reader: the report says what it says.
+      expect(run.published).toBe(`${RECORD_DRAFT.report}\nВерсия 3.`);
       expect(seen).toHaveLength(1);
     });
 
@@ -595,7 +596,7 @@ describe("the ports a run holds", () => {
       const same = (attempt: number) => onIds(`call-${attempt}`, { pick_row_key: "x9" });
       const run = await runOf([{ calls: begin }, { calls: [same(1)] }, { calls: [same(2)] }, { calls: [same(3)] }], { gates: [reading], ports: stores() });
       expect(run.published).toContain("Берите Lonax Memory.");
-      expect(run.published).toContain("with remarks of its last check still open");
+      expect(run.published).toContain(researchNote("gate_failed"));
     });
 
     it("sends back an id of no record, saying which", async () => {
@@ -641,8 +642,7 @@ describe("the ports a run holds", () => {
     it("passes advice that states no fact, and says it came with nothing to check", async () => {
       const advice = "Сначала измерьте кровать, потом выберите жёсткость.";
       const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", { pick_row_key: null, record_ids: [], report: advice })] }], { gates: [], ports: stores() });
-      expect(run.published).toContain(advice);
-      expect(run.published).toContain("This report came without a list of findings");
+      expect(run.published).toBe(`${advice}\n\n---\n\n*${researchNote("no_findings")}*`);
     });
 
     it("keeps a text draft as it stands: it has no ids to check", async () => {
@@ -717,7 +717,7 @@ describe("the ports a run holds", () => {
       research.resume([...started(startResult("run-1")),
         { arguments: JSON.stringify(arguments_), callId: "d", id: "d1", kind: "tool_call", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },
         { callId: "d", id: "d2", kind: "tool_result", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME, outcome: "complete", output: JSON.stringify({ status: "sent_back", gate: "verifier", message: message.replace(`. Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`, ".") }) }]);
-      await vi.waitFor(() => expect(research.finish(false)).toContain("Claim 4."));
+      await vi.waitFor(() => expect(research.finish(false)).toContain("The checks did not confirm"));
     });
 
     it("stops no run on a failed read when an approval rebuilds its drafts", async () => {
