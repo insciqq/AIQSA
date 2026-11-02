@@ -47,7 +47,7 @@ const WORKSPACE_BROWSER_GUIDANCE_BASE = [
   "",
   "## Acting on a page",
   "",
-  `Start with ${sandboxExecToolName}: program \`aiqsa-browser\`, arguments \`open\` and the address. Every action prints one step line, such as \`[browser #3] click: button "Add to cart" @ shop.example/cart\` (a sub-agent line includes its name, for example \`[browser #3 · shop-amazon]\`), then the page: its URL, title and the numbered elements on screen, such as \`[12] button "Add to cart"\`. Act by number. An element keeps its number while it stays on the page; take numbers from the latest output.`,
+  `Start with ${sandboxExecToolName}: \`command\` is \`aiqsa-browser\` and \`args\` holds the action and its values, such as \`["open", "https://example.com"]\`; without \`args\` it only prints its usage. Every action prints one step line, such as \`[browser #3] click: button "Add to cart" @ shop.example/cart\` (a sub-agent line includes its name, for example \`[browser #3 · shop-amazon]\`), then the page: its URL, title and the numbered elements on screen, such as \`[12] button "Add to cart"\`. Act by number. An element keeps its number while it stays on the page; take numbers from the latest output.`,
   "",
   "- `open URL`, `back`, `forward`, `reload`",
   "- `info` (elements on screen), `info --all` (the whole page), `find TEXT` (matching elements anywhere; clicking scrolls to them)",

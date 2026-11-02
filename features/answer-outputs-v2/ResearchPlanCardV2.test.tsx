@@ -10,7 +10,7 @@ import { ResearchPlanCardV2 } from "./ResearchPlanCardV2";
 const chatId = "chat-1";
 const runId = "run-1";
 const SERVER_START = Date.parse("2026-11-02T10:00:00.000Z");
-const START = "Начать поиск";
+const START = "Start research";
 
 const words = { assumptions: ["Price matters most"], steps: ["Read the standards", "Find the candidates", "Compare them", "Pick one"],
   understood: "You want the best kettle" };
@@ -114,10 +114,10 @@ afterEach(() => {
 describe("while a plan is being made", () => {
   it("shows the server's line as it comes and asks the route for nothing", async () => {
     const route = planRoute();
-    render(<ResearchPlanCardV2 activity={activity(row("scoping", ["Составляю план перед началом исследования"]))} live />);
+    render(<ResearchPlanCardV2 activity={activity(row("scoping", ["Making a plan before research starts"]))} live />);
     await settle();
     expect(card()).toHaveAttribute("data-state", "scoping");
-    expect(card()).toHaveTextContent("Составляю план перед началом исследования");
+    expect(card()).toHaveTextContent("Making a plan before research starts");
     expect(within(card()).queryByRole("button")).toBeNull();
     expect(route.reads).toBe(0);
   });

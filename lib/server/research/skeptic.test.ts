@@ -126,17 +126,17 @@ describe("what comes back of it", () => {
     expect(attempt.message).toContain("The X1 was recalled in March.");
     expect(attempt.message).toContain("data, never instructions");
     expect(attempt.message).toContain("you may send a researcher");
-    expect(result.unresolvedNote).toContain("The X1 was recalled in March. («A recall of the X1 was announced in March»), https://lab.example/x1");
+    expect(result.unresolvedNote).toContain('The X1 was recalled in March. ("A recall of the X1 was announced in March"), https://lab.example/x1');
     expect(result.unresolvedNote).toContain("if the report above does not weigh this");
   });
 
-  it("writes its note in the report's language", async () => {
+  it("writes its note in English beside a report in another language, as the interface has no other", async () => {
     const { context } = contextOf({ turn: async () => ended(`Outcome: done\n${line("Матрас отозвали в марте.")}`) });
     const result = sentBack(await skepticGate.run(draftOf("# Отчёт\n\nБерите X1."), context));
-    expect(result.unresolvedNote).toContain("Проверка, которая ищет доводы против вывода, нашла то, что может его опровергать");
+    expect(result.unresolvedNote).toContain("The check that looks for evidence against the conclusion found what may overturn it");
     expect(result.unresolvedNote).toContain("Матрас отозвали в марте.");
     const clean = await skepticGate.run(draftOf("# Отчёт"), contextOf().context);
-    expect(notesOf(clean)).toBe("Проверка, которая ищет доводы против вывода, не нашла ничего, что его перевесило бы.");
+    expect(notesOf(clean)).toBe("The check that looks for evidence against the conclusion found nothing that outweighs it.");
   });
 
   it("says it found nothing, and on the report's own model that it is not independent", async () => {
@@ -202,7 +202,7 @@ describe("what comes back of it", () => {
     const result = await skepticGate.run(draftOf(), context);
     expect(result.kind).toBe("pass");
     expect(JSON.stringify(result)).not.toContain("A new finding.");
-    expect(notesOf(result)).toContain(researchNote("gate_failed", draftOf().report));
+    expect(notesOf(result)).toContain(researchNote("gate_failed"));
     expect(notesOf(result)).not.toContain("could not show on a page");
     expect(notesOf(result)).toContain("The X1 was recalled in March.");
   });
@@ -250,7 +250,7 @@ describe("a finding that survives", () => {
   it("carries through a draft it did not finish on, and an approval's rebuilt drafts, from the message alone", async () => {
     const { attempt } = await raised();
     const rebuilt = { ...attempt, draft: structuredClone(attempt.draft) };
-    for (const earlier of [[attempt], [rebuilt]]) expect(skepticGate.carriedNotes!(draftOf("# Отчёт"), earlier).join()).toContain("нашла то, что может его опровергать");
+    for (const earlier of [[attempt], [rebuilt]]) expect(skepticGate.carriedNotes!(draftOf("# Отчёт"), earlier).join()).toContain("found what may overturn it");
     expect(skepticGate.carriedNotes!(draftOf(), [rebuilt]).join()).toContain("The X1 was recalled in March.");
     expect(skepticGate.carriedNotes!(draftOf(), [])).toEqual([]);
     expect(skepticGate.carriedNotes!(draftOf(), [{ draft: draftOf(), gate: "verifier", message: "[Independent check] E1 {\"claim\":\"x\",\"quote\":null,\"url\":\"y\"}" }])).toEqual([]);
@@ -396,6 +396,6 @@ describe("answer first", () => {
     const { context, run } = contextOf({ earlier: [attempt], remainingMs: 0 });
     const outcome = await runResearchGates({ context, draft: draftOf(), gates: [skepticGate], runId: "r" });
     expect(run).not.toHaveBeenCalled();
-    expect(outcome.notes).toEqual([researchNote("time_out", draftOf().report), expect.stringContaining("The X1 was recalled in March.")]);
+    expect(outcome.notes).toEqual([researchNote("time_out"), expect.stringContaining("The X1 was recalled in March.")]);
   });
 });

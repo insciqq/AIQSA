@@ -157,7 +157,7 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
     context.signal.throwIfAborted();
     const remaining = context.time.remainingMs();
     if (remaining <= 0) {
-      notes.push(researchNote("time_out", draft.report));
+      notes.push(researchNote("time_out"));
       break;
     }
     const own = new AbortController();
@@ -175,12 +175,12 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
           const sentBackNotes = withCarried();
           return { gate: gate.name, kind: "sent_back", message: result.message, ...sentBackNotes.length > 0 ? { notes: sentBackNotes } : {} };
         }
-        notes.push(result.unresolvedNote ?? researchNote(capped ? "unresolved" : "time_out", draft.report));
+        notes.push(result.unresolvedNote ?? researchNote(capped ? "unresolved" : "time_out"));
       }
     } catch (error) {
       if (context.signal.aborted) throw error;
       const timedOut = own.signal.aborted;
-      notes.push(researchNote(timedOut ? "time_out" : "gate_failed", draft.report));
+      notes.push(researchNote(timedOut ? "time_out" : "gate_failed"));
       if (!timedOut) logEvent("run_execution", { code: "research_gate_failed", error, outcome: "failed", run_id: input.runId, stage: "execution" });
     } finally {
       clearTimeout(timer);

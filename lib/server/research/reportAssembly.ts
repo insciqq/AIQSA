@@ -1,7 +1,7 @@
 import {
   RESEARCH_LIMITS, type ResearchCriterion, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchMatrixCell, type ResearchUnreachable
 } from "../../contracts/research";
-import { researchCountWords, researchDatasetWords, researchSampleIsSmall } from "./dataCollection";
+import { researchDatasetWords } from "./dataCollection";
 import { RESEARCH_WHOLE_QUESTION_ROW, researchMatrix, type ResearchMatrix } from "./matrix";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
 import type { ResearchPorts, ResearchReportEnding, ResearchReportPort, ResearchRunScope } from "./ports";
@@ -113,22 +113,13 @@ export function researchRecordList(records: readonly ResearchEvidenceRecord[], l
   return [`Records to cite by id in record_ids (from the server)${left > 0 ? `, and ${left} more with the next report` : ""}:`, ...lines].join("\n");
 }
 
-type Language = "en" | "ru";
-
-const WORDS = {
-  en: { added: "added during research", asOf: "Data as of", claimed: "claimed", criteria: "What was compared and why it matters", criterion: "Criterion",
-    classes: { action_channel: "sellers", independent_tests: "tests", owner_reviews: "owners", primary_official: "official" },
-    found: "What was found", independent: "Independent sources", leftOut: (count: number) => `Left out, as their quotes did not check out: ${count}.`,
-    months: (count: number) => `${count} mo. old`, more: (count: number) => `and ${count} more`,
-    noData: "no data", notFound: "not found", notVerified: "not verified", option: "Option", other: "Other records", recorded: "What was recorded",
-    sources: "Sources", title: "What research recorded", unreachable: "Could not be reached" },
-  ru: { added: "добавлен в ходе исследования", asOf: "Данные на", claimed: "заявлено", criteria: "Что сравнивалось и почему это важно", criterion: "Критерий",
-    classes: { action_channel: "продавцы", independent_tests: "тесты", owner_reviews: "владельцы", primary_official: "официальные" },
-    found: "Что найдено", independent: "Независимых источников", leftOut: (count: number) => `Не вошло, потому что цитаты не подтвердились: ${count}.`,
-    months: (count: number) => `${count} мес. назад`, more: (count: number) => `и ещё ${count}`,
-    noData: "нет данных", notFound: "не найдено", notVerified: "не проверено", option: "Вариант", other: "Другие записи", recorded: "Что записано",
-    sources: "Источники", title: "Что записало исследование", unreachable: "Не удалось открыть" }
-} as const;
+/** The composed report's own words; like every word of the product's own, they are English (operator decision 2026-11-02). */
+const WORDS = { added: "added during research", asOf: "Data as of", claimed: "claimed", criteria: "What was compared and why it matters", criterion: "Criterion",
+  classes: { action_channel: "sellers", independent_tests: "tests", owner_reviews: "owners", primary_official: "official" },
+  found: "What was found", independent: "Independent sources", leftOut: (count: number) => `Left out, as their quotes did not check out: ${count}.`,
+  months: (count: number) => `${count} mo. old`, more: (count: number) => `and ${count} more`,
+  noData: "no data", notFound: "not found", notVerified: "not verified", option: "Option", other: "Other records", recorded: "What was recorded",
+  sources: "Sources", title: "What research recorded", unreachable: "Could not be reached" } as const;
 
 /** Text of a record inside the answer: it came off web pages, so nothing in it may become a link, an image, a table cell or markup. */
 const safe = (text: string) => oneLine(text).replace(/[|*`[\]<>\\]+/gu, " ").replace(/\s+/gu, " ").trim();
@@ -136,40 +127,30 @@ const safe = (text: string) => oneLine(text).replace(/[|*`[\]<>\\]+/gu, " ").rep
 /** A link Markdown and a table cell both keep whole. */
 const linkTarget = (url: string) => url.replace(/[()|<>\s]/gu, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 
-/** What a report may say of a tally, in its language. The rule of when a share may be given stays `researchCountWords`'s. */
-function datasetWords(dataset: Pick<ResearchDataset, "counts" | "sampleSize">, language: Language): string {
-  if (language === "en") return researchDatasetWords(dataset);
-  const counted = (count: number) => researchCountWords(count, dataset.sampleSize).replace(" of ", " из ").replace("under 1%", "менее 1%").replace("over 99%", "более 99%");
-  const sample = researchSampleIsSmall(dataset.sampleSize) ? `Малая выборка: ${dataset.sampleSize}` : `Выборка: ${dataset.sampleSize}`;
-  const counts = dataset.counts.map(({ count, label }) => `${label}: ${counted(count)}`);
-  return counts.length > 0 ? `${sample}. ${counts.join("; ")}.` : `${sample}.`;
-}
-
-type Composing = Readonly<{ language: Language; now: Date; records: readonly ResearchEvidenceRecord[]; witnesses: readonly ResearchEvidenceRecord[] }>;
+type Composing = Readonly<{ now: Date; records: readonly ResearchEvidenceRecord[]; witnesses: readonly ResearchEvidenceRecord[] }>;
 
 const CELL_CHARACTERS = 140;
 const LINE_CHARACTERS = 300;
 const STANDING_ORDER = { claimed: 1, confirmed: 0, not_verified: 2 } as const;
 
 /** Its source, as a link with the page's own age where it gave a date. */
-function sourceLink(record: ClaimRecord, { language, now }: Composing): string {
+function sourceLink(record: ClaimRecord, { now }: Composing): string {
   const age = researchSourceAgeMonths(record, now);
-  const site = safe(record.registrableDomain ?? researchRegistrableDomain(record.url) ?? WORDS[language].sources);
-  return `[${site}${age === null || age === 0 ? "" : `, ${WORDS[language].months(age)}`}](${linkTarget(record.url)})`;
+  const site = safe(record.registrableDomain ?? researchRegistrableDomain(record.url) ?? WORDS.sources);
+  return `[${site}${age === null || age === 0 ? "" : `, ${WORDS.months(age)}`}](${linkTarget(record.url)})`;
 }
 
 /** A claim in a few words, with its standing kept apart and its source. */
 function claimWords(record: ClaimRecord, composing: Composing, characters: number): string {
-  const { language, witnesses } = composing;
-  const standing = researchSourceStanding(record, witnesses);
-  const mark = standing === "claimed" ? ` (${WORDS[language].claimed})` : standing === "not_verified" ? ` (${WORDS[language].notVerified})` : "";
-  const tally = record.kind === "dataset" ? ` ${safe(datasetWords(record.dataset, language))}` : "";
+  const standing = researchSourceStanding(record, composing.witnesses);
+  const mark = standing === "claimed" ? ` (${WORDS.claimed})` : standing === "not_verified" ? ` (${WORDS.notVerified})` : "";
+  const tally = record.kind === "dataset" ? ` ${safe(researchDatasetWords(record.dataset))}` : "";
   return `${cut(safe(record.claim), characters)}${tally}${mark} ${sourceLink(record, composing)}`;
 }
 
 function cellWords(cell: ResearchMatrixCell | undefined, composing: Composing): string {
-  const { language, records, witnesses } = composing;
-  const words = WORDS[language];
+  const { records, witnesses } = composing;
+  const words = WORDS;
   if (!cell || cell.state === "empty") return words.noData;
   const held = cell.recordIds.flatMap((id) => records.find((record) => record.id === id) ?? []);
   if (cell.state === "not_found") {
@@ -197,8 +178,8 @@ function within(lines: readonly string[], characters: number): Readonly<{ kept: 
 const TABLE_CHARACTERS = Math.floor(RESEARCH_LIMITS.reportCharacters * 0.6);
 const LIST_CHARACTERS = Math.floor(RESEARCH_LIMITS.reportCharacters * 0.15);
 
-function criteriaSection({ frame }: ResearchMatrix, { language }: Composing): string {
-  const words = WORDS[language];
+function criteriaSection({ frame }: ResearchMatrix): string {
+  const words = WORDS;
   const added = new Map(frame.changes.filter(({ change }) => change === "add_criterion").map(({ key, reason }) => [key, reason] as const));
   const line = ({ criterion, key, why }: ResearchCriterion) => {
     const reason = added.get(key);
@@ -210,7 +191,7 @@ function criteriaSection({ frame }: ResearchMatrix, { language }: Composing): st
 const tableRow = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
 
 function tableSection({ coverage, frame }: ResearchMatrix, composing: Composing): string {
-  const words = WORDS[composing.language];
+  const words = WORDS;
   const cellAt = (rowKey: string, criterionKey: string) => coverage.cells.find((cell) => cell.rowKey === rowKey && cell.criterionKey === criterionKey);
   if (frame.rows.length === 0) {
     return [tableRow([words.criterion, words.found]), tableRow(["---", "---"]),
@@ -224,8 +205,8 @@ function tableSection({ coverage, frame }: ResearchMatrix, composing: Composing)
 
 /** What holds no place in the table, or everything when no matrix could be read. */
 function otherRecords(matrix: ResearchMatrix | null, composing: Composing): string | null {
-  const { language, records } = composing;
-  const words = WORDS[language];
+  const { records } = composing;
+  const words = WORDS;
   const placed = new Set(matrix?.coverage.cells.flatMap(({ recordIds }) => recordIds) ?? []);
   const lines = records.flatMap((record) => {
     if (placed.has(record.id)) return [];
@@ -237,15 +218,15 @@ function otherRecords(matrix: ResearchMatrix | null, composing: Composing): stri
   return [`### ${matrix ? words.other : words.recorded}`, ...kept, ...left > 0 ? [`- ${words.more(left)}`] : []].join("\n");
 }
 
-function unreachableSection({ language, records }: Composing): string | null {
+function unreachableSection({ records }: Composing): string | null {
   const lines = records.flatMap((record) => record.kind === "unreachable" ? [`- ${cut(safe(record.target), LINE_CHARACTERS)}: ${cut(safe(record.reason), LINE_CHARACTERS)}`] : []);
   if (lines.length === 0) return null;
   const { kept, left } = within(lines, LIST_CHARACTERS);
-  return [`### ${WORDS[language].unreachable}`, ...kept, ...left > 0 ? [`- ${WORDS[language].more(left)}`] : []].join("\n");
+  return [`### ${WORDS.unreachable}`, ...kept, ...left > 0 ? [`- ${WORDS.more(left)}`] : []].join("\n");
 }
 
-function sourcesLine({ language, now, records }: Composing): string {
-  const words = WORDS[language];
+function sourcesLine({ now, records }: Composing): string {
+  const words = WORDS;
   const { byClass, independent } = researchSourceCounts(records.filter((record) => isClaim(record) && quoteHolds(record)), records);
   const classes = Object.entries(byClass).filter(([, count]) => count > 0).map(([name, count]) => `${words.classes[name as keyof typeof byClass]}: ${count}`);
   return `${words.asOf} ${now.toISOString().slice(0, 10)}. ${words.independent}: ${independent}${classes.length > 0 ? ` (${classes.join(", ")})` : ""}.`;
@@ -253,26 +234,25 @@ function sourcesLine({ language, now, records }: Composing): string {
 
 const ENDING_NOTES: Readonly<Record<ResearchReportEnding, ResearchNoteKey>> = { failed: "composed_failed", no_report: "composed_no_report", timed_out: "composed_timed_out" };
 
-/** The answer from the records, in the language of `userWords`, with its note. Null when nothing was recorded. */
-export function composeResearchReport(input: Readonly<{ ended: ResearchReportEnding; matrix: ResearchMatrix | null; now: Date; records: readonly ResearchEvidenceRecord[]; userWords: string }>): string | null {
-  const { ended, matrix, now, records, userWords } = input;
+/** The answer from the records, with its note. Null when nothing was recorded. */
+export function composeResearchReport(input: Readonly<{ ended: ResearchReportEnding; matrix: ResearchMatrix | null; now: Date; records: readonly ResearchEvidenceRecord[] }>): string | null {
+  const { ended, matrix, now, records } = input;
   if (records.length === 0) return null;
-  const language: Language = /\p{Script=Cyrillic}/u.test(userWords) ? "ru" : "en";
-  const composing: Composing = { language, now, records, witnesses: sourceWitnesses(records) };
+  const composing: Composing = { now, records, witnesses: sourceWitnesses(records) };
   const leftOut = records.filter((record) => isClaim(record) && !quoteHolds(record)).length;
-  const body = [`## ${WORDS[language].title}`, sourcesLine(composing), ...matrix ? [criteriaSection(matrix, composing), tableSection(matrix, composing)] : [],
-    otherRecords(matrix, composing), unreachableSection(composing), leftOut > 0 ? WORDS[language].leftOut(leftOut) : null].filter((part) => part !== null).join("\n\n");
-  return researchAnswerText(body, [researchNote(ENDING_NOTES[ended], userWords)]);
+  const body = [`## ${WORDS.title}`, sourcesLine(composing), ...matrix ? [criteriaSection(matrix), tableSection(matrix, composing)] : [],
+    otherRecords(matrix, composing), unreachableSection(composing), leftOut > 0 ? WORDS.leftOut(leftOut) : null].filter((part) => part !== null).join("\n\n");
+  return researchAnswerText(body, [researchNote(ENDING_NOTES[ended])]);
 }
 
 /** The port of one run (`ResearchPortFactories.report`). */
 export function createResearchReport(run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">): ResearchReportPort {
   return {
-    async compose({ ended, goal, signal }) {
+    async compose({ ended, signal }) {
       const records = await parts.evidence.records(signal);
       if (records.length === 0) return null;
       const matrix = await researchMatrix(parts.coverage, signal);
-      return composeResearchReport({ ended, matrix, now: new Date(run.now()), records, userWords: goal ?? run.userMessage });
+      return composeResearchReport({ ended, matrix, now: new Date(run.now()), records });
     },
     gates: [reportCheckGate]
   };

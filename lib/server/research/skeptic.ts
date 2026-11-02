@@ -214,8 +214,8 @@ const FAILURE_CODE = "research_skeptic_failed";
 async function seekCounterEvidence(draft: ResearchDraft, context: ResearchGateContext): Promise<ResearchGateResult> {
   const { report } = draft;
   const earlier = openEvidence(context.earlier);
-  const named = (found: readonly ResearchCounterEvidence[]) => found.length > 0 ? [researchCounterEvidenceNote(found, report)] : [];
-  const unfinished = (outcome: ResearchSkepticOutcome): ResearchGateResult => ({ kind: "pass", notes: [researchSkepticNote(outcome, report), ...named(earlier)] });
+  const named = (found: readonly ResearchCounterEvidence[]) => found.length > 0 ? [researchCounterEvidenceNote(found)] : [];
+  const unfinished = (outcome: ResearchSkepticOutcome): ResearchGateResult => ({ kind: "pass", notes: [researchSkepticNote(outcome), ...named(earlier)] });
 
   const model = await boundedGateStep(context, timeLeft(context), (signal) => context.verifierModel(signal), FAILURE_CODE);
   if (!model.ok) return unfinished("failed");
@@ -245,23 +245,23 @@ async function seekCounterEvidence(draft: ResearchDraft, context: ResearchGateCo
 
   if (fresh.length > 0) {
     const closed = context.researchersClosed?.() ?? null;
-    return { kind: "send_back", message: correctionMessage(stands, closed !== null), unresolvedNote: researchCounterEvidenceNote(stands, report) };
+    return { kind: "send_back", message: correctionMessage(stands, closed !== null), unresolvedNote: researchCounterEvidenceNote(stands) };
   }
   // With nothing to look a quote up in, nothing can be said of what it raised, least of all that it is unbacked.
-  if (opened && !opened.ok) return { kind: "pass", notes: [researchNote("gate_failed", report), ...named(stands)] };
-  if (unbacked > 0) return { kind: "pass", notes: [researchSkepticNote("unbacked", report), ...named(stands)] };
+  if (opened && !opened.ok) return { kind: "pass", notes: [researchNote("gate_failed"), ...named(stands)] };
+  if (unbacked > 0) return { kind: "pass", notes: [researchSkepticNote("unbacked"), ...named(stands)] };
   if (stands.length > 0) return { kind: "pass", notes: named(stands) };
   // Nothing found counts only from a turn that finished and could look. A model's own search leaves no step, so only steps that all failed tell.
   const couldNotLook = result.steps.length > 0 && result.steps.every((step) => step.outcome !== "complete");
   const looked = result.state === "done" && result.outcome === "done" && decoded.none && !couldNotLook;
-  return { kind: "pass", notes: [looked ? researchSkepticNote("none_found", report, model.value.kind === "main_model" ? plainWords(model.value.label, SKEPTIC_LIMITS.claimCharacters) : null)
-    : researchSkepticNote("failed", report)] };
+  return { kind: "pass", notes: [looked ? researchSkepticNote("none_found", model.value.kind === "main_model" ? plainWords(model.value.label, SKEPTIC_LIMITS.claimCharacters) : null)
+    : researchSkepticNote("failed")] };
 }
 
 export const skepticGate: ResearchGate = {
   carriedNotes(draft, earlier) {
     const open = openEvidence(earlier);
-    return open.length > 0 ? [researchCounterEvidenceNote(open, draft.report)] : [];
+    return open.length > 0 ? [researchCounterEvidenceNote(open)] : [];
   },
   name: "skeptic",
   run: seekCounterEvidence

@@ -39,7 +39,7 @@ import type { PlanUpdate } from "../tools/updatePlan";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { createResearchRounds, researchFilledCells, researchMatrix } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate } from "./method";
-import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
+import { researchAnswerText, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { createResearchSources } from "./sources";
@@ -126,12 +126,11 @@ const TEXT_DRAFT_CALL = "research_text_draft_";
  */
 const REPORT_AS_TEXT_CHARACTERS = 2_000;
 
-/** The line the user sees as soon as research starts, in the language they wrote in (`notes.ts` reads a report the same way). */
-const PLANNING_LINE = { en: "Making a plan before research starts", ru: "Составляю план перед началом исследования" };
-/** The line above the plan of research a Continue picked up, in its goal's language: the user's own word here is the button's. */
-const PICKED_UP_LINE = { en: "Continuing from what was recorded", ru: "Продолжаю с записанного" };
-const PICKED_UP_CELLS = { en: (filled: number, cells: number) => `${filled} of ${cells} cells filled`, ru: (filled: number, cells: number) => `ячеек заполнено: ${filled} из ${cells}` };
-const CYRILLIC = /\p{Script=Cyrillic}/u;
+/** The line the user sees as soon as research starts. Like every word of the interface it is English (operator decision 2026-11-02). */
+const PLANNING_LINE = "Making a plan before research starts";
+/** The line above the plan of research a Continue picked up. */
+const PICKED_UP_LINE = "Continuing from what was recorded";
+const pickedUpCells = (filled: number, cells: number) => `${filled} of ${cells} cells filled`;
 
 const SUBMIT_FIRST = `Your message was not shown to the user: while research runs, only a report handed in reaches them. Call ` +
   `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the whole report, the ids of the records it rests on and what could not be reached.`;
@@ -273,8 +272,6 @@ export function createRunResearch(input: RunResearchInput) {
   const researchRunId = input.researchRunId ?? input.runId;
   /** The turn this run's Continue answers, whatever it held; null for any other message. */
   const continued = continuedTurn(input.items());
-  /** The user's last words are the button's, on a Continue and on an approval after one, and they say nothing of the user's language: the goal does. */
-  const buttonWord = input.userMessage.trim() === CONTINUE_TURN_TEXT;
   /** What the store says that Continue can pick up, asked once. It only reads. */
   let pickUp: Promise<ResearchResumeState | null> | null = null;
   /** Whether this run's row was written for it, once: only a start writes it, as a run that never starts ran no research. */
@@ -310,11 +307,10 @@ export function createRunResearch(input: RunResearchInput) {
   let composing: Promise<string | null> | null = null;
   /** The records the main agent has been given the ids of (`researchRecordList`). */
   const listedRecords = new Set<string>();
-  const note = (key: ResearchNoteKey, draft: Pick<ResearchDraft, "report">) => researchNote(key, draft.report);
   /** What the model last wrote without handing it in. The longer text says more: narration after a whole report written as a message must not replace it. */
   const lastWords = () => {
-    if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote(plan ? "incomplete" : "before_plan", attemptText)]);
-    return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
+    if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote(plan ? "incomplete" : "before_plan")]);
+    return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted")]) : null;
   };
   const wroteReport = () => Math.max(attemptText.trim().length, lastHeld.trim().length) >= REPORT_AS_TEXT_CHARACTERS;
   /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
@@ -376,7 +372,7 @@ export function createRunResearch(input: RunResearchInput) {
     try {
       return await untilAborted(Promise.resolve().then(() => {
         signal.throwIfAborted();
-        return ports.report.compose({ ended, ...buttonWord && goal !== null ? { goal } : {}, signal });
+        return ports.report.compose({ ended, signal });
       }), signal);
     } catch (error) {
       if (!stop.aborted) logEvent("run_execution", { code: "research_report_failed", error, outcome: "failed", run_id: input.runId, stage: "execution" });
@@ -440,7 +436,7 @@ export function createRunResearch(input: RunResearchInput) {
     attempts.push(outcome.kind === "sent_back" ? { draft, gate: outcome.gate, message: outcome.message } : { draft, message: null });
     held = { draft, notes: outcome.notes ?? [] };
     if (outcome.kind === "accepted") {
-      accepted = { draft, notes: [...outcome.notes, ...draft.findings.length === 0 ? [note("no_findings", draft)] : []] };
+      accepted = { draft, notes: [...outcome.notes, ...draft.findings.length === 0 ? [researchNote("no_findings")] : []] };
       sentBack = null;
       sentBackBy = null;
     } else {
@@ -518,10 +514,9 @@ export function createRunResearch(input: RunResearchInput) {
     const [matrix, records] = await Promise.all([researchMatrix(ports.coverage, execution.signal), liveRecords(execution.signal)]);
     if (records) fillFromTurn(records, rebuilt);
     openedFrom = records?.[0]?.runId ?? state.fromRunId;
-    const language = CYRILLIC.test(state.goal) ? "ru" : "en";
-    const cells = matrix && PICKED_UP_CELLS[language](matrix.coverage.filled, matrix.coverage.cells.length);
+    const cells = matrix && pickedUpCells(matrix.coverage.filled, matrix.coverage.cells.length);
     const shown = researchPlanUpdate(stands);
-    await showPlan(execution.persistedToolCallId, "stands", { ...shown, plan: [{ status: "completed", step: `${PICKED_UP_LINE[language]}${cells ? `: ${cells}` : ""}` }, ...shown.plan] });
+    await showPlan(execution.persistedToolCallId, "stands", { ...shown, plan: [{ status: "completed", step: `${PICKED_UP_LINE}${cells ? `: ${cells}` : ""}` }, ...shown.plan] });
     const { questions, skipped_source_classes } = researchPlanProposalDocument(state.answer.plan);
     // No researcher need follow, so this is where the ids a draft cites come from. It rides behind the server's fields, whatever its length.
     const list = records && researchRecordList(records, listedRecords, PICKED_UP_RECORD_LIST_CHARACTERS);
@@ -550,8 +545,7 @@ export function createRunResearch(input: RunResearchInput) {
       const written = state !== null && await linked(state);
       if (plan) return harnessToolError(call, "research_plan_stands", "Research already runs and its plan stands: go on with it.");
       if (continued && state && written) return pickUpResearch(call, { persistedToolCallId, signal }, continued, state);
-      // A Continue's own word is the button's, so its goal says what language the user reads.
-      await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: CYRILLIC.test(buttonWord ? decoded.value.goal : input.userMessage) ? PLANNING_LINE.ru : PLANNING_LINE.en }] });
+      await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: PLANNING_LINE }] });
       // The server's fields, first so an excerpt would keep them: an approval continuation reads them back (`researchRunOf`).
       return resultOf(call, { research_run: researchRunId, status: "scoping",
         instructions: [...continued?.goal === undefined ? [] : [NOTHING_PICKED_UP], researchScopingInstructions()].join("\n") });
@@ -774,7 +768,7 @@ export function createRunResearch(input: RunResearchInput) {
       if (accepted) return true;
       if (input_.toolChoice !== "none" || !plan || !held) return false;
       // Tools closed with a draft in hand: tool-free text could only repeat it. It goes out as it stands.
-      accepted = { draft: held.draft, notes: [...held.notes, note(input.toolTimeLeft() ? "unresolved" : "time_out", held.draft)] };
+      accepted = { draft: held.draft, notes: [...held.notes, researchNote(input.toolTimeLeft() ? "unresolved" : "time_out")] };
       return true;
     },
 
@@ -804,7 +798,7 @@ export function createRunResearch(input: RunResearchInput) {
       }
       // A report handed in stays the report: a message never replaces it, whatever it says.
       if (held) {
-        accepted = { draft: held.draft, notes: [...held.notes, note(toolsOpen ? "unresolved" : "time_out", held.draft)] };
+        accepted = { draft: held.draft, notes: [...held.notes, researchNote(toolsOpen ? "unresolved" : "time_out")] };
         return null;
       }
       textDrafts += 1;
@@ -839,9 +833,9 @@ export function createRunResearch(input: RunResearchInput) {
     finish(waiting: boolean): string | null {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
       if (!researching() || waiting) return null;
-      if (!plan) return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
-      if (held) return researchAnswerText(held.draft.report, [...held.notes, note("unresolved", held.draft)]);
-      if (superseded) return researchAnswerText(superseded.draft.report, [...superseded.notes, note("followup_not_applied", superseded.draft)]);
+      if (!plan) return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted")]) : null;
+      if (held) return researchAnswerText(held.draft.report, [...held.notes, researchNote("unresolved")]);
+      if (superseded) return researchAnswerText(superseded.draft.report, [...superseded.notes, researchNote("followup_not_applied")]);
       return null;
     },
 
@@ -851,8 +845,8 @@ export function createRunResearch(input: RunResearchInput) {
       const report = held ?? superseded;
       if (report) {
         return researchAnswerText(report.draft.report, [...report.notes,
-          note(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed", report.draft),
-          ...held ? [] : [note("followup_not_applied", report.draft)]]);
+          researchNote(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
+          ...held ? [] : [researchNote("followup_not_applied")]]);
       }
       if (reason === "stopped") return null;
       return plan ? null : lastWords();

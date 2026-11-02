@@ -525,54 +525,37 @@ type ClaimResult = Readonly<{
 
 const isUnsupported = (claim: ClaimResult) => claim.quote.status === "unsupported" || claim.answer?.verdict === "unsupported";
 
-const CYRILLIC = /\p{Script=Cyrillic}/u;
-
 const inline = (text: string) => text.replace(/[*`[\]]+/gu, " ").replace(/\s+/gu, " ").trim();
 const excerpt = (text: string, max: number) => {
   const line = Array.from(inline(text));
   return line.length > max ? `${line.slice(0, max - 1).join("")}…` : line.join("");
 };
 
-type Language = "en" | "ru";
-
-function labelSentence(model: ResearchVerifierModel | null, language: Language): string {
+function labelSentence(model: ResearchVerifierModel | null): string {
   if (!model || model.kind === "unavailable") return "";
   const label = inline(model.label);
-  if (model.kind === "main_model") {
-    return language === "ru" ? `Проверила основная модель (${label}), которая и писала этот отчёт, поэтому проверка не независимая.`
-      : `Checked by the main model (${label}), which also wrote this report, so this check is not independent.`;
-  }
-  return language === "ru" ? `Независимая проверка: модель ${label}.` : `Independently checked by ${label}.`;
+  return model.kind === "main_model" ? `Checked by the main model (${label}), which also wrote this report, so this check is not independent.`
+    : `Independently checked by ${label}.`;
 }
 
-const NOT_RUN: Readonly<Record<Exclude<ModelRound["kind"], "not_needed" | "ran">, Readonly<Record<Language, string>>>> = {
-  busy: { en: "The independent check could not start, as this chat is running as many sub-agents as it may. Only the quotes were checked.",
-    ru: "Независимая проверка не запустилась: в этом чате уже работает максимум субагентов. Проверены только цитаты." },
-  failed: { en: "The independent check failed. Only the quotes were checked.", ru: "Независимая проверка не удалась. Проверены только цитаты." },
-  no_time: { en: "The independent check did not run, as too little time was left for it. Only the quotes were checked.",
-    ru: "Независимая проверка не запускалась: на неё не осталось времени. Проверены только цитаты." },
-  timed_out: { en: "Time ran out during the independent check. Only the quotes were checked.", ru: "Время вышло во время независимой проверки. Проверены только цитаты." },
-  unavailable: { en: "The independent check did not run: the model chosen for it is not available to this answer. Only the quotes were checked.",
-    ru: "Независимая проверка не запускалась: выбранная для неё модель недоступна этому ответу. Проверены только цитаты." }
+const NOT_RUN: Readonly<Record<Exclude<ModelRound["kind"], "not_needed" | "ran">, string>> = {
+  busy: "The independent check could not start, as this chat is running as many sub-agents as it may. Only the quotes were checked.",
+  failed: "The independent check failed. Only the quotes were checked.",
+  no_time: "The independent check did not run, as too little time was left for it. Only the quotes were checked.",
+  timed_out: "Time ran out during the independent check. Only the quotes were checked.",
+  unavailable: "The independent check did not run: the model chosen for it is not available to this answer. Only the quotes were checked."
 };
 
 /** How the note opens: which model checked, or why none did. */
-function checkedBy(model: ResearchVerifierModel | null, round: ModelRound, carried: boolean, language: Language): string {
-  const label = labelSentence(model, language);
-  if (round.kind === "ran") {
-    if (round.whole) return label;
-    return `${label} ${language === "ru" ? "Она ответила не по всем утверждениям." : "It did not answer for every claim."}`;
-  }
-  if (round.kind === "not_needed") {
-    return carried ? label : language === "ru" ? "Модели нечего было проверять: все утверждения уже разобраны по цитатам." : "No claim was left for a model to check after the quotes.";
-  }
-  if (carried && label && round.kind !== "unavailable") {
-    return `${label} ${language === "ru" ? "Утверждения, изменённые после этого, ею не перепроверены." : "Claims changed after that were not checked again by it."}`;
-  }
-  return NOT_RUN[round.kind][language];
+function checkedBy(model: ResearchVerifierModel | null, round: ModelRound, carried: boolean): string {
+  const label = labelSentence(model);
+  if (round.kind === "ran") return round.whole ? label : `${label} It did not answer for every claim.`;
+  if (round.kind === "not_needed") return carried ? label : "No claim was left for a model to check after the quotes.";
+  if (carried && label && round.kind !== "unavailable") return `${label} Claims changed after that were not checked again by it.`;
+  return NOT_RUN[round.kind];
 }
 
-function countsSentence(claims: readonly ClaimResult[], leftOut: number, language: Language): string {
+function countsSentence(claims: readonly ClaimResult[], leftOut: number): string {
   const open = claims.filter((claim) => !claim.marked);
   const of = (test: (claim: ClaimResult) => boolean) => open.filter(test).length;
   const supported = of((claim) => !isUnsupported(claim) && claim.answer?.verdict === "supported");
@@ -580,53 +563,40 @@ function countsSentence(claims: readonly ClaimResult[], leftOut: number, languag
   const unsupported = of(isUnsupported);
   const unknown = open.length - supported - partly - unsupported;
   const marked = claims.length - open.length;
-  const names = language === "ru"
-    ? { claims: "Утверждений", leftOut: "Не вошло в проверку из-за объёма", marked: "в списке как непроверенные", partly: "подтверждено частично",
-      supported: "подтверждено", unknown: "проверить не удалось", unsupported: "не подтверждено" }
-    : { claims: "Claims", leftOut: "Left out of the check for size", marked: "listed as not verified", partly: "partly supported",
-      supported: "supported", unknown: "could not be checked", unsupported: "unsupported" };
-  const parts = [`${names.claims}: ${claims.length}`, `${names.supported}: ${supported}`,
-    ...partly ? [`${names.partly}: ${partly}`] : [], ...unsupported ? [`${names.unsupported}: ${unsupported}`] : [],
-    ...marked ? [`${names.marked}: ${marked}`] : [], ...unknown ? [`${names.unknown}: ${unknown}`] : []];
-  return [`${parts.join("; ")}.`, ...leftOut ? [`${names.leftOut}: ${leftOut}.`] : []].join(" ");
+  const parts = [`Claims: ${claims.length}`, `supported: ${supported}`, ...partly ? [`partly supported: ${partly}`] : [],
+    ...unsupported ? [`unsupported: ${unsupported}`] : [], ...marked ? [`listed as not verified: ${marked}`] : [], ...unknown ? [`could not be checked: ${unknown}`] : []];
+  return [`${parts.join("; ")}.`, ...leftOut ? [`Left out of the check for size: ${leftOut}.`] : []].join(" ");
 }
 
 /** What the model judged from: only the server's knowledge of what it was given, never the model's word. */
-function basisSentence(claims: readonly ClaimResult[], language: Language): string {
+function basisSentence(claims: readonly ClaimResult[]): string {
   const judged = claims.filter((claim) => !claim.marked && claim.answer && claim.answer.verdict !== "could_not_check");
   if (judged.length === 0) return "";
   const withExcerpt = judged.filter((claim) => claim.answer!.withExcerpt).length;
-  return language === "ru" ? `Из разобранных утверждений модель видела открытый текст для ${withExcerpt}, только страницу — для ${judged.length - withExcerpt}.`
-    : `Of the claims judged, the model had the opened text for ${withExcerpt} and only the page for ${judged.length - withExcerpt}.`;
+  return `Of the claims judged, the model had the opened text for ${withExcerpt} and only the page for ${judged.length - withExcerpt}.`;
 }
 
-function quotesSentence(claims: readonly ClaimResult[], language: Language): string {
+function quotesSentence(claims: readonly ClaimResult[]): string {
   const count = (status: QuoteCheck["status"]) => claims.filter((claim) => claim.quote.status === status).length;
   const elsewhere = claims.filter((claim) => claim.quote.status === "found" && claim.quote.excerpt.source.kind === "other").length;
   const [found, inexact, notChecked, missing] = [count("found") - elsewhere, count("not_verbatim"), count("not_checked"), count("unsupported")];
-  const parts = language === "ru"
-    ? [`найдено в открытых страницах: ${found}`, ...elsewhere ? [`найдено на другой странице, не на указанной: ${elsewhere}`] : [], ...inexact ? [`на открытой странице не дословно: ${inexact}`] : [],
-      ...notChecked ? [`не проверялось (нет сохранённого текста страницы для сравнения): ${notChecked}`] : [], ...missing ? [`не найдено: ${missing}`] : []]
-    : [`found in opened pages: ${found}`, ...elsewhere ? [`found on a different page than the one cited: ${elsewhere}`] : [], ...inexact ? [`not word for word on the opened page: ${inexact}`] : [],
-      ...notChecked ? [`not checked (no saved page text to compare with): ${notChecked}`] : [], ...missing ? [`not found: ${missing}`] : []];
-  return `${language === "ru" ? "Цитаты" : "Quotes"}: ${parts.join("; ")}.`;
+  const parts = [`found in opened pages: ${found}`, ...elsewhere ? [`found on a different page than the one cited: ${elsewhere}`] : [],
+    ...inexact ? [`not word for word on the opened page: ${inexact}`] : [], ...notChecked ? [`not checked (no saved page text to compare with): ${notChecked}`] : [],
+    ...missing ? [`not found: ${missing}`] : []];
+  return `Quotes: ${parts.join("; ")}.`;
 }
 
 /** The server's mark on the claims the check rejected: the answer says which, in words true whether or not the report still holds them. */
-function rejectedNote(claims: readonly string[], language: Language): string | null {
+function rejectedNote(claims: readonly string[]): string | null {
   if (claims.length === 0) return null;
-  const shown = claims.slice(0, VERIFIER_LIMITS.noteClaims).map((claim) => `«${excerpt(claim, VERIFIER_LIMITS.noteClaimCharacters)}»`).join("; ");
+  const shown = claims.slice(0, VERIFIER_LIMITS.noteClaims).map((claim) => `"${excerpt(claim, VERIFIER_LIMITS.noteClaimCharacters)}"`).join("; ");
   const more = claims.length - VERIFIER_LIMITS.noteClaims;
-  return language === "ru"
-    ? `Проверка не подтвердила эти утверждения; если они есть выше, полагаться на них нельзя: ${shown}${more > 0 ? `; и ещё ${more}` : ""}.`
-    : `The check did not support these claims; if they appear above, do not rely on them: ${shown}${more > 0 ? `; and ${more} more` : ""}.`;
+  return `The check did not support these claims; if they appear above, do not rely on them: ${shown}${more > 0 ? `; and ${more} more` : ""}.`;
 }
-
-const languageOf = (draft: ResearchDraft): Language => CYRILLIC.test(draft.report) ? "ru" : "en";
 
 /** What holds for a draft this gate did not finish on: the claims the run's checks rejected so far. */
 function carriedNotes(draft: ResearchDraft, earlier: readonly ResearchAttempt[]): readonly string[] {
-  const named = rejectedNote([...earlierChecks(earlier).rejected.values()], languageOf(draft));
+  const named = rejectedNote([...earlierChecks(earlier).rejected.values()]);
   return named ? [named] : [];
 }
 
@@ -698,7 +668,6 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
     const carried = carriedNotes(draft, context.earlier);
     return carried.length > 0 ? { kind: "pass", notes: carried } : { kind: "pass" };
   }
-  const language = languageOf(draft);
 
   const { records, stored } = await recordedClaims(draft, context);
   const notStored = draft.findings.filter((_, index) => !stored.has(index));
@@ -741,9 +710,9 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
   checks.set(draft, { answers: new Map(claims.flatMap((claim) => claim.answer ? [[claim.key, claim.answer] as const] : [])), rejected });
 
   const leftOut = round.kind === "ran" ? round.leftOut : 0;
-  const summary = [checkedBy(model, round, earlier.answers.size > 0, language), countsSentence(claims, leftOut, language), basisSentence(claims, language), quotesSentence(claims, language)]
+  const summary = [checkedBy(model, round, earlier.answers.size > 0), countsSentence(claims, leftOut), basisSentence(claims), quotesSentence(claims)]
     .filter(Boolean).join(" ");
-  const named = rejectedNote([...rejected.values()], language);
+  const named = rejectedNote([...rejected.values()]);
 
   if (unsupported.length > 0 && !corrected) {
     const partly = open.filter((claim) => !isUnsupported(claim) && claim.answer?.verdict === "partly");

@@ -238,12 +238,12 @@ describe("a Continue's start", () => {
     expect(run.research.frameOpen()).toBe(true);
   });
 
-  it("goes by the stored goal, whatever the model passed, and tells the user in its language what was picked up", async () => {
+  it("goes by the stored goal, whatever the model passed, and tells the user what was picked up", async () => {
     const run = runOn(turn(), portsOf().ports);
     const { result } = await startOn(run);
     expect(result.status).toBe("complete");
     expect(run.shown).toHaveLength(1);
-    expect(run.shown[0]).toMatchObject({ items: [{ completed: true, text: "Продолжаю с записанного: ячеек заполнено: 1 из 2" }, { active: true, text: PLAN.questions[0]!.question }] });
+    expect(run.shown[0]).toMatchObject({ items: [{ completed: true, text: "Continuing from what was recorded: 1 of 2 cells filled" }, { active: true, text: PLAN.questions[0]!.question }] });
     expect(run.shown[0]).not.toHaveProperty("researchPlan");
   });
 
@@ -349,7 +349,7 @@ describe("what is no Continue, or has nothing to pick up", () => {
     expect(parts.resume).not.toHaveBeenCalled();
   });
 
-  it("starts over with the plan step when nothing was recorded, in the goal's language, however the user's word reads", async () => {
+  it("starts over with the plan step when nothing was recorded", async () => {
     const parts = portsOf(async () => null);
     const run = runOn(turn(), parts.ports);
     const { text } = await startOn(run);
@@ -357,7 +357,7 @@ describe("what is no Continue, or has nothing to pick up", () => {
     expect(text).toContain("research starts over with the plan");
     expect(parts.planReleased).not.toHaveBeenCalled();
     expect(run.research.outstanding()).toBe(false);
-    expect(run.shown[0]).toMatchObject({ items: [{ text: "Составляю план перед началом исследования" }], researchPlan: { runId: "run-b", state: "scoping" } });
+    expect(run.shown[0]).toMatchObject({ items: [{ text: "Making a plan before research starts" }], researchPlan: { runId: "run-b", state: "scoping" } });
   });
 
   it("starts over the same way when the store fails, and says so in the log", async () => {
@@ -475,12 +475,12 @@ describe("the ids a picked-up run cites", () => {
     log.mockRestore();
   });
 
-  it("go with the goal to the server's own answer on a Continue, and an ordinary run's words stay what they were", async () => {
+  it("ask the server's own answer for nothing but how it ended, on a Continue and on an ordinary run", async () => {
     const reported = (load?: () => Promise<ResearchResumeState | null>) => ({ ...portsOf(load).ports, report: () => ({ ...NOOP_RESEARCH_PORTS.report, compose }) });
     const continued = runOn(turn(), reported());
     await startOn(continued);
     await continued.research.composed("failed", running);
-    expect(compose).toHaveBeenLastCalledWith({ ended: "failed", goal: GOAL, signal: expect.any(AbortSignal) });
+    expect(compose).toHaveBeenLastCalledWith({ ended: "failed", signal: expect.any(AbortSignal) });
     const items = [...turn().slice(0, -1), { id: "msg-other", kind: "user" as const, text: "Проведи исследование подушек." }];
     const ordinary = runOn(items, { ...reported(), planWindow: () => NOOP_RESEARCH_PORTS.planWindow }, { userMessage: "Проведи исследование подушек." });
     await startOn(ordinary);

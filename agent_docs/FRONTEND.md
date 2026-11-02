@@ -12,6 +12,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 ## What users see
 
 - Beyond the root product stance, answers show no private identifiers or receipts.
+- The interface has one language, English (operator decision 2026-11-02): every word the product writes, the research plan card and the notes the server adds to an answer included, whatever language the user writes in. Only the model's own text follows the user, and read-aloud speaks its skip words in the voice's language.
 - Each answer has one process disclosure above the body (thinking, friendly tool names, outcomes, duration), actions below it, then sources and downloads.
 - The process line says how long the work took; search, Memory and Past chats counts and PDF routes live in the fold. A line names them only when there is no work to name, or when every search failed (operator decision 2026-10-30, reversing `f8bba8134`).
 - Counts must be true. In the fold, Search ×N counts successful calls per engine; failures show separately. Memory and Past chats counts describe what entered the context, not proven influence.
