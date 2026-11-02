@@ -183,8 +183,8 @@ function previousJudgeNotes(context: ResearchGateContext, russian: boolean, prev
 }
 
 const SEND_RESEARCHERS = {
-  en: "Send researchers with call_subagent for exactly these next steps. Keep every finding that still holds. Never remove findings or shorten the report to satisfy this check. If research cannot settle something, state the limit in the report and submit it. For an unreachable source, keep its target and reason in unreachable.",
-  ru: "Отправьте исследователей через call_subagent ровно для следующих шагов. Сохраните все находки, которые остаются верными. Никогда не удаляйте находки и не сокращайте отчёт ради этой проверки. Если исследование не может разрешить вопрос, укажите ограничение в отчёте и передайте его. Для недоступного источника сохраните цель и причину в unreachable."
+  en: "Send researchers with call_subagent for exactly these next steps. Keep in record_ids every record that still holds. Never drop records or shorten the report to satisfy this check. If research cannot settle something, state the limit in the report and submit it. For an unreachable source, keep its target and reason in unreachable.",
+  ru: "Отправьте исследователей через call_subagent ровно для следующих шагов. Сохраните в record_ids все записи, которые остаются верными. Никогда не убирайте записи и не сокращайте отчёт ради этой проверки. Если исследование не может разрешить вопрос, укажите ограничение в отчёте и передайте его. Для недоступного источника сохраните цель и причину в unreachable."
 };
 
 const NO_NEW_CELL_NOTE = {
@@ -350,8 +350,8 @@ export const gapCheckGate: ResearchGate = {
         ...previous && previous.gaps.length > 0 ? [gapNote(previous.gaps, russian, previous.kind)] : []] };
       if (!context.time.sendBackAllowed() || context.earlier.some((attempt) => attempt.draft.origin === "plain_text")) return { kind: "pass", notes };
       return { kind: "send_back", notes, message: CYRILLIC.test(context.plan.goal)
-        ? "Передайте отчёт через submit_research_draft со списком находок: утверждение, ссылка, точная цитата и источник. Сохраните все находки, которые остаются верными; не сокращайте отчёт ради проверки."
-        : "Submit the report through submit_research_draft with findings: claim, link, verbatim quote and source. Keep every finding that still holds; do not shorten the report to satisfy this check." };
+        ? "Передайте отчёт через submit_research_draft и укажите в record_ids записи, на которых он стоит: их id перечислены после отчётов исследователей. Сохраните все записи, которые остаются верными; не сокращайте отчёт ради проверки."
+        : "Submit the report through submit_research_draft with record_ids, the ids of the records it rests on, as listed after each researcher's report. Keep every record that still holds; do not shorten the report to satisfy this check." };
     }
 
     let missing: Gap[];
