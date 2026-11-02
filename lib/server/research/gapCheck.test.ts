@@ -825,6 +825,73 @@ describe("where a frame exists", () => {
     });
   });
 
+  describe("the candidates agents noted", () => {
+    const note = (name: string, reason = "A ranking names it.") => ({ at: "2026-11-03T10:00:00.000Z", by: { name, threadId: `thread-${name}` }, reason });
+    const NOTED: ResearchFrame = { ...FRAME, candidates: [{ key: "dreamline-sleep-dream-medium-s1000", label: "Dreamline SleepDream Medium S1000",
+      notes: [note("marketplaces", "An Ozon listing shows it at 59 521 ₽.")] }] };
+    const STEP = "Candidate dreamline-sleep-dream-medium-s1000: add it as a row with change_research_frame add_row and send researchers for its cells, or set it aside with " +
+      "change_research_frame set_aside, its key and your reason.";
+
+    it("sends back a candidate still open at draft time, with who noted it and why, and no model", async () => {
+      const ctx = withMatrix(ALL, {}, NOTED);
+      const result = await gapCheckGate.run(DRAFT, ctx);
+      expect(result.kind).toBe("send_back");
+      expect(messageOf(result)).toContain("Dreamline SleepDream Medium S1000: a candidate neither a row nor set aside, noted by marketplaces: An Ozon listing shows it at 59 521 ₽.");
+      expect(messageOf(result)).toContain(STEP);
+      expect(ctx.subagents.run).not.toHaveBeenCalled();
+    });
+
+    it("joins the empty cells' send back, and never spends one of its own while cells are open", async () => {
+      const ctx = withMatrix(ALL.slice(0, 1), {}, NOTED);
+      const result = await gapCheckGate.run(DRAFT, ctx);
+      expect(messageOf(result)).toContain("Fill the cells of row y2: durability, firmness.");
+      expect(messageOf(result)).toContain(STEP);
+      const earlier: ResearchAttempt[] = [{ draft: DRAFT, gate: gapCheckGate.name, message: messageOf(result) }];
+      // Asked once: no new page, and nothing goes back again.
+      expect(await gapCheckGate.run(DRAFT, { ...ctx, attempt: 2, earlier })).toEqual({ kind: "pass" });
+      // One noted since, with cells still open and no new page, does not go back alone.
+      const later: ResearchFrame = { ...NOTED, candidates: [...NOTED.candidates!, { key: "sealy-hybrid", label: "Sealy Hybrid", notes: [note("brands")] }] };
+      expect(await gapCheckGate.run(DRAFT, { ...withMatrix(ALL.slice(0, 1), { plan: ctx.plan }, later), attempt: 2, earlier })).toEqual({ kind: "pass" });
+    });
+
+    it("goes back with no new page once no cell is open, since deciding needs none, once and within the cap", async () => {
+      const ctx = withMatrix();
+      expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
+      // A later gate sent the draft back; since then a candidate was noted and no page opened.
+      const earlier: ResearchAttempt[] = [{ draft: DRAFT, gate: "verifier", message: "[Independent check] A check did not support some of them." }];
+      const noted = withMatrix(ALL, { plan: ctx.plan }, NOTED);
+      const result = await gapCheckGate.run(DRAFT, { ...noted, attempt: 2, earlier });
+      expect(messageOf(result)).toContain(STEP);
+      expect(vi.mocked(noted.subagents.run)).not.toHaveBeenCalled();
+      const asked = [...earlier, { draft: DRAFT, gate: gapCheckGate.name, message: messageOf(result) }];
+      expect(await gapCheckGate.run(DRAFT, { ...noted, attempt: 3, earlier: asked })).toEqual({ kind: "pass" });
+      const capped = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: DRAFT, gate: gapCheckGate.name, message: "Missing." }));
+      expect(await runResearchGates({ context: { ...noted, attempt: 4, earlier: [...capped, ...earlier] }, draft: DRAFT, gates: [gapCheckGate], runId: "r" }))
+        .toEqual({ kind: "accepted", notes: [] });
+    });
+
+    it("asks nothing of a frame with no rows, once researchers are closed, or of one a row covers or the main agent set aside", async () => {
+      const covered: ResearchFrame = { ...NOTED, rows: [...FRAME.rows, { key: "sleepdream", label: "Dreamline SleepDream Medium S1000 180x200" }] };
+      expect(messageOf(await gapCheckGate.run(DRAFT, withMatrix(ALL, {}, covered)))).toContain("Fill the cells of row sleepdream");
+      expect(messageOf(await gapCheckGate.run(DRAFT, withMatrix(ALL, {}, covered)))).not.toContain("Candidate ");
+      const aside: ResearchFrame = { ...NOTED, setAside: [{ at: "2026-11-03T10:05:00.000Z", key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out." }] };
+      for (const ctx of [withMatrix(ALL, {}, { ...NOTED, rows: [] }), withMatrix(ALL, { researchersClosed: () => "no_new_cell" }, NOTED), withMatrix(ALL, {}, aside)]) {
+        expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
+        expect(ctx.subagents.run).toHaveBeenCalledOnce();
+      }
+    });
+
+    it("stays within its bound with every row empty and every candidate open, each candidate named", async () => {
+      const limits = RESEARCH_FRAME_LIMITS;
+      const large: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "c".repeat(limits.labelCharacters), key: "c", why: "W." }],
+        rows: Array.from({ length: limits.rows }, (_value, index) => ({ key: `r-${index}`, label: `${"r".repeat(limits.labelCharacters - 4)}${index}` })),
+        candidates: Array.from({ length: limits.candidates }, (_value, index) => ({ key: `model-${index}`, label: `Model ${index}`, notes: [note(`agent-${index}`, "x".repeat(1_000))] })) };
+      const message = messageOf(await gapCheckGate.run(DRAFT, withMatrix([], {}, large)));
+      expect(message.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+      expect(message).toContain("Candidate model-0: add");
+    });
+  });
+
   it("past the cap its gaps go nowhere: the answer is the report", async () => {
     const earlier = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: without("owner_reviews"), gate: gapCheckGate.name, message: "Missing." }));
     const ctx = withMatrix(ALL.slice(0, 2), { earlier, sources: { opened: async () => [...SOURCES, { partial: false, text: "New page.", toolName: "fetch_url", url: "https://example.test/new" }] } });

@@ -3,6 +3,7 @@ import { CHANGE_RESEARCH_FRAME_TOOL_NAME, decodeResearchFrameChange, RESEARCH_FR
 import { SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import { subagentOffersTool } from "../engine/subagents/registry";
 import type { EngineToolExecution } from "../engine/toolRegistry";
+import { changedResearchFrame } from "../research/matrix";
 import { changeResearchFrameEngineTool, changeResearchFrameTool, type ChangeResearchFrameTarget } from "./changeResearchFrame";
 import type { ToolExecutionResult } from "./types";
 
@@ -112,5 +113,63 @@ describe("a change_research_frame call", () => {
     const tool = changeResearchFrameEngineTool(targetOf().target, { kind: "main" });
     expect(tool.effects).toBe("local");
     expect(tool.activity({ arguments: {}, id: "c", name: CHANGE_RESEARCH_FRAME_TOOL_NAME })).toEqual({ origin: "tool", serverName: "Research", toolName: "Extending the matrix" });
+  });
+});
+
+const NOTE = { cases: null, change: "note_candidate", key: null, label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing shows it.", why: null };
+const ASIDE = { cases: null, change: "set_aside", key: "dreamline-sleep-dream-medium-s1000", label: null, reason: "Sold out in every shop.", why: null };
+
+describe("candidates through change_research_frame", () => {
+  /** The real change on one frame held in memory, as the coverage port makes it. */
+  function held() {
+    const state = { frame: { branches: [], changes: [], criteria: [{ criterion: "Firmness", key: "firmness", why: "It decides comfort." }],
+      rows: [{ key: "kombi-3", label: "Dreamline Kombi-3 S1000" }] } as ResearchFrame };
+    const target: ChangeResearchFrameTarget = { coverage: { change: async (request, by) => {
+      const changed = changedResearchFrame(state.frame, request, { at: "2026-11-03T10:00:00.000Z", by });
+      if (changed.ok) state.frame = changed.value;
+      return changed;
+    } }, open: () => true };
+    return { state, target };
+  }
+  const researcher = (name: string) => ({ kind: "subagent", name, threadId: `thread-${name}` }) as never;
+
+  it("asks for the name and a nullable key and label, and the decoder reads both kinds", () => {
+    expect(properties.key!.type).toEqual(["string", "null"]);
+    expect(properties.label!.type).toEqual(["string", "null"]);
+    expect(changeResearchFrameTool.description).toContain("note_candidate: an option you saw that the matrix lacks");
+    expect(changeResearchFrameTool.description).toContain("the model and not only its brand or line");
+    expect(changeResearchFrameTool.description).toContain("set_aside: the main agent only");
+    expect(decodeResearchFrameChange(NOTE)).toMatchObject({ ok: true, value: { change: "note_candidate", label: NOTE.label } });
+    expect(decodeResearchFrameChange(ASIDE)).toMatchObject({ ok: true, value: { change: "set_aside", key: ASIDE.key } });
+  });
+
+  it("stores a researcher's note under the key the server makes, counts a second agent, and tells the researcher to go on", async () => {
+    const { state, target } = held();
+    const first = value(await changeResearchFrameEngineTool(target, researcher("marketplaces")).execute(call(NOTE)));
+    expect(first).toEqual({ message: "Candidate noted under key dreamline-sleep-dream-medium-s1000. The main agent decides whether it becomes a row; go on with your question.",
+      status: "changed" });
+    const second = value(await changeResearchFrameEngineTool(target, researcher("brands")).execute(call({ ...NOTE, label: "Dreamline Sleep Dream Medium S1000" })));
+    expect(second.message).toContain("dreamline-sleep-dream-medium-s1000, by 2 agents now");
+    expect(state.frame.candidates![0]!.notes.map(({ by }) => by)).toEqual([{ name: "marketplaces", threadId: "thread-marketplaces" }, { name: "brands", threadId: "thread-brands" }]);
+    const covered = await changeResearchFrameEngineTool(target, researcher("brands")).execute(call({ ...NOTE, label: "Dreamline Kombi-3" }));
+    expect(value(covered)).toMatchObject({ code: "research_frame_change_refused", message: expect.stringContaining("already row kombi-3") });
+  });
+
+  it("refuses a researcher's set_aside with nothing written, and lets the main agent set one aside with its reason", async () => {
+    const { state, target } = held();
+    await changeResearchFrameEngineTool(target, researcher("marketplaces")).execute(call(NOTE));
+    const refused = await changeResearchFrameEngineTool(target, researcher("marketplaces")).execute(call(ASIDE));
+    expect(refused.status).toBe("error");
+    expect(value(refused)).toMatchObject({ code: "research_frame_change_refused", message: expect.stringContaining("only the main agent sets a noted candidate aside") });
+    expect(state.frame.setAside).toBeUndefined();
+    const aside = value(await changeResearchFrameEngineTool(target, { kind: "main" }).execute(call(ASIDE)));
+    expect(aside).toEqual({ message: "Set aside: dreamline-sleep-dream-medium-s1000. The report keeps it among the options it does not recommend, with your reason.", status: "changed" });
+    expect(state.frame.setAside).toEqual([{ at: "2026-11-03T10:00:00.000Z", key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." }]);
+  });
+
+  it("tells the main agent what to do with a candidate it noted itself", async () => {
+    const { target } = held();
+    expect(value(await changeResearchFrameEngineTool(target, { kind: "main" }).execute(call(NOTE))).message)
+      .toBe("Candidate noted under key dreamline-sleep-dream-medium-s1000. Make it a row with add_row, or set it aside with set_aside and your reason.");
   });
 });

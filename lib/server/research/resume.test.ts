@@ -328,6 +328,19 @@ describe("a Continue's start", () => {
     expect(run.research.frameOpen()).toBe(true);
   });
 
+  it("names the candidates still open beside what is filled, so the model decides on them as it plans a round", async () => {
+    const parts = portsOf();
+    const noted = { ...FRAME, candidates: [{ key: "sealy-hybrid", label: "Sealy Hybrid", notes: [{ at: "2026-11-03T10:00:00.000Z", by: { name: "brands", threadId: "thread-1" },
+      reason: "A ranking names it." }] }] };
+    const run = runOn(turn(), { ...parts.ports, coverage: () => ({ ...NOOP_RESEARCH_PORTS.coverage, coverage: async () => COVERAGE, frame: async () => noted }) });
+    const { text } = await startOn(run);
+    expect(text).toContain("1 of 2 cells empty");
+    expect(text).toContain("Candidates noted (from the server), neither a row nor set aside: 1.");
+    expect(text).toContain("sealy-hybrid");
+    const plain = await startOn(runOn(turn(), portsOf().ports));
+    expect(plain.text).not.toContain("Candidates noted");
+  });
+
   it("goes by the stored goal, whatever the model passed, and tells the user what was picked up", async () => {
     const run = runOn(turn(), portsOf().ports);
     const { result } = await startOn(run);
