@@ -1,4 +1,5 @@
 import { modelWithConnectionLabel } from "../../contracts/providerConnectionLabels";
+import { RESEARCHER_CONTEXT_CLEARING } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, SUBAGENT_BUILT_IN_TYPE, SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, SUBAGENT_NAME_PATTERN } from "../../contracts/subagents";
 import type { SubagentRouteResult } from "../engine/subagents/modelRoutes";
 import { withoutResearchBookkeeping } from "../engine/subagents/registry";
@@ -122,6 +123,8 @@ export function createResearchTurns(input: ResearchTurnsInput) {
           const resolved = await types.resolve(scope);
           return resolved.kind === "found" ? { ...resolved, type: { ...resolved.type, providerModelId: null, reasoningEffort: null } } : resolved;
         } } } : {}) } } : ports?.browserIdentity ? { ports: { browserIdentity: ports.browserIdentity } } : {}),
+        // A researcher's old pages leave its context past a mark, on a role or not; a gate's turn reads what it was given.
+        ...researcher ? { resultClearing: RESEARCHER_CONTEXT_CLEARING } : {},
         runContextItems: researcher ? base.runContextItems : [],
         // A gate is the server's check and its calls are not the model's budget to spend.
         toolState: researcher ? base.toolState : { calls: 0 } });

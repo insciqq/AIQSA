@@ -118,7 +118,8 @@ export function createResearchSources(input: Readonly<{
       for (const list of [input.items(), ...read.map((thread) => thread.items)]) {
         const calls = new Map(list.flatMap((item) => item.kind === "tool_call" ? [[item.callId, item] as const] : []));
         for (const item of list) {
-          if (item.kind !== "tool_result" || item.outcome !== "complete" || AGENT_WRITTEN.has(item.name)) continue;
+          // A cleared result's stub stands for the result it follows, which is read already (`lib/server/engine/compaction/clearing.ts`).
+          if (item.kind !== "tool_result" || item.cleared === true || item.outcome !== "complete" || AGENT_WRITTEN.has(item.name)) continue;
           if (opened.length >= RESEARCH_SOURCE_LIMITS.results || characters >= RESEARCH_SOURCE_LIMITS.totalCharacters) return opened;
           signal.throwIfAborted();
           let text = item.output;
