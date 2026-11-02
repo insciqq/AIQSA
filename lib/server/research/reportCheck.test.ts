@@ -5,6 +5,7 @@ import { runResearchGates, type ResearchAttempt, type ResearchGateContext } from
 import type { ResearchMatrix } from "./matrix";
 import { dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, RECORDS, SUMMARY, TABLE, unreachable } from "./report.testFixtures";
 import { REPORT_CHECK_GATE, reportCheckGate, researchDraftWithLinkedRecords, researchReportFindings } from "./reportCheck";
+import { VERIFIER_MARKER } from "./verifier";
 
 const check = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[] = RECORDS, matrix: ResearchMatrix | null = MATRIX) => researchReportFindings(draft, records, matrix);
 const messages = (draft: ResearchDraft, records?: readonly ResearchEvidenceRecord[], matrix?: ResearchMatrix | null) => check(draft, records, matrix).troubles.map(({ message }) => message).join("\n");
@@ -152,10 +153,11 @@ describe("the summary the reader reads first", () => {
     }
   });
 
-  it("sends back a summary that names no row while the draft picks one", () => {
-    expect(messages({ ...DRAFT, summary: { rowKeys: [], text: "Берите лучший." } })).toContain("The summary names no row of the matrix while the draft picks x1");
+  it("sends back a summary that names no row while the draft picks one, or calls rows inseparable, saying which it does", () => {
+    expect(messages({ ...DRAFT, summary: { rowKeys: [], text: "Берите лучший." } })).toContain("The summary names no row of the matrix while the draft picks x1:");
     const inseparable: ResearchDraft = { ...DRAFT, doesNotSeparate: { rowKeys: ["x1", "x2"], statement: "Оба.", wouldDecide: "Полежать." }, pickRowKey: null, summary: { rowKeys: [], text: "Оба." } };
-    expect(messages(inseparable)).toContain("while the draft picks x1, x2");
+    expect(messages(inseparable)).toContain("while the draft calls x1, x2 inseparable:");
+    expect(messages({ ...inseparable, pickRowKey: "x1" })).toContain("while the draft picks x1 and calls x2 inseparable:");
   });
 
   it("sends back a summary that does not start with the pick, or leaves out a case's pick", () => {
@@ -242,6 +244,19 @@ describe("the key specifications of the options it recommends", () => {
     expect(keyedMessages(keyed([6, 7]), reserve)).toBe("");
     const oneSite = [...RECORDS, load(6, "x1", 130, "https://maker.example/x1-load"), load(7, "x1", 140, "https://maker.example/x1-spec")];
     expect(keyedMessages(keyed([6]), oneSite)).toBe("");
+  });
+
+  it("asks no one to cite a site whose records of the cell the checks rejected, nor names a disagreement with one, as the verifier remembers them", async () => {
+    // Only the rejected site holds the second record: the verifier tells the model what to do with it, and this check does not ask for it back.
+    expect(researchReportFindings(keyed([6]), AGREE, matrixOf(KEYED, AGREE), new Set([id(7)])).troubles).toEqual([]);
+    expect(researchReportFindings(keyed([6]), DISAGREE, matrixOf(KEYED, DISAGREE), new Set([id(7)])).troubles).toEqual([]);
+    // The gate reads the rejections from the earlier send backs, an approval's rebuilt ones included.
+    const message = `${VERIFIER_MARKER} A check did not support some of them.\nRejected ${JSON.stringify({ claim: "Нагрузка на сторону до 140 кг.", key: `record:${id(7)}`, record: id(7) })}`;
+    const context = { attempt: 2, coverage: { change: vi.fn(), coverage: async () => matrixOf(KEYED, DISAGREE).coverage, frame: async () => KEYED }, earlier: [{ draft: keyed([6, 7]), gate: "verifier", message }],
+      evidence: { page: vi.fn(), record: vi.fn(), records: async () => DISAGREE }, plan: { goal: "Выбрать.", questions: [], skipped: [] }, signal: new AbortController().signal,
+      sources: { opened: async () => [] }, subagents: { run: vi.fn() }, time: { remainingMs: () => 600_000, sendBackAllowed: () => true }, verifierModel: vi.fn() } satisfies ResearchGateContext;
+    expect(await reportCheckGate.run(keyed([6]), context)).toEqual({ kind: "pass" });
+    expect(await reportCheckGate.run(keyed([6]), { ...context, earlier: [] })).toMatchObject({ kind: "send_back" });
   });
 
   it("reads no key specification in a frame that marks none, as every frame stored before did", () => {

@@ -134,13 +134,25 @@ function matrixGaps(matrix: ResearchMatrix): Gap[] {
   });
 }
 
+const GAP_CHECK_GATE = "gap_check";
+
+/** How a confirmation's next step names its cells, which is how an earlier send back says what it asked, an approval's or a Continue's rebuilt one included. */
+const CONFIRMATION_STEP = /the key specifications of row ([a-z0-9][a-z0-9_-]{0,47}): ([a-z0-9][a-z0-9_-]{0,47}(?:, [a-z0-9][a-z0-9_-]{0,47})*)\./gu;
+
+/** The confirmations this research's earlier send backs of this gate asked for, as `row/criterion`. */
+function askedConfirmations(earlier: ResearchGateContext["earlier"]): ReadonlySet<string> {
+  return new Set(earlier.filter(({ gate, message }) => gate === GAP_CHECK_GATE && message !== null).flatMap(({ message }) =>
+    [...message!.matchAll(CONFIRMATION_STEP)].flatMap(([, row, criteria]) => criteria!.split(", ").map((criterion) => `${row}/${criterion}`))));
+}
+
 /**
  * The second sites the key specifications of the options a draft recommends still need, one gap per option (`researchUnconfirmedKeyCells`, operator decision 2026-11-02).
- * Mechanical like the empty cells, and all this check asks of a filled cell: each is answered by a record of another site or by not_found, so it is asked once.
+ * Mechanical like the empty cells, and all this check asks of a filled cell: each is answered by a record of another site or by not_found, and each is asked once, so
+ * one an earlier send back asked for is left out, answered or not.
  */
-function confirmationGaps(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: ResearchDraft): Gap[] {
+function confirmationGaps(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: ResearchDraft, asked: ReadonlySet<string>): Gap[] {
   const limit = RESEARCH_LIMITS.questionCharacters;
-  const cells = researchUnconfirmedKeyCells(matrix, records, draft);
+  const cells = researchUnconfirmedKeyCells(matrix, records, draft).filter(({ criterion, row }) => !asked.has(`${row.key}/${criterion.key}`));
   return [...new Set(cells.map(({ row }) => row.key))].map((rowKey) => {
     const own = cells.filter(({ row }) => row.key === rowKey);
     return { issue: line(`${own[0]!.row.label}: ${own.map(({ criterion }) => space(criterion.criterion)).join(", ")} (one site only)`, limit),
@@ -193,8 +205,8 @@ const SEND_RESEARCHERS = "Send researchers with call_subagent for exactly these 
  * process notes): what research could not settle is the report's to state where it matters, as the method asks. With researchers closed nobody could act
  * on this, so the model goes on to its report.
  */
-function gapsResult(draft: ResearchDraft, context: ResearchGateContext, feedback: SentBack, closed: ResearchersClosed): ResearchGateResult {
-  if (addedNothing(draft, context) || !context.time.sendBackAllowed() || closed) return { kind: "pass" };
+function gapsResult(draft: ResearchDraft, context: ResearchGateContext, feedback: SentBack, closed: ResearchersClosed, newlyRecommended = false): ResearchGateResult {
+  if ((!newlyRecommended && addedNothing(draft, context)) || !context.time.sendBackAllowed() || closed) return { kind: "pass" };
   const heading = feedback.kind === "judged" ? JUDGE_HEADING : MISSING_HEADING;
   const limits = [...new Set(feedback.limits.map(readerText))];
   const budget = Math.floor((RUN_FOLLOWUP_MAX_CHARS - SEND_RESEARCHERS.length - 6) / (limits.length > 0 ? 3 : 2));
@@ -327,7 +339,7 @@ function judgeIssues(report: string): Judgment | null {
  * judgment it needed did not finish, as a report not fully checked.
  */
 export const gapCheckGate: ResearchGate = {
-  name: "gap_check",
+  name: GAP_CHECK_GATE,
   async run(draft, context) {
     const matrix = await researchMatrix(researchGatePorts(context).coverage, context.signal);
     const closed = matrix ? context.researchersClosed?.() ?? null : null;
@@ -346,8 +358,8 @@ export const gapCheckGate: ResearchGate = {
     }
 
     // A source class whose opening cannot be told stays neither covered nor missing.
-    const missing = matrix ? [...matrixGaps(matrix), ...confirmationGaps(matrix, await confirmationRecords(context, matrix, draft), draft)]
-      : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
+    const confirmations = matrix ? confirmationGaps(matrix, await confirmationRecords(context, matrix, draft), draft, askedConfirmations(context.earlier)) : [];
+    const missing = matrix ? [...matrixGaps(matrix), ...confirmations] : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
     // An unfinished judgment costs the check, never the answer, and the answer says only that it is not fully checked, and whether time is why. Evidence that
     // did not change pays for no new judgment, so the last one's word stands, an unfinished one included, until a judgment completes.
     const said = (cause: Unfinished): ResearchGateResult => ({ kind: "pass", notes: [researchNote(cause === "time" ? "time_out" : "gate_failed")] });
@@ -356,6 +368,11 @@ export const gapCheckGate: ResearchGate = {
       return said(cause);
     };
     const asBefore = (): ResearchGateResult => progress?.unfinished ? said(progress.unfinished) : { kind: "pass" };
+    // An option the draft newly recommends needs its key specifications confirmed however few pages are new or findings changed: what the draft leans on changed,
+    // not its evidence. Only these go back then; each is asked once, and the caps hold.
+    if (confirmations.length > 0 && (noNewPages || addedNothing(draft, context))) {
+      return gapsResult(draft, context, { gaps: confirmations, kind: "mechanical", limits: previous?.limits ?? [], pages }, closed, true);
+    }
     if (noNewPages) return asBefore();
     if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, closed);
 

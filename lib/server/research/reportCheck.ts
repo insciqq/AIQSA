@@ -5,6 +5,7 @@ import type { ResearchGate } from "./gates";
 import { researchKeyCells, researchLeadingRows, researchMatrix, researchRecordSite, type ResearchMatrix } from "./matrix";
 import { researchGatePorts } from "./ports";
 import { figuresNotIn, type ClaimFigure } from "./quoteCheck";
+import { researchRejectedRecords } from "./verifier";
 import { researchRegistrableDomain } from "./sourceQuality";
 
 /**
@@ -234,23 +235,28 @@ function uncitedRows(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: Res
  * figure while sellers disagreed on its load and height. Which figure is right stays the report's to say, and where it says so stays the model's word: only that both
  * are stated somewhere is checked, so records that describe different parts of one cell pass once the report states both.
  */
-function keySpecTrouble(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
+function keySpecTrouble(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], report: string,
+  rejected: ReadonlySet<string>): Trouble | null {
   const rows = new Set(matrix.frame.rows.map(({ key }) => key));
   const secondSites: string[] = [];
   const pairs: string[] = [];
   const unnamed: string[] = [];
   for (const cell of researchKeyCells(matrix, records, researchLeadingRows(draft).filter((key) => rows.has(key)))) {
     const where = `${cell.row.key} / ${cell.criterion.key}`;
-    const citedSites = new Set(cell.records.filter(({ id }) => ids.has(id)).flatMap((record) => researchRecordSite(record) ?? []));
-    if (cell.sites.length >= 2 && citedSites.size < 2) {
+    // A site whose records of the cell the checks all rejected is no site to cite: the verifier tells the model what to do with those.
+    const usable = cell.records.filter(({ id }) => !rejected.has(id));
+    const sites = [...new Set(usable.flatMap((record) => researchRecordSite(record) ?? []))];
+    const citedSites = new Set(usable.filter(({ id }) => ids.has(id)).flatMap((record) => researchRecordSite(record) ?? []));
+    if (sites.length >= 2 && citedSites.size < 2) {
       // One record of each site not cited yet, so any id taken adds a site.
-      const others = cell.sites.filter((site) => !citedSites.has(site)).flatMap((site) => cell.records.find((record) => researchRecordSite(record) === site) ?? []);
+      const others = sites.filter((site) => !citedSites.has(site)).flatMap((site) => usable.find((record) => researchRecordSite(record) === site) ?? []);
       secondSites.push(`${where}: ${others.slice(0, IDS_PER_CELL).map(({ id }) => id).join(", ")}`);
     }
-    if (cell.disagreements.length === 0) continue;
-    const cited = cell.disagreements.filter(({ records: pair }) => pair.every(({ id }) => ids.has(id)));
+    const disagreements = cell.disagreements.filter(({ records: pair }) => pair.every(({ id }) => !rejected.has(id)));
+    if (disagreements.length === 0) continue;
+    const cited = disagreements.filter(({ records: pair }) => pair.every(({ id }) => ids.has(id)));
     if (cited.length === 0) {
-      const pair = cell.disagreements.find(({ records: both }) => both.some(({ id }) => ids.has(id))) ?? cell.disagreements[0]!;
+      const pair = disagreements.find(({ records: both }) => both.some(({ id }) => ids.has(id))) ?? disagreements[0]!;
       pairs.push(`${where}: ${pair.records.map(({ id }) => id).join(", ")}`);
     } else if (!cited.some(({ figures }) => figures.every((side) => figuresNotIn(side, report).length === 0))) {
       const { figures, records: [one, other] } = cited[0]!;
@@ -281,9 +287,10 @@ function summaryTrouble(draft: ResearchDraft, frame: ResearchFrame | null): Trou
   if (!summary) return { message: `${draft.invalidSummary ?? "The draft has no summary."} ${SUMMARY_FORM}` };
   const problems: string[] = draft.invalidSummary === undefined ? [] : [draft.invalidSummary];
   const picked = pickedRows(draft);
-  const leaning = [...new Set([...picked, ...draft.doesNotSeparate?.rowKeys ?? []])];
-  if (summary.rowKeys.length === 0 && leaning.length > 0) {
-    problems.push(`The summary names no row of the matrix while the draft picks ${listed(leaning)}: list in row_keys the rows it recommends, the pick first, and name each in its text.`);
+  const inseparable = (draft.doesNotSeparate?.rowKeys ?? []).filter((key) => !picked.includes(key));
+  if (summary.rowKeys.length === 0 && picked.length + inseparable.length > 0) {
+    const leaning = [...picked.length > 0 ? [`picks ${listed(picked)}`] : [], ...inseparable.length > 0 ? [`calls ${listed(inseparable)} inseparable`] : []].join(" and ");
+    problems.push(`The summary names no row of the matrix while the draft ${leaning}: list in row_keys the rows it recommends, the pick first, and name each in its text.`);
   } else if (summary.rowKeys.length > 0) {
     if (draft.pickRowKey && summary.rowKeys[0] !== draft.pickRowKey) {
       problems.push(`The summary starts with ${summary.rowKeys[0]}, while pick_row_key is ${draft.pickRowKey}: the pick comes first, in row_keys and in its text.`);
@@ -392,7 +399,8 @@ export type ResearchReportFindings = Readonly<{ troubles: readonly Trouble[] }>;
  * The whole check, with no port: what goes back. A statement that the rows do not separate, with what would decide, is the report's own to make, and the
  * server adds it nowhere.
  */
-export function researchReportFindings(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[], matrix: ResearchMatrix | null): ResearchReportFindings {
+export function researchReportFindings(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[], matrix: ResearchMatrix | null,
+  rejected: ReadonlySet<string> = new Set()): ResearchReportFindings {
   /** What the reader reads, the summary above the report: its links are the report's too. */
   const report = researchDraftText(draft);
   if (draft.origin === "plain_text" || (records.length === 0 && !matrix)) return { troubles: [] };
@@ -406,7 +414,7 @@ export function researchReportFindings(draft: ResearchDraft, records: readonly R
   const unknown = unknownRecords(ids, records, report);
   const links = unbackedLinks(draft, ids, records, report);
   const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report),
-    keySpecTrouble(draft, ids, matrix, records, report)];
+    keySpecTrouble(draft, ids, matrix, records, report, rejected)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
   const summary = [summaryTrouble(draft, matrix?.frame ?? null), uncitedOffers(draft, ids, records, matrix)];
@@ -427,7 +435,7 @@ export const reportCheckGate: ResearchGate = {
     if (draft.origin === "plain_text") return { kind: "pass" };
     const { coverage, evidence } = researchGatePorts(context);
     const [records, matrix] = await Promise.all([evidence.records(context.signal), researchMatrix(coverage, context.signal)]);
-    const { troubles } = researchReportFindings(draft, records, matrix);
+    const { troubles } = researchReportFindings(draft, records, matrix, researchRejectedRecords(context.earlier));
     return troubles.length === 0 ? { kind: "pass" } : { kind: "send_back", message: sendBackMessage(troubles) };
   }
 };
