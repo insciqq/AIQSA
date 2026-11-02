@@ -46,6 +46,7 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - Bootstrap accepts only an empty schema or the exact adopted administrator identity and refuses any other non-empty database before changing it. It creates no demo content or real provider deployments; reruns repair code-owned foundations but keep operator identity, credentials, settings, grants and content.
 - Upgrade adoptions of earlier configuration run once; later administrator edits stay independent of them.
 - A scheduled task's schedule columns stay required (decision 2026-10-25): a webhook-only task keeps the editor's schedule with `scheduleEnabled` off, and a check keeps its next run null, so existing rows needed no backfill and the previous release's writers, which never fire a task without a next run, stay safe during the upgrade (`prisma/migrations/20261025120000_automation_webhooks/migration.sql`).
+- Migrations from the baseline on use column-scoped `ON DELETE SET NULL (column)`, the research contract's among them (`prisma/migrations/20261101140000_research_system_contract/migration.sql`), so a key that carries the owner and the chat clears only its own column. That needs PostgreSQL 15 or later, and both Compose files pin 18. `prisma/schema.prisma` cannot express it, so a `migrate diff` shows that drift by design, and no migration should chase it.
 
 ## Deletion
 

@@ -27,6 +27,7 @@ import type { ResearchCoveragePort } from "./ports";
 import { DRAFT as RECORD_DRAFT, FRAME as RECORD_FRAME, matrixOf, notFound, RECORDS } from "./report.testFixtures";
 import { researchDraftWithRecords } from "./reportAssembly";
 import { REPORT_CHECK_GATE, reportCheckGate } from "./reportCheck";
+import { createResearchSources } from "./sources";
 
 const LABELS: Record<ResearchSourceClass, string> = {
   primary_official: "official sources", independent_tests: "independent tests", owner_reviews: "owner reviews", action_channel: "purchase options and terms"
@@ -650,6 +651,22 @@ describe("what this gate ended on", () => {
     const changed = { ...READY, findings: [...READY.findings, { ...READY.findings[0]!, claim: "A new claim." }] };
     await gapCheckGate.run(changed, { ...ctx, attempt: 3, earlier: [{ draft: READY, message: null }, { draft: WRONG, gate: REPORT_CHECK_GATE, message: "Outside the matrix." }] });
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts only researchers' pages as new: what a skeptic fetched opens no second judge turn", async () => {
+    const fetched = (url: string): TranscriptItem[] => [{ arguments: JSON.stringify({ url }), callId: url, id: `${url}-call`, kind: "tool_call", name: "fetch_url" },
+      { callId: url, id: `${url}-result`, kind: "tool_result", name: "fetch_url", outcome: "complete", output: "Page text." }];
+    const threads = [{ items: fetched("https://lab.example/1"), name: "lab", threadId: "t1" }];
+    const sources = createResearchSources({ chatId: "c", items: () => [], run: { branchRunIds: [], researchRunId: "r", runId: "r" }, savedResults: { read: async () => null },
+      threads: { backgroundRunIds: async () => [], threadEffectItems: async () => threads }, userId: "u" });
+    const run = vi.fn(async (): Promise<ResearchSubagentOutcome> => judged(OPEN));
+    const ctx = ofRecords({ sources, subagents: { run } });
+    const asked = await gapCheckGate.run(READY, ctx);
+    threads.push({ items: fetched("https://refuted.example/1"), name: "skeptic-1", threadId: "t2" });
+    const changed = { ...READY, findings: [...READY.findings, { ...READY.findings[0]!, claim: "A new claim." }] };
+    const again = await gapCheckGate.run(changed, { ...ctx, attempt: 2, earlier: [{ draft: READY, gate: gapCheckGate.name, message: messageOf(asked) }] });
+    expect(again.kind).toBe("pass");
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it("still counts a draft a later gate sent back, which it did read: the judge is paid for no second reading", async () => {

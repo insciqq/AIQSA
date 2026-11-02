@@ -313,7 +313,7 @@ export function createRunResearch(input: RunResearchInput) {
   const note = (key: ResearchNoteKey, draft: Pick<ResearchDraft, "report">) => researchNote(key, draft.report);
   /** What the model last wrote without handing it in. The longer text says more: narration after a whole report written as a message must not replace it. */
   const lastWords = () => {
-    if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote("incomplete", attemptText)]);
+    if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote(plan ? "incomplete" : "before_plan", attemptText)]);
     return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
   };
   const wroteReport = () => Math.max(attemptText.trim().length, lastHeld.trim().length) >= REPORT_AS_TEXT_CHARACTERS;
@@ -469,7 +469,9 @@ export function createRunResearch(input: RunResearchInput) {
    * call would wait for the user. Stop and the turn's deadline stay what they are.
    */
   async function underTime(tool: EngineTool, execution: EngineToolExecution, call: ModelToolCall): Promise<ToolExecutionResult> {
-    const signal = ports.time.researcherSignal(execution.signal);
+    // The clock's limit lasts as long as the signal it hangs on, so a call that ends takes its timer and its listener with it.
+    const ended = new AbortController();
+    const signal = ports.time.researcherSignal(AbortSignal.any([execution.signal, ended.signal]));
     const researcher = { name: normalizeSubagentName(call.arguments.name) ?? "" };
     running.add(researcher);
     try {
@@ -479,6 +481,7 @@ export function createRunResearch(input: RunResearchInput) {
       return await researcherEnded(execution, call, researcher.name);
     } finally {
       running.delete(researcher);
+      ended.abort();
     }
   }
 
