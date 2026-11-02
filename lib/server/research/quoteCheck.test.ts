@@ -3,7 +3,7 @@ import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECOR
 import type { TranscriptItem } from "../engine/transcript";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import type { ResearchOpenedSource } from "./gates";
-import { checkQuotes, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn } from "./quoteCheck";
+import { checkQuotes, claimFigures, figuresNotIn, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn } from "./quoteCheck";
 import { createResearchSources, researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 
 const LINK = "https://lab.example/x1";
@@ -206,5 +206,60 @@ describe("what the sources read of a run", () => {
       { callId: "b", id: "b2", kind: "tool_result", name: SHELL, outcome: "complete", output: "held up" }
     ]);
     expect(opened.map((source) => researchEvidenceKind(source))).toEqual(["page", "other"]);
+  });
+});
+
+describe("a claim's figures", () => {
+  const figures = (claim: string) => claimFigures(claim).map(({ text }) => text);
+  /** The figures of the claim this text does not write. */
+  const missing = (claim: string, text: string) => figuresNotIn(claimFigures(claim), text).map(({ text: shown }) => shown);
+
+  it("are its numbers with their units, in the research languages", () => {
+    expect(figures("Слои: латекс 3 см, кокос 1 см.")).toEqual(["3 см", "1 см"]);
+    expect(figures("Нагрузка до 140 кг на место, 7 зон жёсткости, 7-зонный блок, цена 59 732 ₽.")).toEqual(["140 кг", "7 зон", "7-зонный", "59 732 ₽"]);
+    expect(figures("Holds 140 kg, has 3 layers and a 10-year warranty, costs $599 or € 1.200, draws 300 W.")).toEqual(["140 kg", "3 layers", "10-year", "$599", "€ 1.200", "300 W"]);
+    expect(figures("Soporta 140 kilos, tiene 3 capas y 10 años de garantía; cuesta 599 €.")).toEqual(["140 kilos", "3 capas", "10 años", "599 €"]);
+    expect(figures("Размер 160×200 см, высота 1,5 м, скидка 15%, 1,2 млн руб.")).toEqual(["160×200 см", "1,5 м", "15%", "1,2 млн"]);
+  });
+
+  it("leave out what is no figure: a name's number, a rating's scale, a date", () => {
+    expect(figures("Lumo Flex 20 стоит 59 732 ₽.")).toEqual(["59 732 ₽"]);
+    expect(figures("The iPhone 15 Pro and the Galaxy S24 rate 4.8 of 5 and 4,6 из 5.")).toEqual([]);
+    expect(figures("COVID-19 spread on 12.05.2024 and 24/7 lines opened at 10:30 sharp.")).toEqual([]);
+    expect(figures("The X1 holds up.")).toEqual([]);
+  });
+
+  it("are found however a page writes the number: grouped by any space, with a decimal comma, in another unit or in words", () => {
+    expect(missing("Цена 59 732 ₽.", "Цена: 59732 руб.")).toEqual([]);
+    expect(missing("Цена 59732 руб.", "Цена: 59 732 ₽")).toEqual([]);
+    for (const page of ["59 732 ₽", "59 732 ₽", "59 732,00 ₽", "59,732 RUB", "59.732 руб.", "59'732"]) expect(missing("Цена 59 732 ₽.", page)).toEqual([]);
+    expect(missing("Толщина 1,5 см.", "thickness 1.5 cm")).toEqual([]);
+    expect(missing("Weighs 2.5 kg.", "Вес 2,5 кг")).toEqual([]);
+    for (const page of ["160x200", "160 x 200", "160 х 200", "160X200 см", "ширина 160 см, длина 200 см"]) expect(missing("Размер 160×200 см.", page)).toEqual([]);
+    expect(missing("Высота 1,5 м.", "Высота: 150 см")).toEqual([]);
+    expect(missing("Оборот 1,2 млн руб.", "Оборот: 1 200 000 руб.")).toEqual([]);
+    expect(missing("Оборот 1 200 000 руб.", "Оборот 1,2 млн руб.")).toEqual([]);
+    expect(missing("Матрас имеет 7 зон.", "семь зон жёсткости")).toEqual([]);
+    expect(missing("Матрас имеет 7 зон.", "семизонный пружинный блок")).toEqual([]);
+    expect(missing("Tiene 3 capas.", "tres capas")).toEqual([]);
+    expect(missing("Has 3 layers.", "three layers")).toEqual([]);
+    // A table puts the unit in its header.
+    expect(missing("Латекс 3 см.", "| Слой | Толщина, см |\n| латекс | 3 |")).toEqual([]);
+    expect(missing("Латекс 3 см.", "латекс 3см")).toEqual([]);
+  });
+
+  it("are missing when the text writes another number or none", () => {
+    expect(missing("Слои: латекс 3 см, кокос 1 см.", "латекс, кокос")).toEqual(["3 см", "1 см"]);
+    expect(missing("Слои: латекс 3 см, кокос 1 см.", "латекс 3 см, кокос")).toEqual(["1 см"]);
+    expect(missing("Нагрузка 140 кг.", "Нагрузка до 120 кг")).toEqual(["140 кг"]);
+    expect(missing("Цена 59 732 ₽.", "Цена 59 733 ₽")).toEqual(["59 732 ₽"]);
+    expect(missing("Высота 1,5 м.", "Высота 15 см")).toEqual(["1,5 м"]);
+    expect(missing("Размер 160×200 см.", "160×190 см")).toEqual(["160×200 см"]);
+    expect(missing("Скидка 15%.", "скидка 5%")).toEqual(["15%"]);
+    expect(missing("Matrás de 3 capas y 25 cm.", "colchón de 3 capas")).toEqual(["25 cm"]);
+  });
+
+  it("read a JSON-escaped page as the quote check does", () => {
+    expect(missing("Латекс 3 см.", JSON.stringify(JSON.stringify("латекс 3 см")))).toEqual([]);
   });
 });
