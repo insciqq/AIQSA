@@ -246,14 +246,14 @@ function verifierTurns(claims: readonly BriefClaim[]): readonly (readonly BriefC
 }
 
 const tidy = (text: string) => text.normalize("NFC").replace(/\s+/gu, " ").trim();
-/** A claim's identity, for reusing what was said of it: exact, since 1 mW and 1 MW are different claims, and short, since a send back carries it. */
+/** A typed finding's identity, its words and link: exact, since 1 mW and 1 MW are different claims, and short, since a send back carries it. */
 const keyOf = (finding: ResearchFinding) => createHash("sha256").update(JSON.stringify([tidy(finding.claim), tidy(finding.url)])).digest("hex").slice(0, 32);
 /**
- * A rejection's identity: the record a finding stands for, since two records may carry the same words and link and only one may stay cited; a typed finding,
- * which has no record, by its words and link.
+ * A claim's identity, for its verdict and its rejection alike: the record a finding stands for, since two records may carry the same words and link on
+ * different evidence, and only one may stay cited; a typed finding, which has no record, by its words and link.
  */
 const recordKey = (record: string) => `record:${record}`;
-const rejectionKeyOf = (finding: ResearchFinding) => finding.recordId ? recordKey(finding.recordId) : keyOf(finding);
+const identityOf = (finding: ResearchFinding) => finding.recordId ? recordKey(finding.recordId) : keyOf(finding);
 
 /** A matrix label as the answer shows it: a model wrote it, so nothing of it may become a link, an image or markup. */
 const plainLabel = (text: string) => text.replace(/[\p{Cc}\p{Cf}*_`[\]<>|]+/gu, " ").replace(/\s+/gu, " ").trim();
@@ -318,7 +318,7 @@ function rejectedInMessage(attempt: ResearchAttempt): ReadonlyMap<string, Reject
   const ids = REJECTED_LINE.exec(attempt.message)?.[1]?.split(", ").map(Number) ?? [];
   return new Map(ids.flatMap((id) => {
     const finding = attempt.draft.findings[id - 1];
-    return finding ? [[rejectionKeyOf(finding), { claim: finding.claim, label: null, record: finding.recordId ?? null }] as const] : [];
+    return finding ? [[identityOf(finding), { claim: finding.claim, label: null, record: finding.recordId ?? null }] as const] : [];
   }));
 }
 
@@ -684,7 +684,8 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
 
   const earlier = earlierChecks(context.earlier);
   const corrected = context.earlier.some((attempt) => attempt.message?.startsWith(VERIFIER_MARKER) === true);
-  const keys = draft.findings.map(keyOf);
+  // A verdict is reused only for the same record, or the same words and link of a typed finding: two records of one claim may rest on different evidence.
+  const keys = draft.findings.map(identityOf);
   // A claim the report itself marks needs no model, and an invented quote is settled before any model sees it.
   const toAsk = draft.findings.flatMap((finding, index): BriefClaim[] => {
     const quote = quotes[index]!;
@@ -713,9 +714,9 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
   const frame = frameRead?.ok ? frameRead.value : null;
   const rejected = new Map(earlier.rejected);
   for (const claim of claims) {
-    if (isUnsupported(claim)) rejected.set(rejectionKeyOf(claim.finding), { claim: claim.finding.claim, label: factLabel(claim.record, frame), record: claim.finding.recordId ?? null });
+    if (isUnsupported(claim)) rejected.set(claim.key, { claim: claim.finding.claim, label: factLabel(claim.record, frame), record: claim.finding.recordId ?? null });
     // A claim the quote check rejected whose page has since been read, and which the model then supported.
-    else if (!claim.answer?.settled && (claim.answer?.verdict === "supported" || claim.answer?.verdict === "partly")) rejected.delete(rejectionKeyOf(claim.finding));
+    else if (!claim.answer?.settled && (claim.answer?.verdict === "supported" || claim.answer?.verdict === "partly")) rejected.delete(claim.key);
   }
   checks.set(draft, { answers: new Map(claims.flatMap((claim) => claim.answer ? [[claim.key, claim.answer] as const] : [])), rejected,
     claims: claims.map((claim): VerifiedClaim => ({ marked: claim.marked, quote: claim.quote.status === "found" && claim.quote.excerpt.source.kind === "other" ? "found_elsewhere" : claim.quote.status,

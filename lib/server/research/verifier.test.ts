@@ -841,6 +841,20 @@ describe("a finding that stands for a record", () => {
       expect(result.unresolvedNote).toBe("The checks did not confirm these facts this report cites, so do not rely on them: Lonax Memory — Жёсткость; Optima Classic — Жёсткость; and others.");
     });
 
+    it("reuses no verdict of another record of the same words and link, so a supported one cannot clear a rejected one", async () => {
+      const records = [{ ...reportFinding(1, "x1", "price"), pageId: "p1" }, { ...reportFinding(2, "x1", "price", { claim: "Claim 1.", url: "https://source.example/1" }), pageId: "p2" }] as ResearchEvidenceRecord[];
+      const pages = [page, pageOf("p2", "Quote 2. All fine.", { url: "https://source.example/1" })];
+      const draft = researchDraftWithRecords({ ...wire, recordIds: records.map(({ id }) => id) }, records);
+      const first = contextOf({ coverage, evidence: evidenceOf(records, pages), opened: refused, turn: async () => ended("Outcome: done\nC1 | unsupported | the page says otherwise\nC2 | supported | yes") });
+      const sent = sentBack(await check(draft, first.context));
+      const finalDraft = researchDraftWithRecords({ ...wire, recordIds: [records[0]!.id] }, records);
+      const { context, run } = contextOf({ coverage, earlier: [{ draft, gate: "verifier", message: sent.message }], evidence: evidenceOf(records, pages), opened: refused,
+        turn: async () => ended("Outcome: done\nC1 | supported | yes") });
+      // The first record's own verdict stands, so nothing is asked again and its warning stays.
+      expect(await check(finalDraft, context)).toEqual({ kind: "pass", notes: [LINE] });
+      expect(run).not.toHaveBeenCalled();
+    });
+
     it("names the correction when it fails as well, by the same cell", async () => {
       const { message } = await firstRound();
       const stored = { ...correction, pageId: "p2" } as ResearchEvidenceRecord;
