@@ -1680,7 +1680,14 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           const { planInBrowser } = await planBrowserModule();
           browserAct = new AbortController();
           acted = planInBrowser(act)({ baseUrl: ctx.session.api.baseUrl.origin, chatId: chat.id, cookie: ctx.session.api.cookie, marker: randomUUID().replaceAll("-", ""), runId, signal: browserAct.signal })
-            .then((evidence) => ({ act, ...evidence }), (error: unknown) => ({ act, failed: error instanceof BrowserScenarioError ? error.message : "interaction_failed" }));
+            .then((evidence) => {
+              emit({ stage: "research_act", kind: job.kind, act, ...evidence });
+              return { act, ...evidence };
+            }, (error: unknown) => {
+              const failed = error instanceof BrowserScenarioError ? error.message : `interaction_failed:${error instanceof Error ? error.name : "unknown"}`;
+              emit({ stage: "research_act", kind: job.kind, act, failed });
+              return { act, failed };
+            });
         }
         if (act === "push" && job.repeat === 1) {
           const { pushInBrowser } = await planBrowserModule();
