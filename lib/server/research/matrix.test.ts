@@ -136,6 +136,20 @@ describe("the key specifications of the options a draft leads with", () => {
     expect(cellsOf([on("x1", "durability", "https://maker.example/a"), notFound("x1", "durability")])[0]).toMatchObject({ confirmed: true });
   });
 
+  it("takes no site from a record whose quote was found only on another page, since its link's site did not show it", () => {
+    const elsewhere = { ...on("x1", "durability", "https://shop.example/b"), quoteCheck: { reason: "other_page", status: "found" } } as ResearchEvidenceRecord;
+    expect(cellsOf([on("x1", "durability", "https://maker.example/a"), elsewhere])[0]).toMatchObject({ confirmed: false, sites: ["maker.example"] });
+  });
+
+  it("takes a not_found as a second site looked for only when written after the cell's last record", () => {
+    // Written before the finding, it says only that the first site was not found yet.
+    expect(cellsOf([notFound("x1", "durability"), on("x1", "durability", "https://maker.example/a")])[0]).toMatchObject({ confirmed: false });
+    const first = on("x1", "durability", "https://maker.example/a");
+    const after = notFound("x1", "durability");
+    expect(cellsOf([first, after, on("x1", "durability", "https://www.maker.example/c")])[0]).toMatchObject({ confirmed: false });
+    expect(cellsOf([{ ...after, createdAt: "2026-11-02T10:05:00.000Z" }, { ...first, createdAt: "2026-11-02T10:00:00.000Z" } as ResearchEvidenceRecord])[0]).toMatchObject({ confirmed: true });
+  });
+
   it("has none for a criterion not marked decisive, an empty cell, a quote that failed, a row no draft leads with, or a frame that marks none", () => {
     expect(cellsOf([on("x1", "firmness", "https://maker.example/a")])).toEqual([]);
     expect(cellsOf([{ ...on("x1", "durability", "https://maker.example/a"), quoteCheck: { reason: null, status: "not_verbatim" } } as ResearchEvidenceRecord])).toEqual([]);

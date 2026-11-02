@@ -15,6 +15,7 @@ import {
 } from "../../contracts/research";
 import { SUBAGENT_LIMITS } from "../../contracts/subagents";
 import { logEvent } from "../observability";
+import { RESEARCH_CHECK_REASONS } from "./evidenceStore";
 import type { ResearchCoveragePort, ResearchPorts, ResearchRunScope } from "./ports";
 import { claimFigures, figuresNotIn, type ClaimFigure } from "./quoteCheck";
 import { researchRegistrableDomain } from "./sourceQuality";
@@ -99,8 +100,19 @@ export function researchLeadingRows(draft: LeadingDraft): readonly string[] {
 
 export type ResearchClaimRecord = Extract<ResearchEvidenceRecord, Readonly<{ kind: "dataset" | "finding" }>>;
 
-/** A record's site, from its link where the store has none: two pages of one site are one source. */
-export const researchRecordSite = (record: ResearchClaimRecord): string | null => record.registrableDomain ?? researchRegistrableDomain(record.url);
+/**
+ * A record's site, from its link where the store has none: two pages of one site are one source. None for a record whose quote was found only on another page
+ * than the one it cites (`RESEARCH_CHECK_REASONS.otherPage`): its link's site is not what showed it, so it confirms no site.
+ */
+export const researchRecordSite = (record: ResearchClaimRecord): string | null => record.quoteCheck?.reason === RESEARCH_CHECK_REASONS.otherPage ? null
+  : record.registrableDomain ?? researchRegistrableDomain(record.url);
+
+/** Whether a record came after another, by the clock and within a run by its sequence; records of two runs at one instant are in no order. */
+function later(one: ResearchEvidenceRecord, other: ResearchEvidenceRecord): boolean {
+  const [at, otherAt] = [Date.parse(one.createdAt), Date.parse(other.createdAt)];
+  if (Number.isFinite(at) && Number.isFinite(otherAt) && at !== otherAt) return at > otherAt;
+  return one.runId === other.runId && one.sequence > other.sequence;
+}
 
 /** Two records of one key specification from different sites, with the figures each gives that the other does not, in the same order. */
 export type ResearchDisagreement = Readonly<{ figures: readonly [readonly ClaimFigure[], readonly ClaimFigure[]]; records: readonly [ResearchClaimRecord, ResearchClaimRecord] }>;
@@ -154,7 +166,9 @@ export function researchKeyCells(matrix: ResearchMatrix, records: readonly Resea
       // Records that could not be read say nothing of the cell, so nothing is asked of it.
       if (held.length === 0) return [];
       const sites = [...new Set(held.flatMap((record) => researchRecordSite(record) ?? []))];
-      const sought = records.some((record) => record.kind === "not_found" && record.rowKey === rowKey && record.criterionKey === criterion.key);
+      // Only a not_found written after the cell's last record says a further site was looked for: one written before says only that the first was not found yet.
+      const sought = records.some((record) => record.kind === "not_found" && record.rowKey === rowKey && record.criterionKey === criterion.key &&
+        held.every((claim) => later(record, claim)));
       return [{ confirmed: sites.length >= 2 || sought, criterion, disagreements: disagreementsOf(held), records: held, row, sites }];
     }) : [];
   });
