@@ -50,7 +50,8 @@ describe("the plan and the draft", () => {
       expect(decodeResearchDraft({ findings: [{ ...finding, [key]: "" }], report: "r", unreachable: [] })).toMatchObject({ message: expect.stringContaining(`findings[0].${key}`), ok: false });
     }
     expect(decodeResearchDraft({ findings: [], report: " ", unreachable: [] })).toMatchObject({ message: expect.stringContaining("report"), ok: false });
-    expect(decodeResearchDraft({ report: "r", unreachable: [] })).toMatchObject({ message: expect.stringContaining("findings"), ok: false });
+    expect(decodeResearchDraft({ report: "r", unreachable: [] })).toMatchObject({ ok: true, value: { invalidReferences: expect.stringContaining("must be given") } });
+    expect(decodeResearchDraft({ findings: "many", report: "r", unreachable: [] })).toMatchObject({ message: expect.stringContaining("findings"), ok: false });
     expect(decodeResearchDraft({ findings: [], report: "r", unreachable: [{ target: "t" }] })).toMatchObject({ message: expect.stringContaining("unreachable[0]"), ok: false });
   });
 
@@ -59,6 +60,20 @@ describe("the plan and the draft", () => {
     expect(schemas).not.toMatch(/"type":\[/u);
     expect(startResearchTool.capability).toBe("session");
     expect(proposeResearchPlanTool.capability).toBe("session");
+  });
+
+  it("requires every field of a draft, which takes record ids and never findings, and stays out of strict mode", () => {
+    const schema = submitResearchDraftTool.inputSchema as { properties: Record<string, unknown>; required: readonly string[] };
+    expect([...schema.required].sort()).toEqual(Object.keys(schema.properties).sort());
+    expect(Object.keys(schema.properties).sort()).toEqual(["branch_picks", "does_not_separate", "pick_row_key", "record_ids", "report", "unreachable"]);
+    expect(submitResearchDraftTool.strict).toBe(false);
+    expect(schema.properties.does_not_separate).toMatchObject({ anyOf: [{ required: ["row_keys", "statement", "would_decide"], type: "object" }, { type: "null" }] });
+    expect(schema.properties.pick_row_key).toMatchObject({ anyOf: [{ type: "string" }, { type: "null" }] });
+  });
+
+  it("decodes the arguments its own schema asks for", () => {
+    const decoded = decodeResearchDraft({ branch_picks: [], does_not_separate: null, pick_row_key: null, record_ids: [], report: "r", unreachable: [] });
+    expect(decoded).toMatchObject({ ok: true, value: { findings: [], recordIds: [] } });
   });
 
   it("requires every field of a proposal, which stays out of strict mode like its neighbours", () => {
@@ -74,6 +89,9 @@ describe("the method", () => {
     const text = researchMethodText(plan);
     expect(text).toContain("call_subagent");
     expect(text).toContain("submit_research_draft");
+    expect(text).toContain("the ids of the records it rests on");
+    expect(text).toContain("comparison table");
+    expect(text).not.toContain("every finding");
     expect(text).toContain("Which one? [primary_official, independent_tests, owner_reviews, action_channel]");
     expect(text).toContain("shop.example");
   });

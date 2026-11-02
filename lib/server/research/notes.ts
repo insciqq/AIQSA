@@ -3,9 +3,17 @@
  * writes these, in the language of the report, and they are never left to the
  * model: "the answer still arrives, with a visible note" (`agent_docs/RUN_CONTRACTS.md`, Answer first).
  */
-export type ResearchNoteKey = "followup_not_applied" | "gap_judge_unfinished" | "gate_failed" | "incomplete" | "no_findings" | "not_submitted" | "run_failed" | "stopped" | "time_out" | "unresolved";
+export type ResearchNoteKey = "composed_failed" | "composed_no_report" | "composed_timed_out" | "followup_not_applied" | "gap_judge_unfinished" | "gate_failed" | "incomplete" | "no_findings" |
+  "not_submitted" | "report_added_criteria" | "report_branches_open" | "report_criteria_missing" | "report_links_unrecorded" | "report_no_table" | "report_not_separated" | "report_pick_outside" |
+  "report_pick_unbacked" | "report_typed_findings" | "report_unknown_records" | "report_would_decide" | "run_failed" | "stopped" | "time_out" | "unresolved";
 
 const NOTES: Readonly<Record<ResearchNoteKey, Readonly<{ en: string; ru: string }>>> = {
+  composed_failed: { en: "The answer failed before a report was written, so the server built this from what research recorded. It draws no conclusion and picks nothing, and no check read it.",
+    ru: "Ответ прервался сбоем раньше, чем был написан отчёт, поэтому сервер собрал этот текст из записей исследования. Здесь нет вывода и выбора, и проверки его не читали." },
+  composed_no_report: { en: "No report was handed in, so the server built this from what research recorded. It draws no conclusion and picks nothing, and no check read it.",
+    ru: "Отчёт не был передан, поэтому сервер собрал этот текст из записей исследования. Здесь нет вывода и выбора, и проверки его не читали." },
+  composed_timed_out: { en: "Time ran out before a report was written, so the server built this from what research recorded. It draws no conclusion and picks nothing, and no check read it.",
+    ru: "Время вышло раньше, чем был написан отчёт, поэтому сервер собрал этот текст из записей исследования. Здесь нет вывода и выбора, и проверки его не читали." },
   followup_not_applied: { en: "What you wrote last arrived after this report was written and could not be taken into it.",
     ru: "Ваше последнее сообщение пришло уже после этого отчёта, и учесть его не удалось." },
   gap_judge_unfinished: { en: "The check for open questions could not be finished.",
@@ -18,6 +26,22 @@ const NOTES: Readonly<Record<ResearchNoteKey, Readonly<{ en: string; ru: string 
     ru: "Отчёт пришёл без списка находок, поэтому его утверждения не удалось сверить с источниками." },
   not_submitted: { en: "Research ended before the report was handed in for checking, so this is its last text and it is not checked.",
     ru: "Исследование завершилось раньше, чем отчёт был передан на проверку: это его последний текст, он не проверен." },
+  report_added_criteria: { en: "Criteria added during research, which this report does not name:", ru: "Критерии, добавленные в ходе исследования, которых нет в этом отчёте:" },
+  report_branches_open: { en: "This report gives no pick for these cases, though they change the result:", ru: "В этом отчёте нет выбора для этих случаев, хотя от них зависит результат:" },
+  report_criteria_missing: { en: "The comparison in this report leaves out:", ru: "В сравнении в этом отчёте нет:" },
+  report_links_unrecorded: { en: "Some links in this report have no research record cited behind them, so what they back was not checked.",
+    ru: "За некоторыми ссылками этого отчёта нет указанных записей исследования, поэтому то, что они подтверждают, не проверялось." },
+  report_no_table: { en: "This report has no comparison table on the research's criteria.", ru: "В этом отчёте нет таблицы сравнения по критериям исследования." },
+  report_not_separated: { en: "The data does not separate these options:", ru: "Данные не разделяют эти варианты:" },
+  report_pick_outside: { en: "This report's pick is not among the options research compared, so it does not follow from that comparison.",
+    ru: "Выбор в этом отчёте не входит в варианты, которые сравнивало исследование, поэтому из сравнения он не следует." },
+  report_pick_unbacked: { en: "The records behind this report's pick were not handed in with it, so the checks did not read them:",
+    ru: "Записи, на которых стоит выбор в этом отчёте, не были переданы вместе с ним, поэтому проверки их не читали:" },
+  report_typed_findings: { en: "This report's findings were not tied to research records, so they were not checked against them.",
+    ru: "Находки этого отчёта не были привязаны к записям исследования, поэтому с ними не сверялись." },
+  report_unknown_records: { en: "This report refers to research records that do not stand, so what rests on them was not checked.",
+    ru: "Этот отчёт ссылается на записи исследования, которых нет, поэтому то, что на них опирается, не проверялось." },
+  report_would_decide: { en: "What would decide:", ru: "Что решит:" },
   run_failed: { en: "The answer failed while this report was being checked, so it is not fully checked.",
     ru: "Ответ прервался сбоем во время проверки отчёта, поэтому он проверен не полностью." },
   stopped: { en: "Stopped before the check of this report finished, so it is not fully checked.",

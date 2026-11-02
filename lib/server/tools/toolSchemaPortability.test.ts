@@ -17,6 +17,7 @@ import { monitoringVerdictTool } from "./monitoringVerdict";
 import { readToolResultTool } from "./readToolResult";
 import { changeResearchFrameTool } from "./changeResearchFrame";
 import { recordEvidenceTool } from "./recordEvidence";
+import { submitResearchDraftTool } from "./research";
 import { createScheduledTaskTool } from "./scheduledTaskCreation";
 import { manageScheduledTaskTool } from "./scheduledTaskManagement";
 import { SELF_SERVICE_TOOLS } from "./selfServiceTools";
@@ -76,7 +77,7 @@ function firstPartyTools(): RunTool[] {
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
     loadSkillTool, readSkillFileTool, artifactTool(), readArtifactTool(), checkpointOutputsTool, analyzeImageTool(),
     analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool,
-    recordEvidenceTool, changeResearchFrameTool
+    recordEvidenceTool, changeResearchFrameTool, submitResearchDraftTool
   ];
 }
 

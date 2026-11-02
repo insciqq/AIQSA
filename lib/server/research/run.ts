@@ -13,6 +13,7 @@ import {
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   type DecodedResearch,
   type ResearchDraft,
+  type ResearchEvidenceRecord,
   type ResearchPlan,
   type ResearchPlanAnswer,
   type ResearchPlanEdit,
@@ -38,6 +39,7 @@ import { createResearchRounds, researchFilledCells, researchMatrix } from "./mat
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchRunScope } from "./ports";
+import { researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { createResearchSources } from "./sources";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -78,9 +80,11 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * time the loop offers it alone, once. A draft in hand means no paid round is
  * spent on tool-free text: the turn ends with that draft and a note. Whatever ends
  * the run, what it held reaches the answer (Answer first): the report as soon as the
- * response that holds it completed, before any record of it, and with no report the
- * text of the provider's last attempt. A delivered follow-up makes the report in hand
- * no longer the answer until the model has read it, and it stays only for recovery.
+ * response that holds it completed, before any record of it, and with no report what the
+ * server builds from the records. Only with nothing recorded does the text of the
+ * provider's last attempt stand in: nearly every run has a line of narration by then,
+ * which must not take the place of what research found. A delivered follow-up makes the
+ * report in hand no longer the answer until the model has read it, and it stays only for recovery.
  *
  * What ends the going round is the matrix and the gates' own cap (`matrix.ts`, `gates.ts`): a round's researchers read its empty cells, the
  * main agent reads them after each report, and rounds that fill no new cell end research. An approval continuation starts that count
@@ -114,7 +118,7 @@ const PLANNING_LINE = { en: "Making a plan before research starts", ru: "Сос�
 const CYRILLIC = /\p{Script=Cyrillic}/u;
 
 const SUBMIT_FIRST = `Your message was not shown to the user: while research runs, only a report handed in reaches them. Call ` +
-  `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the whole report, its findings and what could not be reached.`;
+  `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the whole report, the ids of the records it rests on and what could not be reached.`;
 
 const PROPOSE_FIRST = `Your message was not shown to the user: research has started and the user is waiting for your plan. Call ` +
   `${PROPOSE_RESEARCH_PLAN_TOOL_NAME} with what you have, naming what you lack as assumptions; do not ask the user anything.`;
@@ -259,7 +263,14 @@ export function createRunResearch(input: RunResearchInput) {
   });
   /** What building the answer from the records came to: a run composes once, however many of its ends ask. */
   let composing: Promise<string | null> | null = null;
+  /** The records the main agent has been given the ids of (`researchRecordList`). */
+  const listedRecords = new Set<string>();
   const note = (key: ResearchNoteKey, draft: Pick<ResearchDraft, "report">) => researchNote(key, draft.report);
+  /** What the model last wrote without handing it in. The longer text says more: narration after a whole report written as a message must not replace it. */
+  const lastWords = () => {
+    if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote("incomplete", attemptText)]);
+    return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
+  };
   /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
   const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: researchCarriedNotes(gates, draft, attempts) });
   /** The plan stands: research proper starts, and its phases count from here. */
@@ -306,8 +317,30 @@ export function createRunResearch(input: RunResearchInput) {
     }
   }
 
-  async function check(draft: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<void> {
+  /** A store that cannot be read costs a draft its findings and never the draft: the report check fails on the same read, and the answer says so. */
+  async function liveRecords(signal: AbortSignal): Promise<readonly ResearchEvidenceRecord[] | null> {
+    try {
+      return await ports.evidence.records(signal);
+    } catch (error) {
+      if (!signal.aborted) logEvent("service_operation", { action: "degrade", code: "research_records_unreadable", error, outcome: "degraded", run_id: input.runId, stage: "read", subsystem: "database" });
+      return null;
+    }
+  }
+
+  /** A transcript keeps only a draft's ids, so a draft an approval rebuilt has no findings until the records fill them. One that has them keeps its object, which a gate's memory hangs on. */
+  const awaitsRecords = (draft: ResearchDraft) => draft.findings.length === 0 && (draft.recordIds?.length ?? 0) > 0;
+  function fillAttempts(records: readonly ResearchEvidenceRecord[]): void {
+    for (const [index, attempt] of attempts.entries()) {
+      if (awaitsRecords(attempt.draft)) attempts[index] = { ...attempt, draft: researchDraftWithRecords(attempt.draft, records) };
+    }
+  }
+
+  async function check(submitted: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<void> {
     if (!plan) return;
+    // Only what has ids to fill reads the store, so a draft with none costs no read.
+    const records = awaitsRecords(submitted) || attempts.some((earlier) => awaitsRecords(earlier.draft)) ? await liveRecords(execution.signal) : null;
+    if (records) fillAttempts(records);
+    const draft = records ? researchDraftWithRecords(submitted, records) : submitted;
     held = unchecked(draft);
     const attempt = attempts.length + 1;
     await rounds.settle(execution.signal);
@@ -380,7 +413,9 @@ export function createRunResearch(input: RunResearchInput) {
     const matrix = await researchMatrix(ports.coverage, execution.signal);
     if (!matrix) return result;
     const line = researchCoverageLine(matrix, await rounds.newCells(researchFilledCells(matrix.coverage)));
-    return { ...result, content: [...result.content, { text: line, type: "text" }] };
+    const records = await liveRecords(execution.signal);
+    const list = records && researchRecordList(records, listedRecords);
+    return { ...result, content: [...result.content, { text: line, type: "text" }, ...list ? [{ text: list, type: "text" as const }] : []] };
   }
 
   const startTool: EngineTool = {
@@ -682,7 +717,7 @@ export function createRunResearch(input: RunResearchInput) {
       if (!plan) return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
       if (held) return researchAnswerText(held.draft.report, [...held.notes, note("unresolved", held.draft)]);
       if (superseded) return researchAnswerText(superseded.draft.report, [...superseded.notes, note("followup_not_applied", superseded.draft)]);
-      return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
+      return null;
     },
 
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */
@@ -695,20 +730,18 @@ export function createRunResearch(input: RunResearchInput) {
           ...held ? [] : [note("followup_not_applied", report.draft)]]);
       }
       if (reason === "stopped") return null;
-      // The longer text says more: narration after a whole report written as a message must not replace it.
-      if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote("incomplete", attemptText)]);
-      return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted", lastHeld)]) : null;
+      return plan ? null : lastWords();
     },
 
     /**
-     * The answer the server builds from the records when `finish` or `afterEnding` had none, never for a stopped run or one
-     * waiting for the user. Apart from them because it reads a store, and they answer at once. `stop` is what ends the run's Stop,
-     * not its deadline: the deadline may be what ended it. A second end, such as a failure to publish, gets the first one's result.
+     * The answer the server builds from the records when `finish` or `afterEnding` had no report, never for a stopped run or one
+     * waiting for the user, and with nothing recorded what the model last wrote. Apart from them because it reads a store, and they answer at once. `stop`
+     * is what ends the run's Stop, not its deadline: the deadline may be what ended it. A second end, such as a failure to publish, gets the first one's result.
      */
     composed(ended: ResearchReportEnding, stop: AbortSignal): Promise<string | null> {
       if (!plan) return Promise.resolve(null);
       composing ??= compose(ended, stop);
-      return composing;
+      return composing.then((built) => built ?? (stop.aborted ? null : lastWords()));
     },
 
     /** An approval continuation goes on with the research its turn started; every other later turn is an ordinary one. */
@@ -723,6 +756,14 @@ export function createRunResearch(input: RunResearchInput) {
       // Before the draft: what the gates carry for it comes from these.
       attempts.push(...found.attempts);
       if (found.draft) held = unchecked(found.draft);
+      // Resuming answers at once and the records take a read, which is done before the model's first response ends.
+      const rebuilt = held;
+      if (!attempts.some(({ draft }) => awaitsRecords(draft)) && !(rebuilt && awaitsRecords(rebuilt.draft))) return;
+      void liveRecords(AbortSignal.timeout(RESEARCH_TIME_MS.composeReport)).then((records) => {
+        if (!records) return;
+        fillAttempts(records);
+        if (rebuilt && held === rebuilt) held = unchecked(researchDraftWithRecords(rebuilt.draft, records));
+      });
     },
 
     stopAll: (reason: SubagentStopReason) => turns.stopAll(reason)
