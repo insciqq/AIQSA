@@ -11,7 +11,9 @@ const messages = (draft: ResearchDraft, records?: readonly ResearchEvidenceRecor
 const said = (draft: ResearchDraft, records?: readonly ResearchEvidenceRecord[], matrix?: ResearchMatrix | null) => check(draft, records, matrix).troubles.map(({ note }) => note).join("\n");
 
 const ADVICE: ResearchDraft = { branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "Measure the bed first, then try two firmness levels.", unreachable: [] };
-const withBranches: ResearchFrame = { ...FRAME, branches: [{ cases: [{ key: "light", label: "до 70 кг" }, { key: "heavy", label: "тяжелее" }], key: "weight", unknown: "Вес спящего" }] };
+/** Three of the fixtures' five pages, so a draft citing all of them can be traced and a test can be about something else. */
+const LINKED = "https://maker.example/x1 https://shop.example/x1 https://maker.example/x2";
+const withBranches: ResearchFrame ={ ...FRAME, branches: [{ cases: [{ key: "light", label: "до 70 кг" }, { key: "heavy", label: "тяжелее" }], key: "weight", unknown: "Вес спящего" }] };
 
 describe("a draft that holds up", () => {
   it("passes with nothing to say", () => {
@@ -43,7 +45,7 @@ describe("what the pick rests on", () => {
 
   it("asks the same of rows called inseparable, since that too is a claim about their data", () => {
     const draft: ResearchDraft = { ...DRAFT, doesNotSeparate: { rowKeys: ["x1", "x2"], statement: "Оба подходят.", wouldDecide: "Полежать на обоих." }, pickRowKey: null, recordIds: [id(1), id(2), id(3), id(4)],
-      report: `${DRAFT.report}\n\nОба подходят. Полежать на обоих.` };
+      report: `${DRAFT.report}\n\nОба подходят. Полежать на обоих.\n\n${LINKED}` };
     expect(messages(draft)).toContain(`x2 / price: ${id(5)}`);
     expect(messages({ ...draft, recordIds: [...draft.recordIds!, id(5)] })).toBe("");
   });
@@ -170,7 +172,7 @@ describe("the report's links", () => {
 
   it("keeps a bracket a link opened", () => {
     const records = [...RECORDS, finding(6, "x2", "reviews", { url: "https://wiki.example/Mattress_(bed)" })];
-    expect(messages({ ...linked("[вики](https://wiki.example/Mattress_(bed))"), recordIds: [...DRAFT.recordIds!, id(6)] }, records, matrixOf(FRAME, records))).toBe("");
+    expect(messages({ ...linked("[вики](https://wiki.example/Mattress_(bed))", "https://maker.example/x1"), recordIds: [...DRAFT.recordIds!, id(6)] }, records, matrixOf(FRAME, records))).toBe("");
   });
 
   it("counts a dataset's examples and its own link", () => {
@@ -192,6 +194,84 @@ describe("the report's links", () => {
     const records = [...RECORDS, unreachable(6, "https://www.ozon.ru", "Blocked.")];
     expect(messages(linked("https://www.ozon.ru"), records, matrixOf(FRAME, records))).toBe("");
     expect(messages({ ...linked("https://blocked.example/"), unreachable: [{ reason: "Blocked.", sourceClass: null, target: "https://blocked.example" }] })).toBe("");
+  });
+});
+
+describe("what a reader can trace", () => {
+  const onPages = (pages: number) => Array.from({ length: pages }, (_, index) => finding(index + 1, "x1", "price", { claim: `Claim about page ${index + 1}.`, url: `https://source.example/${index + 1}` }));
+  const draftOn = (records: readonly ResearchEvidenceRecord[], report: string): ResearchDraft => ({ ...ADVICE, recordIds: records.map(({ id: recordId }) => recordId), report });
+  const linking = (linked: number) => `Отчёт.\n\n${Array.from({ length: linked }, (_, index) => `[источник](https://source.example/${index + 1})`).join(" ")}`;
+  const traced = (pages: number, linked: number) => messages(draftOn(onPages(pages), linking(linked)), onPages(pages), null);
+
+  it.each([[4, 1, "1 of the 4"], [4, 0, "0 of the 4"], [5, 2, "2 of the 5"], [30, 2, "2 of the 30"]])("sends back %i pages with %i linked: fewer than half", (pages, linked, words) => {
+    expect(traced(pages, linked)).toContain(`The report links ${words} pages it rests on`);
+  });
+
+  it.each([[4, 2], [4, 4], [5, 3], [6, 3]])("passes %i pages with %i linked: half or more", (pages, linked) => {
+    expect(traced(pages, linked)).toBe("");
+  });
+
+  it.each([[3, 0], [3, 1], [1, 0]])("wants no link count of %i pages with %i linked: under 4 there is too little to tell by", (pages, linked) => {
+    expect(traced(pages, linked)).toBe("");
+  });
+
+  it("counts pages, not records, so many records on three pages stay under the line", () => {
+    const records = Array.from({ length: 12 }, (_, index) => finding(index + 1, "x1", "price", { url: `https://source.example/${index % 3}` }));
+    expect(messages(draftOn(records, "Отчёт."), records, null)).toBe("");
+  });
+
+  it("reads a tracking query as the same page", () => {
+    const records = onPages(4).map((record, index) => index < 2 ? { ...record, url: `https://source.example/${index + 1}?utm_source=mail` } as ResearchEvidenceRecord : record);
+    expect(messages(draftOn(records, linking(2)), records, null)).toBe("");
+  });
+
+  it("counts a page linked from a list at the end: the reader can reach it", () => {
+    const list = ["https://source.example/1", "https://source.example/2"].map((link) => `- ${link}`).join("\n");
+    expect(messages(draftOn(onPages(4), `Отчёт.\n\n## Источники\n${list}`), onPages(4), null)).toBe("");
+  });
+
+  it("counts a link to a dataset's example as reaching that record", () => {
+    const records = [dataset(1, "x1", "reviews"), ...onPages(5).slice(1)];
+    expect(messages(draftOn(records, `${linking(0)} https://shop.example/x1/reviews https://source.example/2 https://source.example/3`), records, null)).toBe("");
+  });
+
+  it("does not take a link to a site's root for a page", () => {
+    const records = onPages(4);
+    expect(messages(draftOn(records, "Отчёт: https://source.example/"), records, null)).toContain("0 of the 4");
+  });
+
+  it("does not count a page no cited record stands on", () => {
+    const records = onPages(4);
+    expect(messages(draftOn(records, `${linking(1)} https://elsewhere.example/page`), records, null)).toContain("1 of the 4");
+  });
+
+  it("lists the pages it does not link with their claims in a few words, and never those it does", () => {
+    const records = [...onPages(4), finding(5, "x1", "reviews", { claim: "Another claim on page four.", url: "https://source.example/4" })];
+    const text = messages(draftOn(records, linking(1)), records, null);
+    expect(text).toContain("https://source.example/2 (Claim about page 2.)");
+    expect(text).toContain("https://source.example/4 (Claim about page 4., and 1 more)");
+    expect(text).not.toContain("https://source.example/1 ");
+  });
+
+  it("keeps its list as short as the others, and each claim to a few words", () => {
+    const records = Array.from({ length: 30 }, (_, index) => finding(index + 1, "x1", "price", { claim: "c".repeat(500), url: `https://source.example/${index + 1}` }));
+    const text = messages(draftOn(records, "Отчёт."), records, null);
+    expect(text).toContain("and 6 more");
+    expect(text).not.toContain("c".repeat(100));
+  });
+
+  it("reads a corrected id as its correction's page", () => {
+    const records = [...onPages(4).slice(1), finding(7, "x1", "price", { supersedes: id(1), url: "https://source.example/1" })];
+    expect(messages({ ...draftOn(records, linking(2)), recordIds: [id(1), id(2), id(3), id(4)] }, records, null)).toBe("");
+  });
+
+  it("carries a note for the cap in the report's language", () => {
+    expect(said(draftOn(onPages(4), "Отчёт."), onPages(4), null)).toBe("Часть источников этого отчёта не имеет ссылок в тексте.");
+    expect(said(draftOn(onPages(4), "The report."), onPages(4), null)).toBe("Some sources of this report are not linked in its text.");
+  });
+
+  it("leaves a text draft alone, which has no ids", () => {
+    expect(check({ findings: [], origin: "plain_text", report: "Отчёт.", unreachable: [] }, onPages(5), null)).toEqual({ notes: [], troubles: [] });
   });
 });
 
@@ -297,7 +377,7 @@ describe("the comparison", () => {
 
 describe("when the data does not separate", () => {
   const stated = { rowKeys: ["x1", "x2"], statement: "Данные не разделяют эти матрасы.", wouldDecide: "Полежать на обоих в салоне." };
-  const draft: ResearchDraft = { ...DRAFT, doesNotSeparate: stated, pickRowKey: null, recordIds: [id(1), id(2), id(3), id(4), id(5)] };
+  const draft: ResearchDraft = { ...DRAFT, doesNotSeparate: stated, pickRowKey: null, recordIds: [id(1), id(2), id(3), id(4), id(5)], report: `${DRAFT.report}\n\n${LINKED}` };
 
   it("reaches the user in the server's note when the report does not say it, with no rewrite", () => {
     const { notes, troubles } = check(draft);
