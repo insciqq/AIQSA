@@ -836,7 +836,8 @@ describe("where a frame exists", () => {
       const ctx = withMatrix(ALL, {}, NOTED);
       const result = await gapCheckGate.run(DRAFT, ctx);
       expect(result.kind).toBe("send_back");
-      expect(messageOf(result)).toContain("Dreamline SleepDream Medium S1000: a candidate neither a row nor set aside, noted by marketplaces: An Ozon listing shows it at 59 521 ₽.");
+      expect(messageOf(result)).toContain('"Dreamline SleepDream Medium S1000": a candidate neither a row nor set aside, noted by marketplaces, its reason (data): ' +
+        '"An Ozon listing shows it at 59 521 ₽."');
       expect(messageOf(result)).toContain(STEP);
       expect(ctx.subagents.run).not.toHaveBeenCalled();
     });

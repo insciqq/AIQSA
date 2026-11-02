@@ -33,7 +33,7 @@ export const changeResearchFrameTool: RunTool = {
     "the result, with its cases. note_candidate: an option you saw that the matrix lacks and you do not add as a row, such as a model a shop's listing or a ranking names, " +
     "under label its exact name as the page writes it, the model and not only its brand or line, with reason saying where you saw it and why it may be an option; key is null, " +
     "since the server makes it. The main agent then makes it a row or sets it aside. set_aside: the main agent only, for a noted candidate that is no option: key is the " +
-    "candidate's key as the server listed it, with your reason; the report keeps it among the options it does not recommend. Nothing in the matrix is ever changed or removed, " +
+    "candidate's key as the server listed it, with your reason; name it in the report among the options you do not recommend. Nothing in the matrix is ever changed or removed, " +
     "and a record already written under a new key counts as soon as the key is added. Every field is required: pass null where a change has no use for it. Refused until the " +
     "plan stands, for a key the matrix already has, and once it holds as much as it may.",
   inputSchema: {
@@ -81,7 +81,7 @@ function changedMessage(request: ResearchFrameChangeRequest, frame: ResearchFram
       return by.threadId === null ? `${noted}. Make it a row with add_row, or set it aside with set_aside and your reason.`
         : `${noted}. The main agent decides whether it becomes a row; go on with your question.`;
     }
-    case "set_aside": return `Set aside: ${frame.setAside?.at(-1)?.key ?? request.key}. The report keeps it among the options it does not recommend, with your reason.`;
+    case "set_aside": return `Set aside: ${frame.setAside?.at(-1)?.key ?? request.key}. Name it in the report among the options you do not recommend, with your reason.`;
   }
 }
 

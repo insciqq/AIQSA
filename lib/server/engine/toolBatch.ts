@@ -450,8 +450,15 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       turn.spent.calls += 1;
       left = turn.limit - turn.spent.calls;
     }
+    // A call that never runs (its connection gone, handed back for approval, waiting for one) gives its turn's count back: the budget is
+    // for work done (review finding 2026-11-03).
+    const refund = () => {
+      if (left !== null && turn) turn.spent.calls -= 1;
+      left = null;
+    };
     const links = tool.links ? tool.links(call) : {};
     if (links === null) {
+      refund();
       const message = "This tool's connection is no longer available to this answer, so nothing was sent.";
       const result = jsonError(call, { error: "tool_binding_unavailable", message });
       const row = await deps.store.refuse({ ...record, result, toolName: call.name });
@@ -472,6 +479,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     deps.signal.throwIfAborted();
     // A sub-agent never asks the user itself: the call that would wait goes back to the main agent, unsent and card-free.
     if (deps.approvalHandBack && approval && !humanApproved && approval.guard?.decision !== "allow") {
+      refund();
       const result = jsonError(call, { error: "needs_approval", message: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT });
       const row = await deps.store.refuse({ ...record, result, toolName: call.name });
       if (!row) throw new ToolBatchInactiveError();
@@ -487,6 +495,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {
+      refund();
       recordToolCall({ toolName: call.name, kind, settled: { kind: "awaiting_approval" } });
       approvals.push(begun.approvalId);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",

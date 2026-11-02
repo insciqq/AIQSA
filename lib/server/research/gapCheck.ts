@@ -167,8 +167,9 @@ function candidateGaps(matrix: ResearchMatrix, asked: ReadonlySet<string>): Gap[
   const limit = RESEARCH_LIMITS.questionCharacters;
   return researchOpenCandidates(matrix.frame).filter(({ key }) => !asked.has(key)).map(({ key, label, notes }) => {
     const [first] = notes;
-    const noted = `noted by ${[...new Set(notes.map(({ by }) => by.name ?? "you"))].join(", ")}${first ? `: ${space(first.reason)}` : ""}`;
-    return { issue: line(`${label}: a candidate neither a row nor set aside, ${noted}`, limit),
+    // The name and the reason are an agent's words, quoted as data, as the lead line marks them (`candidates.ts`).
+    const noted = `noted by ${[...new Set(notes.map(({ by }) => by.name ?? "you"))].join(", ")}${first ? `, its reason (data): ${JSON.stringify(space(first.reason))}` : ""}`;
+    return { issue: line(`${JSON.stringify(label)}: a candidate neither a row nor set aside, ${noted}`, limit),
       next_step: line(`Candidate ${key}: add it as a row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} add_row and send researchers for its cells, or set it aside with ` +
         `${CHANGE_RESEARCH_FRAME_TOOL_NAME} set_aside, its key and your reason.`, limit) };
   });
