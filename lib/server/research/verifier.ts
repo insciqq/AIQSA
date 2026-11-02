@@ -76,14 +76,20 @@ export const VERIFIER_LIMITS = Object.freeze({
   quoteWords: 64,
   reasonCharacters: 200,
   reportCharacters: 64_000,
-  /** A turn's stored claims, so each keeps room for its page: a brief of 16,000 characters leaves each about 1,500 of it. */
-  storedClaimsPerTurn: 8,
+  /**
+   * A turn's stored claims, so each keeps room for its page: a brief of 16,000 characters leaves each about 3,400 of it. At 8 it left about 1,500, and a real run's check
+   * called 25 of 27 claims partly supported because a detail was not in what it was shown.
+   */
+  storedClaimsPerTurn: 4,
   /** The answer waits for this turn: past this it goes out with what the check has so far. */
   turnMaxMs: 10 * 60_000,
   /** Less than this cannot fit a model's response after opening a page. */
   turnMinMs: 60_000,
-  /** Turns of one attempt, side by side: well under what a chat may run at once (`SUBAGENT_LIMITS.runningPerChat`). */
-  turnsPerAttempt: 6
+  /**
+   * Turns of one attempt, side by side. Gates run one after another, so this is the most they hold at once, half of what a chat may run (`SUBAGENT_LIMITS.runningPerChat`). A chat
+   * full all the same refuses a turn, and its claims read as not checked.
+   */
+  turnsPerAttempt: 10
 });
 
 /** How the gate recognizes a draft it sent back itself in `context.earlier`, whatever else sent drafts back. */

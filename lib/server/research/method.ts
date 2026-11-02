@@ -42,7 +42,8 @@ export function researchMethodText(plan: ResearchPlan): string {
     `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
       "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
-    "The report holds a comparison table on the matrix's criteria, says why each matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
+    "Every figure, price, study and named claim in the report links the page it came from where it is stated, not in a list at the end only. " +
+      "The report holds a comparison table on the matrix's criteria, says why each matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
       "and each case of a branch gets its row. When the data does not tell rows apart, say so and what would decide, such as trying them, instead of inventing a difference. " +
       "The report still says which of them it would take by default today and why, such as the cheapest among those with the same evidence, marked plainly as a default and not as a finding, " +
       "alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, and says what could not be reached and why.",
