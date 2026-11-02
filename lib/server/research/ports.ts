@@ -141,17 +141,26 @@ export type ResearchResumeState = Readonly<{
   /** The run it continues, as the server verified it. */
   fromRunId: string;
   goal: string;
+  /** The source row as it stands, which `link` copies: a plan is copied, never rewritten. */
+  row: Readonly<{ answer: unknown; frame: unknown; proposal: unknown; version: number; windowEndsAt: Date }>;
 }>;
 
 /**
  * Picking research up after a restart, filled by `research-continue-from-store`. This alone writes `continuedFromRunId`. `run.ts` finds
  * the interrupted turn's research run as an approval continuation does, from its start call's stored result (`researchOfTurn`), and
- * hands it here. It is a stored value, so it counts only in `branchRunIds`: another branch or another user's run reads as null. A run that
- * counts has its frame, answer, proposal and `windowEndsAt` copied into this run's row beside the link, since
- * `ResearchFrame_release_check` needs the last two with `releasedAt`, and `ResearchEvidencePort.records` then reaches the earlier records.
+ * hands it here. It is a stored value, so it counts only in `branchRunIds`: another branch or another user's run reads as null.
  */
 export type ResearchResumePort = Readonly<{
+  /**
+   * Whether research can be picked up. It only reads, since a run asks this before any `start_research` and a model may never call one, and such a run
+   * ran no research and keeps no row.
+   */
   load(researchRunId: string, signal: AbortSignal): Promise<ResearchResumeState | null>;
+  /**
+   * Writes this run's row at the start that picks research up: the frame, answer, proposal and `windowEndsAt` of `load`'s run beside the link, since `ResearchFrame_release_check`
+   * needs the last two with `releasedAt`, and `ResearchEvidencePort.records` then reaches the earlier records. It throws when the row cannot be written.
+   */
+  link(state: ResearchResumeState, signal: AbortSignal): Promise<void>;
 }>;
 
 export type ResearchPorts = Readonly<{
@@ -194,6 +203,7 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     gates: []
   },
   resume: {
+    link: async () => undefined,
     load: async () => null
   },
   time: {
