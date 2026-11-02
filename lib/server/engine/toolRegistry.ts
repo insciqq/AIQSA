@@ -259,6 +259,7 @@ export type ToolRegistryInput = Readonly<{
   fetchUrlSession?: FetchUrlSession;
   /** Earlier main-agent runs whose Search evidence also authorizes this answer's page reads; absent, none. */
   fetchUrlEarlierRunIds?: readonly string[];
+  fetchUrlResearch?: FetchUrlSessionDeps["research"];
   /** The run's accepted MCP runtimes, by server; discovery adds to it. */
   mcpBindings: Map<string, EngineMcpBinding>;
   /**
@@ -556,6 +557,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const repository = input.services.repository;
     const session = input.fetchUrlSession ?? createFetchUrlSession({
       browserStep: () => browserStep,
+      research: input.fetchUrlResearch,
       plan: fetchPlan,
       scheduled: fetchPlan.taskUrlDigests !== undefined,
       searchAvailable: request.searchPlan.options.length > 0,

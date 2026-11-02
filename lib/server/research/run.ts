@@ -663,8 +663,6 @@ export function createRunResearch(input: RunResearchInput) {
   };
 
   return {
-    /** Every agent's handoff uses this wait once research starts, since the user may have left. */
-    handoffWaitMs: RESEARCH_TIME_MS.handoffWait,
     /** This run's ports, for what the engine wires beside the run (a sub-agent's `record_evidence` writes through `ports.evidence`). */
     ports,
     reservedCall: { instruction: researchDraftReservedInstruction(), name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },
@@ -753,8 +751,9 @@ export function createRunResearch(input: RunResearchInput) {
         const name = normalizeSubagentName(foreground.name);
         if (typeof message !== "string" || name === null) return researcherOfRound(tool, execution, { ...call, arguments: foreground });
         const matrix = await researchMatrix(ports.coverage, execution.signal);
-        if (briefed.has(name)) return researcherOfRound(tool, execution, { ...call, arguments: { ...foreground, message: researcherMatrixBrief(message, matrix) } });
-        const brief = researcherBrief(message, plan, matrix);
+        const records = await ports.evidence.records(execution.signal);
+        if (briefed.has(name)) return researcherOfRound(tool, execution, { ...call, arguments: { ...foreground, message: researcherMatrixBrief(message, matrix, records) } });
+        const brief = researcherBrief(message, plan, matrix, records);
         if (brief === null) return harnessToolError(call, "research_brief_too_long", "Nothing started: this brief leaves no room for the research method. Shorten it and call again.");
         briefed.add(name);
         // Researchers work on these questions now, so the plan no longer changes.
