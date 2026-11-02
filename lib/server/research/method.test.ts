@@ -50,8 +50,8 @@ describe("the plan and the draft", () => {
       expect(decodeResearchDraft({ findings: [{ ...finding, [key]: "" }], report: "r", unreachable: [] })).toMatchObject({ message: expect.stringContaining(`findings[0].${key}`), ok: false });
     }
     expect(decodeResearchDraft({ findings: [], report: " ", unreachable: [] })).toMatchObject({ message: expect.stringContaining("report"), ok: false });
-    expect(decodeResearchDraft({ report: "r", unreachable: [] })).toMatchObject({ ok: true, value: { invalidReferences: expect.stringContaining("must be given") } });
-    expect(decodeResearchDraft({ findings: "many", report: "r", unreachable: [] })).toMatchObject({ message: expect.stringContaining("findings"), ok: false });
+    expect(decodeResearchDraft({ report: "r", unreachable: [] })).toMatchObject({ ok: true, value: { findings: [], recordIds: [] } });
+    expect(decodeResearchDraft({ findings: [{ claim: "" }], report: "r", unreachable: [] })).toMatchObject({ message: expect.stringContaining("findings[0]"), ok: false });
     expect(decodeResearchDraft({ findings: [], report: "r", unreachable: [{ target: "t" }] })).toMatchObject({ message: expect.stringContaining("unreachable[0]"), ok: false });
   });
 

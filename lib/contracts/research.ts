@@ -14,7 +14,9 @@
  * property is optional, so a tool on these decoders lists every field as
  * required and gives one that does not apply as null. The decoders of the
  * system expect exactly that: a field that may not apply is required and
- * nullable, never optional. Keep it so when a field is added.
+ * nullable, never optional. Keep it so when a field is added. A draft's
+ * references alone also read a left-out field as one that does not apply: their
+ * tool is not strict, and a report must not hinge on a field with nothing to say.
  */
 
 export const START_RESEARCH_TOOL_NAME = "start_research";
@@ -762,15 +764,15 @@ export function decodeResearchRecord(value: unknown): DecodedResearch<ResearchRe
   return { ok: true, value: { ...cell, ...source, kind, quote: value.quote } };
 }
 
-const DRAFT_REFERENCE_FIELDS = ["branch_picks", "does_not_separate", "pick_row_key", "record_ids"] as const;
-
-/** What ties a draft to the records and the matrix, from `submit_research_draft`'s arguments: every field given, null or empty where it does not apply. */
+/**
+ * What ties a draft to the records and the matrix, from `submit_research_draft`'s arguments. Its tool asks for every field, null or empty where it does not apply, and is
+ * not strict, so a model may leave one out: that is the same statement, and only a value of the wrong shape is refused.
+ */
 export function decodeResearchDraftReferences(value: unknown): DecodedResearch<ResearchDraftReferences> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
-  const missing = missingField(value, DRAFT_REFERENCE_FIELDS);
-  if (missing) return refused(missing);
   const limits = RESEARCH_FRAME_LIMITS;
-  const { does_not_separate: rawNoSeparation, pick_row_key: pickRowKey } = value;
+  const rawNoSeparation: unknown = value.does_not_separate ?? null;
+  const pickRowKey: unknown = value.pick_row_key ?? null;
   const recordIds: unknown = value.record_ids ?? [];
   const rawPicks: unknown = value.branch_picks ?? [];
   if (!Array.isArray(recordIds) || recordIds.length > RESEARCH_LIMITS.findings || !recordIds.every(isCitedRecord)) {
@@ -820,15 +822,16 @@ function decodeTypedFindings(value: unknown): DecodedResearch<readonly ResearchF
 
 /**
  * A draft as `submit_research_draft` takes it; the message names the field to correct. It refers to records, and the server fills its findings from
- * them. A stored transcript keeps the form from before that, findings typed in the call, which `researchOfTurn` reads back and a text draft still
- * uses, so that form decodes as it always did. A model that sends it now goes back at the report check, not here, where nothing could say why. The same
- * goes for references that cannot be read: refused here, a key mistyped on the last call would cost the whole report, and past the send-back cap too (Answer first).
+ * them. A stored transcript keeps the form from before that, findings typed in the call, which `researchOfTurn` reads back, so that form decodes as it always did.
+ * It takes a finding to be that form: an empty list says nothing, a stored draft with one loses nothing by reading as a live one, and a live one sent beside a pick
+ * would lose the pick and the check with it. A model that sends findings now goes back at the report check, not here, where nothing could say why. The same goes
+ * for references that cannot be read: refused here, a key mistyped on the last call would cost the whole report, and past the send-back cap too (Answer first).
  */
 export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDraft> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
   const limits = RESEARCH_LIMITS;
   if (!boundedText(value.report, limits.reportCharacters)) return refused(`report must be 1 to ${limits.reportCharacters} characters.`);
-  const stored = value.findings !== undefined && value.record_ids === undefined;
+  const stored = Array.isArray(value.findings) && value.findings.length > 0 && value.record_ids === undefined;
   const findings = stored ? decodeTypedFindings(value.findings) : null;
   if (findings && !findings.ok) return findings;
   const references = stored ? null : decodeResearchDraftReferences(value);

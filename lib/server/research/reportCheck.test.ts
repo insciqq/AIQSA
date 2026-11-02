@@ -79,10 +79,28 @@ describe("what the draft names", () => {
     expect(troubles[0]!.message).toContain("Nothing else of this draft was checked.");
   });
 
-  it("names the correction of a corrected id", () => {
-    const records = [...RECORDS.slice(1), finding(7, "x1", "firmness", { supersedes: id(1), url: "https://maker.example/x1" })];
-    const text = messages(DRAFT, records, matrixOf(FRAME, records));
-    expect(text).toContain(`${id(1)} (corrected: use ${id(7)})`);
+  it("says references could not be read, never that records do not stand, in the report's language", () => {
+    const unreadable: ResearchDraft = { ...ADVICE, invalidReferences: "pick_row_key must be null or the key of the row picked.", pickRowKey: undefined, recordIds: undefined };
+    expect(said(unreadable)).toBe("The references of this report could not be read, so the checks did not read the records behind it.");
+    expect(said({ ...unreadable, report: "Отчёт." })).toBe("Ссылки этого отчёта на записи исследования не удалось прочитать, поэтому проверки не читали записи, на которых он стоит.");
+  });
+
+  describe("a corrected id", () => {
+    const corrected = [...RECORDS.slice(1), finding(7, "x1", "firmness", { supersedes: id(1), url: "https://maker.example/x1" })];
+
+    it("is cited, since the server reads its correction: nothing goes back and no note rests on it", () => {
+      expect(check(DRAFT, corrected, matrixOf(FRAME, corrected))).toEqual({ notes: [], troubles: [] });
+    });
+
+    it("cites its correction's link as well", () => {
+      expect(check({ ...DRAFT, report: `${DRAFT.report}\n\nhttps://maker.example/x1` }, corrected, matrixOf(FRAME, corrected))).toEqual({ notes: [], troubles: [] });
+    });
+
+    it("does not hide an id of no record beside it", () => {
+      const text = messages({ ...DRAFT, recordIds: [...DRAFT.recordIds!, id(99)] }, corrected, matrixOf(FRAME, corrected));
+      expect(text).toContain(id(99));
+      expect(text).not.toContain(`research: ${id(1)}`);
+    });
   });
 
   it("sends back a pick outside the matrix, and one on a matrix with no rows", () => {
@@ -159,6 +177,17 @@ describe("the report's links", () => {
     expect(messages(linked("https://shop.example/x1/reviews", "https://shop.example/3"))).toBe("");
   });
 
+  it("lets a link to a site's root pass with a record cited on that site: it says nothing and backs nothing", () => {
+    expect(messages(linked("https://maker.example/", "https://www.maker.example", "[сайт](https://maker.example)."))).toBe("");
+  });
+
+  it("lets through a site's root only, and only with a record cited there", () => {
+    expect(messages(linked("https://maker.example/other-page"))).toContain("https://maker.example/other-page");
+    expect(messages(linked("https://maker.example/?page=2"))).toContain("https://maker.example/?page=2");
+    expect(messages(linked("https://elsewhere.example/"))).toContain("https://elsewhere.example/");
+    expect(messages({ ...linked("https://maker.example/"), recordIds: [id(2), id(3)] })).toContain("https://maker.example/");
+  });
+
   it("lets a report link what could not be reached", () => {
     const records = [...RECORDS, unreachable(6, "https://www.ozon.ru", "Blocked.")];
     expect(messages(linked("https://www.ozon.ru"), records, matrixOf(FRAME, records))).toBe("");
@@ -195,6 +224,25 @@ describe("the comparison", () => {
     expect(messages(without(short))).toBe("");
     const turned = ["| | Lonax Memory | Optima Classic |", "| --- | --- | --- |", "| Цена за 160×200 | 30 000 ₽ | 25 000 ₽ |", "| Отзывы | 3 из 11 | нет данных |", "| Жёсткость | средняя | жёсткая |"].join("\n");
     expect(messages(without(turned))).toBe("");
+  });
+
+  describe("a criterion of one word", () => {
+    const frameOf = (criterion: string): ResearchFrame => ({ ...FRAME, criteria: [{ criterion, key: "price", why: "Мешает спать." }] });
+    const table = (heading: string) => [`| Вариант | ${heading} |`, "| --- | --- |", "| Lonax Memory | 30 дБ |", "| Optima Classic | 40 дБ |"].join("\n");
+    const onHeading = (criterion: string, heading: string) => messages(without(table(heading)), RECORDS, matrixOf(frameOf(criterion), RECORDS));
+
+    it("is found by its root under a shortened heading", () => {
+      expect(onHeading("Шумность", "Шум, дБ")).toBe("");
+    });
+
+    it("still goes back when no heading holds its root", () => {
+      expect(onHeading("Шумность", "Цена")).toContain("Шумность");
+    });
+
+    it("leaves a label of many words to the rule it had: any of its words", () => {
+      expect(onHeading("Уровень шумности", "Шум, дБ")).toContain("Уровень шумности");
+      expect(onHeading("Уровень шумности", "Шумности")).toBe("");
+    });
   });
 
   it("wants what is picked in the table", () => {
