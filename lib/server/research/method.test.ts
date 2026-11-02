@@ -127,8 +127,9 @@ describe("the method", () => {
       expect(text).toContain("A row is an option the user could choose");
       expect(text).toContain("a test, a source or a method is evidence");
     }
+    // With no rows a researcher notes the options and the main agent adds the rows from the pool.
     expect(researcherMatrixFooter({ coverage: { cells: [], empty: 0, filled: 0 }, frame: { branches: [], changes: [], criteria: [{ criterion: "Price", key: "price", why: "Budget." }], rows: [] } }, 3_000))
-      .toContain("Add each option the user could choose");
+      .toContain("Rows: none yet. Note each option the user could choose with change_research_frame note_candidate and its page's link; the main agent adds the rows.");
   });
 
   it("gives rows a rule a second run would repeat, since five real runs of one question gave five different shortlists", () => {
@@ -200,36 +201,48 @@ describe("the method", () => {
     }
   });
 
-  it("runs research as short tasks: an enumeration round from what the market names, then a fresh researcher per task, a round's tasks started together", () => {
+  it("runs research as short tasks: an enumeration round that builds a pool, then a fresh researcher per row, a round's tasks started together", () => {
     const text = researchMethodText(plan);
     expect(text).toContain(`Researchers work in short tasks: each has ${RESEARCH_TASK_LIMITS.toolCalls} tool calls, records not counted, and ends with a short report ` +
       "under which the server lists its records.");
     expect(text).toContain("every task of a round in one response, so they work in parallel");
-    expect(text).toContain("Round 1: where the user chooses among options, start one or two enumeration tasks that find them.");
-    expect(text).toContain("Each searches what the market tests, ranks, recommends and reviews most, never only makers' own sites: independent tests and rankings, " +
-      "the options with the most owners' reviews on marketplaces or large shops that can be reached, and recommendation and bestseller lists.");
-    expect(text).toContain("Rows are added from what those sources name, by the rule for rows below.");
-    expect(text).toContain("Later rounds: one task for one row, or for the empty cells of two or three rows, each under a fresh researcher name.");
+    // On acceptance run 2 one enumeration task made six rows in a minute from the first pages it opened: each kind of source gets its own task.
+    expect(text).toContain("Round 1: where the user chooses among options, start two or three enumeration tasks in parallel, one per kind of source, never only " +
+      "makers' own sites: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
+      "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews; (c) owners' reviews and discussions.");
+    expect(text).toContain("Each task notes every option its sources name with change_research_frame note_candidate and the page's link, and adds no rows.");
+    expect(text).toContain("Then you add the rows from that pool, the options named on the most sites first, by the rule for rows below: at least five across " +
+      "price tiers for a purchase. The report's line on that rule says the rows are the options most sites named.");
+    expect(text).not.toContain("start one or two enumeration tasks");
+    expect(text).toContain("Later rounds: one task per row, each under a fresh researcher name; a task takes the empty cells of two or three rows only once the matrix " +
+      "has more than eight rows.");
+    expect(text).not.toContain("one task for one row, or for the empty cells of two or three rows");
     // A continued researcher keeps its whole old context: on acceptance run 1 its input grew with its new brief.
     expect(text).toContain("Never give a new task to a researcher name already used in this research: a continued researcher keeps its whole old context");
     expect(text).toContain("The one exception is a researcher whose call waited for the user's approval: continue that one");
+    // Acceptance run 2 cited no marketplace offer.
+    expect(text).toContain("Once the leading options are clear, one offers task finds their current offers: their cards in marketplaces and shops that can be reached " +
+      "and the maker's own store, opened through the run's browser and proxies where fetch_url is refused.");
     expect(text).not.toContain("one call per question");
     // Round 1 and the questions it starts beside the enumeration come before the later rounds.
     expect(text.indexOf("Round 1:")).toBeLessThan(text.indexOf("Start now only the questions that need no other's answer"));
     expect(text.indexOf("Start now only the questions")).toBeLessThan(text.indexOf("Later rounds:"));
   });
 
-  it("gives a researcher its task's budget, searches in parallel, a short report and a note for an option the matrix lacks", () => {
+  it("gives a researcher its task's budget, searches in parallel, a short report and a note with its page for each option it finds", () => {
     const footer = researcherMethodFooter(plan);
     expect(footer).toContain(`Your task has ${RESEARCH_TASK_LIMITS.toolCalls} tool calls; record_evidence and change_research_frame do not count, so record freely.`);
     expect(footer).toContain("Each result says how many are left; when none are, record what you still have and write your report.");
     expect(footer).toContain("Make two or three independent searches in one response: the calls of one response run at once.");
     expect(footer).toContain("End with a report of at most about 1,500 characters: the server lists your records under it");
     expect(footer).toContain("never each record again");
-    expect(footer).toContain("A task to find the options adds each option its sources name as a row with change_research_frame.");
-    expect(footer).toContain("an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted with change_research_frame change " +
-      "note_candidate: its exact name as the page writes it, the model and not only its brand or line, as the label, and where you saw it as the reason.");
-    expect(footer).toContain("The main agent decides on its row.");
+    expect(footer).toContain("A task to find the options notes each one with change_research_frame change note_candidate: its exact name as the page writes it, " +
+      "the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason.");
+    expect(footer).toContain("One note per option and page, from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from " +
+      "adds nothing. It adds no rows.");
+    expect(footer).toContain("In any other task, an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted the same way.");
+    expect(footer).toContain("The main agent decides on the rows.");
+    expect(footer).not.toContain("adds each option its sources name as a row");
     // The record's form stays: a quote the checks can find.
     expect(footer).toContain("a verbatim quote copied from the page you opened, its source class, and whether it is confirmed, claimed by a party or not verified");
     expect(footer).not.toContain("Report every finding as");
@@ -237,11 +250,19 @@ describe("the method", () => {
     expect(footer.length).toBeLessThan(RUN_FOLLOWUP_MAX_CHARS / 2);
   });
 
-  it("tells the main agent to decide on every noted candidate before the draft, and that only it sets one aside", () => {
+  it("tells the main agent to add rows from the top of the pool, set aside each frequent one it does not take, and that only it sets one aside", () => {
     const text = researchMethodText(plan);
-    expect(text).toContain("Researchers note options they saw that the matrix lacks with change_research_frame note_candidate");
-    expect(text).toContain("before you hand in the draft, add each as a row and send researchers for its cells, or set it aside with set_aside, its key and your reason.");
+    expect(text).toContain("Researchers note the options they see with change_research_frame note_candidate and the page's link, and the line after each report " +
+      "lists the pool still open, ordered by how many sites named each. Add rows from its top.");
+    expect(text).toContain("Before you hand in the draft, set aside with set_aside, its key and your reason, any one named on two sites or by two agents or more that " +
+      "you do not take, and leave those named once as they are.");
     expect(text).toContain("Only you set one aside");
+  });
+
+  it("names no site and no product in what the method says of the pool", () => {
+    for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
+      expect(text).not.toMatch(/ozon|wildberries|yandex|amazon|ebay|aliexpress|expertology|otzovik|irecommend|askona|ormatek|dreamline|sleepdream/iu);
+    }
   });
 
   it("does not tell a researcher to add a row as it finds one, which is what the rule replaces", () => {
