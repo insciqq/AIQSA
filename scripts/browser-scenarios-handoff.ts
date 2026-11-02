@@ -49,7 +49,7 @@ const SIGN_IN_HANDOFFS_MAX = 2;
 
 const fail = (code: string): never => { throw new BrowserScenarioError(code); };
 
-function sessionCookies(cookie: string, url: string) {
+export function sessionCookies(cookie: string, url: string) {
   const cookies = cookie.split(";").map((pair) => pair.trim()).flatMap((pair) => {
     const split = pair.indexOf("=");
     return split > 0 ? [{ name: pair.slice(0, split), url, value: pair.slice(split + 1) }] : [];
@@ -57,7 +57,7 @@ function sessionCookies(cookie: string, url: string) {
   return cookies.length > 0 ? cookies : fail("interaction_session_missing");
 }
 
-function browserChannel(): string | undefined {
+export function browserChannel(): string | undefined {
   const channel = process.env.AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL?.trim();
   if (!channel) return undefined;
   return /^[a-z][a-z0-9-]{0,31}$/u.test(channel) ? channel : fail("browser_channel_invalid");

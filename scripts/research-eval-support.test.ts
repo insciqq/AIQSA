@@ -329,6 +329,15 @@ describe("content-free stdout, role accounting and plan window", () => {
     expect(researchServerNotes("ordinary private answer *Unrelated note*")).toEqual([]);
   });
 
+  it("reads what a person does on a kind's run", () => {
+    const base = { AIQSA_SUBAGENTS_ANSWERS_DIR: "/tmp/a" };
+    expect(researchEvalOptions(base).acts).toEqual({});
+    expect(researchEvalOptions({ ...base, AIQSA_SUBAGENTS_T_ACTS: "technical=edit, medical=start,market=restart" }).acts).toEqual({ market: "restart", medical: "start", technical: "edit" });
+    for (const bad of ["technical", "technical=dance", "nothing=edit", "technical=edit,technical=start", "technical=edit=start"]) {
+      expect(() => researchEvalOptions({ ...base, AIQSA_SUBAGENTS_T_ACTS: bad })).toThrow("research_acts_invalid");
+    }
+  });
+
   it("reads a draft's findings from the records its ids name, and a stored draft's as typed", () => {
     const rows = [{ id: "r1", kind: "finding", claim: "A claim", quote: "a quote", url: "https://x/a", sourceClass: "owner_reviews", dataset: null },
       { id: "r2", kind: "dataset", claim: "A count", quote: null, url: null, sourceClass: "owner_reviews", dataset: { examples: [{ quote: "an example", url: "https://x/b" }] } },
