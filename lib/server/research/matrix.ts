@@ -15,6 +15,7 @@ import {
 } from "../../contracts/research";
 import { SUBAGENT_LIMITS } from "../../contracts/subagents";
 import { logEvent } from "../observability";
+import { researchFrameEntries, researchFrameWithNote, researchFrameWithSetAside } from "./candidates";
 import { RESEARCH_CHECK_REASONS } from "./evidenceStore";
 import type { ResearchCoveragePort, ResearchPorts, ResearchRunScope } from "./ports";
 import { claimFigures, figuresNotIn, type ClaimFigure } from "./quoteCheck";
@@ -22,8 +23,9 @@ import { researchRegistrableDomain } from "./sourceQuality";
 
 /**
  * The matrix (`ResearchCoveragePort`): rows by criteria, the holes of which plan each round of researchers. A cell's state always comes
- * from the live records, so a correction moves it and nothing else has to; `ResearchFrame.frame` holds only the rows, the criteria and
- * why they changed. It only grows, and parallel researchers change it, so a write is a compare and swap on `version`.
+ * from the live records, so a correction moves it and nothing else has to; `ResearchFrame.frame` holds only the rows, the criteria,
+ * why they changed and the candidates noted beside them (`candidates.ts`). It only grows, and parallel researchers change it, so a write
+ * is a compare and swap on `version`.
  */
 
 /**
@@ -191,30 +193,35 @@ const refused = (message: string) => ({ message, ok: false as const });
 const known = (what: string, key: string) => refused(`Nothing was changed: ${key} is already a ${what} of the matrix, so use that key.`);
 const full = (what: string, limit: number) => refused(`Nothing was changed: the matrix holds its ${limit} ${what}. Work with what it has.`);
 
-/** The frame with one addition and its reason in the log. Nothing is changed or removed, and a key once used stays what it was. */
+/**
+ * The frame with one addition and its reason in the log, or with a candidate noted or set aside beside the matrix (`candidates.ts`), which counts toward
+ * the same bound. Nothing is changed or removed, and a key once used stays what it was.
+ */
 export function changedResearchFrame(frame: ResearchFrame, request: ResearchFrameChangeRequest, stamp: Pick<ResearchFrameChange, "at" | "by">): DecodedResearch<ResearchFrame> {
   const limits = RESEARCH_FRAME_LIMITS;
-  if (frame.changes.length >= limits.changes) return full("changes", limits.changes);
-  const logged = (key: string): readonly ResearchFrameChange[] => [...frame.changes, { ...stamp, change: request.change, key, reason: request.reason }];
+  if (researchFrameEntries(frame) >= limits.changes) return full("changes", limits.changes);
+  const logged = (change: ResearchFrameChange["change"], key: string): readonly ResearchFrameChange[] => [...frame.changes, { ...stamp, change, key, reason: request.reason }];
   switch (request.change) {
     case "add_row": {
       const { row } = request;
       if (frame.rows.some(({ key }) => key === row.key)) return known("row", row.key);
       if (frame.rows.length >= limits.rows) return full("rows", limits.rows);
-      return { ok: true, value: { ...frame, changes: logged(row.key), rows: [...frame.rows, row] } };
+      return { ok: true, value: { ...frame, changes: logged("add_row", row.key), rows: [...frame.rows, row] } };
     }
     case "add_criterion": {
       const { criterion } = request;
       if (frame.criteria.some(({ key }) => key === criterion.key)) return known("criterion", criterion.key);
       if (frame.criteria.length >= limits.criteria) return full("criteria", limits.criteria);
-      return { ok: true, value: { ...frame, changes: logged(criterion.key), criteria: [...frame.criteria, criterion] } };
+      return { ok: true, value: { ...frame, changes: logged("add_criterion", criterion.key), criteria: [...frame.criteria, criterion] } };
     }
     case "add_branch": {
       const { branch } = request;
       if (frame.branches.some(({ key }) => key === branch.key)) return known("branch", branch.key);
       if (frame.branches.length >= limits.branches) return full("branches", limits.branches);
-      return { ok: true, value: { ...frame, branches: [...frame.branches, branch], changes: logged(branch.key) } };
+      return { ok: true, value: { ...frame, branches: [...frame.branches, branch], changes: logged("add_branch", branch.key) } };
     }
+    case "note_candidate": return researchFrameWithNote(frame, request, stamp);
+    case "set_aside": return researchFrameWithSetAside(frame, request, stamp);
   }
 }
 

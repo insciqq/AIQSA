@@ -555,6 +555,45 @@ describe("change_research_frame through the real engine", () => {
   });
 });
 
+describe("candidates noted through the real engine", () => {
+  const frameCall = (id: string, change: Record<string, unknown>) => ({ arguments: { cases: null, key: null, label: null, why: null, ...change }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
+  const note = (id: string) => frameCall(id, { change: "note_candidate", label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it." });
+  const aside = (id: string) => frameCall(id, { change: "set_aside", key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." });
+
+  it("stores a researcher's note, which the main agent reads after that report, refuses the researcher's set_aside, and the main agent's closes it", async () => {
+    const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] }, { calls: [aside("call-early-aside")] }, DONE,
+      { calls: [aside("call-aside")] }, { calls: [researcher("brands")] }, DONE, { calls: [submit("one")] }]);
+    await run(adapter, engineOf({ gates: [], ports: matrix.ports }));
+    expect(resultsOf(requests[3], CHANGE_RESEARCH_FRAME_TOOL_NAME)[0]).toContain("Candidate noted under key dreamline-sleep-dream-medium-s1000");
+    expect(resultsOf(requests[4], CHANGE_RESEARCH_FRAME_TOOL_NAME)[1]).toContain("only the main agent sets a noted candidate aside");
+    const [first, second] = resultsOf(requests[8], CALL_SUBAGENT_TOOL_NAME);
+    expect(first).toContain("Candidates noted (from the server), neither a row nor set aside: 1.");
+    expect(first).toContain('"key":"dreamline-sleep-dream-medium-s1000","name":"Dreamline SleepDream Medium S1000","noted_by":[{"agent":"marketplaces","reason":"An Ozon listing of 180x200 shows it."}]');
+    expect(resultsOf(requests[6], CHANGE_RESEARCH_FRAME_TOOL_NAME).at(-1)).toContain("Set aside: dreamline-sleep-dream-medium-s1000.");
+    expect(second).not.toContain("Candidates noted");
+    const frame = matrix.held.frame as ResearchFrame;
+    expect(frame.candidates).toEqual([{ key: "dreamline-sleep-dream-medium-s1000", label: "Dreamline SleepDream Medium S1000",
+      notes: [{ at: expect.any(String), by: { name: "marketplaces", threadId: "thread-1" }, reason: "An Ozon listing of 180x200 shows it." }] }]);
+    expect(frame.setAside).toEqual([{ at: expect.any(String), key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." }]);
+    expect(frame.rows).toEqual(FRAME.rows);
+  });
+
+  it("raises a candidate still open at draft time through the real gap check, and a row covering it closes it", async () => {
+    const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const addRow = frameCall("call-row", { change: "add_row", key: "sleepdream", label: "Dreamline SleepDream Medium S1000", reason: "Ranked among the most sold." });
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] }, DONE, { calls: [submit("one")] },
+      { calls: [addRow] }, { calls: [submit("two")] }, { text: JSON.stringify({ gaps: [], limits: [] }) }]);
+    const memory = engineOf({ gates: [gapCheckGate], ports: matrix.ports });
+    await run(adapter, memory);
+    expect(resultsOf(requests[5], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("Candidate dreamline-sleep-dream-medium-s1000: add it as a row");
+    expect((matrix.held.frame as ResearchFrame).rows.map(({ key }) => key)).toEqual(["x1", "sleepdream"]);
+    // Once a row covers it nothing is asked of it again, and the report goes out.
+    expect(requests.slice(7).flatMap((request) => resultsOf(request, SUBMIT_RESEARCH_DRAFT_TOOL_NAME)).join("\n")).not.toContain("Candidate dreamline");
+    expect(memory.published()).toContain("Report two");
+  });
+});
+
 describe("the default engine", () => {
   const scope = { branchRunIds: [], chatId: "chat", researchRunId: "run-1", runId: "run-c", userId: "user", now: () => 0 } as unknown as ResearchRunScope;
   const where = { chatId: "chat", modelRunId: "run-1", userId: "user" };
