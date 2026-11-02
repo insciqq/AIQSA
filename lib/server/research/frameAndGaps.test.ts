@@ -458,7 +458,7 @@ describe("each round is planned from the empty cells", () => {
 });
 
 describe("change_research_frame through the real engine", () => {
-  const change = (id: string, key: string) => ({ arguments: { cases: null, change: "add_row", key, label: `Row ${key}`, reason: "Found along the way.", why: null }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
+  const change = (id: string, key: string) => ({ arguments: { cases: null, change: "add_row", key, label: `Row ${key}`, reason: "Found along the way.", url: null, why: null }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
   const toolsOf = (request: ProviderRunRequest | undefined) => request?.tools?.map((tool) => tool.name) ?? [];
 
   it("reaches the main agent and every researcher, and each change lands under whoever made it", async () => {
@@ -556,11 +556,13 @@ describe("change_research_frame through the real engine", () => {
 });
 
 describe("candidates noted through the real engine", () => {
-  const frameCall = (id: string, change: Record<string, unknown>) => ({ arguments: { cases: null, key: null, label: null, why: null, ...change }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
-  const note = (id: string) => frameCall(id, { change: "note_candidate", label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it." });
+  const frameCall = (id: string, change: Record<string, unknown>) => ({ arguments: { cases: null, key: null, label: null, url: null, why: null, ...change }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
+  const LISTING = "https://www.ozon.ru/category/matrasy-15018/?sorting=rating";
+  const note = (id: string, url: string = LISTING) =>
+    frameCall(id, { change: "note_candidate", label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it.", url });
   const aside = (id: string) => frameCall(id, { change: "set_aside", key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." });
 
-  it("stores a researcher's note, which the main agent reads after that report, refuses the researcher's set_aside, and the main agent's closes it", async () => {
+  it("stores a researcher's note with its page, which the main agent reads after that report, refuses the researcher's set_aside, and the main agent's closes it", async () => {
     const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
     const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] }, { calls: [aside("call-early-aside")] }, DONE,
       { calls: [aside("call-aside")] }, { calls: [researcher("brands")] }, DONE, { calls: [submit("one")] }]);
@@ -568,29 +570,45 @@ describe("candidates noted through the real engine", () => {
     expect(resultsOf(requests[3], CHANGE_RESEARCH_FRAME_TOOL_NAME)[0]).toContain("Candidate noted under key dreamline-sleep-dream-medium-s1000");
     expect(resultsOf(requests[4], CHANGE_RESEARCH_FRAME_TOOL_NAME)[1]).toContain("only the main agent sets a noted candidate aside");
     const [first, second] = resultsOf(requests[8], CALL_SUBAGENT_TOOL_NAME);
-    expect(first).toContain("Candidates noted (from the server), neither a row nor set aside: 1.");
-    expect(first).toContain('"key":"dreamline-sleep-dream-medium-s1000","name":"Dreamline SleepDream Medium S1000","noted_by":[{"agent":"marketplaces","reason":"An Ozon listing of 180x200 shows it."}]');
+    expect(first).toContain("Candidates noted (from the server), neither a row nor set aside: 1. Those named on the most sites come first;");
+    expect(first).toContain('named on 1 site by 1 agent: {"key":"dreamline-sleep-dream-medium-s1000","name":"Dreamline SleepDream Medium S1000",' +
+      '"reason":"An Ozon listing of 180x200 shows it."}');
     expect(resultsOf(requests[6], CHANGE_RESEARCH_FRAME_TOOL_NAME).at(-1)).toContain("Set aside: dreamline-sleep-dream-medium-s1000.");
     expect(second).not.toContain("Candidates noted");
     const frame = matrix.held.frame as ResearchFrame;
     expect(frame.candidates).toEqual([{ key: "dreamline-sleep-dream-medium-s1000", label: "Dreamline SleepDream Medium S1000",
-      notes: [{ at: expect.any(String), by: { name: "marketplaces", threadId: "thread-1" }, reason: "An Ozon listing of 180x200 shows it." }] }]);
+      notes: [{ at: expect.any(String), by: { name: "marketplaces", threadId: "thread-1" }, reason: "An Ozon listing of 180x200 shows it.", url: LISTING }] }]);
     expect(frame.setAside).toEqual([{ at: expect.any(String), key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." }]);
     expect(frame.rows).toEqual(FRAME.rows);
   });
 
-  it("raises a candidate still open at draft time through the real gap check, and a row covering it closes it", async () => {
+  it("raises a frequent candidate still open at draft time through the real gap check, and a row covering it closes it", async () => {
     const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
     const addRow = frameCall("call-row", { change: "add_row", key: "sleepdream", label: "Dreamline SleepDream Medium S1000", reason: "Ranked among the most sold." });
-    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] }, DONE, { calls: [submit("one")] },
-      { calls: [addRow] }, { calls: [submit("two")] }, { text: JSON.stringify({ gaps: [], limits: [] }) }]);
+    // One researcher saw it on two sites; a repeat from a site it noted is refused and adds nothing.
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] },
+      { calls: [note("call-note-2", "https://market.yandex.ru/catalog--matrasy/1")] }, { calls: [note("call-note-3", "https://ozon.ru/product/sleepdream-1/")] }, DONE,
+      { calls: [submit("one")] }, { calls: [addRow] }, { calls: [submit("two")] }, { text: JSON.stringify({ gaps: [], limits: [] }) }]);
     const memory = engineOf({ gates: [gapCheckGate], ports: matrix.ports });
     await run(adapter, memory);
-    expect(resultsOf(requests[5], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("Candidate dreamline-sleep-dream-medium-s1000: add it as a row");
+    expect(resultsOf(requests[4], CHANGE_RESEARCH_FRAME_TOOL_NAME).at(-1)).toContain("named on 2 sites by 1 agent now.");
+    expect(resultsOf(requests[5], CHANGE_RESEARCH_FRAME_TOOL_NAME).at(-1)).toContain("you noted dreamline-sleep-dream-medium-s1000 from ozon.ru already.");
+    expect(resultsOf(requests[7], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("Candidate dreamline-sleep-dream-medium-s1000: add it as a row");
     expect((matrix.held.frame as ResearchFrame).rows.map(({ key }) => key)).toEqual(["x1", "sleepdream"]);
     // Once a row covers it nothing is asked of it again, and the report goes out.
-    expect(requests.slice(7).flatMap((request) => resultsOf(request, SUBMIT_RESEARCH_DRAFT_TOOL_NAME)).join("\n")).not.toContain("Candidate dreamline");
+    expect(requests.slice(9).flatMap((request) => resultsOf(request, SUBMIT_RESEARCH_DRAFT_TOOL_NAME)).join("\n")).not.toContain("Candidate dreamline");
     expect(memory.published()).toContain("Report two");
+  });
+
+  it("leaves a candidate one researcher saw on one site in the pool, with no send back", async () => {
+    const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] }, DONE, { calls: [submit("one")] },
+      { text: JSON.stringify({ gaps: [], limits: [] }) }]);
+    const memory = engineOf({ gates: [gapCheckGate], ports: matrix.ports });
+    await run(adapter, memory);
+    expect(resultsOf(requests[4], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("named on 1 site by 1 agent");
+    expect(requests.flatMap((request) => resultsOf(request, SUBMIT_RESEARCH_DRAFT_TOOL_NAME)).join("\n")).not.toContain("Candidate dreamline");
+    expect(memory.published()).toContain("Report one");
   });
 });
 
@@ -628,7 +646,7 @@ describe("the default engine", () => {
 
   it("carries a researcher's change through a run to the database, under the research run and that researcher", async () => {
     const database = client();
-    const add = { arguments: { cases: null, change: "add_row", key: "y2", label: "Dreamline Y2", reason: "A shop sells it.", why: null }, id: "call-add", name: CHANGE_RESEARCH_FRAME_TOOL_NAME };
+    const add = { arguments: { cases: null, change: "add_row", key: "y2", label: "Dreamline Y2", reason: "A shop sells it.", url: null, why: null }, id: "call-add", name: CHANGE_RESEARCH_FRAME_TOOL_NAME };
     const { adapter } = scripted([{ calls: begin }, { calls: [researcher("a")] }, { calls: [add] }, DONE, { calls: [submit("one")] }]);
     // The real port alone: the real plan window would wait out its minute here, and this test is about the port's way to the database.
     await run(adapter, engineOf({ gates: [], ports: { coverage: factories(database).coverage! } }));
