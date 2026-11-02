@@ -328,6 +328,26 @@ describe("rounds that fill no new cell end research", () => {
     expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b", "c", "d"]);
   });
 
+  it("starts no background turn when the mailbox's turn ends between the reads of a message to it", async () => {
+    const matrix = matrixPorts();
+    const message = { arguments: { background: true, message: "Also this.", name: "mail" }, id: "late", name: CALL_SUBAGENT_TOOL_NAME };
+    const { adapter } = scripted([{ calls: begin }, { calls: [message] }, { text: "Outcome: done\nDone." }, { calls: [researcher("a")] }, DONE, { calls: [submit("one")] }]);
+    const memory = engineOf({ gates: [], ports: matrix.ports });
+    const background = new FakeSubagentBackgroundControl();
+    const thread = { anchorRunId: "run-1", definitionId: null, id: "thread-mail", name: "mail", parentThreadId: null, typeName: null };
+    const running = { branchRunId: "run-1", id: "turn-mail", mode: "background", parentRunId: "run-1", state: "running" };
+    const ended = { ...running, state: "done" };
+    let reads = 0;
+    vi.mocked(memory.deps.subagentThreads!.find).mockImplementation(async ({ name }) => {
+      if (name !== "mail") return null;
+      reads += 1;
+      return (reads === 1 ? { active: running, latest: running, thread } : { active: null, latest: ended, thread }) as never;
+    });
+    await run(adapter, memory, { subagents: { background } });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(background.turns).toHaveLength(0);
+  });
+
   it("counts nothing for a message left in a running turn's mailbox", async () => {
     const matrix = matrixPorts();
     const message = (id: string) => ({ arguments: { message: `Also ${id}.`, name: "mail" }, id, name: CALL_SUBAGENT_TOOL_NAME });
