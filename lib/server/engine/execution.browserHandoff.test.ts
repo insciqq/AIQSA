@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
-import { RECORD_EVIDENCE_TOOL_NAME, RESEARCH_SOURCE_CLASSES, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
+import { RECORD_EVIDENCE_TOOL_NAME, RESEARCH_SOURCE_CLASSES, RESEARCH_TASK_LIMITS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   type ResearchEvidenceRecord } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
@@ -233,7 +233,11 @@ describe("a research run's browser handoff", () => {
     const handoffOutput = run.model.requests.flatMap((request) => request.history ?? [])
       .find((item) => item.type === "tool_result" && item.name === BROWSER_HANDOFF_TOOL_NAME);
     if (handoffOutput?.type !== "tool_result") throw new Error("Expected the handoff result in the next model request.");
-    expect(JSON.parse(handoffOutput.output)).toMatchObject({ outcome: "unreachable", next: expect.stringContaining('record_evidence with kind "unreachable"') });
+    // A researcher's counted call ends with what its task has left (`turnCallsLeftLine`); the main agent's has no such line.
+    const tracker = /\n\nCalls left in this task: (\d+)\.$/u;
+    expect(tracker.exec(handoffOutput.output)?.[1]).toBe(agent === "researcher" ? String(RESEARCH_TASK_LIMITS.toolCalls - 1) : undefined);
+    expect(JSON.parse(handoffOutput.output.replace(tracker, ""))).toMatchObject({ outcome: "unreachable",
+      next: expect.stringContaining('record_evidence with kind "unreachable"') });
     for (const instruction of ["target set to the site", "reason explaining", "go on with the remaining research"]) {
       expect(handoffOutput.output).toContain(instruction);
     }

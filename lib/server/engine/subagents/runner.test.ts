@@ -18,7 +18,7 @@ import type { SubagentBinding, SubagentMessage, SubagentMessaging, SubagentTurnI
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackground/render";
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
-import { runToolBatch } from "../toolBatch";
+import { runToolBatch, TURN_TOOL_CALL_LIMIT_OUTPUT } from "../toolBatch";
 import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
 import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
@@ -91,7 +91,7 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
 function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentChildHost; earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
   followups?: () => { id: string; text: string }[]; handoff?: EngineTool["execute"]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging;
   recordSearchEvidence?: SubagentHost["recordSearchEvidence"]; request?: ProviderRunRequest;
-  toolTimeLeft?: () => boolean; tools?: EngineTool[]; workspaceImageView?: true }> = {}) {
+  toolTimeLeft?: () => boolean; tools?: EngineTool[]; turnToolCalls?: number; workspaceImageView?: true }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
   const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
   const begun: unknown[] = [];
@@ -154,6 +154,7 @@ function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentCh
     toolCalls,
     toolState: { calls: 0 },
     toolTimeLeft: options.toolTimeLeft ?? (() => true),
+    ...(options.turnToolCalls !== undefined ? { turnToolCalls: options.turnToolCalls } : {}),
     transcripts: {
       append: vi.fn(async (scope, from, items) => { appended.push({ from, items, thread: scope.thread }); }),
       loadRuns: vi.fn(async (input: Readonly<{ runIds: readonly string[]; threadId?: string }>) =>
@@ -485,6 +486,67 @@ describe("sub-agent runner", () => {
     // The thread's next turn in this answer does not get it again.
     await ctx.runner.wait(await ctx.runner.continue(ctx.input({ brief: "And the second?", turnId: "turn-2" })));
     expect(userTexts(ctx.requests.at(-1)!).filter((text) => text.includes("Do not buy anything, just compare."))).toHaveLength(0);
+  });
+
+  describe("a turn's own budget", () => {
+    const lookups = (from: number, count: number): ModelToolCall[] =>
+      Array.from({ length: count }, (_, index) => ({ arguments: { key: `A-${from + index}` }, id: `l${from + index}`, name: "mcp_jira_get_issue" }));
+    const records = (...ids: string[]): ModelToolCall[] => ids.map((id) => ({ arguments: { claim: id }, id, name: "record_evidence" }));
+    const recorder = () => {
+      const record = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
+      return { record, tool: engineTool("record_evidence", "session", record, { effects: "local" }) };
+    };
+    const resultOf = (request: ProviderRunRequest | undefined, callId: string) =>
+      (request?.history ?? []).flatMap((item) => item.type === "tool_result" && item.callId === callId ? [item.output] : []).at(-1);
+
+    it("refuses a researcher's 16th counted call as a budget refusal, and its next response is tool-free and makes the report", async () => {
+      const { record, tool } = recorder();
+      const ctx = setup([
+        { calls: [...lookups(1, 10), ...records("r1", "r2")] },
+        { calls: [...lookups(11, 5), ...records("r3")] },
+        { calls: [...lookups(16, 1), ...records("r4")] },
+        { text: "Outcome: partial\nTwo rows covered; the rest stays empty." }
+      ], { tools: [tool], turnToolCalls: 15 });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(result).toMatchObject({ outcome: "partial", report: "Outcome: partial\nTwo rows covered; the rest stays empty.", state: "done" });
+      expect(ctx.requests).toHaveLength(4);
+      expect(ctx.requests.slice(0, 3).map((request) => request.toolChoice)).toEqual(["auto", "auto", "auto"]);
+      expect(ctx.requests[3]!.toolChoice).toBe("none");
+      // Fifteen ran, each result saying what is left; records never count and never carry the line.
+      expect(ctx.lookup).toHaveBeenCalledTimes(15);
+      expect(record).toHaveBeenCalledTimes(4);
+      const last = ctx.requests[3];
+      expect(resultOf(last, "l1")).toMatch(/\n\nCalls left in this task: 14\.$/u);
+      expect(resultOf(last, "l15")).toMatch(/\n\nCalls left in this task: 0\.$/u);
+      expect(resultOf(last, "l16")).toBe(TURN_TOOL_CALL_LIMIT_OUTPUT(15));
+      for (const id of ["r1", "r2", "r3", "r4"]) expect(resultOf(last, id)).toBe("recorded");
+      // The run's own budget counts as before: every call that ran, records included.
+      expect(ctx.host.toolState.calls).toBe(19);
+    });
+
+    it("counts each turn of a thread on its own", async () => {
+      const ctx = setup([
+        { calls: lookups(1, 15) },
+        { text: "Outcome: done\nFirst." },
+        { calls: lookups(16, 1) },
+        { text: "Outcome: done\nSecond." }
+      ], { turnToolCalls: 15 });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(resultOf(ctx.requests[1], "l15")).toMatch(/Calls left in this task: 0\.$/u);
+      await ctx.runner.wait(await ctx.runner.continue(ctx.input({ brief: "Now the second row.", turnId: "turn-2" })));
+      expect(resultOf(ctx.requests[3], "l16")).toMatch(/\nok\n\nCalls left in this task: 14\.$/u);
+      expect(ctx.requests[3]!.toolChoice).toBe("auto");
+    });
+
+    it("gives a sub-agent whose host sets no budget no line and no refusal, past 15 calls", async () => {
+      const ctx = setup([{ calls: lookups(1, 16) }, { text: "Outcome: done\nAll." }]);
+      await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(ctx.lookup).toHaveBeenCalledTimes(16);
+      const outputs = (ctx.requests[1]!.history ?? []).flatMap((item) => item.type === "tool_result" ? [item.output] : []);
+      expect(outputs).toHaveLength(16);
+      expect(outputs.some((output) => output.includes("Calls left in this task"))).toBe(false);
+      expect(ctx.requests[1]!.toolChoice).toBe("auto");
+    });
   });
 
   it("continues a thread's rounds and sequence across its turns in one run", async () => {

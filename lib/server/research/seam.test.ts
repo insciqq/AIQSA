@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
-  type ResearchDraft } from "../../contracts/research";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_TASK_LIMITS, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
+  SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -10,6 +10,7 @@ import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRun
 import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
+import { TURN_TOOL_CALL_LIMIT_OUTPUT } from "../engine/toolBatch";
 import { toolOutputExcerpt } from "../engine/toolResults";
 import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
@@ -1323,21 +1324,25 @@ describe("researchers with no role", () => {
 
 describe("a researcher's context sheds its old pages", () => {
   const SAVED = `tor1_${"a".repeat(32)}`;
-  const READS = 16;
+  // One task's worth of reads, each a counted call; Russian pages, as the real runs read, pass the clearing's mark within it.
+  const READS = RESEARCH_TASK_LIMITS.toolCalls;
   const READ_CHARACTERS = 20_000;
-  const book = "Owners report the latex layer holds its shape after years; the seller lists 3 cm latex over coir. ".repeat(4_000);
+  const book = "Владельцы пишут, что латексный слой держит форму годами; продавец указывает 3 см латекса на кокосе. ".repeat(4_000);
   const reads = Array.from({ length: READS }, (_, index) => ({ calls: [{ arguments: { handle: SAVED, limit: READ_CHARACTERS, offset: index * READ_CHARACTERS },
     id: `read-${index}`, name: "read_tool_result" }] }));
   const reading = (memory: ReturnType<typeof engineOf>) => ({ ...memory, deps: { ...memory.deps,
     savedResults: { read: vi.fn(async () => ({ arguments: { url: "https://shop.example/x1" }, text: book, toolName: "fetch_url" })) } } });
   const resultsOfRead = (request: ProviderRunRequest | undefined) => resultsOf(request, "read_tool_result");
   const cleared = (output: string) => output.startsWith("[Cleared to keep this context small: ");
+  const TRACKER = /\n\nCalls left in this task: (\d+)\.$/u;
 
   /** The newest reads stay whole, and each older one is a stub naming the read that brings it back. */
   function expectShed(researcher: readonly ProviderRunRequest[]) {
     const last = resultsOfRead(researcher.at(-1));
     expect(last).toHaveLength(READS);
-    expect(last.slice(-3).map((output) => (JSON.parse(output) as { offset: number; text: string }))).toEqual([13, 14, 15].map((index) =>
+    // Each read is a counted call of the task, the last one its budget's end.
+    expect(TRACKER.exec(last.at(-1)!)?.[1]).toBe("0");
+    expect(last.slice(-3).map((output) => (JSON.parse(output.replace(TRACKER, "")) as { offset: number; text: string }))).toEqual([12, 13, 14].map((index) =>
       expect.objectContaining({ offset: index * READ_CHARACTERS, text: book.slice(index * READ_CHARACTERS, (index + 1) * READ_CHARACTERS) })));
     expect(cleared(last[0]!)).toBe(true);
     expect(last[0]).toContain(`call read_tool_result with {"handle":"${SAVED}","offset":0,"limit":${READ_CHARACTERS}} to read it again.]`);
@@ -1366,6 +1371,42 @@ describe("a researcher's context sheds its old pages", () => {
     expectShed(child.requests);
     // The main agent's own context is no researcher's: nothing of it is cleared.
     expect(main.requests.flatMap((request) => request.history ?? []).some((item) => item.type === "tool_result" && cleared(item.output))).toBe(false);
+    expect(memory.published()).toBe(REPORT);
+  });
+});
+
+describe("a researcher's task budget", () => {
+  const read = (id: string) => ({ arguments: { handle: `tor1_${"b".repeat(32)}` }, id, name: "read_tool_result" });
+  const reads = (prefix: string) => Array.from({ length: RESEARCH_TASK_LIMITS.toolCalls + 1 }, (_, index) => read(`${prefix}-${index + 1}`));
+
+  it("refuses a researcher's 16th call as a budget refusal and takes its report from a tool-free response, while a gate's turn has no budget", async () => {
+    const skeptic = gate("skeptic", async (_draft, context) => {
+      await context.subagents.run({ brief: "Try to refute it.", instructions: "i", model: "main", name: "skeptic", tools: [] }, context.signal);
+      return { kind: "pass" };
+    });
+    const main = scripted([
+      { calls: begin() },
+      { calls: [{ arguments: { message: "Find the options.", name: "options" }, id: "call-options", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { calls: reads("researcher") },
+      { text: "Outcome: partial\nThe options found; their cells stay empty." },
+      { calls: [submit()] },
+      { calls: reads("gate") },
+      { text: "Outcome: done\nNothing refutes it." }
+    ]);
+    const memory = engineOf({ gates: [skeptic] });
+    await run(main.adapter, memory, { prepared: prepared({ noLimits: true }) }).text();
+    const researcher = resultsOf(main.requests[3], "read_tool_result");
+    expect(researcher).toHaveLength(RESEARCH_TASK_LIMITS.toolCalls + 1);
+    expect(researcher[0]).toMatch(/\n\nCalls left in this task: 14\.$/u);
+    expect(researcher[RESEARCH_TASK_LIMITS.toolCalls - 1]).toMatch(/\n\nCalls left in this task: 0\.$/u);
+    expect(researcher.at(-1)).toBe(TURN_TOOL_CALL_LIMIT_OUTPUT(RESEARCH_TASK_LIMITS.toolCalls));
+    expect(main.requests[3]!.toolChoice).toBe("none");
+    expect(resultsOf(main.requests[4], CALL_SUBAGENT_TOOL_NAME).join()).toContain("The options found; their cells stay empty.");
+    // The gate's turn ran every call it made, with no line and no refusal, and its next response still had its tools.
+    const checked = resultsOf(main.requests[6], "read_tool_result");
+    expect(checked).toHaveLength(RESEARCH_TASK_LIMITS.toolCalls + 1);
+    expect(checked.some((output) => output.includes("Calls left in this task") || output === TURN_TOOL_CALL_LIMIT_OUTPUT(RESEARCH_TASK_LIMITS.toolCalls))).toBe(false);
+    expect(main.requests[6]!.toolChoice).toBe("auto");
     expect(memory.published()).toBe(REPORT);
   });
 });
