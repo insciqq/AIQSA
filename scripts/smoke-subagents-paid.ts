@@ -140,6 +140,30 @@
  *   - AIQSA_SUBAGENTS_T_QUESTION_FILE: a file of mode 0600 (regular, this user's, at most 16 KiB, not empty) whose text replaces the
  *     `purchase` question for this invocation; it needs `purchase` among the kinds. The text goes only where the question already goes:
  *     the chat and the evaluation calls. It is never printed, logged or stored by the harness.
+ *   - AIQSA_SUBAGENTS_T_QUESTION_SET: a directory of `<name>.txt` questions (name `[a-z0-9][a-z0-9_-]*`, at most 20), each with an
+ *     optional `<name>.expect.json`, every file private as the question file is. It replaces the kinds: each question runs in a fresh
+ *     chat, one after another (CONCURRENCY other than 1, KINDS, ACTS and QUESTION_FILE are refused beside it; REPEATS takes a plain
+ *     integer). An expectation is any subset of `{ "names": [...], "minNames": n, "namesIn": "rows" | "answer" | "either",
+ *     "minCandidates": n, "minOffers": n, "minSupportedShare": 0.8, "maxMinutes": n }`: each name is found as a matrix row, in the
+ *     answer, or either (the default), matched after NFKC, lowercase, collapsed whitespace and one reading of a number's separators;
+ *     `minNames` (all by default) counts the found ones. Candidates are matrix rows, offers the live `action_channel` records the last
+ *     draft cites, the supported share the verifier's verdict lines over every draft, minutes the chat's main runs end to end. Each
+ *     is reported with its value and pass or fail; stdout names names by position only, the private `acceptance` file by text.
+ *   - AIQSA_SUBAGENTS_T_SEARCH_SOURCES (with production Search): the production sources the plan uses, `openai`, `perplexity`,
+ *     `deepseek` or a comma list of them, all three by default. Research then searches only with those; a source left out costs no
+ *     setup (no OpenRouter, no DeepSeek key, no SEARCH_MODEL, which is refused without `openai`). The ready line and each question
+ *     name the sources.
+ *   - AIQSA_SUBAGENTS_T_APP_LOG_COMMAND: one shell line, run on the harness host after each question as the restart hook is (the
+ *     same minimal environment), that prints the stand app's JSON log lines, for example
+ *     `ssh <the stand host> 'docker compose -p aiqsa-sa-kvm logs --no-log-prefix --since 3h app'`. Only Search's `tool_execution`
+ *     lines of the question's runs are read, for each source's latency; nothing else of the output is kept. Absent, latency is null.
+ *   Every question's acceptance metrics (`acceptance` on stdout, in full in the private `acceptance` file) come from the stand's rows:
+ *   wall time; phases in seconds from the research run's start (scoping, plan window, dispatch, each research round with its
+ *   researchers and how many ran at once, drafting, each draft's gates with their turns and what sent it back, publishing); each
+ *   researcher turn's calls (all, and those the per-task budget counts), its end (`report`, `budget`, `time_limit` or its state) and
+ *   input tokens per response (p50, p90, max); searches, rows and errors per source and its latency; rows; candidate notes (noted,
+ *   made rows, set aside, open); the verifier's verdicts; offers. A feature the stand does not have yet (candidate notes, the per-task
+ *   budget) reads as null, never 0. Researchers are numbered, not named.
  *   - AIQSA_SUBAGENTS_OPENROUTER_SETUP=approved with OPENROUTER_API_KEY: with production Search and no live OpenRouter connection holding
  *     Perplexity, Quick Setup adds OpenRouter once, which checks every built-in OpenRouter model; only with the operator's approval of that cost.
  *   - AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL (no default) and DEEPSEEK_API_KEY:
@@ -197,7 +221,8 @@
  *   stand's ports, for example `ssh <the stand host> 'docker compose -p aiqsa-sa-kvm restart app'`. Its
  *   environment is PATH, HOME, USER, LOGNAME and SSH_AUTH_SOCK only.
  * - T's acceptance options (described under T above; each refused without T): AIQSA_SUBAGENTS_T_QUESTION_FILE,
- *   AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL and DEEPSEEK_API_KEY, and
+ *   AIQSA_SUBAGENTS_T_QUESTION_SET, AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL and DEEPSEEK_API_KEY
+ *   (each only when its source is selected), AIQSA_SUBAGENTS_T_SEARCH_SOURCES, AIQSA_SUBAGENTS_T_APP_LOG_COMMAND and
  *   AIQSA_SUBAGENTS_ADMIN_PROXY_FILE. Keys are read from the process environment only and never printed.
  * - AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL, AIQSA_BROWSER_SCENARIOS_SHOTS_DIR: as for S5 (C, D, H drive the
  *   live panel; the harness host needs a Chromium for Playwright).
@@ -250,7 +275,10 @@ import {
   type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer,
   RESEARCH_ADMIN_PROXY_MAX_BYTES, RESEARCH_QUESTION_MAX_BYTES, parseResearchAdminProxy, readPrivateFile, researchAdminProxySecrets,
   researchAttributionCounts, researchCitationAttribution, researchCitedUrls, researchProxyCheckStatus, researchQuestionText,
-  type ResearchAdminProxy, type ResearchSearchRow
+  type ResearchAdminProxy, type ResearchSearchRow,
+  readResearchQuestionSet, researchAcceptanceMetrics, researchAcceptanceObserved, researchEngineLatency, researchExpectationCounts, researchExpectationResults,
+  researchJobLabel, researchResponses, researchSetJobs, type ResearchAcceptanceCall, type ResearchAcceptanceEvidence, type ResearchAcceptanceTurn, type ResearchExpectations,
+  type ResearchResponse, type ResearchSearchLabel, type ResearchSetQuestion
 } from "./research-eval-support";
 
 const SECOND_MODEL_DISPLAY_NAME = "Sub-agents second model";
@@ -276,7 +304,9 @@ type Context = Readonly<{
   second: CatalogModel | null;
   research: Readonly<{ options: ReturnType<typeof researchEvalOptions>; judge: ResearchEvalCall | null;
     /** The operator's purchase question (AIQSA_SUBAGENTS_T_QUESTION_FILE) and administrator proxy, in memory only. */
-    question: string | null; adminProxy: ResearchAdminProxy | null }> | null;
+    question: string | null; adminProxy: ResearchAdminProxy | null;
+    /** The question set's questions by name (AIQSA_SUBAGENTS_T_QUESTION_SET), in memory only. */
+    questions: ReadonlyMap<string, ResearchSetQuestion> }> | null;
   session: Session;
   target: StandTarget;
 }>;
@@ -1600,7 +1630,79 @@ async function researchUsage(ctx: Context, chatId: string, turns: readonly TurnR
   const main = (await ctx.db.query<ResearchTiming>(`SELECT NULL AS "threadId", "createdAt" AS "startedAt", "answerCompletedAt" AS "endedAt"
     FROM "ModelRun" WHERE "chatId" = $1 AND "subagentTurnId" IS NULL`, [chatId])).rows;
   return { roles: researchRoleUsage(transcript, [...main, ...turns.map((turn) => ({ threadId: turn.threadId,
-    startedAt: turn.startedAt, endedAt: turn.endedAt }))], names), byModel: researchUsageByModel(rows), total: usageByPurpose(rows) };
+    startedAt: turn.startedAt, endedAt: turn.endedAt }))], names), byModel: researchUsageByModel(rows), total: usageByPurpose(rows),
+    responses: researchResponses(transcript) };
+}
+
+/**
+ * The app log command's lines for these runs' searches, read as they arrive: only `researchEngineLatency`'s numbers are kept.
+ * The command gets the restart hook's minimal environment; its errors are discarded.
+ */
+function appLogLatency(hook: Readonly<{ command: string; timeoutMs: number }>, runIds: ReadonlySet<string>, labels: readonly string[]) {
+  const latency = researchEngineLatency(runIds, labels);
+  const picked: Record<string, string> = {};
+  for (const key of ["PATH", "HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK"]) {
+    const value = process.env[key];
+    if (value) picked[key] = value;
+  }
+  return new Promise<Readonly<{ status: string; latency: ReturnType<typeof latency.result> | null }>>((resolve) => {
+    let timedOut = false, bytes = 0, rest = "";
+    const child = spawn("/bin/sh", ["-c", hook.command], { env: picked as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "ignore"] });
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, hook.timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      bytes += chunk.length;
+      // A runaway command is cut off; what it printed so far still counts.
+      if (bytes > 1_024 * 1_024 * 1_024) { child.kill("SIGKILL"); return; }
+      const lines = (rest + chunk).split("\n");
+      rest = lines.pop() ?? "";
+      for (const line of lines) latency.add(line);
+      if (rest.length > 65_536) rest = "";
+    });
+    const done = (exitCode: number | null) => {
+      clearTimeout(timer);
+      if (rest) latency.add(rest);
+      resolve({ latency: latency.result(), status: timedOut ? "timed_out" : exitCode === 0 ? "ok" : "failed" });
+    };
+    child.once("error", () => { clearTimeout(timer); resolve({ latency: null, status: "failed" }); });
+    child.once("close", (code) => done(code));
+  });
+}
+
+/**
+ * A question's acceptance metrics and expectations from the stand's rows, read while the chat exists. The full projection (the
+ * expected names included) is for the private archive; `counts` is what stdout shows.
+ */
+async function researchAcceptance(ctx: Context, chatId: string, runId: string, input: Readonly<{ answer: string; appLog: Readonly<{ command: string; timeoutMs: number }> | null; expect: ResearchExpectations | null;
+  labels: ReadonlyMap<string, string>; responses: readonly ResearchResponse[]; sourceLabels: readonly string[] }>) {
+  const runs = (await ctx.db.query<{ id: string; createdAt: Date; answerCompletedAt: Date | null; subagent: boolean }>(`SELECT "id", "createdAt", "answerCompletedAt",
+    "subagentTurnId" IS NOT NULL AS "subagent" FROM "ModelRun" WHERE "chatId" = $1 ORDER BY "createdAt"`, [chatId])).rows;
+  const frame = (await ctx.db.query<{ createdAt: Date; releasedAt: Date | null; frame: unknown }>(`SELECT "createdAt", "releasedAt", "frame"
+    FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chatId, runId])).rows[0] ?? null;
+  const calls = (await ctx.db.query<ResearchAcceptanceCall>(`SELECT c."id", c."modelRunId" AS "runId", c."toolName", c."subagentThreadId" AS "threadId",
+      c."subagentTurnId" AS "turnId", c."startedAt", c."completedAt",
+      CASE WHEN c."result"->>'status' = 'error' THEN c."result"->'content'->0->'value'->>'error' END AS "errorCode",
+      COALESCE(strpos(c."result"::text, 'Calls left in this task') > 0, false) AS "budgetMarker",
+      CASE WHEN c."toolName" = 'call_subagent' THEN c."result"->'content'->0->'value'->>'reason' END AS "endReason",
+      CASE WHEN c."toolName" = 'submit_research_draft' THEN c."result"->'content'->0->'value'->>'status' END AS "draftStatus",
+      CASE WHEN c."toolName" = 'submit_research_draft' THEN c."result"->'content'->0->'value'->>'gate' END AS "draftGate",
+      CASE WHEN c."toolName" = 'submit_research_draft' THEN c."arguments"->'record_ids' END AS "recordIds",
+      CASE WHEN c."toolName" = 'change_research_frame' THEN c."arguments"->>'change' END AS "frameChange"
+    FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1`, [chatId])).rows;
+  const turns = (await ctx.db.query<ResearchAcceptanceTurn>(`SELECT t."id", t."threadId", th."name", t."state"::text AS "state", t."reasonCode",
+      t."parentToolCallId", t."startedAt", t."endedAt", CASE WHEN th."name" ~ '^verifier' THEN t."result"->>'report' END AS "report"
+    FROM "SubagentTurn" t JOIN "SubagentThread" th ON th."id" = t."threadId" WHERE t."chatId" = $1`, [chatId])).rows;
+  const evidence = (await ctx.db.query<ResearchAcceptanceEvidence>(`SELECT "id", "kind"::text AS "kind", "sourceClass"::text AS "sourceClass",
+      "quoteCheck"::text AS "quoteCheck", "rowKey", "supersedesId", "url" FROM "ResearchEvidence" WHERE "chatId" = $1`, [chatId])).rows;
+  const searches = (await ctx.db.query<{ strategyId: string; status: string }>(`SELECT s."strategyId", s."status"::text AS "status"
+    FROM "SearchRun" s JOIN "ModelRun" r ON r."id" = s."modelRunId" WHERE r."chatId" = $1`, [chatId])).rows;
+  const log = input.appLog;
+  const engines = log ? await appLogLatency(log, new Set(runs.map((entry) => entry.id)), input.sourceLabels) : null;
+  const metrics = researchAcceptanceMetrics({ calls, engineLatency: engines?.latency ?? null, evidence, frame, responses: input.responses, runId,
+    runs: runs.filter((entry) => !entry.subagent), searchLabels: input.labels, searches, turns });
+  const expectations = input.expect ? researchExpectationResults(input.expect, researchAcceptanceObserved(metrics, frame?.frame ?? null, input.answer)) : null;
+  const extra = { appLog: engines?.status ?? null, searchSources: [...input.sourceLabels] };
+  return { full: { ...metrics, ...extra, expectations }, counts: { ...metrics, ...extra, expectations: expectations ? researchExpectationCounts(expectations) : null } };
 }
 
 /** The run's records as counts, read before cleanup takes them with the chat. */
@@ -1743,15 +1845,17 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
       let extraction = emptyEval<StructuredResearchAnswer>("no_answer");
       let questionFailed = false;
       const facts: Record<string, unknown> = { metrics: null, roles: null, tokens: null, tokensByModel: [], terminal: "unknown",
-        timeline: [], gateTurnFacts: [], gateTurns: 0, fetchOutcomes: {}, fetchProxyReads: 0, serverNotes: [], researcherInput: null, attribution: null };
+        timeline: [], gateTurnFacts: [], gateTurns: 0, fetchOutcomes: {}, fetchProxyReads: 0, serverNotes: [], researcherInput: null, attribution: null,
+        acceptance: null, searchSources: route.sources.map((source) => source.label) };
       let drafts: TDraftFinding[][] = [];
       let browserAct: AbortController | null = null;
       let acted: Promise<unknown> | null = null;
-      const builtIn = SCENARIO_T_QUESTIONS.find((entry) => entry.kind === job.kind) ?? fail("research_kind_missing");
-      // The operator's question replaces the built-in purchase one; it goes only to the chat and the evaluation calls.
-      const question = { kind: builtIn.kind, text: researchQuestionText(job.kind, builtIn.text, research.question) };
+      // The operator's question replaces the built-in purchase one, and a set's question is its file's; either goes only to the chat and the evaluation calls.
+      const setQuestion = job.kind === "set" ? research.questions.get(job.name) ?? fail("research_question_missing") : null;
+      const builtIn = job.kind === "set" ? null : SCENARIO_T_QUESTIONS.find((entry) => entry.kind === job.kind) ?? fail("research_kind_missing");
+      const question = { text: job.kind === "set" ? setQuestion!.text : researchQuestionText(job.kind, builtIn!.text, research.question) };
       try {
-        const chat = await createScenarioChat(ctx.session.api, `Research scenario ${job.kind} ${job.repeat}`);
+        const chat = await createScenarioChat(ctx.session.api, `Research scenario ${researchJobLabel(job)} ${job.repeat}`);
         chatId = chat.id;
         createdChats.set(job, chat.id);
         run.chats.push(chat.id);
@@ -1777,7 +1881,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
             savedGates.set(row.id, { ...gate, report: clean(gate.report) });
           }
         };
-        const act = options.acts[job.kind] ?? null;
+        const act = job.kind === "set" ? null : options.acts[job.kind] ?? null;
         const sendWords = async (text: string) => {
           const sent = await trySend(ctx, run, chat.id, text, [], { search: route });
           return sent.ok ? sent.runId : fail("research_send_failed");
@@ -1851,13 +1955,20 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           archive.write(job, chat.id, "attribution", { ...job, chat: chat.id, citedRecords: cited.counts.citedRecords, searchCalls: cited.counts.searchCalls, ...cited.attribution });
           facts.attribution = cited.counts;
         } catch { facts.attribution = { failed: "research_attribution_failed" }; }
+        // The phases, researcher turns, searches and candidate notes of the stand's rows, against the question's expectations.
+        try {
+          const acceptance = await researchAcceptance(ctx, chat.id, runId, { answer: [...savedAnswers.values()].at(-1) ?? "", appLog: options.appLog,
+            expect: setQuestion?.expect ?? null, labels: searchLabels, responses: usage.responses, sourceLabels: route.sources.map((source) => source.label) });
+          archive.write(job, chat.id, "acceptance", { ...job, chat: chat.id, ...acceptance.full });
+          facts.acceptance = acceptance.counts;
+        } catch { facts.acceptance = { failed: "research_acceptance_failed" }; }
         Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
           roles: usage.roles, tokensByModel: usage.byModel, store: await researchStore(ctx.db, chat.id, runId), planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
           searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
         questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && !options.acts.purchase && metrics.independentOpened === 0);
-        if (options.acts[job.kind] === "restart") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
+        if (act === "restart") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
         // A push follows the run's end by its grace and the push service's own time.
-        if (options.acts[job.kind] === "push" && acted) await Promise.race([acted, new Promise((resolve) => { setTimeout(resolve, T_PUSH_WAIT_MS); })]);
+        if (act === "push" && acted) await Promise.race([acted, new Promise((resolve) => { setTimeout(resolve, T_PUSH_WAIT_MS); })]);
         browserAct?.abort();
         if (acted) facts.act = await acted;
       } catch {
@@ -1895,9 +2006,9 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
       emit({ stage: "research_question", ...summary });
     });
     failed ||= results.some((result) => result.status === "rejected");
-    const comparisons = [...new Set(options.jobs.map((job) => job.kind))].map((kind) => {
-      const jobs = options.jobs.filter((job) => job.kind === kind);
-      const own = extracted.filter((entry) => entry.job.kind === kind).sort((a, b) => a.job.repeat - b.job.repeat);
+    const comparisons = [...new Set(options.jobs.map(researchJobLabel))].map((kind) => {
+      const jobs = options.jobs.filter((job) => researchJobLabel(job) === kind);
+      const own = extracted.filter((entry) => researchJobLabel(entry.job) === kind).sort((a, b) => a.job.repeat - b.job.repeat);
       const comparison = { kind, expectedRuns: jobs.length, ...researchRepeatability(own.map((entry) => entry.answer)), detailsSaved: false };
       try {
         archive.write(jobs[0], createdChats.get(jobs[0]) ?? "no-chat", "comparisons", { kind, expectedRuns: jobs.length,
@@ -2193,13 +2304,20 @@ function stable<T>(work: () => T): T {
   }
 }
 
-/** Production's Search plan (AIQSA_SUBAGENTS_T_SEARCH=production), set up by `ensureProductionSearch`; the key comes from the process environment. */
-async function productionSearch(api: Api, route: { apiRoot: string }, secret: string, searchModel: string, model: CatalogModel): Promise<SearchRoute> {
+/**
+ * Production's Search plan (AIQSA_SUBAGENTS_T_SEARCH=production) on the selected sources (AIQSA_SUBAGENTS_T_SEARCH_SOURCES), set up
+ * by `ensureProductionSearch`; keys come from the process environment, and only a selected source's.
+ */
+async function productionSearch(api: Api, route: { apiRoot: string }, secret: string, search: Readonly<{ model: string | null; sources: readonly ResearchSearchLabel[] }>,
+  model: CatalogModel): Promise<SearchRoute> {
   stage = "production_search";
-  const sources = await ensureProductionSearch(api, { apiRoot: route.apiRoot, deepseekKey: process.env.DEEPSEEK_API_KEY?.trim() || fail("deepseek_key_required"),
+  const sources = await ensureProductionSearch(api, { apiRoot: route.apiRoot, secret, sources: search.sources,
+    ...(search.sources.includes("deepseek") ? { deepseekKey: process.env.DEEPSEEK_API_KEY?.trim() || fail("deepseek_key_required") } : {}),
+    ...(search.model !== null ? { searchModel: search.model } : {}),
     // OpenRouter's first key checks its whole built-in list, so it is added only with the operator's approval of that cost.
-    ...(process.env.AIQSA_SUBAGENTS_OPENROUTER_SETUP === "approved" ? { openrouterSetupKey: process.env.OPENROUTER_API_KEY?.trim() || fail("openrouter_key_required") } : {}),
-    report: (source, status) => emit({ stage: "research_search_source", source, status }), searchModel, secret });
+    ...(search.sources.includes("perplexity") && process.env.AIQSA_SUBAGENTS_OPENROUTER_SETUP === "approved"
+      ? { openrouterSetupKey: process.env.OPENROUTER_API_KEY?.trim() || fail("openrouter_key_required") } : {}),
+    report: (source, status) => emit({ stage: "research_search_source", source, status }) });
   stage = "setup";
   return { mode: "all_selected", model, name: "production", sources };
 }
@@ -2217,10 +2335,12 @@ async function main() {
   const scenarios = selectedSubagentScenarios(process.env.AIQSA_SUBAGENTS_SELECT);
   const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
   const options = subagentHarnessOptions(process.env, scenarios, route.model);
-  if (!scenarios.includes("T") && (process.env.AIQSA_SUBAGENTS_T_SEARCH?.trim() || process.env.AIQSA_SUBAGENTS_T_QUESTION_FILE?.trim() ||
-    process.env.AIQSA_SUBAGENTS_ADMIN_PROXY_FILE?.trim())) fail("research_option_requires_t");
-  const researchOptions = scenarios.includes("T") ? stable(() => researchEvalOptions(process.env)) : null;
+  if (!scenarios.includes("T") && ["AIQSA_SUBAGENTS_T_SEARCH", "AIQSA_SUBAGENTS_T_SEARCH_SOURCES", "AIQSA_SUBAGENTS_T_QUESTION_FILE", "AIQSA_SUBAGENTS_T_QUESTION_SET",
+    "AIQSA_SUBAGENTS_T_APP_LOG_COMMAND", "AIQSA_SUBAGENTS_ADMIN_PROXY_FILE"].some((name) => process.env[name]?.trim())) fail("research_option_requires_t");
+  const parsedResearch = scenarios.includes("T") ? stable(() => researchEvalOptions(process.env)) : null;
   // The private files are read before anything is set up, so a refused one costs nothing; their text stays in memory.
+  const questionSet = parsedResearch?.questionSet ? stable(() => readResearchQuestionSet(parsedResearch.questionSet!)) : null;
+  const researchOptions = parsedResearch && questionSet ? { ...parsedResearch, jobs: researchSetJobs(questionSet, parsedResearch.setRepeats) } : parsedResearch;
   const researchQuestion = researchOptions?.questionFile
     ? stable(() => readPrivateFile(researchOptions.questionFile!, RESEARCH_QUESTION_MAX_BYTES, "research_question_file")) : null;
   const adminProxy = researchOptions?.adminProxyFile
@@ -2262,7 +2382,7 @@ async function main() {
     // Q and R search for real: the DeepSeek client route always, and the codex-lb hosted route when its model offers one.
     const search: SearchRoute[] = [];
     if (researchOptions?.search) {
-      search.push(await productionSearch(api, route, secret, researchOptions.search.model, model));
+      search.push(await productionSearch(api, route, secret, researchOptions.search, model));
     } else if (scenarios.some((id) => SUBAGENT_SCENARIO_NEEDS[id].search)) {
       const client = await ensureSearchSource(api, { kind: "deepseek_search_api", provider: "deepseek", secret: process.env.DEEPSEEK_API_KEY ?? fail("deepseek_key_required") });
       search.push({ mode: "all_selected", model, name: "client", sources: [{ label: "deepseek", optionId: client }] });
@@ -2280,12 +2400,15 @@ async function main() {
       const client = createFetchOpenAIResponsesClient({ apiKey: secret, baseUrl: route.apiRoot, acceptStreamedCreate: true,
         defaultTimeoutMs: 10 * 60_000, initialRequestRetry: { maxAttempts: 1 }, requestIsolation: true });
       research = { options: researchOptions, adminProxy, question: researchQuestion, judge: checks.model ? (instructions, input) => client.create({ model: checks.model,
-        instructions, input, max_output_tokens: 16_384, store: false, ...(checks.effort ? { reasoning: { effort: checks.effort } } : {}) }) : null };
+        instructions, input, max_output_tokens: 16_384, store: false, ...(checks.effort ? { reasoning: { effort: checks.effort } } : {}) }) : null,
+        questions: new Map((questionSet ?? []).map((question) => [question.name, question] as const)) };
     }
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model, contextWindow: chatProvider.contextWindow,
       reused: chatProvider.reused, secondModel: second !== null, modelWithoutVision: blind !== null, restartHook: options.restart !== null,
-      configuredBounds: target.configuredBounds, scenarios, runs: options.runs, searchPlan: search[0]?.name ?? null, questionFile: researchQuestion !== null,
-      adminProxy: adminProxy !== null });
+      configuredBounds: target.configuredBounds, scenarios, runs: options.runs, searchPlan: search[0]?.name ?? null,
+      searchSources: search[0]?.sources.map((source) => source.label) ?? [], questionFile: researchQuestion !== null,
+      questionSet: questionSet ? { questions: questionSet.length, withExpectations: questionSet.filter((question) => question.expect !== null).length } : null,
+      appLog: researchOptions?.appLog !== null && researchOptions?.appLog !== undefined, adminProxy: adminProxy !== null });
     const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, research, search, second,
       session: { api }, target };
     for (let index = 1; index <= options.runs; index += 1) {

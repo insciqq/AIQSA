@@ -467,7 +467,7 @@ describe("acceptance options", () => {
 
   it("takes production Search only with its model and DeepSeek's key, and the question file only with a purchase question", () => {
     expect(researchEvalOptions(env)).toMatchObject({ search: null, questionFile: null, adminProxyFile: null });
-    expect(researchEvalOptions(production).search).toEqual({ model: "search-model-1", plan: "production" });
+    expect(researchEvalOptions(production).search).toEqual({ model: "search-model-1", plan: "production", sources: ["openai", "perplexity", "deepseek"] });
     expect(() => researchEvalOptions({ ...production, AIQSA_SUBAGENTS_SEARCH_MODEL: "" })).toThrow("research_search_model_required");
     expect(() => researchEvalOptions({ ...production, DEEPSEEK_API_KEY: undefined })).toThrow("deepseek_key_required");
     expect(() => researchEvalOptions({ ...env, AIQSA_SUBAGENTS_T_SEARCH: "all" })).toThrow("research_search_invalid");

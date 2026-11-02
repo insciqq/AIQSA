@@ -63,6 +63,25 @@ describe("production Search setup and OpenRouter", () => {
     expect(calls.filter((call) => call === "POST /api/admin/providers/quick-setup")).toHaveLength(1);
   });
 
+  it("sets up only the selected sources: one engine asks for no OpenRouter, search model or other engine's key", async () => {
+    const calls = stand([]);
+    await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", secret: "synthetic", sources: ["deepseek"], report: () => undefined }))
+      .rejects.toThrow("research_search_deepseek_deepseek_key_required");
+    expect(calls).toEqual([]);
+    vi.unstubAllGlobals();
+    const deepseekOnly = stand([connection("deep", "deepseek", [model("deepseek-chat", "openai_chat_completions_compatible")])]);
+    // Past the DeepSeek connection the Search routes are out of this stub, so the setup stops at DeepSeek's own source.
+    await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", deepseekKey: "synthetic", secret: "synthetic", sources: ["deepseek"],
+      report: () => undefined })).rejects.toThrow(/^browser_scenarios_research_search_deepseek_/u);
+    expect(deepseekOnly.every((call) => !call.includes("quick-setup") && !call.includes("/models"))).toBe(true);
+    vi.unstubAllGlobals();
+    stand([]);
+    await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", secret: "synthetic", sources: ["openai"], report: () => undefined }))
+      .rejects.toThrow("research_search_openai_model_required");
+    await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", secret: "synthetic", sources: [], report: () => undefined }))
+      .rejects.toThrow("research_search_sources_invalid");
+  });
+
   it("reuses only a live OpenRouter connection with a key and the exact model on OpenRouter's adapter", async () => {
     const calls = stand([connection("other", "openrouter", [model("openai/gpt-6-astra")]),
       connection("router", "openrouter", [model("openai/gpt-6-astra"), model("perplexity/sonar-pro-search")])]);
