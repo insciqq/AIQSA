@@ -407,6 +407,18 @@ describe("the matrix in a brief", () => {
       expect(lineOf([...ONE_SITE, on(5, "x1", "load", "maker.example")])).toContain("x1: load.");
     });
 
+    it("names the options a confirmation is for when the cells do not fit, and what it is for when nothing fits", () => {
+      const many: ResearchFrame = { ...specs, criteria: [...specs.criteria, ...Array.from({ length: 3 }, (_value, index) => ({ criterion: "Spec", decisive: true as const, key: `a-long-key-specification-${index}`, why: "W." }))],
+        rows: Array.from({ length: 40 }, (_value, index) => ({ key: `row-with-a-long-key-${index}`, label: "R" })) };
+      const records = many.rows.flatMap((row, index) => many.criteria.map((criterion, place) => on(index * 10 + place + 1, row.key, criterion.key, "maker.example")));
+      const draftOf = (count: number): ResearchDraft => ({ ...draft, pickRowKey: many.rows[0]!.key, summary: { rowKeys: many.rows.slice(0, count).map(({ key }) => key), text: "R." } });
+      const lineFor = (count: number) => lineOf(records, draftOf(count), many);
+      expect(lineFor(5)).toContain("To confirm from a second site, the key specifications of the options the last draft recommends, by row: row-with-a-long-key-0 (4), row-with-a-long-key-1 (4), " +
+        "row-with-a-long-key-2 (4), row-with-a-long-key-3 (4), row-with-a-long-key-4 (4). Send researchers for these confirmations only.");
+      expect(lineFor(40)).toBe("The matrix (from the server): 0 of 200 cells empty, 0 newly filled in this round so far. Send researchers only for second sites of the key specifications " +
+        "of the options the last draft recommends.");
+    });
+
     it("asks it beside the empty cells, and lists the key specifications in a researcher's matrix", () => {
       const line = lineOf(ONE_SITE.slice(0, 3));
       expect(line).toContain("Empty: y2: price. To confirm from a second site");

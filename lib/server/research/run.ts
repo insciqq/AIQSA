@@ -309,7 +309,10 @@ export function createRunResearch(input: RunResearchInput) {
     const matrix = await researchMatrix(ports.coverage, signal);
     // A confirmation the last draft's options needed counts as a new cell; only a frame with key specifications reads the records for it.
     const confirming = matrix !== null && researchKeySpecs(matrix.frame).length > 0 && researchLeadingRows(attempts.at(-1)?.draft).length > 0;
-    return matrix && (confirming ? researchProgressCells(matrix, await liveRecords(signal) ?? [], attempts.at(-1)?.draft) : researchFilledCells(matrix.coverage));
+    if (!matrix || !confirming) return matrix && researchFilledCells(matrix.coverage);
+    // Records that could not be read leave nothing to compare, as a matrix that could not be: the round counts neither way.
+    const records = await liveRecords(signal);
+    return records && researchProgressCells(matrix, records, attempts.at(-1)?.draft);
   });
   /** What building the answer from the records came to: a run composes once, however many of its ends ask. */
   let composing: Promise<string | null> | null = null;

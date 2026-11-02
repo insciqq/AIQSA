@@ -1188,8 +1188,11 @@ describe("a pick on a key specification the check rejected", () => {
     const { result } = await corrected();
     expect(result.message.startsWith(VERIFIER_MARKER)).toBe(true);
     expect(result.message).toContain("This is your one correction, except for what your pick rests on (below)");
-    expect(result.message).toContain("Your pick, or the first option of your summary, rests on a key specification among them: findings 1. A pick cannot stand on one. " +
+    expect(result.message).toContain("Your pick, or the first option of your summary, rests on a key specification the check rejected: finding 1. A pick cannot stand on one. " +
       "Re-record it from a page that shows it, or choose another option.");
+    // The report check wants both sites of an option it recommends cited, so this correction does not offer dropping its id.
+    expect(result.message).toContain("Not for a key specification of an option you recommend (records r1): its id stays in record_ids, so the checks go on reading it, and the report " +
+      "says it is not confirmed, unless you correct it with 2. Your pick cannot rest on one at all (below).");
   });
 
   it("sends a draft whose pick still rests on it back again, past the one correction, with what to do and the fact named for the reader", async () => {
@@ -1229,8 +1232,37 @@ describe("a pick on a key specification the check rejected", () => {
       url: "https://maker.example/x1" })];
     const findings = [recorded("r1", { claim: LAYERS, quote: "Latex 2 cm over coir 1 cm" }), recorded("r4", { claim: "Latex 2 cm over coir 1 cm.", quote: "Latex 2 cm over coir 1 cm", url: "https://maker.example/x1" })];
     const { context } = contextOf({ coverage, earlier, evidence: evidenceOf(both, [pageOf("p1", PAGE_TEXT)]), opened: refused, turn: async () => ended("Outcome: done\nC2 | supported | it says so") });
-    // The rejected record stays named for the reader while the draft cites it.
-    expect(await check(picking("x1", ["x1"], findings), context)).toEqual({ kind: "pass", notes: [LINE] });
+    // The report names the rejected one as not confirmed; the reader's line does not warn off a fact a second site confirmed.
+    expect(await check(picking("x1", ["x1"], findings), context)).toEqual({ kind: "pass" });
+    // Until the second site's record passes, the cell does not count as confirmed for the reader.
+    const unanswered = contextOf({ coverage, earlier, evidence: evidenceOf(both, [pageOf("p1", PAGE_TEXT)]), opened: refused, turn: async () => ended("Outcome: done") });
+    expect(await check(picking("x1", ["x1"], findings), unanswered.context)).toEqual({ kind: "pass", notes: [researchNote("gate_failed"), LINE] });
+  });
+
+  it("holds the rejection through a correction marked not verified, which no check reads, and keeps it named for the reader", async () => {
+    const { earlier } = await corrected();
+    // r1 is no longer live once r3 corrects it.
+    const unverified = [records[1]!, recordOf("r3", "Latex 2 cm over coir 1 cm", "p1", { claim: LAYERS, criterionKey: "firmness", rowKey: "x1", standing: "not_verified", supersedes: "r1" })];
+    const findings = [recorded("r3", { claim: LAYERS, quote: "Latex 2 cm over coir 1 cm", standing: "not_verified" })];
+    const { context, run } = contextOf({ coverage, earlier, evidence: evidenceOf(unverified, [pageOf("p1", PAGE_TEXT)]), opened: refused });
+    const result = sentBack(await check(picking("x1", ["x1"], findings), context));
+    expect(run).not.toHaveBeenCalled();
+    expect(result.message).toContain("(record r3, cell x1 / firmness, written by lab)");
+    expect(result.unresolvedNote).toBe(LINE);
+    // Off the pick it is not sent back again, and the reader is still told.
+    expect(await check(picking("x2", ["x2", "x1"], findings), contextOf({ coverage, earlier, evidence: evidenceOf(unverified, [pageOf("p1", PAGE_TEXT)]), opened: refused }).context))
+      .toEqual({ kind: "pass", notes: [LINE] });
+  });
+
+  it("sees a rejected key specification of the pick the draft no longer cites, since its prose may still state it", async () => {
+    const { earlier } = await corrected();
+    // The model took r1's id out and cites only another option's record, while the pick's cell holds r1 alone.
+    const findings = [recorded("r2", { claim: "The X2 has latex.", quote: "Latex 2 cm over coir 1 cm" })];
+    const { context } = contextOf({ coverage, earlier, evidence: evidence(), opened: refused });
+    const result = sentBack(await check(picking("x1", ["x1", "x2"], findings), context));
+    expect(result.message).toContain(`- "${LAYERS}" (record r1, cell x1 / firmness, not in record_ids, while the pick still rests on that cell)`);
+    expect(result.message).toContain("neither is taking its id out of record_ids");
+    expect(result.unresolvedNote).toBe(LINE);
   });
 
   it("clears once a correction of the record passes", async () => {

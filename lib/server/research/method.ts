@@ -215,12 +215,15 @@ export function researchCoverageLine(matrix: ResearchMatrix, newCells: number | 
   if (coverage.empty === 0 && unconfirmed.length === 0) return `${opening} Nothing is left for researchers to fill.`;
   const empty = researchEmptyByRow(matrix);
   const emptyForms = coverage.empty === 0 ? [""] : [` Empty: ${emptyCells(empty)}.`, ` Empty: ${emptyCounts(empty, frame.criteria.length)}.`];
+  const byRow = [...new Set(unconfirmed.map(({ row }) => row.key))].map((key) => `${key} (${unconfirmed.filter(({ row }) => row.key === key).length})`).join(", ");
   const confirmForms = unconfirmed.length === 0 ? [""] : [` To confirm from a second site, the maker's or a seller's, for the options the last draft recommends: ${unconfirmedCells(unconfirmed)}.`,
-    ` To confirm from a second site: ${unconfirmed.length} key specifications of the options the last draft recommends.`];
+    ` To confirm from a second site, the key specifications of the options the last draft recommends, by row: ${byRow}.`];
   const closing = unconfirmed.length === 0 ? "Send researchers for empty cells only." : coverage.empty === 0 ? "Send researchers for these confirmations only."
     : "Send researchers for empty cells and these confirmations only.";
+  // With no room to list them, the line still says what the confirmations are.
+  const unlisted = unconfirmed.length === 0 ? closing : `Send researchers only for ${coverage.empty === 0 ? "" : "empty cells and "}second sites of the key specifications of the options the last draft recommends.`;
   const forms = confirmForms.flatMap((confirm) => emptyForms.map((emptyForm) => `${opening}${emptyForm}${confirm} ${closing}`));
-  return forms.find((form) => form.length <= COVERAGE_LINE_CHARACTERS) ?? `${opening} ${closing}`;
+  return forms.find((form) => form.length <= COVERAGE_LINE_CHARACTERS) ?? `${opening} ${unlisted}`;
 }
 
 /** Why no further researcher starts, as the refused call says it. */
