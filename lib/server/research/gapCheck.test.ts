@@ -358,15 +358,23 @@ describe("research stops on evidence or time, not a round count", () => {
     expect(await gapCheckGate.run(DRAFT, ctx)).toMatchObject({ kind: "pass", notes: [expect.stringContaining("lab and owners disagree")] });
   });
 
-  it("asks for findings from plain text once, leaving the no-findings report note to run.ts", async () => {
+  it("asks for record ids from plain text once, leaving the no-findings report note to run.ts", async () => {
     const draft: ResearchDraft = { ...DRAFT, origin: "plain_text", findings: [] };
     const ctx = context();
     const first = await gapCheckGate.run(draft, ctx);
     expect(first.kind).toBe("send_back");
-    expect(messageOf(first)).toContain("findings: claim, link, verbatim quote and source");
+    expect(messageOf(first)).toContain("with record_ids, the ids of the records it rests on");
     expect(await gapCheckGate.run(draft, { ...ctx, attempt: 2, earlier: [{ draft, message: messageOf(first) }] })).toEqual({ kind: "pass", notes: [] });
     expect(await gapCheckGate.run(draft, { ...ctx, time: { remainingMs: () => 0, sendBackAllowed: () => false } })).toEqual({ kind: "pass", notes: [] });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
+  });
+
+  it.each(["en", "ru"])("never asks a plain-text draft for findings, which the tool no longer takes and the report check sends back (%s)", async (language) => {
+    const draft: ResearchDraft = { ...DRAFT, origin: "plain_text", findings: [] };
+    const message = messageOf(await gapCheckGate.run(draft, context({ plan: { ...structuredClone(PLAN), goal: language === "ru" ? "Выбрать матрас." : PLAN.goal } })));
+    expect(message).toContain("submit_research_draft");
+    expect(message).toContain("record_ids");
+    expect(message).not.toMatch(/finding|находк|цитат|quote/iu);
   });
 });
 
@@ -468,15 +476,16 @@ describe("actionable gaps and page progress", () => {
     expect(judge).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["en", "ru"])("asks for the exact next steps and preservation of findings in the plan's language (%s)", async (language) => {
+  it.each(["en", "ru"])("asks for the exact next steps and for keeping its records in the plan's language (%s)", async (language) => {
     const ctx = context({ plan: { ...structuredClone(PLAN), goal: language === "ru" ? "Выбрать матрас." : PLAN.goal },
       subagents: { run: async () => judged(JSON.stringify(openGap)) } });
     const result = await gapCheckGate.run(DRAFT, ctx);
     expect(messageOf(result)).toContain(next);
     expect(messageOf(result)).toContain(language === "ru" ? "ровно для следующих шагов" : "exactly these next steps");
-    expect(messageOf(result)).toContain(language === "ru" ? "Сохраните все находки" : "Keep every finding that still holds");
-    expect(messageOf(result)).toContain(language === "ru" ? "Никогда не удаляйте находки и не сокращайте отчёт" : "Never remove findings or shorten the report");
+    expect(messageOf(result)).toContain(language === "ru" ? "Сохраните в record_ids все записи" : "Keep in record_ids every record that still holds");
+    expect(messageOf(result)).toContain(language === "ru" ? "Никогда не убирайте записи и не сокращайте отчёт" : "Never drop records or shorten the report");
     expect(messageOf(result)).toContain(language === "ru" ? "укажите ограничение в отчёте и передайте его" : "state the limit in the report and submit it");
+    expect(messageOf(result)).not.toMatch(/находк|keep every finding|remove findings/iu);
   });
 
   it("passes irreducible weaknesses as limits and instructs the judge with concrete examples", async () => {
@@ -960,7 +969,7 @@ describe("gap check through the real engine", () => {
     const memory = engineOf({ gates: [gapCheckGate] });
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(4);
-    expect(JSON.stringify(main.requests[3]!.history)).toContain("findings: claim, link, verbatim quote and source");
+    expect(JSON.stringify(main.requests[3]!.history)).toContain("with record_ids, the ids of the records it rests on");
     // run.ts keeps the standing draft after this one correction opportunity.
     expect(memory.published()).toContain("Second report.");
     expect(memory.published()).toContain(researchNote("unresolved", "Second report."));
