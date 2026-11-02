@@ -1688,9 +1688,13 @@ export function researchProcessFacts(input: Readonly<{ drafts: readonly (readonl
   return { timeline, gateTurnFacts, gateTurns: input.gates.length, fetchOutcomes, fetchProxyReads };
 }
 
-/** The existing server check-note pattern is the deliberate text exception in T's summary. */
+/**
+ * The existing server check-note pattern is the deliberate text exception in T's summary. Since 2026-11-02 the answer carries only notes that it is incomplete or
+ * not fully checked, the facts the checks rejected and the evidence against the conclusion (`lib/server/research/notes.ts`); the older openings stay so earlier
+ * answers still read.
+ */
 export function researchServerNotes(answer: string): string[] {
-  return [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт|This report|Research ended|Исследование завершилось|В этом отчёте|Этот отчёт|В сравнении|За некоторыми|Выбор в этом|Записи, на которых|Находки этого|Критерии|Criteria added|Данные не разделяют|The data does not|Some links|The records behind|The answer failed|No report was|Ответ прервался)[^*]{0,1500})\*/gu)].map((match) => match[1]);
+  return [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт|This report|Research ended|Исследование завершилось|В этом отчёте|Этот отчёт|В сравнении|За некоторыми|Выбор в этом|Записи, на которых|Находки этого|Критерии|Criteria added|Данные не разделяют|The data does not|Some links|The records behind|The answer failed|No report was|Ответ прервался|A check|Stopped before|What you wrote|Evidence against)[^*]{0,1500})\*/gu)].map((match) => match[1]);
 }
 
 /** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */

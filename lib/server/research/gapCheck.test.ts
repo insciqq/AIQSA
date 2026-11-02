@@ -96,7 +96,7 @@ describe("mechanical research coverage", () => {
     const saved = JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ stdout: 'Owners said "still firm".\r\nAfter\u00a0a   year: C:\\notes.' }) }] });
     const ctx = context({ sources: { opened: async () => SOURCES.map((source) => source.url?.endsWith("owner_reviews")
       ? { browser: true as const, partial: false, text: saved, toolName: namespacedWorkspaceToolName("sandbox_exec"), url: null } : source) } });
-    expect(await gapCheckGate.run(draft, ctx)).toMatchObject({ kind: "pass", notes: [] });
+    expect(await gapCheckGate.run(draft, ctx)).toMatchObject({ kind: "pass" });
     expect(ctx.subagents.run).toHaveBeenCalledTimes(1);
   });
 
@@ -115,28 +115,22 @@ describe("mechanical research coverage", () => {
   it.each([namespacedWorkspaceToolName("sandbox_exec"), "mcp__notes__read"])("does not take a quote in %s output for an opened page: it stays unknown", async (toolName) => {
     const ctx = context({ sources: { opened: async () => SOURCES.map((source) => source.url?.endsWith("owner_reviews")
       ? { partial: false, text: `echo ${source.text}`, toolName, url: null } : source) } });
-    const result = await gapCheckGate.run(DRAFT, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("Source opening could not be checked:");
-    expect(result.notes?.join()).toContain("owner reviews");
+    // Neither covered nor missing: nothing goes back, and the reader is told nothing of it.
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 
   it("takes a browser command's output for an opened page, with or without a step line", async () => {
     const steps = { partial: false, text: `[browser #1] open @ example.test/x\n${FINDINGS[2]!.quote}`, toolName: namespacedWorkspaceToolName("sandbox_exec"), url: null };
     for (const source of [steps, { ...steps, browser: true as const, text: FINDINGS[2]!.quote }]) {
       const ctx = context({ sources: { opened: async () => SOURCES.map((entry) => entry.url?.endsWith("owner_reviews") ? source : entry) } });
-      expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [] });
+      expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
     }
   });
 
   it.each([null, FINDINGS[2]!.url])("treats partial page text as unknown, never missing (URL %s)", async (url) => {
     const ctx = context({ sources: { opened: async () => SOURCES.map((source) => source.url?.endsWith("owner_reviews")
       ? { partial: true, text: "unrelated excerpt", toolName: namespacedWorkspaceToolName("sandbox_exec"), url } : source) } });
-    const result = await gapCheckGate.run(DRAFT, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("Source opening could not be checked:");
-    expect(result.notes?.join()).toContain("owner reviews");
-    expect(result.notes?.join()).not.toContain("Missing");
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 
   it("does not let an unrelated partial page hide a missing source class", async () => {
@@ -157,32 +151,14 @@ describe("mechanical research coverage", () => {
   });
 });
 
-describe("unreachable sources reach the report", () => {
+describe("unreachable sources", () => {
   const unreachable = { target: "Owner forum", sourceClass: "owner_reviews" as const, reason: "Sign-in required; no public reviews available." };
 
-  it.each(["# Report", "# Отчёт"])("closes a class only with its reason and guarantees both target and reason in %s", async (report) => {
+  it.each(["# Report", "# Отчёт"])("close a class only with its reason, and leave what to say of it to %s (operator decision 2026-11-02: no list after the report)", async (report) => {
     const draft = { ...without("owner_reviews"), report, unreachable: [unreachable] };
     const ctx = context();
-    const result = await runResearchGates({ context: ctx, draft, gates: [gapCheckGate], runId: "test" });
-    expect(result.kind).toBe("accepted");
-    if (result.kind !== "accepted") throw new Error("Expected acceptance");
-    const answer = researchAnswerText(draft.report, result.notes);
-    expect(answer).toContain(unreachable.target);
-    expect(answer).toContain(unreachable.reason);
-    expect(answer).toContain("Sources that could not be reached:");
+    expect(await runResearchGates({ context: ctx, draft, gates: [gapCheckGate], runId: "test" })).toEqual({ kind: "accepted", notes: [] });
     expect(JSON.parse(vi.mocked(ctx.subagents.run).mock.calls[0]![0].brief).unreachableClasses).toEqual(["owner_reviews"]);
-  });
-
-  it.each([unreachable.target, unreachable.reason])("adds the reason and target when only %s is already in the report", async (report) => {
-    const result = await gapCheckGate.run({ ...without("owner_reviews"), report, unreachable: [unreachable] }, context());
-    expect(result.notes?.join()).toContain(unreachable.reason);
-    expect(result.notes?.join()).toContain(unreachable.target);
-  });
-
-  it("does not repeat an unreachable explanation already present with different whitespace", async () => {
-    const result = await gapCheckGate.run({ ...without("owner_reviews"), report: `${unreachable.target}\n${unreachable.reason.replaceAll(" ", "\n")}`,
-      unreachable: [unreachable] }, context());
-    expect(result).toEqual({ kind: "pass", notes: [] });
   });
 
   it.each([{ ...unreachable, reason: " " }, { ...unreachable, sourceClass: null }])("does not close an unassigned or unexplained class", async (entry) => {
@@ -206,7 +182,7 @@ describe("independent gap judgment", () => {
     expect(JSON.parse(request.brief)).toMatchObject({ plan: PLAN, findings: FINDINGS, planShortened: false, findingsShortened: false });
   });
 
-  it("sends only actionable questions and conflicts back, with their next steps and the limits to state, which no note repeats", async () => {
+  it("sends only actionable questions and conflicts back, with their next steps and the limits to state, and nothing of it for the reader", async () => {
     const ctx = context({ subagents: { run: vi.fn(async () => judged(JSON.stringify({
       gaps: [gap("Delivery to the city is unknown.", "Open the chosen shop's delivery terms for Moscow."),
         gap("Two shops disagree on the warranty.", "Open the manufacturer's warranty for this exact model.")],
@@ -218,8 +194,8 @@ describe("independent gap judgment", () => {
     expect(messageOf(result)).toContain("Open the chosen shop's delivery terms for Moscow.");
     expect(messageOf(result)).toContain("Open the manufacturer's warranty for this exact model.");
     expect(messageOf(result)).toContain("Limits to state in the report, if it does not yet:\nIndependent tests cover only one year; ten-year life cannot be established.");
-    expect(result.notes?.join() ?? "").not.toContain("ten-year life");
-    expect(result.kind === "send_back" ? result.unresolvedNote : "").not.toContain("ten-year life");
+    expect(result).not.toHaveProperty("notes");
+    expect(result).not.toHaveProperty("unresolvedNote");
   });
 
   it.each([
@@ -239,32 +215,24 @@ describe("independent gap judgment", () => {
     JSON.stringify({ ...CLEAN, limits: Array.from({ length: RESEARCH_LIMITS.questions + 1 }, () => "Limit") }),
     JSON.stringify({ open_questions: [], weak_answers: [], conflicts: [] }),
     `Outcome: done\n${JSON.stringify(CLEAN)}`, "x".repeat(RUN_FOLLOWUP_MAX_CHARS + 1)
-  ])("passes an unreadable judgment with a note that says so (%#)", async (report) => {
+  ])("passes an unreadable judgment, and tells the reader nothing of it (%#)", async (report) => {
     const ctx = context({ subagents: { run: async () => judged(report) } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished")] });
-  });
-
-  it("says it in English beside a report in another language", async () => {
-    const ctx = context({ subagents: { run: async () => judged("not JSON") } });
-    expect(await gapCheckGate.run({ ...DRAFT, report: "# Отчёт" }, ctx)).toEqual({ kind: "pass", notes: ["The check for open questions could not be finished."] });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 
   it("adds no note for a judge that found nothing, or one skipped because the draft added nothing new", async () => {
-    expect(await gapCheckGate.run(DRAFT, context())).toEqual({ kind: "pass", notes: [] });
+    expect(await gapCheckGate.run(DRAFT, context())).toEqual({ kind: "pass" });
     const ctx = context({ earlier: [{ draft: DRAFT, message: null }], subagents: { run: async () => { throw new Error("never called"); } } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [] });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 
-  it("keeps the issues named before when a later judge fails", async () => {
+  it("passes when a later judge fails, and names nothing the earlier one raised", async () => {
     const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("How durable is it after five years?")] })) } }));
     const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }], subagents: { run: async () => { throw new Error("unavailable"); } } });
-    const result = await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("How durable is it after five years?");
-    expect(result.notes).toContain(researchNote("gap_judge_unfinished"));
+    expect(await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, ctx)).toEqual({ kind: "pass" });
   });
 
-  it.each(["throw", "refused", "failed", "partial", "truncated"])("passes a %s judge with a note and still runs the next gate", async (failure) => {
+  it.each(["throw", "refused", "failed", "partial", "truncated"])("passes a %s judge with no note and still runs the next gate", async (failure) => {
     const ctx = context({ subagents: { run: async () => {
       if (failure === "throw") throw new Error("unavailable");
       if (failure === "refused") return { kind: "refused", code: "subagent_limit_reached" };
@@ -277,7 +245,7 @@ describe("independent gap judgment", () => {
     } } });
     const verifier = vi.fn(async () => ({ kind: "pass" as const }));
     expect(await runResearchGates({ context: ctx, draft: DRAFT, gates: [gapCheckGate, { name: "verifier", run: verifier }], runId: "test" }))
-      .toEqual({ kind: "accepted", notes: [researchNote("gap_judge_unfinished")] });
+      .toEqual({ kind: "accepted", notes: [] });
     expect(verifier).toHaveBeenCalledOnce();
   });
 });
@@ -286,9 +254,7 @@ describe("research stops on evidence or time, not a round count", () => {
   it("ends when claim and link add nothing after normalization, even if the quote changes", async () => {
     const draft = { ...DRAFT, findings: FINDINGS.map((finding) => ({ ...finding, claim: `  ${finding.claim.toUpperCase()}\n`, url: `${finding.url}#new`, quote: "A different quote." })) };
     const ctx = context({ attempt: 2, earlier: [{ draft: DRAFT, message: "Old feedback" }], sources: { opened: async () => [] } });
-    const result = await gapCheckGate.run(draft, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("independent tests");
+    expect(await gapCheckGate.run(draft, ctx)).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -298,21 +264,18 @@ describe("research stops on evidence or time, not a round count", () => {
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
-  it("keeps the previous judge's named gaps when a round finds nothing new", async () => {
+  it("sends nothing back again when a round finds nothing new, and names nothing", async () => {
     const first = context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("How durable is it after five years?")] })) } });
     const sentBack = await gapCheckGate.run(DRAFT, first);
     const ctx = context({ attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(sentBack) }] });
-    const result = await gapCheckGate.run(DRAFT, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("How durable is it after five years?");
-    expect(result.notes?.join()).not.toContain("Send researchers");
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
   it("drops a previous mechanical gap once its page was opened, even without a new claim", async () => {
     const first = await gapCheckGate.run(DRAFT, context({ sources: { opened: async () => [] } }));
     expect(await gapCheckGate.run(DRAFT, context({ attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(first) }] })))
-      .toEqual({ kind: "pass", notes: [] });
+      .toEqual({ kind: "pass" });
   });
 
   it("continues after many rounds when the draft adds a finding and a gap remains", async () => {
@@ -321,45 +284,42 @@ describe("research stops on evidence or time, not a round count", () => {
     expect((await gapCheckGate.run(DRAFT, ctx)).kind).toBe("send_back");
   });
 
-  it("names remaining gaps in English beside a Russian report when the tool deadline closes", async () => {
+  it("passes with what stays open left to the report when the tool deadline closes", async () => {
     const ctx = context({ time: { remainingMs: () => 60_000, sendBackAllowed: () => false } });
-    const result = await gapCheckGate.run({ ...without("owner_reviews"), report: "Отчёт о матрасах." }, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes?.join()).toContain("Missing evidence from opened pages:");
-    expect(result.notes?.join()).toContain("owner reviews");
+    expect(await gapCheckGate.run({ ...without("owner_reviews"), report: "Отчёт о матрасах." }, ctx)).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
-  it("lets the seam turn a send-back into its named note when the deadline races the gate", async () => {
+  it("adds nothing to the answer when the deadline races the gate's send back", async () => {
     const allowed = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
     const result = await runResearchGates({ context: context({ time: { remainingMs: () => 60_000, sendBackAllowed: allowed } }),
       draft: without("owner_reviews"), gates: [gapCheckGate], runId: "test" });
-    expect(result).toMatchObject({ kind: "accepted", notes: [expect.stringContaining("owner reviews")] });
+    expect(result).toEqual({ kind: "accepted", notes: [] });
   });
 
   it("does not start a judge without time for a turn", async () => {
     const ctx = context({ time: { remainingMs: () => 1, sendBackAllowed: () => true } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished")] });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
-  it("keeps previously named issues when a new finding arrives too late to judge them", async () => {
+  it("names nothing when a new finding arrives too late to judge it", async () => {
     const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN,
       gaps: [gap("How durable is it after five years?")] })) } }));
     const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }],
       time: { remainingMs: () => 1, sendBackAllowed: () => true } });
     const result = await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another short-term result." }] }, ctx);
-    expect(result).toMatchObject({ kind: "pass", notes: [researchNote("gap_judge_unfinished"), expect.stringContaining("How durable is it after five years?")] });
+    expect(result).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
-  it("turns the judge's send-back into a note if time runs out during judgment", async () => {
+  it("passes with nothing for the reader if time runs out during judgment", async () => {
     let allowed = true;
     const ctx = context({ time: { remainingMs: () => 60_000, sendBackAllowed: () => allowed }, subagents: { run: async () => {
       allowed = false;
       return judged(JSON.stringify({ ...CLEAN, gaps: [gap("The lab and owners disagree on durability.")] }));
     } } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toMatchObject({ kind: "pass", notes: [expect.stringContaining("lab and owners disagree")] });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 
   it("asks for record ids from plain text once, leaving the no-findings report note to run.ts", async () => {
@@ -368,8 +328,8 @@ describe("research stops on evidence or time, not a round count", () => {
     const first = await gapCheckGate.run(draft, ctx);
     expect(first.kind).toBe("send_back");
     expect(messageOf(first)).toContain("with record_ids, the ids of the records it rests on");
-    expect(await gapCheckGate.run(draft, { ...ctx, attempt: 2, earlier: [{ draft, message: messageOf(first) }] })).toEqual({ kind: "pass", notes: [] });
-    expect(await gapCheckGate.run(draft, { ...ctx, time: { remainingMs: () => 0, sendBackAllowed: () => false } })).toEqual({ kind: "pass", notes: [] });
+    expect(await gapCheckGate.run(draft, { ...ctx, attempt: 2, earlier: [{ draft, message: messageOf(first) }] })).toEqual({ kind: "pass" });
+    expect(await gapCheckGate.run(draft, { ...ctx, time: { remainingMs: () => 0, sendBackAllowed: () => false } })).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -412,10 +372,9 @@ describe("actionable gaps and page progress", () => {
     const rewritten = { ...revised, findings: revised.findings.slice(0, count) };
     const result = await runResearchGates({ context: { ...ctx, attempt: 2, earlier: [{ draft: firstDraft, message: first.message }] },
       draft: rewritten, gates, runId: "test" });
-    expect(result).toMatchObject({ kind: "accepted", notes: expect.arrayContaining([expect.stringContaining(issue)]) });
+    expect(result).toEqual({ kind: "accepted", notes: [] });
     expect(judge).toHaveBeenCalledTimes(1);
     expect(verifier).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(result)).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel/u);
   });
 
   it.each(["search_selected_engines", "mcp__notes__read", namespacedWorkspaceToolName("sandbox_exec")])("does not count %s output as a new page", async (toolName) => {
@@ -425,7 +384,7 @@ describe("actionable gaps and page progress", () => {
     const first = await gapCheckGate.run(DRAFT, ctx);
     opened = [...opened, { partial: false, toolName, url: null, text: "Some new search snippets or rewritten text." }];
     const result = await gapCheckGate.run(revised, { ...ctx, attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(first) }] });
-    expect(result).toMatchObject({ kind: "pass", notes: expect.arrayContaining([expect.stringContaining(issue)]) });
+    expect(result).toEqual({ kind: "pass" });
     expect(judge).toHaveBeenCalledTimes(1);
   });
 
@@ -448,7 +407,7 @@ describe("actionable gaps and page progress", () => {
     const first = await gapCheckGate.run(DRAFT, ctx);
     expect(first.kind).toBe("send_back");
     const result = await gapCheckGate.run(revised, { ...ctx, attempt: 2, earlier: [{ draft: DRAFT, message: messageOf(first) }] });
-    expect(result).toMatchObject({ kind: "pass", notes: [expect.stringContaining("owner reviews")] });
+    expect(result).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -459,8 +418,7 @@ describe("actionable gaps and page progress", () => {
     const result = await gapCheckGate.run({ ...firstDraft,
       unreachable: [{ sourceClass: "owner_reviews", target: "Owner forum", reason: "Sign-in required." }] },
     { ...ctx, attempt: 2, earlier: [{ draft: firstDraft, message: messageOf(first) }] });
-    expect(result).toMatchObject({ kind: "pass", notes: [expect.stringContaining("Owner forum — Sign-in required.")] });
-    expect(result.notes?.join()).not.toContain("Missing evidence");
+    expect(result).toEqual({ kind: "pass" });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -497,7 +455,7 @@ describe("actionable gaps and page progress", () => {
       "No independent evidence for this exact model was found after searching."];
     const ctx = context({ subagents: { run: vi.fn(async () => judged(JSON.stringify({ gaps: [], limits }))) } });
     const result = await gapCheckGate.run(DRAFT, ctx);
-    expect(result).toEqual({ kind: "pass", notes: [] });
+    expect(result).toEqual({ kind: "pass" });
     const instructions = vi.mocked(ctx.subagents.run).mock.calls[0]![0].instructions;
     expect(instructions).toContain("no independent evidence for the exact model is a limit, not a gap");
     expect(instructions).toContain("two shops list different warranty terms");
@@ -505,19 +463,17 @@ describe("actionable gaps and page progress", () => {
     expect(instructions).toContain("unreachable are closed with a reason");
   });
 
-  it.each(["# Report", "# Отчёт"])("never turns limits into a note, whichever way the judge's turn goes on, in %s", async (report) => {
+  it.each(["# Report", "# Отчёт"])("never turns limits or open gaps into a note, whichever way the judge's turn goes on, in %s", async (report) => {
     const limits = ["Ten-year durability cannot be established from these tests."];
     const clean = await gapCheckGate.run({ ...DRAFT, report }, context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [], limits })) } }));
-    expect(clean).toEqual({ kind: "pass", notes: [] });
+    expect(clean).toEqual({ kind: "pass" });
     const sentBack = await gapCheckGate.run({ ...DRAFT, report }, context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [gap("Open?")], limits })) } }));
     expect(sentBack.kind).toBe("send_back");
-    expect(JSON.stringify(sentBack.notes)).not.toContain("Ten-year");
-    // A later judge that cannot run names open gaps and that it could not finish, never the limits.
+    expect(sentBack).not.toHaveProperty("notes");
+    // A later judge that cannot run names nothing either: neither the open gaps nor that it could not finish.
     const earlier = [{ draft: DRAFT, message: messageOf(sentBack) }];
     const failing = context({ earlier, subagents: { run: async () => { throw new Error("unavailable"); } } });
-    const later = await gapCheckGate.run({ ...DRAFT, report, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, failing);
-    expect(later.notes).toContain(researchNote("gap_judge_unfinished"));
-    expect(JSON.stringify(later.notes)).not.toContain("Ten-year");
+    expect(await gapCheckGate.run({ ...DRAFT, report, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, failing)).toEqual({ kind: "pass" });
   });
 
   it("hands limits to the author within its bound, without internal names", async () => {
@@ -529,26 +485,21 @@ describe("actionable gaps and page progress", () => {
     expect(messageOf(result)).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel|класс источников/u);
   });
 
-  it("maps identifiers that leak into a judge's issue before adding a report note", async () => {
+  it("maps identifiers that leak into a judge's issue before the main agent reads it", async () => {
     const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN,
       gaps: [gap("action_channel conflicts with primary_official; класс источников owner_reviews.")] })) } });
     const result = await gapCheckGate.run({ ...DRAFT, report: "# Отчёт" }, ctx);
     expect(result.kind).toBe("send_back");
     if (result.kind !== "send_back") throw new Error("Expected send-back");
-    expect(result.unresolvedNote).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel|класс источников/u);
-    expect(result.unresolvedNote).toContain("purchase options and terms");
+    expect(result.message.split("\n\n")[0]).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel|класс источников/u);
+    expect(result.message).toContain("purchase options and terms");
+    expect(result).not.toHaveProperty("unresolvedNote");
   });
 
-  it("groups unreachable sources under one bounded heading with a bullet for every source", async () => {
+  it("lists no unreachable source after the report: what was not reached is the report's to say where it matters", async () => {
     const unreachable = Array.from({ length: RESEARCH_LIMITS.unreachable }, (_, index) => ({ sourceClass: null,
       target: `${index} owner_reviews ` + "t".repeat(450), reason: "action_channel " + "r".repeat(950) }));
-    const result = await gapCheckGate.run({ ...DRAFT, unreachable }, context());
-    expect(result.notes).toHaveLength(1);
-    const note = result.notes![0]!;
-    expect(note).toContain("Sources that could not be reached:");
-    expect(note.split("\n").filter((part) => part.startsWith("- "))).toHaveLength(RESEARCH_LIMITS.unreachable);
-    expect(note.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
-    expect(note).not.toMatch(/owner_reviews|action_channel/u);
+    expect(await gapCheckGate.run({ ...DRAFT, unreachable }, context())).toEqual({ kind: "pass" });
   });
 });
 
@@ -594,7 +545,7 @@ describe("bounded messages", () => {
     const issues = Array.from({ length: RESEARCH_LIMITS.questions }, (_, index) => `${index}:` + "x".repeat(RESEARCH_LIMITS.questionCharacters - 3));
     // The decoder's total bound is independent of the individual field bounds.
     const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ gaps: issues.map((issue) => gap(issue, issue)), limits: issues })) } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gap_judge_unfinished")] });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 });
 
@@ -629,18 +580,15 @@ describe("what this gate ended on", () => {
     const ctx = ofRecords({ subagents: { run } });
     const asked = await gapCheckGate.run(READY, ctx);
     const earlier = [{ draft: READY, gate: gapCheckGate.name, message: messageOf(asked) }, { draft: WRONG, gate: REPORT_CHECK_GATE, message: "Outside the matrix." }];
-    const again = await gapCheckGate.run(READY, { ...ctx, attempt: 3, earlier });
-    expect(again.kind).toBe("pass");
-    expect(again.notes?.join()).toContain("Comfort was not found");
+    expect(await gapCheckGate.run(READY, { ...ctx, attempt: 3, earlier })).toEqual({ kind: "pass" });
     expect(run).toHaveBeenCalledOnce();
   });
 
-  it("finds what the judge said across a report check's send back, after an approval rebuilt the run", async () => {
+  it("pays for no second judge across a report check's send back, after an approval rebuilt the run", async () => {
     const asked = await gapCheckGate.run(READY, ofRecords({ subagents: { run: async () => judged(OPEN) } }));
     const earlier = [{ draft: READY, gate: gapCheckGate.name, message: messageOf(asked) }, { draft: WRONG, gate: REPORT_CHECK_GATE, message: "Outside the matrix." }];
     const rebuilt = ofRecords({ attempt: 3, earlier, subagents: { run: vi.fn(async () => judged()) } });
-    const result = await gapCheckGate.run(READY, rebuilt);
-    expect(result.notes?.join()).toContain("Comfort was not found");
+    expect(await gapCheckGate.run(READY, rebuilt)).toEqual({ kind: "pass" });
     expect(rebuilt.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -711,7 +659,7 @@ describe("where a frame exists", () => {
     expect((await gapCheckGate.run(without("owner_reviews"), ctx)).kind).toBe("pass");
     expect(ctx.subagents.run).toHaveBeenCalledOnce();
     const unopened = withMatrix(ALL, { sources: { opened: async () => [] } });
-    expect((await gapCheckGate.run(DRAFT, unopened)).notes).toEqual([]);
+    expect(await gapCheckGate.run(DRAFT, unopened)).toEqual({ kind: "pass" });
   });
 
   it("narrows the judge to what the matrix cannot see, with the rule for actionable gaps, on the checks model and with no tools", async () => {
@@ -741,29 +689,14 @@ describe("where a frame exists", () => {
     expect(messageOf(result)).toContain("Two tests contradict");
   });
 
-  it("sends nothing back for research once rounds ran dry: the empty cells go into the answer with why", async () => {
-    const ctx = withMatrix(ALL.slice(0, 2), { researchersClosed: () => "no_new_cell" });
-    const result = await gapCheckGate.run(DRAFT, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes).toEqual(["Research ended here: several rounds in a row found nothing new.", expect.stringContaining("Dreamline Y2: Durability, Firmness")]);
+  it.each(["no_new_cell", "time"] as const)("sends nothing back for research once researchers are closed (%s), and names neither the empty cells nor why", async (closed) => {
+    expect(await gapCheckGate.run(DRAFT, withMatrix(ALL.slice(0, 2), { researchersClosed: () => closed }))).toEqual({ kind: "pass" });
   });
 
-  it("sends nothing back for research once the clock closed researchers, and says nothing of rounds", async () => {
-    const result = await gapCheckGate.run(DRAFT, withMatrix(ALL.slice(0, 2), { researchersClosed: () => "time" }));
-    expect(result.kind).toBe("pass");
-    expect(result.notes).toEqual([expect.stringContaining("Dreamline Y2: Durability, Firmness")]);
-  });
-
-  it("turns a judged gap into a note once researchers are closed, in English beside any report", async () => {
+  it("names no judged gap once researchers are closed", async () => {
     const ctx = withMatrix(ALL, { researchersClosed: () => "no_new_cell", subagents: { run: vi.fn(async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("Два теста расходятся.", "Откройте оба.")] }))) } });
-    const result = await gapCheckGate.run({ ...DRAFT, report: "# Отчёт" }, ctx);
-    expect(result.kind).toBe("pass");
-    expect(result.notes?.join("\n")).toContain("Research ended here");
-    expect(result.notes?.join("\n")).toContain("Два теста расходятся.");
-  });
-
-  it("adds no word of rounds when nothing stayed open", async () => {
-    expect(await gapCheckGate.run(DRAFT, withMatrix(ALL, { researchersClosed: () => "no_new_cell" }))).toEqual({ kind: "pass", notes: [] });
+    expect(await gapCheckGate.run({ ...DRAFT, report: "# Отчёт" }, ctx)).toEqual({ kind: "pass" });
+    expect(ctx.subagents.run).toHaveBeenCalledOnce();
   });
 
   it("keeps today's send back with no frame, whatever closed researchers", async () => {
@@ -790,12 +723,11 @@ describe("where a frame exists", () => {
     expect(JSON.parse(brief)).toMatchObject({ matrix: { filledCells: everything.length } });
   });
 
-  it("past the cap its gaps reach the answer through the gate's own note", async () => {
+  it("past the cap its gaps go nowhere: the answer is the report", async () => {
     const earlier = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: without("owner_reviews"), gate: gapCheckGate.name, message: "Missing." }));
     const ctx = withMatrix(ALL.slice(0, 2), { earlier, sources: { opened: async () => [...SOURCES, { partial: false, text: "New page.", toolName: "fetch_url", url: "https://example.test/new" }] } });
     const outcome = await runResearchGates({ context: ctx, draft: DRAFT, gates: [gapCheckGate], runId: "r" });
-    expect(outcome.kind).toBe("accepted");
-    expect(outcome.notes?.join("\n")).toContain("Dreamline Y2: Durability, Firmness");
+    expect(outcome).toEqual({ kind: "accepted", notes: [] });
   });
 });
 
@@ -979,9 +911,8 @@ describe("gap check through the real engine", () => {
     expect(memory.threads.admitForeground).toHaveBeenCalledTimes(1);
     expect(verifier).toHaveBeenCalledTimes(1);
     expect(verifier).toHaveBeenCalledWith(expect.objectContaining({ report: rewritten.report, findings: rewritten.findings }), expect.anything());
-    expect(memory.published()).toContain(rewritten.report);
-    expect(memory.published()).toContain(issue);
-    expect(memory.published()).not.toMatch(/primary_official|independent_tests|owner_reviews|action_channel/u);
+    // What the judge left open is the report's to state: the answer is the report.
+    expect(memory.published()).toBe(rewritten.report);
   });
 
   it("forces a draft with a missing class back to researchers, then publishes the completed round", async () => {
@@ -1010,7 +941,7 @@ describe("gap check through the real engine", () => {
     expect(memory.runs.complete).toHaveBeenCalledTimes(1);
   });
 
-  it("publishes the named gap and unreachable reason when the turn has no time for another round", async () => {
+  it("publishes the report with no gap or unreachable list when the turn has no time for another round", async () => {
     let clock = 0;
     const draft: ResearchDraft = { ...without("owner_reviews"), findings: [],
       unreachable: [{ sourceClass: "primary_official", target: "Maker site", reason: "The site is unavailable." }] };
@@ -1018,13 +949,11 @@ describe("gap check through the real engine", () => {
     const memory = engineOf({ gates: [gapCheckGate] }, { now: () => clock });
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(2);
-    expect(memory.published()).toContain("owner reviews");
-    expect(memory.published()).toContain("Maker site");
-    expect(memory.published()).toContain("The site is unavailable.");
+    expect(memory.published()).toBe(researchAnswerText(draft.report, [researchNote("no_findings")]));
     expect(memory.runs.complete).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves gap notes when time expires after a send-back but before a replacement draft", async () => {
+  it("says only that time ran out when it expires after a send-back but before a replacement draft", async () => {
     let clock = 0;
     const reason = "The maker site is unavailable.";
     const draft: ResearchDraft = { ...without("owner_reviews"), findings: FINDINGS.filter((finding) =>
@@ -1043,10 +972,8 @@ describe("gap check through the real engine", () => {
     await run(main.adapter, memory).text();
     expect(main.requests).toHaveLength(4);
     expect(resultsOf(main.requests[2], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("sent_back");
-    // Both notes survive when a later response ends the run without
-    // checking another draft.
-    expect({ namedGap: memory.published()?.includes("owner reviews"), unreachableReason: memory.published()?.includes(reason) })
-      .toEqual({ namedGap: true, unreachableReason: true });
+    // A later response ends the run without checking another draft: neither the gap nor the unreachable list reaches the reader.
+    expect(memory.published()).toBe(researchAnswerText(draft.report, [researchNote("time_out")]));
   });
 
   it("keeps responseEnded's plain-text recovery finite when the model never supplies findings", async () => {
@@ -1056,8 +983,7 @@ describe("gap check through the real engine", () => {
     expect(main.requests).toHaveLength(4);
     expect(JSON.stringify(main.requests[3]!.history)).toContain("with record_ids, the ids of the records it rests on");
     // run.ts keeps the standing draft after this one correction opportunity.
-    expect(memory.published()).toContain("Second report.");
-    expect(memory.published()).toContain(researchNote("unresolved"));
+    expect(memory.published()).toBe("Second report.");
   });
 });
 
@@ -1092,9 +1018,10 @@ describe("gate notes survive draft recovery", () => {
       const saved = (repo.appendAssistantText.mock.calls.at(-1) as unknown[] | undefined)?.[1];
       const stopped = (vi.mocked(memory.runs.saveStoppedText).mock.calls.at(-1) as unknown[] | undefined)?.[1];
       const shown = memory.published() ?? stopped ?? saved;
+      // Ending on a message adds nothing: the gates' own notes are what the reader is told.
       const generic = ending === "stopped" ? "stopped" : ending === "failed" ? "run_failed"
-        : ending === "tools_closed" || ending === "timed_out" ? "time_out" : "unresolved";
-      expect(shown).toBe(researchAnswerText(DRAFT.report, [earlierNote, ownNote, unresolvedNote, researchNote(generic)]));
+        : ending === "tools_closed" || ending === "timed_out" ? "time_out" : null;
+      expect(shown).toBe(researchAnswerText(DRAFT.report, [earlierNote, ownNote, unresolvedNote, ...generic ? [researchNote(generic)] : []]));
       expect(main.requests).toHaveLength(ending === "tools_closed" || ending === "text_ended" ? 4 : 3);
     } finally {
       if (ending === "timed_out") vi.useRealTimers();
