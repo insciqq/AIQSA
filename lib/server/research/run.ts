@@ -312,9 +312,11 @@ export function createRunResearch(input: RunResearchInput) {
     if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote(plan ? "incomplete" : "before_plan")]);
     return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted")]) : null;
   };
+  /** A report going out on how the run ended: that note says it is not fully checked and why, so the plain word that a check did not finish goes. */
+  const endedWith = (notes: readonly string[], ending: "run_failed" | "stopped" | "time_out") => [...notes.filter((note) => note !== researchNote("gate_failed")), researchNote(ending)];
   const wroteReport = () => Math.max(attemptText.trim().length, lastHeld.trim().length) >= REPORT_AS_TEXT_CHARACTERS;
-  /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
-  const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: researchCarriedNotes(gates, draft, attempts) });
+  /** A draft no gate has finished on: an earlier draft's notes are not its own, only what the gates carry holds for it, and it is not fully checked. */
+  const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: [...researchCarriedNotes(gates, draft, attempts), researchNote("gate_failed")] });
   /** The plan stands: research proper starts, and its phases count from here. */
   const planStands = (stands: ResearchPlan) => {
     plan = stands;
@@ -767,8 +769,8 @@ export function createRunResearch(input: RunResearchInput) {
     answerTaken(input_: Readonly<{ toolChoice: LoopToolChoice }>): boolean {
       if (accepted) return true;
       if (input_.toolChoice !== "none" || !plan || !held) return false;
-      // Tools closed with a draft in hand: tool-free text could only repeat it. It goes out as it stands.
-      accepted = { draft: held.draft, notes: [...held.notes, researchNote(input.toolTimeLeft() ? "unresolved" : "time_out")] };
+      // Tools closed with a draft in hand: tool-free text could only repeat it. It goes out as it stands, with what its gates said, and time is named only when it is why.
+      accepted = { draft: held.draft, notes: input.toolTimeLeft() ? held.notes : endedWith(held.notes, "time_out") };
       return true;
     },
 
@@ -798,7 +800,7 @@ export function createRunResearch(input: RunResearchInput) {
       }
       // A report handed in stays the report: a message never replaces it, whatever it says.
       if (held) {
-        accepted = { draft: held.draft, notes: [...held.notes, researchNote(toolsOpen ? "unresolved" : "time_out")] };
+        accepted = { draft: held.draft, notes: toolsOpen ? held.notes : endedWith(held.notes, "time_out") };
         return null;
       }
       textDrafts += 1;
@@ -834,7 +836,7 @@ export function createRunResearch(input: RunResearchInput) {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
       if (!researching() || waiting) return null;
       if (!plan) return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted")]) : null;
-      if (held) return researchAnswerText(held.draft.report, [...held.notes, researchNote("unresolved")]);
+      if (held) return researchAnswerText(held.draft.report, held.notes);
       if (superseded) return researchAnswerText(superseded.draft.report, [...superseded.notes, researchNote("followup_not_applied")]);
       return null;
     },
@@ -844,8 +846,7 @@ export function createRunResearch(input: RunResearchInput) {
       if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
       const report = held ?? superseded;
       if (report) {
-        return researchAnswerText(report.draft.report, [...report.notes,
-          researchNote(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
+        return researchAnswerText(report.draft.report, [...endedWith(report.notes, reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
           ...held ? [] : [researchNote("followup_not_applied")]]);
       }
       if (reason === "stopped") return null;

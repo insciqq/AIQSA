@@ -263,7 +263,7 @@ describe("no gate passes its send backs, whatever a model does", () => {
 });
 
 describe("rounds that fill no new cell end research", () => {
-  it("stops after two rounds: the third call starts nothing and says why, the report goes out, and the empty cells are in the answer", async () => {
+  it("stops after two rounds: the third call starts nothing and says why, and the report goes out with nothing of the empty cells after it", async () => {
     const matrix = matrixPorts();
     const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("a")] }, DONE, { calls: [researcher("b")] }, DONE, { calls: [researcher("c")] }, { calls: [submit("one")] }]);
     const memory = engineOf({ gates: [gapCheckGate], ports: matrix.ports });
@@ -271,9 +271,10 @@ describe("rounds that fill no new cell end research", () => {
     expect(memory.admitForeground).toHaveBeenCalledTimes(RESEARCH_ROUND_LIMITS.noNewCellRounds);
     expect(resultsOf(requests[6], CALL_SUBAGENT_TOOL_NAME).at(-1)).toContain("research_no_new_cell");
     expect(requests).toHaveLength(7);
-    expect(memory.published()).toContain("# Report one");
-    expect(memory.published()).toContain("several rounds in a row found nothing new");
-    expect(memory.published()).toContain("Lonax X1: Durability, Firmness");
+    // What stayed empty is the report's to say: no list of cells, and no word of rounds.
+    expect(memory.published()).toMatch(/^# Report one/u);
+    expect(memory.published()).not.toContain("several rounds in a row found nothing new");
+    expect(memory.published()).not.toContain("Lonax X1: Durability, Firmness");
   });
 
   it("counts a batch of one response as one round, whoever else ran in it", async () => {
