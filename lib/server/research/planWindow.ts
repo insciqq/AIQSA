@@ -30,6 +30,12 @@ export const RESEARCH_PLAN_WINDOW_LIMITS = Object.freeze({
   followupPollMs: 2_000,
   /** A lease renews while a person edits, up to this many leases: a tab left renewing cannot spend the turn in the window. */
   holdLeases: 3,
+  /**
+   * How long before the turn's end a window must have closed. Only the release extends the turn, so past this the deadline would end
+   * the run with no plan and no answer. It covers the close's write and the plan's row before the extension; a rebuild of the
+   * questions comes after it, on the extended turn.
+   */
+  releaseReserveMs: 60_000,
   /** The least `cancel_hold` gives back, so a person sees the countdown again before research starts. */
   resumeMinimumMs: 10_000
 });
@@ -153,7 +159,9 @@ export function createResearchPlanWindow(run: ResearchRunScope, deps: ResearchPl
     async open({ goal, proposal, signal }) {
       signal.throwIfAborted();
       if (answered) return rebuild(answered, proposal);
-      let windowEndsAt = run.now() + RESEARCH_TIME_MS.planWindow;
+      /** The latest this window may stay open, whatever holds it: it closes then as it would for nobody there. */
+      const latest = () => run.turnEndsAt() - RESEARCH_PLAN_WINDOW_LIMITS.releaseReserveMs;
+      let windowEndsAt = Math.min(run.now() + RESEARCH_TIME_MS.planWindow, latest());
       let heldUntil: number | null = null;
       let firstHoldAt: number | null = null;
       let remaining = 0;
@@ -207,14 +215,14 @@ export function createResearchPlanWindow(run: ResearchRunScope, deps: ResearchPl
             case "hold":
               if (heldUntil === null) remaining = Math.max(0, windowEndsAt - now);
               firstHoldAt ??= now;
-              heldUntil = Math.min(now + RESEARCH_TIME_MS.abandonedEdit, firstHoldAt + RESEARCH_PLAN_WINDOW_LIMITS.holdLeases * RESEARCH_TIME_MS.abandonedEdit);
+              heldUntil = Math.min(now + RESEARCH_TIME_MS.abandonedEdit, firstHoldAt + RESEARCH_PLAN_WINDOW_LIMITS.holdLeases * RESEARCH_TIME_MS.abandonedEdit, latest());
               arm();
               await saving(deps.store.held(key, { heldUntil: new Date(heldUntil), windowEndsAt: new Date(windowEndsAt) }));
               break;
             case "cancel_hold":
               if (heldUntil === null) break;
               heldUntil = null;
-              windowEndsAt = now + Math.max(remaining, RESEARCH_PLAN_WINDOW_LIMITS.resumeMinimumMs);
+              windowEndsAt = Math.min(now + Math.max(remaining, RESEARCH_PLAN_WINDOW_LIMITS.resumeMinimumMs), latest());
               arm();
               await saving(deps.store.held(key, { heldUntil: null, windowEndsAt: new Date(windowEndsAt) }));
               break;

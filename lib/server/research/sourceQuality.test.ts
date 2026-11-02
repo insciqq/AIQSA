@@ -341,7 +341,7 @@ describe("source quality in the store", () => {
       expect(memory.isLocked()).toBe(false);
       return original(record, page);
     });
-    const run: ResearchRunScope = { ...scope, branchRunIds: [], extendTurn: () => undefined, now: () => 0, runId: "run", sources: { opened: async () => [] },
+    const run: ResearchRunScope = { ...scope, branchRunIds: [], extendTurn: () => undefined, now: () => 0, runId: "run", turnEndsAt: () => 0, sources: { opened: async () => [] },
       userFollowups: async () => [], userMessage: "Research." };
     const port = createResearchEvidenceStore({ repository, savedResults: { read: async () => null }, threads: { backgroundRunIds: async () => [] } })(run);
     const written = await port.record({ author: { name: null, threadId: null }, record: input() }, new AbortController().signal);
