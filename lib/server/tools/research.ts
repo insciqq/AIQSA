@@ -80,7 +80,8 @@ export const proposeResearchPlanTool: RunTool = {
         },
         type: "array"
       },
-      rows: { description: "The options the user could choose known so far; empty when researchers will find them. A test, a source or a method is evidence, not a row.", items: keyed({ label }), type: "array" },
+      rows: { description: "The options the user could choose known so far; empty when researchers will find them. A test, a source or a method is evidence, not a row. " +
+        "Chosen by a rule you can state, not by what a search showed first: leave it empty if you have not applied it yet, and researchers add them.", items: keyed({ label }), type: "array" },
       skipped_source_classes: {
         description: "Source classes that do not apply to this goal, each with its reason; empty when all apply.",
         items: {

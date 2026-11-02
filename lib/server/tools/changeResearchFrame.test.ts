@@ -20,6 +20,10 @@ describe("what the tool asks of its words", () => {
     expect(changeResearchFrameTool.description).not.toContain("study");
   });
 
+  it("adds a row by the research's rule, not by what a search showed first", () => {
+    expect(changeResearchFrameTool.description).toContain("by the rule the research states, never by what a search showed first");
+  });
+
   it("asks labels and reasons in the goal's language, since they reach the report as written", () => {
     for (const field of ["label", "reason", "why"]) expect(properties[field]!.description).toContain("in the language of the research goal");
     expect(properties.reason!.description).toContain("name no tool");
