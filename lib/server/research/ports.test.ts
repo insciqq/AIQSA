@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RESEARCH_LIMITS, RESEARCH_PAGE_LIMITS, RESEARCH_QUOTE_CHECKS, RESEARCH_RECORD_KINDS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS,
   START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchPlanProposal } from "../../contracts/research";
+import { CONTINUE_TURN_TEXT } from "../../contracts/runs";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
@@ -456,6 +457,31 @@ describe("the run research belongs to", () => {
     expect(researchOfTurn(foreign).researchRun).toBe("run-of-another-branch");
     expect(researchRunOf(foreign, { branchRunIds: ["run-0"], runId: "run-c" })).toBe("run-c");
     await expect(continuationScope([[...foreign, ...held("call-held")]])).resolves.toMatchObject({ researchRunId: "run-c", runId: "run-c" });
+  });
+
+  it("hands a Continue's run its own rows and the turn's research run to pick up, through the engine; any other message asks nothing", async () => {
+    async function afterInterruption(text: string) {
+      const stored = [...started(startResult("run-0")), ...held("call-first")];
+      const { adapter } = scripted([{ calls: [start] }, { calls: [submit] }]);
+      const scopes: ResearchRunScope[] = [];
+      const load = vi.fn(NOOP_RESEARCH_PORTS.resume.load);
+      const memory = engineOf({ gates: [], ports: { resume: (run) => { scopes.push(run); return { load }; } } });
+      vi.mocked(memory.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map([["answer-0", "run-0"]]));
+      vi.mocked(memory.deps.transcripts.loadRuns).mockResolvedValue(new Map([["run-0", stored]]));
+      const content = (words: string) => ({ blocks: [{ text: words, type: "text" as const }] });
+      const messages = [{ content: content("Проведи исследование."), id: "question", role: "user" as const }, { content: content(""), id: "answer-0", role: "assistant" as const },
+        { content: content(text), id: "current-user-message", role: "user" as const }];
+      const base = prepared();
+      const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
+      await createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-c", runId: "run-c", userMessageId: "current-user-message" }, engine: memory.deps,
+        prepared: { ...base, normalizedRequest: request, providerRequest: request }, repository: repository() as unknown as RunRepository, services: {},
+        subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" }).text();
+      return { load, scope: scopes[0]! };
+    }
+    const continued = await afterInterruption(CONTINUE_TURN_TEXT);
+    expect(continued.scope).toMatchObject({ branchRunIds: ["run-0"], researchRunId: "run-c", runId: "run-c" });
+    expect(continued.load).toHaveBeenCalledExactlyOnceWith("run-0", expect.any(AbortSignal));
+    expect((await afterInterruption("Продолжай исследование.")).load).not.toHaveBeenCalled();
   });
 
   it("keeps the run's own id for an older stored start, one that was refused, and one of an earlier turn", () => {
