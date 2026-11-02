@@ -8,6 +8,7 @@ import {
   decodeResearchStart,
   PROPOSE_RESEARCH_PLAN_TOOL_NAME,
   RESEARCH_TIME_MS,
+  researchDraftText,
   researchPlanFromProposal,
   researchPlanProposalDocument,
   START_RESEARCH_TOOL_NAME,
@@ -133,7 +134,7 @@ const PICKED_UP_LINE = "Continuing from what was recorded";
 const pickedUpCells = (filled: number, cells: number) => `${filled} of ${cells} cells filled`;
 
 const SUBMIT_FIRST = `Your message was not shown to the user: while research runs, only a report handed in reaches them. Call ` +
-  `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the whole report, the ids of the records it rests on and what could not be reached.`;
+  `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the summary, the whole report, the ids of the records it rests on and what could not be reached.`;
 
 const PROPOSE_FIRST = `Your message was not shown to the user: research has started and the user is waiting for your plan. Call ` +
   `${PROPOSE_RESEARCH_PLAN_TOOL_NAME} with what you have, naming what you lack as assumptions; do not ask the user anything.`;
@@ -862,20 +863,20 @@ export function createRunResearch(input: RunResearchInput) {
      * continuation goes on with it). What was held goes out rather than being lost.
      */
     finish(waiting: boolean): string | null {
-      if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
+      if (accepted) return researchAnswerText(researchDraftText(accepted.draft), accepted.notes);
       if (!researching() || waiting) return null;
       if (!plan) return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted")]) : null;
-      if (held) return researchAnswerText(held.draft.report, held.notes);
-      if (superseded) return researchAnswerText(superseded.draft.report, [...superseded.notes, researchNote("followup_not_applied")]);
+      if (held) return researchAnswerText(researchDraftText(held.draft), held.notes);
+      if (superseded) return researchAnswerText(researchDraftText(superseded.draft), [...superseded.notes, researchNote("followup_not_applied")]);
       return null;
     },
 
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */
     afterEnding(reason: "failed" | "stopped" | "timed_out"): string | null {
-      if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
+      if (accepted) return researchAnswerText(researchDraftText(accepted.draft), accepted.notes);
       const report = held ?? superseded;
       if (report) {
-        return researchAnswerText(report.draft.report, [...endedWith(report.notes, reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
+        return researchAnswerText(researchDraftText(report.draft), [...endedWith(report.notes, reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
           ...held ? [] : [researchNote("followup_not_applied")]]);
       }
       if (reason === "stopped") return null;

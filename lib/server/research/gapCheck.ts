@@ -188,6 +188,7 @@ Return gaps only for material unanswered questions or real conflicts that more r
 Example gap: two shops list different warranty terms for the same mattress; next_step: open the manufacturer's warranty and both shops' current terms for that model.
 Example gap: the delivery charge to the user's city is unknown; next_step: open the selected shop's delivery terms for that city.
 Limits are weaknesses that further research cannot reasonably resolve. A weak answer alone is not a gap. Once a search was tried, no independent evidence for the exact model is a limit, not a gap.
+For a purchase whose prices spread, fewer than five options, or options of a single price tier, while the findings name more candidates within the question's limits, is a gap to fill, not a limit: next_step names those candidates and says to find their current offers.
 Example limit: tests concern other models, so they cannot establish this mattress's ten-year lifespan. Keep that uncertainty in the recommendation; do not demand a ten-year test or another rewrite.
 Example limit: owner reviews cannot establish long-term durability. State that limit while still answering the purchase question.
 Source classes listed as unreachable are closed with a reason. Any concern about them belongs in limits, never gaps. Respect classes the plan skipped.
@@ -204,13 +205,15 @@ The entire reply must fit ${RUN_FOLLOWUP_MAX_CHARS} characters. Only gaps reques
  */
 const JUDGE_MATRIX_INSTRUCTIONS = `${JUDGE_INSTRUCTIONS}
 The brief's matrix is what the server tracks: which row has evidence for which criterion. It checks the empty cells itself, so an empty cell is never your gap, and neither is one more detail for a filled one, however useful.
-Return gaps only for what the matrix cannot see, where the report would otherwise mislead: findings that contradict each other on something the report rests on; evidence that sits in a cell but does not answer its criterion or is about another model; a criterion or a candidate the goal plainly needs and the matrix lacks, in which case next_step says to add it with change_research_frame and send researchers for it.`;
+Return gaps only for what the matrix cannot see, where the report would otherwise mislead: findings that contradict each other on something the report rests on; evidence that sits in a cell but does not answer its criterion or is about another model; a criterion or a candidate the goal plainly needs and the matrix lacks, in which case next_step says to add it with change_research_frame and send researchers for it.
+A purchase's matrix with fewer than five options, or with options of a single price tier, while the findings name more candidates within the question's limits, lacks candidates the goal needs. matrix.recommended are the options the report's summary recommends, its pick first: for a purchase, one with no current offer among the findings, giving its link, seller and price, is a gap whose next_step says to open that option's offers.`;
 
-/** What the judge reads of the matrix, a quarter of the brief at most: the plan keeps its half, and the findings the rest. */
-function matrixBrief({ coverage, frame }: ResearchMatrix) {
+/** What the judge reads of the matrix, a quarter of the brief at most: the plan keeps its half, and the findings the rest. `recommended` are the rows the draft's summary names. */
+function matrixBrief({ coverage, frame }: ResearchMatrix, recommended: readonly string[]) {
   let limit: number = RESEARCH_FRAME_LIMITS.labelCharacters;
+  const labels = recommended.flatMap((key) => frame.rows.find((row) => row.key === key)?.label ?? []);
   const project = () => ({ criteria: frame.criteria.map(({ criterion }) => bounded(criterion, limit)), emptyCells: coverage.empty, filledCells: coverage.filled,
-    rows: frame.rows.map(({ label }) => bounded(label, limit)) });
+    recommended: labels.map((label) => bounded(label, limit)), rows: frame.rows.map(({ label }) => bounded(label, limit)) });
   let projected = project();
   while (limit > 1 && JSON.stringify(projected).length > RUN_FOLLOWUP_MAX_CHARS / 4) {
     limit = Math.max(1, Math.floor(limit / 2));
@@ -243,7 +246,7 @@ function judgeBrief(draft: ResearchDraft, plan: ResearchPlan, matrix: ResearchMa
   }
   const brief = {
     language: CYRILLIC.test(draft.report) ? "Russian" : "English", nextStepLanguage: CYRILLIC.test(plan.goal) ? "Russian" : "English", plan: projected, planShortened,
-    ...matrix ? { matrix: matrixBrief(matrix) } : {},
+    ...matrix ? { matrix: matrixBrief(matrix, draft.summary?.rowKeys ?? []) } : {},
     unreachableClasses: [...new Set(draft.unreachable.filter((entry) => entry.reason.trim() && entry.target.trim()).map((entry) => entry.sourceClass))],
     findings: [] as ResearchFinding[], findingsShortened: false, omittedFindings: draft.findings.length
   };

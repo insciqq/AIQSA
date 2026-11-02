@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeResearchPlanProposal, RESEARCH_LIMITS, RESEARCH_PAGE_LIMITS, RESEARCH_QUOTE_CHECKS, RESEARCH_RECORD_KINDS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS,
-  START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft, type ResearchEvidenceRecord, type ResearchPlanProposal } from "../../contracts/research";
+  researchDraftText, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft, type ResearchEvidenceRecord, type ResearchPlanProposal } from "../../contracts/research";
 import { CONTINUE_TURN_TEXT } from "../../contracts/runs";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -545,7 +545,11 @@ describe("the ports a run holds", () => {
       evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, records: async () => records() }), report: createResearchReport });
     const seen: ResearchDraft[] = [];
     const reading: ResearchGate = { name: "reading", run: async (draft) => { seen.push(draft); return { kind: "pass" }; } };
-    const onIds = (callId: string, fields: Readonly<Record<string, unknown>>) => ({ arguments: { branch_picks: [], does_not_separate: null, pick_row_key: "x1", record_ids: [id(1), id(2), id(3)], report: RECORD_DRAFT.report, unreachable: [], ...fields },
+    const summary = { row_keys: RECORD_DRAFT.summary!.rowKeys, text: RECORD_DRAFT.summary!.text };
+    /** What the user reads of the fixture's draft: its summary above its report. */
+    const ANSWER = researchDraftText(RECORD_DRAFT);
+    const onIds = (callId: string, fields: Readonly<Record<string, unknown>>) => ({ arguments: { branch_picks: [], does_not_separate: null, pick_row_key: "x1", record_ids: [id(1), id(2), id(3)], report: RECORD_DRAFT.report,
+      summary, unreachable: [], ...fields },
       id: callId, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
     const resultsOf = (requests: string, part: string) => requests.includes(part);
 
@@ -567,7 +571,7 @@ describe("the ports a run holds", () => {
 
     it("lets every later gate read the prices and reviews the pick rests on, as findings with their records", async () => {
       const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", {})] }], { gates: [reading], ports: stores() });
-      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(run.published).toBe(ANSWER);
       expect(seen[0]!.findings.map(({ recordId }) => recordId)).toEqual([id(1), id(2), id(3)]);
       expect(seen[0]!.findings[2]).toMatchObject({ quote: "Просел за год.", sourceClass: "owner_reviews" });
       expect(seen[0]!.findings[2]!.claim).toContain("Small sample of 11. sagging: 3 of 11.");
@@ -580,7 +584,7 @@ describe("the ports a run holds", () => {
       expect(resultsOf(run.requests, "x1 / price: <id>")).toBe(true);
       expect(resultsOf(run.requests, "\\\"gate\\\":\\\"report_check\\\"")).toBe(true);
       expect(seen).toHaveLength(1);
-      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(run.published).toBe(ANSWER);
     });
 
     it("sends back a pick outside the matrix, and at the cap the answer is the report rather than going round", async () => {
@@ -588,7 +592,7 @@ describe("the ports a run holds", () => {
       const run = await runOf([{ calls: begin }, { calls: [wrong(1)] }, { calls: [wrong(2)] }, { calls: [wrong(3)] }], { gates: [reading], ports: stores() });
       expect(resultsOf(run.requests, "Outside the matrix: row x9")).toBe(true);
       // What its form missed is no news to the reader: the report says what it says.
-      expect(run.published).toBe(`${RECORD_DRAFT.report}\nВерсия 3.`);
+      expect(run.published).toBe(`${ANSWER}\nВерсия 3.`);
       expect(seen).toHaveLength(1);
     });
 
@@ -602,14 +606,14 @@ describe("the ports a run holds", () => {
     it("sends back an id of no record, saying which", async () => {
       const run = await runOf([{ calls: begin }, { calls: [onIds("call-one", { record_ids: [id(1), id(2), id(3), id(99)] })] }, { calls: [onIds("call-two", {})] }], { gates: [], ports: stores() });
       expect(resultsOf(run.requests, "These record_ids name no live record of this research: <id>")).toBe(true);
-      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(run.published).toBe(ANSWER);
     });
 
     it("sends back a mistyped key under the cap, and a run that ends there keeps the report", async () => {
       const mistyped = onIds("call-one", { pick_row_key: "Лонакс" });
       const fixed = await runOf([{ calls: begin }, { calls: [mistyped] }, { calls: [onIds("call-two", {})] }], { gates: [reading], ports: stores() });
       expect(resultsOf(fixed.requests, "pick_row_key must be null or the key of the row picked.")).toBe(true);
-      expect(fixed.published).toBe(RECORD_DRAFT.report);
+      expect(fixed.published).toBe(ANSWER);
       const ended = await runOf([{ calls: begin }, { calls: [mistyped] }, { fail: true }], { gates: [], ports: stores() });
       expect(ended.shown).toContain("Берите Lonax Memory.");
     });
@@ -619,7 +623,7 @@ describe("the ports a run holds", () => {
       void _picks;
       void _separate;
       const run = await runOf([{ calls: begin }, { calls: [{ ...onIds("call-draft", {}), arguments: partial }] }], { gates: [reading], ports: stores() });
-      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(run.published).toBe(ANSWER);
       expect(seen[0]).toMatchObject({ pickRowKey: "x1", recordIds: [id(1), id(2), id(3)] });
       expect(seen[0]!.findings).toHaveLength(3);
     });
@@ -635,14 +639,15 @@ describe("the ports a run holds", () => {
     it("reads a corrected id as its correction with no send back", async () => {
       const corrected = () => [...RECORDS.slice(1), finding(7, "x1", "firmness", { supersedes: id(1), url: "https://maker.example/x1" })];
       const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", {})] }], { gates: [reading], ports: stores(corrected) });
-      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(run.published).toBe(ANSWER);
       expect(seen[0]!.findings.map(({ recordId }) => recordId)).toContain(id(7));
     });
 
     it("passes advice that states no fact, and says it came with nothing to check", async () => {
       const advice = "Сначала измерьте кровать, потом выберите жёсткость.";
-      const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", { pick_row_key: null, record_ids: [], report: advice })] }], { gates: [], ports: stores() });
-      expect(run.published).toBe(`${advice}\n\n---\n\n*${researchNote("no_findings")}*`);
+      const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", { pick_row_key: null, record_ids: [], report: advice, summary: { row_keys: [], text: "Сначала кровать." } })] }],
+        { gates: [], ports: stores() });
+      expect(run.published).toBe(`Сначала кровать.\n\n${advice}\n\n---\n\n*${researchNote("no_findings")}*`);
     });
 
     it("keeps a text draft as it stands: it has no ids to check", async () => {
@@ -679,7 +684,7 @@ describe("the ports a run holds", () => {
         const run = await afterInterruption({ ports: pickedUp(), steps: [{ calls: [startAgain] }, { calls: [onIds("call-draft", {})] }] });
         expect(run.requests).toContain(`${id(2)} | x1 / price | Claim 2.`);
         expect(run.calls).toEqual([START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME]);
-        expect(run.published).toBe(RECORD_DRAFT.report);
+        expect(run.published).toBe(ANSWER);
       });
 
       it("keeps them through an approval of that run, whose plan and rows are the start's", async () => {
@@ -687,7 +692,7 @@ describe("the ports a run holds", () => {
         const later = [...first.appended.filter((item) => (item.kind === "tool_call" || item.kind === "tool_result") && item.name === START_RESEARCH_TOOL_NAME), ...held("call-held")];
         const run = await afterInterruption({ approved: { later, runId: "run-c" }, ports: stores(), steps: [{ calls: [onIds("call-after", {})] }] });
         expect(run.requests).toContain(`${id(2)} | x1 / price | Claim 2.`);
-        expect(run.published).toBe(RECORD_DRAFT.report);
+        expect(run.published).toBe(ANSWER);
       });
 
       it("builds the answer in English, whatever the goal's language and the button's word", async () => {
