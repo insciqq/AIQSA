@@ -1595,6 +1595,31 @@ export const SCENARIO_T_QUESTIONS: readonly Readonly<{ kind: string; text: strin
 
 export type TDraftFinding = Readonly<{ claim: string; quote: string; sourceClass: string; url: string }>;
 
+/** A record as a draft's ids read it; a dataset's quote and link are its first example's, as the server expands it. */
+export type TEvidenceRow = Readonly<{ id: string; kind: string; claim: string | null; quote: string | null; url: string | null; sourceClass: string | null; dataset: unknown }>;
+
+function draftFinding(row: TEvidenceRow): TDraftFinding | null {
+  if (row.kind !== "finding" && row.kind !== "dataset") return null;
+  const examples = record(row.dataset) && Array.isArray(row.dataset.examples) ? row.dataset.examples : [];
+  const example: unknown = examples[0];
+  const first = record(example) ? example : {};
+  return { claim: row.claim ?? "", quote: row.quote ?? String(first.quote ?? ""), sourceClass: row.sourceClass ?? "", url: row.url ?? String(first.url ?? "") };
+}
+
+/** A draft's findings from its call: the records its ids name, or those typed into a draft from before drafts referred to records. */
+export function researchDraftFindings(args: unknown, rows: readonly TEvidenceRow[]): readonly TDraftFinding[] {
+  const value = record(args) ? args : {};
+  if (Array.isArray(value.record_ids)) {
+    const byId = new Map(rows.map((row) => [row.id, row] as const));
+    return value.record_ids.flatMap((id: unknown) => {
+      const row = typeof id === "string" ? byId.get(id) : undefined;
+      return (row && draftFinding(row)) ?? [];
+    });
+  }
+  return (Array.isArray(value.findings) ? value.findings : []).filter(record).map((finding) => ({ claim: String(finding.claim ?? ""), quote: String(finding.quote ?? ""),
+    sourceClass: String(finding.source_class ?? ""), url: String(finding.url ?? "") }));
+}
+
 /** What one research question's run shows per step, in counts. */
 export type TMetrics = Readonly<{
   /** Opened pages behind the last draft's independent tests and owner reviews. */
@@ -1640,10 +1665,10 @@ export function researchProcessFacts(input: Readonly<{ drafts: readonly (readonl
     }
     const result = JSON.stringify(call.result ?? "");
     return { accepted: result.includes("accepted"), byClass, findings: findings.length,
-      sentBackBy: !result.includes("sent_back") ? null : result.includes("[Skeptic]") ? "skeptic" : result.includes("[Independent check]") ? "verifier"
+      sentBackBy: !result.includes("sent_back") ? null : /\\*"gate\\*":\\*"report_check/u.test(result) ? "report_check" : result.includes("[Skeptic]") ? "skeptic" : result.includes("[Independent check]") ? "verifier"
         : /Research questions still open|Открытые вопросы исследования/u.test(result) ? "gap_judge" : "gap_mechanical" };
   });
-  const gateTurnFacts = input.gates.map((row) => ({ name: /^(?:gap-judge|verifier|skeptic)-[0-9]+$/u.test(row.name) ? row.name : "other",
+  const gateTurnFacts = input.gates.map((row) => ({ name: /^(?:gap-judge|verifier|skeptic)(?:-[0-9]+)+$/u.test(row.name) ? row.name : "other",
     reason: row.reasonCode !== null && CODE_PATTERN.test(row.reasonCode) ? row.reasonCode : null,
     reportChars: row.report?.length ?? 0, state: stableCode(row.state) }));
   const fetchOutcomes: Record<string, number> = {};
@@ -1661,7 +1686,7 @@ export function researchProcessFacts(input: Readonly<{ drafts: readonly (readonl
 
 /** The existing server check-note pattern is the deliberate text exception in T's summary. */
 export function researchServerNotes(answer: string): string[] {
-  return [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт пришёл|This report came|Research ended|Исследование завершилось)[^*]{0,400})\*/gu)].map((match) => match[1]);
+  return [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт|This report|Research ended|Исследование завершилось|В этом отчёте|Этот отчёт|В сравнении|За некоторыми|Выбор в этом|Записи, на которых|Находки этого|Критерии|Criteria added|Данные не разделяют|The data does not|Some links|The records behind|The answer failed|No report was|Ответ прервался)[^*]{0,1500})\*/gu)].map((match) => match[1]);
 }
 
 /** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
