@@ -13,6 +13,19 @@ const BRANCH = { cases: [{ key: "light", label: "Up to 70 kg" }, { key: "heavy",
 const properties = changeResearchFrameTool.inputSchema.properties as Record<string, Record<string, unknown>>;
 const signal = new AbortController().signal;
 
+describe("what the tool asks of its words", () => {
+  it("says a row is an option the user could choose, never a test, a source or a method", () => {
+    expect(changeResearchFrameTool.description).toContain("an option the user could choose");
+    expect(changeResearchFrameTool.description).toContain("a test, a source or a method is evidence");
+    expect(changeResearchFrameTool.description).not.toContain("study");
+  });
+
+  it("asks labels and reasons in the goal's language, since they reach the report as written", () => {
+    for (const field of ["label", "reason", "why"]) expect(properties[field]!.description).toContain("in the language of the research goal");
+    expect(properties.reason!.description).toContain("name no tool");
+  });
+});
+
 const call = (args: Record<string, unknown>): EngineToolExecution =>
   ({ call: { arguments: args, id: "call-1", name: CHANGE_RESEARCH_FRAME_TOOL_NAME }, ordinal: 0, persistedToolCallId: "row-1", round: 1, signal });
 

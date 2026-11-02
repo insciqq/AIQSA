@@ -14,6 +14,17 @@ import { researchEmptyByRow, type ResearchEmptyRow, type ResearchMatrix } from "
  * so the next round is planned from the empty cells.
  */
 
+/** A real run's frame held rows for a lab's comparison and a testing method, which no reader can choose. */
+const ROWS_ARE_OPTIONS = "A row is an option the user could choose; a test, a source or a method is evidence, recorded under the row it is about.";
+
+/** A real run's English label and a reason naming a tool reached a Russian answer: these reach the report as they are written. */
+const READER_WORDS = "Write labels and reasons in the language of the goal, for a reader, naming no tool and no error: the user reads them as you write them.";
+
+/** Enough of the goal for a researcher to tell its language: the whole of it may be long, and a brief is bounded. */
+const GOAL_CHARACTERS = 200;
+
+const cut = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+
 const classLine = (question: ResearchQuestion, index: number) =>
   `${index + 1}. ${question.question} [${question.sourceClasses.join(", ")}]${question.sites.length > 0 ? ` (sites the user named: ${question.sites.join(", ")})` : ""}`;
 
@@ -27,13 +38,14 @@ export function researchMethodText(plan: ResearchPlan): string {
     "Do not write the report as a message: nothing you write while research runs reaches the user, and search snippets are not evidence.",
     "After each researcher's report you read what is still empty in the matrix. Send more researchers for empty cells only, never for one " +
       `more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
-      `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}.`,
+      `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${READER_WORDS}`,
     `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
       "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
     "The report holds a comparison table on the matrix's criteria, says why each matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
       "and each case of a branch gets its row. When the data does not tell rows apart, say so and what would decide, such as trying them, instead of inventing a difference. " +
-      "The report keeps apart what is confirmed, what a party claims and what is not verified, and says what could not be reached and why.",
+      "The report still says which of them it would take by default today and why, such as the cheapest among those with the same evidence, marked plainly as a default and not as a finding, " +
+      "alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, and says what could not be reached and why.",
     "",
     "The plan:",
     ...plan.questions.map(classLine),
@@ -59,7 +71,8 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date.",
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
-      `A candidate or an option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. A criterion only when the question needs it, with your reason.`,
+      `An option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} A criterion only when the question needs it, with your reason.`,
+    `The goal: ${cut(plain(plan.goal), GOAL_CHARACTERS)} ${READER_WORDS}`,
     RESEARCH_REVIEWS_REFERENCE,
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
       "claimed by a party or not verified.",
@@ -81,7 +94,7 @@ const emptyCounts = (rows: readonly ResearchEmptyRow[], criteria: number) => row
 export function researcherMatrixFooter(matrix: ResearchMatrix, room: number): string | null {
   const { coverage, frame } = matrix;
   const empty = researchEmptyByRow(matrix);
-  const noRows = `Rows: none yet. Add each candidate, study or option you find with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
+  const noRows = `Rows: none yet. Add each option the user could choose with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} as you find it. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
   const rowKeys = frame.rows.length > 0 ? `Rows: ${frame.rows.map(({ key }) => key).join(", ")}.` : noRows;
   const criterionKeys = `Criteria: ${frame.criteria.map(({ key }) => key).join(", ")}.`;
   const total = `${coverage.empty} of ${coverage.cells.length} cells are still empty.`;

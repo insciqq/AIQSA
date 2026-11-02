@@ -64,7 +64,7 @@ export const recordEvidenceTool: RunTool = {
       }, { type: "null" }] },
       kind: { enum: [...RESEARCH_RECORD_KINDS], type: "string" },
       quote: nullableText("finding only: copied word for word from the page you opened, never paraphrased."),
-      reason: nullableText("not_found: where you looked. unreachable: why it could not be reached."),
+      reason: nullableText("not_found: where you looked. unreachable: why it could not be reached. Written for a reader, in the language of the research goal; name no tool and no error, since the report may carry it as written."),
       row_key: nullableText("The matrix row this is about; required for not_found and dataset, otherwise null when none."),
       source_class: { anyOf: [sourceClass, { type: "null" }] },
       standing: { anyOf: [{ description: "finding, dataset. confirmed: an independent source you opened says so. claimed: only a party with an interest says so. " +
