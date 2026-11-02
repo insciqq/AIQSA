@@ -6,6 +6,7 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
 import { researchEmptyByRow, researchMatrix, type ResearchMatrix } from "./matrix";
+import { researchNote } from "./notes";
 import { researchGatePorts } from "./ports";
 import { REPORT_CHECK_GATE } from "./reportCheck";
 import { researchEvidenceKind } from "./sources";
@@ -289,7 +290,8 @@ function judgeIssues(report: string): Judgment | null {
 /**
  * Mechanical coverage first; a judgment only after it. Answer first: an unfinished judgment costs the check, never the answer. Where a frame exists its
  * matrix is the mechanical part and the judge keeps to what it cannot see, and once researchers are closed a gap no longer goes back for research. With
- * no frame, or one that could not be read, the check is what it always was. It adds nothing to the answer: what it finds goes to the main agent only.
+ * no frame, or one that could not be read, the check is what it always was. What it finds goes to the main agent only; the answer hears of it only that a
+ * judgment it needed did not finish, as a report not fully checked.
  */
 export const gapCheckGate: ResearchGate = {
   name: "gap_check",
@@ -317,9 +319,9 @@ export const gapCheckGate: ResearchGate = {
 
     // Mechanical gaps are recomputed above, so a newly opened page can close them even when the finding itself did not change.
     if (addedNothing(draft, context)) return { kind: "pass" };
-    // An unfinished judgment costs the check and nothing else.
-    const unfinished = (): ResearchGateResult => ({ kind: "pass" });
-    if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) return unfinished();
+    // An unfinished judgment costs the check, never the answer, and the answer says only that it is not fully checked, and whether time is why.
+    const unfinished = (cause: "failed" | "time" = "failed"): ResearchGateResult => ({ kind: "pass", notes: [researchNote(cause === "time" ? "time_out" : "gate_failed")] });
+    if (!context.time.sendBackAllowed() || context.time.remainingMs() < JUDGE_MIN_REMAINING_MS) return unfinished("time");
     try {
       const outcome = await context.subagents.run({ brief: judgeBrief(draft, context.plan, matrix), instructions: matrix ? JUDGE_MATRIX_INSTRUCTIONS : JUDGE_INSTRUCTIONS,
         model: "verifier", name: "gap-judge", tools: [] }, context.signal);
