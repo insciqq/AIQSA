@@ -6,9 +6,10 @@ import { harnessPromptSection } from "../engine/prompts/harness";
 import type { TranscriptItem } from "../engine/transcript";
 import { proposeResearchPlanTool, researchScopingInstructions, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import { runResearchGates, type ResearchGateContext } from "./gates";
-import { researchMatrixCoverage } from "./matrix";
+import { researchMatrixCoverage, researchUnconfirmedKeyCells } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researcherMatrixFooter, researcherMethodFooter, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
+import { finding as recordFinding, notFound as recordNotFound } from "./report.testFixtures";
 import { researchOffered } from "./run";
 import { createResearchSources, researchRunsOnBranch } from "./sources";
 import { researchTurnName } from "./turns";
@@ -203,10 +204,25 @@ describe("the method", () => {
 
   it("asks for a default when evidence does not separate rows, marked as one, beside what would decide and without inventing a difference", () => {
     const text = researchMethodText(plan);
-    expect(text).toContain("which of them it would take by default today and why, such as the cheapest among those with the same evidence");
-    expect(text).toContain("marked plainly as a default and not as a finding");
+    expect(text).toContain("which of them it would take by default today and why: the option whose key specifications passed the checks and that best fits the user's stated " +
+      "priorities, price breaking only a tie among those, marked plainly as a default and not as a finding");
     expect(text).toContain("what would decide");
     expect(text).toContain("instead of inventing a difference");
+    // A real run's default was the cheaper of two lookalikes.
+    expect(text).not.toContain("cheapest");
+  });
+
+  it("rests a pick's key specifications on two sites, names a disagreement, and never lets a pick stand on a rejected one", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain("The criteria the plan marked decisive are the key specifications a pick depends on.");
+    expect(text).toContain("rests on records from two different sites, the maker's and a seller's where both exist");
+    expect(text).toContain("both stay recorded and cited, and the report names the disagreement for that option instead of choosing one figure");
+    expect(text).toContain("never rest on a key specification the checks rejected: re-record it from a page that shows it, or choose another option");
+    const footer = researcherMethodFooter(plan);
+    expect(footer).toContain("recorded from each site that states it, the maker's and a seller's where both exist, each as its own record of that cell");
+    expect(footer).toContain("never a correction of the other");
+    expect(footer).toContain("Where no second site shows it, record not_found for that cell");
+    expect(researchScopingInstructions()).toContain("mark as decisive the few key specifications a pick depends on");
   });
 
   it("asks labels and reasons in the goal's language, for a reader, naming no tool", () => {
@@ -295,12 +311,21 @@ describe("scoping and the proposal", () => {
     expect(tool).toContain("70 kg");
   });
 
-  it("opens the method for a plan that stands, and sends researchers for empty cells only", () => {
+  it("opens the method for a plan that stands, and sends researchers for empty cells and the confirmations the matrix line names only", () => {
     const text = researchMethodText(plan);
     expect(text.startsWith("The plan stands.")).toBe(true);
     expect(text).not.toContain("Research started");
-    expect(text).toContain("empty cells only");
+    expect(text).toContain("Send more researchers only for empty cells and for the confirmations the matrix line names, never for one more detail of a filled cell.");
     expect(text).toContain("change_research_frame");
+  });
+
+  it("asks the plan to mark its key specifications, as a required field of each criterion", () => {
+    const criteria = (proposeResearchPlanTool.inputSchema as { properties: { criteria: { items: { properties: Record<string, { description?: string; type: string }>; required: string[] } } } })
+      .properties.criteria.items;
+    expect(criteria.required).toContain("decisive");
+    expect(criteria.properties.decisive).toMatchObject({ type: "boolean" });
+    expect(criteria.properties.decisive!.description).toContain("load per side, height and layers");
+    expect(criteria.properties.decisive!.description).toContain("false for the offer, the price, owners' reviews");
   });
 });
 
@@ -351,6 +376,45 @@ describe("the matrix in a brief", () => {
     const long = researchCoverageLine(matrixOf(large), 0);
     expect(long.length).toBeLessThanOrEqual(600);
     expect(long).toContain("Send researchers for empty cells only.");
+  });
+
+  describe("the key specifications of the options a draft recommends", () => {
+    const specs: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Load per side", decisive: true, key: "load", why: "W." }, { criterion: "Price", key: "price", why: "W." }],
+      rows: [{ key: "x1", label: "Lonax X1" }, { key: "y2", label: "Dreamline Y2" }] };
+    const on = (number: number, rowKey: string, criterionKey: string, site: string) => recordFinding(number, rowKey, criterionKey, { registrableDomain: site, url: `https://${site}/${number}` });
+    const ONE_SITE = [on(1, "x1", "load", "maker.example"), on(2, "x1", "price", "shop-a.example"), on(3, "y2", "load", "shop-a.example"), on(4, "y2", "price", "shop-a.example")];
+    const leading: ResearchDraft = { ...draft, pickRowKey: "x1", summary: { rowKeys: ["x1"], text: "Lonax X1." } };
+    const lineOf = (records: readonly ResearchEvidenceRecord[], last: ResearchDraft | null = leading, frame = specs) => {
+      const matrix = { coverage: researchMatrixCoverage(frame, records), frame };
+      return researchCoverageLine(matrix, 0, researchUnconfirmedKeyCells(matrix, records, last));
+    };
+
+    it("asks a second site of a leading option's key specification on one site, and of no other filled cell", () => {
+      // Dreamline's load is on one site too, but no draft recommends it; Lonax's price is no key specification.
+      expect(lineOf(ONE_SITE)).toBe("The matrix (from the server): 0 of 4 cells empty, 0 newly filled in this round so far. To confirm from a second site, the maker's or a seller's, " +
+        "for the options the last draft recommends: x1: load. Send researchers for these confirmations only.");
+    });
+
+    it("asks nothing of a filled cell before a draft names its options, nor of a frame that marks none", () => {
+      expect(lineOf(ONE_SITE, null)).toBe("The matrix (from the server): 0 of 4 cells empty, 0 newly filled in this round so far. Nothing is left for researchers to fill.");
+      const unmarked = { ...specs, criteria: specs.criteria.map(({ criterion, key, why }) => ({ criterion, key, why })) };
+      expect(lineOf(ONE_SITE, leading, unmarked)).toContain("Nothing is left for researchers to fill.");
+    });
+
+    it("stops asking once a second site holds it, or an agent recorded that none shows it; another page of the same site is no second site", () => {
+      expect(lineOf([...ONE_SITE, on(5, "x1", "load", "shop-b.example")])).toContain("Nothing is left for researchers to fill.");
+      expect(lineOf([...ONE_SITE, recordNotFound(5, "x1", "load")])).toContain("Nothing is left for researchers to fill.");
+      expect(lineOf([...ONE_SITE, on(5, "x1", "load", "maker.example")])).toContain("x1: load.");
+    });
+
+    it("asks it beside the empty cells, and lists the key specifications in a researcher's matrix", () => {
+      const line = lineOf(ONE_SITE.slice(0, 3));
+      expect(line).toContain("Empty: y2: price. To confirm from a second site");
+      expect(line).toContain("Send researchers for empty cells and these confirmations only.");
+      const matrix = { coverage: researchMatrixCoverage(specs, ONE_SITE), frame: specs };
+      expect(researcherMatrixFooter(matrix, 10_000)).toContain("Criteria: load (Load per side), price (Price). Key specifications: load.");
+      expect(researcherMatrixFooter(matrix, 140)).toContain("Criteria: load, price. Key specifications: load.");
+    });
   });
 
   it("says why no further researcher starts", () => {

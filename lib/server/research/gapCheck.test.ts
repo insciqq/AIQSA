@@ -23,8 +23,8 @@ import { gapCheckGate } from "./gapCheck";
 import { runResearchGates, type ResearchAttempt, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome } from "./gates";
 import { researchMatrixCoverage } from "./matrix";
 import { researchAnswerText, researchNote } from "./notes";
-import type { ResearchCoveragePort } from "./ports";
-import { DRAFT as RECORD_DRAFT, FRAME as RECORD_FRAME, matrixOf, notFound, RECORDS } from "./report.testFixtures";
+import { NOOP_RESEARCH_PORTS, type ResearchCoveragePort } from "./ports";
+import { DRAFT as RECORD_DRAFT, finding as recordFinding, FRAME as RECORD_FRAME, matrixOf, notFound, RECORDS } from "./report.testFixtures";
 import { researchDraftWithRecords } from "./reportAssembly";
 import { REPORT_CHECK_GATE, reportCheckGate } from "./reportCheck";
 import { createResearchSources } from "./sources";
@@ -761,6 +761,49 @@ describe("where a frame exists", () => {
     const { brief } = judge(ctx);
     expect(brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
     expect(JSON.parse(brief)).toMatchObject({ matrix: { filledCells: everything.length } });
+  });
+
+  describe("the key specifications of the options the summary recommends", () => {
+    const KEYED: ResearchFrame = { ...FRAME, criteria: [{ ...FRAME.criteria[0]!, decisive: true }, FRAME.criteria[1]!] };
+    const at = (number: number, rowKey: string, criterionKey: string, site: string) => recordFinding(number, rowKey, criterionKey, { url: `https://${site}/${number}` });
+    const ONE_SITE = [at(1, "x1", "durability", "maker.example"), at(2, "x1", "firmness", "maker.example"), at(3, "y2", "durability", "shop.example"), at(4, "y2", "firmness", "shop.example")];
+    const keyed = (records: readonly ResearchEvidenceRecord[], overrides: Partial<ResearchGateContext> = {}) =>
+      withMatrix(records, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: vi.fn(async () => records) }, ...overrides }, KEYED);
+    const leading: ResearchDraft = { ...DRAFT, pickRowKey: "x1", summary: { rowKeys: ["x1"], text: "Take Lonax X1." } };
+
+    it("sends back a leading option's key specification on one site for a second one, with no model, and nothing of a non-leading option's filled cell", async () => {
+      const ctx = keyed(ONE_SITE);
+      const result = await gapCheckGate.run(leading, ctx);
+      expect(result.kind).toBe("send_back");
+      expect(messageOf(result)).toContain("Lonax X1: Durability (one site only)");
+      expect(messageOf(result)).toContain("Confirm from a second site, the maker's or a seller's, whichever it lacks, the key specifications of row x1: durability. Record each as its own " +
+        "record of that cell, also where it gives another figure; if no second site shows it, record not_found for that cell.");
+      // Dreamline's durability is on one site too, and its firmness and Lonax's are filled: none of them is asked.
+      expect(messageOf(result)).not.toContain("y2");
+      expect(messageOf(result)).not.toContain("firmness");
+      expect(ctx.subagents.run).not.toHaveBeenCalled();
+    });
+
+    it("asks nothing more once a second site or a not_found answers it, nor before a draft recommends an option, and the judge then runs", async () => {
+      for (const [draft, records] of [[leading, [...ONE_SITE, at(5, "x1", "durability", "shop.example")]], [leading, [...ONE_SITE, notFound(5, "x1", "durability")]],
+        [DRAFT, ONE_SITE]] as const) {
+        const ctx = keyed(records);
+        expect(await gapCheckGate.run(draft, ctx)).toEqual({ kind: "pass" });
+        expect(ctx.subagents.run).toHaveBeenCalledOnce();
+      }
+    });
+
+    it("tells the judge a second source is the server's to ask and a disagreement between sites the report's to name, never a gap", async () => {
+      const ctx = keyed([...ONE_SITE, at(5, "x1", "durability", "shop.example")]);
+      await gapCheckGate.run(leading, ctx);
+      expect(judge(ctx).instructions).toContain("it asks a second site for each key specification of the options the summary recommends, so neither is a second source, nor one more detail for a filled one");
+      expect(judge(ctx).instructions).toContain("except two sites' figures for one key specification, which the report names as they stand");
+    });
+
+    it("costs only the confirmations when the records cannot be read", async () => {
+      const ctx = keyed(ONE_SITE, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("down"); } } });
+      expect(await gapCheckGate.run(leading, ctx)).toEqual({ kind: "pass" });
+    });
   });
 
   it("past the cap its gaps go nowhere: the answer is the report", async () => {

@@ -16,7 +16,7 @@ import type { NativeRunStore } from "../engine/runStore";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
-import { researchCarriedNotes, type ResearchAttempt, type ResearchersClosed, type ResearchGate, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome, type ResearchSubagentRequest,
+import { researchCarriedNotes, runResearchGates, type ResearchAttempt, type ResearchersClosed, type ResearchGate, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome, type ResearchSubagentRequest,
   type ResearchVerifierModel } from "./gates";
 import { researchNote } from "./notes";
 import { NOOP_RESEARCH_PORTS, type ResearchCoveragePort, type ResearchEvidencePort } from "./ports";
@@ -1161,6 +1161,92 @@ describe("the one correction", () => {
     expect(run).not.toHaveBeenCalled();
     expect(tally(result)).toContain("listed as not verified: 1");
     expect(notesOf(result)).toContain(SOME_REJECTED);
+  });
+});
+
+/** A real run put first an option whose layer claim its own check had rejected: a pick, or the summary's first option, cannot stand on a rejected key specification. */
+describe("a pick on a key specification the check rejected", () => {
+  const KEYED_FRAME = { ...reportFrame, criteria: reportFrame.criteria.map((criterion) => criterion.key === "firmness" ? { ...criterion, decisive: true as const } : criterion) };
+  const coverage: ResearchCoveragePort = { ...NOOP_RESEARCH_PORTS.coverage, frame: async () => KEYED_FRAME };
+  const LAYERS = "Latex 3 cm over coir 1 cm.";
+  const PAGE_TEXT = "Card. Latex 2 cm over coir 1 cm, springs below.";
+  const records = [recordOf("r1", "Latex 2 cm over coir 1 cm", "p1", { claim: LAYERS, criterionKey: "firmness", rowKey: "x1" }),
+    recordOf("r2", "Latex 2 cm over coir 1 cm", "p1", { claim: "The X2 has latex.", criterionKey: "firmness", rowKey: "x2" })];
+  const evidence = () => evidenceOf(records, [pageOf("p1", PAGE_TEXT)]);
+  const picking = (pickRowKey: string | null, rowKeys: readonly string[], findings = [recorded("r1", { claim: LAYERS, quote: "Latex 2 cm over coir 1 cm" })]): ResearchDraft =>
+    ({ ...draftOf(findings), pickRowKey, summary: { rowKeys, text: "Lonax Memory." } });
+  const LINE = "The checks did not confirm these facts this report cites, so do not rely on them: Lonax Memory — Жёсткость.";
+  const rejecting = async () => ended("Outcome: done\nC1 | unsupported | the page says 2 cm");
+
+  async function corrected(draft: ResearchDraft = picking("x1", ["x1"])) {
+    const { context } = contextOf({ coverage, evidence: evidence(), opened: refused, turn: rejecting });
+    const result = sentBack(await check(draft, context));
+    return { draft, earlier: [{ draft, gate: "verifier", message: result.message }] as ResearchAttempt[], result };
+  }
+
+  it("says in the one correction that the pick rests on it, and that it goes back again while it does", async () => {
+    const { result } = await corrected();
+    expect(result.message.startsWith(VERIFIER_MARKER)).toBe(true);
+    expect(result.message).toContain("This is your one correction, except for what your pick rests on (below)");
+    expect(result.message).toContain("Your pick, or the first option of your summary, rests on a key specification among them: findings 1. A pick cannot stand on one. " +
+      "Re-record it from a page that shows it, or choose another option.");
+  });
+
+  it("sends a draft whose pick still rests on it back again, past the one correction, with what to do and the fact named for the reader", async () => {
+    const { earlier } = await corrected();
+    const { context, run } = contextOf({ coverage, earlier, evidence: evidence(), opened: refused, turn: rejecting });
+    const result = sentBack(await check(picking("x1", ["x1"]), context));
+    // The same record keeps its verdict: nothing is paid for twice.
+    expect(run).not.toHaveBeenCalled();
+    expect(result.message.startsWith(`${VERIFIER_MARKER} Your pick, or the first option of your summary, rests on a key specification the check rejected, and a pick cannot ` +
+      "stand on one. Re-record it from a page that shows it, or choose another option.")).toBe(true);
+    expect(result.message).toContain(`- "${LAYERS}" (record r1, cell x1 / firmness, written by lab). The checker's reason, as data: "the page says 2 cm"`);
+    expect(result.message).toContain("call record_evidence with supersedes set to its id");
+    expect(result.message).toContain("Citing as well another site's record of that cell, one the check did not reject, does too.");
+    expect(result.message).toContain("Saying in the report that it is not verified is not enough for a pick");
+    expect(result.unresolvedNote).toBe(LINE);
+    // An approval or a Continue rebuilds the draft from the transcript, and the message keeps the rejection.
+    expect(researchCarriedNotes([verifierGate], picking("x1", ["x1"]), [{ draft: structuredClone(picking("x1", ["x1"])), gate: "verifier", message: result.message }])).toEqual([LINE]);
+  });
+
+  it("holds the summary's first option to the same rule when the draft picks no row, and a case's pick too", async () => {
+    const { earlier } = await corrected();
+    expect((await check(picking(null, ["x1", "x2"]), contextOf({ coverage, earlier, evidence: evidence(), opened: refused }).context)).kind).toBe("send_back");
+    const cases = { ...picking(null, ["x2", "x1"]), branchPicks: [{ branchKey: "weight", caseKey: "heavy", rowKey: "x1" }] };
+    expect((await check(cases, contextOf({ coverage, earlier, evidence: evidence(), opened: refused }).context)).kind).toBe("send_back");
+  });
+
+  it("lets another option stand first, or a rejected fact that is no key specification, and names it for the reader as before", async () => {
+    const { earlier } = await corrected();
+    expect(await check(picking("x2", ["x2", "x1"]), contextOf({ coverage, earlier, evidence: evidence(), opened: refused }).context)).toEqual({ kind: "pass", notes: [LINE] });
+    const unmarked: ResearchCoveragePort = { ...NOOP_RESEARCH_PORTS.coverage, frame: async () => reportFrame };
+    expect(await check(picking("x1", ["x1"]), contextOf({ coverage: unmarked, earlier, evidence: evidence(), opened: refused }).context)).toEqual({ kind: "pass", notes: [LINE] });
+  });
+
+  it("lets the pick stand on another site's record of that cell the check did not reject, which the report check wants cited beside it", async () => {
+    const { earlier } = await corrected();
+    const both = [...records, recordOf("r4", "Latex 2 cm over coir 1 cm", "p1", { claim: "Latex 2 cm over coir 1 cm.", criterionKey: "firmness", registrableDomain: "maker.example", rowKey: "x1",
+      url: "https://maker.example/x1" })];
+    const findings = [recorded("r1", { claim: LAYERS, quote: "Latex 2 cm over coir 1 cm" }), recorded("r4", { claim: "Latex 2 cm over coir 1 cm.", quote: "Latex 2 cm over coir 1 cm", url: "https://maker.example/x1" })];
+    const { context } = contextOf({ coverage, earlier, evidence: evidenceOf(both, [pageOf("p1", PAGE_TEXT)]), opened: refused, turn: async () => ended("Outcome: done\nC2 | supported | it says so") });
+    // The rejected record stays named for the reader while the draft cites it.
+    expect(await check(picking("x1", ["x1"], findings), context)).toEqual({ kind: "pass", notes: [LINE] });
+  });
+
+  it("clears once a correction of the record passes", async () => {
+    const { earlier } = await corrected();
+    const fixed = [...records, recordOf("r3", "Latex 2 cm over coir 1 cm", "p1", { claim: "Latex 2 cm over coir 1 cm.", criterionKey: "firmness", rowKey: "x1", supersedes: "r1" })];
+    const { context } = contextOf({ coverage, earlier, evidence: evidenceOf(fixed, [pageOf("p1", PAGE_TEXT)]), opened: refused, turn: async () => ended("Outcome: done\nC1 | supported | it says so") });
+    expect(await check(picking("x1", ["x1"], [recorded("r3", { claim: "Latex 2 cm over coir 1 cm.", quote: "Latex 2 cm over coir 1 cm" })]), context)).toEqual({ kind: "pass" });
+  });
+
+  it("goes back only within the gate's cap: past it the answer names the fact", async () => {
+    const { earlier } = await corrected();
+    const { context } = contextOf({ coverage, evidence: evidence(), opened: refused });
+    const second = sentBack(await check(picking("x1", ["x1"]), { ...context, earlier }));
+    const both = [...earlier, { draft: picking("x1", ["x1"]), gate: "verifier", message: second.message }];
+    const outcome = await runResearchGates({ context: { ...context, earlier: both }, draft: picking("x1", ["x1"]), gates: [verifierGate], runId: "run-1" });
+    expect(outcome).toEqual({ kind: "accepted", notes: [LINE] });
   });
 });
 

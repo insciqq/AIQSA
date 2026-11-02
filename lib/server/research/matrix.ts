@@ -5,6 +5,7 @@ import {
   RESEARCH_ROUND_LIMITS,
   type DecodedResearch,
   type ResearchCriterion,
+  type ResearchDraft,
   type ResearchEvidenceRecord,
   type ResearchFrame,
   type ResearchFrameChange,
@@ -15,6 +16,8 @@ import {
 import { SUBAGENT_LIMITS } from "../../contracts/subagents";
 import { logEvent } from "../observability";
 import type { ResearchCoveragePort, ResearchPorts, ResearchRunScope } from "./ports";
+import { claimFigures, figuresNotIn, type ClaimFigure } from "./quoteCheck";
+import { researchRegistrableDomain } from "./sourceQuality";
 
 /**
  * The matrix (`ResearchCoveragePort`): rows by criteria, the holes of which plan each round of researchers. A cell's state always comes
@@ -81,6 +84,93 @@ export function researchEmptyByRow({ coverage, frame }: ResearchMatrix): readonl
     const criteria = frame.criteria.filter(({ key }) => empty.has(cellId(row?.key ?? RESEARCH_WHOLE_QUESTION_ROW, key)));
     return criteria.length > 0 ? [{ criteria, row }] : [];
   });
+}
+
+/** The criteria the plan marked decisive: the key specifications a pick depends on (`RESEARCH_FRAME_LIMITS.decisiveCriteria`). */
+export const researchKeySpecs = (frame: ResearchFrame): readonly ResearchCriterion[] => frame.criteria.filter(({ decisive }) => decisive === true);
+
+type LeadingDraft = Pick<ResearchDraft, "branchPicks" | "pickRowKey" | "summary"> | null | undefined;
+
+/** The options a draft leads with, in its order: its pick, each case's pick and the options its summary recommends. None before a first draft. */
+export function researchLeadingRows(draft: LeadingDraft): readonly string[] {
+  if (!draft) return [];
+  return [...new Set([...draft.pickRowKey ? [draft.pickRowKey] : [], ...draft.branchPicks?.map(({ rowKey }) => rowKey) ?? [], ...draft.summary?.rowKeys ?? []])];
+}
+
+export type ResearchClaimRecord = Extract<ResearchEvidenceRecord, Readonly<{ kind: "dataset" | "finding" }>>;
+
+/** A record's site, from its link where the store has none: two pages of one site are one source. */
+export const researchRecordSite = (record: ResearchClaimRecord): string | null => record.registrableDomain ?? researchRegistrableDomain(record.url);
+
+/** Two records of one key specification from different sites, with the figures each gives that the other does not, in the same order. */
+export type ResearchDisagreement = Readonly<{ figures: readonly [readonly ClaimFigure[], readonly ClaimFigure[]]; records: readonly [ResearchClaimRecord, ResearchClaimRecord] }>;
+
+/** A key specification of an option as its live records fill it. */
+export type ResearchKeyCell = Readonly<{
+  /** Two sites hold it, or an agent recorded that no further one shows it (`not_found` in a filled cell): nothing more is asked of it. */
+  confirmed: boolean;
+  criterion: ResearchCriterion;
+  disagreements: readonly ResearchDisagreement[];
+  records: readonly ResearchClaimRecord[];
+  row: ResearchMatrixRow;
+  sites: readonly string[];
+}>;
+
+/** A cell's records compared pairwise for disagreements: past this a cell is no specification any more, and the first ones written stand for it. */
+const KEY_CELL_RECORDS = 12;
+
+/**
+ * The pairs of sites whose figures each say what the other does not, as two shops stating a load of 130 and of 140 kg do. Which one is right stays the report's to
+ * say; records that describe different parts of one cell read as such a pair too, and cost nothing once the report states both.
+ */
+function disagreementsOf(records: readonly ResearchClaimRecord[]): readonly ResearchDisagreement[] {
+  const read = records.slice(0, KEY_CELL_RECORDS).map((record) => ({ figures: claimFigures(record.claim), record, site: researchRecordSite(record) }));
+  return read.flatMap((one, index) => read.slice(index + 1).flatMap((other): ResearchDisagreement[] => {
+    if (one.site === null || other.site === null || one.site === other.site) return [];
+    const figures = [figuresNotIn(one.figures, other.record.claim), figuresNotIn(other.figures, one.record.claim)] as const;
+    return figures[0].length > 0 && figures[1].length > 0 ? [{ figures, records: [one.record, other.record] }] : [];
+  }));
+}
+
+/**
+ * The key specifications of these rows that hold evidence, row by row in their order (operator decision 2026-11-02): a real run's pick rested on one seller's figures
+ * while sellers disagreed on its load and height, so a leading option's key specifications rest on two sites, and only theirs: the 70-minute loop of one more detail of
+ * a filled cell cannot come back. A row the matrix lacks has none.
+ */
+export function researchKeyCells(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], rowKeys: readonly string[]): readonly ResearchKeyCell[] {
+  const keySpecs = researchKeySpecs(matrix.frame);
+  if (keySpecs.length === 0 || rowKeys.length === 0) return [];
+  const byId = new Map(records.map((record) => [record.id, record] as const));
+  const cells = new Map(matrix.coverage.cells.map((cell) => [cellId(cell.rowKey, cell.criterionKey), cell] as const));
+  return rowKeys.flatMap((rowKey) => {
+    const row = matrix.frame.rows.find(({ key }) => key === rowKey);
+    return row ? keySpecs.flatMap((criterion): ResearchKeyCell[] => {
+      const cell = cells.get(cellId(rowKey, criterion.key));
+      if (cell?.state !== "filled") return [];
+      const held = cell.recordIds.flatMap((id) => {
+        const record = byId.get(id);
+        return record && (record.kind === "finding" || record.kind === "dataset") ? [record] : [];
+      });
+      // Records that could not be read say nothing of the cell, so nothing is asked of it.
+      if (held.length === 0) return [];
+      const sites = [...new Set(held.flatMap((record) => researchRecordSite(record) ?? []))];
+      const sought = records.some((record) => record.kind === "not_found" && record.rowKey === rowKey && record.criterionKey === criterion.key);
+      return [{ confirmed: sites.length >= 2 || sought, criterion, disagreements: disagreementsOf(held), records: held, row, sites }];
+    }) : [];
+  });
+}
+
+/** The key specifications of the options a draft leads with that one site alone holds: what the coverage line and the gap check ask a second site for. */
+export const researchUnconfirmedKeyCells = (matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: LeadingDraft): readonly ResearchKeyCell[] =>
+  researchKeyCells(matrix, records, researchLeadingRows(draft)).filter(({ confirmed }) => !confirmed);
+
+/**
+ * What a round is measured by: the cells filled, and the key specifications of the last draft's options confirmed, since a round that confirmed what was asked of it
+ * found something. Only those options': a confirmation nobody asked for buys no further round.
+ */
+export function researchProgressCells(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: LeadingDraft): ReadonlySet<string> {
+  const confirmed = researchKeyCells(matrix, records, researchLeadingRows(draft)).filter((cell) => cell.confirmed).map((cell) => `${cellId(cell.row.key, cell.criterion.key)}#confirmed`);
+  return new Set([...researchFilledCells(matrix.coverage), ...confirmed]);
 }
 
 const refused = (message: string) => ({ message, ok: false as const });
