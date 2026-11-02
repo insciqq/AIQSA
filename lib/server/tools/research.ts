@@ -1,4 +1,4 @@
-import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_LIMITS, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import type { RunTool } from "./types";
 
@@ -64,7 +64,11 @@ export const proposeResearchPlanTool: RunTool = {
       criteria: {
         description: "What the answer is judged by, at least one, found in the guides and standards you read while scoping and not from memory. For a knowledge question: its outcomes or sub-questions. " +
           "For a purchase, the current offer (where to buy, the seller, the price) and owners' reviews are criteria too, so every option found gets them as cells to fill.",
-        items: keyed({ criterion: { description: "In plain words, in the user's language.", type: "string" }, why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
+        items: keyed({ criterion: { description: "In plain words, in the user's language.", type: "string" },
+          decisive: { description: "true for a key specification: a property of the option itself that the pick depends on and sellers may state differently, such as a mattress's " +
+            `load per side, height and layers. Each option the report recommends gets it confirmed from two sites. At most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}; false for the offer, ` +
+            "the price, owners' reviews and a knowledge question's outcomes.", type: "boolean" },
+          why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
         type: "array"
       },
       questions: {
@@ -193,6 +197,7 @@ export function researchScopingInstructions(): string {
     `Research started with scoping: you have up to ${SCOPING_MINUTES} minutes before the plan. Read a few guides or standards on how such a thing ` +
       "is chosen and find the criteria yourself: the user may not know what matters, and criteria from memory float between runs.",
     "Write each criterion in plain words with why it matters. A knowledge question gets its outcomes or sub-questions in the same place, each with why it matters.",
+    `For a choice between options, mark as decisive the few key specifications a pick depends on, at most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}: the recommended options get them confirmed from two sites.`,
     `Then call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}. Do not wait until the time is up, and do not start researchers: they start after the plan.`,
     "Ask the user nothing, here or in the plan: what you lack becomes a named assumption. What is unknown about the user and changes the result " +
       "becomes a branch with its cases, so the report can say \"up to 70 kg, A; heavier, B\".",

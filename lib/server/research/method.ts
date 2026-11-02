@@ -3,7 +3,7 @@ import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RESEARCH_ROUND_LIMITS, SUBMIT_RESEARCH
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { PlanUpdate } from "../tools/updatePlan";
 import { RESEARCH_REVIEWS_REFERENCE } from "./dataCollection";
-import { researchEmptyByRow, type ResearchEmptyRow, type ResearchMatrix } from "./matrix";
+import { researchEmptyByRow, researchKeySpecs, type ResearchEmptyRow, type ResearchKeyCell, type ResearchMatrix } from "./matrix";
 import { researchRegistrableDomain } from "./sourceQuality";
 
 /**
@@ -44,6 +44,21 @@ const cut = (text: string, max: number) => text.length <= max ? text : `${text.s
 const classLine = (question: ResearchQuestion, index: number) =>
   `${index + 1}. ${question.question} [${question.sourceClasses.join(", ")}]${question.sites.length > 0 ? ` (sites the user named: ${question.sites.join(", ")})` : ""}`;
 
+/**
+ * The facts a pick stands on (operator decisions 2026-11-02). A real run's pick rested on one seller's figures while sellers disagreed on its load and height, and on a
+ * layer claim its own check had rejected; its default was the cheaper of two lookalikes. A second site is asked only of the key specifications of the options a draft
+ * recommends, so one more detail of any other filled cell, which once kept a run going for 70 minutes, is still never asked.
+ */
+const KEY_SPECIFICATIONS = "The criteria the plan marked decisive are the key specifications a pick depends on. Each key specification of an option you will recommend rests on records " +
+  "from two different sites, the maker's and a seller's where both exist: send researchers for that before you hand in the draft, and once a draft names its options the matrix line " +
+  "lists those still on one site. Where two sites give different figures, both stay recorded and cited, and the report names the disagreement for that option instead of choosing one " +
+  "figure. Your pick, and the first option of the summary, never rest on a key specification the checks rejected: re-record it from a page that shows it, or choose another option.";
+
+/** What a researcher does with a key specification: each site its own record, so a disagreement stays seen and the checks read both. */
+const KEY_SPECIFICATION_RECORDS = "A criterion the matrix lists under key specifications is recorded from each site that states it, the maker's and a seller's where both exist, each " +
+  "as its own record of that cell; a site that gives another figure is a record of its own too, never a correction of the other. Where no second site shows it, record not_found " +
+  "for that cell with the reason.";
+
 /** A real run's question about the finalists' reviews started beside the questions that find them, waited 12 minutes for their names and finished last. */
 const INDEPENDENT_QUESTIONS = "Start now only the questions that need no other's answer: one that needs the options found, such as their owners' reviews, current offers or key " +
   "specifications, waits for the next round and works on the empty cells of the rows found.";
@@ -56,9 +71,10 @@ export function researchMethodText(plan: ResearchPlan): string {
       "parallel and you get their reports together. Name in each brief which question it covers and the matrix cells it is to fill. The server " +
       `adds the method, the source classes and the matrix to each brief; do not repeat them. ${INDEPENDENT_QUESTIONS}`,
     "Do not write the report as a message: nothing you write while research runs reaches the user, and search snippets are not evidence.",
-    "After each researcher's report you read what is still empty in the matrix. Send more researchers for empty cells only, never for one " +
-      `more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
+    "After each researcher's report you read what is still empty in the matrix. Send more researchers only for empty cells and for the confirmations the matrix line names, " +
+      `never for one more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
       `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} ${READER_WORDS}`,
+    KEY_SPECIFICATIONS,
     `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the summary, the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
       "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
@@ -68,8 +84,8 @@ export function researchMethodText(plan: ResearchPlan): string {
     "Every figure, price, study and named claim in the report links the page it came from where it is stated, not in a list at the end only. " +
       "The report leads with a comparison table on the matrix's criteria holding every option considered, says why each criterion matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
       "and each case of a branch gets its row. When the data does not tell rows apart, say so and what would decide, such as trying them, instead of inventing a difference. " +
-      "The report still says which of them it would take by default today and why, such as the cheapest among those with the same evidence, marked plainly as a default and not as a finding, " +
-      "alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, marked compactly in the table or in one clause rather than by " +
+      "The report still says which of them it would take by default today and why: the option whose key specifications passed the checks and that best fits the user's stated " +
+      "priorities, price breaking only a tie among those, marked plainly as a default and not as a finding, alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, marked compactly in the table or in one clause rather than by " +
       "hedging every sentence, and says what could not be reached and why.",
     "For a purchase, each option the summary recommends has at least one current offer cited, an action_channel record with its link, seller, price and the date it was seen, from any " +
       "shop; one sentence says which shops could not be reached. Where the maker's own price is known, judge each offer against it. The options considered and not recommended stay " +
@@ -101,6 +117,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
       `An option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} A criterion only when the question needs it, with your reason.`,
+    KEY_SPECIFICATION_RECORDS,
     OFFERS,
     `The goal: ${cut(plain(plan.goal), GOAL_CHARACTERS)} ${READER_WORDS}`,
     RESEARCH_REVIEWS_REFERENCE,
@@ -129,11 +146,13 @@ export function researcherMatrixFooter(matrix: ResearchMatrix, room: number): st
   const empty = researchEmptyByRow(matrix);
   const noRows = `Rows: none yet. Add each option the user could choose with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
   const rowKeys = frame.rows.length > 0 ? `Rows: ${frame.rows.map(({ key }) => key).join(", ")}.` : noRows;
-  const criterionKeys = `Criteria: ${frame.criteria.map(({ key }) => key).join(", ")}.`;
+  const keySpecs = researchKeySpecs(frame);
+  const keySpecKeys = keySpecs.length > 0 ? ` Key specifications: ${keySpecs.map(({ key }) => key).join(", ")}.` : "";
+  const criterionKeys = `Criteria: ${frame.criteria.map(({ key }) => key).join(", ")}.${keySpecKeys}`;
   const total = `${coverage.empty} of ${coverage.cells.length} cells are still empty.`;
   const forms = [
     [frame.rows.length > 0 ? `Rows: ${frame.rows.map(({ key, label }) => `${key} (${plain(label)})`).join(", ")}.` : noRows,
-      `Criteria: ${frame.criteria.map(({ criterion, key }) => `${key} (${plain(criterion)})`).join(", ")}.`, `${total} ${emptyCells(empty)}`.trim()],
+      `Criteria: ${frame.criteria.map(({ criterion, key }) => `${key} (${plain(criterion)})`).join(", ")}.${keySpecKeys}`, `${total} ${emptyCells(empty)}`.trim()],
     [rowKeys, criterionKeys, `${total} ${emptyCounts(empty, frame.criteria.length)}`.trim()],
     [rowKeys, criterionKeys, total],
     [total]
@@ -179,16 +198,29 @@ export function researcherBrief(brief: string, plan: ResearchPlan, matrix: Resea
   return full.length <= RUN_FOLLOWUP_MAX_CHARS ? researcherMatrixBrief(full, matrix, records) : null;
 }
 
-/** What the main agent reads after each researcher's report, in that call's result: what the next round is planned from. */
-export function researchCoverageLine(matrix: ResearchMatrix, newCells: number | null): string {
+/** The key specifications still on one site, by row: their keys, the words a researcher's brief names them by. */
+function unconfirmedCells(cells: readonly ResearchKeyCell[]): string {
+  const rows = [...new Set(cells.map(({ row }) => row.key))];
+  return rows.map((key) => `${key}: ${cells.filter(({ row }) => row.key === key).map(({ criterion }) => criterion.key).join(", ")}`).join("; ");
+}
+
+/**
+ * What the main agent reads after each researcher's report, in that call's result: what the next round is planned from. `unconfirmed` are the key specifications
+ * of the last draft's options that one site alone holds (`researchUnconfirmedKeyCells`), which are all it asks of a filled cell.
+ */
+export function researchCoverageLine(matrix: ResearchMatrix, newCells: number | null, unconfirmed: readonly ResearchKeyCell[] = []): string {
   const { coverage, frame } = matrix;
   const sofar = newCells === null ? "" : `, ${newCells} newly filled in this round so far`;
   const opening = `The matrix (from the server): ${coverage.empty} of ${coverage.cells.length} cells empty${sofar}.`;
-  if (coverage.empty === 0) return `${opening} Nothing is left for researchers to fill.`;
+  if (coverage.empty === 0 && unconfirmed.length === 0) return `${opening} Nothing is left for researchers to fill.`;
   const empty = researchEmptyByRow(matrix);
-  const closing = "Send researchers for empty cells only.";
-  return [`${opening} Empty: ${emptyCells(empty)}. ${closing}`, `${opening} Empty: ${emptyCounts(empty, frame.criteria.length)}. ${closing}`]
-    .find((form) => form.length <= COVERAGE_LINE_CHARACTERS) ?? `${opening} ${closing}`;
+  const emptyForms = coverage.empty === 0 ? [""] : [` Empty: ${emptyCells(empty)}.`, ` Empty: ${emptyCounts(empty, frame.criteria.length)}.`];
+  const confirmForms = unconfirmed.length === 0 ? [""] : [` To confirm from a second site, the maker's or a seller's, for the options the last draft recommends: ${unconfirmedCells(unconfirmed)}.`,
+    ` To confirm from a second site: ${unconfirmed.length} key specifications of the options the last draft recommends.`];
+  const closing = unconfirmed.length === 0 ? "Send researchers for empty cells only." : coverage.empty === 0 ? "Send researchers for these confirmations only."
+    : "Send researchers for empty cells and these confirmations only.";
+  const forms = confirmForms.flatMap((confirm) => emptyForms.map((emptyForm) => `${opening}${emptyForm}${confirm} ${closing}`));
+  return forms.find((form) => form.length <= COVERAGE_LINE_CHARACTERS) ?? `${opening} ${closing}`;
 }
 
 /** Why no further researcher starts, as the refused call says it. */

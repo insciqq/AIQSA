@@ -2,8 +2,9 @@ import { researchDraftText, type ResearchDraft, type ResearchEvidenceRecord, typ
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchGate } from "./gates";
-import { researchMatrix, type ResearchMatrix } from "./matrix";
+import { researchKeyCells, researchLeadingRows, researchMatrix, researchRecordSite, type ResearchMatrix } from "./matrix";
 import { researchGatePorts } from "./ports";
+import { figuresNotIn, type ClaimFigure } from "./quoteCheck";
 import { researchRegistrableDomain } from "./sourceQuality";
 
 /**
@@ -15,7 +16,8 @@ import { researchRegistrableDomain } from "./sourceQuality";
  * - a link in the report is a record the draft cites, since a link is what a report's prose claims to rest on that a field can show;
  * - a report resting on several pages links at least half of them, so its reader can trace what it says;
  * - a comparison has its table, naming every criterion, and a criterion added on the way is named;
- * - the summary the reader reads first is there, starts with the pick, names in its text the rows it lists, and the offers of the options it recommends are cited.
+ * - the summary the reader reads first is there, starts with the pick, names in its text the rows it lists, and the offers of the options it recommends are cited;
+ * - a key specification of an option it leads with is cited from two sites where two hold it, and where they disagree both are cited and both figures stated.
  *
  * What stays the model's word: that the prose says what the cited records say (the verifier reads the records, not the prose), that the pick follows
  * from the comparison, why each criterion matters, a statement that rows do not separate, any pick written only in prose, and the summary's prices, shops and
@@ -197,6 +199,45 @@ function uncitedRows(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: Res
   return { message: `${noEvidence}${uncited}`.trim() };
 }
 
+/**
+ * The key specifications of the options the draft leads with (`researchKeyCells`, operator decisions 2026-11-02): held on two sites, a record of each is cited, so the
+ * checks read both; where two sites give different figures, both records are cited and the report states each figure, since a real run's pick rested on one seller's
+ * figure while sellers disagreed on its load and height. Which figure is right stays the report's to say, and where it says so stays the model's word: only that both
+ * are stated somewhere is checked, so records that describe different parts of one cell pass once the report states both.
+ */
+function keySpecTrouble(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
+  const rows = new Set(matrix.frame.rows.map(({ key }) => key));
+  const secondSites: string[] = [];
+  const pairs: string[] = [];
+  const unnamed: string[] = [];
+  for (const cell of researchKeyCells(matrix, records, researchLeadingRows(draft).filter((key) => rows.has(key)))) {
+    const where = `${cell.row.key} / ${cell.criterion.key}`;
+    const citedSites = new Set(cell.records.filter(({ id }) => ids.has(id)).flatMap((record) => researchRecordSite(record) ?? []));
+    if (cell.sites.length >= 2 && citedSites.size < 2) {
+      // One record of each site not cited yet, so any id taken adds a site.
+      const others = cell.sites.filter((site) => !citedSites.has(site)).flatMap((site) => cell.records.find((record) => researchRecordSite(record) === site) ?? []);
+      secondSites.push(`${where}: ${others.slice(0, IDS_PER_CELL).map(({ id }) => id).join(", ")}`);
+    }
+    if (cell.disagreements.length === 0) continue;
+    const cited = cell.disagreements.filter(({ records: pair }) => pair.every(({ id }) => ids.has(id)));
+    if (cited.length === 0) {
+      const pair = cell.disagreements.find(({ records: both }) => both.some(({ id }) => ids.has(id))) ?? cell.disagreements[0]!;
+      pairs.push(`${where}: ${pair.records.map(({ id }) => id).join(", ")}`);
+    } else if (!cited.some(({ figures }) => figures.every((side) => figuresNotIn(side, report).length === 0))) {
+      const { figures, records: [one, other] } = cited[0]!;
+      const side = (shown: readonly ClaimFigure[], record: ClaimRecord) => `${shown.map(({ text }) => plain(text)).join(", ")} (${researchRecordSite(record) ?? record.id})`;
+      unnamed.push(`${plain(cell.row.label)} — ${plain(cell.criterion.criterion)}: ${side(figures[0], one)} against ${side(figures[1], other)}`);
+    }
+  }
+  const parts = [
+    ...secondSites.length > 0 ? [`A key specification of an option you recommend rests on two sites, and the checks read only what record_ids names: cite records of two sites for each of ` +
+      `these, from the ids of sites you do not cite yet. ${listed(secondSites, "; ")}.`] : [],
+    ...pairs.length > 0 ? [`Two sites give different figures for a key specification of an option you recommend: cite both records, so the checks read both, and name the disagreement in the report. ${listed(pairs, "; ")}.`] : [],
+    ...unnamed.length > 0 ? [`Two sites disagree on a key specification of an option you recommend, and the report does not state both figures: name the disagreement for that option, each figure with the site that gives it, instead of one figure. ${listed(unnamed, "; ")}.`] : []
+  ];
+  return parts.length > 0 ? { message: parts.join(" ") } : null;
+}
+
 const SUMMARY_FORM = "Pass summary with its text, two to four short paragraphs in the user's language that the server puts above the report: the option to take for the user's " +
   "criteria, then the alternatives for their other likely priorities, each named as the matrix names it and, for a purchase, with its price and where to buy it; and its row_keys, " +
   "the rows it recommends in that order, the pick first.";
@@ -335,7 +376,8 @@ export function researchReportFindings(draft: ResearchDraft, records: readonly R
   const ids = citedRecords(named, records);
   const unknown = unknownRecords(ids, records, report);
   const links = unbackedLinks(draft, ids, records, report);
-  const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report)];
+  const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report),
+    keySpecTrouble(draft, ids, matrix, records, report)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
   const summary = [summaryTrouble(draft, matrix?.frame ?? null), uncitedOffers(draft, ids, records, matrix)];
