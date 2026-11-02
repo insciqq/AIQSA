@@ -21,7 +21,7 @@ describe("the engine a real run gets", () => {
     expect(deps.research?.ports?.time).toBe(createResearchClock);
     const extendTurn = vi.fn();
     const run: ResearchRunScope = { branchRunIds: [], chatId: "chat", extendTurn, now: () => Date.now(), researchRunId: "run", runId: "run", sources: { opened: async () => [] },
-      userFollowups: async () => [], userId: "user", userMessage: "" };
+      turnEndsAt: () => Date.now() + 3_600_000, userFollowups: async () => [], userId: "user", userMessage: "" };
     const { time } = researchPorts(deps.research?.ports, run);
     expect(time).not.toBe(NOOP_RESEARCH_PORTS.time);
     time.planReleased();
