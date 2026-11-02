@@ -171,20 +171,49 @@ describe("what comes back of it", () => {
     expect((await skepticGate.run(draftOf(), context)).kind).toBe("pass");
   });
 
-  it("names the page a quote was really on, and shows no quote it could not find there", async () => {
+  it("names the page a quote was really on", async () => {
     const elsewhere = line("The X1 was recalled.", "A recall of the X1", "https://cited.example/x");
     const other = sentBack(await skepticGate.run(draftOf(), contextOf({ turn: async () => ended(`Outcome: done\n${elsewhere}`) }).context));
     expect(other.unresolvedNote).toContain(LAB);
     expect(other.unresolvedNote).not.toContain("cited.example");
-
-    const reworded = line("The X1 was recalled.", "They recalled the X1 this spring", LAB);
-    const loose = sentBack(await skepticGate.run(draftOf(), contextOf({ turn: async () => ended(`Outcome: done\n${reworded}`) }).context));
-    expect(loose.unresolvedNote).not.toContain("«");
   });
 
-  it("keeps a finding when the opened text cannot be read, since that says nothing against it", async () => {
-    const { context } = contextOf({ sources: async () => { throw new Error("storage down"); }, turn: async () => ended(`Outcome: done\n${RECALL}`) });
-    expect(await skepticGate.run(draftOf(), context)).toMatchObject({ kind: "send_back", unresolvedNote: expect.stringContaining("The X1 was recalled in March.") });
+  it("lets no quote that is on no opened page stand, though it cites a page that was opened: that is not_verbatim, and nothing is behind the claim", async () => {
+    const { context } = contextOf({ turn: async () => ended(`Outcome: done\n${line("The X1 catches fire.", "bursts into flames", LAB)}`) });
+    const result = await skepticGate.run(draftOf(), context);
+    expect(result.kind).toBe("pass");
+    expect(JSON.stringify(result)).not.toContain("catches fire");
+    expect(notesOf(result)).toContain("could not show on a page it opened");
+  });
+
+  it("lets a reworded quote count for nothing either, and what stood stands", async () => {
+    const { attempt } = await raised();
+    const reworded = line("The X1 was recalled.", "They recalled the X1 this spring", LAB);
+    const result = await skepticGate.run(draftOf(), contextOf({ earlier: [attempt], turn: async () => ended(`Outcome: done\n${reworded}`) }).context);
+    expect(result.kind).toBe("pass");
+    expect(notesOf(result)).toContain("could not show on a page it opened");
+    expect(notesOf(result)).toContain("The X1 was recalled in March.");
+    expect(notesOf(result)).not.toContain("The X1 was recalled.");
+  });
+
+  it("publishes nothing it could not look up when the opened text cannot be read, and says the check could not be completed", async () => {
+    const { attempt } = await raised();
+    const { context } = contextOf({ earlier: [attempt], sources: async () => { throw new Error("storage down"); }, turn: async () => ended(`Outcome: done\n${line("A new finding.")}`) });
+    const result = await skepticGate.run(draftOf(), context);
+    expect(result.kind).toBe("pass");
+    expect(JSON.stringify(result)).not.toContain("A new finding.");
+    expect(notesOf(result)).toContain(researchNote("gate_failed", draftOf().report));
+    expect(notesOf(result)).not.toContain("could not show on a page");
+    expect(notesOf(result)).toContain("The X1 was recalled in March.");
+  });
+
+  it("does not take text past what one read holds for a page: such a quote is not_checked, and the note says it is left out", async () => {
+    const many: ResearchOpenedSource[] = Array.from({ length: 2_000 }, () => ({ partial: false, text: "A page.", toolName: "fetch_url", url: "https://other.example/x" }));
+    const { context } = contextOf({ sources: async () => many, turn: async () => ended(`Outcome: done\n${line("Something big.", "said on no page read here", "https://never.example/x")}`) });
+    const result = await skepticGate.run(draftOf(), context);
+    expect(result.kind).toBe("pass");
+    expect(JSON.stringify(result)).not.toContain("Something big.");
+    expect(notesOf(result)).toContain("could not show on a page it opened");
   });
 });
 
