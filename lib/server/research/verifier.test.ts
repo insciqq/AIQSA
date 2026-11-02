@@ -397,6 +397,14 @@ function evidenceOf(records: readonly ResearchEvidenceRecord[], pages: readonly 
   return port satisfies ResearchEvidencePort;
 }
 
+/** The store as it is after these writes: the live records, those no correction superseded, and every correction's lineage, superseded ones included. */
+function writtenEvidence(writes: readonly ResearchEvidenceRecord[], pages: readonly ResearchStoredPage[]) {
+  const superseded = new Set(writes.flatMap((record) => record.supersedes ?? []));
+  const port = { ...evidenceOf(writes.filter((record) => !superseded.has(record.id)), pages),
+    supersessions: vi.fn(async () => new Map(writes.flatMap(({ id, supersedes }) => supersedes === null ? [] : [[id, supersedes] as const]))) };
+  return port satisfies ResearchEvidencePort;
+}
+
 const recorded = (recordId: string, extra: Partial<ResearchFinding> = {}): ResearchFinding => finding("The X1 is in stock at 399.", "in stock at 399", { recordId, url: CARD, ...extra });
 const lineIn = (brief: string, id: number) => JSON.parse(brief.split("\n").find((line) => line.startsWith(`C${id} `))!.slice(`C${id} `.length)) as Record<string, unknown>;
 const refused = async (): Promise<readonly ResearchOpenedSource[]> => { throw new Error("no need to read the run's opened text"); };
@@ -1263,6 +1271,39 @@ describe("a pick on a key specification the check rejected", () => {
     expect(result.message).toContain(`- "${LAYERS}" (record r1, cell x1 / firmness, not in record_ids, while the pick still rests on that cell)`);
     expect(result.message).toContain("neither is taking its id out of record_ids");
     expect(result.unresolvedNote).toBe(LINE);
+  });
+
+  it("holds the rejection through two corrections written before the next draft, though the store keeps only the last one live", async () => {
+    const { earlier } = await corrected();
+    const writes = [records[0]!,
+      recordOf("r3", "Latex 2 cm over coir 1 cm", "p1", { claim: LAYERS, criterionKey: "firmness", rowKey: "x1", standing: "not_verified", supersedes: "r1" }),
+      recordOf("r4", "Latex 2 cm over coir 1 cm", "p1", { claim: LAYERS, criterionKey: "firmness", rowKey: "x1", standing: "not_verified", supersedes: "r3" })];
+    const findings = [recorded("r4", { claim: LAYERS, quote: "Latex 2 cm over coir 1 cm", standing: "not_verified" })];
+    const { context, run } = contextOf({ coverage, earlier, evidence: writtenEvidence(writes, [pageOf("p1", PAGE_TEXT)]), opened: refused });
+    const result = await check(picking("x1", ["x1"], findings), context);
+    expect(run).not.toHaveBeenCalled();
+    expect(sentBack(result).message).toContain("(record r4, cell x1 / firmness, written by lab)");
+    expect(sentBack(result).unresolvedNote).toBe(LINE);
+    // A correction between them that passed its own check ends the walk: what it corrected stands answered.
+    const r3Draft = picking("x1", ["x1"], [recorded("r3", { claim: LAYERS, quote: "Latex 2 cm over coir 1 cm" })]);
+    await check(r3Draft, contextOf({ coverage, earlier, evidence: writtenEvidence(writes.slice(0, 2), [pageOf("p1", PAGE_TEXT)]), opened: refused,
+      turn: async () => ended("Outcome: done\nC1 | supported | it says so") }).context);
+    const afterPass = [...earlier, { draft: r3Draft, message: null }];
+    expect(await check(picking("x1", ["x1"], findings), contextOf({ coverage, earlier: afterPass, evidence: writtenEvidence(writes, [pageOf("p1", PAGE_TEXT)]), opened: refused }).context))
+      .toEqual({ kind: "pass" });
+  });
+
+  it("checks what the pick rests on when the draft drops every citation", async () => {
+    const { earlier } = await corrected();
+    const { context } = contextOf({ coverage, earlier, evidence: evidence(), opened: refused });
+    const result = await check(picking("x1", ["x1"], []), context);
+    expect(result.kind).toBe("send_back");
+    expect(result.kind === "send_back" && result.unresolvedNote).toBe(LINE);
+    // A draft that cites nothing and picks nothing, or one before any rejection, still costs no read.
+    const empty = evidence();
+    expect(await check(picking(null, [], []), contextOf({ coverage, earlier, evidence: empty, opened: refused }).context)).toEqual({ kind: "pass" });
+    expect(await check(picking("x1", ["x1"], []), contextOf({ coverage, evidence: empty, opened: refused }).context)).toEqual({ kind: "pass" });
+    expect(empty.records).not.toHaveBeenCalled();
   });
 
   it("clears once a correction of the record passes", async () => {

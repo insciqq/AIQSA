@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import {
-  RECORD_EVIDENCE_TOOL_NAME, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchFrame, type ResearchGateResult, type ResearchStoredPage
+  RECORD_EVIDENCE_TOOL_NAME, RESEARCH_EVIDENCE_LIMITS, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchFrame, type ResearchGateResult, type ResearchStoredPage
 } from "../../contracts/research";
 import { SUBAGENT_ERROR_CODES, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import { logEvent } from "../observability";
@@ -513,17 +513,20 @@ function claimsOnPage(page: ResearchStoredPage, findings: readonly RecordedFindi
 type RecordedClaims = Readonly<{
   /** Every live record the read returned, which is how a key specification the draft no longer cites is still seen (`pickRejections`). */
   live: readonly ResearchEvidenceRecord[];
+  /** Each record that corrects another, live or not, to the one it corrects: a correction's ancestry back to what the checks rejected (`rejectedAncestor`). */
+  lineage: ReadonlyMap<string, string>;
   records: ReadonlyMap<number, ResearchEvidenceRecord>;
   stored: ReadonlyMap<number, StoredClaim>;
 }>;
 
 /** Read under this research and the runs it continues. Any other finding keeps the opened text, and a store that cannot be read costs only that. */
-async function recordedClaims(draft: ResearchDraft, context: ResearchGateContext): Promise<RecordedClaims> {
+async function recordedClaims(draft: ResearchDraft, context: ResearchGateContext, liveWanted: boolean): Promise<RecordedClaims> {
   const wanted = new Set(draft.findings.flatMap((finding) => finding.recordId ?? []));
-  if (wanted.size === 0) return { live: [], records: new Map(), stored: new Map() };
+  if (wanted.size === 0 && !liveWanted) return { lineage: new Map(), live: [], records: new Map(), stored: new Map() };
   const { evidence } = researchGatePorts(context);
   const read = await boundedGateStep(context, timeLeft(context), async (signal) => {
     const live = await evidence.records(signal);
+    const lineage = new Map([...await evidence.supersessions?.(signal) ?? [], ...live.flatMap(({ id, supersedes }) => supersedes === null ? [] : [[id, supersedes] as const])]);
     const records = new Map(live.filter((record) => wanted.has(record.id)).map((record) => [record.id, record] as const));
     const pages = new Map<string, ResearchStoredPage>();
     for (const { pageId } of records.values()) {
@@ -531,9 +534,9 @@ async function recordedClaims(draft: ResearchDraft, context: ResearchGateContext
       const page = await evidence.page(pageId, signal);
       if (page) pages.set(pageId, page);
     }
-    return { live, pages, records };
+    return { lineage, live, pages, records };
   });
-  if (!read.ok) return { live: [], records: new Map(), stored: new Map() };
+  if (!read.ok) return { lineage: new Map(), live: [], records: new Map(), stored: new Map() };
   const records = new Map<number, ResearchEvidenceRecord>();
   const onPage = new Map<string, RecordedFinding[]>();
   for (const [index, finding] of draft.findings.entries()) {
@@ -542,7 +545,7 @@ async function recordedClaims(draft: ResearchDraft, context: ResearchGateContext
     if (!record?.pageId || !read.value.pages.has(record.pageId) || quotesOf(record).length === 0) continue;
     onPage.set(record.pageId, [...onPage.get(record.pageId) ?? [], { finding, index, record }]);
   }
-  return { live: read.value.live, records, stored: new Map([...onPage].flatMap(([pageId, findings]) => claimsOnPage(read.value.pages.get(pageId)!, findings))) };
+  return { lineage: read.value.lineage, live: read.value.live, records, stored: new Map([...onPage].flatMap(([pageId, findings]) => claimsOnPage(read.value.pages.get(pageId)!, findings))) };
 }
 
 /**
@@ -660,23 +663,36 @@ const cellOf = (record: ResearchEvidenceRecord | undefined) => record && record.
 /** A key specification of what the draft ranks first, held by a record the run's checks rejected: the record, the claim that cites it if one does, and its words and place for the reader. */
 type PickFact = Readonly<{ cell: string; claim?: ClaimResult; label: string | null; record: string; words: string }>;
 
+/** How far a correction's ancestry is walked: past every record a research may hold, so a chain ends there however it was written. */
+const LINEAGE_STEPS = RESEARCH_EVIDENCE_LIMITS.recordsPerRun * RESEARCH_EVIDENCE_LIMITS.continuationChain;
+
 /**
- * Whether a record takes the rejection of the one it corrects: until a verdict of its own passes it. A correction marked not verified is never asked, and a new id would
- * otherwise clear a rejected key fact, and the reader's warning, with no check passed (operator decision 2026-11-02).
+ * The rejected record a correction stands in for, or null: walking what it corrects, a correction of a correction included, back to a record the checks rejected, and
+ * stopping at one that passed since. Until a verdict of its own passes it, a correction takes that rejection: one marked not verified is never asked, and a new id
+ * would otherwise clear a rejected key fact, and the reader's warning, with no check passed (operator decision 2026-11-02). Researchers often correct twice before a
+ * draft, so the walk reads the store's lineage, not only the live record's own `supersedes`.
  */
-function inheritsRejection(record: ResearchEvidenceRecord | undefined, rejected: ReadonlyMap<string, Rejected>, answer: VerifierAnswer | null | undefined): boolean {
-  return record?.supersedes !== null && record?.supersedes !== undefined && rejected.has(recordKey(record.supersedes)) && !passes(answer);
+function rejectedAncestor(record: ResearchEvidenceRecord | undefined, rejected: ReadonlyMap<string, Rejected>, answers: ReadonlyMap<string, VerifierAnswer>,
+  lineage: ReadonlyMap<string, string>, answer: VerifierAnswer | null | undefined): string | null {
+  if (!record || passes(answer)) return null;
+  const seen = new Set([record.id]);
+  for (let at = record.supersedes ?? lineage.get(record.id) ?? null; at !== null && !seen.has(at) && seen.size <= LINEAGE_STEPS; at = lineage.get(at) ?? null) {
+    seen.add(at);
+    if (rejected.has(recordKey(at))) return at;
+    if (passes(answers.get(recordKey(at)))) return null;
+  }
+  return null;
 }
 
 /**
  * The key specifications of what the draft ranks first that rest only on records the run's checks rejected (operator decision 2026-11-02): a real run put first an option whose
  * layer claim its own check had rejected. A cell holds a rejected record whether the draft cites it or not, since a draft that drops the id may keep the figure in its prose,
  * and it stands only on a record the draft cites that the checks did not reject, so a second site's record, which the report check wants cited, keeps it standing and the two
- * gates never send back what the other asks for. A correction is rejected as what it corrects until it passes itself (`inheritsRejection`). Marking a record not verified
+ * gates never send back what the other asks for. A correction is rejected as what it corrects until it passes itself (`rejectedAncestor`). Marking a record not verified
  * clears nothing, as it does not for the reader's line.
  */
 function pickRejections(draft: ResearchDraft, claims: readonly ClaimResult[], rejected: ReadonlyMap<string, Rejected>, frame: ResearchFrame | null, live: readonly ResearchEvidenceRecord[],
-  answers: ReadonlyMap<string, VerifierAnswer>): readonly PickFact[] {
+  answers: ReadonlyMap<string, VerifierAnswer>, lineage: ReadonlyMap<string, string>): readonly PickFact[] {
   if (!frame) return [];
   const keySpecs = researchKeySpecs(frame);
   const first = [...rankedFirst(draft)].filter((key) => frame.rows.some((row) => row.key === key));
@@ -691,7 +707,7 @@ function pickRejections(draft: ResearchDraft, claims: readonly ClaimResult[], re
     return [...new Set([...cited.flatMap(({ finding }) => finding.recordId ?? []), ...filledBy])].flatMap((id): PickFact[] => {
       const claim = cited.find(({ finding }) => finding.recordId === id);
       const record = byId.get(id) ?? claim?.record;
-      if (claim ? !rejected.has(claim.key) : !rejected.has(recordKey(id)) && !inheritsRejection(record, rejected, answers.get(recordKey(id)))) return [];
+      if (claim ? !rejected.has(claim.key) : !rejected.has(recordKey(id)) && rejectedAncestor(record, rejected, answers, lineage, answers.get(recordKey(id))) === null) return [];
       const words = claim?.finding.claim ?? (record?.kind === "finding" || record?.kind === "dataset" ? record.claim : rejected.get(recordKey(id))?.claim ?? "");
       return [{ cell, ...claim ? { claim } : {}, label: factLabel(record, frame), record: id, words }];
     });
@@ -799,16 +815,18 @@ function recommendedKeySpecifications(draft: ResearchDraft, claims: readonly Cla
 
 async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): Promise<ResearchGateResult> {
   // Nothing to check, and a draft that cites nothing cites nothing rejected. `run.ts` says so in the answer (`no_findings`).
-  if (draft.findings.length === 0) return { kind: "pass" };
+  // Nor can it rest a pick on a rejected record unless the run's checks rejected one and the draft ranks a row first: then the pick's key cells are read whatever it cites.
+  const earlier = earlierChecks(context.earlier);
+  const pickAtStake = rankedFirst(draft).size > 0 && earlier.rejected.size > 0;
+  if (draft.findings.length === 0 && !pickAtStake) return { kind: "pass" };
 
-  const { live, records, stored } = await recordedClaims(draft, context);
+  const { lineage, live, records, stored } = await recordedClaims(draft, context, pickAtStake);
   const notStored = draft.findings.filter((_, index) => !stored.has(index));
   const opened = notStored.length > 0 ? await boundedGateStep(context, timeLeft(context), (signal) => context.sources.opened(signal, "researchers")) : null;
   const elsewhere = notStored.length > 0 ? checkQuotes(notStored, opened?.ok ? opened.value : null) : [];
   let nextOpened = 0;
   const quotes = draft.findings.map((_, index) => stored.get(index)?.quote ?? elsewhere[nextOpened++]!);
 
-  const earlier = earlierChecks(context.earlier);
   const corrected = context.earlier.some((attempt) => attempt.message?.startsWith(VERIFIER_MARKER) === true);
   // A verdict is reused only for the same record, or the same words and link of a typed finding: two records of one claim may rest on different evidence.
   const keys = draft.findings.map(identityOf);
@@ -843,8 +861,9 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
     if (isUnsupported(claim)) rejected.set(claim.key, { claim: claim.finding.claim, label: factLabel(claim.record, frame), record: claim.finding.recordId ?? null });
     // A claim the quote check rejected whose page has since been read, and which the model then supported.
     else if (passes(claim.answer)) rejected.delete(claim.key);
-    else if (claim.finding.recordId && inheritsRejection(claim.record, earlier.rejected, claim.answer)) {
-      rejected.set(claim.key, { claim: claim.finding.claim, label: factLabel(claim.record, frame) ?? earlier.rejected.get(recordKey(claim.record!.supersedes!))?.label ?? null, record: claim.finding.recordId });
+    else {
+      const ancestor = claim.finding.recordId ? rejectedAncestor(claim.record, earlier.rejected, earlier.answers, lineage, claim.answer) : null;
+      if (ancestor !== null) rejected.set(claim.key, { claim: claim.finding.claim, label: factLabel(claim.record, frame) ?? earlier.rejected.get(recordKey(ancestor))?.label ?? null, record: claim.finding.recordId! });
     }
   }
   checks.set(draft, { answers: new Map(claims.flatMap((claim) => claim.answer ? [[claim.key, claim.answer] as const] : [])), rejected,
@@ -855,7 +874,7 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
   const unanswered = toAsk.some(({ id }) => claims[id - 1]!.answer === null);
   const notRun = toAsk.length > 0 ? roundNote(round) ?? (unanswered ? researchNote("gate_failed") : null) : null;
   const answers = new Map([...earlier.answers, ...claims.flatMap((claim) => claim.answer ? [[claim.key, claim.answer] as const] : [])]);
-  const pick = pickRejections(draft, claims, rejected, frame, live, answers);
+  const pick = pickRejections(draft, claims, rejected, frame, live, answers, lineage);
   // A record the draft no longer cites that the pick still rests on is remembered as rejected, as a cited one is, and named for the reader.
   for (const { claim, label, record, words } of pick) if (!claim && !rejected.has(recordKey(record))) rejected.set(recordKey(record), { claim: words, label, record });
   const named = rejectedNote(draft, rejected, { add: new Set(pick.flatMap(({ claim, record }) => claim ? [] : [record])), leaveOut: confirmedElsewhere(claims, rejected, frame) });
