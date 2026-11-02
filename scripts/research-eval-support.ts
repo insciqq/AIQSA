@@ -14,6 +14,9 @@ const exact = (value: Record<string, unknown>, keys: readonly string[]) => Objec
 
 export const T_KINDS = ["purchase", "medical", "technical", "market"] as const;
 export type TKind = typeof T_KINDS[number];
+/** What a person does on one kind's run: edit the plan and start, press start, leave a site's handoff unanswered, or restart the app and press Continue. */
+export const T_ACTS = ["edit", "handoff", "restart", "start"] as const;
+export type TAct = typeof T_ACTS[number];
 export type ResearchJob = Readonly<{ kind: TKind; repeat: number }>;
 export const T_QUESTION_MS = 110 * 60_000;
 /** Scoping and an abandoned edit precede research; the margin belongs to the same question deadline. */
@@ -45,6 +48,12 @@ export function researchEvalOptions(env: Readonly<Record<string, string | undefi
   } else if (raw) {
     for (const kind of T_KINDS) repeats[kind] = integer(raw, 1, 20, "research_repeats_invalid");
   }
+  const acts: Partial<Record<TKind, TAct>> = {};
+  for (const part of env.AIQSA_SUBAGENTS_T_ACTS?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? []) {
+    const [kind, act, ...rest] = part.split("=").map((entry) => entry.trim());
+    if (rest.length > 0 || !T_KINDS.includes(kind as TKind) || !T_ACTS.includes(act as TAct) || acts[kind as TKind]) fail("research_acts_invalid");
+    acts[kind as TKind] = act as TAct;
+  }
   const role = (name: "RESEARCHER" | "CHECKS") => {
     const model = env[`AIQSA_SUBAGENTS_${name}_MODEL`]?.trim() || null;
     const effort = env[`AIQSA_SUBAGENTS_${name}_EFFORT`]?.trim() || null;
@@ -58,7 +67,7 @@ export function researchEvalOptions(env: Readonly<Record<string, string | undefi
   if (!answersDir) return fail("research_answers_dir_required");
   const checks = role("CHECKS");
   if (checks.model && env.AIQSA_SUBAGENTS_VERIFIER_FAMILY?.trim()) fail("research_checks_role_ambiguous");
-  return { answersDir, answersFile, checks, concurrency: integer(env.AIQSA_SUBAGENTS_T_CONCURRENCY, 3, 8, "research_concurrency_invalid"),
+  return { acts, answersDir, answersFile, checks, concurrency: integer(env.AIQSA_SUBAGENTS_T_CONCURRENCY, 3, 8, "research_concurrency_invalid"),
     jobs: T_KINDS.filter((kind) => kinds.includes(kind)).flatMap((kind) => Array.from({ length: repeats[kind] }, (_, index) => ({ kind, repeat: index + 1 }))),
     researcher: role("RESEARCHER") };
 }

@@ -111,7 +111,10 @@
  *   A proxy pasted in chat is saved for `.ru` and tested; the browser opens a hinted page, Yandex Market, Wildberries and Ozon, and an address echo through the named
  *   proxy; `fetch_url` reads through it; a dead proxy fails visibly; a switched-off one is refused by name. Oracles compare exit addresses inside SQL and print booleans. The
  *   answers go to AIQSA_SUBAGENTS_ANSWERS_FILE when set (0600), for reading by hand. Paid calls: about 15-30 codex-lb requests, in about 5-10 minutes.
- * - T: repeatable synthetic research, only when named. AIQSA_SUBAGENTS_T_KINDS selects questions; AIQSA_SUBAGENTS_T_REPEATS is
+ * - T: repeatable synthetic research, only when named. AIQSA_SUBAGENTS_T_ACTS gives a kind what a person does on its run, as
+ *   technical=edit,medical=start,market=restart: `edit` and `start` drive the plan card in a browser, `handoff` asks a question behind a
+ *   sign-in and leaves the handoff unanswered, and `restart` runs AIQSA_SUBAGENTS_RESTART_COMMAND mid-research and presses Continue.
+ *   AIQSA_SUBAGENTS_T_KINDS selects questions; AIQSA_SUBAGENTS_T_REPEATS is
  *   1 by default, an integer (1..20), or purchase=5,medical=3,technical=3,market=3 (omitted kinds keep 1). AIQSA_SUBAGENTS_T_CONCURRENCY
  *   is 3 by default (1..8). Each question has at least 110 minutes, including scoping, the plan window and the harness margin.
  *   AIQSA_SUBAGENTS_ANSWERS_DIR is required unless AIQSA_SUBAGENTS_ANSWERS_FILE supplies its adjacent .d directory. The directory
@@ -174,6 +177,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Client as PostgresClient } from "pg";
 import type { CatalogModel } from "../lib/contracts/catalog";
+import { CONTINUE_TURN_TEXT } from "../lib/contracts/runs";
 import { decodeSubagentDefinitionListResponse } from "../lib/contracts/subagentDefinitions";
 import {
   SUBAGENT_API_PATHS, decodeSubagentChatThreads, decodeSubagentStopAllResponse, decodeSubagentStopResponse,
@@ -194,7 +198,7 @@ import {
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
   browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, SCENARIO_R_PHRASES, SUBAGENT_SCENARIO_NEEDS,
-  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes,
+  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_HANDOFF_QUESTION, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes,
   type PageReads, type RPhraseResult, type TDraftFinding, type TEvidenceRow, type TGateRow,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
@@ -616,6 +620,10 @@ function interact(ctx: Context, run: Run, interaction: ScenarioInteraction, chat
     run.line.interactionFailed = error instanceof BrowserScenarioError ? error.message : "interaction_failed";
   }));
   return abort;
+}
+
+async function planBrowserModule() {
+  return import("./research-plan-browser");
 }
 
 async function handoffModule() {
@@ -1565,6 +1573,38 @@ async function researchStore(db: Context["db"], chatId: string, runId: string) {
   return researchStoreFacts({ evidence, frame, pages });
 }
 
+/** Records a run must hold before T's `restart` act cuts it: what a Continue then has to keep. */
+const T_RESTART_RECORDS = 5;
+
+/** T's `restart` act: the app restarts mid-research, recovery ends the run, and the user presses Continue. The Continue's run, and what stood before it, in counts. */
+async function restartAndContinue(ctx: Context, run: Run, chatId: string, send: (text: string) => Promise<string>) {
+  const hook = ctx.options.restart ?? fail("restart_command_required");
+  const records = async () => (await ctx.db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "ResearchEvidence" WHERE "chatId" = $1 AND "kind" <> 'not_found'`, [chatId])).rows[0]?.count ?? 0;
+  await poll(45 * 60_000, async () => await records() >= T_RESTART_RECORDS ? true : null, "research_restart_precondition_timeout", 5_000);
+  const recordsBefore = await records();
+  const restart = await runRestartHook(hook);
+  run.line.restart = restart;
+  await poll(10 * 60_000, async () => (await request(ctx.session.api, "/api/health/ready").catch(() => null))?.ok ? true : null, "app_not_ready", 3_000);
+  const me = await request(ctx.session.api, "/api/me").catch(() => null);
+  if (!me || me.status === 401) ctx.session.api = await authenticate(ctx.target);
+  await poll(20 * 60_000, async () => {
+    await request(ctx.session.api, `/api/chats/${encodeURIComponent(chatId)}`).catch(() => null);
+    const mains = await mainRuns(ctx.db, chatId);
+    return mains.every((entry) => TERMINAL_RUN_STATES.has(entry.status)) ? true : null;
+  }, "research_restart_interrupted_timeout", 5_000);
+  const interrupted = (await mainRuns(ctx.db, chatId)).at(-1)?.status ?? null;
+  return { continued: await send(CONTINUE_TURN_TEXT), facts: { interrupted, recordsBefore, restartExit: restart.exitCode } };
+}
+
+/** What a Continue came to, in counts. */
+async function continuedFacts(db: Context["db"], chatId: string, runId: string) {
+  const link = (await db.query<{ linked: boolean }>(`SELECT "continuedFromRunId" IS NOT NULL AS "linked" FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chatId, runId])).rows[0];
+  const calls = (await db.query<{ toolName: string; resumed: boolean }>(`SELECT "toolName", ("result"::text LIKE '%resumed%') AS "resumed" FROM "ModelRunToolCall" WHERE "modelRunId" = $1
+    AND "toolName" IN ('start_research', 'propose_research_plan')`, [runId])).rows;
+  return { linked: link?.linked ?? false, resumedStarts: calls.filter((call) => call.toolName === "start_research" && call.resumed).length,
+    newPlans: calls.filter((call) => call.toolName === "propose_research_plan").length };
+}
+
 async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
   const route = ctx.search[0] ?? fail("search_route_missing");
   const research = ctx.research ?? fail("research_setup_missing");
@@ -1598,6 +1638,8 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
       const facts: Record<string, unknown> = { metrics: null, roles: null, tokens: null, tokensByModel: [], terminal: "unknown",
         timeline: [], gateTurnFacts: [], gateTurns: 0, fetchOutcomes: {}, fetchProxyReads: 0, serverNotes: [] };
       let drafts: TDraftFinding[][] = [];
+      let browserAct: AbortController | null = null;
+      let acted: Promise<unknown> | null = null;
       const question = SCENARIO_T_QUESTIONS.find((entry) => entry.kind === job.kind) ?? fail("research_kind_missing");
       try {
         const chat = await createScenarioChat(ctx.session.api, `Research scenario ${job.kind} ${job.repeat}`);
@@ -1626,8 +1668,23 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
             savedGates.set(row.id, { ...gate, report: clean(gate.report) });
           }
         };
-        const sent = await trySend(ctx, run, chat.id, question.text, [], { search: route });
-        const runId = sent.ok ? sent.runId : fail("research_send_failed");
+        const act = options.acts[job.kind] ?? null;
+        const sendWords = async (text: string) => {
+          const sent = await trySend(ctx, run, chat.id, text, [], { search: route });
+          return sent.ok ? sent.runId : fail("research_send_failed");
+        };
+        let runId = await sendWords(act === "handoff" ? SCENARIO_T_HANDOFF_QUESTION : question.text);
+        if (act === "edit" || act === "start") {
+          const { planInBrowser } = await planBrowserModule();
+          browserAct = new AbortController();
+          acted = planInBrowser(act)({ baseUrl: ctx.session.api.baseUrl.origin, chatId: chat.id, cookie: ctx.session.api.cookie, marker: randomUUID().replaceAll("-", ""), runId, signal: browserAct.signal })
+            .then((evidence) => ({ act, ...evidence }), (error: unknown) => ({ act, failed: error instanceof BrowserScenarioError ? error.message : "interaction_failed" }));
+        }
+        if (act === "restart") {
+          const { continued, facts: restarted } = await restartAndContinue(ctx, run, chat.id, sendWords);
+          runId = continued;
+          facts.restart = restarted;
+        }
         let quiet = 0;
         const terminal = await poll(Math.max(1, deadline - Date.now()), async () => {
           await capture!();
@@ -1666,7 +1723,10 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
           roles: usage.roles, tokensByModel: usage.byModel, store: await researchStore(ctx.db, chat.id, runId), planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
           searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
-        questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && metrics.independentOpened === 0);
+        questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && !options.acts.purchase && metrics.independentOpened === 0);
+        if (options.acts[job.kind] === "restart") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
+        browserAct?.abort();
+        if (acted) facts.act = await acted;
       } catch {
         questionFailed = true;
         facts.harnessError = "research_question_failed";

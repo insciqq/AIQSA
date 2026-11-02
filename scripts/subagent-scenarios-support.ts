@@ -1593,6 +1593,10 @@ export const SCENARIO_T_QUESTIONS: readonly Readonly<{ kind: string; text: strin
   { kind: "market", text: "Проанализируй рынок складных электровелосипедов в России в 2026 году: кто главные продавцы, цены и что о них говорят владельцы." }
 ]);
 
+/** T's `handoff` act: the answer lies behind a sign-in only a person can pass, and nobody comes. */
+export const SCENARIO_T_HANDOFF_QUESTION = "Проведи исследование: какие товары и цены показывает магазин https://www.saucedemo.com после входа и какой товар там самый дешёвый? " +
+  "Войти можно только через меня: логин и пароль я введу сам, когда попросишь, со страницы их не бери.";
+
 export type TDraftFinding = Readonly<{ claim: string; quote: string; sourceClass: string; url: string }>;
 
 /** A record as a draft's ids read it; a dataset's quote and link are its first example's, as the server expands it. */
