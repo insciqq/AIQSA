@@ -24,7 +24,8 @@ const nullableText = (description: string) => ({ description, type: ["string", "
 
 export const changeResearchFrameTool: RunTool = {
   capability: "session",
-  description: "Add to the research matrix while research runs. add_row: a candidate, study or option found along the way, so its cells can be filled. add_criterion: something " +
+  description: "Add to the research matrix while research runs. add_row: an option the user could choose, found along the way, so its cells can be filled; a test, a source or a " +
+    "method is evidence, recorded under the row it is about. add_criterion: something " +
     "that turned out to matter, which is a rarer thing: the report names every added criterion with your reason. add_branch: something unknown about the user that changes " +
     "the result, with its cases. Nothing in the matrix is ever changed or removed, and a record already written under a new key counts as soon as the key is added. Every " +
     "field is required: pass null where a change has no use for it. Refused until the plan stands, for a key the matrix already has, and once it holds as much as it may.",
@@ -38,9 +39,9 @@ export const changeResearchFrameTool: RunTool = {
       }, { type: "null" }] },
       change: { enum: [...RESEARCH_FRAME_CHANGES], type: "string" },
       key: { description: "Stable for the whole research: lowercase letters, digits, - or _. It is what records use as row_key or criterion_key.", type: "string" },
-      label: { description: "The row's name, the criterion in plain words, or what is unknown about the user.", type: "string" },
-      reason: { description: "Why the matrix changes, in plain words.", type: "string" },
-      why: nullableText("add_criterion only: why this criterion matters to the user, in plain words.")
+      label: { description: "The row's name, the criterion in plain words, or what is unknown about the user, in the language of the research goal.", type: "string" },
+      reason: { description: "Why the matrix changes, in plain words, in the language of the research goal; name no tool, since the report may carry it as written.", type: "string" },
+      why: nullableText("add_criterion only: why this criterion matters to the user, in plain words, in the language of the research goal.")
     },
     required: ["change", "key", "label", "reason", "why", "cases"],
     type: "object"

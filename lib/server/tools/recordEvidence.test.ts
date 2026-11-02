@@ -69,6 +69,13 @@ describe("the record_evidence schema", () => {
   });
 });
 
+describe("a record's reason", () => {
+  it("is written for a reader in the goal's language, since a real run's raw reason, naming fetch_url, reached a Russian answer", () => {
+    expect(properties.reason!.description).toContain("in the language of the research goal");
+    expect(properties.reason!.description).toContain("name no tool");
+  });
+});
+
 describe("a record_evidence call", () => {
   it("writes under the agent its registry names, whatever the model says", async () => {
     const { record, target } = targetOf();

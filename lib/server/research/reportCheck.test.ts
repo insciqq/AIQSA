@@ -226,6 +226,36 @@ describe("the comparison", () => {
     expect(messages(without(turned))).toBe("");
   });
 
+  describe("a criterion in another script than the report's", () => {
+    const ENGLISH = "Independent test results for a specific candidate model";
+    const added = (criterion: string): ResearchFrame => ({ ...FRAME, changes: [{ at: "2026-11-01T10:00:00.000Z", by: { name: "lab", threadId: "thread-1" }, change: "add_criterion", key: "tests", reason: "It separates the rows." }],
+      criteria: [...FRAME.criteria, { criterion, key: "tests", why: "It separates the rows." }] });
+
+    it("passes, added or not: no word match can see a translation, and a real run's model pasted the English in to get past it", () => {
+      expect(check(DRAFT, RECORDS, matrixOf(added(ENGLISH), RECORDS))).toEqual({ notes: [], troubles: [] });
+    });
+
+    it("passes the other way round", () => {
+      const english = "# Report\n\n| Option | Price | Reviews | Firmness |\n| --- | --- | --- | --- |\n| Lonax Memory | 30 000 | 3 of 11 | medium |\n| Optima Classic | 25 000 | none | firm |\n";
+      expect(messages({ ...DRAFT, report: english }, RECORDS, matrixOf(added("Шумность"), RECORDS))).toBe("");
+    });
+
+    it("still goes back in the report's own script", () => {
+      expect(messages(DRAFT, RECORDS, matrixOf(added("Шумность"), RECORDS))).toContain("Шумность");
+    });
+
+    it("still goes back for an English criterion an English report leaves out", () => {
+      const frame = added("Noise level");
+      const english = "# Report\n\n| Option | Price |\n| --- | --- |\n| Lonax Memory | 30 000 |\n| Optima Classic | 25 000 |\n";
+      expect(messages({ ...DRAFT, report: english }, RECORDS, matrixOf({ ...frame, criteria: frame.criteria.slice(3) }, RECORDS))).toContain("Noise level");
+    });
+
+    it("is about criteria only: a row's name is not translated, so a Latin name stays wanted in a Russian table", () => {
+      const table = ["| Вариант | Цена за 160×200 | Отзывы владельцев | Жёсткость |", "| --- | --- | --- | --- |", "| Optima Classic | 25 000 ₽ | нет данных | жёсткая |"].join("\n");
+      expect(messages({ ...DRAFT, report: `# Отчёт\n\n${table}` })).toContain("leaves out what you pick: Lonax Memory");
+    });
+  });
+
   describe("a criterion of one word", () => {
     const frameOf = (criterion: string): ResearchFrame => ({ ...FRAME, criteria: [{ criterion, key: "price", why: "Мешает спать." }] });
     const table = (heading: string) => [`| Вариант | ${heading} |`, "| --- | --- |", "| Lonax Memory | 30 дБ |", "| Optima Classic | 40 дБ |"].join("\n");

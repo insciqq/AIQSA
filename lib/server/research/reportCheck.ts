@@ -54,6 +54,18 @@ function namesLabel(text: string, label: string): boolean {
   return wanted.length > 0 ? wanted.some((stem) => text.includes(stem)) : text.includes(folded(label).trim());
 }
 
+const CYRILLIC = /\p{Script=Cyrillic}/u;
+const LATIN = /\p{Script=Latin}/u;
+
+/**
+ * Whether folded text names a criterion. One in another script than the report's is translated there, which no word match can see: a real run sent a good draft back twice over one
+ * English label, and the model pasted the English into its Russian report. A row is a name and stays as it is written, so a row's label goes to `namesLabel` alone.
+ */
+function namesCriterion(text: string, criterion: string, report: string): boolean {
+  const otherScript = CYRILLIC.test(report) ? !CYRILLIC.test(criterion) && LATIN.test(criterion) : CYRILLIC.test(criterion);
+  return otherScript || namesLabel(text, criterion);
+}
+
 const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/u;
 
 /** The lines of the report's Markdown tables, header included; empty when it has none. */
@@ -208,7 +220,7 @@ function comparison(draft: ResearchDraft, matrix: ResearchMatrix, records: reado
     return criterion ? [{ criterion, reason }] : [];
   });
   const text = folded(draft.report);
-  const unnamed = added.filter(({ criterion }) => !namesLabel(text, criterion.criterion));
+  const unnamed = added.filter(({ criterion }) => !namesCriterion(text, criterion.criterion, report));
   const troubles: Trouble[] = unnamed.length > 0 ? [{
     message: `Criteria were added during research, and the report must name each with its reason. Name: ${listed(unnamed.map(({ criterion, reason }) => `${plain(criterion.criterion)} (${plain(reason)})`), "; ")}.`,
     note: `${researchNote("report_added_criteria", report)} ${listed(unnamed.map(({ criterion, reason }) => `${plain(criterion.criterion)}: ${plain(reason)}`), "; ")}.` }] : [];
@@ -217,7 +229,7 @@ function comparison(draft: ResearchDraft, matrix: ResearchMatrix, records: reado
   const table = folded(tableText(draft.report));
   const wanted = "Put one comparison table in the report, as a Markdown table with the rows against all of the matrix's criteria, and write no data for a cell nothing filled.";
   if (!table) return [...troubles, { message: `The report has no comparison table. ${wanted}`, note: researchNote("report_no_table", report) }];
-  const leftOut = frame.criteria.filter(({ criterion }) => !namesLabel(table, criterion)).map(({ criterion, why }) => ({ criterion: plain(criterion), why: plain(why) }));
+  const leftOut = frame.criteria.filter(({ criterion }) => !namesCriterion(table, criterion, report)).map(({ criterion, why }) => ({ criterion: plain(criterion), why: plain(why) }));
   const picks = leanedOn(draft).filter((key) => !namesLabel(table, rowLabel(frame, key))).map((key) => plain(rowLabel(frame, key)));
   if (leftOut.length === 0 && picks.length === 0) return troubles;
   const message = [...leftOut.length > 0 ? [`The comparison table leaves out these criteria of the matrix: ${listed(leftOut.map(({ criterion, why }) => `${criterion} (${why})`), "; ")}.`] : [],
