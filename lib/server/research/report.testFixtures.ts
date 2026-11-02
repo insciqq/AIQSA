@@ -1,4 +1,4 @@
-import type { ResearchDataset, ResearchDraft, ResearchEvidenceRecord, ResearchFrame, ResearchSourceClass, ResearchStanding } from "../../contracts/research";
+import type { ResearchDataset, ResearchDraft, ResearchDraftSummary, ResearchEvidenceRecord, ResearchFrame, ResearchSourceClass, ResearchStanding } from "../../contracts/research";
 import { researchMatrixCoverage, type ResearchMatrix } from "./matrix";
 
 /**
@@ -52,6 +52,9 @@ export const MATRIX = matrixOf(FRAME, RECORDS);
 
 export const TABLE = ["| Вариант | Цена за 160×200 | Отзывы владельцев | Жёсткость |", "| --- | --- | --- | --- |", "| Lonax Memory | 30 000 ₽ | 3 из 11 | средняя |", "| Optima Classic | 25 000 ₽ | нет данных | жёсткая |"].join("\n");
 
-/** A draft that holds up: the pick's evidence named, a table on every criterion and nothing linked. */
+/** What the reader reads first: the pick, named as the matrix names it, with its price and its shop. */
+export const SUMMARY: ResearchDraftSummary = { rowKeys: ["x1"], text: `Для ваших условий берите ${FRAME.rows[0]!.label}: 30 000 ₽ в магазине.` };
+
+/** A draft that holds up: its summary, the pick's evidence named, a table on every criterion and nothing linked. */
 export const DRAFT: ResearchDraft = { branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: "x1", recordIds: [id(1), id(2), id(3)],
-  report: `# Отчёт\n\nБерите Lonax Memory.\n\n${TABLE}\n`, unreachable: [] };
+  report: `# Отчёт\n\nБерите Lonax Memory.\n\n${TABLE}\n`, summary: SUMMARY, unreachable: [] };

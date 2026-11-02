@@ -253,10 +253,10 @@ describe("a draft's references", () => {
   });
 
   it("reads a draft that refers to records, with no findings of its own: the server fills those from the records", () => {
-    const decoded = value(decodeResearchDraft({ ...references, report: "# Report", unreachable: [] }));
+    const decoded = value(decodeResearchDraft({ ...references, report: "# Report", summary: { row_keys: ["x1"], text: "Take X1." }, unreachable: [] }));
     expect(decoded).toEqual({ branchPicks: [{ branchKey: "weight", caseKey: "light", rowKey: "x1" }],
       doesNotSeparate: { rowKeys: ["x1", "x2"], statement: references.does_not_separate.statement, wouldDecide: "Trying them." }, findings: [], origin: "reserved_call",
-      pickRowKey: "x1", recordIds: [RECORD_ID], report: "# Report", unreachable: [] });
+      pickRowKey: "x1", recordIds: [RECORD_ID], report: "# Report", summary: { rowKeys: ["x1"], text: "Take X1." }, unreachable: [] });
   });
 
   it("takes the model's ids over any findings it typed beside them", () => {
@@ -285,7 +285,8 @@ describe("a draft's references", () => {
 
   it("reads an empty findings list as a live draft, so its pick reaches the report check: a stored draft with none loses nothing by it", () => {
     expect(value(decodeResearchDraft({ findings: [], pick_row_key: "x9", report: "# Report", unreachable: [] }))).toMatchObject({ findings: [], pickRowKey: "x9", recordIds: [] });
-    expect(value(decodeResearchDraft(draft))).toEqual({ branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "# Report", unreachable: [] });
+    expect(value(decodeResearchDraft(draft))).toEqual({ branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "# Report", summary: null,
+      unreachable: [] });
   });
 
   it("still refuses a draft whose report or list of what was unreachable cannot be read", () => {

@@ -699,6 +699,22 @@ describe("where a frame exists", () => {
     expect(JSON.parse(request.brief)).toMatchObject({ matrix: { criteria: ["Durability", "Firmness"], emptyCells: 0, filledCells: 4, rows: ["Lonax X1", "Dreamline Y2"] }, plan: PLAN });
   });
 
+  it("takes a purchase's narrow ladder for a gap to fill, not a limit, and asks an offer of each option the summary recommends", async () => {
+    const ctx = withMatrix();
+    await gapCheckGate.run({ ...DRAFT, summary: { rowKeys: ["y2", "x1", "gone"], text: "Take Y2; cheaper, X1." } }, ctx);
+    const request = judge(ctx);
+    expect(request.instructions).toContain("For a purchase whose prices spread, fewer than five options, or options of a single price tier, while the findings name more candidates within " +
+      "the question's limits, is a gap to fill, not a limit: next_step names those candidates and says to find their current offers.");
+    expect(request.instructions).toContain("A purchase's matrix with fewer than five options, or with options of a single price tier, while the findings name more candidates within the question's limits, lacks candidates the goal needs.");
+    expect(request.instructions).toContain("matrix.recommended are the options the report's summary recommends, its pick first: for a purchase, one with no current offer among the findings, " +
+      "giving its link, seller and price, is a gap whose next_step says to open that option's offers.");
+    // Labels, in the summary's order, of the rows the matrix has.
+    expect(JSON.parse(request.brief)).toMatchObject({ matrix: { recommended: ["Dreamline Y2", "Lonax X1"] } });
+    const plain = withMatrix();
+    await gapCheckGate.run(DRAFT, plain);
+    expect(JSON.parse(judge(plain).brief)).toMatchObject({ matrix: { recommended: [] } });
+  });
+
   it("keeps the judge's job and brief with no frame, as they always were", async () => {
     const ctx = context();
     await gapCheckGate.run(DRAFT, ctx);

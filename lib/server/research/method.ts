@@ -18,10 +18,20 @@ import { researchRegistrableDomain } from "./sourceQuality";
 /** A real run's frame held rows for a lab's comparison and a testing method, which no reader can choose. */
 const ROWS_ARE_OPTIONS = "A row is an option the user could choose; a test, a source or a method is evidence, recorded under the row it is about.";
 
-/** Five real runs of one question gave five different shortlists, each what a search showed first: a rule is what a second run can repeat. */
-const ROWS_BY_RULE = "Rows come from a rule you can state, never from what a search showed first: first what independent tests and rankings name, then the options within the question's limits with " +
-  "the most owners' reviews, taken in order from the top of the marketplace's own listing sorted by reviews with its filters set to those limits, or, where there is no marketplace, what authoritative " +
-  "sources list, in their order. The report states that rule in one line, so a reader sees why these rows.";
+/**
+ * Five real runs of one question gave five different shortlists, each what a search showed first: a rule is what a second run can repeat. A rule on one listing
+ * failed when that listing was closed: a real run fell back to makers' catalogs and kept two lookalikes of one price, so no source alone makes the rows, and a
+ * purchase asks for a ladder of prices. No site is named (operator decision 2026-11-02): offers may come from any shop.
+ */
+const ROWS_BY_RULE = "Rows come from a rule you can state, never from what a search showed first and never from one listing alone: the options independent tests and rankings name, " +
+  "the options with the most owners' reviews within the question's limits on any marketplace or large shop that can be reached, and the makers' lines in the relevant range; " +
+  "where nothing is sold, what authoritative sources list, in their order. For a purchase whose prices spread, aim for at least five options across two or three price tiers. " +
+  "The report states that rule in one line, so a reader sees why these rows.";
+
+/** What a purchase is bought by: a real run named two options and no offer, so its reader could not act on it. Any shop counts. */
+const OFFERS = "An offer is an action_channel finding from the shop's page you opened, with its link, the seller and the price in the claim and the quote; the record's date is the day it " +
+  "was seen. Any shop counts: a marketplace, the maker's store or a dealer; where the user named where they buy, look there first. A trap seen on a card, such as variants merged " +
+  "under one card with shared reviews, or a size, seller or warranty other than the title says, is a finding too.";
 
 /** A real run's English label and a reason naming a tool reached a Russian answer: these reach the report as they are written. */
 const READER_WORDS = "Write labels and reasons in the language of the goal, for a reader, naming no tool and no error: the user reads them as you write them.";
@@ -34,25 +44,37 @@ const cut = (text: string, max: number) => text.length <= max ? text : `${text.s
 const classLine = (question: ResearchQuestion, index: number) =>
   `${index + 1}. ${question.question} [${question.sourceClasses.join(", ")}]${question.sites.length > 0 ? ` (sites the user named: ${question.sites.join(", ")})` : ""}`;
 
+/** A real run's question about the finalists' reviews started beside the questions that find them, waited 12 minutes for their names and finished last. */
+const INDEPENDENT_QUESTIONS = "Start now only the questions that need no other's answer: one that needs the options found, such as their owners' reviews, current offers or key " +
+  "specifications, waits for the next round and works on the empty cells of the rows found.";
+
 /** What a plan that stands returns: how the main agent runs what it planned. */
 export function researchMethodText(plan: ResearchPlan): string {
   return [
     "The plan stands. The user sees your questions as the plan; keep it current with update_plan.",
     `Start the researchers now with ${CALL_SUBAGENT_TOOL_NAME}: in one response, one call per question, without background, so they work in ` +
       "parallel and you get their reports together. Name in each brief which question it covers and the matrix cells it is to fill. The server " +
-      "adds the method, the source classes and the matrix to each brief; do not repeat them.",
+      `adds the method, the source classes and the matrix to each brief; do not repeat them. ${INDEPENDENT_QUESTIONS}`,
     "Do not write the report as a message: nothing you write while research runs reaches the user, and search snippets are not evidence.",
     "After each researcher's report you read what is still empty in the matrix. Send more researchers for empty cells only, never for one " +
       `more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
       `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} ${READER_WORDS}`,
-    `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the report, the ids of the records it rests on, ` +
+    `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the summary, the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
       "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
+    "The server puts the summary above the report, and most readers stop there: two to four short paragraphs in the user's language, the option to take for the user's criteria " +
+      "first, then the alternatives for their other likely priorities, such as cheaper or a different feel, each a row of the matrix named as the matrix names it and listed in that " +
+      "order in its row_keys, with its price and where to buy it for a purchase. The report follows it and does not repeat it.",
     "Every figure, price, study and named claim in the report links the page it came from where it is stated, not in a list at the end only. " +
-      "The report holds a comparison table on the matrix's criteria, says why each matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
+      "The report leads with a comparison table on the matrix's criteria holding every option considered, says why each criterion matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
       "and each case of a branch gets its row. When the data does not tell rows apart, say so and what would decide, such as trying them, instead of inventing a difference. " +
       "The report still says which of them it would take by default today and why, such as the cheapest among those with the same evidence, marked plainly as a default and not as a finding, " +
-      "alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, and says what could not be reached and why.",
+      "alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, marked compactly in the table or in one clause rather than by " +
+      "hedging every sentence, and says what could not be reached and why.",
+    "For a purchase, each option the summary recommends has at least one current offer cited, an action_channel record with its link, seller, price and the date it was seen, from any " +
+      "shop; one sentence says which shops could not be reached. Where the maker's own price is known, judge each offer against it. The options considered and not recommended stay " +
+      "in the report as a reserve, each with one reason. Where research saw a trap on a card, such as variants merged under one card, a size, the seller or warranty terms, the report " +
+      "names what to check before paying.",
     "",
     "The plan:",
     ...plan.questions.map(classLine),
@@ -79,6 +101,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
     "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
       `An option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} A criterion only when the question needs it, with your reason.`,
+    OFFERS,
     `The goal: ${cut(plain(plan.goal), GOAL_CHARACTERS)} ${READER_WORDS}`,
     RESEARCH_REVIEWS_REFERENCE,
     "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +

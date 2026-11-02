@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { decodeResearchDraft, decodeResearchPlan, decodeResearchPlanProposal, RESEARCH_LIMITS, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFrame,
+import { decodeResearchDraft, decodeResearchPlan, decodeResearchPlanProposal, RESEARCH_LIMITS, researchDraftText, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFrame,
   type ResearchEvidenceRecord, type ResearchPlan } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { harnessPromptSection } from "../engine/prompts/harness";
@@ -66,15 +66,38 @@ describe("the plan and the draft", () => {
   it("requires every field of a draft, which takes record ids and never findings, and stays out of strict mode", () => {
     const schema = submitResearchDraftTool.inputSchema as { properties: Record<string, unknown>; required: readonly string[] };
     expect([...schema.required].sort()).toEqual(Object.keys(schema.properties).sort());
-    expect(Object.keys(schema.properties).sort()).toEqual(["branch_picks", "does_not_separate", "pick_row_key", "record_ids", "report", "unreachable"]);
+    expect(Object.keys(schema.properties).sort()).toEqual(["branch_picks", "does_not_separate", "pick_row_key", "record_ids", "report", "summary", "unreachable"]);
+    expect(schema.properties.summary).toMatchObject({ required: ["row_keys", "text"], type: "object" });
     expect(submitResearchDraftTool.strict).toBe(false);
     expect(schema.properties.does_not_separate).toMatchObject({ anyOf: [{ required: ["row_keys", "statement", "would_decide"], type: "object" }, { type: "null" }] });
     expect(schema.properties.pick_row_key).toMatchObject({ anyOf: [{ type: "string" }, { type: "null" }] });
   });
 
   it("decodes the arguments its own schema asks for", () => {
-    const decoded = decodeResearchDraft({ branch_picks: [], does_not_separate: null, pick_row_key: null, record_ids: [], report: "r", unreachable: [] });
-    expect(decoded).toMatchObject({ ok: true, value: { findings: [], recordIds: [] } });
+    const decoded = decodeResearchDraft({ branch_picks: [], does_not_separate: null, pick_row_key: null, record_ids: [], report: "r", summary: { row_keys: ["x1"], text: "Take X1." }, unreachable: [] });
+    expect(decoded).toMatchObject({ ok: true, value: { findings: [], recordIds: [], summary: { rowKeys: ["x1"], text: "Take X1." } } });
+  });
+
+  it("reads a summary apart from the references, and never refuses a draft over it: the report check sends it back", () => {
+    const draftWith = (summary: unknown) => decodeResearchDraft({ pick_row_key: "x1", record_ids: [], report: "r", summary, unreachable: [] });
+    expect(draftWith(undefined)).toMatchObject({ ok: true, value: { pickRowKey: "x1", summary: null } });
+    expect(draftWith(null)).toMatchObject({ ok: true, value: { summary: null } });
+    expect(draftWith("Take X1.")).toMatchObject({ ok: true, value: { summary: { rowKeys: [], text: "Take X1." } } });
+    expect(draftWith({ row_keys: ["x1", "x2", "x1"], text: "Take X1." })).toMatchObject({ ok: true, value: { summary: { rowKeys: ["x1", "x2"] } } });
+    // A mistyped key keeps the words and the pick; a summary past its length is none, and the report still stands.
+    const badKeys = draftWith({ row_keys: ["X 1"], text: "Take X1." });
+    expect(badKeys).toMatchObject({ ok: true, value: { invalidSummary: expect.stringContaining("summary.row_keys"), pickRowKey: "x1", summary: { rowKeys: [], text: "Take X1." } } });
+    const long = draftWith({ row_keys: [], text: "x".repeat(RESEARCH_LIMITS.summaryCharacters + 1) });
+    expect(long).toMatchObject({ ok: true, value: { invalidSummary: expect.stringContaining(`1 to ${RESEARCH_LIMITS.summaryCharacters} characters`), report: "r", summary: null } });
+    // A draft stored before drafts referred to records has no summary to read.
+    const stored = decodeResearchDraft({ findings: [{ claim: "c", quote: "q", source_class: "owner_reviews", standing: "claimed", url: "https://a.example" }], report: "r", unreachable: [] });
+    expect(stored.ok && "summary" in stored.value).toBe(false);
+  });
+
+  it("puts the summary above the report, with no words of the server's own between them", () => {
+    expect(researchDraftText({ report: "# Report\n\nBody.", summary: { rowKeys: ["x1"], text: "Take X1.\n" } })).toBe("Take X1.\n\n# Report\n\nBody.");
+    expect(researchDraftText({ report: "Body.", summary: null })).toBe("Body.");
+    expect(researchDraftText({ report: "Body." })).toBe("Body.");
   });
 
   it("requires every field of a proposal, which stays out of strict mode like its neighbours", () => {
@@ -110,10 +133,54 @@ describe("the method", () => {
   it("gives rows a rule a second run would repeat, since five real runs of one question gave five different shortlists", () => {
     for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
       expect(text).toContain("Rows come from a rule you can state, never from what a search showed first");
-      expect(text).toContain("first what independent tests and rankings name");
-      expect(text).toContain("then the options within the question's limits with the most owners' reviews, taken in order from the top of the marketplace's own listing sorted by reviews with its filters set to those limits");
       expect(text).toContain("The report states that rule in one line, so a reader sees why these rows.");
     }
+  });
+
+  it("rests that rule on no single listing, since a real run's closed marketplaces left two lookalikes of one price, and asks a purchase for a ladder", () => {
+    for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
+      expect(text).toContain("never from one listing alone: the options independent tests and rankings name, the options with the most owners' reviews within the question's " +
+        "limits on any marketplace or large shop that can be reached, and the makers' lines in the relevant range");
+      expect(text).toContain("For a purchase whose prices spread, aim for at least five options across two or three price tiers.");
+      expect(text).not.toContain("sorted by reviews");
+    }
+  });
+
+  it("asks the report for offers with link, seller, price and date, judged against the maker's price, a reserve with reasons and the traps of a card", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain("each option the summary recommends has at least one current offer cited, an action_channel record with its link, seller, price and the date it was seen, from any shop");
+    expect(text).toContain("one sentence says which shops could not be reached");
+    expect(text).toContain("Where the maker's own price is known, judge each offer against it.");
+    expect(text).toContain("The options considered and not recommended stay in the report as a reserve, each with one reason.");
+    expect(text).toContain("variants merged under one card, a size, the seller or warranty terms");
+    expect(text).toContain("marked compactly in the table or in one clause rather than by hedging every sentence");
+    const footer = researcherMethodFooter(plan);
+    expect(footer).toContain("An offer is an action_channel finding from the shop's page you opened, with its link, the seller and the price in the claim and the quote");
+    expect(footer).toContain("the record's date is the day it was seen");
+    expect(footer).toContain("where the user named where they buy, look there first");
+    expect(footer).toContain("variants merged under one card with shared reviews");
+  });
+
+  it("asks for the summary the server puts above the report, the pick first, each with its price and where to buy it", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain("call submit_research_draft with the summary, the report");
+    expect(text).toContain("The server puts the summary above the report, and most readers stop there: two to four short paragraphs in the user's language");
+    expect(text).toContain("listed in that order in its row_keys, with its price and where to buy it for a purchase. The report follows it and does not repeat it.");
+  });
+
+  it("names no site anywhere in what the model reads, since offers may come from any shop (operator decision 2026-11-02)", () => {
+    const siteless: ResearchPlan = { ...plan, questions: [{ ...plan.questions[0]!, sites: [] }] };
+    const texts = [researchMethodText(siteless), researcherMethodFooter(siteless), JSON.stringify([proposeResearchPlanTool, submitResearchDraftTool, startResearchTool]), researchScopingInstructions()];
+    for (const text of texts) expect(text).not.toMatch(/\b[a-z0-9-]+\.(?:ru|com|net|org|io|de|uk|by|kz)\b/iu);
+  });
+
+  it("keeps the plan's questions apart: what needs the options found is a later round's cells, since a real run's question waited 12 minutes for them", () => {
+    expect(researchMethodText(plan)).toContain("Start now only the questions that need no other's answer: one that needs the options found, such as their owners' reviews, current offers or key " +
+      "specifications, waits for the next round and works on the empty cells of the rows found.");
+    const { criteria, questions } = proposeResearchPlanTool.inputSchema.properties as { criteria: { description: string }; questions: { description: string } };
+    expect(questions.description).toContain("They run at once, so none may need another's answer");
+    expect(questions.description).toContain("is no question but a criterion, whose cells the next round fills once the rows exist");
+    expect(criteria.description).toContain("For a purchase, the current offer (where to buy, the seller, the price) and owners' reviews are criteria too");
   });
 
   it("reaches the plan's first rows too, which are written before the method is read and never change", () => {
@@ -121,8 +188,8 @@ describe("the method", () => {
     expect(rows.description).toContain("Chosen by a rule you can state, not by what a search showed first: leave it empty if you have not applied it yet, and researchers add them.");
   });
 
-  it("words that rule so it reads sensibly with no marketplace", () => {
-    expect(researchMethodText(plan)).toContain("where there is no marketplace, what authoritative sources list, in their order");
+  it("words that rule so it reads sensibly where nothing is sold", () => {
+    expect(researchMethodText(plan)).toContain("where nothing is sold, what authoritative sources list, in their order");
   });
 
   it("does not tell a researcher to add a row as it finds one, which is what the rule replaces", () => {
