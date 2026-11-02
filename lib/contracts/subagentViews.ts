@@ -128,8 +128,8 @@ export type SubagentThreadSummary = Readonly<{
   model: SubagentTurnModel | null;
   name: string;
   outcome: SubagentOutcome | null;
-  /** The sub-agent that started it; null when the main agent did, and on a row from before children. */
-  parent: SubagentThreadParent | null;
+  /** The sub-agent that started it, named only for a child: a tab from before children reads keys strictly. */
+  parent?: SubagentThreadParent | null;
   /** A stable code: a blocked outcome's reason, or why it failed, stopped or was interrupted. */
   reason: string | null;
   state: SubagentThreadState;
@@ -277,7 +277,7 @@ export function decodeSubagentThreadSummary(value: unknown): SubagentThreadSumma
   return {
     createdAt: value.createdAt as string, currentStep, endedAt: value.endedAt as string | null, id: value.id, latestAnswerMessageId,
     mode: value.mode, model,
-    name: value.name as string, outcome: value.outcome as SubagentOutcome | null, parent, reason: value.reason, state: value.state,
+    name: value.name as string, outcome: value.outcome as SubagentOutcome | null, ...parent ? { parent } : {}, reason: value.reason, state: value.state,
     turnCount: value.turnCount as number, type: value.type as string | null, updatedAt: value.updatedAt as string
   };
 }
