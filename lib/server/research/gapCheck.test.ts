@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
-  type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchFrame, type ResearchPlan, type ResearchSourceClass
+  type ResearchCandidateNote, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchFrame, type ResearchPlan, type ResearchSourceClass
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
@@ -826,20 +826,33 @@ describe("where a frame exists", () => {
   });
 
   describe("the candidates agents noted", () => {
-    const note = (name: string, reason = "A ranking names it.") => ({ at: "2026-11-03T10:00:00.000Z", by: { name, threadId: `thread-${name}` }, reason });
+    const note = (name: string, reason = "A ranking names it.", url?: string): ResearchCandidateNote =>
+      ({ at: "2026-11-03T10:00:00.000Z", by: { name, threadId: `thread-${name}` }, reason, ...url === undefined ? {} : { url } });
     const NOTED: ResearchFrame = { ...FRAME, candidates: [{ key: "dreamline-sleep-dream-medium-s1000", label: "Dreamline SleepDream Medium S1000",
-      notes: [note("marketplaces", "An Ozon listing shows it at 59 521 ₽.")] }] };
+      notes: [note("marketplaces", "An Ozon listing shows it at 59 521 ₽.", "https://www.ozon.ru/product/1/"), note("tests", "A ranking names it.", "https://expertology.ru/rating/")] }] };
     const STEP = "Candidate dreamline-sleep-dream-medium-s1000: add it as a row with change_research_frame add_row and send researchers for its cells, or set it aside with " +
       "change_research_frame set_aside, its key and your reason.";
 
-    it("sends back a candidate still open at draft time, with who noted it and why, and no model", async () => {
+    it("sends back a frequent candidate still open at draft time, with how widely it is named, who noted it and why, and no model", async () => {
       const ctx = withMatrix(ALL, {}, NOTED);
       const result = await gapCheckGate.run(DRAFT, ctx);
       expect(result.kind).toBe("send_back");
-      expect(messageOf(result)).toContain('"Dreamline SleepDream Medium S1000": a candidate neither a row nor set aside, noted by marketplaces, its reason (data): ' +
-        '"An Ozon listing shows it at 59 521 ₽."');
+      expect(messageOf(result)).toContain('"Dreamline SleepDream Medium S1000": a candidate neither a row nor set aside, named on 2 sites by 2 agents (marketplaces, tests), ' +
+        'its first reason (data): "An Ozon listing shows it at 59 521 ₽."');
       expect(messageOf(result)).toContain(STEP);
       expect(ctx.subagents.run).not.toHaveBeenCalled();
+    });
+
+    it("counts one agent's notes from two sites, or two agents' notes, as frequent, and leaves one named once in the pool with no send back", async () => {
+      const candidate = (notes: readonly ResearchCandidateNote[]): ResearchFrame => ({ ...NOTED, candidates: [{ ...NOTED.candidates![0]!, notes }] });
+      const frequent = [[note("marketplaces", "R.", "https://ozon.ru/1"), note("marketplaces", "R.", "https://wildberries.ru/1")], [note("a"), note("b")]];
+      for (const notes of frequent) expect(messageOf(await gapCheckGate.run(DRAFT, withMatrix(ALL, {}, candidate(notes))))).toContain(STEP);
+      for (const notes of [[note("marketplaces", "R.", "https://ozon.ru/1")], [note("a")]]) {
+        const ctx = withMatrix(ALL, {}, candidate(notes));
+        expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
+        // The judge still runs: a singleton costs no mechanical send back, and nothing else.
+        expect(ctx.subagents.run).toHaveBeenCalledOnce();
+      }
     });
 
     it("joins the empty cells' send back, and never spends one of its own while cells are open", async () => {
@@ -851,7 +864,7 @@ describe("where a frame exists", () => {
       // Asked once: no new page, and nothing goes back again.
       expect(await gapCheckGate.run(DRAFT, { ...ctx, attempt: 2, earlier })).toEqual({ kind: "pass" });
       // One noted since, with cells still open and no new page, does not go back alone.
-      const later: ResearchFrame = { ...NOTED, candidates: [...NOTED.candidates!, { key: "sealy-hybrid", label: "Sealy Hybrid", notes: [note("brands")] }] };
+      const later: ResearchFrame = { ...NOTED, candidates: [...NOTED.candidates!, { key: "sealy-hybrid", label: "Sealy Hybrid", notes: [note("brands"), note("tests")] }] };
       expect(await gapCheckGate.run(DRAFT, { ...withMatrix(ALL.slice(0, 1), { plan: ctx.plan }, later), attempt: 2, earlier })).toEqual({ kind: "pass" });
     });
 
@@ -886,7 +899,8 @@ describe("where a frame exists", () => {
       const limits = RESEARCH_FRAME_LIMITS;
       const large: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "c".repeat(limits.labelCharacters), key: "c", why: "W." }],
         rows: Array.from({ length: limits.rows }, (_value, index) => ({ key: `r-${index}`, label: `${"r".repeat(limits.labelCharacters - 4)}${index}` })),
-        candidates: Array.from({ length: limits.candidates }, (_value, index) => ({ key: `model-${index}`, label: `Model ${index}`, notes: [note(`agent-${index}`, "x".repeat(1_000))] })) };
+        candidates: Array.from({ length: limits.candidates }, (_value, index) => ({ key: `model-${index}`, label: `Model ${index}`,
+          notes: [note(`agent-${index}`, "x".repeat(1_000), `https://one-${index}.example/`), note(`agent-${index}`, "y".repeat(1_000), `https://two-${index}.example/`)] })) };
       const message = messageOf(await gapCheckGate.run(DRAFT, withMatrix([], {}, large)));
       expect(message.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
       expect(message).toContain("Candidate model-0: add");

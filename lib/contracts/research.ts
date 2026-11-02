@@ -73,13 +73,14 @@ export const RESEARCH_PLAN_LIMITS = Object.freeze({
 export const RESEARCH_FRAME_LIMITS = Object.freeze({
   branches: 8,
   /**
-   * Notes of candidates in all, a second agent's of one included, and candidates noted. With one set-aside at most per candidate they and the
-   * matrix's own additions (64 rows, 24 criteria, 8 branches) stay within `changes`, so no note can cost a row.
+   * Notes of candidates in all, a further site's or agent's note of one included, and candidates noted: room for the pool round 1 builds from
+   * several kinds of source (`lib/server/research/candidates.ts`). With one set-aside at most per candidate they and the matrix's own additions
+   * (64 rows, 24 criteria, 8 branches) stay within `changes` (64 + 24 + 8 + 160 + 64 = 320), so no note can cost a row.
    */
-  candidateNotes: 64,
-  candidates: 32,
+  candidateNotes: 160,
+  candidates: 64,
   casesPerBranch: 6,
-  changes: 200,
+  changes: 320,
   criteria: 24,
   /** Criteria a plan may mark decisive: the few a pick depends on, each of which every option the report recommends has confirmed on two sites. */
   decisiveCriteria: 4,
@@ -244,16 +245,20 @@ export type ResearchFrameChangeRequest = Readonly<{ reason: string }> & (
   | Readonly<{ branch: ResearchBranch; change: "add_branch" }>
   | Readonly<{ change: "add_criterion"; criterion: ResearchCriterion }>
   | Readonly<{ change: "add_row"; row: ResearchMatrixRow }>
-  | Readonly<{ change: "note_candidate"; label: string }>
+  | Readonly<{ change: "note_candidate"; label: string; url?: string }>
   | Readonly<{ change: "set_aside"; key: string }>
 );
 
-/** One agent's note of a candidate: who, when, and where it was seen and why it may be an option. */
-export type ResearchCandidateNote = Readonly<{ at: string; by: ResearchAgentRef; reason: string }>;
+/**
+ * One agent's note of a candidate: who, when, and where it was seen and why it may be an option. `url` is the page that names it, absent on a note
+ * that gave none and on one stored before the field: such a note counts its agent and no site.
+ */
+export type ResearchCandidateNote = Readonly<{ at: string; by: ResearchAgentRef; reason: string; url?: string }>;
 
 /**
- * An option an agent saw that the matrix may lack, with one note per agent that noted it. `key` is the server's normal form of the name
- * (`lib/server/research/candidates.ts`), which merges one option written two ways; `label` is the name as the first agent wrote it.
+ * An option an agent saw that the matrix may lack, with one note per agent that noted it and per further site that agent saw it on. `key` is the
+ * server's normal form of the name (`lib/server/research/candidates.ts`), which merges one option written two ways; `label` is the name as the first
+ * agent wrote it.
  */
 export type ResearchCandidate = Readonly<{ key: string; label: string; notes: readonly ResearchCandidateNote[] }>;
 
@@ -762,7 +767,10 @@ function decodeCandidate(value: unknown, place: string): DecodedResearch<Researc
     const by = decodeAgentRef(entry.by);
     if (!by) return refused(`${at}.by must name the agent.`);
     if (!storableText(entry.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`${at}.reason must be 1 to ${RESEARCH_LIMITS.reasonCharacters} characters.`);
-    notes.push({ at: entry.at, by, reason: entry.reason });
+    // Left out or null reads as no page: a note stored before the field has none.
+    const url = entry.url;
+    if (url !== undefined && url !== null && !isLink(url)) return refused(`${at}.url must be an http or https link of at most ${RESEARCH_LIMITS.urlCharacters} characters.`);
+    notes.push({ at: entry.at, by, reason: entry.reason, ...isLink(url) ? { url } : {} });
   }
   return { ok: true, value: { key: value.key, label: value.label, notes } };
 }
@@ -800,11 +808,12 @@ export function decodeResearchFrame(value: unknown): DecodedResearch<ResearchFra
     ...setAside ? { setAside: setAside.value } : {} } };
 }
 
-const FRAME_CHANGE_FIELDS = ["cases", "change", "key", "label", "reason", "why"] as const;
+const FRAME_CHANGE_FIELDS = ["cases", "change", "key", "label", "reason", "url", "why"] as const;
 
 /**
  * A change of the frame as `change_research_frame` takes it: `label` is a row's name, a criterion, what is unknown or a candidate's name, `key` is unread for
- * a candidate noted and names the candidate set aside, and `why` and `cases` are null where they do not apply.
+ * a candidate noted and names the candidate set aside, `url` is the page that names a noted candidate and unread for any other change, and `why`, `cases`
+ * and `url` are null where they do not apply.
  */
 export function decodeResearchFrameChange(value: unknown): DecodedResearch<ResearchFrameChangeRequest> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
@@ -815,7 +824,11 @@ export function decodeResearchFrameChange(value: unknown): DecodedResearch<Resea
   const reason = value.reason;
   if (value.change === "note_candidate") {
     if (!storableText(value.label, RESEARCH_FRAME_LIMITS.labelCharacters)) return refused(`label must name the option in 1 to ${RESEARCH_FRAME_LIMITS.labelCharacters} characters, as the page writes it.`);
-    return { ok: true, value: { change: "note_candidate", label: value.label, reason } };
+    const url = value.url;
+    if (url !== null && !isLink(url)) {
+      return refused(`url must be the http or https link of the page that names the option, at most ${RESEARCH_LIMITS.urlCharacters} characters, or null.`);
+    }
+    return { ok: true, value: { change: "note_candidate", label: value.label, reason, ...isLink(url) ? { url } : {} } };
   }
   if (value.change === "set_aside") {
     if (!storableText(value.key, RESEARCH_FRAME_LIMITS.labelCharacters)) return refused("key must name the noted candidate, as the server listed it.");
