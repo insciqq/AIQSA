@@ -21,8 +21,9 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { runResearchGates, type ResearchGate, type ResearchGateContext } from "./gates";
 import { researchNote } from "./notes";
+import { createResearchClock } from "./clock";
 import { createResearchPlanHandlers } from "./planHandlers";
-import { createResearchPlanWindow, ResearchPlanWindows, type ResearchPlanStore } from "./planWindow";
+import { createResearchPlanWindow, RESEARCH_PLAN_WINDOW_LIMITS, ResearchPlanWindows, type ResearchPlanStore } from "./planWindow";
 import { proposeCall, proposalArguments } from "./planWindow.testFixtures";
 import { researchOfTurn, type ResearchEngineDeps } from "./run";
 import { researchModelIdentity } from "./turns";
@@ -1267,19 +1268,19 @@ describe("the plan window through the real engine", () => {
     read: vi.fn(async () => null), rebuilt: vi.fn(async () => undefined) });
 
   /** The real window, with a store that keeps nothing, and the route over the same windows. */
-  function windowed() {
+  function windowed(ports: ResearchEngineDeps["ports"] = {}) {
     const windows = new ResearchPlanWindows();
     const rows = store();
-    const deps: ResearchEngineDeps = { gates: [], ports: { planWindow: (run) => createResearchPlanWindow(run, { store: rows, windows }) } };
+    const deps: ResearchEngineDeps = { gates: [], ports: { ...ports, planWindow: (run) => createResearchPlanWindow(run, { store: rows, windows }) } };
     const handlers = createResearchPlanHandlers({ resolveAuth: (async () => ({ id: "s", user: { status: "active" }, userId: "user" })) as never, store: rows, windows });
     const post = (body: unknown) => handlers.act(new Request("http://app/api/chats/chat/research/plan", { body: JSON.stringify({ runId: "run-1", ...body as object }), method: "POST" }), { params: { chatId: "chat" } });
     return { deps, handlers, post, rows, windows };
   }
 
   /** Runs under a fake clock until the window is open, and hands the test the turn to finish. */
-  async function inWindow(steps: readonly Step[], extra: Partial<NativeRunExecutionInput> = FREE, repo = repository()) {
+  async function inWindow(steps: readonly Step[], extra: Partial<NativeRunExecutionInput> = FREE, repo = repository(), ports: ResearchEngineDeps["ports"] = {}) {
     const main = scripted(steps);
-    const real = windowed();
+    const real = windowed(ports);
     const memory = engineOf(real.deps);
     const finished = events(run(main.adapter, memory, extra, repo));
     await vi.waitFor(() => expect(real.windows.find({ chatId: "chat", runId: "run-1", userId: "user" })).not.toBeNull());
@@ -1465,6 +1466,28 @@ describe("the plan window through the real engine", () => {
     expect(open.rows.closed).not.toHaveBeenCalled();
     expect(open.windows.find({ chatId: "chat", runId, userId: "user" })).toBeNull();
     expect(open.main.requests).toHaveLength(2);
+  });
+
+  it("releases an edit before the turn's deadline, so research starts on the extended turn and the answer arrives", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, advanceTimeDelta: 1 });
+    try {
+      const startedAt = Date.now();
+      const repo = repository();
+      const open = await inWindow(standing, FREE, repo, { time: createResearchClock });
+      // Research came late in a long turn: a minute and a half before it ends.
+      vi.setSystemTime(startedAt + 60 * 60_000 - 90_000);
+      await open.post({ action: "hold" });
+      const view = await (await open.handlers.read(new Request("http://app/x?runId=run-1"), { params: { chatId: "chat" } })).json() as { heldUntil: string };
+      expect(Date.parse(view.heldUntil)).toBe(startedAt + 60 * 60_000 - RESEARCH_PLAN_WINDOW_LIMITS.releaseReserveMs);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await open.finished;
+      expect(open.rows.closed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ answer: expect.objectContaining({ releasedBy: "abandoned_edit" }) }));
+      expect(open.memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "lab" }));
+      expect(open.memory.published()).toBe(REPORT);
+      expect(repo.failRun).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses a proposal naming the field, and the model's corrected one opens the window", async () => {
