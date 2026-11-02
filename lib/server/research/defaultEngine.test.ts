@@ -36,4 +36,8 @@ describe("production research role wiring", () => {
       [{ select: { executionSnapshot: true }, where: { modelRunId_bindingKey: { bindingKey: "research_verifier", modelRunId: "run" } } }]
     ]);
   });
+
+  it("wires the resume port, so a Continue reaches the store", () => {
+    expect(defaultNativeEngineDeps({} as never, {} as never).research?.ports?.resume).toBeTypeOf("function");
+  });
 });

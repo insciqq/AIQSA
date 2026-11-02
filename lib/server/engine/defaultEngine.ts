@@ -21,6 +21,7 @@ import { createResearchEvidenceStore } from "../research/evidenceStore";
 import { createResearchCoverage, createResearchFrameStore } from "../research/matrix";
 import { createResearchPlanStore, createResearchPlanWindow, researchPlanWindows } from "../research/planWindow";
 import { createResearchReport } from "../research/reportAssembly";
+import { createResearchResume, createResearchResumeStore } from "../research/resume";
 import { createResearchVerifierRole } from "../research/verifierRole";
 import { createNativeRunStore } from "./runStore";
 import { createPrismaSubagentModelCatalog } from "./subagents/modelRoutes";
@@ -68,6 +69,7 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
         threads: createSubagentThreadStore(client) }),
       planWindow: (run) => createResearchPlanWindow(run, { store: createResearchPlanStore(client), windows: researchPlanWindows() }),
       report: createResearchReport,
+      resume: createResearchResume({ store: createResearchResumeStore(client, createResearchEvidenceRepository(client)) }),
       time: createResearchClock },
       researcher: createResearchVerifierRole({ prisma: client, role: "researcher", runtime: providerRuntimeResolver }),
       verifier: createResearchVerifierRole({ prisma: client, runtime: providerRuntimeResolver }) },
