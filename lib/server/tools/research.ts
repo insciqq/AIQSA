@@ -1,4 +1,4 @@
-import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_STANDINGS, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import type { RunTool } from "./types";
 
@@ -105,29 +105,41 @@ export const submitResearchDraftTool: RunTool = {
   capability: "session",
   description: "Hand in the research report once the researchers finished. Nothing you write while research runs reaches the user " +
     "except this report: the server checks it and either shows it to the user exactly as written, so do not write it again, or " +
-    "tells you what to do before you submit again. Pass the whole report each time. Refused until the plan stands.",
+    "tells you what to do before you submit again. Pass the whole report each time. The report rests on records: you pass their ids, never " +
+    "their text, and every check reads each claim from its record. Refused until the plan stands.",
   inputSchema: {
     additionalProperties: false,
     properties: {
-      findings: {
-        description: "Every claim the report rests on.",
+      branch_picks: {
+        description: "The row picked for each case of each branch of the matrix, the same row where a case changes nothing; empty when the matrix has no branches or you pick nothing.",
         items: {
           additionalProperties: false,
-          properties: {
-            claim: { type: "string" },
-            quote: { description: "Copied verbatim from the page an agent opened; never paraphrased.", type: "string" },
-            source_class: sourceClass,
-            standing: { description: "confirmed: an independent source you opened says so. claimed: only a party with an interest says so. " +
-              "not_verified: no opened source settles it.", enum: [...RESEARCH_STANDINGS], type: "string" },
-            url: { type: "string" }
-          },
-          required: ["claim", "url", "quote", "source_class", "standing"],
+          properties: { branch_key: { type: "string" }, case_key: { type: "string" }, row_key: { type: "string" } },
+          required: ["branch_key", "case_key", "row_key"],
           type: "object"
         },
         type: "array"
       },
-      report: { description: "The report in Markdown, in the user's language, exactly as the user should read it: confirmed, claimed by a " +
-        "party and not verified kept apart, sources linked, and what could not be reached said plainly.", type: "string" },
+      does_not_separate: { anyOf: [{
+        additionalProperties: false,
+        description: "When the data does not tell rows apart. Say the same in the report, in the same words.",
+        properties: {
+          row_keys: { description: "The rows it does not tell apart, at least two.", items: { type: "string" }, type: "array" },
+          statement: { description: "What the data does not tell apart, in the user's language.", type: "string" },
+          would_decide: { description: "What would decide between them, such as trying them, in the user's language.", type: "string" }
+        },
+        required: ["row_keys", "statement", "would_decide"],
+        type: "object"
+      }, { type: "null" }] },
+      pick_row_key: { anyOf: [{ description: "The row of the matrix the report picks, for every user alike.", type: "string" }, { type: "null" }] },
+      record_ids: {
+        description: "The ids of the records the report rests on, as listed after each researcher's report and returned by record_evidence: every record behind a figure, a price, " +
+          "a seller, a review or a link you state, those of your pick above all. Empty only for advice that states no fact.",
+        items: { type: "string" },
+        type: "array"
+      },
+      report: { description: "The report in Markdown, in the user's language, exactly as the user should read it: a comparison table on the matrix's criteria, why each criterion matters, " +
+        "any criterion added during research with its reason, confirmed, claimed by a party and not verified kept apart, sources linked, and what could not be reached said plainly.", type: "string" },
       unreachable: {
         description: "Sources that could not be reached; empty when none.",
         items: {
@@ -143,7 +155,7 @@ export const submitResearchDraftTool: RunTool = {
         type: "array"
       }
     },
-    required: ["report", "findings", "unreachable"],
+    required: ["report", "record_ids", "pick_row_key", "branch_picks", "does_not_separate", "unreachable"],
     type: "object"
   },
   name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
