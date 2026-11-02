@@ -9,6 +9,7 @@ import {
   researchPlanProposalDocument,
   START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
+  type ResearchDraft,
   type ResearchEvidenceRecord,
   type ResearchMatrixCoverage
 } from "../../contracts/research";
@@ -24,6 +25,7 @@ import type { ResearchGate } from "./gates";
 import { proposalArguments } from "./planWindow.testFixtures";
 import { finding, id } from "./report.testFixtures";
 import { NOOP_RESEARCH_PORTS, type ResearchPortFactories, type ResearchResumeState, type ResearchRunScope } from "./ports";
+import { reportCheckGate } from "./reportCheck";
 import { createResearchResume, createResearchResumeStore, type ResearchResumeSource, type ResearchResumeStore } from "./resume";
 import { createRunResearch, researchOfTurn, researchRunOf, type RunResearchInput } from "./run";
 
@@ -220,6 +222,94 @@ async function startOn(run: ReturnType<typeof runOn>) {
   const result = await execute(toolOf(run, START_RESEARCH_TOOL_NAME), start);
   return { result, text: toolResultOutputText(result) };
 }
+
+describe("submitting edits and rebuilding them", () => {
+  const references = { branch_picks: [], does_not_separate: null, pick_row_key: null, record_ids: [], unreachable: [] };
+  const draft = { ...references, report: "A claim: https://missing.example/claim. Repeated. Repeated.", summary: { row_keys: [], text: "Read the evidence." } };
+  const edits = { ...references, edits: [{ old: "https://missing.example/claim", new: "https://source.example/1#claim" }] };
+  const record = finding(1, null, null);
+  const submit = (args: Record<string, unknown>, callId: string): ModelToolCall => ({ arguments: args, id: callId, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
+  const save = (call: ModelToolCall, result: Awaited<ReturnType<typeof execute>>): TranscriptItem[] =>
+    called(call.name, call.id, call.arguments, toolResultOutputText(result)).map((item) => item.kind === "tool_result" ? { ...item, outcome: result.status === "error" ? "error" : "complete" } : item);
+
+  function setup(gates: readonly ResearchGate[] = [reportCheckGate]) {
+    const ports = portsOf(undefined, [record]).ports;
+    const items = [QUESTION, ...started(), ...planned()];
+    const run = runOn(items, ports, { deps: { gates, ports } });
+    run.research.resume(items);
+    return { items, ports, run };
+  }
+
+  it("checks an edit-only submission as a whole draft, including the automatically cited finding, with a stable tool list", async () => {
+    const seen: ResearchDraft[] = [];
+    const { run } = setup([reportCheckGate, { name: "spy", run: async (whole) => { seen.push(whole); return { kind: "pass" }; } }]);
+    const definitions = JSON.stringify(run.research.tools.map((tool) => tool.definition));
+    const first = await execute(toolOf(run, SUBMIT_RESEARCH_DRAFT_TOOL_NAME), submit(draft, "first"));
+    expect(toolResultOutputText(first)).toContain('"status":"sent_back"');
+    expect(toolResultOutputText(first)).toContain("edits or the whole report");
+    const second = await execute(toolOf(run, SUBMIT_RESEARCH_DRAFT_TOOL_NAME), submit(edits, "second"));
+    expect(toolResultOutputText(second)).toContain('"status":"accepted"');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ report: draft.report.replace("https://missing.example/claim", "https://source.example/1#claim"),
+      summary: { rowKeys: [], text: draft.summary.text }, recordIds: [id(1)], findings: [{ recordId: id(1) }] });
+    expect(run.research.finish(false)).toContain(seen[0]!.report);
+    expect(JSON.stringify(run.research.tools.map((tool) => tool.definition))).toBe(definitions);
+  });
+
+  it.each([["not found", "Absent."], ["found more than once", "Repeated."]])("refuses every edit when one is %s, keeping the previous draft live and on replay", async (reason, old) => {
+    const { items, run } = setup();
+    const first = submit(draft, "first");
+    const firstResult = await execute(toolOf(run, SUBMIT_RESEARCH_DRAFT_TOOL_NAME), first);
+    items.push(...save(first, firstResult));
+    const before = run.research.finish(false);
+    const invalid = submit({ ...edits, edits: [...edits.edits, { old, new: "Wrong." }], summary: { row_keys: [], text: "Must not survive." } }, "bad");
+    const failed = await execute(toolOf(run, SUBMIT_RESEARCH_DRAFT_TOOL_NAME), invalid);
+    expect(failed.status).toBe("error");
+    expect(toolResultOutputText(failed)).toContain(`edits[1].old was ${reason}`);
+    items.push(...save(invalid, failed));
+    expect(run.research.finish(false)).toBe(before);
+    expect(researchOfTurn(items)).toMatchObject({ attempts: [expect.anything()], draft: { report: draft.report, summary: { text: draft.summary.text } } });
+    expect(toolResultOutputText(await execute(toolOf(run, SUBMIT_RESEARCH_DRAFT_TOOL_NAME), submit(edits, "fixed")))).toContain('"status":"accepted"');
+  });
+
+  it.each(["approval", "Continue"])("rebuilds an edit-only draft identically after %s, then edits that latest draft", async (mode) => {
+    const seen: ResearchDraft[] = [];
+    const gate: ResearchGate = { name: "spy", run: async (whole) => { seen.push(whole); return { kind: "send_back", message: "Correct the conclusion." }; } };
+    const { items, run } = setup([gate]);
+    for (const call of [submit(draft, "first"), submit({ ...edits, summary: { row_keys: [], text: "Revised summary." } }, "edited")]) {
+      items.push(...save(call, await execute(toolOf(run, SUBMIT_RESEARCH_DRAFT_TOOL_NAME), call)));
+    }
+    // Another record now shares the URL. Replay must retain the citation the server added when it was unique.
+    const ports = portsOf(undefined, [record, finding(2, null, null, { url: "https://source.example/1" })]).ports;
+    const resumedItems = mode === "Continue" ? [...items, CONTINUE] : [...items];
+    const after: ResearchDraft[] = [];
+    const resumed = runOn(resumedItems, ports, { deps: { ports, gates: [{ name: "spy", run: async (whole, context) => {
+      expect(context.earlier.at(-1)!.draft).toEqual(seen.at(-1));
+      after.push(whole);
+      return { kind: "pass" };
+    } }] } });
+    if (mode === "approval") resumed.research.resume(resumedItems);
+    else {
+      const { result } = await startOn(resumed);
+      resumedItems.push(...save(start, result));
+    }
+    const next = submit({ ...references, record_ids: [id(1)], edits: [{ old: "A claim:", new: "A checked claim:" }] }, "after-resume");
+    const result = await execute(toolOf(resumed, SUBMIT_RESEARCH_DRAFT_TOOL_NAME), next);
+    expect(toolResultOutputText(result)).toContain('"status":"accepted"');
+    expect(after).toEqual([{ ...seen.at(-1), report: seen.at(-1)!.report.replace("A claim:", "A checked claim:") }]);
+    resumedItems.push(...save(next, result));
+    const rebuilt = researchOfTurn(resumedItems);
+    expect(rebuilt.draft).toEqual({ ...after[0], findings: [] });
+    expect(rebuilt.attempts).toHaveLength(3);
+  });
+
+  it("keeps server-added citations even when a long send back is excerpted", () => {
+    const output = toolOutputExcerpt(JSON.stringify({ status: "sent_back", gate: "spy", auto_cited_record_ids: [id(1)], message: "word ".repeat(10_000) }), { handle: "tor1_saved" }).output;
+    const rebuilt = researchOfTurn([QUESTION, ...started(), ...planned(), ...called(SUBMIT_RESEARCH_DRAFT_TOOL_NAME, "d", draft, output)]);
+    expect(rebuilt.draft?.recordIds).toEqual([id(1)]);
+    expect(rebuilt.draftChecked).toBe("sent_back");
+  });
+});
 
 describe("a Continue's start", () => {
   it("skips scoping and the window: the plan stands, the clock starts afresh and the result says what is filled", async () => {
