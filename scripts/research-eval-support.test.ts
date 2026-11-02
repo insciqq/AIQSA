@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdminProviderModelConfiguration } from "../lib/contracts/adminProviders";
@@ -8,7 +8,9 @@ import {
   RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, T_QUESTION_MS, comparePicks, compareResearchAnswers, configureResearchEvalRoles, conflictingFacts, createResearchArchive,
   criteriaOverlap, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval, evaluateResearch, redactResearchSecrets, researchEvalOptions,
   researchEffortConfiguration, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout, researchComparisonDetails, researchRepeatability, researchRoleUsage, researchStoreFacts, researchUsageByModel, shortlistOverlap,
-  type ResearchGrade, type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
+  type ResearchGrade, type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer,
+  RESEARCH_PRODUCTION_SEARCH, parseResearchAdminProxy, readPrivateFile, researchAdminProxySecrets, researchAttributionCounts, researchCitationAttribution,
+  researchCitedUrls, researchProxyCheckStatus, researchQuestionText, researchSearchSourceStatus
 } from "./research-eval-support";
 import { parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes } from "./subagent-scenarios-support";
 
@@ -394,8 +396,10 @@ describe("content-free stdout, role accounting and plan window", () => {
       row("input-only", "r", 6, "assistant_text", { origin, requestAnchor: anchor(20) }),
       row("followup-two", "r", 7, "user", {}), row("output-only", "r", 8, "assistant_text", { origin, outputTokens: 3 })
     ];
-    expect(researchRoleUsage(rows, [], names).researchers).toMatchObject({ responses: 4, inputTokens: 30, outputTokens: 5, missing: 3, missingInput: 2, missingOutput: 2 });
-    expect(researchRoleUsage(rows.slice(2, 5), [], names).researchers).toMatchObject({ responses: 1, missing: 1, inputTokens: null, outputTokens: null });
+    // The mean per response counts only the two responses whose input was reported.
+    expect(researchRoleUsage(rows, [], names).researchers).toMatchObject({ responses: 4, inputTokens: 30, outputTokens: 5, missing: 3, missingInput: 2, missingOutput: 2,
+      inputPerResponse: 15 });
+    expect(researchRoleUsage(rows.slice(2, 5), [], names).researchers).toMatchObject({ responses: 1, missing: 1, inputTokens: null, outputTokens: null, inputPerResponse: null });
   });
 
   it("keeps response boundaries across runs, turns, anchors and write batches and ignores compaction/synthetic items", () => {
@@ -445,5 +449,132 @@ describe("content-free stdout, role accounting and plan window", () => {
   it("includes time spent holding the plan after cancel_hold rewrites the countdown deadline", () => {
     const held = { createdAt: "2026-11-01T00:00:00Z", windowEndsAt: "2026-11-01T00:03:00Z", releasedAt: "2026-11-01T00:03:00Z", releasedBy: "timer" };
     expect(researchPlanWindow(held)).toEqual({ present: true, seconds: 180, releasedBy: "timer" });
+  });
+});
+
+describe("acceptance options", () => {
+  const env = { AIQSA_SUBAGENTS_ANSWERS_DIR: "/private/research" };
+  const production = { ...env, AIQSA_SUBAGENTS_T_SEARCH: "production", AIQSA_SUBAGENTS_SEARCH_MODEL: "search-model-1", OPENROUTER_API_KEY: "k", DEEPSEEK_API_KEY: "k" };
+  let directory: string | null = null;
+  const scratch = () => (directory ??= mkdtempSync(join(tmpdir(), "research-acceptance-")));
+  afterEach(() => { if (directory) rmSync(directory, { force: true, recursive: true }); directory = null; });
+  const file = (name: string, text: string, mode = 0o600) => {
+    const path = join(scratch(), name);
+    writeFileSync(path, text, { mode });
+    chmodSync(path, mode);
+    return path;
+  };
+
+  it("takes production Search only with its model and both keys, and the question file only with a purchase question", () => {
+    expect(researchEvalOptions(env)).toMatchObject({ search: null, questionFile: null, adminProxyFile: null });
+    expect(researchEvalOptions(production).search).toEqual({ model: "search-model-1", plan: "production" });
+    expect(() => researchEvalOptions({ ...production, AIQSA_SUBAGENTS_SEARCH_MODEL: "" })).toThrow("research_search_model_required");
+    expect(() => researchEvalOptions({ ...production, OPENROUTER_API_KEY: " " })).toThrow("openrouter_key_required");
+    expect(() => researchEvalOptions({ ...production, DEEPSEEK_API_KEY: undefined })).toThrow("deepseek_key_required");
+    expect(() => researchEvalOptions({ ...env, AIQSA_SUBAGENTS_T_SEARCH: "all" })).toThrow("research_search_invalid");
+    expect(() => researchEvalOptions({ ...env, AIQSA_SUBAGENTS_SEARCH_MODEL: "search-model-1" })).toThrow("research_search_model_invalid");
+    expect(() => researchEvalOptions({ ...production, AIQSA_SUBAGENTS_SEARCH_MODEL: "bad model" })).toThrow("research_search_model_invalid");
+    expect(researchEvalOptions({ ...env, AIQSA_SUBAGENTS_T_QUESTION_FILE: "/private/q", AIQSA_SUBAGENTS_ADMIN_PROXY_FILE: "/private/p" }))
+      .toMatchObject({ questionFile: "/private/q", adminProxyFile: "/private/p" });
+    expect(() => researchEvalOptions({ ...env, AIQSA_SUBAGENTS_T_KINDS: "medical", AIQSA_SUBAGENTS_T_QUESTION_FILE: "/private/q" })).toThrow("research_question_file_unused");
+  });
+
+  it("reads only a private, regular, bounded, non-empty file and replaces only the purchase question", () => {
+    const question = file("question", "  A synthetic purchase question.\n");
+    expect(readPrivateFile(question, 100, "research_question_file")).toBe("  A synthetic purchase question.\n");
+    expect(() => readPrivateFile(file("open", "text", 0o644), 100, "research_question_file")).toThrow("research_question_file_mode");
+    expect(() => readPrivateFile(file("group", "text", 0o640), 100, "research_question_file")).toThrow("research_question_file_mode");
+    expect(() => readPrivateFile(file("blank", " \n"), 100, "research_question_file")).toThrow("research_question_file_empty");
+    expect(() => readPrivateFile(file("long", "x".repeat(101)), 100, "research_question_file")).toThrow("research_question_file_too_large");
+    expect(() => readPrivateFile(join(scratch(), "absent"), 100, "research_question_file")).toThrow("research_question_file_invalid");
+    expect(() => readPrivateFile(scratch(), 100, "research_question_file")).toThrow("research_question_file_invalid");
+    const link = join(scratch(), "link");
+    symlinkSync(question, link);
+    expect(() => readPrivateFile(link, 100, "research_question_file")).toThrow("research_question_file_invalid");
+    const exposed = file("other", "secret text", 0o644);
+    expect(() => readPrivateFile(exposed, 100, "research_question_file")).toThrow(expect.objectContaining({ message: "research_question_file_mode" }));
+    expect(researchQuestionText("purchase", "built-in", " operator question \n")).toBe("operator question");
+    expect(researchQuestionText("medical", "built-in", "operator question")).toBe("built-in");
+    expect(researchQuestionText("purchase", "built-in", null)).toBe("built-in");
+  });
+
+  it("parses the administrator proxy file exactly and keeps its values out of errors", () => {
+    const valid = { url: "http://proxy.example.net:8080", username: "synthetic-user", password: "synthetic-pass", country: "RU", hints: [".ru", " .su "] };
+    const proxy = parseResearchAdminProxy(JSON.stringify(valid));
+    expect(proxy).toEqual({ country: "RU", domainHints: [".ru", ".su"], host: "proxy.example.net", login: "synthetic-user", password: "synthetic-pass",
+      port: 8080, protocol: "http", url: "http://proxy.example.net:8080" });
+    expect(parseResearchAdminProxy(JSON.stringify({ ...valid, url: "socks5://proxy.example.net:1080" })).protocol).toBe("socks5");
+    expect(researchAdminProxySecrets(proxy)).toEqual(["http://proxy.example.net:8080", "proxy.example.net", "synthetic-user", "synthetic-pass"]);
+    expect(researchAdminProxySecrets(null)).toEqual([]);
+    for (const broken of [
+      "not json", JSON.stringify([valid]), JSON.stringify({ ...valid, extra: true }), JSON.stringify({ ...valid, hints: undefined }),
+      JSON.stringify({ ...valid, url: "http://a:b@proxy.example.net:8080" }), JSON.stringify({ ...valid, url: "http://proxy.example.net" }),
+      JSON.stringify({ ...valid, url: "ftp://proxy.example.net:21" }), JSON.stringify({ ...valid, url: "http://proxy.example.net:8080/path" }),
+      JSON.stringify({ ...valid, country: "ru" }), JSON.stringify({ ...valid, username: "" }), JSON.stringify({ ...valid, password: "a\nb" }),
+      JSON.stringify({ ...valid, hints: [] }), JSON.stringify({ ...valid, hints: [1] })
+    ]) {
+      expect(() => parseResearchAdminProxy(broken)).toThrow(expect.objectContaining({ message: "research_admin_proxy_file_invalid" }));
+    }
+    expect(researchProxyCheckStatus({ check: { status: "ok", exitAddress: "203.0.113.1" } })).toBe("ok");
+    expect(researchProxyCheckStatus({ check: { status: "proxy_auth_failed" } })).toBe("proxy_auth_failed");
+    expect(researchProxyCheckStatus({ check: { status: "Bad Status" } })).toBe("invalid");
+    expect(researchProxyCheckStatus(null)).toBe("invalid");
+  });
+
+  it("requires each production source live, published, on its client route and checked with sources", () => {
+    const source = { archivedAt: null, enabled: true, ready: true, configurationActive: true, draftDirty: false,
+      configuration: { adapterKind: "provider_model_client", protocol: "openai_responses_web_search", providerModelId: "model-1" },
+      draftTestEvidence: { method: "provider_search", protocol: "openai_responses_web_search", status: "available", normalizedSourceCount: 4 } };
+    const expected = { protocol: "openai_responses_web_search", providerModelId: "model-1" };
+    expect(researchSearchSourceStatus(source, expected)).toBe("ok");
+    expect(researchSearchSourceStatus(null, expected)).toBe("missing");
+    expect(researchSearchSourceStatus({ ...source, archivedAt: "2026-11-01" }, expected)).toBe("archived");
+    expect(researchSearchSourceStatus({ ...source, enabled: false }, expected)).toBe("disabled");
+    expect(researchSearchSourceStatus({ ...source, ready: false }, expected)).toBe("not_ready");
+    expect(researchSearchSourceStatus({ ...source, draftDirty: true }, expected)).toBe("not_published");
+    expect(researchSearchSourceStatus(source, { ...expected, providerModelId: "model-2" })).toBe("configuration_mismatch");
+    expect(researchSearchSourceStatus({ ...source, configuration: { ...source.configuration, adapterKind: "answer_provider_hosted" } }, expected)).toBe("configuration_mismatch");
+    expect(researchSearchSourceStatus({ ...source, draftTestEvidence: null }, expected)).toBe("not_checked");
+    expect(researchSearchSourceStatus({ ...source, draftTestEvidence: { ...source.draftTestEvidence, method: "configuration" } }, expected)).toBe("not_checked");
+    expect(researchSearchSourceStatus({ ...source, draftTestEvidence: { ...source.draftTestEvidence, status: "unavailable" } }, expected)).toBe("check_unavailable");
+    expect(researchSearchSourceStatus({ ...source, draftTestEvidence: { ...source.draftTestEvidence, normalizedSourceCount: 0 } }, expected)).toBe("check_empty");
+    // DeepSeek's source borrows any DeepSeek model's key, so only its protocol is compared.
+    expect(researchSearchSourceStatus({ ...source, configuration: { ...source.configuration, protocol: "deepseek_search_api", providerModelId: "other" },
+      draftTestEvidence: { ...source.draftTestEvidence, protocol: "deepseek_search_api" } }, { protocol: "deepseek_search_api" })).toBe("ok");
+    expect(RESEARCH_PRODUCTION_SEARCH.map((entry) => entry.protocol)).toEqual(["openai_responses_web_search", "openrouter_perplexity_chat", "deepseek_search_api"]);
+  });
+
+  it("attributes the cited records' links to the Search sources that returned them, in fetch_url's form", () => {
+    const evidence = [
+      { id: "r1", url: "https://Shop.Example.com:443/item#reviews", dataset: null },
+      { id: "r2", url: "https://example.org/review", dataset: null },
+      { id: "r3", url: null, dataset: { examples: [{ url: "https://example.net/a" }, { url: "not a url" }] } },
+      { id: "r4", url: "https://example.com/linked-in-answer", dataset: null },
+      { id: "r5", url: "https://example.com/uncited", dataset: null }
+    ];
+    const cited = researchCitedUrls({ evidence, answer: "See [the page](https://example.com/linked-in-answer).", lastDraft: { record_ids: ["r1", "r2", "r3", "missing", 7] } });
+    expect(cited).toEqual({ records: 4, urls: ["https://example.com/linked-in-answer", "https://example.net/a", "https://example.org/review", "https://shop.example.com/item"] });
+    expect(researchCitedUrls({ evidence: [], answer: "", lastDraft: { findings: [{ url: "https://EXAMPLE.com/x" }] } }))
+      .toEqual({ records: 0, urls: ["https://example.com/x"] });
+    expect(researchCitedUrls({ evidence, answer: "", lastDraft: null })).toEqual({ records: 0, urls: [] });
+    const labels = new Map([["opt-openai", "openai"], ["opt-perplexity", "perplexity"], ["opt-deepseek", "deepseek"]]);
+    const attribution = researchCitationAttribution(cited.urls, [
+      { strategyId: "opt-openai", sources: [{ url: "https://shop.example.com/item" }, { url: "https://example.org/review" }] },
+      { strategyId: "opt-deepseek", sources: [{ url: "https://example.org/review#top" }, { url: "https://example.net/a" }, { title: "no url" }] },
+      { strategyId: "opt-perplexity", sources: null },
+      { strategyId: "opt-retired", sources: [{ url: "https://example.com/linked-in-answer" }] }
+    ], labels);
+    expect(attribution.sources).toEqual({
+      deepseek: { urls: ["https://example.net/a", "https://example.org/review"], only: 1 },
+      openai: { urls: ["https://example.org/review", "https://shop.example.com/item"], only: 1 },
+      other: { urls: ["https://example.com/linked-in-answer"], only: 1 },
+      perplexity: { urls: [], only: 0 }
+    });
+    expect(attribution.unsurfaced).toEqual([]);
+    const counts = researchAttributionCounts(attribution, cited.records);
+    expect(counts).toEqual({ citedRecords: 4, citedUrls: 4, unsurfaced: 0, sources: { deepseek: { cited: 2, only: 1 }, openai: { cited: 2, only: 1 },
+      other: { cited: 1, only: 1 }, perplexity: { cited: 0, only: 0 } } });
+    expect(JSON.stringify(counts)).not.toContain("example");
+    expect(researchCitationAttribution(["https://example.com/x"], [], labels).unsurfaced).toEqual(["https://example.com/x"]);
   });
 });

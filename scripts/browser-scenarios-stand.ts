@@ -259,12 +259,39 @@ export async function setWorkspaceEnabled(api: Api, enabled: boolean): Promise<v
 
 type SearchSourceInput = Readonly<{ connectionId: string; kind: "web_search" } | { kind: "deepseek_search_api"; provider: "deepseek"; secret: string }>;
 
-type StandSearchIntegration = Readonly<{ archivedAt: unknown; configurationActive: unknown; enabled: unknown; id: string; kind: unknown; sourceConnectionId: unknown; strategyId: string }>;
+type StandSearchIntegration = Readonly<{ archivedAt: unknown; configuration: unknown; configurationActive: unknown; draftVersion: unknown; enabled: unknown;
+  id: string; kind: unknown; sourceConnectionId: unknown; strategyId: string }>;
+
+/** The Admin Search catalog as the Control Center reads it. */
+async function searchCatalog(api: Api): Promise<Readonly<{ integrations: readonly StandSearchIntegration[]; policy: Readonly<{ version: number }> }>> {
+  const value = await json(api, "/api/admin/search");
+  const search = isRecord(value) && isRecord(value.search) ? value.search : fail("search_catalog_invalid");
+  if (!Array.isArray(search.integrations) || !isRecord(search.policy) || !Number.isSafeInteger(search.policy.version)) fail("search_catalog_invalid");
+  return { integrations: search.integrations as readonly StandSearchIntegration[], policy: search.policy as { version: number } };
+}
 
 async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegration[]> {
-  const value = await json(api, "/api/admin/search");
-  const list = isRecord(value) && isRecord(value.search) && Array.isArray(value.search.integrations) ? value.search.integrations : fail("search_catalog_invalid");
-  return list as readonly StandSearchIntegration[];
+  return (await searchCatalog(api)).integrations;
+}
+
+/** A family's connection: reused when one exists, else added through Quick Setup as an administrator's first key would add it. */
+export async function ensureFamilyConnection(api: Api, provider: "deepseek" | "openrouter", secret: string): Promise<string> {
+  const existing = (await connections(api)).find((connection) => connection.family === provider && !connection.checkRunning);
+  if (existing) return existing.id;
+  const snapshot = await json(api, "/api/admin/providers/quick-setup");
+  const providers = isRecord(snapshot) && Array.isArray(snapshot.providers) ? snapshot.providers as readonly Record<string, unknown>[] : fail("quick_setup_invalid");
+  const offered = providers.find((entry) => entry.provider === provider) ?? fail("quick_setup_not_offered");
+  let result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: offered.stateToken, provider, secret },
+    method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  if (isRecord(result) && result.outcome === "selection_required" && Array.isArray(result.candidates)) {
+    const candidate = (result.candidates as readonly Record<string, unknown>[])[0] ?? fail("quick_setup_no_candidate");
+    result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: result.expectedState, provider, secret,
+      selectedModel: { candidateId: candidate.candidateId, policyVersion: result.policyVersion } }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  }
+  if (!isRecord(result) || typeof result.connectionId !== "string" || (result.outcome !== "ready" && result.outcome !== "partial")) fail("quick_setup_failed");
+  const connectionId = (result as { connectionId: string }).connectionId;
+  await checksIdle(api, connectionId);
+  return connectionId;
 }
 
 /**
@@ -272,30 +299,69 @@ async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegra
  * and runs its one probe search, and a hosted one that the model's own setup created.
  */
 export async function ensureSearchSource(api: Api, input: SearchSourceInput): Promise<string> {
-  let connectionId: string | null = input.kind === "web_search" ? input.connectionId : null;
-  if (input.kind === "deepseek_search_api") {
-    const existing = (await connections(api)).find((connection) => connection.family === input.provider && !connection.checkRunning);
-    if (existing) connectionId = existing.id;
-    else {
-      const snapshot = await json(api, "/api/admin/providers/quick-setup");
-      const providers = isRecord(snapshot) && Array.isArray(snapshot.providers) ? snapshot.providers as readonly Record<string, unknown>[] : fail("quick_setup_invalid");
-      const offered = providers.find((entry) => entry.provider === input.provider) ?? fail("quick_setup_not_offered");
-      let result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: offered.stateToken, provider: input.provider, secret: input.secret },
-        method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
-      if (isRecord(result) && result.outcome === "selection_required" && Array.isArray(result.candidates)) {
-        const candidate = (result.candidates as readonly Record<string, unknown>[])[0] ?? fail("quick_setup_no_candidate");
-        result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: result.expectedState, provider: input.provider, secret: input.secret,
-          selectedModel: { candidateId: candidate.candidateId, policyVersion: result.policyVersion } }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
-      }
-      if (!isRecord(result) || typeof result.connectionId !== "string" || (result.outcome !== "ready" && result.outcome !== "partial")) fail("quick_setup_failed");
-      connectionId = (result as { connectionId: string }).connectionId;
-      await checksIdle(api, connectionId);
-    }
-  }
+  const connectionId = input.kind === "web_search" ? input.connectionId : await ensureFamilyConnection(api, input.provider, input.secret);
   const integration = await poll(SETUP_TIMEOUT_MS, async () => (await searchIntegrations(api)).find((entry) =>
     entry.sourceConnectionId === connectionId && entry.kind === input.kind && entry.archivedAt === null && entry.configurationActive) ?? null, "search_source_missing", 3_000);
   if (!integration.enabled) await json(api, `/api/admin/search/${encodeURIComponent(integration.id)}/actions`, { body: { action: "enable" }, method: "POST" });
   return integration.strategyId;
+}
+
+export type ClientSearchSource = Readonly<{ id: string; providerModelId: string; strategyId: string }>;
+
+/**
+ * A Search source on one connection's client route with one exact model, through the routes the Control Center uses: kept when
+ * it already searches with that model, re-saved with Save and check when it names another, created with its live check when the
+ * connection has none (a failed check creates nothing), then switched on. The draft is the Control Center's own for a model
+ * choice (`draftForModel` in `components/admin/search/searchSourceView.ts`). Without `upstreamModelId` the connection's first
+ * enabled model carries the source, as the DeepSeek Search API borrows its connection's key and never calls the model.
+ */
+export async function ensureClientSearchSource(api: Api, input: Readonly<{ connectionId: string; displayName: string;
+  kind: "deepseek_search_api" | "perplexity_search" | "web_search"; protocol: string; upstreamModelId: string | null }>): Promise<ClientSearchSource> {
+  const connection = await checksIdle(api, input.connectionId);
+  const model = input.upstreamModelId === null ? connection.models.find((entry) => entry.enabled) ?? null
+    : connection.models.find((entry) => entry.enabled && (entry.activeConfig ?? entry.draftConfig).upstreamModelId === input.upstreamModelId) ?? null;
+  if (!model) return fail(`search_model_missing_${input.kind}`);
+  const draft = { adapterKind: "provider_model_client", credentialMode: "provider_model", maxOutputTokens: null, protocol: input.protocol,
+    providerModelId: model.id, queryMaxCharacters: input.protocol === "deepseek_search_api" ? 128 : 1_000, reasoningPolicy: "lowest_supported", timeoutMs: 120_000 };
+  const description = "Web search available in chat.";
+  const live = async () => (await searchIntegrations(api)).find((entry) => entry.sourceConnectionId === input.connectionId &&
+    entry.kind === input.kind && entry.archivedAt === null) ?? null;
+  const existing = await live();
+  const configuration = existing && isRecord(existing.configuration) ? existing.configuration : null;
+  if (!existing || !configuration) {
+    const created = await json(api, "/api/admin/search", { body: { check: true, description, displayName: input.displayName, draft }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+    if (!isRecord(created) || typeof created.selectedIntegrationId !== "string") fail("search_source_create_invalid");
+  } else if (configuration.providerModelId !== model.id || configuration.protocol !== input.protocol || configuration.adapterKind !== "provider_model_client") {
+    // A DeepSeek source keeps whichever DeepSeek model carries its key: the API never calls it.
+    if (input.upstreamModelId !== null || configuration.protocol !== input.protocol) {
+      await json(api, `/api/admin/search/${encodeURIComponent(existing.id)}/actions`, { body: { action: "save_and_check", description,
+        displayName: input.displayName, draft, expectedDraftVersion: existing.draftVersion }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+    }
+  }
+  const integration = await live() ?? fail(`search_source_missing_${input.kind}`);
+  if (!integration.enabled) await json(api, `/api/admin/search/${encodeURIComponent(integration.id)}/actions`, { body: { action: "enable" }, method: "POST" });
+  // The model the source must search with; the caller's check compares the saved configuration against it.
+  return { id: integration.id, providerModelId: model.id, strategyId: integration.strategyId };
+}
+
+/** Runs a source's live check (the Control Center's Test) and returns the source as the catalog then shows it, for the caller's verdict. */
+export async function checkSearchSource(api: Api, integrationId: string): Promise<Readonly<{ code: string | null; integration: unknown }>> {
+  const response = await request(api, `/api/admin/search/${encodeURIComponent(integrationId)}/actions`, { body: { action: "test" }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  const code = response.ok ? null : await errorCode(response);
+  if (response.ok) await discard(response);
+  return { code, integration: (await searchIntegrations(api)).find((entry) => entry.id === integrationId) ?? null };
+}
+
+/** The organization's default Search plan, as the Control Center saves it; the server's answer must hold exactly this plan. */
+export async function setOrganizationSearchPlan(api: Api, plan: Readonly<{ mode: "all_selected" | "model_choice"; optionIds: readonly string[] }>): Promise<void> {
+  const { policy } = await searchCatalog(api);
+  const updated = await json(api, "/api/admin/search", { body: { defaultPlan: plan, expectedVersion: policy.version }, method: "PATCH" });
+  const saved = isRecord(updated) && isRecord(updated.search) && isRecord(updated.search.policy) && isRecord(updated.search.policy.defaultPlan)
+    ? updated.search.policy.defaultPlan : null;
+  const ids = saved && Array.isArray(saved.optionIds) ? saved.optionIds as readonly unknown[] : null;
+  if (!saved || saved.mode !== plan.mode || !ids || ids.length !== plan.optionIds.length || plan.optionIds.some((id, index) => ids[index] !== id)) {
+    fail("search_default_plan_not_applied");
+  }
 }
 
 /** The research verifier role on the first enabled answer model of a connection of that family (of another family than the chat's, as the role is meant to be). */
