@@ -6,6 +6,7 @@ import {
   type ToolObservationSource,
   type ToolObservationSourceBinding
 } from "../toolObservations/contract";
+import { searchToolResultFairShare } from "../search/toolResult";
 import { readObservationOriginal } from "../toolObservations/searchOriginal";
 import type { ToolObservationService } from "../toolObservations/service";
 import type { ModelToolCall, RunTool, ToolExecutionContent, ToolExecutionResult } from "../tools/types";
@@ -21,7 +22,8 @@ import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
  * out of the context and name where it lives (decision 2026-10-23,
  * `agent_docs/RUN_CONTRACTS.md`).
  * The model receives a text up to `inlineChars` whole, and a longer one as
- * its head and tail with the handle; `read_tool_result` reads any part of a
+ * its head and tail with the handle (a merged search result: a fair share of
+ * each engine, `toolModelOutput`); `read_tool_result` reads any part of a
  * saved result by handle, with the call's tool and arguments, from any later
  * turn of the same user's chat (compaction included), and never runs the
  * tool again. Nothing is cut silently: an excerpt always says what it left
@@ -79,6 +81,22 @@ export function toolOutputExcerpt(text: string, saved: Readonly<{ handle: string
       `The whole result could not be saved (${saved && "unsavedReason" in saved ? saved.unsavedReason : "storage_unavailable"}), ` +
       "so the omitted part cannot be read later.]";
   return { handle, output: `${head}\n\n${note}\n\n${tail}`, truncated: true };
+}
+
+/**
+ * What the model reads of a result, wherever it reaches one (main agent, researchers, sub-agents): the excerpt, except that a saved
+ * search result of several engines too long to show whole gives each engine a fair share of the same visible budget
+ * (`searchToolResultFairShare`) instead of the head and tail, which hid every engine but the first. The saved copy and the call's row
+ * keep the whole text; a result that could not be saved keeps the head and tail, whose note says so.
+ */
+export function toolModelOutput(result: ToolExecutionResult, text: string, excerpt: Readonly<{ handle: string | null; output: string }>): string {
+  if (!excerpt.handle || text.length <= TOOL_RESULT_LIMITS.inlineChars) return excerpt.output;
+  const shared = searchToolResultFairShare(result, text, TOOL_RESULT_LIMITS.headChars + TOOL_RESULT_LIMITS.tailChars);
+  if (!shared) return excerpt.output;
+  // The note's opening names the whole length the way the head-and-tail note does (`resultLength`, `compaction/retained.ts`).
+  return `${shared.text}\n\n[${Math.max(0, text.length - shared.shown)} of ${text.length} characters omitted here: each search source ` +
+    `keeps a share, cut where its note says. The whole result is saved: call ${READ_TOOL_RESULT_NAME} with handle "${excerpt.handle}" ` +
+    `and the offset a note names, or 0 (limit up to ${TOOL_RESULT_LIMITS.readChars}), to read it.]`;
 }
 
 /** Saves a long result text once as its call's observation; null when the store retained nothing. */
