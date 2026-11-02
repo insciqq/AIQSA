@@ -116,6 +116,23 @@ function refusedPageNextStep(step: FetchUrlBrowserStep): string {
       "the site needs and finish with what you have.";
 }
 
+function proxiesToTry(context: FailureContext): string {
+  return context.proxiesToTry?.length ? ` Try fetch_url with proxy set to one of: ${context.proxiesToTry.map((name) => JSON.stringify(name)).join(", ")}.` : "";
+}
+
+/**
+ * In research nobody passes a CAPTCHA, but the run's own proxies and browser still count: a real marketplace refused every
+ * `fetch_url` and opened with prices in the Workspace browser through the run's proxy (2026-11-02). The site is given up
+ * only when they fail too.
+ */
+function researchRefusedPageNextStep(proxies: string, step: FetchUrlBrowserStep | null): string {
+  const browser = step ? " If this page is needed and other sources will not do, open it once in the Workspace browser " +
+    `(read ${WORKSPACE_GUIDE_PATHS.browser} first).` : "";
+  return proxies || browser
+    ? `${proxies}${browser} If that is refused too or shows a CAPTCHA, a block page or a sign-in: ${RESEARCH_UNREACHABLE_NEXT}`
+    : ` ${RESEARCH_UNREACHABLE_NEXT}`;
+}
+
 /** What the model is told for each refusal or failure. */
 function failureMessage(code: FailureCode, context: FailureContext): string {
   const { httpStatus, scope } = context;
@@ -139,9 +156,8 @@ function failureMessage(code: FailureCode, context: FailureContext): string {
     case "fetch_http_status":
       return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.` +
         (PROXY_BLOCKED_HTTP_STATUSES.some((status) => status === httpStatus)
-          ? context.researching ? ` ${RESEARCH_UNREACHABLE_NEXT}`
-            : (context.proxiesToTry?.length ? ` Try fetch_url with proxy set to one of: ${context.proxiesToTry.map((name) => JSON.stringify(name)).join(", ")}.` : "") +
-            (context.browserStep ? refusedPageNextStep(context.browserStep) : "") : "");
+          ? context.researching ? researchRefusedPageNextStep(proxiesToTry(context), context.browserStep ?? null)
+            : proxiesToTry(context) + (context.browserStep ? refusedPageNextStep(context.browserStep) : "") : "");
     case "fetch_network_error": return "The site could not be reached.";
     case "fetch_no_readable_text":
       return context.pdf
