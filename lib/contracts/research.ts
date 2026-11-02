@@ -108,8 +108,6 @@ export const RESEARCH_TIME_MS = Object.freeze({
    * so seconds at worst, and well inside the minute a turn keeps for its handoff (`TURN_HANDOFF_RESERVE_MS`).
    */
   composeReport: 15_000,
-  /** How long a research handoff waits for the user before the site goes to the unreachable list. */
-  handoffWait: 3 * MINUTE_MS,
   /** From the plan's release: the hard end. */
   hardEnd: 90 * MINUTE_MS,
   /** From the plan's release: what did not pass by now goes out with a note. Report and checks run from `stopRunningResearchers` to here. */

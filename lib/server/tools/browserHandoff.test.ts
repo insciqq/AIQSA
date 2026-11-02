@@ -1,6 +1,5 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RESEARCH_TIME_MS } from "../../contracts/research";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import type { BrowserLiveRunHandle } from "../workspace/browserLive";
@@ -20,7 +19,7 @@ describe("a handoff's wait", () => {
   const call = { arguments: { message: "Please sign in to the shop.", reason: "sign_in" }, id: "call-1", name: BROWSER_HANDOFF_TOOL_NAME };
   const page = { title: "Sign in", url: "https://shop.example/login" };
 
-  it.each([undefined, RESEARCH_TIME_MS.handoffWait])("waits until its limit with research wait %s", async (researchWait) => {
+  it("waits until the ordinary limit", async () => {
     vi.useFakeTimers();
     const handoff = vi.fn<BrowserLiveRunHandle["handoff"]>(({ waitMs }) => new Promise((resolve) => {
       setTimeout(() => resolve({ kind: "ended", outcome: "timed_out", page, saved: null }), waitMs);
@@ -28,45 +27,46 @@ describe("a handoff's wait", () => {
     const live = { end: async () => undefined, handoff } satisfies BrowserLiveRunHandle;
     const completed = vi.fn();
     const waiting = executeBrowserHandoff(call, { kind: "interactive", live, toolTimeLeftMs: () => BROWSER_HANDOFF_WAIT_MS,
-      waitMs: () => researchWait }, new AbortController().signal).then((result) => { completed(); return result; });
-    const wait = researchWait ?? BROWSER_HANDOFF_WAIT_MS;
+      researching: () => false }, new AbortController().signal).then((result) => { completed(); return result; });
+    const wait = BROWSER_HANDOFF_WAIT_MS;
     await vi.advanceTimersByTimeAsync(wait - 1);
     expect(completed).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     const result = valueOf(await waiting);
     expect(result).toMatchObject({ outcome: "timed_out", page });
     expect(handoff).toHaveBeenCalledWith(expect.objectContaining({ waitMs: wait }));
-    expect(result.next).toEqual(researchWait === undefined
-      ? "The user did not finish in time. Look at the page; if the step is still needed, tell the user what is waiting for them and finish with what you have."
-      : expect.stringContaining('record_evidence with kind "unreachable"'));
+    expect(result.next).toBe("The user did not finish in time. Look at the page; if the step is still needed, tell the user what is waiting for them and finish with what you have.");
   });
 
-  it("reads the research wait at each call and never exceeds the remaining tool time", async () => {
+  it("reads whether research started at each call and caps ordinary waits at the remaining time", async () => {
     let researching = false;
     let timeLeft = BROWSER_HANDOFF_WAIT_MS;
     const handoff = vi.fn<BrowserLiveRunHandle["handoff"]>(async () => ({ kind: "ended", outcome: "timed_out", page, saved: null }));
     const mode: BrowserHandoffMode = { kind: "interactive", live: { end: async () => undefined, handoff },
-      toolTimeLeftMs: () => timeLeft, waitMs: () => researching ? RESEARCH_TIME_MS.handoffWait : undefined };
+      toolTimeLeftMs: () => timeLeft, researching: () => researching };
     const signal = new AbortController().signal;
     await executeBrowserHandoff(call, mode, signal);
     expect(handoff).toHaveBeenLastCalledWith(expect.objectContaining({ waitMs: BROWSER_HANDOFF_WAIT_MS }));
     researching = true;
-    await executeBrowserHandoff(call, mode, signal);
-    expect(handoff).toHaveBeenLastCalledWith(expect.objectContaining({ waitMs: RESEARCH_TIME_MS.handoffWait }));
-    timeLeft = RESEARCH_TIME_MS.handoffWait / 2;
+    expect(valueOf(await executeBrowserHandoff(call, mode, signal))).toMatchObject({ outcome: "unreachable" });
+    expect(handoff).toHaveBeenCalledTimes(1);
+    researching = false;
+    timeLeft = BROWSER_HANDOFF_WAIT_MS / 2;
     await executeBrowserHandoff(call, mode, signal);
     expect(handoff).toHaveBeenLastCalledWith(expect.objectContaining({ waitMs: timeLeft }));
   });
 
-  it.each(["completed", "cancelled"] as const)("keeps the %s result when the user answers during research", async (outcome) => {
-    const live: BrowserLiveRunHandle = { end: async () => undefined,
-      handoff: async () => ({ kind: "ended", outcome, page, saved: null }) };
-    const mode: BrowserHandoffMode = { kind: "interactive", live, toolTimeLeftMs: () => BROWSER_HANDOFF_WAIT_MS };
-    const signal = new AbortController().signal;
-    const ordinary = await executeBrowserHandoff(call, mode, signal);
-    const research = await executeBrowserHandoff(call, { ...mode, waitMs: () => RESEARCH_TIME_MS.handoffWait }, signal);
-    expect(research).toEqual(ordinary);
-    expect(valueOf(research).outcome).toBe(outcome);
+  it.each([true, false])("returns immediately in research, with no handoff or timer, live browser available: %s", async (available) => {
+    vi.useFakeTimers();
+    const handoff = vi.fn<BrowserLiveRunHandle["handoff"]>();
+    const toolTimeLeftMs = vi.fn(() => 0);
+    const result = await executeBrowserHandoff(call, { kind: "interactive", researching: () => true,
+      live: available ? { end: async () => undefined, handoff } : null, toolTimeLeftMs }, new AbortController().signal);
+    expect(valueOf(result)).toMatchObject({ outcome: "unreachable", next: expect.stringContaining('record_evidence with kind "unreachable"') });
+    expect(valueOf(result).next).toContain("Do not open this site again or wait for a person");
+    expect(handoff).not.toHaveBeenCalled();
+    expect(toolTimeLeftMs).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
