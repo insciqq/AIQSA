@@ -101,10 +101,14 @@ describe("research refuses unreachable fetch_url sites", () => {
     expect(fetchPage).not.toHaveBeenCalled();
   });
 
-  it("directs a research block to unreachable instead of a person's handoff", async () => {
-    const s = session({ browserStep: () => "user", fetchPage: async () => { throw new WebFetchError("fetch_http_status", { dispatched: true, httpStatus: 403 }); } });
-    const result = json(await s.execute(call(0), { signal }));
-    expect(result.message).toContain('record_evidence with kind "unreachable"');
-    expect(result.message).not.toContain("browser_handoff");
+  it("sends a research block to the run's own browser first, then to unreachable, never to a person's handoff", async () => {
+    const blocked = async () => { throw new WebFetchError("fetch_http_status", { dispatched: true, httpStatus: 403 }); };
+    const withBrowser = json(await session({ browserStep: () => "user", fetchPage: blocked }).execute(call(0), { signal }));
+    expect(withBrowser.message).toContain("open it once in the Workspace browser");
+    expect(withBrowser.message).toContain('If that is refused too or shows a CAPTCHA, a block page or a sign-in: Call record_evidence with kind "unreachable"');
+    expect(withBrowser.message).not.toContain("browser_handoff");
+    const withoutBrowser = json(await session({ fetchPage: blocked }).execute(call(0), { signal }));
+    expect(withoutBrowser.message).not.toContain("Workspace browser");
+    expect(withoutBrowser.message).toContain('record_evidence with kind "unreachable"');
   });
 });
