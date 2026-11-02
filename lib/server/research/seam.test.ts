@@ -1153,6 +1153,8 @@ describe("researchers on the installation role", () => {
     expect(JSON.stringify(child.requests[0]!.history)).toContain("# Research method (from the server)");
     expect(JSON.stringify(child.requests[0]!.history)).toContain("Проведи исследование матрасов.");
     expect(child.requests[0]!.prompt.system).toContain("Be brief.");
+    // A researcher on the role starts no children either, with every tool.
+    expect(child.requests[0]!.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
     expect(installed.bindings.get(RESEARCH_RESEARCHER_BINDING_KEY)).toMatchObject({ executionSnapshot: { credentialId: "installation-key" } });
     expect(installed.loadRole).toHaveBeenCalledTimes(1);
     expect(installed.runtime.resolve).toHaveBeenCalledExactlyOnceWith("run-1", "answer", RESEARCH_RESEARCHER_BINDING_KEY);
@@ -1235,25 +1237,73 @@ it("runs the gap judge on the checks binding with the user's request and its req
   expect(memory.published()).toBe(REPORT);
 });
 
-it("keeps ordinary caller model and effort selection when researchers are unassigned", async () => {
-  const child = scripted([{ text: "Outcome: done\nFindings." }]);
-  const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
-    arguments: { name: "researcher", message: "Read the sources.", model: "personal-model", effort: "low" } }] }, { calls: [submit()] }]);
-  const memory = engineOf({ gates: [], researcher: { frozenChoice: async () => ({ kind: "not_set" }), route: vi.fn() } });
-  const base = prepared();
-  const request = { ...base.providerRequest, subagentModels: { version: 1 as const, models: [{ connectionId: "personal-provider", contextWindow: null,
-    defaultEffort: "high", displayName: "Personal model", imageInput: false, providerFamily: "fake", providerModelId: "personal-model",
-    reasoningEfforts: ["low", "high"], upstreamModelId: "personal-upstream" }] } };
-  const subagentModels: NonNullable<NativeEngineDeps["subagentModels"]> = { route: async () => ({ ok: true, route: { adapter: child.adapter,
-    request: { modelCapabilities: request.modelCapabilities, modelId: "personal-upstream", params: {}, provider: "fake", reasoningEffort: "low" },
-    snapshot: { connectionId: "personal-provider", providerFamily: "fake", providerModelId: "personal-model",
-      model: { adapterKind: "fake", upstreamModelId: "personal-upstream" } } as never, timeoutMs: 120_000 } }) };
-  await run(main.adapter, { ...memory, deps: { ...memory.deps, subagentModels } }, { prepared: { ...base, normalizedRequest: request, providerRequest: request } }).text();
-  const recorded = await vi.mocked(memory.threads.admitForeground).mock.results[0]!.value;
-  expect(recorded).toMatchObject({ turn: { providerModelId: "personal-model", reasoningEffort: "low" } });
-  expect(child.requests).toHaveLength(1);
-  expect(memory.deps.research?.researcher?.route).not.toHaveBeenCalled();
-  expect(memory.published()).toBe(REPORT);
+describe("researchers with no role", () => {
+  const personal = { connectionId: "personal-provider", contextWindow: null, defaultEffort: "high", displayName: "Personal model", imageInput: false,
+    providerFamily: "fake", providerModelId: "personal-model", reasoningEfforts: ["low", "high"], upstreamModelId: "personal-upstream" };
+  /** A custom sub-agent on another model of the user's at its own effort, as the user's default was in the psaux trace. */
+  const custom = (name: string) => ({ definitionId: `type-${name}`, revisionId: `rev-${name}`, name, description: "", instructions: `Custom ${name} instructions.`,
+    providerModelId: "personal-model", reasoningEffort: "high", toolGroups: null });
+  const offered = (request: ProviderRunRequest | undefined) => request?.tools?.map((tool) => tool.name) ?? [];
+
+  it.each([
+    ["the user's default", { name: "researcher", message: "Read the sources." }],
+    ["the call's type, model and effort", { name: "researcher", type: "specialist", message: "Read the sources.", model: "personal-model", effort: "low" }],
+    ["a custom sub-agent of its name", { name: "specialist", message: "Read the sources." }]
+  ])("runs as the built-in sub-agent on the chat's model and effort, whatever %s names", async (_case, args) => {
+    const child = scripted([{ text: "Must not run." }]);
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: args }] },
+      { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [], researcher: { frozenChoice: async () => ({ kind: "not_set" }), route: vi.fn() } });
+    const base = prepared();
+    const request = { ...base.providerRequest, reasoningEffort: "medium", subagentDefault: { definitionId: "type-deep", name: "deep", version: 1 as const },
+      subagentModels: { version: 1 as const, models: [personal] } };
+    const subagentModels: NonNullable<NativeEngineDeps["subagentModels"]> = { route: vi.fn(async () => ({ ok: true as const, route: { adapter: child.adapter,
+      request: { modelCapabilities: request.modelCapabilities, modelId: "personal-upstream", params: {}, provider: "fake", reasoningEffort: "high" },
+      snapshot: { connectionId: "personal-provider", providerFamily: "fake", providerModelId: "personal-model",
+        model: { adapterKind: "fake", upstreamModelId: "personal-upstream" } } as never, timeoutMs: 120_000 } })) };
+    const resolve = vi.fn(async (scope: { definitionId?: string; name?: string }) =>
+      ({ kind: "found" as const, type: custom(scope.name ?? scope.definitionId?.replace(/^type-/u, "") ?? "deep") }));
+    await run(main.adapter, { ...memory, deps: { ...memory.deps, subagentModels } }, { prepared: { ...base, normalizedRequest: request, providerRequest: request },
+      subagents: { types: { catalog: async () => [], resolve } } }).text();
+    expect(memory.threads.admitForeground).toHaveBeenCalledOnce();
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ definitionId: null, definitionRevisionId: null, typeName: null,
+      binding: { effortSource: "parent", modelId: "fake-qsa", modelSource: "parent", provider: "connection-1", providerModelId: "model-1", reasoningEffort: "medium" } }));
+    expect(subagentModels.route).not.toHaveBeenCalled();
+    expect(memory.deps.research?.researcher?.route).not.toHaveBeenCalled();
+    expect(child.requests).toHaveLength(0);
+    // The researcher's turn ran on the chat's adapter, with the method's brief and none of a custom type's instructions.
+    const researcher = main.requests[2]!;
+    expect(researcher).toMatchObject({ modelId: "fake-qsa", reasoningEffort: "medium" });
+    expect(JSON.stringify(researcher.history)).toContain("# Research method (from the server)");
+    expect(researcher.prompt.system).not.toContain("Custom ");
+    expect(offered(researcher)).toEqual(expect.arrayContaining([CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME]));
+    expect(offered(researcher)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("starts no children: call_subagent is not among a researcher's tools, and a call of it anyway starts nothing", async () => {
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      { calls: [{ id: "child-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "helper", message: "Read the shop.", background: true } }] },
+      { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] });
+    await run(main.adapter, memory).text();
+    expect(offered(main.requests[2])).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+    expect(offered(main.requests[2])).not.toContain("stop_subagent");
+    expect(resultsOf(main.requests[3], CALL_SUBAGENT_TOOL_NAME)).toHaveLength(1);
+    expect(memory.threads.admitForeground).toHaveBeenCalledOnce();
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "lab" }));
+    expect(memory.threads.ensureThread).not.toHaveBeenCalled();
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("leaves the main agent's tool list the same across its turns", async () => {
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    await run(main.adapter, engineOf({ gates: [] })).text();
+    const ofMain = [main.requests[0], main.requests[1], main.requests[3]].map((request) => JSON.stringify(request?.tools));
+    expect(new Set(ofMain).size).toBe(1);
+    expect(offered(main.requests[0])).toContain(CALL_SUBAGENT_TOOL_NAME);
+  });
 });
 
 /** A turn of a new installation: scoping and the plan take rounds of their own. */

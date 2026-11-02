@@ -1,5 +1,5 @@
 import { modelWithConnectionLabel } from "../../contracts/providerConnectionLabels";
-import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, SUBAGENT_NAME_PATTERN } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, SUBAGENT_BUILT_IN_TYPE, SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, SUBAGENT_NAME_PATTERN } from "../../contracts/subagents";
 import type { SubagentRouteResult } from "../engine/subagents/modelRoutes";
 import { withoutResearchBookkeeping } from "../engine/subagents/registry";
 import type { HostedSubagentRunner } from "../engine/subagents/runner";
@@ -111,10 +111,14 @@ export function createResearchTurns(input: ResearchTurnsInput) {
           ...independent ? { prompt: { ...admittedRequest.prompt.baseline ? { baseline: admittedRequest.prompt.baseline } : {}, developer: null, system: null } } : {} },
         ...independent ? { userFollowups: async () => [] } : {},
         backgroundAllowed: false,
+        // No turn the server routes starts children: a researcher's ran for minutes, recorded nothing and its parent redid the work.
+        childrenAllowed: false,
         engine: { ...base.engine, ...(researcherStore ? { subagentThreads: researcherStore } : {}),
           subagentModels: { route: async (): Promise<SubagentRouteResult> => route ? { ok: true, route: route.route }
           : { code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false } } },
         ...(researcher ? { ports: { ...ports, ...(types ? { types: { ...types, resolve: async (scope: Parameters<typeof types.resolve>[0]) => {
+          // With no role a researcher is the built-in sub-agent (`researcherCall`), and no custom type is one, a legacy "built-in" included.
+          if (!route) return { kind: "unavailable" as const };
           const resolved = await types.resolve(scope);
           return resolved.kind === "found" ? { ...resolved, type: { ...resolved.type, providerModelId: null, reasoningEffort: null } } : resolved;
         } } } : {}) } } : ports?.browserIdentity ? { ports: { browserIdentity: ports.browserIdentity } } : {}),
@@ -166,17 +170,21 @@ export function createResearchTurns(input: ResearchTurnsInput) {
       const refused = await startRefusal();
       if (refused) return harnessToolError(execution.call, refused.code, refused.message);
       const route = await researcherRoute();
-      if (route === "main") return tool.execute(execution);
       if (!route) return harnessToolError(execution.call, RESEARCH_RESEARCHER_UNAVAILABLE, "The assigned researcher model is unavailable; nothing started. Tell the user.");
-      const prepared = await hosted("researcher", route);
+      // Not set, the role runs on the chat's model: the same host, with no role model to route to.
+      const onRole = route === "main" ? null : route;
+      const prepared = await hosted("researcher", onRole);
       const call = prepared?.tools.find((entry) => entry.definition.name === execution.call.name);
       if (!call) return harnessToolError(execution.call, "subagent_unavailable", "Research sub-agents are unavailable; nothing started.");
       if (execution.call.name !== CALL_SUBAGENT_TOOL_NAME) return call.execute(execution);
       const { model: _model, effort: _effort, ...args } = execution.call.arguments;
       void _model;
       void _effort;
+      // With no role, the built-in sub-agent on the chat's frozen model and effort, whatever the user's default or the call names:
+      // the method's brief is a researcher's instructions, and a custom type's model is no researcher's to choose.
+      if (!onRole) return call.execute({ ...execution, call: { ...execution.call, arguments: { ...args, type: SUBAGENT_BUILT_IN_TYPE } } });
       return call.execute({ ...execution, call: { ...execution.call, arguments: { ...args,
-        model: route.route.snapshot.providerModelId, ...(route.route.request.reasoningEffort ? { effort: route.route.request.reasoningEffort } : {}) } } });
+        model: onRole.route.snapshot.providerModelId, ...(onRole.route.request.reasoningEffort ? { effort: onRole.route.request.reasoningEffort } : {}) } } });
     },
     async verifierModel(): Promise<ResearchVerifierModel> {
       const route = await verifierRoute();
