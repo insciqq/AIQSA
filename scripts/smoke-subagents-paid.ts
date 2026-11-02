@@ -130,6 +130,31 @@
  *   judge/extraction usage is reported separately and is outside the chat ledger too. Minutes sum turn intervals, including waits and overlapping roles.
  *   Private comparison files retain candidates, criteria, picks, ties and conflicting fact pairs. Stdout keeps comparison counts and the existing server check notes.
  *   No baseline is required. Proxy values are redacted before private storage or evaluation. Paid calls: hundreds per question plus two evaluation calls.
+ *   Stdout gives each role's input tokens per response (`inputPerResponse`, the mean over responses with a reported input) and
+ *   `researcherInput` restates the researchers' mean beside their responses and the `missing` count it leaves out.
+ *   After each question, the links of the records the final answer cites (those its last draft names, and every record whose link
+ *   the answer carries, compared in `fetch_url`'s form) are matched against the Search results the chat's runs recorded (`SearchRun`):
+ *   the private `attribution` file lists, per Search source, the cited links it returned and how many only it returned, and the links
+ *   no source returned; stdout keeps the counts.
+ *   Acceptance options, each off unless set:
+ *   - AIQSA_SUBAGENTS_T_QUESTION_FILE: a file of mode 0600 (regular, this user's, at most 16 KiB, not empty) whose text replaces the
+ *     `purchase` question for this invocation; it needs `purchase` among the kinds. The text goes only where the question already goes:
+ *     the chat and the evaluation calls. It is never printed, logged or stored by the harness.
+ *   - AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL (no default), OPENROUTER_API_KEY and DEEPSEEK_API_KEY:
+ *     production's Search plan, every search to three sources at once (`all_selected`), through the Control Center's routes
+ *     (`/api/admin/search`, its `actions`): OpenAI Responses web search on a codex-lb connection whose model is SEARCH_MODEL (added by
+ *     `ensureModel` with native Search; its setup creates the connection's client source), Perplexity on the OpenRouter connection's
+ *     `perplexity/sonar-pro-search` (`openrouter_perplexity_chat`), and the DeepSeek Search API. A family missing from the stand is added
+ *     through Quick Setup, which for OpenRouter checks every built-in OpenRouter model once. A source missing its client route is created
+ *     with its live check, one on another model is re-saved with Save and check, then each source's Test runs and must show a real
+ *     search with sources, or the harness stops with `research_search_<source>_<code>`. The plan becomes the organization's default and
+ *     every send names it; Q and R then search on it too. It stays on the stand like the rest of the setup.
+ *   - AIQSA_SUBAGENTS_ADMIN_PROXY_FILE: a file of mode 0600 holding exactly
+ *     `{ "url": "http://host:port", "username": "...", "password": "...", "country": "RU", "hints": [".ru"] }` (http, https or socks5).
+ *     Before the questions T adds it as an administrator proxy (`/api/admin/proxies`), runs its check (`.../check`) and requires `ok`;
+ *     after them, and on every failure path inside the process, it deletes it and proves it gone from the list and the database. A
+ *     proxy of that name left by a killed invocation stops T with `research_admin_proxy_exists`; one that cannot be removed stops the
+ *     harness (`admin_proxy_not_removed`). Stdout shows only booleans and codes; values are redacted from the private files.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -166,6 +191,9 @@
  *   that restarts the stand's app container on the server through the SSH connection that forwards the
  *   stand's ports, for example `ssh <the stand host> 'docker compose -p aiqsa-sa-kvm restart app'`. Its
  *   environment is PATH, HOME, USER, LOGNAME and SSH_AUTH_SOCK only.
+ * - T's acceptance options (described under T above; each refused without T): AIQSA_SUBAGENTS_T_QUESTION_FILE,
+ *   AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL, OPENROUTER_API_KEY and DEEPSEEK_API_KEY, and
+ *   AIQSA_SUBAGENTS_ADMIN_PROXY_FILE. Keys are read from the process environment only and never printed.
  * - AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL, AIQSA_BROWSER_SCENARIOS_SHOTS_DIR: as for S5 (C, D, H drive the
  *   live panel; the harness host needs a Chromium for Playwright).
  */
@@ -177,6 +205,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Client as PostgresClient } from "pg";
 import type { CatalogModel } from "../lib/contracts/catalog";
+import { PROXY_ROUTES } from "../lib/contracts/proxies";
 import { CONTINUE_TURN_TEXT } from "../lib/contracts/runs";
 import { decodeSubagentDefinitionListResponse } from "../lib/contracts/subagentDefinitions";
 import {
@@ -191,8 +220,9 @@ import {
   type OracleVerdict, type ScenarioInteraction, type StandTarget
 } from "./browser-scenarios-support";
 import {
-  SETUP_TIMEOUT_MS, TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard, ensureModel, ensureResearchVerifier, ensureSearchSource, ensureTextModel, errorCode,
-  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setWorkspaceEnabled, standDatabase,
+  SETUP_TIMEOUT_MS, TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, checkSearchSource, createScenarioChat, deleteChat, discard, ensureClientSearchSource,
+  ensureFamilyConnection, ensureModel, ensureResearchVerifier, ensureSearchSource, ensureTextModel, errorCode,
+  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setOrganizationSearchPlan, setWorkspaceEnabled, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
@@ -212,7 +242,10 @@ import {
   RESEARCH_EXTRACTION_PROMPT, RESEARCH_JUDGE_PROMPT, configureResearchEvalRoles, createResearchArchive, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval,
   evaluateResearch, redactResearchSecrets, researchEvalOptions, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout,
   researchComparisonDetails, researchRepeatability, researchRoleUsage, researchStoreFacts, researchThreadRole, researchUsageByModel, researchEffortConfiguration, type ResearchEvalCall, type ResearchGrade, type ResearchJob, type ResearchTiming,
-  type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
+  type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer,
+  RESEARCH_ADMIN_PROXY_MAX_BYTES, RESEARCH_PRODUCTION_SEARCH, RESEARCH_QUESTION_MAX_BYTES, parseResearchAdminProxy, readPrivateFile, researchAdminProxySecrets,
+  researchAttributionCounts, researchCitationAttribution, researchCitedUrls, researchProxyCheckStatus, researchQuestionText, researchSearchSourceStatus,
+  type ResearchAdminProxy, type ResearchSearchRow
 } from "./research-eval-support";
 
 const SECOND_MODEL_DISPLAY_NAME = "Sub-agents second model";
@@ -236,12 +269,15 @@ type Context = Readonly<{
   /** The Search routes Q and R run on: the client route, and the hosted one when the stand's model offers it. */
   search: readonly SearchRoute[];
   second: CatalogModel | null;
-  research: Readonly<{ options: ReturnType<typeof researchEvalOptions>; judge: ResearchEvalCall | null }> | null;
+  research: Readonly<{ options: ReturnType<typeof researchEvalOptions>; judge: ResearchEvalCall | null;
+    /** The operator's purchase question (AIQSA_SUBAGENTS_T_QUESTION_FILE) and administrator proxy, in memory only. */
+    question: string | null; adminProxy: ResearchAdminProxy | null }> | null;
   session: Session;
   target: StandTarget;
 }>;
 
-type SearchRoute = Readonly<{ mode: "all_selected" | "model_choice"; model: CatalogModel; name: string; optionId: string }>;
+/** A Search plan a send names: its sources, each with the label attribution reports it under. */
+type SearchRoute = Readonly<{ mode: "all_selected" | "model_choice"; model: CatalogModel; name: string; sources: readonly Readonly<{ label: string; optionId: string }>[] }>;
 
 /** What one scenario run created and started, for cleanup and for stopping its streams. */
 type Run = {
@@ -301,7 +337,7 @@ async function trySend(ctx: Context, run: Run, chatId: string, text: string,
   const abort = new AbortController();
   const response = await request(ctx.session.api, `/api/chats/${encodeURIComponent(chatId)}/messages`, { body: {
     content: { blocks: [{ text, type: "text" }, ...files] }, expectedActiveLeafId: leaf, ...runControls(search?.model ?? ctx.model), ...others,
-    ...(search ? { searchPlan: { mode: search.mode, optionIds: [search.optionId] }, searchStrategy: undefined } : {})
+    ...(search ? { searchPlan: { mode: search.mode, optionIds: search.sources.map((source) => source.optionId) }, searchStrategy: undefined } : {})
   }, method: "POST", signal: abort.signal });
   if (!response.ok) return { code: await errorCode(response), ok: false };
   run.streams.push({ abort, drained: discard(response) });
@@ -1607,26 +1643,90 @@ async function continuedFacts(db: Context["db"], chatId: string, runId: string) 
     newPlans: calls.filter((call) => call.toolName === "propose_research_plan").length };
 }
 
+/** T's administrator proxy, one per invocation. A name the stand already has is a killed invocation's: the operator removes it. */
+const ADMIN_PROXY_NAME = "Research acceptance proxy";
+const ADMIN_PROXY_TIMEOUT_MS = 120_000;
+
+async function adminProxies(ctx: Context): Promise<readonly Readonly<Record<string, unknown>>[]> {
+  const value = await json(ctx.session.api, PROXY_ROUTES.administrator);
+  return isRecord(value) && Array.isArray(value.proxies) ? value.proxies.filter(isRecord) : fail("research_admin_proxy_list_invalid");
+}
+
+/** Adds the proxy as an administrator does. The id comes back whenever the proxy exists, also when the answer was lost, so cleanup can own it. */
+async function createAdminProxy(ctx: Context, proxy: ResearchAdminProxy): Promise<Readonly<{ code: string | null; id: string | null }>> {
+  if ((await adminProxies(ctx)).some((entry) => entry.name === ADMIN_PROXY_NAME)) fail("research_admin_proxy_exists");
+  const response = await request(ctx.session.api, PROXY_ROUTES.administrator, { body: { active: true, country: proxy.country, domainHints: proxy.domainHints,
+    host: proxy.host, login: proxy.login, name: ADMIN_PROXY_NAME, password: proxy.password, port: proxy.port, protocol: proxy.protocol },
+  method: "POST", timeoutMs: ADMIN_PROXY_TIMEOUT_MS }).catch(() => null);
+  const code = !response ? "request_failed" : response.ok ? null : await errorCode(response);
+  const created: unknown = response?.ok ? await response.json().catch(() => null) : null;
+  const direct = isRecord(created) && isRecord(created.proxy) && typeof created.proxy.id === "string" ? created.proxy.id : null;
+  const known = await adminProxies(ctx).catch((): readonly Readonly<Record<string, unknown>>[] => []);
+  const listed = direct ?? known.find((entry) => entry.name === ADMIN_PROXY_NAME)?.id;
+  return { code: code ?? (direct ? null : "response_invalid"), id: typeof listed === "string" ? listed : null };
+}
+
+/** The proxy's own check, as the settings page runs it: its stable status, or the route's code. */
+async function checkAdminProxy(ctx: Context, id: string): Promise<string> {
+  const response = await request(ctx.session.api, PROXY_ROUTES.administratorCheck(id), { method: "POST", timeoutMs: ADMIN_PROXY_TIMEOUT_MS }).catch(() => null);
+  if (!response) return "request_failed";
+  if (!response.ok) return errorCode(response);
+  return researchProxyCheckStatus(await response.json().catch(() => null));
+}
+
+/** Deletes the proxy at its current version and proves it gone from the administrator list and the database. */
+async function removeAdminProxy(ctx: Context, id: string): Promise<boolean> {
+  const current = (await adminProxies(ctx)).find((entry) => entry.id === id);
+  if (current) {
+    const response = await request(ctx.session.api, PROXY_ROUTES.administratorItem(id), { body: { expectedVersion: current.version }, method: "DELETE" });
+    await discard(response);
+  }
+  const listed = (await adminProxies(ctx)).some((entry) => entry.id === id);
+  const stored = (await ctx.db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "NetworkProxy" WHERE "id" = $1`, [id])).rows[0]?.count ?? 1;
+  return !listed && stored === 0;
+}
+
+/** What each Search source contributed to the records the final answer cites: links in the private file, counts on stdout. */
+async function researchAttribution(ctx: Context, chatId: string, input: Readonly<{ answer: string; evidence: readonly TEvidenceRow[]; lastDraft: unknown;
+  labels: ReadonlyMap<string, string> }>) {
+  const cited = researchCitedUrls({ answer: input.answer, evidence: input.evidence, lastDraft: input.lastDraft });
+  const searches = (await ctx.db.query<ResearchSearchRow>(`SELECT s."strategyId", s."artifacts"->'sources' AS "sources"
+    FROM "SearchRun" s JOIN "ModelRun" r ON r."id" = s."modelRunId" WHERE r."chatId" = $1`, [chatId])).rows;
+  const attribution = researchCitationAttribution(cited.urls, searches, input.labels);
+  return { attribution, counts: { ...researchAttributionCounts(attribution, cited.records), searchCalls: searches.length } };
+}
+
 async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
   const route = ctx.search[0] ?? fail("search_route_missing");
   const research = ctx.research ?? fail("research_setup_missing");
   const { options, judge } = research;
   const proxy = parseTestProxy(process.env.AIQSA_SUBAGENTS_TEST_PROXY);
-  const secrets = proxy ? [proxy.url, proxy.host, proxy.login, proxy.password] : [];
+  const secrets = [...(proxy ? [proxy.url, proxy.host, proxy.login, proxy.password] : []), ...researchAdminProxySecrets(research.adminProxy)];
   const clean = (value: string) => redactResearchSecrets(value, secrets);
   const archive = createResearchArchive(options.answersDir, secrets, options.answersFile);
+  // Attribution names each Search result by the plan's own label for its source.
+  const searchLabels = new Map(route.sources.map((source) => [source.optionId, source.label] as const));
   let ownedProxy: string | null = null;
-  if (proxy) {
-    try {
-      ownedProxy = await researchProxySetup(() => json(ctx.session.api, "/api/me/proxies", { body: { domainHints: [".ru"], host: proxy.host, login: proxy.login,
-        name: SCENARIO_S_NAME, password: proxy.password, port: proxy.port, protocol: proxy.protocol }, method: "POST" }));
-    } catch { fail("research_proxy_setup_failed"); }
-  }
+  let adminProxyId: string | null = null;
   const questions: Record<string, unknown>[] = [];
   const extracted: { job: ResearchJob; answer: StructuredResearchAnswer }[] = [];
   const createdChats = new Map<ResearchJob, string>();
   let failed = false;
   try {
+    if (proxy) {
+      try {
+        ownedProxy = await researchProxySetup(() => json(ctx.session.api, "/api/me/proxies", { body: { domainHints: [".ru"], host: proxy.host, login: proxy.login,
+          name: SCENARIO_S_NAME, password: proxy.password, port: proxy.port, protocol: proxy.protocol }, method: "POST" }));
+      } catch { fail("research_proxy_setup_failed"); }
+    }
+    if (research.adminProxy) {
+      const created = await createAdminProxy(ctx, research.adminProxy);
+      adminProxyId = created.id;
+      const id = created.code === null && created.id !== null ? created.id : fail(`research_admin_proxy_setup_${created.code ?? "response_invalid"}`);
+      const status = await checkAdminProxy(ctx, id);
+      emit({ stage: "research_admin_proxy", created: true, check: status });
+      if (status !== "ok") fail(`research_admin_proxy_check_${status}`);
+    }
     const results = await researchPool(options.jobs, options.concurrency, async (job) => {
       const started = Date.now();
       const deadline = started + researchQuestionTimeout(ctx.marginSeconds);
@@ -1638,11 +1738,13 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
       let extraction = emptyEval<StructuredResearchAnswer>("no_answer");
       let questionFailed = false;
       const facts: Record<string, unknown> = { metrics: null, roles: null, tokens: null, tokensByModel: [], terminal: "unknown",
-        timeline: [], gateTurnFacts: [], gateTurns: 0, fetchOutcomes: {}, fetchProxyReads: 0, serverNotes: [] };
+        timeline: [], gateTurnFacts: [], gateTurns: 0, fetchOutcomes: {}, fetchProxyReads: 0, serverNotes: [], researcherInput: null, attribution: null };
       let drafts: TDraftFinding[][] = [];
       let browserAct: AbortController | null = null;
       let acted: Promise<unknown> | null = null;
-      const question = SCENARIO_T_QUESTIONS.find((entry) => entry.kind === job.kind) ?? fail("research_kind_missing");
+      const builtIn = SCENARIO_T_QUESTIONS.find((entry) => entry.kind === job.kind) ?? fail("research_kind_missing");
+      // The operator's question replaces the built-in purchase one; it goes only to the chat and the evaluation calls.
+      const question = { kind: builtIn.kind, text: researchQuestionText(job.kind, builtIn.text, research.question) };
       try {
         const chat = await createScenarioChat(ctx.session.api, `Research scenario ${job.kind} ${job.repeat}`);
         chatId = chat.id;
@@ -1735,6 +1837,15 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           WHERE t."chatId" = $1 AND th."name" ~ '^(gap-judge|verifier|skeptic)-' ORDER BY t."startedAt"`, [chat.id])).rows;
         Object.assign(facts, researchProcessFacts({ calls, drafts, gates }));
         const usage = await researchUsage(ctx, chat.id, turns, names);
+        const researchers = usage.roles.researchers;
+        facts.researcherInput = { meanPerResponse: researchers?.inputPerResponse ?? null, responses: researchers?.responses ?? 0, missing: researchers?.missingInput ?? 0 };
+        // Read while the chat exists: the final answer, its last draft and the records it cites, against what each Search source returned.
+        try {
+          const cited = await researchAttribution(ctx, chat.id, { answer: [...savedAnswers.values()].at(-1) ?? "", evidence,
+            labels: searchLabels, lastDraft: calls.filter((call) => call.toolName === "submit_research_draft").at(-1)?.arguments ?? null });
+          archive.write(job, chat.id, "attribution", { ...job, chat: chat.id, citedRecords: cited.counts.citedRecords, searchCalls: cited.counts.searchCalls, ...cited.attribution });
+          facts.attribution = cited.counts;
+        } catch { facts.attribution = { failed: "research_attribution_failed" }; }
         Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
           roles: usage.roles, tokensByModel: usage.byModel, store: await researchStore(ctx.db, chat.id, runId), planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
           searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
@@ -1793,6 +1904,10 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
     });
     Object.assign(run.line, { questions, comparisons, questionFailures: results.filter((result) => result.status === "rejected").length });
   } finally {
+    // The administrator proxy goes first and whatever happens to the personal one: it is seen by every user's runs.
+    if (adminProxyId !== null) {
+      run.line.adminProxyRemoved = await removeAdminProxy(ctx, adminProxyId).catch(() => false);
+    }
     if (ownedProxy !== null) {
       try {
         const stored = (await ctx.db.query<{ version: number }>(`SELECT "version" FROM "NetworkProxy" WHERE "id" = $1`, [ownedProxy])).rows[0];
@@ -2058,11 +2173,56 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
   emit(run.line);
   if (!cleaned) fail("cleanup_failed");
   if (run.line.workspaceRestored === false) fail("workspace_not_restored");
+  if (run.line.adminProxyRemoved === false) fail("admin_proxy_not_removed");
   return { run: index, scenario: id, success: outcome.success, usage: outcome.usage,
     wallSeconds: typeof run.line.wallSeconds === "number" ? run.line.wallSeconds : seconds(started) };
 }
 
 // Main -------------------------------------------------------------------------------
+
+/** A support function's refusal as its own stable code (they throw plain errors), never its text. */
+function stable<T>(work: () => T): T {
+  try { return work(); } catch (error) {
+    if (error instanceof BrowserScenarioError) throw error;
+    return fail(error instanceof Error && /^[a-z0-9_]{1,64}$/u.test(error.message) ? error.message : "research_option_invalid");
+  }
+}
+
+const PRODUCTION_SEARCH_NAMES = { deepseek: "DeepSeek Search API", openai: "OpenAI (CodexLB) Search", perplexity: "Perplexity" } as const;
+
+/**
+ * Production's Search plan (AIQSA_SUBAGENTS_T_SEARCH=production): each source on its client route, checked by its own Test, then
+ * the three together as the organization's default. Keys come from the process environment and go only to the Admin routes.
+ */
+async function productionSearch(api: Api, route: { apiRoot: string }, secret: string, searchModel: string, model: CatalogModel): Promise<SearchRoute> {
+  stage = "production_search";
+  // Every refusal names its source: `research_search_<source>_<code>`.
+  const step = async <T>(label: string, work: () => Promise<T>): Promise<T> => {
+    try { return await work(); } catch (error) {
+      return fail(`research_search_${label}_${error instanceof BrowserScenarioError ? error.message : "setup_failed"}`);
+    }
+  };
+  const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || fail("deepseek_key_required");
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim() || fail("openrouter_key_required");
+  const openai = await step("openai", () => ensureModel(api, { apiRoot: route.apiRoot, model: searchModel }, secret, "Research search model", { nativeSearch: true, vision: false }));
+  const connections = { deepseek: await step("deepseek", () => ensureFamilyConnection(api, "deepseek", deepseekKey)),
+    openai: openai.connectionId, perplexity: await step("perplexity", () => ensureFamilyConnection(api, "openrouter", openRouterKey)) };
+  const sources: { label: string; optionId: string }[] = [];
+  for (const spec of RESEARCH_PRODUCTION_SEARCH) {
+    const upstreamModelId = spec.label === "openai" ? searchModel : spec.label === "perplexity" ? spec.upstreamModelId : null;
+    const source = await step(spec.label, () => ensureClientSearchSource(api, { connectionId: connections[spec.label], displayName: PRODUCTION_SEARCH_NAMES[spec.label],
+      kind: spec.kind, protocol: spec.protocol, upstreamModelId }));
+    const checked = await step(spec.label, () => checkSearchSource(api, source.id));
+    const status = checked.code ?? researchSearchSourceStatus(checked.integration,
+      { protocol: spec.protocol, ...(upstreamModelId === null ? {} : { providerModelId: source.providerModelId }) });
+    emit({ stage: "research_search_source", source: spec.label, status });
+    if (status !== "ok") fail(`research_search_${spec.label}_${status}`);
+    sources.push({ label: spec.label, optionId: source.strategyId });
+  }
+  await step("plan", () => setOrganizationSearchPlan(api, { mode: "all_selected", optionIds: sources.map((source) => source.optionId) }));
+  stage = "setup";
+  return { mode: "all_selected", model, name: "production", sources };
+}
 
 function boundedInteger(raw: string | undefined, fallback: number, min: number, max: number, code: string): number {
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -2077,10 +2237,17 @@ async function main() {
   const scenarios = selectedSubagentScenarios(process.env.AIQSA_SUBAGENTS_SELECT);
   const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
   const options = subagentHarnessOptions(process.env, scenarios, route.model);
-  const researchOptions = scenarios.includes("T") ? researchEvalOptions(process.env) : null;
+  if (!scenarios.includes("T") && (process.env.AIQSA_SUBAGENTS_T_SEARCH?.trim() || process.env.AIQSA_SUBAGENTS_T_QUESTION_FILE?.trim() ||
+    process.env.AIQSA_SUBAGENTS_ADMIN_PROXY_FILE?.trim())) fail("research_option_requires_t");
+  const researchOptions = scenarios.includes("T") ? stable(() => researchEvalOptions(process.env)) : null;
+  // The private files are read before anything is set up, so a refused one costs nothing; their text stays in memory.
+  const researchQuestion = researchOptions?.questionFile
+    ? stable(() => readPrivateFile(researchOptions.questionFile!, RESEARCH_QUESTION_MAX_BYTES, "research_question_file")) : null;
+  const adminProxy = researchOptions?.adminProxyFile
+    ? stable(() => parseResearchAdminProxy(readPrivateFile(researchOptions.adminProxyFile!, RESEARCH_ADMIN_PROXY_MAX_BYTES, "research_admin_proxy_file"))) : null;
   if (researchOptions) {
     if (process.env.AIQSA_SUBAGENTS_TEST_PROXY?.trim() && !parseTestProxy(process.env.AIQSA_SUBAGENTS_TEST_PROXY)) fail("research_proxy_invalid");
-    createResearchArchive(researchOptions.answersDir);
+    stable(() => createResearchArchive(researchOptions.answersDir));
   }
   const marginSeconds = boundedInteger(process.env.AIQSA_SUBAGENTS_MARGIN_SECONDS, 600, 60, 3_600, "margin_invalid");
   const label = process.env.AIQSA_SUBAGENTS_LABEL?.trim() || "unlabelled";
@@ -2114,13 +2281,15 @@ async function main() {
     }
     // Q and R search for real: the DeepSeek client route always, and the codex-lb hosted route when its model offers one.
     const search: SearchRoute[] = [];
-    if (scenarios.some((id) => SUBAGENT_SCENARIO_NEEDS[id].search)) {
+    if (researchOptions?.search) {
+      search.push(await productionSearch(api, route, secret, researchOptions.search.model, model));
+    } else if (scenarios.some((id) => SUBAGENT_SCENARIO_NEEDS[id].search)) {
       const client = await ensureSearchSource(api, { kind: "deepseek_search_api", provider: "deepseek", secret: process.env.DEEPSEEK_API_KEY ?? fail("deepseek_key_required") });
-      search.push({ mode: "all_selected", model, name: "client", optionId: client });
+      search.push({ mode: "all_selected", model, name: "client", sources: [{ label: "deepseek", optionId: client }] });
       if (process.env.AIQSA_SUBAGENTS_HOSTED_SEARCH === "1") {
         const hostedModel = await ensureModel(api, { apiRoot: route.apiRoot, model: route.model }, secret, "Sub-agents hosted search model", { nativeSearch: true });
         const hosted = await ensureSearchSource(api, { connectionId: hostedModel.connectionId, kind: "web_search" });
-        search.push({ mode: "model_choice", model: await catalogModel(api, hostedModel), name: "hosted", optionId: hosted });
+        search.push({ mode: "model_choice", model: await catalogModel(api, hostedModel), name: "hosted", sources: [{ label: "hosted", optionId: hosted }] });
       }
     }
     if (scenarios.includes("T") && process.env.AIQSA_SUBAGENTS_VERIFIER_FAMILY) await ensureResearchVerifier(api, process.env.AIQSA_SUBAGENTS_VERIFIER_FAMILY);
@@ -2130,12 +2299,13 @@ async function main() {
       const checks = researchOptions.checks;
       const client = createFetchOpenAIResponsesClient({ apiKey: secret, baseUrl: route.apiRoot, acceptStreamedCreate: true,
         defaultTimeoutMs: 10 * 60_000, initialRequestRetry: { maxAttempts: 1 }, requestIsolation: true });
-      research = { options: researchOptions, judge: checks.model ? (instructions, input) => client.create({ model: checks.model,
+      research = { options: researchOptions, adminProxy, question: researchQuestion, judge: checks.model ? (instructions, input) => client.create({ model: checks.model,
         instructions, input, max_output_tokens: 16_384, store: false, ...(checks.effort ? { reasoning: { effort: checks.effort } } : {}) }) : null };
     }
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model, contextWindow: chatProvider.contextWindow,
       reused: chatProvider.reused, secondModel: second !== null, modelWithoutVision: blind !== null, restartHook: options.restart !== null,
-      configuredBounds: target.configuredBounds, scenarios, runs: options.runs });
+      configuredBounds: target.configuredBounds, scenarios, runs: options.runs, searchPlan: search[0]?.name ?? null, questionFile: researchQuestion !== null,
+      adminProxy: adminProxy !== null });
     const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, research, search, second,
       session: { api }, target };
     for (let index = 1; index <= options.runs; index += 1) {
