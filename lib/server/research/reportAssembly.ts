@@ -57,9 +57,9 @@ function findingOf(record: ResearchEvidenceRecord, witnesses: readonly ResearchE
 
 /**
  * A draft with its findings filled from the records its ids name, so every gate goes on reading `draft.findings`. A corrected id reads as its correction. The rows it picks
- * come first, because a check that cannot read everything reads from the top. `not_found` claims nothing. Cited `unreachable` records make the list only when the draft has none:
- * the model's is curated and in the report's language, and joining a record to it repeats a site under another target in a researcher's words. The same ids and records give
- * the same list, since a send back names findings by position (`verifier.ts`) and an approval rebuilds this from the transcript's ids.
+ * and its summary recommends come first, because a check that cannot read everything reads from the top. `not_found` claims nothing. Cited `unreachable` records make the
+ * list only when the draft has none: the model's is curated and in the report's language, and joining a record to it repeats a site under another target in a researcher's
+ * words. The same ids and records give the same list, since a send back names findings by position (`verifier.ts`) and an approval rebuilds this from the transcript's ids.
  */
 export function researchDraftWithRecords(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[]): ResearchDraft {
   if (!draft.recordIds) return draft;
@@ -69,7 +69,7 @@ export function researchDraftWithRecords(draft: ResearchDraft, records: readonly
     const record = live.get(id) ?? corrections.get(id);
     return record ? [[record.id, record] as const] : [];
   })).values()];
-  const picked = new Set([...draft.pickRowKey ? [draft.pickRowKey] : [], ...draft.branchPicks?.map(({ rowKey }) => rowKey) ?? []]);
+  const picked = new Set([...draft.pickRowKey ? [draft.pickRowKey] : [], ...draft.branchPicks?.map(({ rowKey }) => rowKey) ?? [], ...draft.summary?.rowKeys ?? []]);
   const first = (record: ResearchEvidenceRecord) => record.rowKey !== null && picked.has(record.rowKey) ? 0 : 1;
   const witnesses = sourceWitnesses(records);
   const findings = [...cited].sort((one, other) => first(one) - first(other)).flatMap((record) => findingOf(record, witnesses) ?? []);

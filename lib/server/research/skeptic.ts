@@ -1,4 +1,4 @@
-import type { ResearchDraft, ResearchGateResult } from "../../contracts/research";
+import { researchDraftText, type ResearchDraft, type ResearchGateResult } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import { normalizeFetchUrl } from "../webFetch/urls";
@@ -82,9 +82,9 @@ const CYRILLIC = /\p{Script=Cyrillic}/u;
 /** The report's two ends are kept, where a conclusion stands, with the larger share to its start. */
 const REPORT_HEAD_SHARE = 0.6;
 
-/** One line on the brief: the report stays a JSON string, so its text can never read as anything else. */
+/** One line on the brief: the report stays a JSON string, so its text can never read as anything else. It is what the reader reads, the summary on top, where a conclusion stands first. */
 function skepticBrief(draft: ResearchDraft, goal: string, earlier: readonly ResearchCounterEvidence[]): string {
-  const { report } = draft;
+  const report = researchDraftText(draft);
   const line = (keep: number) => {
     const head = Math.ceil(keep * REPORT_HEAD_SHARE);
     const shortened = keep < report.length;
