@@ -13,12 +13,12 @@ import { HARNESS_SEARCH_TOOL } from "../prompts/harness";
 import { READ_TOOL_RESULT_NAME, toolOutputExcerpt } from "../toolResults";
 import { projectTranscript, type TranscriptItem, type TranscriptTarget, type TranscriptToolResultItem } from "../transcript";
 import { decodeTranscriptItem, encodeTranscriptItem, TranscriptItemInvalidError } from "../transcriptCodec";
-import { CLEARED_RESULT_HEADING, CLEARING_PRODUCT_TOOLS, pageBearingCall, planToolResultClearing } from "./clearing";
+import { CLEARED_RESULT_HEADING, CLEARING_PRODUCT_TOOLS, pageBearingCall, planToolResultClearing, type ToolResultClearingPolicy } from "./clearing";
 import { CODEX, charTokens, handleFor, transcriptBuilder } from "./compaction.testFixtures";
 import { buildStateBlock } from "./retained";
 
 /** A low mark above zero, so the planner's "only as many as it takes" shows; the researchers' own policy clears to zero and has its test below. */
-const POLICY = Object.freeze({ clearAboveTokens: 60_000, clearAtLeastTokens: 10_000, clearToTokens: 25_000, keepRecentResults: 3 });
+const POLICY: ToolResultClearingPolicy = Object.freeze({ clearAboveTokens: 60_000, clearAtLeastTokens: 10_000, clearToTokens: 25_000, keepRecentResults: 3 });
 const ANTHROPIC: TranscriptTarget = { model: "claude-fable-5", provider: "anthropic-main", reasoningScope: "current_turn" };
 const CHAT: TranscriptTarget = { model: "deepseek-v4", provider: "openrouter" };
 
@@ -45,7 +45,7 @@ const tokensOf = (items: readonly TranscriptItem[], target: TranscriptTarget = C
 
 let stubIds = 0;
 
-function plan(items: readonly TranscriptItem[], target: TranscriptTarget = CODEX, policy = POLICY) {
+function plan(items: readonly TranscriptItem[], target: TranscriptTarget = CODEX, policy: ToolResultClearingPolicy = POLICY) {
   return planToolResultClearing({ estimate: charTokens, items, nextId: () => `stub-${++stubIds}`, policy, target, tokens: tokensOf(items, target) });
 }
 
