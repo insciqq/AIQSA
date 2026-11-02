@@ -844,7 +844,7 @@ describe("a sub-agent's children on PostgreSQL", () => {
     const listed = await views.chatThreads({ chatId: f.chatId, userId: f.userId });
     expect(decodeSubagentChatThreads(listed)).toEqual(listed);
     expect(listed?.threads.find((row) => row.name === "one")).toMatchObject({ latestAnswerMessageId: f.main.assistantMessageId, parent: { id: parent.threadId, name: "parent" } });
-    expect(listed?.threads.find((row) => row.name === "parent")).toMatchObject({ parent: null });
+    expect(listed?.threads.find((row) => row.name === "parent")).not.toHaveProperty("parent");
     const view = await views.threadView({ chatId: f.chatId, threadId: thread.threadId, userId: f.userId });
     expect(decodeSubagentThreadView(view)).toEqual(view);
     expect(view?.turns[0]).toMatchObject({ brief: "Brief for one", parentMessageId: f.main.assistantMessageId });
