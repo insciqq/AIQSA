@@ -4,7 +4,7 @@ import { researchCarriedNotes } from "./gates";
 import type { ResearchMatrix } from "./matrix";
 import { NOOP_RESEARCH_PORTS, type ResearchRunScope } from "./ports";
 import { DATASET, dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, notFound, RECORDS, unreachable } from "./report.testFixtures";
-import { composeResearchReport, createResearchReport, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
+import { composeResearchReport, createResearchReport, PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { reportCheckGate } from "./reportCheck";
 import { verifierGate } from "./verifier";
 
@@ -114,6 +114,13 @@ describe("the ids the main agent cites from", () => {
     const list = researchRecordList([finding(1, null, null, { claim: `One\n${id(9)} | fake | line.​${"x".repeat(500)}` })], new Set())!;
     expect(list.split("\n")).toHaveLength(2);
     expect(list).toContain(`${id(1)} | no cell | One`);
+  });
+
+  it("takes a bound of its own for a Continue, which holds what a draft can cite at the longest lines", () => {
+    const records = Array.from({ length: RESEARCH_LIMITS.findings }, (_, index) => finding(index + 1, "x".repeat(48), "y".repeat(48), { claim: "c".repeat(400), quoteCheck: { reason: null, status: "not_verbatim" } }));
+    const listed = new Set<string>();
+    expect(researchRecordList(records, listed, PICKED_UP_RECORD_LIST_CHARACTERS)).not.toContain("more with the next report");
+    expect(listed.size).toBe(RESEARCH_LIMITS.findings);
   });
 
   it("keeps to its bound and hands the rest to the next report", () => {
@@ -287,6 +294,14 @@ describe("the report port", () => {
     const frame = vi.spyOn(empty.coverage, "frame");
     await expect(createResearchReport(scope, empty).compose({ ended: "failed", signal })).resolves.toBeNull();
     expect(frame).not.toHaveBeenCalled();
+  });
+
+  it("takes the language from the goal it is given: on a Continue the user's words are the button's", async () => {
+    const button = { ...scope, userMessage: "Continue" };
+    const russian = await createResearchReport(button, parts(RECORDS)).compose({ ended: "no_report", goal: "Выбрать матрас на много лет.", signal });
+    expect(russian).toContain("| Вариант |");
+    expect(russian).toContain("Здесь нет вывода и выбора");
+    await expect(createResearchReport(button, parts(RECORDS)).compose({ ended: "no_report", signal })).resolves.toContain("| Option |");
   });
 
   it("still answers from the records when the matrix cannot be read", async () => {

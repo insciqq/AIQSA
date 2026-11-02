@@ -24,4 +24,16 @@ describe("registered thrown failure codes", () => {
     }
     expect(missing).toEqual([]);
   });
+
+  it("registers every research code, since an unregistered one logs as unknown and a refused tool call as a bare failure", () => {
+    const registered = new Set(codes);
+    /** Names that are no codes: a result's field, a thread name's start, and the two roles' binding keys. */
+    const names = new Set(["research_researcher", "research_run", "research_text_draft_", "research_verifier"]);
+    /** `verifierRole.ts` builds these from a role's binding key. */
+    const built = ["research_researcher_unavailable", "research_researcher_unreadable", "research_verifier_unavailable", "research_verifier_unreadable"];
+    const literal = [...sources("lib/server"), ...sources("app/api")].flatMap((path) => [...readFileSync(path, "utf8").matchAll(/"(research_[a-z0-9_]+)"/gu)].map((match) => match[1]!));
+    expect([...new Set([...literal, ...built])].filter((code) => !names.has(code) && !registered.has(code))).toEqual([]);
+    // `evidenceStore.ts` logs a page the bounds left out under this reason.
+    expect(registered.has("page_not_stored")).toBe(true);
+  });
 });
