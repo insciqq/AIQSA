@@ -54,6 +54,8 @@
     { "name": "a plain host", "input": "www.ozon.ru", "host": "www.ozon.ru", "site": "ozon.ru" },
     { "name": "a registered domain", "input": "ozon.ru", "host": "ozon.ru", "site": "ozon.ru" },
     { "name": "a deep subdomain", "input": "a.b.c.ozon.ru", "host": "a.b.c.ozon.ru", "site": "ozon.ru" },
+    { "name": "Yandex Market shares its site with sign-in hosts", "input": "market.yandex.ru", "host": "market.yandex.ru", "site": "yandex.ru" },
+    { "name": "Yandex sign-in shares its site with the market", "input": "sso.passport.yandex.ru", "host": "sso.passport.yandex.ru", "site": "yandex.ru" },
     { "name": "case and a trailing dot", "input": "WWW.Ozon.RU.", "host": "www.ozon.ru", "site": "ozon.ru" },
     { "name": "an internationalized name", "input": "www.Яндекс.рф", "host": "www.xn--d1acpjx3f.xn--p1ai", "site": "xn--d1acpjx3f.xn--p1ai" },
     { "name": "a public second level", "input": "shop.example.co.uk", "host": "shop.example.co.uk", "site": "example.co.uk" },
@@ -175,6 +177,91 @@
         { "op": "select", "host": "api.one.kz", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": ".kz" },
           "state": { "cursors": { ".kz|personal": 1 }, "failed": {}, "sites": { "one.kz": "a" } } },
         { "op": "select", "host": "two.kz", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": ".kz" } }
+      ]
+    },
+    {
+      "name": "an unhinted sibling goes direct before a pin and follows it afterwards without advancing rotation",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "direct", "reason": "no_match" },
+          "state": { "cursors": {}, "failed": {}, "sites": {} } },
+        { "op": "select", "host": "market.yandex.ru", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": "market.yandex.ru" },
+          "state": { "cursors": { "market.yandex.ru|personal": 1 }, "failed": {}, "sites": { "yandex.ru": "a" } } },
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": null },
+          "state": { "cursors": { "market.yandex.ru|personal": 1 }, "failed": {}, "sites": { "yandex.ru": "a" } } },
+        { "op": "select", "host": "SSO.Passport.Yandex.RU.", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": null } },
+        { "op": "select", "host": "sso.passport.yandex.ru.example", "expect": { "kind": "direct", "reason": "no_match" },
+          "state": { "cursors": { "market.yandex.ru|personal": 1 }, "failed": {}, "sites": { "yandex.ru": "a" } } }
+      ]
+    },
+    {
+      "name": "an unhinted sibling goes direct after the pin fails until a hinted host pins another proxy",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] }
+      ],
+      "steps": [
+        { "op": "select", "host": "market.yandex.ru", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": "market.yandex.ru" } },
+        { "op": "fail", "host": "sso.passport.yandex.ru", "proxyId": "a" },
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "direct", "reason": "no_match" },
+          "state": { "cursors": { "market.yandex.ru|personal": 1 }, "failed": { "yandex.ru": ["a"] }, "sites": {} } },
+        { "op": "select", "host": "market.yandex.ru", "expect": { "kind": "proxy", "proxyId": "b", "reason": "hint", "hint": "market.yandex.ru" } },
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "proxy", "proxyId": "b", "reason": "site", "hint": null },
+          "state": { "cursors": { "market.yandex.ru|personal": 0 }, "failed": { "yandex.ru": ["a"] }, "sites": { "yandex.ru": "b" } } }
+      ]
+    },
+    {
+      "name": "explicit direct and named proxies win on an unhinted sibling without changing its pin",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] },
+        { "id": "b", "name": "B", "owner": "administrator", "active": true, "domainHints": [] }
+      ],
+      "steps": [
+        { "op": "select", "host": "market.yandex.ru", "expect": { "kind": "proxy", "proxyId": "a", "reason": "hint", "hint": "market.yandex.ru" } },
+        { "op": "select", "host": "sso.passport.yandex.ru", "explicit": { "kind": "direct" },
+          "expect": { "kind": "direct", "reason": "explicit" },
+          "state": { "cursors": { "market.yandex.ru|personal": 0 }, "failed": {}, "sites": { "yandex.ru": "a" } } },
+        { "op": "select", "host": "sso.passport.yandex.ru", "explicit": { "kind": "proxy", "ref": "B" },
+          "expect": { "kind": "proxy", "proxyId": "b", "reason": "explicit", "hint": null },
+          "state": { "cursors": { "market.yandex.ru|personal": 0 }, "failed": {}, "sites": { "yandex.ru": "a" } } },
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "proxy", "proxyId": "a", "reason": "site", "hint": null } }
+      ]
+    },
+    {
+      "name": "an unhinted sibling ignores a stale pin to a proxy that failed for its site",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] }
+      ],
+      "state": { "cursors": {}, "failed": { "yandex.ru": ["a"] }, "sites": { "yandex.ru": "a" } },
+      "steps": [
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "direct", "reason": "no_match" },
+          "state": { "cursors": {}, "failed": { "yandex.ru": ["a"] }, "sites": { "yandex.ru": "a" } } }
+      ]
+    },
+    {
+      "name": "an unhinted sibling ignores an inactive pinned proxy",
+      "proxies": [
+        { "id": "a", "name": "A", "owner": "personal", "active": false, "domainHints": ["market.yandex.ru"] },
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] }
+      ],
+      "state": { "cursors": {}, "failed": {}, "sites": { "yandex.ru": "a" } },
+      "steps": [
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "direct", "reason": "no_match" },
+          "state": { "cursors": {}, "failed": {}, "sites": { "yandex.ru": "a" } } }
+      ]
+    },
+    {
+      "name": "an unhinted sibling ignores a pinned proxy absent from the plan",
+      "proxies": [
+        { "id": "b", "name": "B", "owner": "personal", "active": true, "domainHints": ["market.yandex.ru"] }
+      ],
+      "state": { "cursors": {}, "failed": {}, "sites": { "yandex.ru": "a" } },
+      "steps": [
+        { "op": "select", "host": "sso.passport.yandex.ru", "expect": { "kind": "direct", "reason": "no_match" },
+          "state": { "cursors": {}, "failed": {}, "sites": { "yandex.ru": "a" } } }
       ]
     },
     {

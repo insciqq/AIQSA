@@ -159,13 +159,18 @@ def select(entries: Sequence[Entry], host_value: Any, state: State,
         return _explicit(entries, explicit["ref"]), state
 
     host = normalize_site_host(host_value)
-    tiers = [] if host is None else _tiers(entries, host)
-    if host is None or not tiers:
+    if host is None:
         return {"kind": "direct", "reason": "no_match"}, state
 
+    tiers = _tiers(entries, host)
     site = site_key(host)
     failed = state["failed"].get(site, [])
     stayed_on = state["sites"].get(site)
+    if not tiers:
+        if stayed_on is not None and stayed_on not in failed and any(
+                entry["id"] == stayed_on and entry["active"] for entry in entries):
+            return {"hint": None, "kind": "proxy", "proxyId": stayed_on, "reason": "site"}, state
+        return {"kind": "direct", "reason": "no_match"}, state
     if stayed_on is not None and stayed_on not in failed:
         for tier in tiers:
             if stayed_on in tier["members"]:
