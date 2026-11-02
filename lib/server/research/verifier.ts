@@ -248,6 +248,12 @@ function verifierTurns(claims: readonly BriefClaim[]): readonly (readonly BriefC
 const tidy = (text: string) => text.normalize("NFC").replace(/\s+/gu, " ").trim();
 /** A claim's identity, for reusing what was said of it: exact, since 1 mW and 1 MW are different claims, and short, since a send back carries it. */
 const keyOf = (finding: ResearchFinding) => createHash("sha256").update(JSON.stringify([tidy(finding.claim), tidy(finding.url)])).digest("hex").slice(0, 32);
+/**
+ * A rejection's identity: the record a finding stands for, since two records may carry the same words and link and only one may stay cited; a typed finding,
+ * which has no record, by its words and link.
+ */
+const recordKey = (record: string) => `record:${record}`;
+const rejectionKeyOf = (finding: ResearchFinding) => finding.recordId ? recordKey(finding.recordId) : keyOf(finding);
 
 /** A matrix label as the answer shows it: a model wrote it, so nothing of it may become a link, an image or markup. */
 const plainLabel = (text: string) => text.replace(/[\p{Cc}\p{Cf}*_`[\]<>|]+/gu, " ").replace(/\s+/gu, " ").trim();
@@ -289,8 +295,10 @@ const REJECTED_CLAIM = /^Rejected (\{.*\})$/gmu;
 function rejectedClaim(line: string): readonly [string, Rejected] | null {
   try {
     const { claim, key, label, record } = JSON.parse(line) as { claim?: unknown; key?: unknown; label?: unknown; record?: unknown };
-    return typeof claim === "string" && typeof key === "string"
-      ? [key, { claim, label: typeof label === "string" ? plainLabel(label) || null : null, record: typeof record === "string" ? record : null }] : null;
+    if (typeof claim !== "string" || typeof key !== "string") return null;
+    const recordId = typeof record === "string" ? record : null;
+    // A claim with a record is that record's, whatever key a message from before keyed it by.
+    return [recordId === null ? key : recordKey(recordId), { claim, label: typeof label === "string" ? plainLabel(label) || null : null, record: recordId }];
   } catch {
     return null;
   }
@@ -310,7 +318,7 @@ function rejectedInMessage(attempt: ResearchAttempt): ReadonlyMap<string, Reject
   const ids = REJECTED_LINE.exec(attempt.message)?.[1]?.split(", ").map(Number) ?? [];
   return new Map(ids.flatMap((id) => {
     const finding = attempt.draft.findings[id - 1];
-    return finding ? [[keyOf(finding), { claim: finding.claim, label: null, record: finding.recordId ?? null }] as const] : [];
+    return finding ? [[rejectionKeyOf(finding), { claim: finding.claim, label: null, record: finding.recordId ?? null }] as const] : [];
   }));
 }
 
@@ -705,15 +713,17 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
   const frame = frameRead?.ok ? frameRead.value : null;
   const rejected = new Map(earlier.rejected);
   for (const claim of claims) {
-    if (isUnsupported(claim)) rejected.set(claim.key, { claim: claim.finding.claim, label: factLabel(claim.record, frame), record: claim.finding.recordId ?? null });
+    if (isUnsupported(claim)) rejected.set(rejectionKeyOf(claim.finding), { claim: claim.finding.claim, label: factLabel(claim.record, frame), record: claim.finding.recordId ?? null });
     // A claim the quote check rejected whose page has since been read, and which the model then supported.
-    else if (!claim.answer?.settled && (claim.answer?.verdict === "supported" || claim.answer?.verdict === "partly")) rejected.delete(claim.key);
+    else if (!claim.answer?.settled && (claim.answer?.verdict === "supported" || claim.answer?.verdict === "partly")) rejected.delete(rejectionKeyOf(claim.finding));
   }
   checks.set(draft, { answers: new Map(claims.flatMap((claim) => claim.answer ? [[claim.key, claim.answer] as const] : [])), rejected,
     claims: claims.map((claim): VerifiedClaim => ({ marked: claim.marked, quote: claim.quote.status === "found" && claim.quote.excerpt.source.kind === "other" ? "found_elsewhere" : claim.quote.status,
       rejected: isUnsupported(claim), verdict: claim.answer?.verdict ?? null })) });
 
-  const notRun = toAsk.length > 0 ? roundNote(round) : null;
+  // A claim the model was to read and has no verdict for (it did not answer, its batch failed, or no brief had room for it) leaves the report not fully checked.
+  const unanswered = toAsk.some(({ id }) => claims[id - 1]!.answer === null);
+  const notRun = toAsk.length > 0 ? roundNote(round) ?? (unanswered ? researchNote("gate_failed") : null) : null;
   const named = rejectedNote(draft, rejected);
 
   if (unsupported.length > 0 && !corrected) {
