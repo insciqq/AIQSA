@@ -203,7 +203,8 @@ function summarize(thread: ThreadRow, turns: readonly TurnRow[], facts: SummaryF
     model: turnModel(latest, facts.modelNames),
     name: thread.name,
     outcome: outcomeOf(state, latest.outcome),
-    parent: thread.parentThread,
+    // Only a child names one: a tab still running the release before children reads keys strictly, and would lose every thread over a null.
+    ...(thread.parentThread ? { parent: thread.parentThread } : {}),
     reason: isSubagentCode(latest.reasonCode) ? latest.reasonCode : null,
     state,
     turnCount: turns.length,

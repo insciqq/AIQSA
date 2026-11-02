@@ -214,8 +214,16 @@ describe("a child in the chat's projections", () => {
     const { client } = fakeClient({ threads: [{ ...thread("child", [childTurn("turn-c", "done")]), parentThread }, thread("parent", [turn("turn-p", "done")])] });
     const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
     expect(chat!.threads.find((row) => row.name === "child")).toMatchObject({ latestAnswerMessageId: "answer-1", parent: parentThread });
-    expect(chat!.threads.find((row) => row.name === "parent")).toMatchObject({ parent: null });
+    expect(chat!.threads.find((row) => row.name === "parent")).not.toHaveProperty("parent");
     expect(decodeSubagentChatThreads(chat)).toEqual(chat);
+  });
+
+  it("names no parent for a thread the main agent started, so a tab from before children still reads it", async () => {
+    const { client } = fakeClient({ threads: [thread("worker", [turn("turn-w", "done")])] });
+    const chat = await createSubagentViews(client).chatThreads({ chatId: "chat-1", userId: "user-1" });
+    // The key set a v0.4.16 tab's strict decoder accepts.
+    const released = ["createdAt", "currentStep", "endedAt", "id", "latestAnswerMessageId", "mode", "model", "name", "outcome", "reason", "state", "turnCount", "type", "updatedAt"];
+    expect(Object.keys(chat!.threads[0]!).filter((key) => !released.includes(key))).toEqual([]);
   });
 
   it("leaves a child off a branch that does not hold its main-agent run's answer", async () => {
