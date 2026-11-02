@@ -23,7 +23,8 @@ import {
  * A stub is a later result of the same call (`TranscriptToolResultItem.cleared`). Replay already takes a call's latest
  * result in its place (`selectTranscript`), so only that result's output text changes, never a call, its pairing or a
  * reasoning item, on every adapter; and the transcript records it like any result, so a resumed or replayed thread renders
- * the same context. What to clear is decided from the transcript and the measured size alone, never from the time. A
+ * the same context, as reliably as any item is recorded: a stub whose write failed leaves the next turn the whole pages, and
+ * that turn clears them again. What to clear is decided from the transcript and the measured size alone, never from the time. A
  * result nothing reads back (one too short to be saved, or not saved) is never cleared.
  */
 

@@ -38,7 +38,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { PlanUpdate } from "../tools/updatePlan";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { createResearchRounds, researchFilledCells, researchMatrix } from "./matrix";
-import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate } from "./method";
+import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
@@ -140,6 +140,9 @@ const PROPOSE_FIRST = `Your message was not shown to the user: research has star
 
 const RESEARCHERS_AFTER_PLAN = `Nothing started: researchers start after the plan. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} first.`;
 const REBUILD_FIRST = `Nothing started: the user changed the plan, so your questions must follow it first. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} again with questions rebuilt from the user's words.`;
+
+/** How long `fetch_url` trusts its last read of the unreachable sites: a researcher's record reaches the others within it. */
+const UNREACHABLE_SITES_FRESH_MS = 5_000;
 
 const PICK_UP_FIRST = `The research of the interrupted answer can be picked up from what it recorded. Call ${START_RESEARCH_TOOL_NAME} with its goal now: ` +
   "its plan and records come back with it, and nothing else carries on that research.";
@@ -257,6 +260,8 @@ export function createRunResearch(input: RunResearchInput) {
   const isAccepted = () => accepted !== null;
   /** Researchers whose brief already holds the method, by the name their thread has (`normalizeSubagentName`). */
   const briefed = new Set<string>();
+  /** The unreachable sites `fetch_url` last read, so a run's hundreds of page reads do not each read every record. */
+  let unreachable: Readonly<{ at: number; sites: ReadonlyMap<string, string> }> | null = null;
   /**
    * The researcher calls running now, by the name their thread has, which is what the store lists and stops, one entry each: a
    * second call of a name in one batch is refused, and must not take the first off.
@@ -741,6 +746,9 @@ export function createRunResearch(input: RunResearchInput) {
       } : tool.definition.name !== CALL_SUBAGENT_TOOL_NAME ? tool : { ...tool, execute: async (execution) => {
         const { call } = execution;
         if (!researching()) return await pickedUp() ? harnessToolError(call, "research_pick_up_first", PICK_UP_FIRST) : tool.execute(execution);
+        // A message to a background sub-agent already running on the branch is no researcher: it goes to its mailbox as written,
+        // outside research's rounds, briefs and clock, whose end would otherwise stop that sub-agent.
+        if (await turns.runningInBackground(execution)) return tool.execute(execution);
         if (!plan) return harnessToolError(call, "research_plan_first", RESEARCHERS_AFTER_PLAN);
         if (rebuildOwed) return harnessToolError(call, "research_plan_rebuild_first", REBUILD_FIRST);
         const closed = ports.time.researcherRefusal();
@@ -762,6 +770,23 @@ export function createRunResearch(input: RunResearchInput) {
         standing = null;
         return researcherOfRound(tool, execution, { ...call, arguments: { ...foreground, message: brief } });
       } });
+    },
+
+    /**
+     * The sites this research recorded unreachable, for `fetch_url` (`researchUnreachableSites`): read again after a few seconds, and a
+     * failed read keeps the last list, so a store's hiccup never fails a page read.
+     */
+    async unreachableSites(signal: AbortSignal): Promise<ReadonlyMap<string, string>> {
+      const now = input.now();
+      if (unreachable && now - unreachable.at < UNREACHABLE_SITES_FRESH_MS) return unreachable.sites;
+      try {
+        const sites = researchUnreachableSites(await ports.evidence.records(signal));
+        unreachable = { at: now, sites };
+        return sites;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        return unreachable?.sites ?? new Map();
+      }
     },
 
     /** The loop asks before each round whether the turn's answer is already taken, so no paid round follows. */
