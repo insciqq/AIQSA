@@ -32,10 +32,11 @@ export function planInBrowser(act: "edit" | "start"): ScenarioInteraction {
       await page.goto(`/c/${encodeURIComponent(chatId)}`, { timeout: 90_000, waitUntil: "domcontentloaded" });
       stage = "card";
       const card = page.getByTestId("research-plan-card").last();
-      await card.waitFor({ state: "visible", timeout: CARD_WAIT_MS });
+      // The same card says a plan is being made while scoping runs; the window is open once it counts down.
+      await card.getByTestId("research-plan-clock").waitFor({ state: "visible", timeout: CARD_WAIT_MS });
       evidence.cardShown = true;
+      evidence.clockShown = true;
       stage = "act";
-      evidence.clockShown = await card.getByTestId("research-plan-clock").isVisible();
       if (act === "edit") {
         await card.getByRole("button", { exact: true, name: "Edit" }).click();
         const step = card.getByLabel("Step 1", { exact: true });
