@@ -317,7 +317,7 @@ describe("the start", () => {
 describe("the time phases", () => {
   it("follow the operator's minutes from the plan's release", () => {
     const minutes = (value: number) => value * 60_000;
-    expect(RESEARCH_TIME_MS).toMatchObject({ abandonedEdit: minutes(5), handoffWait: minutes(3), hardEnd: minutes(90), notes: minutes(85), planWindow: minutes(1),
+    expect(RESEARCH_TIME_MS).toMatchObject({ abandonedEdit: minutes(5), hardEnd: minutes(90), notes: minutes(85), planWindow: minutes(1),
       researcherTurn: minutes(25), scoping: minutes(3), stopRunningResearchers: minutes(70), stopStartingResearchers: minutes(60) });
     expect(researchPhaseAt(0)).toBe("researching");
     expect(researchPhaseAt(minutes(60) - 1)).toBe("researching");
