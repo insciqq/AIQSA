@@ -194,8 +194,8 @@ import {
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
   browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, SCENARIO_R_PHRASES, SUBAGENT_SCENARIO_NEEDS,
-  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchMetrics, researchProcessFacts, researchServerNotes,
-  type PageReads, type RPhraseResult, type TDraftFinding, type TGateRow,
+  SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes,
+  type PageReads, type RPhraseResult, type TDraftFinding, type TEvidenceRow, type TGateRow,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
@@ -1641,11 +1641,11 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         const { rows: calls } = await ctx.db.query<{ arguments: Record<string, unknown> | null; result: Record<string, unknown> | null; toolName: string }>(`SELECT c."arguments", c."result", c."toolName"
           FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId" WHERE r."chatId" = $1 ORDER BY c."startedAt"`, [chat.id]);
         const count = (name: string) => calls.filter((call) => call.toolName === name).length;
-        drafts = calls.filter((call) => call.toolName === "submit_research_draft").map((call) =>
-          (Array.isArray(call.arguments?.findings) ? call.arguments.findings : []).filter(isRecord).map((finding) => ({ claim: String(finding.claim ?? ""),
-            quote: String(finding.quote ?? ""), sourceClass: String(finding.source_class ?? ""), url: String(finding.url ?? "") })));
+        const evidence = (await ctx.db.query<TEvidenceRow>(`SELECT "id", "kind", "claim", "quote", "url", "sourceClass", "dataset" FROM "ResearchEvidence" WHERE "chatId" = $1`, [chat.id])).rows;
+        drafts = calls.filter((call) => call.toolName === "submit_research_draft").map((call) => [...researchDraftFindings(call.arguments, evidence)]);
         const opened = new Set(calls.filter((call) => call.toolName === "fetch_url" && (call.result?.rawPreview as { fetchUrl?: { outcome?: string } } | undefined)?.fetchUrl?.outcome === "read")
           .flatMap((call) => typeof call.arguments?.url === "string" ? [call.arguments.url] : []));
+        for (const page of (await ctx.db.query<{ url: string }>(`SELECT DISTINCT "url" FROM "ResearchPage" WHERE "chatId" = $1`, [chat.id])).rows) opened.add(page.url);
         for (const call of calls) {
           if (!call.toolName.startsWith("mcp_workspace") || !call.arguments || !JSON.stringify(call.arguments).includes("aiqsa-browser")) continue;
           for (const match of JSON.stringify(call.arguments).matchAll(/https?:\/\/[^\s"'\\]+/gu)) opened.add(match[0]);

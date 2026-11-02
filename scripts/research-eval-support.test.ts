@@ -9,7 +9,7 @@ import {
   researchEffortConfiguration, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout, researchComparisonDetails, researchRepeatability, researchRoleUsage, researchStoreFacts, researchUsageByModel, shortlistOverlap,
   type ResearchGrade, type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer
 } from "./research-eval-support";
-import { parseTestProxy, researchMetrics, researchProcessFacts, researchServerNotes } from "./subagent-scenarios-support";
+import { parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes } from "./subagent-scenarios-support";
 
 const answer: StructuredResearchAnswer = {
   candidates: ["Candidate A", "Candidate B"], criteria: [{ name: "Durability", reason: null }, { name: "Price", reason: "Budget is fixed" }],
@@ -327,6 +327,20 @@ describe("content-free stdout, role accounting and plan window", () => {
       "Source could", "Время вышло", "Time ran out", "Отчёт пришёл", "This report came", "Research ended", "Исследование завершилось"];
     expect(researchServerNotes(prefixes.map((prefix) => `*${prefix} note.*`).join("\n"))).toEqual(prefixes.map((prefix) => `${prefix} note.`));
     expect(researchServerNotes("ordinary private answer *Unrelated note*")).toEqual([]);
+  });
+
+  it("reads a draft's findings from the records its ids name, and a stored draft's as typed", () => {
+    const rows = [{ id: "r1", kind: "finding", claim: "A claim", quote: "a quote", url: "https://x/a", sourceClass: "owner_reviews", dataset: null },
+      { id: "r2", kind: "dataset", claim: "A count", quote: null, url: null, sourceClass: "owner_reviews", dataset: { examples: [{ quote: "an example", url: "https://x/b" }] } },
+      { id: "r3", kind: "not_found", claim: null, quote: null, url: null, sourceClass: null, dataset: null }];
+    expect(researchDraftFindings({ record_ids: ["r1", "r2", "r3", "gone"] }, rows)).toEqual([
+      { claim: "A claim", quote: "a quote", sourceClass: "owner_reviews", url: "https://x/a" }, { claim: "A count", quote: "an example", sourceClass: "owner_reviews", url: "https://x/b" }]);
+    expect(researchDraftFindings({ findings: [{ claim: "Typed", quote: "q", source_class: "primary_official", url: "https://x/c" }] }, rows)).toEqual([
+      { claim: "Typed", quote: "q", sourceClass: "primary_official", url: "https://x/c" }]);
+    expect(researchDraftFindings(null, rows)).toEqual([]);
+    const sent = { result: { content: [{ type: "json", value: { status: "sent_back", gate: "report_check", message: "Rows" } }] }, toolName: "submit_research_draft" };
+    expect(researchProcessFacts({ calls: [sent], drafts: [[]], gates: [{ name: "verifier-2-1", state: "done", reasonCode: null, report: "r" }] })).toMatchObject({
+      gateTurnFacts: [{ name: "verifier-2-1" }], timeline: [{ sentBackBy: "report_check" }] });
   });
 
   const names = new Map([["research-one", ["r"]], ["gap-judge-1", ["g"]], ["verifier-1", ["v"]], ["skeptic-1", ["s"]]]);
