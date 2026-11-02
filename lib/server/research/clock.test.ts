@@ -10,7 +10,7 @@ function scope(agents: readonly SubagentAgentEntry[] = [], extra: Partial<Resear
   const extendTurn = vi.fn<(endsAt: number) => void>();
   const send = vi.fn(async (_message: Readonly<{ to: string }>) => ({ kind: "delivered" as const }));
   const run: ResearchRunScope = { branchRunIds: [], chatId: "chat", extendTurn, mailbox: { agents: async () => ({ agents }), send }, now: () => Date.now(), researchRunId: "run-1",
-    runId: "run-1", sources: { opened: async () => [] }, userFollowups: async () => [], userId: "user", userMessage: "", ...extra };
+    runId: "run-1", sources: { opened: async () => [] }, turnEndsAt: () => Date.now() + 3_600_000, userFollowups: async () => [], userId: "user", userMessage: "", ...extra };
   return { extendTurn, run, send };
 }
 

@@ -197,9 +197,10 @@ describe("sub-agent threads on PostgreSQL", () => {
     await transcripts.append(scope("turn-1"), 0, [toolCall]);
     await transcripts.append(scope("turn-2"), 1, items("Second turn."));
     await transcripts.append({ chatId, runId: run.runId, userId }, 0, items("Main answer."));
+    await prisma.subagentThread.create({ data: { anchorRunId: run.runId, chatId, id: "thread-a", name: "skeptic-2", userId } });
     const effects = await store.threadEffectItems({ chatId, runIds: [run.runId], userId });
     expect(effects).toEqual([{ items: [expect.objectContaining({ callId: "c1", kind: "tool_call", recordedAt: expect.any(Date) })],
-      name: expect.any(String), threadId: "thread-a" }]);
+      name: "skeptic-2", threadId: "thread-a" }]);
     await expect(store.threadEffectItems({ chatId, runIds: [run.runId], userId: "someone-else" })).resolves.toEqual([]);
   });
 
