@@ -1573,6 +1573,8 @@ async function researchStore(db: Context["db"], chatId: string, runId: string) {
   return researchStoreFacts({ evidence, frame, pages });
 }
 
+const T_PUSH_WAIT_MS = 90_000;
+
 /** Records a run must hold before T's `restart` act cuts it: what a Continue then has to keep. */
 const T_RESTART_RECORDS = 5;
 
@@ -1680,6 +1682,12 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           acted = planInBrowser(act)({ baseUrl: ctx.session.api.baseUrl.origin, chatId: chat.id, cookie: ctx.session.api.cookie, marker: randomUUID().replaceAll("-", ""), runId, signal: browserAct.signal })
             .then((evidence) => ({ act, ...evidence }), (error: unknown) => ({ act, failed: error instanceof BrowserScenarioError ? error.message : "interaction_failed" }));
         }
+        if (act === "push" && job.repeat === 1) {
+          const { pushInBrowser } = await planBrowserModule();
+          browserAct = new AbortController();
+          acted = pushInBrowser({ baseUrl: ctx.session.api.baseUrl.origin, chatId: chat.id, cookie: ctx.session.api.cookie, marker: randomUUID().replaceAll("-", ""), runId, signal: browserAct.signal })
+            .then((evidence) => ({ act, ...evidence }), (error: unknown) => ({ act, failed: error instanceof BrowserScenarioError ? error.message : "interaction_failed" }));
+        }
         if (act === "restart") {
           const { continued, facts: restarted } = await restartAndContinue(ctx, run, chat.id, sendWords);
           runId = continued;
@@ -1725,6 +1733,8 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
         questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && !options.acts.purchase && metrics.independentOpened === 0);
         if (options.acts[job.kind] === "restart") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
+        // A push follows the run's end by its grace and the push service's own time.
+        if (options.acts[job.kind] === "push" && acted) await Promise.race([acted, new Promise((resolve) => { setTimeout(resolve, T_PUSH_WAIT_MS); })]);
         browserAct?.abort();
         if (acted) facts.act = await acted;
       } catch {

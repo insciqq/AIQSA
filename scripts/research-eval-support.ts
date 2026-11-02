@@ -14,8 +14,8 @@ const exact = (value: Record<string, unknown>, keys: readonly string[]) => Objec
 
 export const T_KINDS = ["purchase", "medical", "technical", "market"] as const;
 export type TKind = typeof T_KINDS[number];
-/** What a person does on one kind's run: edit the plan and start, press start, leave a site's handoff unanswered, or restart the app and press Continue. */
-export const T_ACTS = ["edit", "handoff", "restart", "start"] as const;
+/** What a person does on one kind's run: edit the plan and start, press start, leave a site's handoff unanswered, restart the app and press Continue, or wait for the push elsewhere. */
+export const T_ACTS = ["edit", "handoff", "push", "restart", "start"] as const;
 export type TAct = typeof T_ACTS[number];
 export type ResearchJob = Readonly<{ kind: TKind; repeat: number }>;
 export const T_QUESTION_MS = 110 * 60_000;

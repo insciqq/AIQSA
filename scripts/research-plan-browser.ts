@@ -1,9 +1,10 @@
 /**
- * The user of scenario T's acts `edit` and `start` (`scripts/smoke-subagents-paid.ts`), driven by Playwright through the real chat page while a real
- * research plan's window is open: it waits for the card, optionally changes a step, and presses the button. Nothing typed comes from a model and
- * nothing read from the page leaves here: the evidence holds counts and booleans. The browser is closed on every path, including the harness's abort.
+ * The user of scenario T's acts (`scripts/smoke-subagents-paid.ts`), driven by Playwright through the real pages. `edit` and `start` work the card while a
+ * real research plan's window is open: wait for it, optionally change a step, press the button. `push` is a device that subscribed and went elsewhere: a
+ * Firefox, whose push service needs no vendor keys, on the home page, which never reports the run as shown, waits for the notification. Nothing typed comes
+ * from a model and nothing read from the page leaves here: the evidence holds counts and booleans. The browser is closed on every path, including the harness's abort.
  */
-import { chromium } from "@playwright/test";
+import { chromium, firefox } from "@playwright/test";
 import { browserChannel, sessionCookies } from "./browser-scenarios-handoff";
 import type { InteractionEvidence, ScenarioInteraction } from "./browser-scenarios-support";
 
@@ -48,3 +49,38 @@ export function planInBrowser(act: "edit" | "start"): ScenarioInteraction {
     }
   };
 }
+
+const PUSH_PREFS = { "dom.push.connection.enabled": true, "dom.push.enabled": true, "dom.push.serverURL": "wss://push.services.mozilla.com/", "dom.serviceWorkers.enabled": true,
+  "permissions.default.desktop-notification": 1 };
+const PUSH_POLL_MS = 5_000;
+
+/** Subscribes as the app's client does, and reads what the worker has shown until `signal` ends. */
+export const pushInBrowser: ScenarioInteraction = async ({ baseUrl, cookie, signal }): Promise<InteractionEvidence> => {
+  const evidence: Record<string, boolean | number | string | null> = { notifications: 0, subscribed: null };
+  if (signal.aborted) return evidence;
+  const browser = await firefox.launch({ firefoxUserPrefs: PUSH_PREFS, headless: true });
+  try {
+    const context = await browser.newContext({ baseURL: baseUrl });
+    await context.addCookies(sessionCookies(cookie, baseUrl));
+    const page = await context.newPage();
+    page.setDefaultTimeout(60_000);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    evidence.subscribed = await page.evaluate(async () => {
+      const path = "/api/me/push-subscriptions";
+      const key = await (await fetch(path, { cache: "no-store" })).json() as { applicationServerKey: string };
+      const raw = atob(key.applicationServerKey.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(key.applicationServerKey.length / 4) * 4, "="));
+      await navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" });
+      const worker = await navigator.serviceWorker.ready;
+      const subscription = await worker.pushManager.subscribe({ applicationServerKey: Uint8Array.from(raw, (character) => character.charCodeAt(0)), userVisibleOnly: true });
+      const saved = await fetch(path, { body: JSON.stringify(subscription.toJSON()), headers: { "content-type": "application/json" }, method: "POST" });
+      return saved.status;
+    }).catch((error: unknown) => error instanceof Error ? error.message.slice(0, 80).replace(/[^\w .:-]+/gu, " ") : "subscribe_failed");
+    while (!signal.aborted && evidence.notifications === 0) {
+      await new Promise<void>((resolve) => { const timer = setTimeout(resolve, PUSH_POLL_MS); signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
+      evidence.notifications = await page.evaluate(async () => (await (await navigator.serviceWorker.ready).getNotifications()).length).catch(() => evidence.notifications);
+    }
+    return evidence;
+  } finally {
+    await browser.close().catch(() => undefined);
+  }
+};
