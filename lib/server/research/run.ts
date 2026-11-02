@@ -299,7 +299,7 @@ export function createRunResearch(input: RunResearchInput) {
   };
   const ports = researchPorts(input.deps.ports, { branchRunIds: input.subagentInput.branchRunIds, chatId: input.chatId,
     extendTurn: (endsAt) => input.extendTurn?.(endsAt), mailbox,
-    now: input.now, researchRunId, runId: input.runId, sources, userFollowups: () => input.subagentInput.userFollowups(), userId: input.userId,
+    now: input.now, researchRunId, runId: input.runId, sources, turnEndsAt: () => input.subagentInput.deadlineAt, userFollowups: () => input.subagentInput.userFollowups(), userId: input.userId,
     userMessage: input.userMessage });
   const gates = [...ports.report.gates, ...input.deps.gates ?? RESEARCH_GATES];
   const rounds = createResearchRounds(async (signal) => {
