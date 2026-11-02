@@ -215,9 +215,9 @@ describe("independent gap judgment", () => {
     JSON.stringify({ ...CLEAN, limits: Array.from({ length: RESEARCH_LIMITS.questions + 1 }, () => "Limit") }),
     JSON.stringify({ open_questions: [], weak_answers: [], conflicts: [] }),
     `Outcome: done\n${JSON.stringify(CLEAN)}`, "x".repeat(RUN_FOLLOWUP_MAX_CHARS + 1)
-  ])("passes an unreadable judgment, and tells the reader nothing of it (%#)", async (report) => {
+  ])("passes an unreadable judgment, saying only that the report is not fully checked (%#)", async (report) => {
     const ctx = context({ subagents: { run: async () => judged(report) } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
   });
 
   it("adds no note for a judge that found nothing, or one skipped because the draft added nothing new", async () => {
@@ -226,13 +226,18 @@ describe("independent gap judgment", () => {
     expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
   });
 
-  it("passes when a later judge fails, and names nothing the earlier one raised", async () => {
-    const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("How durable is it after five years?")] })) } }));
-    const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }], subagents: { run: async () => { throw new Error("unavailable"); } } });
-    expect(await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, ctx)).toEqual({ kind: "pass" });
+  it("says only that the report is not fully checked when a later judge fails, and names nothing the earlier one raised", async () => {
+    const ctx = context({ subagents: { run: async () => { throw new Error("provider failed"); } } });
+    expect(await runResearchGates({ context: ctx, draft: DRAFT, gates: [gapCheckGate], runId: "run" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed")] });
   });
 
-  it.each(["throw", "refused", "failed", "partial", "truncated"])("passes a %s judge with no note and still runs the next gate", async (failure) => {
+  it("names nothing a judge raised before when a later one fails", async () => {
+    const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN, gaps: [gap("How durable is it after five years?")] })) } }));
+    const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }], subagents: { run: async () => { throw new Error("unavailable"); } } });
+    expect(await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, ctx)).toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
+  });
+
+  it.each(["throw", "refused", "failed", "partial", "truncated"])("passes a %s judge saying only that the report is not fully checked, and still runs the next gate", async (failure) => {
     const ctx = context({ subagents: { run: async () => {
       if (failure === "throw") throw new Error("unavailable");
       if (failure === "refused") return { kind: "refused", code: "subagent_limit_reached" };
@@ -245,7 +250,7 @@ describe("independent gap judgment", () => {
     } } });
     const verifier = vi.fn(async () => ({ kind: "pass" as const }));
     expect(await runResearchGates({ context: ctx, draft: DRAFT, gates: [gapCheckGate, { name: "verifier", run: verifier }], runId: "test" }))
-      .toEqual({ kind: "accepted", notes: [] });
+      .toEqual({ kind: "accepted", notes: [researchNote("gate_failed")] });
     expect(verifier).toHaveBeenCalledOnce();
   });
 });
@@ -297,19 +302,19 @@ describe("research stops on evidence or time, not a round count", () => {
     expect(result).toEqual({ kind: "accepted", notes: [] });
   });
 
-  it("does not start a judge without time for a turn", async () => {
+  it("does not start a judge without time for a turn, and says time is why the report is not fully checked", async () => {
     const ctx = context({ time: { remainingMs: () => 1, sendBackAllowed: () => true } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("time_out")] });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
-  it("names nothing when a new finding arrives too late to judge it", async () => {
+  it("names nothing a judge raised when a new finding arrives too late to judge it, only that time left the report not fully checked", async () => {
     const first = await gapCheckGate.run(DRAFT, context({ subagents: { run: async () => judged(JSON.stringify({ ...CLEAN,
       gaps: [gap("How durable is it after five years?")] })) } }));
     const ctx = context({ earlier: [{ draft: DRAFT, message: messageOf(first) }],
       time: { remainingMs: () => 1, sendBackAllowed: () => true } });
     const result = await gapCheckGate.run({ ...DRAFT, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another short-term result." }] }, ctx);
-    expect(result).toEqual({ kind: "pass" });
+    expect(result).toEqual({ kind: "pass", notes: [researchNote("time_out")] });
     expect(ctx.subagents.run).not.toHaveBeenCalled();
   });
 
@@ -470,10 +475,10 @@ describe("actionable gaps and page progress", () => {
     const sentBack = await gapCheckGate.run({ ...DRAFT, report }, context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [gap("Open?")], limits })) } }));
     expect(sentBack.kind).toBe("send_back");
     expect(sentBack).not.toHaveProperty("notes");
-    // A later judge that cannot run names nothing either: neither the open gaps nor that it could not finish.
+    // A later judge that cannot run names neither the open gaps nor the limits, only that the report is not fully checked.
     const earlier = [{ draft: DRAFT, message: messageOf(sentBack) }];
     const failing = context({ earlier, subagents: { run: async () => { throw new Error("unavailable"); } } });
-    expect(await gapCheckGate.run({ ...DRAFT, report, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, failing)).toEqual({ kind: "pass" });
+    expect(await gapCheckGate.run({ ...DRAFT, report, findings: [...FINDINGS, { ...FINDINGS[0]!, claim: "Another result." }] }, failing)).toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
   });
 
   it("hands limits to the author within its bound, without internal names", async () => {
@@ -545,7 +550,7 @@ describe("bounded messages", () => {
     const issues = Array.from({ length: RESEARCH_LIMITS.questions }, (_, index) => `${index}:` + "x".repeat(RESEARCH_LIMITS.questionCharacters - 3));
     // The decoder's total bound is independent of the individual field bounds.
     const ctx = context({ subagents: { run: async () => judged(JSON.stringify({ gaps: issues.map((issue) => gap(issue, issue)), limits: issues })) } });
-    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass" });
+    expect(await gapCheckGate.run(DRAFT, ctx)).toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
   });
 });
 

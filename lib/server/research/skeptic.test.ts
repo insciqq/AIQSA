@@ -327,6 +327,22 @@ describe("answer first", () => {
     expect(notesOf(await skepticGate.run(draftOf(), silent.context))).toBe(researchNote("gate_failed"));
   });
 
+  it("never reads a turn that ended early or could not look as a whole check, whatever it said", async () => {
+    const { attempt } = await raised();
+    const early = { reason: "subagent_failed", state: "failed" } as const;
+    // What stood stays named, beside the word that the report is not fully checked.
+    expect(await skepticGate.run(draftOf(), contextOf({ earlier: [attempt], turn: async () => ended("Outcome: done\nNONE", early) }).context))
+      .toEqual({ kind: "pass", notes: [researchNote("gate_failed"), RECALL_NOTE] });
+    // A lead no page shows is left out, and a cut-short turn that raised only that is no check.
+    const invented = line("It catches fire.", "bursts into flames on contact", "https://never.example/x");
+    expect(await skepticGate.run(draftOf(), contextOf({ turn: async () => ended(`Outcome: done\n${invented}`, early) }).context)).toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
+    const blind = [{ outcome: "refused" as const, summary: "not run", tool: "Web search" }];
+    expect(await skepticGate.run(draftOf(), contextOf({ turn: async () => ended(`Outcome: done\n${invented}`, { steps: blind }) }).context)).toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
+    // Answered before, with nothing new, from a cut-short turn: nothing stands, and nothing is said to be checked.
+    expect(await skepticGate.run(draftOf(), contextOf({ earlier: [attempt], turn: async () => ended("Outcome: done\nANSWERED E1\nNONE", early) }).context))
+      .toEqual({ kind: "pass", notes: [researchNote("gate_failed")] });
+  });
+
   it("starts no turn the time left cannot fit, and says so", async () => {
     const { context, run } = contextOf({ remainingMs: SKEPTIC_LIMITS.turnMinMs + SKEPTIC_LIMITS.gateReserveMs - 1 });
     expect(notesOf(await skepticGate.run(draftOf(), context))).toBe(researchNote("time_out"));
