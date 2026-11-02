@@ -499,7 +499,7 @@ describe("sub-agent runner", () => {
     const resultOf = (request: ProviderRunRequest | undefined, callId: string) =>
       (request?.history ?? []).flatMap((item) => item.type === "tool_result" && item.callId === callId ? [item.output] : []).at(-1);
 
-    it("refuses a researcher's 16th counted call as a budget refusal, and its next response is tool-free and makes the report", async () => {
+    it("refuses a researcher's 16th counted call, keeps recording open after a batch where something ran, and ends on the report", async () => {
       const { record, tool } = recorder();
       const ctx = setup([
         { calls: [...lookups(1, 10), ...records("r1", "r2")] },
@@ -510,8 +510,8 @@ describe("sub-agent runner", () => {
       const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
       expect(result).toMatchObject({ outcome: "partial", report: "Outcome: partial\nTwo rows covered; the rest stays empty.", state: "done" });
       expect(ctx.requests).toHaveLength(4);
-      expect(ctx.requests.slice(0, 3).map((request) => request.toolChoice)).toEqual(["auto", "auto", "auto"]);
-      expect(ctx.requests[3]!.toolChoice).toBe("none");
+      // The third batch recorded r4 beside the refusal, so tools stay open: a record is never what a spent budget shuts out.
+      expect(ctx.requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "auto", "auto"]);
       // Fifteen ran, each result saying what is left; records never count and never carry the line.
       expect(ctx.lookup).toHaveBeenCalledTimes(15);
       expect(record).toHaveBeenCalledTimes(4);
@@ -522,6 +522,24 @@ describe("sub-agent runner", () => {
       for (const id of ["r1", "r2", "r3", "r4"]) expect(resultOf(last, id)).toBe("recorded");
       // The run's own budget counts as before: every call that ran, records included.
       expect(ctx.host.toolState.calls).toBe(19);
+    });
+
+    it("lets a researcher record what the batch that spent its budget returned, then closes tools when only refused calls come", async () => {
+      const { record, tool } = recorder();
+      const ctx = setup([
+        { calls: lookups(1, 14) },
+        { calls: lookups(15, 2) },
+        { calls: records("evidence-from-l15") },
+        { calls: lookups(17, 1) },
+        { text: "Outcome: done\nRecorded the last page." }
+      ], { tools: [tool], turnToolCalls: 15 });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(result).toMatchObject({ outcome: "done", state: "done" });
+      expect(ctx.lookup).toHaveBeenCalledTimes(15);
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(ctx.requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "auto", "auto", "none"]);
+      expect(resultOf(ctx.requests[2], "l16")).toBe(TURN_TOOL_CALL_LIMIT_OUTPUT(15));
+      expect(resultOf(ctx.requests[4], "l17")).toBe(TURN_TOOL_CALL_LIMIT_OUTPUT(15));
     });
 
     it("counts each turn of a thread on its own", async () => {
