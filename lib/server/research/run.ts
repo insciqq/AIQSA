@@ -748,7 +748,12 @@ export function createRunResearch(input: RunResearchInput) {
         if (!researching()) return await pickedUp() ? harnessToolError(call, "research_pick_up_first", PICK_UP_FIRST) : tool.execute(execution);
         // A message to a background sub-agent already running on the branch is no researcher: it goes to its mailbox as written,
         // outside research's rounds, briefs and clock, whose end would otherwise stop that sub-agent.
-        if (await turns.runningInBackground(execution)) return tool.execute(execution);
+        // Without `background`, the rare turn that ends between this read and the handler's own continues in the foreground, which Stop ends.
+        if (await turns.runningInBackground(execution)) {
+          const { background: _background, ...message } = call.arguments;
+          void _background;
+          return tool.execute({ ...execution, call: { ...call, arguments: message } });
+        }
         if (!plan) return harnessToolError(call, "research_plan_first", RESEARCHERS_AFTER_PLAN);
         if (rebuildOwed) return harnessToolError(call, "research_plan_rebuild_first", REBUILD_FIRST);
         const closed = ports.time.researcherRefusal();
