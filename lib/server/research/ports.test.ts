@@ -21,7 +21,7 @@ import type { ResearchGate } from "./gates";
 import { researchMatrixCoverage } from "./matrix";
 import { NOOP_RESEARCH_PORTS, researchGatePorts, researchPorts, type ResearchPortFactories, type ResearchPorts, type ResearchRunScope } from "./ports";
 import { proposalArguments, proposeCall } from "./planWindow.testFixtures";
-import { DRAFT as RECORD_DRAFT, FRAME, id, RECORDS } from "./report.testFixtures";
+import { DRAFT as RECORD_DRAFT, finding, FRAME, id, RECORDS } from "./report.testFixtures";
 import { createResearchReport } from "./reportAssembly";
 import { createRunResearch, researchOfTurn, researchRunOf, type ResearchEngineDeps, type RunResearchInput } from "./run";
 import { VERIFIER_MARKER, verifierGate } from "./verifier";
@@ -475,6 +475,49 @@ describe("the ports a run holds", () => {
       expect(run.published).toContain(REPORT);
       expect(compose).not.toHaveBeenCalled();
     });
+
+    describe("when that text is a whole report", () => {
+      const LINE = 2_000;
+      const written = (characters: number) => `# Report\n\n${"x".repeat(characters - 10)}`;
+      const NOT_SUBMITTED = "Research ended before the report was handed in for checking";
+      const INCOMPLETE = "The answer failed while this report was being written";
+
+      it("lets a report written as a message stand when the re-ask for the call fails, since a report outranks a summary", async () => {
+        const compose = vi.fn(async () => BUILT);
+        const run = await runOf([{ calls: begin }, { text: written(LINE) }, { fail: true }], report(compose));
+        expect(run.shown).toContain(written(LINE));
+        expect(run.shown).toContain(NOT_SUBMITTED);
+        expect(run.shown).not.toContain(BUILT);
+        expect(compose).not.toHaveBeenCalled();
+      });
+
+      it("wins over the table below that line", async () => {
+        const run = await runOf([{ calls: begin }, { text: written(LINE - 1) }, { fail: true }], report(async () => BUILT));
+        expect(run.shown).toContain(BUILT);
+        expect(run.shown).not.toContain("x".repeat(100));
+      });
+
+      it("marks a report cut off as it streamed as incomplete", async () => {
+        const run = await runOf([{ calls: begin }, { fail: true, text: written(LINE) }], report(async () => BUILT));
+        expect(run.shown).toContain(INCOMPLETE);
+        expect(run.shown).not.toContain(BUILT);
+      });
+
+      it("stands when the model stops with nothing more to say", async () => {
+        const run = await runOf([{ calls: begin }, { calls: [researcher], text: written(LINE) }, { text: "Outcome: done\nreport" }, {}], report(async () => BUILT));
+        expect(run.published).toContain(NOT_SUBMITTED);
+        expect(run.published).toContain("x".repeat(100));
+      });
+
+      it("shows nothing of it to a run that was stopped", async () => {
+        const research = direct(report(async () => BUILT));
+        research.resume(started(startResult("run-1")));
+        research.roundText(written(LINE));
+        const stop = new AbortController();
+        stop.abort(new Error("stopped"));
+        await expect(research.composed("no_report", stop.signal)).resolves.toBeNull();
+      });
+    });
   });
 
   describe("on the real port, over a real run's records", () => {
@@ -551,6 +594,31 @@ describe("the ports a run holds", () => {
       expect(fixed.published).toBe(RECORD_DRAFT.report);
       const ended = await runOf([{ calls: begin }, { calls: [mistyped] }, { fail: true }], { gates: [], ports: stores() });
       expect(ended.shown).toContain("Берите Lonax Memory.");
+    });
+
+    it("keeps the pick and the ids of a call that leaves out a field with nothing to say, and tells no false story of it", async () => {
+      const { branch_picks: _picks, does_not_separate: _separate, ...partial } = onIds("call-draft", {}).arguments;
+      void _picks;
+      void _separate;
+      const run = await runOf([{ calls: begin }, { calls: [{ ...onIds("call-draft", {}), arguments: partial }] }], { gates: [reading], ports: stores() });
+      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(seen[0]).toMatchObject({ pickRowKey: "x1", recordIds: [id(1), id(2), id(3)] });
+      expect(seen[0]!.findings).toHaveLength(3);
+    });
+
+    it("checks a live draft that sends an empty findings list beside its pick", async () => {
+      const draft = { ...onIds("call-draft", { findings: [], pick_row_key: "x9" }) };
+      const { record_ids: _ids, ...typed } = draft.arguments;
+      void _ids;
+      const run = await runOf([{ calls: begin }, { calls: [{ ...draft, arguments: typed }] }, { calls: [onIds("call-two", {})] }], { gates: [], ports: stores() });
+      expect(resultsOf(run.requests, "Outside the matrix: row x9")).toBe(true);
+    });
+
+    it("reads a corrected id as its correction with no send back", async () => {
+      const corrected = () => [...RECORDS.slice(1), finding(7, "x1", "firmness", { supersedes: id(1), url: "https://maker.example/x1" })];
+      const run = await runOf([{ calls: begin }, { calls: [onIds("call-draft", {})] }], { gates: [reading], ports: stores(corrected) });
+      expect(run.published).toBe(RECORD_DRAFT.report);
+      expect(seen[0]!.findings.map(({ recordId }) => recordId)).toContain(id(7));
     });
 
     it("passes advice that states no fact, and says it came with nothing to check", async () => {

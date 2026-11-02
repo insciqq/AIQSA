@@ -233,8 +233,16 @@ describe("a draft's references", () => {
       .toEqual({ branchPicks: [], doesNotSeparate: null, pickRowKey: null, recordIds: [] });
   });
 
-  it("refuses naming the field, a missing one included", () => {
-    expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: undefined }))).toBe("record_ids must be given: pass null when it does not apply.");
+  it("reads a left-out field as one that does not apply: the tool is not strict, and a model with no branches may well leave branch_picks out", () => {
+    expect(value(decodeResearchDraftReferences({}))).toEqual({ branchPicks: [], doesNotSeparate: null, pickRowKey: null, recordIds: [] });
+    const { branch_picks: _picks, does_not_separate: _separate, ...partial } = references;
+    void _picks;
+    void _separate;
+    expect(value(decodeResearchDraftReferences(partial))).toEqual({ branchPicks: [], doesNotSeparate: null, pickRowKey: "x1", recordIds: [RECORD_ID] });
+    expect(refusal(decodeResearchDraftReferences("not an object"))).toContain("one object");
+  });
+
+  it("refuses a value of the wrong shape, naming the field", () => {
     expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: [42] }))).toContain("record_ids");
     expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: ["x".repeat(65)] }))).toContain("record_ids");
     expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: Array.from({ length: 301 }, () => RECORD_ID) }))).toContain("at most 300");
@@ -266,7 +274,18 @@ describe("a draft's references", () => {
       expect(decoded).toMatchObject({ findings: [], invalidReferences: expect.stringContaining(field), origin: "reserved_call", report: "# Report" });
       expect(decoded.recordIds).toBeUndefined();
     }
-    expect(value(decodeResearchDraft({ report: "# Report", unreachable: [] })).invalidReferences).toContain("must be given");
+  });
+
+  it("keeps the pick and the ids of a draft that leaves a field out", () => {
+    const decoded = value(decodeResearchDraft({ pick_row_key: "x1", record_ids: [RECORD_ID], report: "# Report", unreachable: [] }));
+    expect(decoded).toMatchObject({ branchPicks: [], doesNotSeparate: null, pickRowKey: "x1", recordIds: [RECORD_ID] });
+    expect(decoded.invalidReferences).toBeUndefined();
+    expect(value(decodeResearchDraft({ report: "# Report", unreachable: [] })).invalidReferences).toBeUndefined();
+  });
+
+  it("reads an empty findings list as a live draft, so its pick reaches the report check: a stored draft with none loses nothing by it", () => {
+    expect(value(decodeResearchDraft({ findings: [], pick_row_key: "x9", report: "# Report", unreachable: [] }))).toMatchObject({ findings: [], pickRowKey: "x9", recordIds: [] });
+    expect(value(decodeResearchDraft(draft))).toEqual({ branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "# Report", unreachable: [] });
   });
 
   it("still refuses a draft whose report or list of what was unreachable cannot be read", () => {
@@ -284,7 +303,6 @@ describe("a draft's references", () => {
       report: "# Report", unreachable: [{ reason: "Blocked.", source_class: null, target: "shop.example" }] };
     expect(value(decodeResearchDraft(stored))).toEqual({ findings: [{ claim: "It holds.", quote: "held up", sourceClass: "independent_tests", standing: "confirmed",
       url: "https://lab.example/x1" }], origin: "reserved_call", report: "# Report", unreachable: [{ reason: "Blocked.", sourceClass: null, target: "shop.example" }] });
-    expect(value(decodeResearchDraft(draft))).toEqual({ findings: [], origin: "reserved_call", report: "# Report", unreachable: [] });
   });
 });
 

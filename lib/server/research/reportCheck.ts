@@ -5,11 +5,12 @@ import type { ResearchGate } from "./gates";
 import { researchMatrix, type ResearchMatrix } from "./matrix";
 import { researchNote } from "./notes";
 import { researchGatePorts } from "./ports";
+import { researchRegistrableDomain } from "./sourceQuality";
 
 /**
  * A draft against the records and the matrix (`agent_docs/RUN_CONTRACTS.md`, Research), the first gate a draft meets. It reads only fields, so it
  * says only what those can prove:
- * - every id names a live record, and a pick, a branch's pick and rows called inseparable are rows of the matrix;
+ * - every id names a live record or one corrected by a live one, and a pick, a branch's pick and rows called inseparable are rows of the matrix;
  * - a row the draft leans on has a record cited in each cell that holds evidence, which is what makes the prices, sellers and reviews behind a pick
  *   reach the checks after it: a real run cited 9 of 56 records, and three checks read the maker's specifications while the pick went unread;
  * - a link in the report is a record the draft cites, since a link is what a report's prose claims to rest on that a field can show;
@@ -42,8 +43,13 @@ const folded = (text: string) => text.normalize("NFKC").toLowerCase().replaceAll
 /** Each longer word cut before its ending, so another case of a word still matches. */
 const stems = (label: string) => (folded(label).match(/[\p{L}\p{N}]{4,}/gu) ?? []).map((word) => word.slice(0, Math.max(3, word.length - 2)));
 
+/** What is left of a one-word label under a shortened heading: its root, as Шум is of Шумность. It has no other word to be found by. */
+const ONE_WORD_ROOT = 3;
+
 /** Whether folded text holds any longer word of a label: a shortened heading names a criterion, and no word of it does not. */
 function namesLabel(text: string, label: string): boolean {
+  const words = folded(label).match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (words.length === 1) return text.includes(words[0]!.slice(0, ONE_WORD_ROOT));
   const wanted = stems(label);
   return wanted.length > 0 ? wanted.some((stem) => text.includes(stem)) : text.includes(folded(label).trim());
 }
@@ -81,27 +87,40 @@ function pageOf(link: string): string | null {
   return `${hostname.replace(/^www\./u, "")}${pathname.replace(/\/+$/u, "")}`;
 }
 
+/** Whether a link goes to a site's front door, which says nothing and backs nothing. */
+function isSiteRoot(link: string): boolean {
+  const normalized = normalizeFetchUrl(link);
+  if (normalized === null) return false;
+  const { pathname, search } = new URL(normalized);
+  return pathname === "/" && search === "";
+}
+
 const reportLinks = (report: string) => [...new Set((report.match(LINK) ?? []).map(bareLink))].slice(0, LINKS_READ);
 
-/** The pages a record stands for, a dataset's examples included. */
-function pagesOf(record: ResearchEvidenceRecord): readonly string[] {
-  const links = record.kind === "finding" ? [record.url] : record.kind === "dataset" ? [record.url, ...record.dataset.examples.map(({ url }) => url)]
-    : record.kind === "unreachable" ? [record.target] : [];
-  return links.flatMap((link) => pageOf(link) ?? []);
-}
+/** The links a record stands for, a dataset's examples included. */
+const linksOf = (record: ResearchEvidenceRecord): readonly string[] => record.kind === "finding" ? [record.url]
+  : record.kind === "dataset" ? [record.url, ...record.dataset.examples.map(({ url }) => url)] : record.kind === "unreachable" ? [record.target] : [];
+
+const pagesOf = (record: ResearchEvidenceRecord) => linksOf(record).flatMap((link) => pageOf(link) ?? []);
 
 const isClaim = (record: ResearchEvidenceRecord) => record.kind === "finding" || record.kind === "dataset";
 
-/** The ids that name no live record, and how: a correction takes the corrected one's place, and the model is told its id. */
-function unknownRecords(ids: readonly string[], records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
+/**
+ * The ids as the records they stand for. A corrected id reads as its correction, as it does in `researchDraftWithRecords`: the checks read that record, so it is cited, and
+ * nothing goes back or is said of it.
+ */
+function citedRecords(named: readonly string[], records: readonly ResearchEvidenceRecord[]): ReadonlySet<string> {
+  const corrections = new Map(records.flatMap(({ id, supersedes }) => supersedes === null ? [] : [[supersedes, id] as const]));
+  return new Set(named.map((id) => corrections.get(id) ?? id));
+}
+
+/** The ids that stand for no live record. */
+function unknownRecords(ids: ReadonlySet<string>, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
   const live = new Set(records.map(({ id }) => id));
-  const unknown = [...new Set(ids)].filter((id) => !live.has(id));
+  const unknown = [...ids].filter((id) => !live.has(id));
   if (unknown.length === 0) return null;
-  const corrected = new Map(records.flatMap(({ id, supersedes }) => supersedes === null ? [] : [[supersedes, id] as const]));
-  const names = unknown.map((id) => corrected.has(id) ? `${id} (corrected: use ${corrected.get(id)!})` : id);
-  return { message: `These record_ids name no live record of this research: ${listed(names)}. Use the record's id as it was listed after a researcher's report or returned by ` +
-    "record_evidence. A corrected record is replaced by its correction. Where no record holds what you wrote, take it out of the report, or record it first.",
-  note: researchNote("report_unknown_records", report) };
+  return { message: `These record_ids name no live record of this research: ${listed(unknown)}. Use the record's id as it was listed after a researcher's report or returned by ` +
+    "record_evidence. Where no record holds what you wrote, take it out of the report, or record it first.", note: researchNote("report_unknown_records", report) };
 }
 
 const rowLabel = (frame: ResearchFrame, key: string) => frame.rows.find((row) => row.key === key)?.label ?? key;
@@ -156,13 +175,18 @@ function uncitedRows(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: Res
   return { message: `${noEvidence}${uncited}`.trim(), note: `${researchNote("report_pick_unbacked", report)} ${listed(named, "; ")}.` };
 }
 
-/** Links of the report that no cited record stands behind: a live record's id goes back with it, and for the rest it is a record or no link. */
+/**
+ * Links of the report that no cited record stands behind: a live record's id goes back with it, and for the rest it is a record or no link. A link to the root of a site
+ * a cited record is on passes: it claims nothing to rest on.
+ */
 function unbackedLinks(draft: ResearchDraft, ids: ReadonlySet<string>, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
   const allowed = new Set([...records.filter(({ id, kind }) => ids.has(id) || kind === "unreachable").flatMap(pagesOf),
     ...draft.unreachable.flatMap(({ target }) => pageOf(target) ?? [])]);
+  const citedSites = new Set(records.filter((record) => isClaim(record) && ids.has(record.id)).flatMap(linksOf).flatMap((link) => researchRegistrableDomain(link) ?? []));
   const links = reportLinks(draft.report).filter((link) => {
     const page = pageOf(link);
-    return page !== null && !allowed.has(page);
+    if (page === null || allowed.has(page)) return false;
+    return !isSiteRoot(link) || !citedSites.has(researchRegistrableDomain(link) ?? "");
   });
   if (links.length === 0) return null;
   const holders = new Map(records.filter(isClaim).flatMap((record) => pagesOf(record).map((page) => [page, record.id] as const)));
@@ -218,15 +242,15 @@ export type ResearchReportFindings = Readonly<{ notes: readonly string[]; troubl
 export function researchReportFindings(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[], matrix: ResearchMatrix | null): ResearchReportFindings {
   const report = draft.report;
   if (draft.origin === "plain_text" || (records.length === 0 && !matrix)) return { notes: [], troubles: [] };
-  if (draft.invalidReferences !== undefined) return { notes: [], troubles: [{ message: `${draft.invalidReferences} Nothing else of this draft was checked.`, note: researchNote("report_unknown_records", report) }] };
+  if (draft.invalidReferences !== undefined) return { notes: [], troubles: [{ message: `${draft.invalidReferences} Nothing else of this draft was checked.`, note: researchNote("report_unreadable_references", report) }] };
   if (draft.recordIds === undefined && draft.findings.length > 0) {
     return { notes: [], troubles: [{ message: "findings are no longer taken: the checks read each claim from its record. Pass record_ids, the ids listed after each researcher's report and " +
       "returned by record_evidence.", note: researchNote("report_typed_findings", report) }] };
   }
   const named = draft.recordIds ?? [];
-  const ids = new Set(named);
+  const ids = citedRecords(named, records);
   const notes = separationNotes(draft, matrix?.frame ?? null, report);
-  const unknown = unknownRecords(named, records, report);
+  const unknown = unknownRecords(ids, records, report);
   const links = unbackedLinks(draft, ids, records, report);
   const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
