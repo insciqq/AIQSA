@@ -9,7 +9,7 @@ import {
   TelegramApiError
 } from "@/components/app-shell/telegramApi";
 import type { TelegramLinkCodeResponse, TelegramUserStatus } from "@/lib/contracts/telegram";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** How often an open link step asks whether Telegram confirmed the link. */
 export const TELEGRAM_LINK_POLL_MS = 3_000;
@@ -90,7 +90,9 @@ export function TelegramConnectionSection() {
     };
   }, []);
 
-  useEffect(() => {
+  // A layout effect moves the focus in the commit that renders its target. A passive effect could still be
+  // pending when the next request arrives (an Escape right after the link appears) and spend it on a stale tree.
+  useLayoutEffect(() => {
     const focus = focusAfterRender.current;
     focusAfterRender.current = null;
     focus?.();
@@ -158,14 +160,15 @@ export function TelegramConnectionSection() {
     linkRequestRef.current = controller;
     setMessage(null);
     setConfirming(false);
+    // The button that started the request leaves with this render; the step's heading, which every state of
+    // the step keeps, takes the focus.
+    focusAfterRender.current = () => linkHeadingRef.current?.focus();
     setLinkStep({ kind: "requesting" });
     try {
       const link = await requestTelegramLinkCode(controller.signal);
       if (controller.signal.aborted || !mountedRef.current) return;
       const expiresAt = Date.parse(link.expiresAt);
       const limit = Date.now() + TELEGRAM_LINK_POLL_LIMIT_MS;
-      // Set before the state, so a render that flushes at once still moves the focus.
-      focusAfterRender.current = () => linkHeadingRef.current?.focus();
       setLinkStep({ deadline: Number.isFinite(expiresAt) ? Math.min(expiresAt, limit) : limit, kind: "open", link });
     } catch (error) {
       if (controller.signal.aborted || !mountedRef.current) return;
