@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { decodeResearchDraft, decodeResearchPlan, decodeResearchPlanProposal, RESEARCH_LIMITS, researchDraftText, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFrame,
-  type ResearchEvidenceRecord, type ResearchPlan } from "../../contracts/research";
+  RESEARCH_TASK_LIMITS, type ResearchEvidenceRecord, type ResearchPlan } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { harnessPromptSection } from "../engine/prompts/harness";
 import type { TranscriptItem } from "../engine/transcript";
@@ -141,7 +141,7 @@ describe("the method", () => {
   it("rests that rule on no single listing, since a real run's closed marketplaces left two lookalikes of one price, and asks a purchase for a ladder", () => {
     for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
       expect(text).toContain("never from one listing alone: the options independent tests and rankings name, the options with the most owners' reviews within the question's " +
-        "limits on any marketplace or large shop that can be reached, and the makers' lines in the relevant range");
+        "limits on any marketplace or large shop that can be reached, and the options recommendation and bestseller lists name.");
       expect(text).toContain("For a purchase whose prices spread, aim for at least five options across two or three price tiers.");
       expect(text).not.toContain("sorted by reviews");
     }
@@ -190,7 +190,49 @@ describe("the method", () => {
   });
 
   it("words that rule so it reads sensibly where nothing is sold", () => {
-    expect(researchMethodText(plan)).toContain("where nothing is sold, what authoritative sources list, in their order");
+    expect(researchMethodText(plan)).toContain("Where nothing is sold, the rows are what authoritative sources list, in their order.");
+  });
+
+  it("represents a maker's line by the models the sources name, since one model per line from the makers' own sites lost the market's pick on acceptance run 1", () => {
+    for (const text of [researchMethodText(plan), researcherMethodFooter(plan)]) {
+      expect(text).toContain("A maker's line is represented by the model or models those sources name, never by any model of the line.");
+      expect(text).not.toContain("makers' lines in the relevant range");
+    }
+  });
+
+  it("runs research as short tasks: an enumeration round from what the market names, then a fresh researcher per task, a round's tasks started together", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain(`Researchers work in short tasks: each has ${RESEARCH_TASK_LIMITS.toolCalls} tool calls, records not counted, and ends with a short report ` +
+      "under which the server lists its records.");
+    expect(text).toContain("every task of a round in one response, so they work in parallel");
+    expect(text).toContain("Round 1: where the user chooses among options, start one or two enumeration tasks that find them.");
+    expect(text).toContain("Each searches what the market tests, ranks, recommends and reviews most, never only makers' own sites: independent tests and rankings, " +
+      "the options with the most owners' reviews on marketplaces or large shops that can be reached, and recommendation and bestseller lists.");
+    expect(text).toContain("Rows are added from what those sources name, by the rule for rows below.");
+    expect(text).toContain("Later rounds: one task for one row, or for the empty cells of two or three rows, each under a fresh researcher name.");
+    // A continued researcher keeps its whole old context: on acceptance run 1 its input grew with its new brief.
+    expect(text).toContain("Never give a new task to a researcher name already used in this research: a continued researcher keeps its whole old context");
+    expect(text).not.toContain("one call per question");
+    // Round 1 and the questions it starts beside the enumeration come before the later rounds.
+    expect(text.indexOf("Round 1:")).toBeLessThan(text.indexOf("Start now only the questions that need no other's answer"));
+    expect(text.indexOf("Start now only the questions")).toBeLessThan(text.indexOf("Later rounds:"));
+  });
+
+  it("gives a researcher its task's budget, searches in parallel, a short report and a note for an option the matrix lacks", () => {
+    const footer = researcherMethodFooter(plan);
+    expect(footer).toContain(`Your task has ${RESEARCH_TASK_LIMITS.toolCalls} tool calls; record_evidence and change_research_frame do not count, so record freely.`);
+    expect(footer).toContain("Each result says how many are left; when none are, record what you still have and write your report.");
+    expect(footer).toContain("Make two or three independent searches in one response: the calls of one response run at once.");
+    expect(footer).toContain("End with a report of at most about 1,500 characters: the server lists your records under it");
+    expect(footer).toContain("never each record again");
+    expect(footer).toContain("A task to find the options adds each option its sources name as a row with change_research_frame.");
+    expect(footer).toContain("an option you saw that the matrix lacks is noted with change_research_frame change note_candidate, its name as written as the label and " +
+      "where you saw it as the reason, and the main agent decides on its row.");
+    // The record's form stays: a quote the checks can find.
+    expect(footer).toContain("a verbatim quote copied from the page you opened, its source class, and whether it is confirmed, claimed by a party or not verified");
+    expect(footer).not.toContain("Report every finding as");
+    // It still fits a brief with room for the matrix.
+    expect(footer.length).toBeLessThan(RUN_FOLLOWUP_MAX_CHARS / 2);
   });
 
   it("does not tell a researcher to add a row as it finds one, which is what the rule replaces", () => {

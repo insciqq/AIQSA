@@ -17,7 +17,8 @@ import { CLEARED_RESULT_HEADING, CLEARING_PRODUCT_TOOLS, pageBearingCall, planTo
 import { CODEX, charTokens, handleFor, transcriptBuilder } from "./compaction.testFixtures";
 import { buildStateBlock } from "./retained";
 
-const POLICY = RESEARCHER_CONTEXT_CLEARING;
+/** A low mark above zero, so the planner's "only as many as it takes" shows; the researchers' own policy clears to zero and has its test below. */
+const POLICY = Object.freeze({ clearAboveTokens: 60_000, clearAtLeastTokens: 10_000, clearToTokens: 25_000, keepRecentResults: 3 });
 const ANTHROPIC: TranscriptTarget = { model: "claude-fable-5", provider: "anthropic-main", reasoningScope: "current_turn" };
 const CHAT: TranscriptTarget = { model: "deepseek-v4", provider: "openrouter" };
 
@@ -100,6 +101,21 @@ describe("clearing old page results", () => {
     for (const [index, callId] of pages.entries()) {
       expect(replayed.get(callId)).toBe(index < stubs.length ? stubs[index]!.output : page(index + 1, 5_000));
     }
+  });
+
+  it("clears every old page in one step with the researchers' zero target, keeps the newest 3 whole, and then waits for the trigger again", () => {
+    const policy = RESEARCHER_CONTEXT_CLEARING;
+    expect(policy).toMatchObject({ clearAboveTokens: 100_000, clearToTokens: 0, keepRecentResults: 3 });
+    expect(plan(researcher(15, 5_000).chat.items, CODEX, policy)).toBeNull();
+    const { chat, pages } = researcher(25, 5_000);
+    expect(tokensOf(chat.items)).toBeGreaterThan(policy.clearAboveTokens);
+    const cleared = plan(chat.items, CODEX, policy)!;
+    expect(cleared.items.map((stub) => stub.callId)).toEqual(pages.slice(0, -policy.keepRecentResults));
+    const replayed = outputs([...chat.items, ...cleared.items]);
+    pages.slice(-policy.keepRecentResults).forEach((callId, index) => expect(replayed.get(callId)).toBe(page(23 + index, 5_000)));
+    // Nothing is left to clear until the context passes the trigger again, so the cache misses once per clearing.
+    expect(tokensOf([...chat.items, ...cleared.items])).toBeLessThan(policy.clearAboveTokens / 4);
+    expect(plan([...chat.items, ...cleared.items], CODEX, policy)).toBeNull();
   });
 
   it("keeps the newest pages whole even when that leaves the context above the low mark", () => {

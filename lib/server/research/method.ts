@@ -1,5 +1,6 @@
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
-import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RESEARCH_ROUND_LIMITS, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchEvidenceRecord, type ResearchPlan, type ResearchQuestion } from "../../contracts/research";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_ROUND_LIMITS, RESEARCH_TASK_LIMITS, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchEvidenceRecord,
+  type ResearchPlan, type ResearchQuestion } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { PlanUpdate } from "../tools/updatePlan";
 import { RESEARCH_REVIEWS_REFERENCE } from "./dataCollection";
@@ -21,12 +22,48 @@ const ROWS_ARE_OPTIONS = "A row is an option the user could choose; a test, a so
 /**
  * Five real runs of one question gave five different shortlists, each what a search showed first: a rule is what a second run can repeat. A rule on one listing
  * failed when that listing was closed: a real run fell back to makers' catalogs and kept two lookalikes of one price, so no source alone makes the rows, and a
- * purchase asks for a ladder of prices. No site is named (operator decision 2026-11-02): offers may come from any shop.
+ * purchase asks for a ladder of prices. No site is named (operator decision 2026-11-02): offers may come from any shop. "The makers' lines" read as one model per
+ * line from each maker's own site: on acceptance run 1 (2026-11-02) that closed a line with a model while the market named another, the one a reference answer
+ * picked first, so a line is represented by what those sources name.
  */
 const ROWS_BY_RULE = "Rows come from a rule you can state, never from what a search showed first and never from one listing alone: the options independent tests and rankings name, " +
-  "the options with the most owners' reviews within the question's limits on any marketplace or large shop that can be reached, and the makers' lines in the relevant range; " +
-  "where nothing is sold, what authoritative sources list, in their order. For a purchase whose prices spread, aim for at least five options across two or three price tiers. " +
+  "the options with the most owners' reviews within the question's limits on any marketplace or large shop that can be reached, and the options recommendation and bestseller " +
+  "lists name. A maker's line is represented by the model or models those sources name, never by any model of the line. Where nothing is sold, the rows are what authoritative " +
+  "sources list, in their order. For a purchase whose prices spread, aim for at least five options across two or three price tiers. " +
   "The report states that rule in one line, so a reader sees why these rows.";
+
+/**
+ * How the main agent splits research into short tasks, in these three paragraphs (operator-approved plan, 2026-11-03). On acceptance run 1 (2026-11-02)
+ * two 25-minute researcher turns ended on time, not on work done, a continued researcher kept its whole old context into its new brief, and one researcher
+ * chose every row in its first minutes from searches on each maker's own site: no search asked what the market tests, ranks, recommends or reviews most.
+ */
+const SHORT_TASKS = `Researchers work in short tasks: each has ${RESEARCH_TASK_LIMITS.toolCalls} tool calls, records not counted, and ends with a short report ` +
+  `under which the server lists its records. Start the researchers now with ${CALL_SUBAGENT_TOOL_NAME}, without background, and every task of a round in one ` +
+  "response, so they work in parallel and you get their reports together. Name in each brief its task and the matrix cells it is to fill. The server adds the " +
+  "method, the source classes and the matrix to each brief; do not repeat them.";
+
+const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start one or two enumeration tasks that find them. Each searches what the market tests, " +
+  "ranks, recommends and reviews most, never only makers' own sites: independent tests and rankings, the options with the most owners' reviews on marketplaces or " +
+  "large shops that can be reached, and recommendation and bestseller lists. Rows are added from what those sources name, by the rule for rows below.";
+
+const LATER_ROUNDS = "Later rounds: one task for one row, or for the empty cells of two or three rows, each under a fresh researcher name. Never give a new task " +
+  "to a researcher name already used in this research: a continued researcher keeps its whole old context, so it is no short task.";
+
+/**
+ * A researcher's own task, in these three sentences (operator-approved plan, 2026-11-03): the budget its results count down, searches that run at once, a short
+ * report, since the server lists its records under it, and who adds rows. On acceptance run 1 (2026-11-02) model responses took 87 of 120 researcher-minutes,
+ * and the one researcher that saw the option a reference answer picked first had no task to add rows and never named it.
+ */
+const RESEARCHER_TASK = `Your task has ${RESEARCH_TASK_LIMITS.toolCalls} tool calls; ${RECORD_EVIDENCE_TOOL_NAME} and ${CHANGE_RESEARCH_FRAME_TOOL_NAME} do not ` +
+  "count, so record freely. Each result says how many are left; when none are, record what you still have and write your report. Make two or three independent " +
+  "searches in one response: the calls of one response run at once.";
+
+const RESEARCHER_REPORT = "End with a report of at most about 1,500 characters: the server lists your records under it, so say what you covered, which cells stayed " +
+  "empty and why, and the options you noted, never each record again.";
+
+const RESEARCHER_ROWS = `A task to find the options adds each option its sources name as a row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. In any other task, an option ` +
+  `you saw that the matrix lacks is noted with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate, its name as written as the label and where you saw it ` +
+  "as the reason, and the main agent decides on its row.";
 
 /** What a purchase is bought by: a real run named two options and no offer, so its reader could not act on it. Any shop counts. */
 const OFFERS = "An offer is an action_channel finding from the shop's page you opened, with its link, the seller and the price in the claim and the quote; the record's date is the day it " +
@@ -67,9 +104,9 @@ const INDEPENDENT_QUESTIONS = "Start now only the questions that need no other's
 export function researchMethodText(plan: ResearchPlan): string {
   return [
     "The plan stands. The user sees your questions as the plan; keep it current with update_plan.",
-    `Start the researchers now with ${CALL_SUBAGENT_TOOL_NAME}: in one response, one call per question, without background, so they work in ` +
-      "parallel and you get their reports together. Name in each brief which question it covers and the matrix cells it is to fill. The server " +
-      `adds the method, the source classes and the matrix to each brief; do not repeat them. ${INDEPENDENT_QUESTIONS}`,
+    SHORT_TASKS,
+    `${ENUMERATION_ROUND} ${INDEPENDENT_QUESTIONS}`,
+    LATER_ROUNDS,
     "Do not write the report as a message: nothing you write while research runs reaches the user, and search snippets are not evidence.",
     "After each researcher's report you read what is still empty in the matrix. Send more researchers only for empty cells and for the confirmations the matrix line names, " +
       `never for one more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
@@ -102,7 +139,7 @@ export function researchMethodText(plan: ResearchPlan): string {
 export function researcherMethodFooter(plan: ResearchPlan): string {
   return [
     "# Research method (from the server)",
-    "You are one researcher of this research. Work on the question your brief names. The plan, with each question's source classes:",
+    "You are one researcher of this research, on one short task. Work on what your brief names. The plan, with each question's source classes:",
     ...plan.questions.map(classLine),
     "",
     "Source classes: primary_official (the maker, the regulator, official documents), independent_tests (labs, independent reviews, " +
@@ -114,15 +151,16 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "Treat affiliate rating sites as weak evidence. Two pages of one site and " +
       "copies of one press release are one source, not independent corroboration. For a claim that depends on time, use the page's " +
       "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date.",
-    "Record each finding with record_evidence as soon as you have it, while you still have the page, and correct it if its result says the quote is not there.",
+    RESEARCHER_TASK,
+    `Record each finding with ${RECORD_EVIDENCE_TOOL_NAME} as soon as you have it, while you still have the page: the claim, its link, a verbatim quote copied from the ` +
+      "page you opened, its source class, and whether it is confirmed, claimed by a party or not verified. Correct it if its result says the quote is not there.",
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
-      `An option the matrix lacks: add its row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}. ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} A criterion only when the question needs it, with your reason.`,
+      `${RESEARCHER_ROWS} ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} A criterion only when the question needs it, with your reason.`,
     KEY_SPECIFICATION_RECORDS,
     OFFERS,
     `The goal: ${cut(plain(plan.goal), GOAL_CHARACTERS)} ${READER_WORDS}`,
     RESEARCH_REVIEWS_REFERENCE,
-    "Report every finding as: claim; link; a verbatim quote copied from the page you opened; source class; and whether it is confirmed, " +
-      "claimed by a party or not verified.",
+    RESEARCHER_REPORT,
     "List what you could not reach and why. A page fetch_url is refused: open it once in the Workspace browser if you have one, since the browser opens " +
       "pages fetch_url cannot. A CAPTCHA, a block page or a sign-in ends work on that site: record it as unreachable with its reason and go on; " +
       "never wait for a person. Never read a page through third-party readers, mirrors or proxies other than the run's own: that works around a block and no check can read it."

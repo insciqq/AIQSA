@@ -178,6 +178,8 @@ export type PrepareRunSubagentsInput = Readonly<{
   snapshot: ProviderExecutionSnapshot;
   toolState: ToolBatchState;
   toolTimeLeft(): boolean;
+  /** The calls one turn of its sub-agents may make (`SubagentHost.turnToolCalls`): a research run's researchers; absent, none is counted per turn. */
+  turnToolCalls?: number;
   /** A thread's view of the run's agent fences (`createAgentUnknownEffects`): its own, and every other agent's to find. */
   unknownEffects(threadId: string): UnknownEffects;
   usage: Pick<UsageLedger, "add" | "settle">;
@@ -287,6 +289,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     toolCalls: input.engine.toolCalls,
     toolState: input.toolState,
     toolTimeLeft: input.toolTimeLeft,
+    ...(input.turnToolCalls !== undefined ? { turnToolCalls: input.turnToolCalls } : {}),
     unknownEffects: input.unknownEffects,
     transcripts: input.engine.transcripts,
     usage: (attribution) => input.usage.add(attribution),

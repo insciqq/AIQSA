@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME } from "../../../contracts/research";
 import {
   CALL_SUBAGENT_TOOL_NAME,
   MAIN_AGENT_NAME,
@@ -212,6 +213,12 @@ export type SubagentHost = Readonly<{
   /** What the run has spent on tools: sub-agents count toward the answer's call budget. */
   toolState: ToolBatchState;
   toolTimeLeft(): boolean;
+  /**
+   * The calls one turn may make, its records and frame changes apart (`TURN_BUDGET_EXEMPT`): each turn of a thread counts its own, and
+   * past them a call is refused as a budget refusal, so the turn's next round writes its report without tools. A research run's
+   * researchers only (`RESEARCH_TASK_LIMITS`); absent, a turn has only the run's budgets.
+   */
+  turnToolCalls?: number;
   transcripts: Pick<TranscriptRepository, "append" | "loadRuns" | "nextSequence" | "runLive">;
   /**
    * A thread's view of the run's agent fences (`createAgentUnknownEffects`), seeded with the effects the branch's
@@ -270,6 +277,11 @@ const SETTLE_ATTEMPTS = 3;
 const MAIL_CHECK_MS = 1_000;
 /** Looks at a child gone from the record with no report coming (a restart, a delivery that failed) before a turn goes on without it. */
 const CHILD_REPORT_LOOKS = 2;
+/**
+ * What a turn's own budget never counts (`SubagentHost.turnToolCalls`): a researcher's records and frame changes, so recording is never
+ * what a spent budget discourages (operator-approved plan, 2026-11-03).
+ */
+const TURN_BUDGET_EXEMPT: ReadonlySet<string> = new Set([CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME]);
 
 const boundLine = (value: string, max: number) => {
   const line = value.replace(/\s+/gu, " ").trim();
@@ -861,6 +873,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         store: host.toolCalls,
         thread,
         toolTimeLeft: host.callTimeLeft,
+        // Made with the turn, so each turn of a thread starts its own count.
+        ...(host.turnToolCalls !== undefined ? { turnBudget: { exempt: TURN_BUDGET_EXEMPT, limit: host.turnToolCalls, spent: { calls: 0 } } } : {}),
         unknownEffects,
         userId: host.userId
       };
