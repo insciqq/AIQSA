@@ -218,7 +218,7 @@ describe("the frame", () => {
   });
 
   it("takes a change with its reason, every field given and null where its kind has no use for it", () => {
-    const change = { cases: null, change: "add_row", key: "x2", label: "X2", reason: "A review names it.", why: null };
+    const change = { cases: null, change: "add_row", key: "x2", label: "X2", reason: "A review names it.", url: null, why: null };
     expect(value(decodeResearchFrameChange(change))).toEqual({ change: "add_row", reason: change.reason, row: { key: "x2", label: "X2" } });
     expect(value(decodeResearchFrameChange({ ...change, change: "add_criterion", key: "edge", label: "Edge support", why: "Sleepers roll off a soft edge." })))
       .toEqual({ change: "add_criterion", criterion: { criterion: "Edge support", key: "edge", why: "Sleepers roll off a soft edge." }, reason: change.reason });
@@ -235,11 +235,24 @@ describe("the frame", () => {
   });
 
   it("takes a candidate noted by its name as written and one set aside by its key, each with its reason", () => {
-    const note = { cases: null, change: "note_candidate", key: null, label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it at 59 521 ₽.", why: null };
+    const note = { cases: null, change: "note_candidate", key: null, label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it at 59 521 ₽.",
+      url: null, why: null };
     expect(value(decodeResearchFrameChange(note))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason });
     // The server makes a candidate's key, so one a model passes is not read.
     expect(value(decodeResearchFrameChange({ ...note, key: "anything" }))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason });
     expect(refusal(decodeResearchFrameChange({ ...note, label: null }))).toContain("label must name the option");
+    // The page that names it, bounded like every research link; null is a note with no page.
+    const url = "https://www.ozon.ru/category/matrasy-15018/?sorting=rating";
+    expect(value(decodeResearchFrameChange({ ...note, url }))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason, url });
+    for (const wrong of ["www.ozon.ru/category", "javascript:alert(1)", `https://example.test/${"a".repeat(RESEARCH_LIMITS.urlCharacters)}`, 7, "https://a.test/\u0000"]) {
+      expect(refusal(decodeResearchFrameChange({ ...note, url: wrong }))).toContain("url must be the http or https link of the page that names the option");
+    }
+    const { url: _url, ...omitted } = note;
+    void _url;
+    expect(refusal(decodeResearchFrameChange(omitted))).toBe("url must be given: pass null when it does not apply.");
+    // Unread for any other change.
+    expect(value(decodeResearchFrameChange({ ...note, change: "add_row", key: "x2", url: "not a link" }))).toEqual({ change: "add_row", reason: note.reason,
+      row: { key: "x2", label: note.label } });
     const aside = { ...note, change: "set_aside", key: "dreamline-sleep-dream-medium-s1000", label: null, reason: "Sold out in every shop." };
     expect(value(decodeResearchFrameChange(aside))).toEqual({ change: "set_aside", key: aside.key, reason: aside.reason });
     expect(refusal(decodeResearchFrameChange({ ...aside, key: null }))).toContain("key must name the noted candidate");
@@ -261,10 +274,25 @@ describe("a frame's candidates", () => {
     expect(decoded).not.toHaveProperty("setAside");
   });
 
-  it("reads back what was noted and set aside, who noted each and why", () => {
-    const grown = { ...frame, candidates: [candidate, { key: "askona-balance", label: "Askona Balance", notes: [note(null)] }], setAside: [aside] };
+  it("reads back what was noted and set aside, who noted each, where and why", () => {
+    const paged = { ...note("tests"), url: "https://expertology.ru/rating/matrasy/" };
+    const grown = { ...frame, candidates: [{ ...candidate, notes: [...candidate.notes, paged] }, { key: "askona-balance", label: "Askona Balance", notes: [note(null)] }],
+      setAside: [aside] };
     expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(grown))))).toEqual(grown);
     expect(value(decodeResearchFrame({ ...frame, candidates: [], setAside: [] }))).toMatchObject({ candidates: [], setAside: [] });
+    // A note stored before its page was kept reads as one with none, and so does a null.
+    const [decoded] = value(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [{ ...note("brands"), url: null }] }] })).candidates!;
+    expect(decoded!.notes[0]).toEqual(note("brands"));
+    expect(decoded!.notes[0]).not.toHaveProperty("url");
+  });
+
+  it("holds a pool: as many candidates and notes as its bounds, and refuses a note's link no writer here could have made", () => {
+    const limits = RESEARCH_FRAME_LIMITS;
+    const notes = Array.from({ length: limits.candidateNotes }, (_entry, index) => ({ ...note(`agent-${index}`), url: `https://site-${index}.example/list` }));
+    const pool = { ...frame, candidates: Array.from({ length: limits.candidates }, (_entry, index) => ({ ...candidate, key: `c${index}`, notes: index === 0 ? notes : [note("a")] })) };
+    expect(value(decodeResearchFrame(pool)).candidates).toHaveLength(limits.candidates);
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [...notes, note("one more")] }] }))).toContain("candidates[0].notes must list 1 to");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [{ ...note("lab"), url: "ozon.ru" }] }] }))).toContain("candidates[0].notes[0].url");
   });
 
   it("refuses a candidate no writer here could have made, naming the field", () => {

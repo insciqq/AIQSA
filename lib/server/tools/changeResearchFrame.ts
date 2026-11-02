@@ -8,7 +8,7 @@ import {
   type ResearchFrameChangeRequest
 } from "../../contracts/research";
 import type { EngineTool } from "../engine/toolRegistry";
-import { researchNotedCandidate } from "../research/candidates";
+import { researchCandidateSpread, researchNotedCandidate, researchPooledCandidate } from "../research/candidates";
 import type { ResearchCoveragePort } from "../research/ports";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { harnessToolError } from "./harnessTool";
@@ -31,8 +31,10 @@ export const changeResearchFrameTool: RunTool = {
     "can be filled; a test, a source or a method is evidence, recorded under the row it is about. add_criterion: something " +
     "that turned out to matter, which is a rarer thing: the report names every added criterion with your reason. add_branch: something unknown about the user that changes " +
     "the result, with its cases. note_candidate: an option you saw that the matrix lacks and you do not add as a row, such as a model a shop's listing or a ranking names, " +
-    "under label its exact name as the page writes it, the model and not only its brand or line, with reason saying where you saw it and why it may be an option; key is null, " +
-    "since the server makes it. The main agent then makes it a row or sets it aside. set_aside: the main agent only, for a noted candidate that is no option: key is the " +
+    "under label its exact name as the page writes it, the model and not only its brand or line, with url the link of the page that names it and reason saying where you " +
+    "saw it and why it may be an option; key is null, since the server makes it. Note an option once per site that names it: the server counts the sites and agents that " +
+    "named each, a note with no url counts no site, and the main agent adds rows from the options named on the most sites or sets them aside. set_aside: the main agent " +
+    "only, for a noted candidate that is no option: key is the " +
     "candidate's key as the server listed it, with your reason; name it in the report among the options you do not recommend. Nothing in the matrix is ever changed or removed, " +
     "and a record already written under a new key counts as soon as the key is added. Every field is required: pass null where a change has no use for it. Refused until the " +
     "plan stands, for a key the matrix already has, and once it holds as much as it may.",
@@ -51,9 +53,11 @@ export const changeResearchFrameTool: RunTool = {
         "option's exact name as the page writes it; null for set_aside."),
       reason: { description: "Why the matrix changes; for note_candidate where you saw the option and why it may be one, and for set_aside why it is no option. In plain words, " +
         "in the language of the research goal; name no tool, since the report may carry it as written.", type: "string" },
+      url: nullableText("note_candidate only: the http or https link of the page you opened that names the option. Null for the other changes, and for an option " +
+        "no page you opened names."),
       why: nullableText("add_criterion only: why this criterion matters to the user, in plain words, in the language of the research goal.")
     },
-    required: ["change", "key", "label", "reason", "why", "cases"],
+    required: ["change", "key", "label", "reason", "why", "cases", "url"],
     type: "object"
   },
   name: CHANGE_RESEARCH_FRAME_TOOL_NAME,
@@ -75,11 +79,12 @@ function changedMessage(request: ResearchFrameChangeRequest, frame: ResearchFram
     case "add_criterion": return `Criterion added: use criterion_key ${request.criterion.key}. The report will name it with your reason.`;
     case "add_branch": return "Branch added: the report will split by its cases.";
     case "note_candidate": {
-      const candidate = researchNotedCandidate(frame, request.label);
-      const agents = candidate?.notes.length ?? 1;
-      const noted = `Candidate noted under key ${candidate?.key ?? request.label}${agents > 1 ? `, by ${agents} agents now` : ""}`;
-      return by.threadId === null ? `${noted}. Make it a row with add_row, or set it aside with set_aside and your reason.`
-        : `${noted}. The main agent decides whether it becomes a row; go on with your question.`;
+      const noted = researchNotedCandidate(frame, request.label);
+      const candidate = noted && researchPooledCandidate(noted);
+      const spread = candidate && candidate.notes.length > 1 ? `, ${researchCandidateSpread(candidate)} now` : "";
+      const said = `Candidate noted under key ${candidate?.key ?? request.label}${spread}.${request.url === undefined ? " With no url it counts for no site." : ""}`;
+      return by.threadId === null ? `${said} Make it a row with add_row, or set it aside with set_aside and your reason.`
+        : `${said} The main agent decides whether it becomes a row; go on with your question.`;
     }
     case "set_aside": return `Set aside: ${frame.setAside?.at(-1)?.key ?? request.key}. Name it in the report among the options you do not recommend, with your reason.`;
   }

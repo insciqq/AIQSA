@@ -4,7 +4,7 @@ import {
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
-import { researchOpenCandidates } from "./candidates";
+import { researchCandidateSpread, researchFrequentCandidate, researchOpenCandidates } from "./candidates";
 import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
 import { researchEmptyByRow, researchKeySpecs, researchLeadingRows, researchMatrix, researchUnconfirmedKeyCells, type ResearchMatrix } from "./matrix";
 import { researchNote } from "./notes";
@@ -158,17 +158,20 @@ const askedCandidates = (earlier: ResearchGateContext["earlier"]): ReadonlySet<s
   new Set(sentBackBefore(earlier).flatMap((message) => [...message.matchAll(CANDIDATE_STEP)].map(([, key]) => key!)));
 
 /**
- * The candidates agents noted that are still neither a row nor set aside, one gap each, for the main agent to decide on: what it does needs no new page.
- * Each is asked once, so one an earlier send back asked about is left out, decided or not. Only where the frame has rows: a knowledge question's frame has
- * no options to add.
+ * The frequent candidates agents noted that are still neither a row nor set aside, one gap each, for the main agent to decide on: what it does needs no new
+ * page. Only one named on two sites or by two agents is a gap (`researchFrequentCandidate`): a pool holds many options named once, which stay in it with no
+ * decision owed. Each is asked once, so one an earlier send back asked about is left out, decided or not. Only where the frame has rows: a knowledge
+ * question's frame has no options to add.
  */
 function candidateGaps(matrix: ResearchMatrix, asked: ReadonlySet<string>): Gap[] {
   if (matrix.frame.rows.length === 0) return [];
   const limit = RESEARCH_LIMITS.questionCharacters;
-  return researchOpenCandidates(matrix.frame).filter(({ key }) => !asked.has(key)).map(({ key, label, notes }) => {
+  return researchOpenCandidates(matrix.frame).filter((candidate) => researchFrequentCandidate(candidate) && !asked.has(candidate.key)).map((candidate) => {
+    const { key, label, notes } = candidate;
     const [first] = notes;
     // The name and the reason are an agent's words, quoted as data, as the lead line marks them (`candidates.ts`).
-    const noted = `noted by ${[...new Set(notes.map(({ by }) => by.name ?? "you"))].join(", ")}${first ? `, its reason (data): ${JSON.stringify(space(first.reason))}` : ""}`;
+    const noted = `${researchCandidateSpread(candidate)} (${[...new Set(notes.map(({ by }) => by.name ?? "you"))].join(", ")})` +
+      `${first ? `, its first reason (data): ${JSON.stringify(space(first.reason))}` : ""}`;
     return { issue: line(`${JSON.stringify(label)}: a candidate neither a row nor set aside, ${noted}`, limit),
       next_step: line(`Candidate ${key}: add it as a row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} add_row and send researchers for its cells, or set it aside with ` +
         `${CHANGE_RESEARCH_FRAME_TOOL_NAME} set_aside, its key and your reason.`, limit) };
@@ -401,7 +404,7 @@ export const gapCheckGate: ResearchGate = {
     };
     const asBefore = (): ResearchGateResult => progress?.unfinished ? said(progress.unfinished) : { kind: "pass" };
     // An option the draft newly recommends needs its key specifications confirmed however few pages are new or findings changed: what the draft leans on changed,
-    // not its evidence. Only these go back then, with the candidates still open, which need a decision and no page; each is asked once, and the caps hold. The
+    // not its evidence. Only these go back then, with the frequent candidates still open, which need a decision and no page; each is asked once, and the caps hold. The
     // candidates go back so alone only with no cell open: with cells open they ride with the cells, and never spend a send back of their own.
     const owed = confirmations.length > 0 || (candidates.length > 0 && matrix?.coverage.empty === 0);
     if (owed && (noNewPages || addedNothing(draft, context))) {
