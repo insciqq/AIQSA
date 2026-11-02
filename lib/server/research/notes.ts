@@ -3,11 +3,13 @@
  * writes these, in the language of the report, and they are never left to the
  * model: "the answer still arrives, with a visible note" (`agent_docs/RUN_CONTRACTS.md`, Answer first).
  */
-export type ResearchNoteKey = "composed_failed" | "composed_no_report" | "composed_timed_out" | "followup_not_applied" | "gap_judge_unfinished" | "gate_failed" | "incomplete" | "no_findings" |
+export type ResearchNoteKey = "before_plan" | "composed_failed" | "composed_no_report" | "composed_timed_out" | "followup_not_applied" | "gap_judge_unfinished" | "gate_failed" | "incomplete" | "no_findings" |
   "not_submitted" | "report_added_criteria" | "report_branches_open" | "report_criteria_missing" | "report_links_unrecorded" | "report_no_table" | "report_not_separated" | "report_pick_outside" |
   "report_pick_unbacked" | "report_typed_findings" | "report_unknown_records" | "report_unlinked_sources" | "report_unreadable_references" | "report_would_decide" | "run_failed" | "stopped" | "time_out" | "unresolved";
 
 const NOTES: Readonly<Record<ResearchNoteKey, Readonly<{ en: string; ru: string }>>> = {
+  before_plan: { en: "Research ended before its plan stood, so this is only what was written by then, and it is not checked.",
+    ru: "Исследование завершилось раньше, чем был готов его план, поэтому здесь только написанное к тому моменту, и это не проверено." },
   composed_failed: { en: "The answer failed before a report was written, so the server built this from what research recorded. It draws no conclusion and picks nothing, and no check read it.",
     ru: "Ответ прервался сбоем раньше, чем был написан отчёт, поэтому сервер собрал этот текст из записей исследования. Здесь нет вывода и выбора, и проверки его не читали." },
   composed_no_report: { en: "No report was handed in, so the server built this from what research recorded. It draws no conclusion and picks nothing, and no check read it.",

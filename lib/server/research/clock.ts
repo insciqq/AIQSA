@@ -71,6 +71,7 @@ export function createResearchClock(run: ResearchRunScope): ResearchTimePort {
       return since !== null && since >= RESEARCH_TIME_MS.stopStartingResearchers ? RESEARCHERS_CLOSED : null;
     },
 
+    /** Its timer and listener last as long as `signal`, so a caller ends that with its call. */
     researcherSignal(signal) {
       const own = new AbortController();
       const timer = setTimeout(() => own.abort(new SubagentTimeEnded()), RESEARCH_TIME_MS.researcherTurn);

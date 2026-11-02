@@ -3,6 +3,7 @@ import { decodeResearchDraft, decodeResearchPlan, decodeResearchPlanProposal, RE
   type ResearchPlan } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { harnessPromptSection } from "../engine/prompts/harness";
+import type { TranscriptItem } from "../engine/transcript";
 import { proposeResearchPlanTool, researchScopingInstructions, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import { runResearchGates, type ResearchGateContext } from "./gates";
 import { researchMatrixCoverage } from "./matrix";
@@ -130,8 +131,9 @@ describe("the method", () => {
   it("ends every brief with the source classes, the finding's form, and one handoff before leaving an unreachable site", () => {
     const footer = researcherMethodFooter(plan);
     expect(footer).toContain("verbatim quote");
-    expect(footer).toContain("CAPTCHA or asks to sign in, call browser_handoff once");
-    expect(footer).toContain("if nobody comes, record it as unreachable with its reason and go on");
+    expect(footer).toContain("CAPTCHA or asks to sign in and you have browser_handoff, call it once");
+    // A Workspace-disabled installation has no such tool, and a custom researcher's groups can narrow it away.
+    expect(footer).toContain("if you have no such tool or nobody comes, record it as unreachable with its reason and go on");
     expect(footer).not.toContain("never skip");
     expect(researcherBrief("Cover it.", plan)).toBe(`Cover it.\n\n${footer}`);
     expect(researcherBrief("x".repeat(RUN_FOLLOWUP_MAX_CHARS), plan)).toBeNull();
@@ -340,6 +342,33 @@ describe("what was opened", () => {
     ], run: { branchRunIds: [], researchRunId: "run", runId: "run" }, savedResults: { read: async () => { throw new Error("down"); } },
     threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [] }, userId: "u" });
     expect(await sources.opened(new AbortController().signal)).toEqual([{ partial: true, text: "excerpt", toolName: "fetch_url", url: "https://a.example" }]);
+  });
+
+  describe("by whose reading", () => {
+    const signal = new AbortController().signal;
+    const fetched = (url: string): TranscriptItem[] => [{ arguments: JSON.stringify({ url }), callId: url, id: `${url}-call`, kind: "tool_call", name: "fetch_url" },
+      { callId: url, id: `${url}-result`, kind: "tool_result", name: "fetch_url", outcome: "complete", output: "Page text." }];
+    const sourcesOf = (threads: readonly Readonly<{ items: TranscriptItem[]; name?: string; threadId: string }>[]) => createResearchSources({ chatId: "c",
+      items: () => fetched("https://main.example"), run: { branchRunIds: [], researchRunId: "run", runId: "run" }, savedResults: { read: async () => null },
+      threads: { backgroundRunIds: async () => [], threadEffectItems: async () => [...threads] }, userId: "u" });
+    const urls = (sources: readonly Readonly<{ url: string | null }>[]) => sources.map(({ url }) => url);
+    const GATES = [researchTurnName("gap-judge", 1), researchTurnName("verifier", 1), researchTurnName("verifier-2", 3), researchTurnName("verifier-10", 12), researchTurnName("skeptic", 2)];
+
+    it("gives every agent's by default, which a skeptic's own quote check needs", async () => {
+      const sources = sourcesOf([{ items: fetched("https://lab.example"), name: "lab", threadId: "t1" }, { items: fetched("https://refuted.example"), name: "skeptic-1", threadId: "t2" }]);
+      expect(urls(await sources.opened(signal))).toEqual(["https://main.example", "https://lab.example", "https://refuted.example"]);
+    });
+
+    it.each(GATES)("leaves out what the gate turn %s read, for what counts researchers' reading", async (name) => {
+      const sources = sourcesOf([{ items: fetched("https://lab.example"), name: "lab", threadId: "t1" }, { items: fetched("https://gate.example"), name, threadId: "t2" }]);
+      expect(urls(await sources.opened(signal, "researchers"))).toEqual(["https://main.example", "https://lab.example"]);
+    });
+
+    it("keeps a researcher whose name merely starts like a gate's, and one a test's store gives no name", async () => {
+      const sources = sourcesOf([{ items: fetched("https://a.example"), name: "verifier-of-prices", threadId: "t1" }, { items: fetched("https://b.example"), name: "skeptics", threadId: "t2" },
+        { items: fetched("https://c.example"), threadId: "t3" }]);
+      expect(urls(await sources.opened(signal, "researchers"))).toEqual(["https://main.example", "https://a.example", "https://b.example", "https://c.example"]);
+    });
   });
 
   it("reads background researchers' runs too", async () => {
