@@ -138,6 +138,35 @@ function citedRecords(named: readonly string[], records: readonly ResearchEviden
   return new Set(named.map((id) => corrections.get(id) ?? id));
 }
 
+/** Exact fetch_url identities only: a query, scheme or subdomain may select different evidence. One record can name the same URL more than once. */
+function recordsByUrl(records: readonly ResearchEvidenceRecord[]): ReadonlyMap<string, ReadonlySet<string>> {
+  const holders = new Map<string, Set<string>>();
+  for (const record of records.filter(isClaim)) {
+    for (const link of linksOf(record)) {
+      const url = normalizeFetchUrl(link);
+      if (url === null) continue;
+      const ids = holders.get(url) ?? new Set<string>();
+      ids.add(record.id);
+      holders.set(url, ids);
+    }
+  }
+  return holders;
+}
+
+/** Assemble citations before any gate reads the draft, so the verifier sees the newly cited claims too. Ambiguous URLs still need the model's choice. */
+export function researchDraftWithLinkedRecords(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[]): ResearchDraft {
+  if (draft.origin === "plain_text" || draft.recordIds === undefined || draft.invalidReferences !== undefined) return draft;
+  const holders = recordsByUrl(records);
+  const cited = citedRecords(draft.recordIds, records);
+  const added = new Set<string>();
+  for (const link of reportLinks(researchDraftText(draft))) {
+    const matches = holders.get(normalizeFetchUrl(link) ?? "");
+    if (matches?.size !== 1) continue;
+    for (const id of matches) if (!cited.has(id)) added.add(id);
+  }
+  return added.size === 0 ? draft : { ...draft, recordIds: [...draft.recordIds, ...added] };
+}
+
 /** The ids that stand for no live record. */
 function unknownRecords(ids: ReadonlySet<string>, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
   const live = new Set(records.map(({ id }) => id));
@@ -302,13 +331,13 @@ function unbackedLinks(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
     return !isSiteRoot(link) || !citedSites.has(researchRegistrableDomain(link) ?? "");
   });
   if (links.length === 0) return null;
-  const holders = new Map(records.filter(isClaim).flatMap((record) => pagesOf(record).map((page) => [page, record.id] as const)));
+  const holders = recordsByUrl(records);
   const uncited = links.flatMap((link) => {
-    const id = holders.get(pageOf(link)!);
-    return id === undefined ? [] : [`${link} (record ${id})`];
+    const ids = holders.get(normalizeFetchUrl(link)!);
+    return ids === undefined ? [] : [`${link} (records ${listed([...ids])})`];
   });
-  const unrecorded = links.filter((link) => !holders.has(pageOf(link)!));
-  const parts = [...uncited.length > 0 ? [`These links of the report are records you did not cite: add their ids to record_ids. ${listed(uncited)}.`] : [],
+  const unrecorded = links.filter((link) => !holders.has(normalizeFetchUrl(link)!));
+  const parts = [...uncited.length > 0 ? [`These links of the report are records you did not cite: add the matching ids your claims rest on to record_ids. ${listed(uncited)}.`] : [],
     ...unrecorded.length > 0 ? [`These links of the report are no record of this research: record what they show with record_evidence, then cite it, or take them out. ${listed(unrecorded)}.`] : []];
   return { message: parts.join(" ") };
 }
