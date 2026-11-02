@@ -396,12 +396,73 @@ describe("a finding that stands for a record", () => {
     expect(notesOf(result)).toContain("the model had the opened text for 1 and only the page for 0");
   });
 
-  it("never stays could not check while its page is stored: a model that says so has not settled it, and that is at best partly", async () => {
-    const { context } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", CARD_TEXT)]), opened: refused,
-      turn: async () => ended("Outcome: done\nC1 | could_not_check | fetching the cited link was refused") });
-    const result = await verifierGate.run(draftOf([recorded("r1")]), context);
-    expect(notesOf(result)).toContain("Claims: 1; supported: 0; partly supported: 1.");
-    expect(notesOf(result)).not.toContain("could not be checked");
+  describe("a model that says could not check of a stored claim", () => {
+    const LONG = `${"Other goods. ".repeat(4_000)}The X1 is in stock at 399 today.${" More goods.".repeat(4_000)}`;
+    const lazy = "fetching the cited link was refused";
+
+    it("has the claim read as unsupported when all of the page was before it: the page is there and the claim is not on it", async () => {
+      const { context, run } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", CARD_TEXT)]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | could_not_check | ${lazy}`) });
+      const result = sentBack(await verifierGate.run(draftOf([recorded("r1")]), context));
+      expect(lineIn(run.mock.calls[0]![0].brief, 1).shown).toBe("whole page");
+      expect(result.notes!.join()).toContain("Claims: 1; supported: 0; unsupported: 1.");
+      expect(result.notes!.join()).not.toContain("could not be checked");
+      expect(result.unresolvedNote).toContain("«The X1 is in stock at 399.»");
+    });
+
+    it("has it read as partly when only parts were before it: what they leave out says nothing", async () => {
+      const { context, run } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", LONG)]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | could_not_check | ${lazy}`) });
+      const result = await verifierGate.run(draftOf([recorded("r1")]), context);
+      expect(lineIn(run.mock.calls[0]![0].brief, 1).shown).toBe("parts of the page");
+      expect(result.kind).toBe("pass");
+      expect(notesOf(result)).toContain("Claims: 1; supported: 0; partly supported: 1.");
+      expect(notesOf(result)).not.toContain("could not be checked");
+    });
+
+    it("is read claim by claim, in one brief", async () => {
+      const records = [recordOf("r1", "in stock at 399", "p1"), recordOf("r2", "in stock at 399", "p2", { claim: "The X2 is in stock." })];
+      const { context, run } = contextOf({ evidence: evidenceOf(records, [pageOf("p1", CARD_TEXT), pageOf("p2", LONG)]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | could_not_check | ${lazy}\nC2 | could_not_check | ${lazy}`) });
+      const result = sentBack(await verifierGate.run(draftOf([recorded("r1"), recorded("r2", { claim: "The X2 is in stock." })]), context));
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(result.notes!.join()).toContain("Claims: 2; supported: 0; partly supported: 1; unsupported: 1.");
+      expect(result.unresolvedNote).toContain("«The X1 is in stock at 399.»");
+      expect(result.unresolvedNote).not.toContain("The X2");
+    });
+
+    it("takes what was shown from its brief: a page that fits alone is only parts beside another", async () => {
+      const page = `${"Описание товара. ".repeat(470)}The X1 is in stock at 399 today.`;
+      const alone = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", page)]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | could_not_check | ${lazy}`) });
+      expect((await verifierGate.run(draftOf([recorded("r1")]), alone.context)).kind).toBe("send_back");
+      expect(lineIn(alone.run.mock.calls[0]![0].brief, 1).shown).toBe("whole page");
+
+      const records = [recordOf("r1", "in stock at 399", "p1"), recordOf("r2", "in stock at 399", "p2", { claim: "The X2 is in stock." })];
+      const beside = contextOf({ evidence: evidenceOf(records, [pageOf("p1", page), pageOf("p2", page)]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | could_not_check | ${lazy}\nC2 | could_not_check | ${lazy}`) });
+      const result = await verifierGate.run(draftOf([recorded("r1"), recorded("r2", { claim: "The X2 is in stock." })]), beside.context);
+      expect(lineIn(beside.run.mock.calls[0]![0].brief, 1).shown).toBe("parts of the page");
+      expect(result.kind).toBe("pass");
+      expect(notesOf(result)).toContain("Claims: 2; supported: 0; partly supported: 2.");
+    });
+
+    it("does not call a page the store cut the whole page, however much of it the brief holds", async () => {
+      const { context, run } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", CARD_TEXT, { truncated: true })]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | could_not_check | ${lazy}`) });
+      const result = await verifierGate.run(draftOf([recorded("r1")]), context);
+      expect(lineIn(run.mock.calls[0]![0].brief, 1)).toMatchObject({ page_text: CARD_TEXT, shown: "parts of the page" });
+      expect(notesOf(result)).toContain("partly supported: 1");
+    });
+
+    it("clears no earlier rejection, though it reads as partly: that takes the model's own word", async () => {
+      const first = sentBack(await verifierGate.run(draftOf([recorded("r1")]), contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", LONG)]), opened: refused,
+        turn: async () => ended("Outcome: done\nC1 | unsupported | the page says 499") }).context));
+      const earlier: ResearchAttempt[] = [{ draft: draftOf([]), gate: "verifier", message: first.message }];
+      const again = (verdict: string) => contextOf({ earlier, evidence: evidenceOf([recordOf("r1", "in stock at 399", "p1")], [pageOf("p1", LONG)]), opened: refused, turn: async () => ended(`Outcome: done\nC1 | ${verdict}`) }).context;
+      expect(notesOf(await verifierGate.run(draftOf([recorded("r1")]), again(`could_not_check | ${lazy}`)))).toContain("«The X1 is in stock at 399.»");
+      expect(notesOf(await verifierGate.run(draftOf([recorded("r1")]), again("partly | it says part of it")))).not.toContain("do not rely");
+    });
+
+    it("leaves a claim with no stored page could not check, as it is", async () => {
+      const browserOnly: ResearchOpenedSource = { partial: false, text: "[browser #1] open @ shop.example/x1", toolName: "mcp__workspace__sandbox_shell", url: null };
+      const { context } = contextOf({ evidence: evidenceOf([recordOf("r1", "in stock at 399", null)], []), opened: async () => [browserOnly], turn: async () => ended("Outcome: done\nC1 | could_not_check | the link was refused") });
+      expect(notesOf(await verifierGate.run(draftOf([recorded("r1")]), context))).toContain("could not be checked: 1");
+    });
   });
 
   it("stays could not check only for a record with no stored page, which goes the way of any finding", async () => {
@@ -764,6 +825,14 @@ describe("a dataset, expanded as a draft's record_ids really are", () => {
       expect(notesOf(result)).not.toContain("do not rely");
     });
   }
+
+  it("is not rejected when a model says could not check of a page shown whole: what is stored never held the count", async () => {
+    const { context, run } = contextOf({ evidence: evidenceOf([record("p3")], [printed]), opened: refused, turn: async () => ended("Outcome: done\nC1 | could_not_check | the count cannot be checked here") });
+    const result = await verifierGate.run(expanded(), context);
+    expect(lineIn(run.mock.calls[0]![0].brief, 1).shown).toBe("whole page");
+    expect(result.kind).toBe("pass");
+    expect(notesOf(result)).toContain("Claims: 1; supported: 0; partly supported: 1.");
+  });
 
   it("is not rejected with no stored page either, on the example the run's text holds, and still shows what was counted", async () => {
     const opened: ResearchOpenedSource = { browser: true, partial: false, text: `Отзывы: ${FIRST}`, toolName: "mcp__workspace__sandbox_shell", url: null };
