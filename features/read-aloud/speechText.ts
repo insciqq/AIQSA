@@ -17,12 +17,18 @@ export const MAX_UTTERANCE_CHARACTERS = 220;
 type Placeholder = "code" | "formula" | "image" | "table";
 type Segment = Readonly<{ kind: "text"; value: string }> | Readonly<{ kind: "placeholder"; value: Placeholder }>;
 
-const PLACEHOLDERS: Readonly<Record<"en" | "ru", Readonly<Record<Placeholder, string>>>> = {
+const PLACEHOLDERS: Readonly<Record<"en" | "es" | "ru", Readonly<Record<Placeholder, string>>>> = {
   en: {
     code: "code block skipped",
     formula: "formula skipped",
     image: "image skipped",
     table: "table skipped"
+  },
+  es: {
+    code: "bloque de código omitido",
+    formula: "fórmula omitida",
+    image: "imagen omitida",
+    table: "tabla omitida"
   },
   ru: {
     code: "блок кода пропущен",
@@ -195,7 +201,8 @@ export function answerSpeech(markdown: string, fallbackLanguage: string): Answer
   }
   const prose = groups.flatMap((group) => group.flatMap((segment) => segment.kind === "text" ? [segment.value] : []));
   const lang = detectSpeechLanguage(prose.join(" "), fallbackLanguage);
-  const placeholders = PLACEHOLDERS[lang.toLowerCase().startsWith("ru") ? "ru" : "en"];
+  const language = lang.toLowerCase();
+  const placeholders = PLACEHOLDERS[language.startsWith("ru") ? "ru" : language.startsWith("es") ? "es" : "en"];
   const sentences: string[] = [];
   for (const group of groups) {
     // A block placeholder is its own sentence; one inside a sentence ("see

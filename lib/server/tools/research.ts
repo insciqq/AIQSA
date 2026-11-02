@@ -19,7 +19,7 @@ const sourceClass = { description: "primary_official: the maker, the regulator, 
 export const startResearchTool: RunTool = {
   capability: "session",
   description: "Call this first, before any search, when the user asks to research, analyze, compare for a decision or search carefully " +
-    "(for example \"проанализируй\", \"глубокий анализ\", \"проведи исследование\", \"поищи хорошо\"). It starts the research method: it takes longer, costs more, runs parallel " +
+    "(for example \"проанализируй\", \"глубокий анализ\", \"проведи исследование\", \"поищи хорошо\", \"investiga a fondo\", \"haz un análisis detallado\"). It starts the research method: it takes longer, costs more, runs parallel " +
     "researchers and the server checks the report before the user sees it. Give only the goal: the user sees at once that a plan is " +
     `being made, you find out how such a thing is chosen, and ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} comes next. Result: how to scope. Not for simple questions or quick lookups.`,
   inputSchema: {
