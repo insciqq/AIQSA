@@ -140,12 +140,15 @@
  *   - AIQSA_SUBAGENTS_T_QUESTION_FILE: a file of mode 0600 (regular, this user's, at most 16 KiB, not empty) whose text replaces the
  *     `purchase` question for this invocation; it needs `purchase` among the kinds. The text goes only where the question already goes:
  *     the chat and the evaluation calls. It is never printed, logged or stored by the harness.
- *   - AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL (no default), OPENROUTER_API_KEY and DEEPSEEK_API_KEY:
+ *   - AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL (no default) and DEEPSEEK_API_KEY:
  *     production's Search plan, every search to three sources at once (`all_selected`), through the Control Center's routes
  *     (`/api/admin/search`, its `actions`): OpenAI Responses web search on a codex-lb connection whose model is SEARCH_MODEL (added by
- *     `ensureModel` with native Search; its setup creates the connection's client source), Perplexity on the OpenRouter connection's
- *     `perplexity/sonar-pro-search` (`openrouter_perplexity_chat`), and the DeepSeek Search API. A family missing from the stand is added
- *     through Quick Setup, which for OpenRouter checks every built-in OpenRouter model once. A source missing its client route is created
+ *     `ensureModel` with native Search; its setup creates the connection's client source), Perplexity on an OpenRouter connection's
+ *     `perplexity/sonar-pro-search` (`openrouter_perplexity_chat`), and the DeepSeek Search API. The OpenRouter connection must already
+ *     be on the stand, live with a key and that model, checked first so a stand without it stops before anything paid
+ *     (`research_search_perplexity_perplexity_connection_missing`): the harness never adds one, since an OpenRouter connection's first
+ *     key, through Quick Setup or the manual routes alike, adds and checks every built-in OpenRouter model. DeepSeek, when missing, comes
+ *     through Quick Setup, which checks DeepSeek's two models and its Search API. A source missing its client route is created
  *     with its live check, one on another model is re-saved with Save and check, then each source's Test runs and must show a real
  *     search with sources, or the harness stops with `research_search_<source>_<code>`. The plan becomes the organization's default and
  *     every send names it; Q and R then search on it too. It stays on the stand like the rest of the setup.
@@ -192,7 +195,7 @@
  *   stand's ports, for example `ssh <the stand host> 'docker compose -p aiqsa-sa-kvm restart app'`. Its
  *   environment is PATH, HOME, USER, LOGNAME and SSH_AUTH_SOCK only.
  * - T's acceptance options (described under T above; each refused without T): AIQSA_SUBAGENTS_T_QUESTION_FILE,
- *   AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL, OPENROUTER_API_KEY and DEEPSEEK_API_KEY, and
+ *   AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL and DEEPSEEK_API_KEY, and
  *   AIQSA_SUBAGENTS_ADMIN_PROXY_FILE. Keys are read from the process environment only and never printed.
  * - AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL, AIQSA_BROWSER_SCENARIOS_SHOTS_DIR: as for S5 (C, D, H drive the
  *   live panel; the harness host needs a Chromium for Playwright).
@@ -220,9 +223,9 @@ import {
   type OracleVerdict, type ScenarioInteraction, type StandTarget
 } from "./browser-scenarios-support";
 import {
-  SETUP_TIMEOUT_MS, TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, checkSearchSource, createScenarioChat, deleteChat, discard, ensureClientSearchSource,
-  ensureFamilyConnection, ensureModel, ensureResearchVerifier, ensureSearchSource, ensureTextModel, errorCode,
-  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setOrganizationSearchPlan, setWorkspaceEnabled, standDatabase,
+  SETUP_TIMEOUT_MS, TERMINAL_RUN_STATES, authenticate, awaitExport, catalogModel, createScenarioChat, deleteChat, discard,
+  ensureModel, ensureProductionSearch, ensureResearchVerifier, ensureSearchSource, ensureTextModel, errorCode,
+  handoffCalls, isRecord, json, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setWorkspaceEnabled, standDatabase,
   setUpStand, syncSaucedemoSecret, typedValueLeaks, type Api, type ResultRead
 } from "./browser-scenarios-stand";
 import {
@@ -243,8 +246,8 @@ import {
   evaluateResearch, redactResearchSecrets, researchEvalOptions, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout,
   researchComparisonDetails, researchRepeatability, researchRoleUsage, researchStoreFacts, researchThreadRole, researchUsageByModel, researchEffortConfiguration, type ResearchEvalCall, type ResearchGrade, type ResearchJob, type ResearchTiming,
   type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer,
-  RESEARCH_ADMIN_PROXY_MAX_BYTES, RESEARCH_PRODUCTION_SEARCH, RESEARCH_QUESTION_MAX_BYTES, parseResearchAdminProxy, readPrivateFile, researchAdminProxySecrets,
-  researchAttributionCounts, researchCitationAttribution, researchCitedUrls, researchProxyCheckStatus, researchQuestionText, researchSearchSourceStatus,
+  RESEARCH_ADMIN_PROXY_MAX_BYTES, RESEARCH_QUESTION_MAX_BYTES, parseResearchAdminProxy, readPrivateFile, researchAdminProxySecrets,
+  researchAttributionCounts, researchCitationAttribution, researchCitedUrls, researchProxyCheckStatus, researchQuestionText,
   type ResearchAdminProxy, type ResearchSearchRow
 } from "./research-eval-support";
 
@@ -2188,38 +2191,11 @@ function stable<T>(work: () => T): T {
   }
 }
 
-const PRODUCTION_SEARCH_NAMES = { deepseek: "DeepSeek Search API", openai: "OpenAI (CodexLB) Search", perplexity: "Perplexity" } as const;
-
-/**
- * Production's Search plan (AIQSA_SUBAGENTS_T_SEARCH=production): each source on its client route, checked by its own Test, then
- * the three together as the organization's default. Keys come from the process environment and go only to the Admin routes.
- */
+/** Production's Search plan (AIQSA_SUBAGENTS_T_SEARCH=production), set up by `ensureProductionSearch`; the key comes from the process environment. */
 async function productionSearch(api: Api, route: { apiRoot: string }, secret: string, searchModel: string, model: CatalogModel): Promise<SearchRoute> {
   stage = "production_search";
-  // Every refusal names its source: `research_search_<source>_<code>`.
-  const step = async <T>(label: string, work: () => Promise<T>): Promise<T> => {
-    try { return await work(); } catch (error) {
-      return fail(`research_search_${label}_${error instanceof BrowserScenarioError ? error.message : "setup_failed"}`);
-    }
-  };
-  const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || fail("deepseek_key_required");
-  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim() || fail("openrouter_key_required");
-  const openai = await step("openai", () => ensureModel(api, { apiRoot: route.apiRoot, model: searchModel }, secret, "Research search model", { nativeSearch: true, vision: false }));
-  const connections = { deepseek: await step("deepseek", () => ensureFamilyConnection(api, "deepseek", deepseekKey)),
-    openai: openai.connectionId, perplexity: await step("perplexity", () => ensureFamilyConnection(api, "openrouter", openRouterKey)) };
-  const sources: { label: string; optionId: string }[] = [];
-  for (const spec of RESEARCH_PRODUCTION_SEARCH) {
-    const upstreamModelId = spec.label === "openai" ? searchModel : spec.label === "perplexity" ? spec.upstreamModelId : null;
-    const source = await step(spec.label, () => ensureClientSearchSource(api, { connectionId: connections[spec.label], displayName: PRODUCTION_SEARCH_NAMES[spec.label],
-      kind: spec.kind, protocol: spec.protocol, upstreamModelId }));
-    const checked = await step(spec.label, () => checkSearchSource(api, source.id));
-    const status = checked.code ?? researchSearchSourceStatus(checked.integration,
-      { protocol: spec.protocol, ...(upstreamModelId === null ? {} : { providerModelId: source.providerModelId }) });
-    emit({ stage: "research_search_source", source: spec.label, status });
-    if (status !== "ok") fail(`research_search_${spec.label}_${status}`);
-    sources.push({ label: spec.label, optionId: source.strategyId });
-  }
-  await step("plan", () => setOrganizationSearchPlan(api, { mode: "all_selected", optionIds: sources.map((source) => source.optionId) }));
+  const sources = await ensureProductionSearch(api, { apiRoot: route.apiRoot, deepseekKey: process.env.DEEPSEEK_API_KEY?.trim() || fail("deepseek_key_required"),
+    report: (source, status) => emit({ stage: "research_search_source", source, status }), searchModel, secret });
   stage = "setup";
   return { mode: "all_selected", model, name: "production", sources };
 }

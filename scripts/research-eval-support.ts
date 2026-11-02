@@ -73,7 +73,6 @@ export function researchEvalOptions(env: Readonly<Record<string, string | undefi
   const searchModel = env.AIQSA_SUBAGENTS_SEARCH_MODEL?.trim() || null;
   if (searchModel !== null && (search === null || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(searchModel))) fail("research_search_model_invalid");
   if (search === "production" && searchModel === null) fail("research_search_model_required");
-  if (search === "production" && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
   if (search === "production" && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
   const jobs = T_KINDS.filter((kind) => kinds.includes(kind)).flatMap((kind) => Array.from({ length: repeats[kind] }, (_, index) => ({ kind, repeat: index + 1 })));
   const questionFile = env.AIQSA_SUBAGENTS_T_QUESTION_FILE?.trim() || null;
@@ -568,10 +567,12 @@ export function researchAttributionCounts(attribution: ReturnType<typeof researc
     sources: Object.fromEntries(Object.entries(attribution.sources).map(([name, entry]) => [name, { cited: entry.urls.length, only: entry.only }])) };
 }
 
+/** The model production's Perplexity source searches with through OpenRouter. */
+export const RESEARCH_PERPLEXITY_SEARCH_MODEL = "perplexity/sonar-pro-search";
 /** Production's Search plan for the acceptance run: each source, its protocol, and the upstream model its client route searches with. */
 export const RESEARCH_PRODUCTION_SEARCH = Object.freeze([
   { label: "openai", kind: "web_search", protocol: "openai_responses_web_search" },
-  { label: "perplexity", kind: "perplexity_search", protocol: "openrouter_perplexity_chat", upstreamModelId: "perplexity/sonar-pro-search" },
+  { label: "perplexity", kind: "perplexity_search", protocol: "openrouter_perplexity_chat", upstreamModelId: RESEARCH_PERPLEXITY_SEARCH_MODEL },
   { label: "deepseek", kind: "deepseek_search_api", protocol: "deepseek_search_api" }
 ] as const);
 
