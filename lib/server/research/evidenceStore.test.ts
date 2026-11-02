@@ -387,6 +387,17 @@ describe("corrections", () => {
     expect(memory.evidence).toHaveLength(3);
   });
 
+  it("keeps the lineage of a correction of a correction, which records leaves out once corrected again", async () => {
+    const memory = tables();
+    fetched(memory);
+    const { port } = storeOf(memory);
+    const first = await recorded(port, finding("broke after a year"));
+    const second = await recorded(port, finding("broke after two years", LINK, { supersedes: first.id }));
+    const third = await recorded(port, finding(QUOTE, LINK, { supersedes: second.id }));
+    await expect(port.records(signal)).resolves.toEqual([expect.objectContaining({ id: third.id })]);
+    await expect(port.supersessions!(signal)).resolves.toEqual(new Map([[second.id, first.id], [third.id, second.id]]));
+  });
+
   it("refuses a record that is not this research's as one that does not exist, and a second correction", async () => {
     const memory = tables();
     fetched(memory);

@@ -201,6 +201,15 @@ export function createResearchEvidenceRepository(client: EvidenceClient) {
         .sort((one, other) => runIds.indexOf(one.modelRunId) - runIds.indexOf(other.modelRunId) || one.sequence - other.sequence).map(recordOf);
     },
 
+    /**
+     * Every record under these runs that corrects another, live or not, to the one it corrects: how a check follows a correction of a correction back to what
+     * it rejected, since `records` holds only the live end of the chain.
+     */
+    async supersessions(scope: ResearchEvidenceScope, runIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
+      const rows = await client.researchEvidence.findMany({ select: { id: true, supersedesId: true }, where: { chatId: scope.chatId, modelRunId: { in: [...runIds] }, userId: scope.userId } });
+      return new Map(rows.flatMap(({ id, supersedesId }) => supersedesId === null ? [] : [[id, supersedesId] as const]));
+    },
+
     /** What a write reads of one agent's own calls, through the owner and chat of its research. */
     agentCalls(scope: Pick<ResearchEvidenceScope, "chatId" | "userId">): ResearchAgentCalls {
       const own = (agent: ResearchAgentScope) => ({ modelRun: { chatId: scope.chatId, userId: scope.userId }, modelRunId: { in: [...agent.runIds] },
