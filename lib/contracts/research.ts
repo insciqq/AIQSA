@@ -128,6 +128,22 @@ export const RESEARCH_ROUND_LIMITS = Object.freeze({
   sendBacksPerCheck: 2
 });
 
+/**
+ * When a researcher's context sheds its oldest pages (`lib/server/engine/compaction/clearing.ts`), in tokens of the measured
+ * context. Measured on nine runs of 2026-11-02: a research makes 200–350 researcher responses, each reading 85–120 thousand input
+ * tokens while a researcher's first reads about 14 thousand, because every page it opened stayed in its context.
+ */
+export const RESEARCHER_CONTEXT_CLEARING = Object.freeze({
+  /** Past this the oldest page results become stubs that name their handle. */
+  clearAboveTokens: 60_000,
+  /** Less than this to free and the clearing waits, since each clearing costs one miss of the provider's prompt cache. */
+  clearAtLeastTokens: 10_000,
+  /** Down to this in one step, as far as the pages it may clear allow. */
+  clearToTokens: 25_000,
+  /** The newest page results, which stay whole: a researcher records from the page it has just read. */
+  keepRecentResults: 3
+});
+
 /** Where a research run stands. The first two come before the plan's release; `researchPhaseAt` gives the rest. */
 export const RESEARCH_PHASES = ["scoping", "plan_window", "researching", "winding_down", "reporting", "notes", "ended"] as const;
 export type ResearchPhase = (typeof RESEARCH_PHASES)[number];

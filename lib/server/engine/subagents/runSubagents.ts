@@ -29,6 +29,7 @@ import type { NativeRunStore } from "../runStore";
 import type { ToolBatchDeps, ToolBatchState } from "../toolBatch";
 import type { ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
+import type { ToolResultClearingPolicy } from "../compaction";
 import type { TranscriptItem, TranscriptTarget } from "../transcript";
 import type { TranscriptRepository } from "../transcriptRepository";
 import type { UnknownEffects } from "../unknownEffects";
@@ -166,6 +167,8 @@ export type PrepareRunSubagentsInput = Readonly<{
   childrenAllowed?: false;
   ports?: SubagentRunPorts;
   recordSearchEvidence: SubagentHost["recordSearchEvidence"];
+  /** Its sub-agents clear their oldest page results past the policy's mark (a research run's researchers); absent, none do. */
+  resultClearing?: ToolResultClearingPolicy;
   runContextItems: readonly TranscriptItem[];
   runId: string;
   saveResult: ToolBatchDeps["saveResult"];
@@ -267,6 +270,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     onWorkspaceLifecycle: input.onWorkspaceLifecycle,
     userFollowups: input.userFollowups,
     recordSearchEvidence: input.recordSearchEvidence,
+    ...(input.resultClearing ? { resultClearing: input.resultClearing } : {}),
     recordDetachedCompaction: ({ item, sequence, thread }) =>
       input.engine.runs.recordDetachedCompaction(input.scope, { item, sequence, status: null, thread }),
     request,

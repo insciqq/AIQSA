@@ -1306,6 +1306,55 @@ describe("researchers with no role", () => {
   });
 });
 
+describe("a researcher's context sheds its old pages", () => {
+  const SAVED = `tor1_${"a".repeat(32)}`;
+  const READS = 16;
+  const READ_CHARACTERS = 20_000;
+  const book = "Owners report the latex layer holds its shape after years; the seller lists 3 cm latex over coir. ".repeat(4_000);
+  const reads = Array.from({ length: READS }, (_, index) => ({ calls: [{ arguments: { handle: SAVED, limit: READ_CHARACTERS, offset: index * READ_CHARACTERS },
+    id: `read-${index}`, name: "read_tool_result" }] }));
+  const reading = (memory: ReturnType<typeof engineOf>) => ({ ...memory, deps: { ...memory.deps,
+    savedResults: { read: vi.fn(async () => ({ arguments: { url: "https://shop.example/x1" }, text: book, toolName: "fetch_url" })) } } });
+  const resultsOfRead = (request: ProviderRunRequest | undefined) => resultsOf(request, "read_tool_result");
+  const cleared = (output: string) => output.startsWith("[Cleared to keep this context small: ");
+
+  /** The newest reads stay whole, and each older one is a stub naming the read that brings it back. */
+  function expectShed(researcher: readonly ProviderRunRequest[]) {
+    const last = resultsOfRead(researcher.at(-1));
+    expect(last).toHaveLength(READS);
+    expect(last.slice(-3).map((output) => (JSON.parse(output) as { offset: number; text: string }))).toEqual([13, 14, 15].map((index) =>
+      expect.objectContaining({ offset: index * READ_CHARACTERS, text: book.slice(index * READ_CHARACTERS, (index + 1) * READ_CHARACTERS) })));
+    expect(cleared(last[0]!)).toBe(true);
+    expect(last[0]).toContain(`call read_tool_result with {"handle":"${SAVED}","offset":0,"limit":${READ_CHARACTERS}} to read it again.]`);
+    // The first request after the first clearing is a fraction of the one before it.
+    const sizes = researcher.map((request) => JSON.stringify(request.history).length);
+    expect(Math.min(...sizes.slice(sizes.findIndex((_, index) => resultsOfRead(researcher[index]).some(cleared))))).toBeLessThan(Math.max(...sizes) / 2);
+  }
+
+  it("for a researcher with no role, on the chat's model", async () => {
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      ...reads, { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    const memory = reading(engineOf({ gates: [] }));
+    await run(main.adapter, memory, { prepared: prepared({ noLimits: true }) }).text();
+    expectShed(main.requests.slice(2, 3 + READS));
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("for a researcher on the installation role", async () => {
+    const child = scripted([...reads, { text: "Outcome: done\nFindings." }]);
+    const installed = installedResearchRole(child.adapter);
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      { calls: [submit()] }]);
+    const memory = reading(engineOf({ gates: [], researcher: installed.role }));
+    await run(main.adapter, memory, { prepared: prepared({ noLimits: true }) }).text();
+    expect(child.requests).toHaveLength(READS + 1);
+    expectShed(child.requests);
+    // The main agent's own context is no researcher's: nothing of it is cleared.
+    expect(main.requests.flatMap((request) => request.history ?? []).some((item) => item.type === "tool_result" && cleared(item.output))).toBe(false);
+    expect(memory.published()).toBe(REPORT);
+  });
+});
+
 /** A turn of a new installation: scoping and the plan take rounds of their own. */
 const FREE: Partial<NativeRunExecutionInput> = { prepared: prepared({ noLimits: true }) };
 
