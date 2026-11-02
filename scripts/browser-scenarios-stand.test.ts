@@ -40,6 +40,29 @@ describe("production Search setup and OpenRouter", () => {
     }
   });
 
+  it("runs OpenRouter's Quick Setup only when the operator's approval brings a key, then reuses what it added", async () => {
+    const calls: string[] = [];
+    let added = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: URL, init: RequestInit) => {
+      const method = init.method ?? "GET";
+      calls.push(`${method} ${url.pathname}`);
+      if (url.pathname === "/api/admin/providers" && method === "GET") {
+        return Response.json({ connections: added ? [connection("router", "openrouter", [model("perplexity/sonar-pro-search")])] : [] });
+      }
+      if (url.pathname === "/api/admin/providers/quick-setup" && method === "GET") return Response.json({ providers: [{ provider: "openrouter", stateToken: "state-1" }] });
+      if (url.pathname === "/api/admin/providers/quick-setup" && method === "POST") {
+        expect(JSON.parse(String(init.body))).toMatchObject({ provider: "openrouter", secret: "synthetic-openrouter" });
+        added = true;
+        return Response.json({ connectionId: "router", outcome: "ready" });
+      }
+      return Response.json({ error: "unexpected_call" }, { status: 500 });
+    }));
+    // Past OpenRouter the next step (the codex-lb search model) is out of this stub, so the setup stops there.
+    await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", deepseekKey: "synthetic", openrouterSetupKey: "synthetic-openrouter",
+      searchModel: "search-model-1", secret: "synthetic", report: () => undefined })).rejects.toThrow(/research_search_openai_/u);
+    expect(calls.filter((call) => call === "POST /api/admin/providers/quick-setup")).toHaveLength(1);
+  });
+
   it("reuses only a live OpenRouter connection with a key and the exact model on OpenRouter's adapter", async () => {
     const calls = stand([connection("other", "openrouter", [model("openai/gpt-6-astra")]),
       connection("router", "openrouter", [model("openai/gpt-6-astra"), model("perplexity/sonar-pro-search")])]);

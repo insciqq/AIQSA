@@ -140,6 +140,8 @@
  *   - AIQSA_SUBAGENTS_T_QUESTION_FILE: a file of mode 0600 (regular, this user's, at most 16 KiB, not empty) whose text replaces the
  *     `purchase` question for this invocation; it needs `purchase` among the kinds. The text goes only where the question already goes:
  *     the chat and the evaluation calls. It is never printed, logged or stored by the harness.
+ *   - AIQSA_SUBAGENTS_OPENROUTER_SETUP=approved with OPENROUTER_API_KEY: with production Search and no live OpenRouter connection holding
+ *     Perplexity, Quick Setup adds OpenRouter once, which checks every built-in OpenRouter model; only with the operator's approval of that cost.
  *   - AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL (no default) and DEEPSEEK_API_KEY:
  *     production's Search plan, every search to three sources at once (`all_selected`), through the Control Center's routes
  *     (`/api/admin/search`, its `actions`): OpenAI Responses web search on a codex-lb connection whose model is SEARCH_MODEL (added by
@@ -2195,6 +2197,8 @@ function stable<T>(work: () => T): T {
 async function productionSearch(api: Api, route: { apiRoot: string }, secret: string, searchModel: string, model: CatalogModel): Promise<SearchRoute> {
   stage = "production_search";
   const sources = await ensureProductionSearch(api, { apiRoot: route.apiRoot, deepseekKey: process.env.DEEPSEEK_API_KEY?.trim() || fail("deepseek_key_required"),
+    // OpenRouter's first key checks its whole built-in list, so it is added only with the operator's approval of that cost.
+    ...(process.env.AIQSA_SUBAGENTS_OPENROUTER_SETUP === "approved" ? { openrouterSetupKey: process.env.OPENROUTER_API_KEY?.trim() || fail("openrouter_key_required") } : {}),
     report: (source, status) => emit({ stage: "research_search_source", source, status }), searchModel, secret });
   stage = "setup";
   return { mode: "all_selected", model, name: "production", sources };

@@ -276,11 +276,12 @@ async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegra
 }
 
 /**
- * DeepSeek's connection: reused when one exists, else added through Quick Setup as an administrator's first key would add it,
- * which checks DeepSeek's own two models and its Search API. Only DeepSeek: OpenRouter's first key, by Quick Setup or by hand,
- * adds and checks every built-in OpenRouter model (`providerSetupModels`), so the harness never gives one (`perplexitySearchConnection`).
+ * A family's connection: reused when one exists, else added through Quick Setup as an administrator's first key would add it. DeepSeek's checks
+ * its own two models and its Search API. OpenRouter's first key, by Quick Setup or by hand, adds and checks every built-in OpenRouter model
+ * (`providerSetupModels`), so it runs only when the operator approved that one-time cost (`AIQSA_SUBAGENTS_OPENROUTER_SETUP=approved`,
+ * operator decision 2026-11-02 for the parity acceptance).
  */
-export async function ensureFamilyConnection(api: Api, provider: "deepseek", secret: string): Promise<string> {
+export async function ensureFamilyConnection(api: Api, provider: "deepseek" | "openrouter", secret: string): Promise<string> {
   const existing = (await connections(api)).find((connection) => connection.family === provider && !connection.checkRunning);
   if (existing) return existing.id;
   const snapshot = await json(api, "/api/admin/providers/quick-setup");
@@ -391,13 +392,25 @@ const PRODUCTION_SEARCH_NAMES = { deepseek: "DeepSeek Search API", openai: "Open
  * stand without it stops before anything is paid for, and no step runs Quick Setup for it.
  */
 export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot: string; deepseekKey: string; searchModel: string; secret: string;
+  /** Present only when the operator approved OpenRouter's one-time setup: without a live connection it is added once, then reused. */
+  openrouterSetupKey?: string;
   report(source: string, status: string): void }>): Promise<readonly Readonly<{ label: string; optionId: string }>[]> {
   const step = async <T>(label: string, work: () => Promise<T>): Promise<T> => {
     try { return await work(); } catch (error) {
       return fail(`research_search_${label}_${error instanceof BrowserScenarioError ? error.message.replace(/^browser_scenarios_/u, "") : "setup_failed"}`);
     }
   };
-  const perplexity = await step("perplexity", () => perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL));
+  const perplexity = await step("perplexity", async () => {
+    try {
+      return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL);
+    } catch (error) {
+      if (!input.openrouterSetupKey || !(error instanceof BrowserScenarioError)) throw error;
+      await ensureFamilyConnection(api, "openrouter", input.openrouterSetupKey);
+      return poll(SETUP_TIMEOUT_MS, async () => {
+        try { return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL); } catch { return null; }
+      }, "perplexity_connection_missing", 3_000);
+    }
+  });
   const openai = await step("openai", () => ensureModel(api, { apiRoot: input.apiRoot, model: input.searchModel }, input.secret, "Research search model",
     { nativeSearch: true, vision: false }));
   const connections = { deepseek: await step("deepseek", () => ensureFamilyConnection(api, "deepseek", input.deepseekKey)), openai: openai.connectionId, perplexity };
