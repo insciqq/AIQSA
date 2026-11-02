@@ -249,7 +249,7 @@ export type ResearchFinding = Readonly<{
   claim: string;
   /** Copied verbatim from the page an agent opened. */
   quote: string;
-  /** The record it came from. Absent on a finding typed into a draft stored before drafts referred to records. */
+  /** The evidence record it stands for, which only the server sets. Absent on a finding typed into a draft stored before drafts referred to records. */
   recordId?: string;
   sourceClass: ResearchSourceClass;
   standing: ResearchStanding;
