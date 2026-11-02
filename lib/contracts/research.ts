@@ -166,7 +166,7 @@ export type ResearchStart = Readonly<{ goal: string }>;
 /** A column of the matrix, with why it matters in plain words. For a knowledge question it is an outcome or a sub-question. */
 export type ResearchCriterion = Readonly<{ criterion: string; key: string; why: string }>;
 
-/** A row of the matrix: a candidate, a study or an option. */
+/** A row of the matrix: an option the user could choose. */
 export type ResearchMatrixRow = Readonly<{ key: string; label: string }>;
 
 export type ResearchBranchCase = Readonly<{ key: string; label: string }>;
