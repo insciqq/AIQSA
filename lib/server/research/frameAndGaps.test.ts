@@ -397,6 +397,34 @@ describe("rounds that fill no new cell end research", () => {
   });
 });
 
+describe("the key specifications of the options a draft recommends, through the real engine", () => {
+  const KEYED: ResearchFrame = { ...FRAME, criteria: [{ ...FRAME.criteria[0]!, decisive: true }, FRAME.criteria[1]!] };
+  const leading = (id: string) => ({ arguments: { branch_picks: [], does_not_separate: null, pick_row_key: "x1", record_ids: ["x1-durability", "x1-firmness"], report: `# Report ${id}\n\nTake Lonax X1.`,
+    summary: { row_keys: ["x1"], text: "Take Lonax X1." }, unreachable: [] }, id, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
+  const secondSite: ResearchEvidenceRecord = { ...finding("x1", "durability"), id: "x1-durability-shop", url: "https://shop.example/x1" };
+
+  it("asks a second site in the line after each researcher once a draft names its options, and never before", async () => {
+    const matrix = matrixPorts(KEYED, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("a")] }, DONE, { calls: [leading("one")] }, { calls: [researcher("b")] }, DONE, { calls: [leading("two")] }]);
+    await run(adapter, engineOf({ gates: [sendingBack("judge")], ports: matrix.ports }));
+    const [before, after] = resultsOf(requests[6], CALL_SUBAGENT_TOOL_NAME);
+    expect(before).toContain("Nothing is left for researchers to fill.");
+    expect(after).toContain("To confirm from a second site, the maker's or a seller's, for the options the last draft recommends: x1: durability. Send researchers for these confirmations only.");
+    expect(after).not.toContain("firmness");
+  });
+
+  it("counts a round that confirmed what the last draft's options needed as one that found something, so research goes on", async () => {
+    const matrix = matrixPorts(KEYED, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const confirms = () => { matrix.records.push(secondSite); };
+    const { adapter } = scripted([{ calls: begin }, { calls: [researcher("a")] }, DONE, { calls: [leading("one")] }, { calls: [researcher("b")] }, { ...DONE, onCall: confirms },
+      { calls: [researcher("c")] }, DONE, { calls: [leading("two")] }]);
+    const memory = engineOf({ gates: [sendingBack("judge")], ports: matrix.ports });
+    await run(adapter, memory);
+    // Round a filled nothing new, so without the confirmation of round b, round c would be the third in a row and refused.
+    expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b", "c"]);
+  });
+});
+
 describe("each round is planned from the empty cells", () => {
   it("ends a researcher's brief with the matrix, and tells the main agent what stayed empty", async () => {
     const matrix = matrixPorts(FRAME, [finding("x1", "firmness")]);

@@ -83,6 +83,20 @@ describe("the plan proposal", () => {
     const proposal = value(decodeResearchPlanProposal(PROPOSAL));
     expect(value(decodeResearchPlanProposal(researchPlanProposalDocument(proposal)))).toEqual(proposal);
   });
+
+  it("keeps a criterion marked decisive through the plan, its stored form and the frame, reads one left out or null as not, and bounds how many", () => {
+    const marked = { ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, decisive: true }, { criterion: "Price", decisive: false, key: "price", why: "The budget." }, { criterion: "Reviews", decisive: null, key: "reviews", why: "A year on." }] };
+    const proposal = value(decodeResearchPlanProposal(marked));
+    expect(proposal.criteria.map((criterion) => "decisive" in criterion)).toEqual([true, false, false]);
+    expect(value(decodeResearchPlanProposal(researchPlanProposalDocument(proposal)))).toEqual(proposal);
+    const frame = researchFrameFromPlan(proposal);
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(frame)))).criteria[0]).toEqual({ ...PROPOSAL.criteria[0], decisive: true });
+    expect(value(decodeResearchPlanProposal(PROPOSAL)).criteria[0]).not.toHaveProperty("decisive");
+    expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, decisive: "yes" }] }))).toContain("criteria[0].decisive must be true or false");
+    const many = Array.from({ length: RESEARCH_FRAME_LIMITS.decisiveCriteria + 1 }, (_entry, index) => ({ criterion: `Spec ${index}`, decisive: true, key: `spec-${index}`, why: "It decides." }));
+    expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many }))).toContain(`more than ${RESEARCH_FRAME_LIMITS.decisiveCriteria} as decisive`);
+    expect(value(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many.slice(1) })).criteria).toHaveLength(RESEARCH_FRAME_LIMITS.decisiveCriteria);
+  });
 });
 
 describe("the user's answer", () => {
