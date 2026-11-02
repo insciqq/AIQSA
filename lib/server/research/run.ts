@@ -41,7 +41,7 @@ import { createResearchRounds, researchFilledCells, researchMatrix } from "./mat
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate } from "./method";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
-import { researchDraftWithRecords, researchRecordList } from "./reportAssembly";
+import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { createResearchSources } from "./sources";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -263,6 +263,8 @@ export function createRunResearch(input: RunResearchInput) {
   const researchRunId = input.researchRunId ?? input.runId;
   /** The turn this run's Continue answers, whatever it held; null for any other message. */
   const continued = continuedTurn(input.items());
+  /** The user's last words are the button's, on a Continue and on an approval after one, and they say nothing of the user's language: the goal does. */
+  const buttonWord = input.userMessage.trim() === CONTINUE_TURN_TEXT;
   /** What the store gave that Continue, asked once: the first ask writes this run's row. */
   let pickUp: Promise<ResearchResumeState | null> | null = null;
   let askedToPickUp = false;
@@ -310,8 +312,8 @@ export function createRunResearch(input: RunResearchInput) {
     ports.time.planReleased();
   };
   /**
-   * The research a Continue may pick up: the run its turn's start names, or, with that call compacted out of the turn, the turn's own run. A store
-   * that fails costs the pick-up, never the run; only Stop goes on as what it is.
+   * The research a Continue may pick up: the run its turn's start names, or, with that call's record lost (a transcript write is bookkeeping), the turn's own run.
+   * A store that fails costs the pick-up, never the run; only Stop goes on as what it is.
    */
   function pickedUp(): Promise<ResearchResumeState | null> {
     const from = continued && (continued.researchRun ?? input.subagentInput.branchRunIds.at(-1));
@@ -351,7 +353,7 @@ export function createRunResearch(input: RunResearchInput) {
     try {
       return await untilAborted(Promise.resolve().then(() => {
         signal.throwIfAborted();
-        return ports.report.compose({ ended, signal });
+        return ports.report.compose({ ended, ...buttonWord && goal !== null ? { goal } : {}, signal });
       }), signal);
     } catch (error) {
       if (!stop.aborted) logEvent("run_execution", { code: "research_report_failed", error, outcome: "failed", run_id: input.runId, stage: "execution" });
@@ -379,6 +381,15 @@ export function createRunResearch(input: RunResearchInput) {
     for (const [index, attempt] of attempts.entries()) {
       if (awaitsRecords(attempt.draft)) attempts[index] = { ...attempt, draft: researchDraftWithRecords(attempt.draft, records) };
     }
+  }
+  /** A research whose earlier turn left no record: what those turns' gates said is gone, so their caps reopen, and the log says so. */
+  function historyLost({ historyCut }: Pick<ContinuedTurn, "historyCut">): void {
+    if (historyCut) logEvent("service_operation", { action: "degrade", code: "research_history_cut", outcome: "degraded", run_id: input.runId, stage: "read", subsystem: "database" });
+  }
+  /** The same for what a turn left, and for `rebuilt`, the draft it held, unless a newer one stands by now. */
+  function fillFromTurn(records: readonly ResearchEvidenceRecord[], rebuilt: HeldDraft | null): void {
+    fillAttempts(records);
+    if (rebuilt && held === rebuilt) held = unchecked(researchDraftWithRecords(rebuilt.draft, records));
   }
 
   async function check(submitted: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<void> {
@@ -468,26 +479,32 @@ export function createRunResearch(input: RunResearchInput) {
   async function pickUpResearch(call: ModelToolCall, execution: Pick<EngineToolExecution, "persistedToolCallId" | "signal">, turn: ContinuedTurn, state: ResearchResumeState): Promise<ToolExecutionResult> {
     const stands = researchPlanFromProposal(state.goal, state.answer.plan);
     goal = state.goal;
+    historyLost(turn);
     // Before the draft: what the gates carry for it comes from these.
     attempts.push(...turn.attempts);
-    if (turn.draft) held = unchecked(turn.draft);
+    const rebuilt = turn.draft && unchecked(turn.draft);
+    held = rebuilt ?? held;
     if (turn.owedRebuild) {
       rebuildOwed = true;
       standing = turn.owedRebuild;
     }
     planStands(stands);
-    const [matrix, records] = await Promise.all([researchMatrix(ports.coverage, execution.signal), ports.evidence.records(execution.signal).catch(() => [])]);
-    openedFrom = records[0]?.runId ?? state.fromRunId;
+    const [matrix, records] = await Promise.all([researchMatrix(ports.coverage, execution.signal), liveRecords(execution.signal)]);
+    if (records) fillFromTurn(records, rebuilt);
+    openedFrom = records?.[0]?.runId ?? state.fromRunId;
     const language = CYRILLIC.test(state.goal) ? "ru" : "en";
     const cells = matrix && PICKED_UP_CELLS[language](matrix.coverage.filled, matrix.coverage.cells.length);
     const shown = researchPlanUpdate(stands);
     await showPlan(execution.persistedToolCallId, "stands", { ...shown, plan: [{ status: "completed", step: `${PICKED_UP_LINE[language]}${cells ? `: ${cells}` : ""}` }, ...shown.plan] });
     const { questions, skipped_source_classes } = researchPlanProposalDocument(state.answer.plan);
+    // No researcher need follow, so this is where the ids a draft cites come from. It rides behind the server's fields, whatever its length.
+    const list = records && researchRecordList(records, listedRecords, PICKED_UP_RECORD_LIST_CHARACTERS);
     // The server's fields, first and in this order: a later approval or Continue reads them back (`researchOfTurn`).
-    return resultOf(call, { research_run: researchRunId, status: "resumed", opened_from: openedFrom, plan: { questions, skipped_source_classes },
-      instructions: [PICKED_UP, `${records.length} records stand.`, ...matrix ? [researchCoverageLine(matrix, null)] : [], ...turn.draft ? [DRAFT_NOT_FINISHED] : [],
-        ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
+    const result = resultOf(call, { research_run: researchRunId, status: "resumed", opened_from: openedFrom, plan: { goal: state.goal, questions, skipped_source_classes },
+      instructions: [PICKED_UP, ...records ? [`${records.length} records stand.${list ? " The ids a draft cites them by end this result." : ""}`] : [],
+        ...matrix ? [researchCoverageLine(matrix, null)] : [], ...turn.draft ? [DRAFT_NOT_FINISHED] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
       ...rebuildOwed ? {} : { method: researchMethodText(stands) } });
+    return list ? { ...result, content: [...result.content, { text: list, type: "text" }] } : result;
   }
 
   const startTool: EngineTool = {
@@ -507,7 +524,7 @@ export function createRunResearch(input: RunResearchInput) {
       if (plan) return harnessToolError(call, "research_plan_stands", "Research already runs and its plan stands: go on with it.");
       if (continued && state) return pickUpResearch(call, { persistedToolCallId, signal }, continued, state);
       // A Continue's own word is the button's, so its goal says what language the user reads.
-      await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: CYRILLIC.test(continued ? decoded.value.goal : input.userMessage) ? PLANNING_LINE.ru : PLANNING_LINE.en }] });
+      await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: CYRILLIC.test(buttonWord ? decoded.value.goal : input.userMessage) ? PLANNING_LINE.ru : PLANNING_LINE.en }] });
       // The server's fields, first so an excerpt would keep them: an approval continuation reads them back (`researchRunOf`).
       return resultOf(call, { research_run: researchRunId, status: "scoping",
         instructions: [...continued?.goal === undefined ? [] : [NOTHING_PICKED_UP], researchScopingInstructions()].join("\n") });
@@ -828,6 +845,7 @@ export function createRunResearch(input: RunResearchInput) {
     /** An approval continuation goes on with the research its turn started; a Continue comes through the start, and every other later turn is an ordinary one. */
     resume(items: readonly TranscriptItem[]): void {
       const found = researchOfTurn(items);
+      historyLost(found);
       if (found.goal !== undefined) startResearching(found.goal);
       // A stored value: it counts only on this branch, as in `researchRunOf`.
       if (found.openedFrom !== undefined && input.subagentInput.branchRunIds.includes(found.openedFrom)) openedFrom = found.openedFrom;
@@ -843,9 +861,7 @@ export function createRunResearch(input: RunResearchInput) {
       const rebuilt = held;
       if (!attempts.some(({ draft }) => awaitsRecords(draft)) && !(rebuilt && awaitsRecords(rebuilt.draft))) return;
       void liveRecords(AbortSignal.timeout(RESEARCH_TIME_MS.composeReport)).then((records) => {
-        if (!records) return;
-        fillAttempts(records);
-        if (rebuilt && held === rebuilt) held = unchecked(researchDraftWithRecords(rebuilt.draft, records));
+        if (records) fillFromTurn(records, rebuilt);
       });
     },
 
@@ -911,8 +927,13 @@ function pickedUpOfResult(output: string): Readonly<{ openedFrom?: string; plan?
  * plan whose questions have not followed. `researchRun` is what the start call's stored result names, there only when it names one,
  * as no older result does; a stored value, so it means nothing until `researchRunOf` has checked it. A start that picked research up has no plan
  * call in its turn, so its plan comes from its result, with `openedFrom`, the run what agents opened starts in, as much a stored value as the other.
+ *
+ * Such a start is not where its research began, so the reading goes on past the Continue into the turn it picked up, up to the research's first start, and the gates' history,
+ * the draft and an owed rebuild add up across the chain: a Continue buys no checks, and rejected claims stay named. Everything else comes from the newest start. These are the
+ * branch's own items and they only ever hold a run to more. `items` keep a whole transcript, as a compaction acts where a request is built (`transcript.ts`), so what cuts this short
+ * is an earlier turn whose records were lost: `historyCut` says so, what was found stands, and what the lost turn's gates said is gone.
  */
-export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ attempts: readonly ResearchAttempt[]; draft: ResearchDraft | null; goal?: string; openedFrom?: string;
+export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ attempts: readonly ResearchAttempt[]; draft: ResearchDraft | null; goal?: string; historyCut?: true; openedFrom?: string;
   owedRebuild?: StandingPlan; plan: ResearchPlan | null; researchRun?: string }> {
   const attempts: ResearchAttempt[] = [];
   const results = new Map<string, Extract<TranscriptItem, { kind: "tool_result" }>>();
@@ -925,9 +946,17 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
   let rebuilt = false;
   let researchRun: string | undefined;
   const ownCall = (name: string) => name === START_RESEARCH_TOOL_NAME || name === PROPOSE_RESEARCH_PLAN_TOOL_NAME || name === SUBMIT_RESEARCH_DRAFT_TOOL_NAME;
-  for (let index = items.length - 1; index >= 0 && goal === undefined; index -= 1) {
+  /** The research's first start was reached. */
+  let began = false;
+  /** A start that picked research up was reached, and the Continue before it has not been. */
+  let pickedUpBehind = false;
+  for (let index = items.length - 1; index >= 0 && !began; index -= 1) {
     const item = items[index]!;
-    if (item.kind === "user" && item.id.startsWith("msg-")) break;
+    if (item.kind === "user" && item.id.startsWith("msg-")) {
+      if (!pickedUpBehind) break;
+      pickedUpBehind = false;
+      continue;
+    }
     if (item.kind === "tool_result" && ownCall(item.name)) results.set(item.callId, item);
     if (item.kind !== "tool_call" || !ownCall(item.name)) continue;
     let parsed: unknown;
@@ -938,14 +967,21 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
     }
     if (item.name === START_RESEARCH_TOOL_NAME) {
       const started = results.get(item.callId);
+      // A start refused, such as a second one under a plan that stands, began nothing.
+      if (started?.outcome === "error") continue;
       const output = started?.outcome === "complete" ? started.output : "";
       const older = SCOPING_STARTED.test(output) ? null : decodeResearchPlan(parsed);
       const start = decodeResearchStart(parsed);
       if (!start.ok) continue;
-      goal = start.value.goal;
+      pickedUpBehind = PICKED_UP_START.test(output);
+      began = !pickedUpBehind;
+      if (goal !== undefined) continue;
       const picked = pickedUpOfResult(output);
+      const pickedPlan = isObject(picked.plan) ? picked.plan : null;
+      // A Continue's goal is the row's, whatever words the model's call used.
+      goal = typeof pickedPlan?.goal === "string" ? pickedPlan.goal : start.value.goal;
       openedFrom = picked.openedFrom;
-      const planned = proposed ?? (isObject(picked.plan) ? picked.plan : null);
+      const planned = proposed ?? pickedPlan;
       const stands = older?.ok ? older : planned ? decodeResearchPlan({ ...planned, goal }) : null;
       plan = stands?.ok ? stands.value : null;
       researchRun = STARTED_RESEARCH_RUN.exec(output)?.[1];
@@ -964,7 +1000,8 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
     }
   }
   const owed = plan && !rebuilt ? released as StandingPlan | null : null;
-  return { attempts, draft, ...goal === undefined ? {} : { goal }, ...openedFrom === undefined ? {} : { openedFrom }, ...owed?.changed ? { owedRebuild: owed } : {}, plan,
+  return { attempts, draft, ...goal === undefined ? {} : { goal }, ...goal !== undefined && !began ? { historyCut: true as const } : {},
+    ...openedFrom === undefined ? {} : { openedFrom }, ...owed?.changed ? { owedRebuild: owed } : {}, plan,
     ...researchRun === undefined ? {} : { researchRun } };
 }
 
