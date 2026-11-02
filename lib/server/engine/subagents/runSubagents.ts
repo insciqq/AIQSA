@@ -162,6 +162,8 @@ export type PrepareRunSubagentsInput = Readonly<{
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   /** Background turns may start (web chats); never from a Telegram turn or a scheduled occurrence, which still reach them. */
   backgroundAllowed: boolean;
+  /** False: its sub-agents start no children, whatever their tools (a research run's researchers); absent, one with every tool may. */
+  childrenAllowed?: false;
   ports?: SubagentRunPorts;
   recordSearchEvidence: SubagentHost["recordSearchEvidence"];
   runContextItems: readonly TranscriptItem[];
@@ -252,7 +254,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     ...(input.ports?.browserIdentity ? { browserIdentity: input.ports.browserIdentity } : {}),
     callTimeLeft: input.callTimeLeft,
     chatId: input.chatId,
-    children,
+    ...(input.childrenAllowed === false ? {} : { children }),
     // Read at each use: a research run's turn ends later once its plan is released (`execution.ts`).
     get deadlineAt() { return input.deadlineAt; },
     deadlineSignal: input.deadline,
