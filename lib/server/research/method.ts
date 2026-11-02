@@ -28,9 +28,12 @@ export function researchMethodText(plan: ResearchPlan): string {
     "After each researcher's report you read what is still empty in the matrix. Send more researchers for empty cells only, never for one " +
       `more detail of a filled cell. ${RESEARCH_ROUND_LIMITS.noNewCellRounds} rounds of researchers in a row that fill no new cell end the research. ` +
       `A row or a criterion that turns out to matter goes in with ${CHANGE_RESEARCH_FRAME_TOOL_NAME}.`,
-    `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the report, ` +
-      "every finding and what could not be reached. The report keeps apart what is confirmed, what a party claims and what is not verified, " +
-      "and says what could not be reached and why.",
+    `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the report, the ids of the records it rests on, ` +
+      "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
+      "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
+    "The report holds a comparison table on the matrix's criteria, says why each matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
+      "and each case of a branch gets its row. When the data does not tell rows apart, say so and what would decide, such as trying them, instead of inventing a difference. " +
+      "The report keeps apart what is confirmed, what a party claims and what is not verified, and says what could not be reached and why.",
     "",
     "The plan:",
     ...plan.questions.map(classLine),

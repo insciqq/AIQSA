@@ -249,6 +249,8 @@ export type ResearchFinding = Readonly<{
   claim: string;
   /** Copied verbatim from the page an agent opened. */
   quote: string;
+  /** The record it came from. Absent on a finding typed into a draft stored before drafts referred to records. */
+  recordId?: string;
   sourceClass: ResearchSourceClass;
   standing: ResearchStanding;
   url: string;
@@ -350,8 +352,14 @@ export type ResearchDraftReferences = Readonly<{
   recordIds: readonly string[];
 }>;
 
+/**
+ * The references are there on a draft that refers to records, and absent on a text draft or one stored from before. `findings` are what
+ * every gate reads: a model types none, and the server fills them from the records its ids name (`researchDraftWithRecords`).
+ */
 export type ResearchDraft = Partial<ResearchDraftReferences> & Readonly<{
   findings: readonly ResearchFinding[];
+  /** What is wrong with references that could not be read: the report stands, and the report check sends it back with this. */
+  invalidReferences?: string;
   /**
    * `reserved_call`: the model called `submit_research_draft`. `plain_text`: it wrote a final message instead, twice
    * or with its tools closed, so the draft has its text and no findings.
@@ -397,6 +405,8 @@ const isResearchKey = (value: unknown): value is string => typeof value === "str
 
 const RECORD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const isRecordId = (value: unknown): value is string => typeof value === "string" && RECORD_ID_PATTERN.test(value);
+/** What a draft may name as a record, any short text: one that is no id goes back through the report check, which says which, like any other that names no record. */
+const isCitedRecord = (value: unknown): value is string => storableText(value, 64);
 
 const isLink = (value: unknown): value is string => storableText(value, RESEARCH_LIMITS.urlCharacters) && /^https?:\/\//iu.test(value);
 
@@ -754,18 +764,17 @@ export function decodeResearchRecord(value: unknown): DecodedResearch<ResearchRe
 
 const DRAFT_REFERENCE_FIELDS = ["branch_picks", "does_not_separate", "pick_row_key", "record_ids"] as const;
 
-/**
- * What ties a draft to the records and the matrix, from `submit_research_draft`'s arguments: every field given, null or empty where it
- * does not apply. Apart from `decodeResearchDraft` until a draft refers to records, so a draft of today decodes as it always did.
- */
+/** What ties a draft to the records and the matrix, from `submit_research_draft`'s arguments: every field given, null or empty where it does not apply. */
 export function decodeResearchDraftReferences(value: unknown): DecodedResearch<ResearchDraftReferences> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
   const missing = missingField(value, DRAFT_REFERENCE_FIELDS);
   if (missing) return refused(missing);
   const limits = RESEARCH_FRAME_LIMITS;
-  const { branch_picks: rawPicks, does_not_separate: rawNoSeparation, pick_row_key: pickRowKey, record_ids: recordIds } = value;
-  if (!Array.isArray(recordIds) || recordIds.length > RESEARCH_LIMITS.findings || !recordIds.every(isRecordId)) {
-    return refused(`record_ids must list at most ${RESEARCH_LIMITS.findings} record ids.`);
+  const { does_not_separate: rawNoSeparation, pick_row_key: pickRowKey } = value;
+  const recordIds: unknown = value.record_ids ?? [];
+  const rawPicks: unknown = value.branch_picks ?? [];
+  if (!Array.isArray(recordIds) || recordIds.length > RESEARCH_LIMITS.findings || !recordIds.every(isCitedRecord)) {
+    return refused(`record_ids must list at most ${RESEARCH_LIMITS.findings} ids, each whole as the server gave it.`);
   }
   if (pickRowKey !== null && !isResearchKey(pickRowKey)) return refused("pick_row_key must be null or the key of the row picked.");
   const maxPicks = limits.branches * limits.casesPerBranch;
@@ -791,16 +800,12 @@ export function decodeResearchDraftReferences(value: unknown): DecodedResearch<R
   return { ok: true, value: { branchPicks, doesNotSeparate, pickRowKey, recordIds } };
 }
 
-/** A draft as `submit_research_draft` takes it; the message names the field to correct. */
-export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDraft> {
-  if (!isRecord(value)) return refused("The arguments must be one object.");
+/** The findings typed into a draft stored before drafts referred to records. */
+function decodeTypedFindings(value: unknown): DecodedResearch<readonly ResearchFinding[]> {
   const limits = RESEARCH_LIMITS;
-  if (!boundedText(value.report, limits.reportCharacters)) return refused(`report must be 1 to ${limits.reportCharacters} characters.`);
-  if (!Array.isArray(value.findings) || value.findings.length > limits.findings) {
-    return refused(`findings must list at most ${limits.findings} findings.`);
-  }
+  if (!Array.isArray(value) || value.length > limits.findings) return refused(`findings must list at most ${limits.findings} findings.`);
   const findings: ResearchFinding[] = [];
-  for (const [index, entry] of value.findings.entries()) {
+  for (const [index, entry] of value.entries()) {
     const at = `findings[${index}]`;
     if (!isRecord(entry)) return refused(`${at} must be one object.`);
     if (!boundedText(entry.claim, limits.claimCharacters)) return refused(`${at}.claim must be 1 to ${limits.claimCharacters} characters.`);
@@ -810,6 +815,23 @@ export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDra
     if (!(RESEARCH_STANDINGS as readonly unknown[]).includes(entry.standing)) return refused(`${at}.standing must be one of ${RESEARCH_STANDINGS.join(", ")}.`);
     findings.push({ claim: entry.claim, quote: entry.quote, sourceClass: entry.source_class, standing: entry.standing as ResearchStanding, url: entry.url });
   }
+  return { ok: true, value: findings };
+}
+
+/**
+ * A draft as `submit_research_draft` takes it; the message names the field to correct. It refers to records, and the server fills its findings from
+ * them. A stored transcript keeps the form from before that, findings typed in the call, which `researchOfTurn` reads back and a text draft still
+ * uses, so that form decodes as it always did. A model that sends it now goes back at the report check, not here, where nothing could say why. The same
+ * goes for references that cannot be read: refused here, a key mistyped on the last call would cost the whole report, and past the send-back cap too (Answer first).
+ */
+export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDraft> {
+  if (!isRecord(value)) return refused("The arguments must be one object.");
+  const limits = RESEARCH_LIMITS;
+  if (!boundedText(value.report, limits.reportCharacters)) return refused(`report must be 1 to ${limits.reportCharacters} characters.`);
+  const stored = value.findings !== undefined && value.record_ids === undefined;
+  const findings = stored ? decodeTypedFindings(value.findings) : null;
+  if (findings && !findings.ok) return findings;
+  const references = stored ? null : decodeResearchDraftReferences(value);
   if (!Array.isArray(value.unreachable) || value.unreachable.length > limits.unreachable) {
     return refused(`unreachable must list at most ${limits.unreachable} sources.`);
   }
@@ -823,5 +845,6 @@ export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDra
     if (sourceClass !== null && !isResearchSourceClass(sourceClass)) return refused(`${at}.source_class must be one of ${RESEARCH_SOURCE_CLASSES.join(", ")} or null.`);
     unreachable.push({ reason: entry.reason, sourceClass, target: entry.target });
   }
-  return { ok: true, value: { findings, origin: "reserved_call", report: value.report, unreachable } };
+  const referred = !references ? {} : references.ok ? references.value : { invalidReferences: references.message };
+  return { ok: true, value: { ...referred, findings: findings?.value ?? [], origin: "reserved_call", report: value.report, unreachable } };
 }

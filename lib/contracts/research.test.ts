@@ -235,15 +235,56 @@ describe("a draft's references", () => {
 
   it("refuses naming the field, a missing one included", () => {
     expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: undefined }))).toBe("record_ids must be given: pass null when it does not apply.");
-    expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: ["one"] }))).toContain("record_ids");
+    expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: [42] }))).toContain("record_ids");
+    expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: ["x".repeat(65)] }))).toContain("record_ids");
+    expect(refusal(decodeResearchDraftReferences({ ...references, record_ids: Array.from({ length: 301 }, () => RECORD_ID) }))).toContain("at most 300");
     expect(refusal(decodeResearchDraftReferences({ ...references, pick_row_key: "Лонакс" }))).toContain("pick_row_key");
     expect(refusal(decodeResearchDraftReferences({ ...references, branch_picks: [{ branch_key: "weight" }] }))).toContain("branch_picks[0]");
     expect(refusal(decodeResearchDraftReferences({ ...references, does_not_separate: { row_keys: ["x1"], statement: "Same.", would_decide: "Try." } }))).toContain("row_keys");
     expect(refusal(decodeResearchDraftReferences({ ...references, does_not_separate: { ...references.does_not_separate, would_decide: "" } }))).toContain("would_decide");
   });
 
-  it("leaves today's draft as it decoded: references on it are neither read nor refused", () => {
-    expect(value(decodeResearchDraft({ ...draft, ...references, record_ids: "not a list" }))).toEqual({ findings: [], origin: "reserved_call", report: "# Report", unreachable: [] });
+  it("reads a draft that refers to records, with no findings of its own: the server fills those from the records", () => {
+    const decoded = value(decodeResearchDraft({ ...references, report: "# Report", unreachable: [] }));
+    expect(decoded).toEqual({ branchPicks: [{ branchKey: "weight", caseKey: "light", rowKey: "x1" }],
+      doesNotSeparate: { rowKeys: ["x1", "x2"], statement: references.does_not_separate.statement, wouldDecide: "Trying them." }, findings: [], origin: "reserved_call",
+      pickRowKey: "x1", recordIds: [RECORD_ID], report: "# Report", unreachable: [] });
+  });
+
+  it("takes the model's ids over any findings it typed beside them", () => {
+    const typed = { claim: "Typed.", quote: "Typed.", source_class: "owner_reviews", standing: "confirmed", url: "https://shop.example/x1" };
+    expect(value(decodeResearchDraft({ ...references, findings: [typed], report: "# Report", unreachable: [] })).findings).toEqual([]);
+  });
+
+  it("reads an id that was never one as an id, so the report check can say which", () => {
+    expect(value(decodeResearchDraft({ ...references, record_ids: ["rec-12", RECORD_ID], report: "# Report", unreachable: [] })).recordIds).toEqual(["rec-12", RECORD_ID]);
+  });
+
+  it("never loses a report over its references: what is wrong goes back at the report check, under the cap", () => {
+    for (const [wrong, field] of [[{ pick_row_key: "Лонакс" }, "pick_row_key"], [{ record_ids: "not a list" }, "record_ids"], [{ branch_picks: [{ branch_key: "weight" }] }, "branch_picks[0]"]] as const) {
+      const decoded = value(decodeResearchDraft({ ...references, ...wrong, report: "# Report", unreachable: [] }));
+      expect(decoded).toMatchObject({ findings: [], invalidReferences: expect.stringContaining(field), origin: "reserved_call", report: "# Report" });
+      expect(decoded.recordIds).toBeUndefined();
+    }
+    expect(value(decodeResearchDraft({ report: "# Report", unreachable: [] })).invalidReferences).toContain("must be given");
+  });
+
+  it("still refuses a draft whose report or list of what was unreachable cannot be read", () => {
+    expect(refusal(decodeResearchDraft({ ...references, report: " ", unreachable: [] }))).toContain("report");
+    expect(refusal(decodeResearchDraft({ ...references, report: "# Report", unreachable: "none" }))).toContain("unreachable");
+  });
+
+  it("reads null for a list as an empty one, as a missing field's refusal says to pass it", () => {
+    expect(value(decodeResearchDraftReferences({ branch_picks: null, does_not_separate: null, pick_row_key: null, record_ids: null })))
+      .toEqual({ branchPicks: [], doesNotSeparate: null, pickRowKey: null, recordIds: [] });
+  });
+
+  it("keeps decoding a draft stored before drafts referred to records, since persisted chats survive an upgrade", () => {
+    const stored = { findings: [{ claim: "It holds.", quote: "held up", source_class: "independent_tests", standing: "confirmed", url: "https://lab.example/x1" }],
+      report: "# Report", unreachable: [{ reason: "Blocked.", source_class: null, target: "shop.example" }] };
+    expect(value(decodeResearchDraft(stored))).toEqual({ findings: [{ claim: "It holds.", quote: "held up", sourceClass: "independent_tests", standing: "confirmed",
+      url: "https://lab.example/x1" }], origin: "reserved_call", report: "# Report", unreachable: [{ reason: "Blocked.", sourceClass: null, target: "shop.example" }] });
+    expect(value(decodeResearchDraft(draft))).toEqual({ findings: [], origin: "reserved_call", report: "# Report", unreachable: [] });
   });
 });
 

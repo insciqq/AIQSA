@@ -1,8 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultNativeEngineDeps } from "../engine/defaultEngine";
+import { researchPorts, type ResearchRunScope } from "./ports";
+import { REPORT_CHECK_GATE } from "./reportCheck";
 
 // Every database port is a fake, including defaults imported by the production factory.
 vi.mock("../prisma", () => ({ prisma: {} }));
+
+describe("production report wiring", () => {
+  it("hands a run the real report port: the check first among its gates, and an answer from the records", async () => {
+    const deps = defaultNativeEngineDeps({} as never, {} as never);
+    const ports = researchPorts(deps.research?.ports, { chatId: "chat", researchRunId: "run", runId: "run", userId: "user", userMessage: "Проведи исследование." } as ResearchRunScope);
+    expect(ports.report.gates.map(({ name }) => name)).toEqual([REPORT_CHECK_GATE]);
+    await expect(ports.report.compose({ ended: "failed", signal: AbortSignal.abort(new Error("stopped")) })).rejects.toThrow("stopped");
+  });
+});
 
 describe("production research role wiring", () => {
   it("builds both real roles from defaultNativeEngineDeps and admits through the installation loader", async () => {
