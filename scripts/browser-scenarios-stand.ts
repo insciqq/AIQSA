@@ -27,7 +27,7 @@ import {
   JOURNEY_LIMITS, discoveredContextWindow, journeyReuseDecision, modelInConnection, readConnections,
   type JourneyConnection
 } from "./context-compaction-journey-support";
-import { RESEARCH_PERPLEXITY_SEARCH_MODEL, RESEARCH_PRODUCTION_SEARCH, researchSearchSourceStatus } from "./research-eval-support";
+import { RESEARCH_PERPLEXITY_SEARCH_MODEL, RESEARCH_PRODUCTION_SEARCH, RESEARCH_SEARCH_LABELS, researchSearchSourceStatus, type ResearchSearchLabel } from "./research-eval-support";
 
 export const REQUEST_TIMEOUT_MS = 60_000;
 export const SETUP_TIMEOUT_MS = 900_000;
@@ -386,12 +386,19 @@ export async function setOrganizationSearchPlan(api: Api, plan: Readonly<{ mode:
 const PRODUCTION_SEARCH_NAMES = { deepseek: "DeepSeek Search API", openai: "OpenAI (CodexLB) Search", perplexity: "Perplexity" } as const;
 
 /**
- * Production's Search plan for scenario T: each source on its client route, checked by its own Test, then the three together as
- * the organization's default; resolves the plan's sources with their labels. Every refusal names its source,
+ * Production's Search plan for scenario T: each selected source (all three by default) on its client route, checked by its own Test,
+ * then together as the organization's default, so research searches with exactly those; resolves the plan's sources with their labels.
+ * A source left out costs no setup: no OpenRouter lookup, DeepSeek key or search model. Every refusal names its source,
  * `research_search_<source>_<code>`. OpenRouter is resolved first and only ever reused (`perplexitySearchConnection`), so a
  * stand without it stops before anything is paid for, and no step runs Quick Setup for it.
  */
-export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot: string; deepseekKey: string; searchModel: string; secret: string;
+export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot: string; secret: string;
+  /** DeepSeek's key, when `deepseek` is selected. */
+  deepseekKey?: string;
+  /** The codex-lb model OpenAI's source searches with, when `openai` is selected. */
+  searchModel?: string;
+  /** The sources the plan uses, in any order; absent, all three. */
+  sources?: readonly ResearchSearchLabel[];
   /** Present only when the operator approved OpenRouter's one-time setup: without a live connection it is added once, then reused. */
   openrouterSetupKey?: string;
   report(source: string, status: string): void }>): Promise<readonly Readonly<{ label: string; optionId: string }>[]> {
@@ -400,7 +407,10 @@ export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot
       return fail(`research_search_${label}_${error instanceof BrowserScenarioError ? error.message.replace(/^browser_scenarios_/u, "") : "setup_failed"}`);
     }
   };
-  const perplexity = await step("perplexity", async () => {
+  const selected = RESEARCH_PRODUCTION_SEARCH.filter((spec) => (input.sources ?? RESEARCH_SEARCH_LABELS).includes(spec.label));
+  if (selected.length === 0) fail("research_search_sources_invalid");
+  const wanted = (label: ResearchSearchLabel) => selected.some((spec) => spec.label === label);
+  const perplexity = !wanted("perplexity") ? null : await step("perplexity", async () => {
     try {
       return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL);
     } catch (error) {
@@ -411,13 +421,17 @@ export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot
       }, "perplexity_connection_missing", 3_000);
     }
   });
-  const openai = await step("openai", () => ensureModel(api, { apiRoot: input.apiRoot, model: input.searchModel }, input.secret, "Research search model",
-    { nativeSearch: true, vision: false }));
-  const connections = { deepseek: await step("deepseek", () => ensureFamilyConnection(api, "deepseek", input.deepseekKey)), openai: openai.connectionId, perplexity };
+  const searchModel = wanted("openai") ? input.searchModel ?? fail("research_search_openai_model_required") : null;
+  const openai = searchModel === null ? null : await step("openai", () => ensureModel(api, { apiRoot: input.apiRoot, model: searchModel }, input.secret,
+    "Research search model", { nativeSearch: true, vision: false }));
+  const deepseek = !wanted("deepseek") ? null
+    : await step("deepseek", () => ensureFamilyConnection(api, "deepseek", input.deepseekKey ?? fail("deepseek_key_required")));
+  const connections = { deepseek, openai: openai?.connectionId ?? null, perplexity };
   const sources: { label: string; optionId: string }[] = [];
-  for (const spec of RESEARCH_PRODUCTION_SEARCH) {
-    const upstreamModelId = spec.label === "openai" ? input.searchModel : spec.label === "perplexity" ? spec.upstreamModelId : null;
-    const source = await step(spec.label, () => ensureClientSearchSource(api, { connectionId: connections[spec.label], displayName: PRODUCTION_SEARCH_NAMES[spec.label],
+  for (const spec of selected) {
+    const connectionId = connections[spec.label] ?? fail(`research_search_${spec.label}_connection_missing`);
+    const upstreamModelId = spec.label === "openai" ? searchModel : spec.label === "perplexity" ? spec.upstreamModelId : null;
+    const source = await step(spec.label, () => ensureClientSearchSource(api, { connectionId, displayName: PRODUCTION_SEARCH_NAMES[spec.label],
       kind: spec.kind, protocol: spec.protocol, upstreamModelId }));
     const checked = await step(spec.label, () => checkSearchSource(api, source.id));
     const status = checked.code ?? researchSearchSourceStatus(checked.integration,
