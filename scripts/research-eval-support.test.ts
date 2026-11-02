@@ -454,7 +454,7 @@ describe("content-free stdout, role accounting and plan window", () => {
 
 describe("acceptance options", () => {
   const env = { AIQSA_SUBAGENTS_ANSWERS_DIR: "/private/research" };
-  const production = { ...env, AIQSA_SUBAGENTS_T_SEARCH: "production", AIQSA_SUBAGENTS_SEARCH_MODEL: "search-model-1", OPENROUTER_API_KEY: "k", DEEPSEEK_API_KEY: "k" };
+  const production = { ...env, AIQSA_SUBAGENTS_T_SEARCH: "production", AIQSA_SUBAGENTS_SEARCH_MODEL: "search-model-1", DEEPSEEK_API_KEY: "k" };
   let directory: string | null = null;
   const scratch = () => (directory ??= mkdtempSync(join(tmpdir(), "research-acceptance-")));
   afterEach(() => { if (directory) rmSync(directory, { force: true, recursive: true }); directory = null; });
@@ -465,11 +465,10 @@ describe("acceptance options", () => {
     return path;
   };
 
-  it("takes production Search only with its model and both keys, and the question file only with a purchase question", () => {
+  it("takes production Search only with its model and DeepSeek's key, and the question file only with a purchase question", () => {
     expect(researchEvalOptions(env)).toMatchObject({ search: null, questionFile: null, adminProxyFile: null });
     expect(researchEvalOptions(production).search).toEqual({ model: "search-model-1", plan: "production" });
     expect(() => researchEvalOptions({ ...production, AIQSA_SUBAGENTS_SEARCH_MODEL: "" })).toThrow("research_search_model_required");
-    expect(() => researchEvalOptions({ ...production, OPENROUTER_API_KEY: " " })).toThrow("openrouter_key_required");
     expect(() => researchEvalOptions({ ...production, DEEPSEEK_API_KEY: undefined })).toThrow("deepseek_key_required");
     expect(() => researchEvalOptions({ ...env, AIQSA_SUBAGENTS_T_SEARCH: "all" })).toThrow("research_search_invalid");
     expect(() => researchEvalOptions({ ...env, AIQSA_SUBAGENTS_SEARCH_MODEL: "search-model-1" })).toThrow("research_search_model_invalid");
