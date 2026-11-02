@@ -29,7 +29,7 @@ import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import { recordToolCall, type SettledToolCall } from "./toolCallTelemetry";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
-import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolOutputExcerpt, toolResultImage, toolResultOutputText } from "./toolResults";
+import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolModelOutput, toolOutputExcerpt, toolResultImage, toolResultOutputText } from "./toolResults";
 import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
 import type { UnknownEffects } from "./unknownEffects";
 
@@ -304,6 +304,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
         ...(sourceBinding ? { sourceBinding } : {}), text, toolCallId: row.id })
       : null;
     const excerpt = tool.runScopedResult ? { handle: null, output: text } : toolOutputExcerpt(text, saved);
+    const modelOutput = toolModelOutput(result, text, excerpt);
     const rowResult = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) ??
       snapshotToolExecutionResult({ callId: result.callId, content: [{ text: excerpt.output, type: "text" }], name: result.name,
         status: result.status }, toolLoopPersistenceLimits.resultBytes)!;
@@ -326,7 +327,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       kind: "tool_result",
       name: execution.call.name,
       outcome: result.status,
-      output: identical === null ? excerpt.output : `${excerpt.output}\n\n${repeatIdenticalNote(identical)}`
+      output: identical === null ? modelOutput : `${modelOutput}\n\n${repeatIdenticalNote(identical)}`
     };
   }
 

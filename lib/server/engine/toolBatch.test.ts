@@ -21,7 +21,9 @@ import {
 } from "./toolBatch";
 import { createToolCallStore, type ToolCallBeginResult, type ToolCallRow, type ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry";
-import { TOOL_RESULT_LIMITS } from "./toolResults";
+import { TOOL_RESULT_LIMITS, toolModelOutput, toolOutputExcerpt, toolResultOutputText } from "./toolResults";
+import { rehydratePersistedSearchToolExecutionResult } from "../search/toolResult";
+import { threeEngineResult } from "../search/toolResult.testFixtures";
 import { createUnknownEffects, unknownEffectsOf } from "./unknownEffects";
 import { createTranscriptRepository } from "./transcriptRepository";
 import { SearchToolCancelledError } from "../search/toolExecutor";
@@ -477,6 +479,24 @@ describe("native tool batch", () => {
     expect(outcome.results[0]!.handle).toBe(`tor1_${"b".repeat(32)}`);
     expect(outcome.results[0]!.output.length).toBeLessThan(TOOL_RESULT_LIMITS.inlineChars);
     expect([...rows.values()][0]!.state).toBe("complete");
+  });
+
+  it("shows the model a fair share of each engine of a long merged search result, and saves and records it whole", async () => {
+    const merged = threeEngineResult();
+    const text = toolResultOutputText(merged);
+    const { rows, store } = fakeStore();
+    const batch = deps({ search_selected_engines: tool("search_selected_engines", "none", async ({ call }) => ({ ...merged, callId: call.id }),
+      { observationSource: "search" }) }, store);
+    const outcome = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: { query: "q" }, id: "c1", name: "search_selected_engines" }],
+      round: 1 });
+    expect(batch.saveResult).toHaveBeenCalledWith(expect.objectContaining({ text }));
+    const handle = `tor1_${"b".repeat(32)}`;
+    expect(outcome.results[0]!.handle).toBe(handle);
+    expect(outcome.results[0]!.output).toBe(toolModelOutput({ ...merged, callId: "c1" }, text, toolOutputExcerpt(text, { handle })));
+    for (const name of ["OpenAI", "Perplexity", "DeepSeek"]) expect(outcome.results[0]!.output).toContain(`Search source "${name}":\n`);
+    // The call's row keeps the whole result: its findings, not a view of them.
+    const row = [...rows.values()][0]!;
+    expect(rehydratePersistedSearchToolExecutionResult(row.result as unknown as ToolExecutionResult)?.content).toEqual(merged.content);
   });
 
   it("saves every result over the save bound with a handle and shows it whole; a short one and a read of a saved one stay unsaved", async () => {

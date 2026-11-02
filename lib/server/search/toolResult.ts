@@ -1,6 +1,7 @@
 import { decodeTokenUsage, reportedCostMicros } from "../../domain/usage";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeSearchEvidence } from "../../domain/search";
+import { takeUtf16SafePrefix } from "../../domain/utf16";
 import type { ToolExecutionResult } from "../tools/types";
 import {
   MAX_SEARCH_FINDINGS_CHARACTERS,
@@ -273,14 +274,21 @@ function findingsHeader(engine: RenderedEngine): string {
   return `Search source ${JSON.stringify(engine.displayName)}:\n`;
 }
 
-/** One engine's numbered sources, "" without sources. A cited source keeps
- * the number its findings use; the others follow the highest such number, so
- * an engine without citation numbers is numbered by position. */
-function engineSourcesText(engine: RenderedEngine): string {
+/** One engine's numbered source lines. A cited source keeps the number its
+ * findings use; the others follow the highest such number, so an engine
+ * without citation numbers is numbered by position. */
+function engineSourceLines(engine: RenderedEngine): Readonly<{ line: string; number: number }>[] {
   let next = engine.sources.reduce((highest, source) => Math.max(highest, source.citation ?? 0), 0);
+  return engine.sources.map((source) => {
+    const number = source.citation ?? ++next;
+    return { line: `[${number}] ${source.title} — ${source.url}`, number };
+  });
+}
+
+/** One engine's numbered sources, "" without sources. */
+function engineSourcesText(engine: RenderedEngine): string {
   return engine.sources.length
-    ? `Sources for ${JSON.stringify(engine.displayName)}:\n${engine.sources.map((source) =>
-        `[${source.citation ?? ++next}] ${source.title} — ${source.url}`).join("\n")}`
+    ? `Sources for ${JSON.stringify(engine.displayName)}:\n${engineSourceLines(engine).map(({ line }) => line).join("\n")}`
     : "";
 }
 
@@ -372,4 +380,157 @@ export function rehydratePersistedSearchToolExecutionResult(
   if (version === null || !markerContent(result, version)) return null;
   const executions = canonicalExecutions(result);
   return executions ? { ...result, content: searchToolResultContent(executions, version) } : null;
+}
+
+/** How many of an engine's first sources a fair share keeps besides those its shown findings cite. */
+export const SEARCH_FAIR_SHARE_FIRST_SOURCES = 3;
+
+/** A citation in findings: `[3]` or `[3, 5]`. */
+const CITATION = /\[(\d{1,4}(?:\s*,\s*\d{1,4})*)\]/gu;
+/** Where the next DeepSeek Search API entry starts (`[n] title — label`, `lib/server/providers/deepSeekSearchApi.ts`). */
+const DEEPSEEK_ENTRY_START = /\n\n(?=\[\d{1,4}\] )/gu;
+
+type SourceLine = Readonly<{ line: string; number: number }>;
+
+type FairShareBlock = Readonly<{
+  displayName: string;
+  findings: string;
+  findingsStart: number;
+  header: string;
+  lines: readonly SourceLine[];
+  size: number;
+  sourcesStart: number;
+  start: number;
+  wholeEntries: boolean;
+}>;
+
+function citedNumbers(text: string): Set<number> {
+  const cited = new Set<number>();
+  for (const match of text.matchAll(CITATION)) {
+    for (const value of match[1]!.split(",")) cited.add(Number(value.trim()));
+  }
+  return cited;
+}
+
+/** The beginning of findings within `room`: whole DeepSeek entries when one fits, else a cut at a paragraph, line or word end. */
+function findingsPrefix(findings: string, room: number, wholeEntries: boolean): string {
+  if (findings.length <= room) return findings;
+  if (room <= 0) return "";
+  if (wholeEntries) {
+    let end = 0;
+    for (const match of findings.matchAll(DEEPSEEK_ENTRY_START)) {
+      if (match.index > room) break;
+      end = match.index;
+    }
+    if (end > 0) return findings.slice(0, end);
+  }
+  const prefix = takeUtf16SafePrefix(findings, room);
+  const half = Math.floor(room / 2);
+  for (const boundary of ["\n\n", "\n", " "]) {
+    const at = prefix.lastIndexOf(boundary);
+    if (at >= half) return prefix.slice(0, at).trimEnd();
+  }
+  return prefix;
+}
+
+/** Max-min fair shares of `budget`: a block smaller than its share keeps all of it, and what it leaves goes to the larger ones. */
+function fairShares(sizes: readonly number[], budget: number): number[] {
+  const shares = sizes.map(() => 0);
+  let open = sizes.map((_, index) => index);
+  let left = budget;
+  while (open.length > 0) {
+    const share = Math.floor(left / open.length);
+    const small = open.filter((index) => sizes[index]! <= share);
+    if (small.length === 0) {
+      for (const index of open) shares[index] = share;
+      break;
+    }
+    for (const index of small) {
+      shares[index] = sizes[index]!;
+      left -= sizes[index]!;
+    }
+    open = open.filter((index) => sizes[index]! > share);
+  }
+  return shares;
+}
+
+/** The characters a sources part takes: the blank line before it, its heading and one line per source. */
+function sourcesCost(heading: string, lines: readonly SourceLine[]): number {
+  return lines.length === 0 ? 0 : 2 + heading.length + lines.reduce((sum, { line }) => sum + 1 + line.length, 0);
+}
+
+/** One engine block within `room`: what it keeps verbatim, and a note for each part it cut. */
+function fairShareBlock(block: FairShareBlock, room: number): Readonly<{ shown: number; text: string }> {
+  const name = JSON.stringify(block.displayName);
+  const heading = `Sources for ${name}:`;
+  const sourcesFor = (kept: string) => {
+    const cited = citedNumbers(kept);
+    return block.lines.filter((line, index) => index < SEARCH_FAIR_SHARE_FIRST_SOURCES || cited.has(line.number));
+  };
+  const cost = (kept: string, lines: readonly SourceLine[]) => block.header.length + kept.length + sourcesCost(heading, lines);
+  let findingsRoom = room - block.header.length - sourcesCost(heading, block.lines.slice(0, SEARCH_FAIR_SHARE_FIRST_SOURCES));
+  let kept = findingsPrefix(block.findings, findingsRoom, block.wholeEntries);
+  let lines = sourcesFor(kept);
+  // Each pass keeps a shorter beginning, which cites no more sources than a longer one, so it ends within room or with nothing kept.
+  while (kept.length > 0 && cost(kept, lines) > room) {
+    findingsRoom = kept.length - (cost(kept, lines) - room);
+    kept = findingsPrefix(block.findings, findingsRoom, block.wholeEntries);
+    lines = sourcesFor(kept);
+  }
+  while (lines.length > 0 && cost(kept, lines) > room) lines = lines.slice(0, -1);
+  let findingsPart = `${block.header}${kept}`;
+  if (kept.length < block.findings.length) {
+    findingsPart += `${kept ? "\n" : ""}[Search source ${name}: findings cut here, ${kept.length} of ${block.findings.length} characters ` +
+      `shown; the rest starts at offset ${block.findingsStart + kept.length} of the saved result.]`;
+  }
+  const parts = [findingsPart];
+  if (block.lines.length > 0) {
+    const cut = lines.length < block.lines.length
+      ? `[Sources for ${name}: ${lines.length} of ${block.lines.length} shown, the first ${SEARCH_FAIR_SHARE_FIRST_SOURCES} and those ` +
+        `the shown findings cite; the whole list starts at offset ${block.sourcesStart} of the saved result.]`
+      : null;
+    parts.push([...lines.length > 0 ? [heading, ...lines.map(({ line }) => line)] : [], ...cut ? [cut] : []].join("\n"));
+  }
+  return { shown: cost(kept, lines), text: parts.join("\n\n") };
+}
+
+/**
+ * The model's view of a merged search result too long to show whole (`lib/server/engine/toolResults.ts`): each engine block gets a fair
+ * share of `budget`, so the engine listed last is no longer lost in the omitted middle (acceptance run 2026-11-02: of three selected
+ * engines the model saw one and a half). A block keeps its header, the beginning of its findings (whole DeepSeek entries), the source
+ * lines that beginning cites and its first few, and says what it left out and at which offset of the saved text the rest starts. Every
+ * kept part is the saved text verbatim, so a quote from one checks against the saved copy. Null unless the result is a current-version
+ * search result of two or more engine blocks whose text is exactly `text`; the caller then cuts it as any other result.
+ */
+export function searchToolResultFairShare(
+  result: ToolExecutionResult,
+  text: string,
+  budget: number
+): Readonly<{ shown: number; text: string }> | null {
+  if (searchResultVersion(result) !== SEARCH_TOOL_RESULT_VERSION) return null;
+  const executions = canonicalExecutions(result);
+  if (!executions || searchToolResultText(executions) !== text) return null;
+  const engines = executions.filter((engine) => engine.status === "complete" && engine.findings);
+  if (engines.length < 2) return null;
+  const blocks: FairShareBlock[] = [];
+  let start = 0;
+  for (const engine of engines) {
+    const header = findingsHeader(engine);
+    const findings = engine.findings!;
+    const sources = engineSourcesText(engine);
+    const findingsStart = start + header.length;
+    const size = header.length + findings.length + (sources ? 2 + sources.length : 0);
+    blocks.push({ displayName: engine.displayName, findings, findingsStart, header, lines: engineSourceLines(engine), size,
+      sourcesStart: findingsStart + findings.length + 2, start, wholeEntries: engine.provider === "deepseek" && engine.protocol === "deepseek_search_api" });
+    start += size + 2;
+  }
+  const warnings = searchWarningsText(executions);
+  const shares = fairShares(blocks.map((block) => block.size), budget - (warnings ? warnings.length + 2 : 0));
+  const rendered = blocks.map((block, index) => block.size <= shares[index]!
+    ? { shown: block.size, text: text.slice(block.start, block.start + block.size) }
+    : fairShareBlock(block, shares[index]!));
+  return {
+    shown: rendered.reduce((sum, block) => sum + block.shown, 0) + warnings.length,
+    text: [...rendered.map((block) => block.text), ...warnings ? [warnings] : []].join("\n\n")
+  };
 }
