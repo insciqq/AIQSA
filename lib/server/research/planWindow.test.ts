@@ -18,6 +18,10 @@ const PROPOSAL: ResearchPlanProposal = decoded.value;
 const KEY: ResearchPlanWindowKey = { chatId: "chat", runId: "run-1", userId: "user" };
 const FOREIGN: ResearchPlanWindowKey = { ...KEY, userId: "someone-else" };
 
+const OPENED_AT = Date.parse("2026-11-01T12:00:00.000Z");
+/** A deadline no test of an ordinary window comes near. */
+const FAR_DEADLINE = OPENED_AT + 24 * 60 * 60_000;
+
 function memoryStore() {
   const store: ResearchPlanStore = {
     chatOpen: vi.fn(async ({ userId }) => userId === KEY.userId),
@@ -32,7 +36,7 @@ function memoryStore() {
 
 function scope(extra: Partial<ResearchRunScope> = {}): ResearchRunScope {
   return { branchRunIds: [], chatId: KEY.chatId, extendTurn: () => undefined, now: () => Date.now(), researchRunId: KEY.runId, runId: KEY.runId,
-    sources: { opened: async () => [] }, userFollowups: async () => [], userId: KEY.userId, userMessage: "q", ...extra };
+    sources: { opened: async () => [] }, turnEndsAt: () => FAR_DEADLINE, userFollowups: async () => [], userId: KEY.userId, userMessage: "q", ...extra };
 }
 
 function opened(extra: Partial<ResearchRunScope> = {}, store = memoryStore(), signal = new AbortController().signal) {
@@ -44,7 +48,7 @@ function opened(extra: Partial<ResearchRunScope> = {}, store = memoryStore(), si
 }
 
 beforeEach(() => {
-  vi.useFakeTimers({ now: Date.parse("2026-11-01T12:00:00.000Z") });
+  vi.useFakeTimers({ now: OPENED_AT });
 });
 
 afterEach(() => {
@@ -197,6 +201,68 @@ describe("the window", () => {
     expect(store.rebuilt).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.planWindow * 2);
     expect(store.closed).not.toHaveBeenCalled();
+  });
+});
+
+describe("the turn's deadline", () => {
+  const reserve = RESEARCH_PLAN_WINDOW_LIMITS.releaseReserveMs;
+  const endingIn = (ms: number) => ({ turnEndsAt: () => OPENED_AT + ms });
+
+  it("releases a held edit in time for the release to extend the turn, as an abandoned edit", async () => {
+    const turnMs = 3 * 60_000;
+    const { answer, live, store } = opened(endingIn(turnMs));
+    await vi.advanceTimersByTimeAsync(20_000);
+    await live().act({ action: "hold", runId: KEY.runId });
+    expect(live().view().heldUntil).toBe(new Date(OPENED_AT + turnMs - reserve).toISOString());
+    await vi.advanceTimersByTimeAsync(turnMs - reserve - 20_000 - 1);
+    expect(store.closed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(answer).resolves.toEqual({ changed: false, plan: PROPOSAL, releasedBy: "abandoned_edit" });
+    expect(Date.now()).toBe(OPENED_AT + turnMs - reserve);
+  });
+
+  it("does not let a renewed lease pass it", async () => {
+    const turnMs = RESEARCH_TIME_MS.abandonedEdit + 2 * 60_000;
+    const { answer, live } = opened(endingIn(turnMs));
+    await vi.advanceTimersByTimeAsync(0);
+    await live().act({ action: "hold", runId: KEY.runId });
+    await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.abandonedEdit - 1_000);
+    await live().act({ action: "hold", runId: KEY.runId });
+    expect(live().view().heldUntil).toBe(new Date(OPENED_AT + turnMs - reserve).toISOString());
+    await vi.advanceTimersByTimeAsync(OPENED_AT + turnMs - reserve - Date.now());
+    await expect(answer).resolves.toMatchObject({ releasedBy: "abandoned_edit" });
+    expect(Date.now()).toBe(OPENED_AT + turnMs - reserve);
+  });
+
+  it("shortens a window opened late, so the countdown is the truth, and gives back no more than is left", async () => {
+    const turnMs = reserve + 30_000;
+    const { answer, live } = opened(endingIn(turnMs));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(live().view().windowEndsAt).toBe(new Date(OPENED_AT + 30_000).toISOString());
+    await vi.advanceTimersByTimeAsync(25_000);
+    await live().act({ action: "hold", runId: KEY.runId });
+    await live().act({ action: "cancel_hold", runId: KEY.runId });
+    expect(live().view().windowEndsAt).toBe(new Date(OPENED_AT + 30_000).toISOString());
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(answer).resolves.toMatchObject({ releasedBy: "timer" });
+  });
+
+  it("releases at once a window opened with no time left, so research still starts", async () => {
+    const { answer } = opened(endingIn(reserve - 1_000));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(answer).resolves.toEqual({ changed: false, plan: PROPOSAL, releasedBy: "timer" });
+    expect(Date.now()).toBe(OPENED_AT);
+  });
+
+  it("changes nothing for a hold far from it", async () => {
+    const { answer, live } = opened(endingIn(60 * 60_000));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(live().view().windowEndsAt).toBe(new Date(OPENED_AT + RESEARCH_TIME_MS.planWindow).toISOString());
+    await live().act({ action: "hold", runId: KEY.runId });
+    expect(live().view().heldUntil).toBe(new Date(OPENED_AT + 20_000 + RESEARCH_TIME_MS.abandonedEdit).toISOString());
+    await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.abandonedEdit);
+    await expect(answer).resolves.toMatchObject({ releasedBy: "abandoned_edit" });
+    expect(Date.now()).toBe(OPENED_AT + 20_000 + RESEARCH_TIME_MS.abandonedEdit);
   });
 });
 

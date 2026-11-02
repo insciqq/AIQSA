@@ -43,6 +43,8 @@ export type ResearchRunScope = Readonly<{
   runId: string;
   /** What agents of this research really opened. */
   sources: ResearchGateContext["sources"];
+  /** When the turn ends as it stands now: the ordinary deadline until `extendTurn` moves it. */
+  turnEndsAt(): number;
   /** What the user wrote into this answer, delivered yet or not: during the plan window that counts as an edit. */
   userFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;
   userId: string;
@@ -80,7 +82,8 @@ export type ResearchEvidencePort = Readonly<{
  */
 export type ResearchPlanWindowPort = Readonly<{
   /**
-   * Resolves when the window closes. Stop rejects it through `signal`; a closed tab changes nothing. On a window already answered no
+   * Resolves when the window closes, always before the turn's end, since only the release extends the turn. Stop rejects it through
+   * `signal`; a closed tab changes nothing. On a window already answered no
    * window opens: the proposal is the plan rebuilt from what the person changed, and it replaces the answer's plan at once.
    */
   open(input: Readonly<{ goal: string; proposal: ResearchPlanProposal; signal: AbortSignal }>): Promise<ResearchPlanAnswer>;
