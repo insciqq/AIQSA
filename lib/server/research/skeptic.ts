@@ -3,7 +3,7 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { SUBAGENT_ERROR_CODES, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchAttempt, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
-import { researchCounterEvidenceNote, researchSkepticNote, type ResearchCounterEvidence, type ResearchSkepticOutcome } from "./notes";
+import { researchCounterEvidenceNote, researchNote, researchSkepticNote, type ResearchCounterEvidence, type ResearchSkepticOutcome } from "./notes";
 import { checkQuotes } from "./quoteCheck";
 import { RESEARCH_VERIFIER_UNAVAILABLE } from "./turns";
 import { boundedGateStep, gateToolsLeft } from "./verifier";
@@ -15,11 +15,13 @@ import { boundedGateStep, gateToolsLeft } from "./verifier";
  * on the report's own model too. It is a turn of the verifier's kind (`turns.ts`), so it has no record or frame tool and none of the
  * chat's words or instructions.
  *
- * A finding counts only with a page behind it: the server looks for its quote in what agents opened (`checkQuotes`), and one that
- * is in no opened page, or only in a search snippet, is left out, as an invented quote is. What is left goes back to the main
- * agent with `send_back`, under the cap every gate has. It needs no researcher: the evidence is in the message, so the main agent
- * can weigh it in the report whether or not researchers are closed, and it is told which. Only with no time to act on it, or past
- * the cap, does it become the note alone (`gates.ts`).
+ * Only a page the server saw the quote on counts: a finding stands when `checkQuotes` finds its quote in what agents opened. Anything
+ * else is left out, as an invented quote is, and the note says so. That goes for a quote not on a page whose link was really opened,
+ * which reads as `not_verbatim`, and for text the server could not read, which reads as `not_checked`: neither puts a page behind a
+ * claim the user would read as found evidence, so with that text unreadable the note says the check could not be completed.
+ * What is left goes back to the main agent with `send_back`, under the cap every gate has. It needs no researcher: the evidence is
+ * in the message, so the main agent can weigh it in the report whether or not researchers are closed, and it is told which. Only
+ * with no time to act on it, or past the cap, does it become the note alone (`gates.ts`).
  *
  * A finding reaches the user whatever the report does with it, as the verifier's rejected claims do, in words true either way, and
  * it stays named on every later draft until this check itself says that report answers it. A list of findings proves nothing of a
@@ -153,18 +155,15 @@ function shownUrl(url: string): string {
   return url.length <= SKEPTIC_LIMITS.noteUrlCharacters && !/[*`[\]()\s]/u.test(url) ? url : new URL(url).hostname;
 }
 
-/**
- * What the quote check makes of the leads: one found on another page is that page's, and one on no opened page or only in a snippet
- * is out. One the server could not check stands, without its quote, since a bound on what it reads says nothing against the finding.
- */
+/** What the quote check makes of the leads: only one it found stands, and one found on another page is that page's. */
 function backedLeads(leads: readonly SkepticLead[], opened: readonly ResearchOpenedSource[] | null): Readonly<{ found: readonly ResearchCounterEvidence[]; unbacked: number }> {
   const checks = checkQuotes(leads, opened);
   const found = leads.flatMap((lead, index): ResearchCounterEvidence[] => {
     const check = checks[index]!;
-    if (check.status === "unsupported") return [];
-    const elsewhere = check.status === "found" && check.excerpt.source.kind === "other" ? check.excerpt.source.url : null;
+    if (check.status !== "found") return [];
+    const elsewhere = check.excerpt.source.kind === "other" ? check.excerpt.source.url : null;
     const url = normalizeFetchUrl(elsewhere && !/^https?:/iu.test(elsewhere) ? `https://${elsewhere}` : elsewhere) ?? lead.url;
-    return [{ claim: lead.claim, quote: check.status === "found" ? plainWords(lead.quote, SKEPTIC_LIMITS.noteQuoteCharacters) : null, url: shownUrl(url) }];
+    return [{ claim: lead.claim, quote: plainWords(lead.quote, SKEPTIC_LIMITS.noteQuoteCharacters), url: shownUrl(url) }];
   });
   return { found, unbacked: leads.length - found.length };
 }
@@ -248,6 +247,8 @@ async function seekCounterEvidence(draft: ResearchDraft, context: ResearchGateCo
     const closed = context.researchersClosed?.() ?? null;
     return { kind: "send_back", message: correctionMessage(stands, closed !== null), unresolvedNote: researchCounterEvidenceNote(stands, report) };
   }
+  // With nothing to look a quote up in, nothing can be said of what it raised, least of all that it is unbacked.
+  if (opened && !opened.ok) return { kind: "pass", notes: [researchNote("gate_failed", report), ...named(stands)] };
   if (unbacked > 0) return { kind: "pass", notes: [researchSkepticNote("unbacked", report), ...named(stands)] };
   if (stands.length > 0) return { kind: "pass", notes: named(stands) };
   // Nothing found counts only from a turn that finished and could look. A model's own search leaves no step, so only steps that all failed tell.
