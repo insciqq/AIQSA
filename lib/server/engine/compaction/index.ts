@@ -8,8 +8,11 @@
  * and retries once. When no compaction helps, `fitToolResults` makes the one
  * request fit by handle, or the run fails with `context_too_large`. Every
  * call takes the run's `engineItemRules`. The loop's side is
- * `lib/server/engine/runContext.ts`.
+ * `lib/server/engine/runContext.ts`. A run may also clear its oldest page
+ * results past a mark (`planToolResultClearing`), before compaction is
+ * planned, with no model call.
  */
+export { planToolResultClearing, type ToolResultClearing, type ToolResultClearingPolicy } from "./clearing";
 export {
   compact,
   COMPACTION_DEFAULTS,
