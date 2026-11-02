@@ -28,7 +28,7 @@ const domainOf = (record: ResearchEvidenceRecord): string | null => record.regis
 export function researchShopText(text: string): boolean {
   const normalized = text.slice(0, RESEARCH_PAGE_LIMITS.bytesPerPage).normalize("NFKC").toLowerCase();
   const price = /(?:(?:[$€£₽¥]|\b(?:usd|eur|gbp|rub))\s{0,8}\d|\d[\d\s.,]{0,24}(?:[$€£₽¥]|usd\b|eur\b|gbp\b|rub\b|руб(?:\.|ля|лей)?(?:\s|$)))/u;
-  const control = /(?:^|\n)\s*(?:[-*]\s*)?(?:(?:button|link)\s+["'])?(?:\[)?(?:add to (?:cart|basket)|buy now|order now|place order|в корзину|добавить в корзину|купить|заказать|оформить заказ|añadir al carrito|añadir a la cesta|agregar al carrito|comprar(?: ahora)?|realizar pedido|tramitar pedido)(?:\])?(?:["'](?:\s+\[ref=[^\]\n]+\])?)?\s*$/mu;
+  const control = /(?:^|\n)\s*(?:[-*]\s*)?(?:(?:button|link)\s+["'])?(?:\[)?(?:add to (?:cart|basket)|buy now|order now|place order|в корзину|добавить в корзину|купить|заказать|оформить заказ|añadir (?:al carrito|a la cesta|al carro)|agregar al carrito|comprar?(?: ya| ahora)?|realizar pedido|tramitar pedido|finalizar compra|afegeix (?:a la cistella|al carro|al carret)|afegir (?:a la cistella|al carro|al carret)|afig (?:a la cistella|al carro|al carret)|comprar? ara|fer la comanda|tramitar la comanda)(?:\])?(?:["'](?:\s+\[ref=[^\]\n]+\])?)?\s*$/mu;
   return price.test(normalized) && control.test(normalized);
 }
 
@@ -85,7 +85,9 @@ export function researchTextGroupKey(fingerprint: string | null, earlier: readon
 const MONTHS: Readonly<Record<string, number>> = {
   january: 1, february: 2, march: 3, april: 4, may: 5, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
   января: 1, февраля: 2, марта: 3, апреля: 4, мая: 5, июня: 6, июля: 7, августа: 8, сентября: 9, октября: 10, ноября: 11, декабря: 12,
-  enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12
+  enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
+  // Catalan and Valencian; abril and octubre are the same as in Spanish.
+  gener: 1, giner: 1, febrer: 2, març: 3, maig: 5, juny: 6, juliol: 7, agost: 8, setembre: 9, novembre: 11, desembre: 12
 };
 
 const daysInMonth = (year: number, month: number) => month === 2 ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28)
@@ -104,10 +106,10 @@ function dateParts(text: string): Readonly<{ year: number; month: number | null;
 function publicationDate(value: string): string | null {
   const raw = value.trim().toLowerCase();
   if (dateParts(raw)) return raw;
-  // "5 марта 2024 г." and "5 de marzo de 2024".
-  const dayFirst = /^(\d{1,2})\s+(?:de\s+)?([\p{L}]+)\s+(?:de\s+)?(\d{4})(?:\s+г\.?)?$/u.exec(raw);
+  // "5 марта 2024 г.", "5 de marzo de 2024" and the Valencian "5 d'abril del 2024".
+  const dayFirst = /^(\d{1,2})\s+(?:de\s+|d['’])?([\p{L}]+)\s+(?:del?\s+)?(\d{4})(?:\s+г\.?)?$/u.exec(raw);
   const monthFirst = /^([a-z]+)\s+(\d{1,2}),?\s+(\d{4})$/u.exec(raw);
-  const monthOnly = /^([\p{L}]+)\s+(?:de\s+)?(\d{4})$/u.exec(raw);
+  const monthOnly = /^([\p{L}]+)\s+(?:del?\s+)?(\d{4})$/u.exec(raw);
   const month = MONTHS[dayFirst?.[2] ?? monthFirst?.[1] ?? monthOnly?.[1] ?? ""];
   if (!month) return null;
   const year = dayFirst?.[3] ?? monthFirst?.[3] ?? monthOnly?.[2];
@@ -122,8 +124,8 @@ export function researchPublishedOn(text: string): string | null {
   let date: string | null = null;
   const lines = text.slice(0, 2_000).split(/\r?\n/u).slice(0, 20);
   for (const line of lines) {
-    if (/^\s*(?:#{1,6}\s*)?(?:references|sources|related articles|источники|литература|похожие статьи|referencias|fuentes|bibliografía|artículos relacionados)\s*:?\s*$/iu.test(line)) break;
-    const label = /^\s*(?:published(?:\s+on)?|publication date|date published|дата публикации|опубликовано|опубликован[ао]?|publicado(?:\s+el)?|fecha de publicación)\s*:?\s+(.+?)\s*$/iu.exec(line);
+    if (/^\s*(?:#{1,6}\s*)?(?:references|sources|related articles|источники|литература|похожие статьи|referencias|fuentes|bibliografía|artículos relacionados|referències|fonts|bibliografia|articles relacionats)\s*:?\s*$/iu.test(line)) break;
+    const label = /^\s*(?:published(?:\s+on)?|publication date|date published|дата публикации|опубликовано|опубликован[ао]?|publicado(?:\s+el)?|fecha de publicación|publicat(?:\s+el)?|data de publicació)\s*:?\s+(.+?)\s*$/iu.exec(line);
     if (!label) continue;
     const found = publicationDate(label[1]);
     if (found === null) return null;

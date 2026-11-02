@@ -79,6 +79,10 @@ describe("answerSpeech", () => {
     });
   });
 
+  it("speaks a Valencian answer's placeholders in Valencian when the fallback voice is Catalan", () => {
+    expect(answerSpeech("Ací tens el codi:\n\n```ts\nconst value = 1;\n```", "ca-ES").sentences).toEqual(["Ací tens el codi:", "Bloc de codi omés."]);
+  });
+
   it("returns nothing to read when only punctuation or citations remain", () => {
     expect(answerSpeech("[K1] — …", "en").sentences).toEqual([]);
     expect(answerSpeech("   ", "en").sentences).toEqual([]);

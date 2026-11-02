@@ -17,7 +17,14 @@ export const MAX_UTTERANCE_CHARACTERS = 220;
 type Placeholder = "code" | "formula" | "image" | "table";
 type Segment = Readonly<{ kind: "text"; value: string }> | Readonly<{ kind: "placeholder"; value: Placeholder }>;
 
-const PLACEHOLDERS: Readonly<Record<"en" | "es" | "ru", Readonly<Record<Placeholder, string>>>> = {
+const PLACEHOLDERS: Readonly<Record<"ca" | "en" | "es" | "ru", Readonly<Record<Placeholder, string>>>> = {
+  // Catalan in its Valencian spelling: a ca-ES voice reads both alike.
+  ca: {
+    code: "bloc de codi omés",
+    formula: "fórmula omesa",
+    image: "imatge omesa",
+    table: "taula omesa"
+  },
   en: {
     code: "code block skipped",
     formula: "formula skipped",
@@ -202,7 +209,7 @@ export function answerSpeech(markdown: string, fallbackLanguage: string): Answer
   const prose = groups.flatMap((group) => group.flatMap((segment) => segment.kind === "text" ? [segment.value] : []));
   const lang = detectSpeechLanguage(prose.join(" "), fallbackLanguage);
   const language = lang.toLowerCase();
-  const placeholders = PLACEHOLDERS[language.startsWith("ru") ? "ru" : language.startsWith("es") ? "es" : "en"];
+  const placeholders = PLACEHOLDERS[language.startsWith("ru") ? "ru" : language.startsWith("es") ? "es" : language.startsWith("ca") ? "ca" : "en"];
   const sentences: string[] = [];
   for (const group of groups) {
     // A block placeholder is its own sentence; one inside a sentence ("see

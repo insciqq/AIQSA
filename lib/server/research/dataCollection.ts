@@ -72,4 +72,4 @@ export function researchSmallSampleNote(dataset: Pick<ResearchDataset, "counts" 
 }
 
 /** Whether a claim already reads as a rate, which a small sample cannot carry. */
-export const researchClaimGivesRate = (claim: string) => /\d\s*(?:%|процент|percent|por ciento)/iu.test(claim);
+export const researchClaimGivesRate = (claim: string) => /\d\s*(?:%|процент|percent|per cent|por ciento)/iu.test(claim);

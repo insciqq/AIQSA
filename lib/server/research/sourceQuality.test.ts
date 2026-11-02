@@ -148,7 +148,8 @@ describe("seller evidence", () => {
   });
 
   it.each(["Price: $249\nAdd to cart", "Price: EUR 249\n- button \"Order now\" [ref=e5]", "Цена: 29 990 ₽\nВ корзину", "Цена: 29990 руб.\nКупить",
-    "Precio: 499,00 €\nAñadir al carrito", "499 €\n- button \"Comprar ahora\" [ref=e7]"])(
+    "Precio: 499,00 €\nAñadir al carrito", "499 €\n- button \"Comprar ahora\" [ref=e7]", "499,00\u00a0€\n- button \"Añadir a la cesta\" [ref=e3]\n- button \"Comprar ya\" [ref=e4]",
+    "Preu: 499 €\nAfegeix a la cistella", "499 €\nAfig al carret"])(
     "keeps shop signals from page text outside the quote: %s", (text) => {
       const seller = record(URL, `${RELEASE}\n${text}`);
       expect(seller.kind === "finding" && seller.quote).toBe(QUOTE);
@@ -218,6 +219,7 @@ describe("publication dates and ages", () => {
     ["Published: 2024", "2024"], ["Published on 2024-03", "2024-03"], ["Publication date: 2024-02-29", "2024-02-29"],
     ["Published: March 5, 2024", "2024-03-05"], ["Опубликовано: 5 марта 2024", "2024-03-05"], ["Published: March 2024", "2024-03"],
     ["Publicado el 5 de marzo de 2024", "2024-03-05"], ["Fecha de publicación: marzo de 2024", "2024-03"], ["Referencias\nPublicado: 2024-01-01", null],
+    ["Publicat el 5 d'abril de 2024", "2024-04-05"], ["Data de publicació: 12 de març del 2024", "2024-03-12"], ["Publicat: giner 2024", "2024-01"], ["Fonts\nPublicat: 2024-01-01", null],
     ["Published: 2024\nPublished: 2024-03-05", "2024-03-05"],
     ["The study was published in 2024.\nUpdated: 2026-11-02\nCopyright 2026", null],
     ["Published: 03/04/2024", null], ["Published: 2023-02-29", null], ["Published: 2024-13", null], ["Published: 2024-04-31", null],
