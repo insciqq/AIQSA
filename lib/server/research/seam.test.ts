@@ -1379,7 +1379,7 @@ describe("a researcher's task budget", () => {
   const read = (id: string) => ({ arguments: { handle: `tor1_${"b".repeat(32)}` }, id, name: "read_tool_result" });
   const reads = (prefix: string) => Array.from({ length: RESEARCH_TASK_LIMITS.toolCalls + 1 }, (_, index) => read(`${prefix}-${index + 1}`));
 
-  it("refuses a researcher's 16th call as a budget refusal and takes its report from a tool-free response, while a gate's turn has no budget", async () => {
+  it("refuses a researcher's 16th call and takes its report, while a gate's turn has no budget", async () => {
     const skeptic = gate("skeptic", async (_draft, context) => {
       await context.subagents.run({ brief: "Try to refute it.", instructions: "i", model: "main", name: "skeptic", tools: [] }, context.signal);
       return { kind: "pass" };
@@ -1400,7 +1400,8 @@ describe("a researcher's task budget", () => {
     expect(researcher[0]).toMatch(/\n\nCalls left in this task: 14\.$/u);
     expect(researcher[RESEARCH_TASK_LIMITS.toolCalls - 1]).toMatch(/\n\nCalls left in this task: 0\.$/u);
     expect(researcher.at(-1)).toBe(TURN_TOOL_CALL_LIMIT_OUTPUT(RESEARCH_TASK_LIMITS.toolCalls));
-    expect(main.requests[3]!.toolChoice).toBe("none");
+    // Fifteen of the batch ran, so recording stays open for what they returned; the researcher wrote its report instead.
+    expect(main.requests[3]!.toolChoice).toBe("auto");
     expect(resultsOf(main.requests[4], CALL_SUBAGENT_TOOL_NAME).join()).toContain("The options found; their cells stay empty.");
     // The gate's turn ran every call it made, with no line and no refusal, and its next response still had its tools.
     const checked = resultsOf(main.requests[6], "read_tool_result");

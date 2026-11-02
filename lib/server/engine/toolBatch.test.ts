@@ -277,7 +277,7 @@ describe("native tool batch", () => {
   describe("a turn's own budget", () => {
     const budget = (limit: number) => ({ exempt: new Set(["record"]), limit, spent: { calls: 0 } });
 
-    it("counts the turn's calls but its exempt tools, refuses past them as a budget refusal and ends each counted result with what is left", async () => {
+    it("counts the turn's calls but its exempt tools, refuses past them, keeping recording open, and ends each counted result with what is left", async () => {
       const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, `page ${String(call.arguments.page)}`));
       const record = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
       const { store } = fakeStore();
@@ -299,7 +299,8 @@ describe("native tool batch", () => {
         // Recording is never what a spent budget refuses.
         ["r2", "complete", "recorded"]
       ]);
-      expect(outcome.budgetExhausted).toBe(true);
+      // Not the loop's budget refusal, which closes every tool: what ran can still be recorded next round.
+      expect(outcome.budgetExhausted).toBe(false);
       expect(lookup).toHaveBeenCalledTimes(2);
       expect(record).toHaveBeenCalledTimes(2);
       expect(turnBudget.spent.calls).toBe(2);
@@ -319,7 +320,10 @@ describe("native tool batch", () => {
       expect(first.budgetExhausted).toBe(false);
       const second = await runToolBatch(batch, state, { round: 2, calls: [{ arguments: { id: 3 }, id: "c", name: "lookup" }, { arguments: { id: 4 }, id: "d", name: "lookup" }] });
       expect(second.results.map((item) => item.output)).toEqual(["done\n\nCalls left in this task: 0.", TURN_TOOL_CALL_LIMIT_OUTPUT(3)]);
-      expect(second.budgetExhausted).toBe(true);
+      expect(second).toMatchObject({ budgetExhausted: false, executed: 1 });
+      // A batch of only refused calls ran nothing, so the loop closes tools as for any such batch.
+      const third = await runToolBatch(batch, state, { round: 3, calls: [{ arguments: { id: 7 }, id: "g", name: "lookup" }] });
+      expect(third).toMatchObject({ budgetExhausted: false, correctable: 0, executed: 0 });
 
       const run = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store, { maxToolCalls: 1, turnBudget: budget(5) }), { calls: 0 },
         { round: 1, calls: [{ arguments: { id: 5 }, id: "e", name: "lookup" }, { arguments: { id: 6 }, id: "f", name: "lookup" }] });

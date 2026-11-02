@@ -107,9 +107,13 @@ export const AUTO_TOOL_NOT_LOADED_OUTPUT = (name: string, query: string) =>
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
 
-/** A call past its turn's own budget (`ToolBatchDeps.turnBudget`): the turn's next round is its report. */
+/**
+ * A call past its turn's own budget (`ToolBatchDeps.turnBudget`). It is no budget refusal of the loop's kind, which closes every tool: the exempt
+ * tools stay open, so what the batch's last calls returned can still be recorded, and a response of only refused calls closes tools as any batch
+ * of which nothing ran does, so the turn's next round is its report (review finding 2026-11-03).
+ */
 export const TURN_TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
-  `Not run: this task's ${limit} tool calls are spent. Write your report now with what you found, and say what is left to check.`;
+  `Not run: this task's ${limit} tool calls are spent. Record what your results show, then write your report with what you found and what is left to check.`;
 
 /** The line that ends the result of each call a turn's own budget counted. */
 export const turnCallsLeftLine = (left: number) => `Calls left in this task: ${left}.`;
@@ -278,8 +282,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     const turn = deps.turnBudget;
     if (!exempt && turn && !turn.exempt.has(call.name) && turn.spent.calls >= turn.limit) {
       const message = TURN_TOOL_CALL_LIMIT_OUTPUT(turn.limit);
-      return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "turn_tool_call_limit_reached", message }),
-        toolName: call.name };
+      return { kind: "refuse", output: message, result: jsonError(call, { error: "turn_tool_call_limit_reached", message }), toolName: call.name };
     }
     // A read of a saved result is never a loop to stop: after a compaction it is the only way back to that text.
     const repeatOf = call.name === READ_TOOL_RESULT_NAME ? null : deps.history.blockFor({ arguments: call.arguments, toolName: call.name }, round, {
