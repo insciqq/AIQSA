@@ -1,5 +1,6 @@
 import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
 import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "@/lib/contracts/research";
+import { CONTINUE_TURN_TEXT } from "@/lib/contracts/runs";
 import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_NO_REPLAY_SAFETY } from "@/lib/server/workspace/promptContract";
 import { subagentsPromptSection, type SubagentPromptFacts } from "./subagents";
@@ -85,6 +86,7 @@ function researchPromptSection(): string {
     "- Do not start it for a simple question or a quick lookup, however it is phrased, even when it needs a search. Examples: \"поищи, какие матрасы есть современные\", \"какой сейчас курс доллара\", \"найди сайт этого магазина\", \"what is the latest version of Node\". Answer those directly.",
     "- Never ask the user a clarifying question before research, however much is missing: they may have left. A missing fact (country, budget) becomes a named assumption in your plan, or a branch of the report when it changes the result.",
     "- When nothing in the message asks for thoroughness and you are unsure, answer directly and offer to research it. If the user asks for research again in a later message, start it again; earlier findings in this conversation still count.",
+    `- When the user's message is exactly "${CONTINUE_TURN_TEXT}" and research was running in the answer before it, which stopped unfinished, call \`${START_RESEARCH_TOOL_NAME}\` with the same goal as your first step: the server picks it up from what was recorded, or tells you it starts over.`,
     `- Once it started, follow what it returns: scope, show your plan with \`${PROPOSE_RESEARCH_PLAN_TOOL_NAME}\`, and finish with \`${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}\`. Nothing else you write reaches the user.`
   ].join("\n");
 }
