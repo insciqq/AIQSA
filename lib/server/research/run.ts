@@ -38,7 +38,7 @@ import { proposeResearchPlanTool, researchDraftReservedInstruction, researchScop
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { PlanUpdate } from "../tools/updatePlan";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
-import { createResearchRounds, researchFilledCells, researchMatrix } from "./matrix";
+import { createResearchRounds, researchFilledCells, researchKeySpecs, researchLeadingRows, researchMatrix, researchProgressCells, researchUnconfirmedKeyCells } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
@@ -307,7 +307,9 @@ export function createRunResearch(input: RunResearchInput) {
   const gates = [...ports.report.gates, ...input.deps.gates ?? RESEARCH_GATES];
   const rounds = createResearchRounds(async (signal) => {
     const matrix = await researchMatrix(ports.coverage, signal);
-    return matrix && researchFilledCells(matrix.coverage);
+    // A confirmation the last draft's options needed counts as a new cell; only a frame with key specifications reads the records for it.
+    const confirming = matrix !== null && researchKeySpecs(matrix.frame).length > 0 && researchLeadingRows(attempts.at(-1)?.draft).length > 0;
+    return matrix && (confirming ? researchProgressCells(matrix, await liveRecords(signal) ?? [], attempts.at(-1)?.draft) : researchFilledCells(matrix.coverage));
   });
   /** What building the answer from the records came to: a run composes once, however many of its ends ask. */
   let composing: Promise<string | null> | null = null;
@@ -499,8 +501,8 @@ export function createRunResearch(input: RunResearchInput) {
     rounds.ran(execution.round);
     const matrix = await researchMatrix(ports.coverage, execution.signal);
     if (!matrix) return result;
-    const line = researchCoverageLine(matrix, await rounds.newCells(researchFilledCells(matrix.coverage)));
     const records = await liveRecords(execution.signal);
+    const line = researchCoverageLine(matrix, await rounds.newCells(researchFilledCells(matrix.coverage)), researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft));
     const list = records && researchRecordList(records, listedRecords);
     return { ...result, content: [...result.content, { text: line, type: "text" }, ...list ? [{ text: list, type: "text" as const }] : []] };
   }
@@ -531,7 +533,8 @@ export function createRunResearch(input: RunResearchInput) {
     // The server's fields, first and in this order: a later approval or Continue reads them back (`researchOfTurn`).
     const result = resultOf(call, { research_run: researchRunId, status: "resumed", opened_from: openedFrom, plan: { goal: state.goal, questions, skipped_source_classes },
       instructions: [PICKED_UP, ...records ? [`${records.length} records stand.${list ? " The ids a draft cites them by end this result." : ""}`] : [],
-        ...matrix ? [researchCoverageLine(matrix, null)] : [], ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
+        ...matrix ? [researchCoverageLine(matrix, null, researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft))] : [],
+        ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
       ...rebuildOwed ? {} : { method: researchMethodText(stands) } });
     return list ? { ...result, content: [...result.content, { text: list, type: "text" }] } : result;
   }

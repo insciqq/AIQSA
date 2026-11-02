@@ -208,6 +208,47 @@ describe("the summary the reader reads first", () => {
   });
 });
 
+describe("the key specifications of the options it recommends", () => {
+  /** A matrix whose plan marked the load per side decisive: synthetic, with two sites of the pick's load and one of the reserve's. */
+  const KEYED: ResearchFrame = { ...FRAME, criteria: [...FRAME.criteria, { criterion: "Нагрузка на сторону", decisive: true, key: "load", why: "Двое разного веса." }] };
+  const load = (number: number, rowKey: string, kg: number, url: string) => finding(number, rowKey, "load", { claim: `Нагрузка на сторону до ${kg} кг.`, url });
+  const AGREE = [...RECORDS, load(6, "x1", 130, "https://maker.example/x1-load"), load(7, "x1", 130, "https://shop-b.example/x1")];
+  const DISAGREE = [...RECORDS, load(6, "x1", 130, "https://maker.example/x1-load"), load(7, "x1", 140, "https://shop-b.example/x1")];
+  const loadTable = (x1: string) => ["| Вариант | Цена за 160×200 | Отзывы владельцев | Жёсткость | Нагрузка на сторону |", "| --- | --- | --- | --- | --- |",
+    `| Lonax Memory | 30 000 ₽ | 3 из 11 | средняя | ${x1} |`, "| Optima Classic | 25 000 ₽ | нет данных | жёсткая | нет данных |"].join("\n");
+  const keyed = (cited: readonly number[], x1 = "до 130 кг"): ResearchDraft => ({ ...DRAFT, recordIds: [...DRAFT.recordIds!, ...cited.map(id)],
+    report: `# Отчёт\n\nБерите Lonax Memory.\n\n${loadTable(x1)}\n\nhttps://maker.example/x1 https://shop.example/x1 https://shop.example/3\n` });
+  const keyedMessages = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[]) => messages(draft, records, matrixOf(KEYED, records));
+
+  it("passes a pick whose key specification two sites hold and the draft cites from both", () => {
+    expect(keyedMessages(keyed([6, 7]), AGREE)).toBe("");
+  });
+
+  it("asks a record of the second site where the draft cites one, so the checks read both", () => {
+    const text = keyedMessages(keyed([6]), AGREE);
+    expect(text).toContain(`cite records of two sites for each of these, from the ids of sites you do not cite yet. x1 / load: ${id(7)}.`);
+  });
+
+  it("asks both of two disagreeing sites to be cited, and the report to name the disagreement for that option", () => {
+    expect(keyedMessages(keyed([6]), DISAGREE)).toContain(`Two sites give different figures for a key specification of an option you recommend: cite both records, so the checks read both, and name ` +
+      `the disagreement in the report. x1 / load: ${id(6)}, ${id(7)}.`);
+    expect(keyedMessages(keyed([6, 7]), DISAGREE)).toContain("Two sites disagree on a key specification of an option you recommend, and the report does not state both figures: name the " +
+      "disagreement for that option, each figure with the site that gives it, instead of one figure. Lonax Memory — Нагрузка на сторону: 130 кг (maker.example) against 140 кг (shop-b.example).");
+    expect(keyedMessages(keyed([6, 7], "130 кг у производителя, 140 кг у продавца"), DISAGREE)).toBe("");
+  });
+
+  it("asks nothing of an option the draft does not recommend, nor of two pages of one site", () => {
+    const reserve = [...AGREE, load(8, "x2", 120, "https://maker.example/x2-load"), load(9, "x2", 150, "https://shop-c.example/x2")];
+    expect(keyedMessages(keyed([6, 7]), reserve)).toBe("");
+    const oneSite = [...RECORDS, load(6, "x1", 130, "https://maker.example/x1-load"), load(7, "x1", 140, "https://maker.example/x1-spec")];
+    expect(keyedMessages(keyed([6]), oneSite)).toBe("");
+  });
+
+  it("reads no key specification in a frame that marks none, as every frame stored before did", () => {
+    expect(messages(keyed([6]), DISAGREE, matrixOf({ ...KEYED, criteria: [...FRAME.criteria, { criterion: "Нагрузка на сторону", key: "load", why: "Двое разного веса." }] }, DISAGREE))).toBe("");
+  });
+});
+
 describe("advice without facts", () => {
   it("passes: it names no pick and cites no record, however much the store holds", () => {
     expect(check(ADVICE)).toEqual({ troubles: [] });

@@ -1,11 +1,11 @@
 import {
-  RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFinding, type ResearchGateResult,
+  RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchGateResult,
   type ResearchPlan, type ResearchSourceClass
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
-import { researchEmptyByRow, researchMatrix, type ResearchMatrix } from "./matrix";
+import { researchEmptyByRow, researchKeySpecs, researchLeadingRows, researchMatrix, researchUnconfirmedKeyCells, type ResearchMatrix } from "./matrix";
 import { researchNote } from "./notes";
 import { researchGatePorts } from "./ports";
 import { REPORT_CHECK_GATE } from "./reportCheck";
@@ -134,6 +134,32 @@ function matrixGaps(matrix: ResearchMatrix): Gap[] {
   });
 }
 
+/**
+ * The second sites the key specifications of the options a draft recommends still need, one gap per option (`researchUnconfirmedKeyCells`, operator decision 2026-11-02).
+ * Mechanical like the empty cells, and all this check asks of a filled cell: each is answered by a record of another site or by not_found, so it is asked once.
+ */
+function confirmationGaps(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: ResearchDraft): Gap[] {
+  const limit = RESEARCH_LIMITS.questionCharacters;
+  const cells = researchUnconfirmedKeyCells(matrix, records, draft);
+  return [...new Set(cells.map(({ row }) => row.key))].map((rowKey) => {
+    const own = cells.filter(({ row }) => row.key === rowKey);
+    return { issue: line(`${own[0]!.row.label}: ${own.map(({ criterion }) => space(criterion.criterion)).join(", ")} (one site only)`, limit),
+      next_step: line(`Confirm from a second site, the maker's or a seller's, whichever it lacks, the key specifications of row ${rowKey}: ${own.map(({ criterion }) => criterion.key).join(", ")}. ` +
+        "Record each as its own record of that cell, also where it gives another figure; if no second site shows it, record not_found for that cell.", limit) };
+  });
+}
+
+/** What the gate reads of the records, only where there is something to confirm. A store that cannot be read costs the confirmations: the report check fails on the same read. */
+async function confirmationRecords(context: ResearchGateContext, matrix: ResearchMatrix | null, draft: ResearchDraft): Promise<readonly ResearchEvidenceRecord[]> {
+  if (!matrix || researchKeySpecs(matrix.frame).length === 0 || researchLeadingRows(draft).length === 0) return [];
+  try {
+    return await researchGatePorts(context).evidence.records(context.signal);
+  } catch {
+    context.signal.throwIfAborted();
+    return [];
+  }
+}
+
 /** Keep every issue represented, even when all sixteen questions are long. */
 function issueText(heading: string, issues: readonly string[], max = RUN_FOLLOWUP_MAX_CHARS): string {
   const perIssue = Math.floor((max - heading.length) / Math.max(1, issues.length)) - 1;
@@ -204,8 +230,8 @@ The entire reply must fit ${RUN_FOLLOWUP_MAX_CHARS} characters. Only gaps reques
  * and still sent it back four times, each time for one more detail.
  */
 const JUDGE_MATRIX_INSTRUCTIONS = `${JUDGE_INSTRUCTIONS}
-The brief's matrix is what the server tracks: which row has evidence for which criterion. It checks the empty cells itself, so an empty cell is never your gap, and neither is one more detail for a filled one, however useful.
-Return gaps only for what the matrix cannot see, where the report would otherwise mislead: findings that contradict each other on something the report rests on; evidence that sits in a cell but does not answer its criterion or is about another model; a criterion or a candidate the goal plainly needs and the matrix lacks, in which case next_step says to add it with change_research_frame and send researchers for it.
+The brief's matrix is what the server tracks: which row has evidence for which criterion. It checks the empty cells itself, so an empty cell is never your gap, and it asks a second site for each key specification of the options the summary recommends, so neither is a second source, nor one more detail for a filled one, however useful.
+Return gaps only for what the matrix cannot see, where the report would otherwise mislead: findings that contradict each other on something the report rests on, except two sites' figures for one key specification, which the report names as they stand; evidence that sits in a cell but does not answer its criterion or is about another model; a criterion or a candidate the goal plainly needs and the matrix lacks, in which case next_step says to add it with change_research_frame and send researchers for it.
 A purchase's matrix with fewer than five options, or with options of a single price tier, while the findings name more candidates within the question's limits, lacks candidates the goal needs. matrix.recommended are the options the report's summary recommends, its pick first: for a purchase, one with no current offer among the findings, giving its link, seller and price, is a gap whose next_step says to open that option's offers.`;
 
 /** What the judge reads of the matrix, a quarter of the brief at most: the plan keeps its half, and the findings the rest. `recommended` are the rows the draft's summary names. */
@@ -320,7 +346,8 @@ export const gapCheckGate: ResearchGate = {
     }
 
     // A source class whose opening cannot be told stays neither covered nor missing.
-    const missing = matrix ? matrixGaps(matrix) : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
+    const missing = matrix ? [...matrixGaps(matrix), ...confirmationGaps(matrix, await confirmationRecords(context, matrix, draft), draft)]
+      : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
     // An unfinished judgment costs the check, never the answer, and the answer says only that it is not fully checked, and whether time is why. Evidence that
     // did not change pays for no new judgment, so the last one's word stands, an unfinished one included, until a judgment completes.
     const said = (cause: Unfinished): ResearchGateResult => ({ kind: "pass", notes: [researchNote(cause === "time" ? "time_out" : "gate_failed")] });

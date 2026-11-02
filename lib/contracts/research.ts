@@ -72,6 +72,8 @@ export const RESEARCH_FRAME_LIMITS = Object.freeze({
   casesPerBranch: 6,
   changes: 200,
   criteria: 24,
+  /** Criteria a plan may mark decisive: the few a pick depends on, each of which every option the report recommends has confirmed on two sites. */
+  decisiveCriteria: 4,
   labelCharacters: 200,
   rows: 64,
   whyCharacters: 500
@@ -179,8 +181,12 @@ export type ResearchPlan = Readonly<{
 /** What `start_research` takes once the plan window is live: only the goal, which opens scoping. */
 export type ResearchStart = Readonly<{ goal: string }>;
 
-/** A column of the matrix, with why it matters in plain words. For a knowledge question it is an outcome or a sub-question. */
-export type ResearchCriterion = Readonly<{ criterion: string; key: string; why: string }>;
+/**
+ * A column of the matrix, with why it matters in plain words. For a knowledge question it is an outcome or a sub-question. `decisive`: a key specification, a
+ * property of the option itself that a pick depends on and sellers may state differently, such as a mattress's load per side; present only when true, so a
+ * frame stored before it, and a criterion added on the way, have none.
+ */
+export type ResearchCriterion = Readonly<{ criterion: string; decisive?: true; key: string; why: string }>;
 
 /** A row of the matrix: an option the user could choose. */
 export type ResearchMatrixRow = Readonly<{ key: string; label: string }>;
@@ -553,7 +559,9 @@ function decodeCriterion(entry: unknown, place: string): DecodedResearch<Researc
   if (!isResearchKey(entry.key)) return refused(`${fieldAt(place, "key")} must be ${KEY_RULE}.`);
   if (!storableText(entry.criterion, limits.labelCharacters)) return refused(`${fieldAt(place, "criterion")} must be 1 to ${limits.labelCharacters} characters.`);
   if (!storableText(entry.why, limits.whyCharacters)) return refused(`${fieldAt(place, "why")} must say in 1 to ${limits.whyCharacters} characters why this criterion matters.`);
-  return { ok: true, value: { criterion: entry.criterion, key: entry.key, why: entry.why } };
+  // Left out or null reads as false: a frame or proposal stored before the field has none.
+  if (entry.decisive !== undefined && entry.decisive !== null && typeof entry.decisive !== "boolean") return refused(`${fieldAt(place, "decisive")} must be true or false.`);
+  return { ok: true, value: { criterion: entry.criterion, ...entry.decisive === true ? { decisive: true as const } : {}, key: entry.key, why: entry.why } };
 }
 
 function decodeBranch(entry: unknown, place: string): DecodedResearch<ResearchBranch> {
@@ -577,6 +585,9 @@ function decodeProposal(value: unknown, steps: ListBounds): DecodedResearch<Rese
   if (!decodedSteps.ok) return decodedSteps;
   const criteria = decodeKeyed(value.criteria, "criteria", { max: frame.criteria, min: 1 }, decodeCriterion);
   if (!criteria.ok) return criteria;
+  if (criteria.value.filter(({ decisive }) => decisive).length > frame.decisiveCriteria) {
+    return refused(`criteria marks more than ${frame.decisiveCriteria} as decisive: mark only the key specifications a pick depends on.`);
+  }
   const rows = decodeKeyed(value.rows, "rows", { max: frame.rows, min: 0 }, decodeRow);
   if (!rows.ok) return rows;
   const branches = decodeKeyed(value.branches, "branches", { max: frame.branches, min: 0 }, decodeBranch);
