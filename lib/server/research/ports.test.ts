@@ -587,7 +587,7 @@ describe("the ports a run holds", () => {
       if (!decoded.ok) throw new Error(decoded.message);
       const answer = { changed: false, plan: decoded.value, releasedBy: "timer" as const };
       const pickedUp = (goal = "Выбрать матрас на много лет."): ResearchPortFactories =>
-        ({ ...stores(), resume: () => ({ load: async () => ({ answer, frame: FRAME, fromRunId: "run-0", goal }) }) });
+        ({ ...stores(), resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, load: async () => ({ answer, frame: FRAME, fromRunId: "run-0", goal, row: { answer: {}, frame: {}, proposal: {}, version: 1, windowEndsAt: new Date(0) } }) }) });
       const startAgain = { ...start, arguments: { goal: "Выбрать матрас." } };
 
       it("gives the model the ids in the start's result, and a draft on them passes the report check", async () => {
@@ -697,7 +697,7 @@ describe("the run research belongs to", () => {
     const after = async (text: string) => {
       const scopes: ResearchRunScope[] = [];
       const load = vi.fn(NOOP_RESEARCH_PORTS.resume.load);
-      await afterInterruption({ ports: { resume: (run) => { scopes.push(run); return { load }; } }, steps: [{ calls: [start] }, { calls: [submit] }], text });
+      await afterInterruption({ ports: { resume: (run) => { scopes.push(run); return { ...NOOP_RESEARCH_PORTS.resume, load }; } }, steps: [{ calls: [start] }, { calls: [submit] }], text });
       return { load, scope: scopes[0]! };
     };
     const continued = await after(CONTINUE_TURN_TEXT);

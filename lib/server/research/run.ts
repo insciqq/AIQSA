@@ -140,8 +140,12 @@ const PICK_UP_FIRST = `The research of the interrupted answer can be picked up f
   "its plan and records come back with it, and nothing else carries on that research.";
 const PICKED_UP = "Research picked up from what was recorded: the plan stands as it was, with no scoping and no window, its time starts afresh, and the records stay. " +
   "Do not research a filled cell again.";
-const DRAFT_NOT_FINISHED = `The checks never finished on the report you handed in before the interruption, so hand it in again with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} ` +
-  "once the empty cells are filled or cannot be.";
+/** What the model reads of the report it handed in before the interruption, by what the checks came to. */
+const DRAFT_LEFT = {
+  accepted: `The checks passed the report you handed in before the interruption, but it never reached the user. Hand it in again with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}, and it is checked afresh.`,
+  sent_back: `The checks sent back the report you handed in before the interruption, and what they said of it stands. Answer it, then hand in the whole report again with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}.`,
+  unfinished: `The checks never finished on the report you handed in before the interruption, so hand it in again with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} once the empty cells are filled or cannot be.`
+};
 const NOTHING_PICKED_UP = "Nothing of the earlier research could be picked up, so research starts over with the plan. What it found in this conversation still counts, " +
   "and so does anything the user changed in its plan.";
 
@@ -265,8 +269,10 @@ export function createRunResearch(input: RunResearchInput) {
   const continued = continuedTurn(input.items());
   /** The user's last words are the button's, on a Continue and on an approval after one, and they say nothing of the user's language: the goal does. */
   const buttonWord = input.userMessage.trim() === CONTINUE_TURN_TEXT;
-  /** What the store gave that Continue, asked once: the first ask writes this run's row. */
+  /** What the store says that Continue can pick up, asked once. It only reads. */
   let pickUp: Promise<ResearchResumeState | null> | null = null;
+  /** Whether this run's row was written for it, once: only a start writes it, as a run that never starts ran no research. */
+  let linking: Promise<boolean> | null = null;
   let askedToPickUp = false;
   /** Where what agents opened starts: at this research's first run, which a Continue moves back past its own. */
   let openedFrom = researchRunId;
@@ -325,6 +331,16 @@ export function createRunResearch(input: RunResearchInput) {
       return null;
     });
     return pickUp;
+  }
+  /** A row that cannot be written costs the pick-up, never the run: that start is a start over. */
+  function linked(state: ResearchResumeState): Promise<boolean> {
+    const { signal } = input.subagentInput;
+    linking ??= ports.resume.link(state, signal).then(() => true, (error: unknown) => {
+      if (signal.aborted) throw error;
+      logEvent("service_operation", { action: "degrade", code: "research_resume_failed", error, outcome: "degraded", run_id: input.runId, stage: "write", subsystem: "database" });
+      return false;
+    });
+    return linking;
   }
   const researching = () => goal !== null;
   const startResearching = (started: string) => {
@@ -502,7 +518,7 @@ export function createRunResearch(input: RunResearchInput) {
     // The server's fields, first and in this order: a later approval or Continue reads them back (`researchOfTurn`).
     const result = resultOf(call, { research_run: researchRunId, status: "resumed", opened_from: openedFrom, plan: { goal: state.goal, questions, skipped_source_classes },
       instructions: [PICKED_UP, ...records ? [`${records.length} records stand.${list ? " The ids a draft cites them by end this result." : ""}`] : [],
-        ...matrix ? [researchCoverageLine(matrix, null)] : [], ...turn.draft ? [DRAFT_NOT_FINISHED] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
+        ...matrix ? [researchCoverageLine(matrix, null)] : [], ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
       ...rebuildOwed ? {} : { method: researchMethodText(stands) } });
     return list ? { ...result, content: [...result.content, { text: list, type: "text" }] } : result;
   }
@@ -521,8 +537,9 @@ export function createRunResearch(input: RunResearchInput) {
       if (!researching()) startResearching(decoded.value.goal);
       unconfirmedStart = null;
       const state = await pickedUp();
+      const written = state !== null && await linked(state);
       if (plan) return harnessToolError(call, "research_plan_stands", "Research already runs and its plan stands: go on with it.");
-      if (continued && state) return pickUpResearch(call, { persistedToolCallId, signal }, continued, state);
+      if (continued && state && written) return pickUpResearch(call, { persistedToolCallId, signal }, continued, state);
       // A Continue's own word is the button's, so its goal says what language the user reads.
       await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: CYRILLIC.test(buttonWord ? decoded.value.goal : input.userMessage) ? PLANNING_LINE.ru : PLANNING_LINE.en }] });
       // The server's fields, first so an excerpt would keep them: an approval continuation reads them back (`researchRunOf`).
@@ -931,13 +948,16 @@ function pickedUpOfResult(output: string): Readonly<{ openedFrom?: string; plan?
  * Such a start is not where its research began, so the reading goes on past the Continue into the turn it picked up, up to the research's first start, and the gates' history,
  * the draft and an owed rebuild add up across the chain: a Continue buys no checks, and rejected claims stay named. Everything else comes from the newest start. These are the
  * branch's own items and they only ever hold a run to more. `items` keep a whole transcript, as a compaction acts where a request is built (`transcript.ts`), so what cuts this short
- * is an earlier turn whose records were lost: `historyCut` says so, what was found stands, and what the lost turn's gates said is gone.
+ * is an earlier turn whose records were lost: `historyCut` says so, what was found stands, and what the lost turn's gates said is gone. `draftChecked` is what the gates came to on `draft`,
+ * absent when they never ended on it.
  */
-export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ attempts: readonly ResearchAttempt[]; draft: ResearchDraft | null; goal?: string; historyCut?: true; openedFrom?: string;
+export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ attempts: readonly ResearchAttempt[]; draft: ResearchDraft | null; draftChecked?: "accepted" | "sent_back"; goal?: string;
+  historyCut?: true; openedFrom?: string;
   owedRebuild?: StandingPlan; plan: ResearchPlan | null; researchRun?: string }> {
   const attempts: ResearchAttempt[] = [];
   const results = new Map<string, Extract<TranscriptItem, { kind: "tool_result" }>>();
   let draft: ResearchDraft | null = null;
+  let draftChecked: "accepted" | "sent_back" | undefined;
   let goal: string | undefined;
   let openedFrom: string | undefined;
   let plan: ResearchPlan | null = null;
@@ -994,13 +1014,14 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
     } else {
       const decoded = decodeResearchDraft(parsed);
       if (!decoded.ok) continue;
-      draft ??= decoded.value;
       const word = gatesWord(results.get(item.callId));
+      if (draft === null && word !== undefined) draftChecked = word.message === null ? "accepted" : "sent_back";
+      draft ??= decoded.value;
       if (word !== undefined) attempts.unshift({ draft: decoded.value, ...word });
     }
   }
   const owed = plan && !rebuilt ? released as StandingPlan | null : null;
-  return { attempts, draft, ...goal === undefined ? {} : { goal }, ...goal !== undefined && !began ? { historyCut: true as const } : {},
+  return { attempts, draft, ...draftChecked === undefined ? {} : { draftChecked }, ...goal === undefined ? {} : { goal }, ...goal !== undefined && !began ? { historyCut: true as const } : {},
     ...openedFrom === undefined ? {} : { openedFrom }, ...owed?.changed ? { owedRebuild: owed } : {}, plan,
     ...researchRun === undefined ? {} : { researchRun } };
 }

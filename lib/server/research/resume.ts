@@ -8,9 +8,9 @@ import type { ResearchResumePort, ResearchResumeState, ResearchRunScope } from "
 /**
  * Picking research up on the user's Continue (`ResearchResumePort`, operator decision 2026-11-01: nothing restarts by itself).
  *
- * A Continue is a new run with its own frame row, its own records and its own bindings: this writes that row once, with the plan and the
- * frame of the run it continues and `continuedFromRunId`, and from then on `ResearchEvidencePort` reaches the earlier records and pages
- * through the link. Nothing of the earlier run changes, so a Continue on another branch starts from the same rows.
+ * A Continue is a new run with its own frame row, its own records and its own bindings. `load` only says whether there is research to pick up. `link` writes that row once, at the
+ * start that picks it up, with the plan and the frame of the run it continues and `continuedFromRunId`, and from then on `ResearchEvidencePort` reaches the earlier records and
+ * pages through the link. Nothing of the earlier run changes, so a Continue on another branch starts from the same rows.
  *
  * Null is every answer that picks nothing up, and it is one answer: the run was not interrupted, it is another branch's or another
  * user's, it does not exist, its plan never stood, or it recorded nothing. `run.ts` then starts over with the plan step, which is also what
@@ -70,7 +70,7 @@ export function createResearchResume(deps: Readonly<{ store: ResearchResumeStore
     const degraded = (code: string) => logEvent("service_operation", { action: "degrade", code, outcome: "degraded", run_id: run.runId, stage: "read", subsystem: "database" });
 
     /** The plan and frame a row keeps. A row no writer here could have made picks nothing up: the run starts over rather than on a broken matrix. */
-    function kept(source: ResearchResumeSource): Pick<ResearchResumeState, "answer" | "frame"> | null {
+    function decoded(source: ResearchResumeSource): Pick<ResearchResumeState, "answer" | "frame"> | null {
       const answer = decodeResearchPlanAnswer(source.answer);
       const frame = decodeResearchFrame(source.frame);
       if (answer.ok && frame.ok) return { answer: answer.value, frame: frame.value };
@@ -87,7 +87,7 @@ export function createResearchResume(deps: Readonly<{ store: ResearchResumeStore
         if (!await deps.store.interrupted(keyOf(interruptedRun))) return null;
         const source = await deps.store.source(keyOf(fromRunId));
         if (!source || source.releasedAt === null || source.windowEndsAt === null || source.proposal === null) return null;
-        const stands = kept(source);
+        const stands = decoded(source);
         if (!stands) return null;
         signal.throwIfAborted();
         const chain = await deps.store.chain(keyOf(fromRunId));
@@ -96,11 +96,13 @@ export function createResearchResume(deps: Readonly<{ store: ResearchResumeStore
           return null;
         }
         if (!await deps.store.recorded(keyOf(fromRunId), chain)) return null;
+        return { ...stands, fromRunId, goal: source.goal, row: { answer: source.answer, frame: source.frame, proposal: source.proposal, version: source.version, windowEndsAt: source.windowEndsAt } };
+      },
+
+      async link({ fromRunId, goal, row }, signal) {
         signal.throwIfAborted();
-        // What the row holds, not what was decoded: the plan is copied, never rewritten. Its phases count from this run.
-        await deps.store.link(keyOf(run.runId), { answer: source.answer, frame: source.frame, fromRunId, goal: source.goal, proposal: source.proposal,
-          releasedAt: new Date(run.now()), version: source.version, windowEndsAt: source.windowEndsAt });
-        return { ...stands, fromRunId, goal: source.goal };
+        // Its phases count from this run.
+        await deps.store.link(keyOf(run.runId), { ...row, fromRunId, goal, releasedAt: new Date(run.now()) });
       }
     };
   };

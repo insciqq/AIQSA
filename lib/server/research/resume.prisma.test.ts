@@ -113,6 +113,13 @@ async function recorded(ports: ReturnType<typeof portsOf>, record: ResearchRecor
   return written.record;
 }
 
+/** What a Continue's start does: it asks, and with something to pick up writes the row. */
+async function pickUp(ports: ReturnType<typeof portsOf>, fromRunId: string) {
+  const state = await ports.resume.load(fromRunId, signal);
+  if (state) await ports.resume.link(state, signal);
+  return state;
+}
+
 async function filled(ports: ReturnType<typeof portsOf>): Promise<readonly string[]> {
   const coverage = await ports.coverage.coverage(signal);
   return coverage ? [...researchFilledCells(coverage)].sort() : [];
@@ -146,7 +153,7 @@ describe("a Continue on an interrupted run", () => {
     const second = await runOf(userId, chatId, first.answerId);
     const secondPorts = portsOf(second, [first.runId]);
     await expect(filled(secondPorts)).resolves.toEqual([]);
-    await expect(secondPorts.resume.load(first.runId, signal)).resolves.toMatchObject({ answer: { plan: { understood: PROPOSAL.understood } }, fromRunId: first.runId, goal: GOAL });
+    await expect(pickUp(secondPorts, first.runId)).resolves.toMatchObject({ answer: { plan: { understood: PROPOSAL.understood } }, fromRunId: first.runId, goal: GOAL });
     await expect(filled(secondPorts)).resolves.toEqual(["x1/durability", "x1/firmness"]);
     const secondCoverage = await secondPorts.coverage.coverage(signal);
     expect(secondCoverage).toMatchObject({ empty: 2, filled: 2 });
@@ -161,7 +168,7 @@ describe("a Continue on an interrupted run", () => {
 
     const third = await runOf(userId, chatId, second.answerId);
     const thirdPorts = portsOf(third, [first.runId, second.runId]);
-    await expect(thirdPorts.resume.load(second.runId, signal)).resolves.toMatchObject({ fromRunId: second.runId, frame: { rows: [{ key: "x1" }, { key: "x2" }, { key: "x3" }] } });
+    await expect(pickUp(thirdPorts, second.runId)).resolves.toMatchObject({ fromRunId: second.runId, frame: { rows: [{ key: "x1" }, { key: "x2" }, { key: "x3" }] } });
     await expect(filled(thirdPorts)).resolves.toEqual(["x1/durability", "x1/firmness", "x2/firmness"]);
     await expect(thirdPorts.evidence.records(signal)).resolves.toEqual([expect.objectContaining({ kind: "not_found", rowKey: "x1", runId: first.runId }),
       expect.objectContaining({ id: correction.id, runId: second.runId }), expect.objectContaining({ kind: "not_found", rowKey: "x2", runId: second.runId })]);
@@ -174,20 +181,24 @@ describe("a Continue on an interrupted run", () => {
     const { chatId, first, userId } = await interruptedWithRecords();
     const before = await prisma.researchFrame.findUniqueOrThrow({ where: { modelRunId: first.runId } });
     const second = await runOf(userId, chatId, first.answerId);
-    await portsOf(second, [first.runId]).resume.load(first.runId, signal);
+    const ports = portsOf(second, [first.runId]);
+    const state = await ports.resume.load(first.runId, signal);
+    await noRow(second);
+    await expect(filled(ports)).resolves.toEqual([]);
+    await ports.resume.link(state!, signal);
     await expect(prisma.researchFrame.findUniqueOrThrow({ where: { modelRunId: first.runId } })).resolves.toEqual(before);
     const row = await prisma.researchFrame.findUniqueOrThrow({ where: { modelRunId: second.runId } });
     expect(row).toMatchObject({ answer: before.answer, chatId, continuedFromRunId: first.runId, frame: before.frame, goal: GOAL, heldUntil: null, proposal: before.proposal, userId,
       version: before.version, windowEndsAt: before.windowEndsAt });
     expect(row.releasedAt!.getTime()).toBeGreaterThanOrEqual(before.releasedAt!.getTime());
-    await expect(portsOf(second, [first.runId]).resume.load(first.runId, signal)).rejects.toThrow();
+    await expect(ports.resume.link(state!, signal)).rejects.toThrow();
   });
 
   it("is open to a run that reached its time limit, as its answer offers Continue", async () => {
     const { chatId, first, userId } = await interruptedWithRecords();
     await interrupted(first, RUN_TIME_LIMIT_FAILURE);
     const second = await runOf(userId, chatId, first.answerId);
-    await expect(portsOf(second, [first.runId]).resume.load(first.runId, signal)).resolves.toMatchObject({ fromRunId: first.runId });
+    await expect(pickUp(portsOf(second, [first.runId]), first.runId)).resolves.toMatchObject({ fromRunId: first.runId });
   });
 
   it("reaches the research through an approval: the run that started it, with the last run the interrupted one", async () => {
@@ -200,7 +211,7 @@ describe("a Continue on an interrupted run", () => {
     await interrupted(approved);
     const second = await runOf(userId, chatId, approved.answerId);
     const ports = portsOf(second, [first.runId, approved.runId]);
-    await expect(ports.resume.load(first.runId, signal)).resolves.toMatchObject({ fromRunId: first.runId });
+    await expect(pickUp(ports, first.runId)).resolves.toMatchObject({ fromRunId: first.runId });
     await expect(filled(ports)).resolves.toEqual(["x1/durability"]);
   });
 });
@@ -263,14 +274,14 @@ describe("a Continue that gets nothing", () => {
     for (let link = 1; link < RESEARCH_EVIDENCE_LIMITS.continuationChain; link += 1) {
       const previous = chain.at(-1)!;
       const next = await runOf(userId, chatId, previous.answerId);
-      await expect(portsOf(next, chain.map((run) => run.runId)).resume.load(previous.runId, signal)).resolves.not.toBeNull();
+      await expect(pickUp(portsOf(next, chain.map((run) => run.runId)), previous.runId)).resolves.not.toBeNull();
       await interrupted(next);
       chain.push(next);
     }
     const last = await runOf(userId, chatId, chain.at(-1)!.answerId);
     const branch = chain.map((run) => run.runId);
     const lastPorts = portsOf(last, branch);
-    await expect(lastPorts.resume.load(chain.at(-1)!.runId, signal)).resolves.not.toBeNull();
+    await expect(pickUp(lastPorts, chain.at(-1)!.runId)).resolves.not.toBeNull();
     await expect(filled(lastPorts)).resolves.toEqual(["x1/durability", "x1/firmness"]);
     await interrupted(last);
     const past = await runOf(userId, chatId, last.answerId);
