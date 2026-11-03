@@ -153,7 +153,8 @@ export function researchMethodText(plan: ResearchPlan): string {
       "first, then the alternatives for their other likely priorities, such as cheaper or a different feel, each a row of the matrix named as the matrix names it and listed in that " +
       "order in its row_keys, with its price and where to buy it for a purchase. The report follows it and does not repeat it.",
     "Every figure, price, study and named claim in the report links the page it came from where it is stated, not in a list at the end only. " +
-      "The report leads with a comparison table on the matrix's criteria holding every option considered, says why each criterion matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
+      "The report holds a comparison table on the matrix's criteria with every option considered, first unless the user asked for another order, such as the materials " +
+      "and brands before the models, which it then follows; it says why each criterion matters and names any criterion added on the way with its reason. The pick is a row of the matrix, " +
       "and each case of a branch gets its row. When the data does not tell rows apart, say so and what would decide, such as trying them, instead of inventing a difference. " +
       "The report still says which of them it would take by default today and why: the option whose key specifications passed the checks and that best fits the user's stated " +
       "priorities, price breaking only a tie among those, marked plainly as a default and not as a finding, alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, marked compactly in the table or in one clause rather than by " +
