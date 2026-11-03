@@ -31,7 +31,7 @@ export const changeResearchFrameTool: RunTool = {
     "can be filled; a test, a source or a method is evidence, recorded under the row it is about. add_criterion: something " +
     "that turned out to matter, which is a rarer thing: the report names every added criterion with your reason. add_branch: something unknown about the user that changes " +
     "the result, with its cases. note_candidate: an option you saw that the matrix lacks and you do not add as a row, such as a model a shop's listing or a ranking names, " +
-    "under label its exact name as the page writes it, the model and not only its brand or line, with url the link of the page that names it and reason saying where you " +
+    "under label its exact name as the page writes it, the model and not only its brand or line, without the kind of product or a size a listing adds, with url the link of the page that names it and reason saying where you " +
     "saw it and why it may be an option; key is null, since the server makes it. Note an option once per site that names it: the server counts the sites and agents that " +
     "named each, a note with no url counts no site, and the main agent adds rows from the options named on the most sites or sets them aside. set_aside: the main agent " +
     "only, for a noted candidate that is no option: key is the " +
@@ -50,7 +50,7 @@ export const changeResearchFrameTool: RunTool = {
       key: nullableText("Stable for the whole research: lowercase letters, digits, - or _. It is what records use as row_key or criterion_key. For set_aside, the candidate's " +
         "key as the server listed it; null for note_candidate."),
       label: nullableText("The row's name, the criterion in plain words, or what is unknown about the user, in the language of the research goal. For note_candidate, the " +
-        "option's exact name as the page writes it; null for set_aside."),
+        "option's exact name as the page writes it, without the kind of product before it or a size after it; null for set_aside."),
       reason: { description: "Why the matrix changes; for note_candidate where you saw the option and why it may be one, and for set_aside why it is no option. In plain words, " +
         "in the language of the research goal; name no tool, since the report may carry it as written.", type: "string" },
       url: nullableText("note_candidate only: the http or https link of the page you opened that names the option. Null for the other changes, and for an option " +
