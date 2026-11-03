@@ -66,15 +66,25 @@ const sameCandidate = (one: string, other: string) => spelling(one) === spelling
  * A size a listing writes beside a name, always with a times sign: 180×200, 160 x 200, (180×200×20) см, 180х200 with a Cyrillic х, 160*200. A range
  * such as 18-35, or numbers side by side, is part of a model's name (codex review, 2026-11-03).
  */
-const SIZE = /\(?(?<![\p{L}\p{N}])\d{2,3}\s*[x×хХX*]\s*\d{2,3}(?:\s*[x×хХX*]\s*\d{1,3})?(?![\p{L}\p{N}])\)?(?:\s*(?:см|cm|мм|mm)(?!\p{L}))?/gu;
+const SIZE = /\(?(?<![\p{L}\p{N}])(\d{2,3})\s*[x×хХX*]\s*(\d{2,3})(?:\s*[x×хХX*]\s*\d{1,3})?(?![\p{L}\p{N}])\)?(\s*(?:см|cm|мм|mm)(?!\p{L}))?/gu;
+/**
+ * The sides a listing's size has: a bed's, a sofa's or a rug's in centimetres. A smaller first number with a times sign names a model (binoculars
+ * 15x70, 2x2 MIMO), so only a size within these bounds, or one with its unit, goes.
+ */
+const SIZE_SIDE = { max: 300, min: 60 } as const;
+
+const withoutSizes = (name: string) => name.replace(SIZE, (size: string, width: string, length: string, unit: string | undefined) => {
+  const side = (value: string) => Number(value) >= SIZE_SIDE.min && Number(value) <= SIZE_SIDE.max;
+  return unit !== undefined || (side(width) && side(length)) ? " " : size;
+});
 
 /**
  * Whether two names are one option: the same words once the sizes a listing adds go, since they say what was sold and not which option it is. On
- * acceptance run 5 (2026-11-03) one model went into the pool under names that differed by a size. Only the size goes: a word before a model may be a
- * kind of product or another model's name (Hermes-3-Llama-3.1-8B is no Llama-3.1-8B), so agents leave the kind out of the label instead.
+ * acceptance run 5 (2026-11-03) one model went into the pool under names that differed by a size. Only the size goes: a word before or after a model
+ * may make another model (Hermes-3-Llama-3.1-8B is no Llama-3.1-8B, GLM-4.5-Air no GLM-4.5), so agents leave the kind out of the label instead.
  */
 export function researchSameOption(one: string, other: string): boolean {
-  const first = nameWords(one.replace(SIZE, " ")).join(""), second = nameWords(other.replace(SIZE, " ")).join("");
+  const first = nameWords(withoutSizes(one)).join(""), second = nameWords(withoutSizes(other)).join("");
   return first.length > 0 && first === second;
 }
 
@@ -95,13 +105,28 @@ function spells(label: string, key: string): boolean {
 }
 
 /**
- * The row whose label already names a candidate: "Askona Balance Forma 160x200" covers Askona Balance Forma. A label covers only a run of its own
- * words, so Dreamline Kombi-3 does not cover Dreamline SleepDream, though a name of the brand alone is covered by any of its rows. A label that
- * names the same option once sizes go covers the candidate's name too (`researchSameOption`), read from the name and never the key, which has lost
- * the times sign that tells a size.
+ * The row whose label already names a candidate: "Askona Balance Forma 160x200" covers Askona Balance Forma, the same option once sizes go
+ * (`researchSameOption`), read from the candidate's name and never its key, which has lost the times sign that tells a size. A brand or a line
+ * alone is covered by a row that starts with it. Without a name, as for a stored key alone, a run of the label's words that spells the key covers it.
  */
 export function researchCandidateRow(frame: Pick<ResearchFrame, "rows">, key: string, name?: string): ResearchMatrixRow | null {
-  return frame.rows.find(({ label }) => spells(label, key) || (name !== undefined && researchSameOption(label, name))) ?? null;
+  if (name === undefined) return frame.rows.find(({ label }) => spells(label, key)) ?? null;
+  // A name of one word as written is a brand or a line, which a row starting with it covers; any other name only a row of the same option, since a
+  // row whose label holds it among other words may be another model (codex review, 2026-11-03: Hermes-3-Llama-3.1-8B is no Llama-3.1-8B).
+  const lone = withoutSizes(name).split(/[^\p{L}\p{N}+]+/u).filter((word) => word.length > 0).length === 1;
+  return frame.rows.find(({ label }) => researchSameOption(label, name) || (lone && startsWithName(label, key))) ?? null;
+}
+
+/** Whether a label's first words spell the key, however either splits it into words: DreamLine Вельвет starts with Dreamline. */
+function startsWithName(label: string, key: string): boolean {
+  const wanted = spelling(key);
+  let spelled = "";
+  for (const word of nameWords(label)) {
+    spelled += word;
+    if (spelled === wanted) return true;
+    if (!wanted.startsWith(spelled)) return false;
+  }
+  return false;
 }
 
 /** The candidate a name was noted under, written either way. */

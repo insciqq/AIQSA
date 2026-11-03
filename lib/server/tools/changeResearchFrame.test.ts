@@ -162,7 +162,7 @@ describe("candidates through change_research_frame", () => {
     const again = await changeResearchFrameEngineTool(target, researcher("marketplaces")).execute(call({ ...NOTE, url: "https://ozon.ru/product/sleepdream-123/" }));
     expect(value(again)).toMatchObject({ code: "research_frame_change_refused", message: "Nothing was noted: you noted dreamline-sleep-dream-medium-s1000 from ozon.ru already." });
     expect(state.frame.candidates![0]!.notes).toHaveLength(3);
-    const covered = await changeResearchFrameEngineTool(target, researcher("brands")).execute(call({ ...NOTE, label: "Dreamline Kombi-3" }));
+    const covered = await changeResearchFrameEngineTool(target, researcher("brands")).execute(call({ ...NOTE, label: "Dreamline Kombi-3 S1000 180×200" }));
     expect(value(covered)).toMatchObject({ code: "research_frame_change_refused", message: expect.stringContaining("already row kombi-3") });
   });
 
