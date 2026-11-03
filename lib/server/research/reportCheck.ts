@@ -22,7 +22,7 @@ import { researchRegistrableDomain } from "./sourceQuality";
  *
  * What stays the model's word: that the prose says what the cited records say (the verifier reads the records, not the prose), that the pick follows
  * from the comparison, why each criterion matters, a statement that rows do not separate, any pick written only in prose, and the summary's prices, shops and
- * length. Advice with its summary that cites nothing, picks nothing and links nothing passes, as does a text draft, which has no ids. Names are matched
+ * length. Advice with its summary that cites nothing, picks nothing and links nothing passes where the plan marked no key specification, as does a text draft, which has no ids. Names are matched
  * generously: a false alarm costs a paid rewrite of the whole report, a missed one a table column, so only a report that holds no word of a criterion goes back.
  */
 export const REPORT_CHECK_GATE = "report_check";
@@ -278,9 +278,20 @@ const SUMMARY_FORM = "Pass summary with its text, two to four short paragraphs i
   "the rows it recommends in that order, the pick first.";
 
 /**
+ * What a draft that chooses no option hears where the plan marked key specifications, the decisions it depends on, and the matrix holds options. On acceptance
+ * run 3 (2026-11-03) a purchase answer said it named no winner and advised paying for none, because no option had passed every check: the reader had asked for
+ * models and could act on nothing. Checks that could not confirm everything are the report's limits, not a reason to choose nothing.
+ */
+const DEFAULT_PICK = "The plan marked key specifications, so the user chooses among the matrix's options, yet the draft picks none: name in pick_row_key, and first " +
+  "in the summary, the option you would take by default today for the user's stated priorities, marked plainly as a default with what is not confirmed. What the " +
+  "checks could not confirm goes in the report's limits and is never a reason to name no option; where rows do not separate, say so in does_not_separate and still " +
+  "name the default.";
+
+/**
  * The summary the reader reads first, and most readers stop at (operator decision 2026-11-02). It goes back missing, naming no row while the draft picks one, not
  * starting with the pick or leaving out a case's pick, or with a text that does not name a row it lists, since a reader sees its words and not its keys. Names are
- * matched as generously as the table's, so only a text holding no word of a row's label goes back.
+ * matched as generously as the table's, so only a text holding no word of a row's label goes back. A draft that picks nothing goes back where the user chooses
+ * among the matrix's options (`DEFAULT_PICK`).
  */
 function summaryTrouble(draft: ResearchDraft, frame: ResearchFrame | null): Trouble | null {
   const { summary } = draft;
@@ -288,6 +299,7 @@ function summaryTrouble(draft: ResearchDraft, frame: ResearchFrame | null): Trou
   const problems: string[] = draft.invalidSummary === undefined ? [] : [draft.invalidSummary];
   const picked = pickedRows(draft);
   const inseparable = (draft.doesNotSeparate?.rowKeys ?? []).filter((key) => !picked.includes(key));
+  if (picked.length === 0 && frame && frame.rows.length >= 2 && frame.criteria.some((criterion) => criterion.decisive)) problems.push(DEFAULT_PICK);
   if (summary.rowKeys.length === 0 && picked.length + inseparable.length > 0) {
     const leaning = [...picked.length > 0 ? [`picks ${listed(picked)}`] : [], ...inseparable.length > 0 ? [`calls ${listed(inseparable)} inseparable`] : []].join(" and ");
     problems.push(`The summary names no row of the matrix while the draft ${leaning}: list in row_keys the rows it recommends, the pick first, and name each in its text.`);
