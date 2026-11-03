@@ -51,7 +51,7 @@ const SHORT_TASKS = `Researchers work in short tasks: each has ${RESEARCH_TASK_L
  * the rows itself from six notes and covered half the developers a reference answer did, so such a question gets the round too, over its own kinds of source.
  */
 const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start two or three enumeration tasks in parallel, one per kind of source, never only " +
-  "makers' own sites: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
+  "makers' own sites, and each reads at least four lists of its kind, each on another site, so that the options several sites name stand out: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
   "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews, opened through the run's browser and proxies where " +
   "fetch_url is refused; (c) owners' reviews and discussions. Where the user asks for every item of a class, such as a table of all of them, the same round " +
   "runs over (a) catalogues, registries and aggregators' lists, (b) rankings and leaderboards, and (c) news and release roundups of the period. Each task notes " +
@@ -59,11 +59,16 @@ const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start 
   "pool, the options named on the most sites first, by the rule for rows below: at least five across price tiers for a purchase, and every item within the " +
   "question's limits for a class. The report's line on that rule says the rows are the options most sites named.";
 
+/**
+ * Acceptance run 4 (2026-11-03) kept 28 offers and its answer gave one price, of its pick, while the reference answers priced every option from makers,
+ * dealers or marketplaces; its pool of 27 notes had nearly every option named by one site, so its rows, unlike the references', missed the models most of
+ * them agree on, and three runs gave three nearly disjoint shortlists.
+ */
 const LATER_ROUNDS = "Later rounds: one task per row, each under a fresh researcher name; a task takes the empty cells of two or three rows only once the matrix has " +
   "more than eight rows. Never give a new task to a researcher name already used in this research: a continued researcher keeps its whole old context, so it is no " +
   "short task. The one exception is a researcher whose call waited for the user's approval: continue that one, since only it can make the call it was allowed. " +
-  "Once the leading options are clear, one offers task finds their current offers: their cards in marketplaces and shops that can be reached and the maker's own " +
-  "store, opened through the run's browser and proxies where fetch_url is refused.";
+  "Once the rows stand, offers tasks, one for every two or three rows, find a current offer for every row, the leading options first: a card in a marketplace " +
+  "or shop that can be reached, else the maker's own store or a dealer, opened through the run's browser and proxies where fetch_url is refused.";
 
 /**
  * A researcher's own task, in these three sentences (operator-approved plan, 2026-11-03): the budget its results count down, searches that run at once, a short
@@ -81,7 +86,7 @@ const RESEARCHER_REPORT = "End with a report of at most about 1,500 characters: 
  * On acceptance run 2 (2026-11-03) the one enumeration task made every row itself from its first pages, and nobody noted a candidate. On run 3 a ranking of
  * thirteen models gave two notes, every option of the pool was named once, and the card of the option a reference answer picked first went unnoted.
  */
-const RESEARCHER_ROWS = `A task to find the options notes each one with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate: its exact name as the page writes ` +
+const RESEARCHER_ROWS = `A task to find the options reads at least four lists of its kind, each on another site, and notes each option with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate: its exact name as the page writes ` +
   "it, the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason. One note per option and page, " +
   "from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from adds nothing. Note every option a listing, ranking " +
   "or review you opened names, up to its first twenty, not only those you judge to fit: the server ranks the pool by the sites that name each, and the main agent " +
@@ -159,8 +164,8 @@ export function researchMethodText(plan: ResearchPlan): string {
       "The report still says which of them it would take by default today and why: the option whose key specifications passed the checks and that best fits the user's stated " +
       "priorities, price breaking only a tie among those, marked plainly as a default and not as a finding, alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, marked compactly in the table or in one clause rather than by " +
       "hedging every sentence, and says what could not be reached and why.",
-    "For a purchase, each option the summary recommends has at least one current offer cited, an action_channel record with its link, seller, price and the date it was seen, from any " +
-      "shop; one sentence says which shops could not be reached. Where the maker's own price is known, judge each offer against it. The options considered and not recommended stay " +
+    "For a purchase, the table gives every option its current price, with the shop and the date seen, where a record holds one, and each option the summary recommends " +
+      "has at least one current offer cited, an action_channel record with its link, seller, price and the date it was seen, from any shop; one sentence says which shops could not be reached. Where the maker's own price is known, judge each offer against it. The options considered and not recommended stay " +
       "in the report as a reserve, each with one reason. Where research saw a trap on a card, such as variants merged under one card, a size, the seller or warranty terms, the report " +
       "names what to check before paying.",
     "",
