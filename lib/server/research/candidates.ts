@@ -62,61 +62,20 @@ const spelling = (key: string) => key.replace(/-/gu, "");
 
 const sameCandidate = (one: string, other: string) => spelling(one) === spelling(other);
 
-/** A size as one word: 180x200, 180kh200 (Cyrillic х), 180x200x20. */
-const SIZE_WORD = /^\d{2,3}(?:x|kh)\d{2,3}(?:(?:x|kh)\d{1,3})?$/u;
-const SIZE_NUMBER = /^\d{2,3}$/u;
-const SIZE_SEPARATOR = new Set(["x", "kh"]);
-const SIZE_UNIT = new Set(["sm", "cm", "mm"]);
-
 /**
- * A name's words without the sizes a listing adds to them, "180×200", "160 x 200", "(180×200×20) см", which say what was sold and not which option
- * it is: on acceptance run 5 (2026-11-03) one model went into the pool under three names that differed by a size and a leading "Матрас".
+ * A size a listing writes beside a name, always with a times sign: 180×200, 160 x 200, (180×200×20) см, 180х200 with a Cyrillic х, 160*200. A range
+ * such as 18-35, or numbers side by side, is part of a model's name (codex review, 2026-11-03).
  */
-function coreWords(words: readonly string[]): readonly string[] {
-  const kept: string[] = [];
-  for (let index = 0; index < words.length; index += 1) {
-    const word = words[index]!;
-    let end = index;
-    if (SIZE_WORD.test(word)) end = index + 1;
-    else if (SIZE_NUMBER.test(word)) {
-      let next = index + 1;
-      if (SIZE_SEPARATOR.has(words[next] ?? "")) next += 1;
-      if (SIZE_NUMBER.test(words[next] ?? "")) {
-        next += 1;
-        if (SIZE_SEPARATOR.has(words[next] ?? "") && /^\d{1,3}$/u.test(words[next + 1] ?? "")) next += 2;
-        else if (/^\d{1,3}$/u.test(words[next] ?? "")) next += 1;
-        end = next;
-      }
-    }
-    if (end === index) {
-      kept.push(word);
-      continue;
-    }
-    if (SIZE_UNIT.has(words[end] ?? "")) end += 1;
-    index = end - 1;
-  }
-  return kept;
-}
+const SIZE = /\(?(?<![\p{L}\p{N}])\d{2,3}\s*[x×хХX*]\s*\d{2,3}(?:\s*[x×хХX*]\s*\d{1,3})?(?![\p{L}\p{N}])\)?(?:\s*(?:см|cm|мм|mm)(?!\p{L}))?/gu;
 
 /**
- * Whether two names are one option: the same words once sizes go, or the shorter, of two words at least, ending the longer, since pages put a kind
- * before a model ("Матрас DreamLine Вельвет S1000" is DreamLine Вельвет S1000). A word order that differs, a word added after the model (Plus) or
- * a lone brand or word is another name.
+ * Whether two names are one option: the same words once the sizes a listing adds go, since they say what was sold and not which option it is. On
+ * acceptance run 5 (2026-11-03) one model went into the pool under names that differed by a size. Only the size goes: a word before a model may be a
+ * kind of product or another model's name (Hermes-3-Llama-3.1-8B is no Llama-3.1-8B), so agents leave the kind out of the label instead.
  */
 export function researchSameOption(one: string, other: string): boolean {
-  const first = coreWords(nameWords(one)), second = coreWords(nameWords(other));
-  if (first.length === 0 || second.length === 0) return false;
-  const [short, long] = first.join("").length <= second.join("").length ? [first, second] : [second, first];
-  const wanted = short.join("");
-  if (wanted === long.join("")) return true;
-  if (short.length < 2) return false;
-  let tail = "";
-  for (let index = long.length - 1; index >= 0; index -= 1) {
-    tail = `${long[index]}${tail}`;
-    if (tail === wanted) return true;
-    if (!wanted.endsWith(tail)) return false;
-  }
-  return false;
+  const first = nameWords(one.replace(SIZE, " ")).join(""), second = nameWords(other.replace(SIZE, " ")).join("");
+  return first.length > 0 && first === second;
 }
 
 /** Whether a run of the label's words, from one word's start to another's end, spells the key, however either splits it into words. */
@@ -138,10 +97,11 @@ function spells(label: string, key: string): boolean {
 /**
  * The row whose label already names a candidate: "Askona Balance Forma 160x200" covers Askona Balance Forma. A label covers only a run of its own
  * words, so Dreamline Kombi-3 does not cover Dreamline SleepDream, though a name of the brand alone is covered by any of its rows. A label that
- * names the same option once sizes and a leading kind go covers it too (`researchSameOption`).
+ * names the same option once sizes go covers the candidate's name too (`researchSameOption`), read from the name and never the key, which has lost
+ * the times sign that tells a size.
  */
-export function researchCandidateRow(frame: Pick<ResearchFrame, "rows">, key: string): ResearchMatrixRow | null {
-  return frame.rows.find(({ label }) => spells(label, key) || researchSameOption(label, key)) ?? null;
+export function researchCandidateRow(frame: Pick<ResearchFrame, "rows">, key: string, name?: string): ResearchMatrixRow | null {
+  return frame.rows.find(({ label }) => spells(label, key) || (name !== undefined && researchSameOption(label, name))) ?? null;
 }
 
 /** The candidate a name was noted under, written either way. */
@@ -188,7 +148,7 @@ export const researchCandidateSpread = ({ agents, sites }: ResearchPooledCandida
 /** The candidates neither a row nor set aside: those named on the most sites first, then by the most agents, then by key. */
 export function researchOpenCandidates(frame: ResearchFrame): readonly ResearchPooledCandidate[] {
   const aside = new Set((frame.setAside ?? []).map(({ key }) => spelling(key)));
-  const open = (frame.candidates ?? []).filter(({ key }) => !aside.has(spelling(key)) && researchCandidateRow(frame, key) === null).map(researchPooledCandidate);
+  const open = (frame.candidates ?? []).filter(({ key, label }) => !aside.has(spelling(key)) && researchCandidateRow(frame, key, label) === null).map(researchPooledCandidate);
   return open.sort((one, other) => other.sites.length - one.sites.length || other.agents - one.agents || (one.key < other.key ? -1 : one.key > other.key ? 1 : 0));
 }
 
@@ -222,7 +182,7 @@ export function researchFrameWithNote(frame: ResearchFrame, note: Readonly<{ lab
   if (key.length === 0) return refused("Nothing was noted: label must name the option in letters or digits, as the page writes it.");
   const site = note.url === undefined ? null : researchRegistrableDomain(note.url);
   if (note.url !== undefined && site === null) return refused("Nothing was noted: url must be the http or https link of the page that names the option.");
-  const row = researchCandidateRow(frame, key);
+  const row = researchCandidateRow(frame, key, note.label);
   if (row) {
     return refused(`Nothing was noted: ${key} is already row ${row.key} (${row.label}). If the option you saw is another one, note it under its exact name, ` +
       "the model and not only its brand or line.");
@@ -256,7 +216,7 @@ export function researchFrameWithSetAside(frame: ResearchFrame, request: Readonl
     const open = researchOpenCandidates(frame).slice(0, LISTED_KEYS).map(({ key }) => key);
     return refused(`Nothing was changed: no candidate ${request.key} was noted. ${open.length > 0 ? `Open candidates: ${open.join(", ")}.` : "No candidate is open."}`);
   }
-  const row = researchCandidateRow(frame, candidate.key);
+  const row = researchCandidateRow(frame, candidate.key, candidate.label);
   if (row) return refused(`Nothing was changed: ${candidate.key} is already row ${row.key}, so it is in the matrix.`);
   if ((frame.setAside ?? []).some(({ key }) => sameCandidate(key, candidate.key))) return refused(`Nothing was changed: ${candidate.key} is set aside already.`);
   return { ok: true, value: { ...frame, setAside: [...frame.setAside ?? [], { at: stamp.at, key: candidate.key, reason: request.reason }] } };

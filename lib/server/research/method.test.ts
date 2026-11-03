@@ -246,7 +246,7 @@ describe("the method", () => {
     expect(footer).toContain("End with a report of at most about 1,500 characters: the server lists your records under it");
     expect(footer).toContain("never each record again");
     expect(footer).toContain("A task to find the options reads at least four lists of its kind, each on another site, and notes each option with change_research_frame change note_candidate: its exact name as the page writes it, " +
-      "the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason.");
+      "the model and not only its brand or line, without the kind of product or a size a listing adds, as the label, the page's link as the url, and where you saw it as the reason.");
     expect(footer).toContain("One note per option and page, from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from " +
       "adds nothing.");
     // On acceptance run 3 a ranking of thirteen models gave two notes, every option of the pool was named once, and the card of a reference answer's first pick went unnoted.
