@@ -250,8 +250,9 @@ describe("the method", () => {
     expect(footer).toContain("One note per option and page, from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from " +
       "adds nothing.");
     // On acceptance run 3 a ranking of thirteen models gave two notes, every option of the pool was named once, and the card of a reference answer's first pick went unnoted.
-    expect(footer).toContain("Note every option a listing, ranking or review you opened names, up to its first twenty, not only those you judge to fit: the server ranks " +
-      "the pool by the sites that name each, and the main agent judges fit. Notes cost no calls, so make a page's notes together in one response. It adds no rows.");
+    expect(footer).toContain("Note every option of the kind asked that a ranking, a recommendation list, a listing sorted by popularity or reviews, or a review names, " +
+      "up to its first ten, not only those you judge to fit, and never a shop's plain catalog or accessories: the server ranks the pool by the sites that name each, " +
+      "and the main agent judges fit. Notes cost no calls, so make a page's notes together in one response. It adds no rows.");
     expect(footer).toContain("In any other task, an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted the same way.");
     expect(footer).toContain("The main agent decides on the rows.");
     expect(footer).not.toContain("adds each option its sources name as a row");
