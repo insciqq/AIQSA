@@ -24,6 +24,7 @@ import { runResearchGates, type ResearchAttempt, type ResearchGateContext, type 
 import { researchMatrixCoverage } from "./matrix";
 import { researchAnswerText, researchNote } from "./notes";
 import { NOOP_RESEARCH_PORTS, type ResearchCoveragePort } from "./ports";
+import { researchOpenCandidates } from "./candidates";
 import { DRAFT as RECORD_DRAFT, finding as recordFinding, FRAME as RECORD_FRAME, matrixOf, notFound, RECORDS } from "./report.testFixtures";
 import { researchDraftWithRecords } from "./reportAssembly";
 import { REPORT_CHECK_GATE, reportCheckGate } from "./reportCheck";
@@ -832,6 +833,15 @@ describe("where a frame exists", () => {
       notes: [note("marketplaces", "An Ozon listing shows it at 59 521 ₽.", "https://www.ozon.ru/product/1/"), note("tests", "A ranking names it.", "https://expertology.ru/rating/")] }] };
     const STEP = "Candidate dreamline-sleep-dream-medium-s1000: add it as a row with change_research_frame add_row and send researchers for its cells, or set it aside with " +
       "change_research_frame set_aside, its key and your reason.";
+
+    it("keeps open, and asks about, a one-word option a row of a longer name does not cover: MinIO is no MinIO AIStor", async () => {
+      // Codex review (2026-11-03): a one-word prefix rule hid the community server behind its commercial edition.
+      const frame: ResearchFrame = { ...FRAME, rows: FRAME.rows.map((row, index) => ({ ...row, label: index === 0 ? "MinIO AIStor" : "Garage" })),
+        candidates: [{ key: "min-io", label: "MinIO", notes: [note("a", "Community server"), note("b", "Community server")] }] };
+      expect(researchOpenCandidates(frame).map(({ label }) => label)).toEqual(["MinIO"]);
+      const result = await gapCheckGate.run(DRAFT, withMatrix(ALL, { plan: { ...PLAN, goal: "Compare S3 servers." } }, frame));
+      expect(result.kind).toBe("send_back");
+    });
 
     it("sends back a frequent candidate still open at draft time, with how widely it is named, who noted it and why, and no model", async () => {
       const ctx = withMatrix(ALL, {}, NOTED);
