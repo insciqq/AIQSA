@@ -49,6 +49,12 @@ import type { UnknownEffects } from "./unknownEffects";
 export const TOOL_BATCH_LIMITS = Object.freeze({
   /** Calls of one batch that run at once. */
   concurrency: 4,
+  /**
+   * Calls of a delegated tool (`EngineTool.delegated`) of one batch that run at once, beside the others. Each holds a sub-agent's
+   * turn, which `SUBAGENT_LIMITS.runningPerChat` bounds per chat; eight is a research round of one task per row, which the method
+   * groups past eight rows (`lib/server/research/method.ts`).
+   */
+  delegatedConcurrency: 8,
   /** Retries of a read-only call that failed in transport. */
   readOnlyRetries: 2,
   /** Attempts to settle a call's record after it ran; a record that stays unsettled only logs. */
@@ -562,18 +568,20 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   /** The calls not started yet, in the response's order. */
   const waiting = input.calls.map((_, index) => index);
   const isSerial = (index: number) => deps.registry.resolve(input.calls[index]!.name)?.serial === true;
+  const isDelegated = (index: number) => deps.registry.resolve(input.calls[index]!.name)?.delegated === true;
   let serialRunning = false;
   /**
-   * The next call that may start. A serial call (`EngineTool.serial`) waits for the one before it here, holding no
-   * worker, so the workers take the calls behind it; the running one's worker takes the next when it ends.
+   * The next call that may start among the delegated calls or the others, each with its own workers. A serial call
+   * (`EngineTool.serial`) waits for the one before it here, holding no worker, so the workers take the calls behind it;
+   * the running one's worker takes the next when it ends.
    */
-  const nextCall = () => {
-    const position = waiting.findIndex((index) => !serialRunning || !isSerial(index));
+  const nextCall = (delegated: boolean) => {
+    const position = waiting.findIndex((index) => isDelegated(index) === delegated && (!serialRunning || !isSerial(index)));
     return position < 0 ? undefined : waiting.splice(position, 1)[0];
   };
-  const worker = async () => {
+  const worker = (delegated: boolean) => async () => {
     for (;;) {
-      const index = nextCall();
+      const index = nextCall(delegated);
       if (index === undefined) return;
       const serial = isSerial(index);
       if (serial) serialRunning = true;
@@ -584,6 +592,10 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));
+  const delegatedCalls = input.calls.filter((_, index) => isDelegated(index)).length;
+  await Promise.all([
+    ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length - delegatedCalls) }, worker(false)),
+    ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.delegatedConcurrency, delegatedCalls) }, worker(true))
+  ]);
   return { approvals, budgetExhausted, correctable, executed, results };
 }

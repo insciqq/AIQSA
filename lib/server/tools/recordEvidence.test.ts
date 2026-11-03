@@ -45,6 +45,10 @@ const call = (args: Record<string, unknown>): EngineToolExecution =>
 const value = (result: ToolExecutionResult) => (result.content[0] as { value: Record<string, unknown> }).value;
 
 describe("the record_evidence schema", () => {
+  it("keeps a claim to what its quote shows, the cause of most partly verdicts on acceptance run 2", () => {
+    expect(properties.claim!.description).toMatch(/no more than its quote shows: .* goes in a record of its own with a quote that holds it, or stays out\.$/u);
+  });
+
   it("lists every field as required, and the decoder accepts what it describes for each kind", () => {
     expect([...recordEvidenceTool.inputSchema.required as string[]].sort()).toEqual(Object.keys(properties).sort());
     expect(recordEvidenceTool.strict).toBe(false);
