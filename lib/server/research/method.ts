@@ -49,11 +49,14 @@ const SHORT_TASKS = `Researchers work in short tasks: each has ${RESEARCH_TASK_L
  * candidate pool among research agents (APeB, arXiv 2607.03162). So each kind of source gets its own task, every option it names is noted with its page,
  * and the server counts the sites that named each (`candidates.ts`). On the same run's LLM question, a table of every item of a class, the main agent made
  * the rows itself from six notes and covered half the developers a reference answer did, so such a question gets the round too, over its own kinds of source.
+ * On acceptance run 8 a question on one month's disclosures got a frame with no rows and named five products where a reference answer named thirteen, so the
+ * items of a kind within a period are such a class.
  */
 const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start two or three enumeration tasks in parallel, one per kind of source, never only " +
   "makers' own sites, and each reads at least four lists of its kind, each on another site, so that the options several sites name stand out: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
   "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews, opened through the run's browser and proxies where " +
-  "fetch_url is refused; (c) owners' reviews and discussions. Where the user asks for every item of a class, such as a table of all of them, the same round " +
+  "fetch_url is refused; (c) owners' reviews and discussions. Where the user asks for every item of a class, such as a table of all of them, or for the items " +
+  "of a kind that appeared within a period, such as releases or disclosures, the same round " +
   "runs over (a) catalogues, registries and aggregators' lists, (b) rankings and leaderboards, and (c) news and release roundups of the period. Each task notes " +
   `every option its sources name with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate and the page's link, and adds no rows. Then you add the rows from that ` +
   "pool, the options named on the most sites first, by the rule for rows below: at least five across price tiers for a purchase, and every item within the " +
@@ -188,11 +191,15 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "measurements), owner_reviews (what owners and users report, complaints included), action_channel (where the user will buy or act, " +
       "with current prices, stock and terms).",
     "For each source class of your question, open real pages with fetch_url or the browser: a search snippet is not evidence.",
+    // The newest pages decide a question about a period or the present: on acceptance run 8 all three answers missed what the last weeks before the question
+    // published, forecasts, approvals and disclosures a reference answer led with.
     "Source quality: prefer primary documents and measured results with a stated method. A seller's own product claims remain claimed " +
       "even when presented as an independent test. Owners' reviews on a shop page remain owner evidence; maker documents remain primary sources. " +
       "Treat affiliate rating sites as weak evidence. Two pages of one site and " +
       "copies of one press release are one source, not independent corroboration. For a claim that depends on time, use the page's " +
-      "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date.",
+      "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date. " +
+      "Where the question is about a period or the present, the newest pages decide: search with the period's month and year and for the latest releases, read " +
+      "the newest source of each kind first, and give a forecast, a status or a version as the latest one published, with its date.",
     RESEARCHER_TASK,
     `Record each finding with ${RECORD_EVIDENCE_TOOL_NAME} as soon as you have it, while you still have the page: the claim, its link, a verbatim quote copied from the ` +
       "page you opened, its source class, and whether it is confirmed, claimed by a party or not verified. Correct it if its result says the quote is not there.",

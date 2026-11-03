@@ -214,8 +214,10 @@ describe("the method", () => {
       "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews, opened through the run's browser and proxies where " +
       "fetch_url is refused; (c) owners' reviews and discussions.");
     // On the LLM question of acceptance run 2 (a table of every item of a class) the lead made the rows itself and six candidates were noted.
-    expect(text).toContain("Where the user asks for every item of a class, such as a table of all of them, the same round runs over (a) catalogues, registries and " +
-      "aggregators' lists, (b) rankings and leaderboards, and (c) news and release roundups of the period.");
+    // On acceptance run 8 a question on a month's disclosures got a frame with no rows and named five products where a reference answer named thirteen.
+    expect(text).toContain("Where the user asks for every item of a class, such as a table of all of them, or for the items of a kind that appeared within a period, " +
+      "such as releases or disclosures, the same round runs over (a) catalogues, registries and aggregators' lists, (b) rankings and leaderboards, and (c) news and " +
+      "release roundups of the period.");
     expect(text).toContain("Each task notes every option its sources name with change_research_frame note_candidate and the page's link, and adds no rows.");
     expect(text).toContain("Then you add the rows from that pool, the options named on the most sites first, by the rule for rows below: at least five across " +
       "price tiers for a purchase, and every item within the question's limits for a class. The report's line on that rule says the rows are the options most sites named.");
@@ -325,6 +327,9 @@ describe("the method", () => {
     expect(footer).toContain("A CAPTCHA, a block page or a sign-in ends work on that site");
     expect(footer).toContain("record it as unreachable with its reason and go on; never wait for a person");
     expect(footer).toContain("A closed site does not close your question: answer it from another site that states the answer in its own text");
+    // On acceptance run 8 all three answers missed what the last weeks before the question published: forecasts, approvals, disclosures.
+    expect(footer).toContain("Where the question is about a period or the present, the newest pages decide: search with the period's month and year and for the latest " +
+      "releases, read the newest source of each kind first, and give a forecast, a status or a version as the latest one published, with its date.");
     expect(footer).toContain("Never read a page through third-party readers, mirrors or proxies other than the run's own");
     expect(footer).toContain("no check can read it");
     expect(footer).not.toContain("browser_handoff");
