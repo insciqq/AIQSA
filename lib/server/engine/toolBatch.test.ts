@@ -457,6 +457,31 @@ describe("native tool batch", () => {
       .toEqual(expect.arrayContaining(asks.map((call, ordinal) => [call.id, ordinal])));
   });
 
+  it("runs a delegated tool's calls in places of their own, beside the batch's shared ones, and queues those past its own", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const started: string[] = [];
+    const hold = async ({ call }: { call: ModelToolCall }) => {
+      started.push(call.id);
+      await held;
+      return ok(call);
+    };
+    const { store } = fakeStore();
+    const delegated = Array.from({ length: TOOL_BATCH_LIMITS.delegatedConcurrency + 1 }, (_, index) => ({ arguments: { name: `r${index}` }, id: `agent-${index}`, name: "agent" }));
+    const lookups = Array.from({ length: TOOL_BATCH_LIMITS.concurrency + 1 }, (_, index) => ({ arguments: { page: index }, id: `look-${index}`, name: "lookup" }));
+    const running = runToolBatch(deps({ agent: tool("agent", "local", vi.fn(hold), { delegated: true }), lookup: tool("lookup", "none", vi.fn(hold)) }, store, { maxToolCalls: null }),
+      { calls: 0 }, { round: 1, calls: [...delegated, ...lookups] });
+    // Every delegated call up to its own limit and every shared place's call start together; one of each waits.
+    await vi.waitFor(() => expect(started).toHaveLength(TOOL_BATCH_LIMITS.delegatedConcurrency + TOOL_BATCH_LIMITS.concurrency));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started.filter((id) => id.startsWith("agent-"))).toHaveLength(TOOL_BATCH_LIMITS.delegatedConcurrency);
+    expect(started.filter((id) => id.startsWith("look-"))).toHaveLength(TOOL_BATCH_LIMITS.concurrency);
+    release();
+    const outcome = await running;
+    expect(started).toHaveLength(delegated.length + lookups.length);
+    expect(outcome.results.map((item) => item.callId)).toEqual([...delegated, ...lookups].map((call) => call.id));
+  });
+
   it("starts no queued call after the tool time ran out, lets running calls settle and still runs the reserved report", async () => {
     let timeLeft = true;
     let started = 0;
