@@ -106,27 +106,14 @@ function spells(label: string, key: string): boolean {
 
 /**
  * The row whose label already names a candidate: "Askona Balance Forma 160x200" covers Askona Balance Forma, the same option once sizes go
- * (`researchSameOption`), read from the candidate's name and never its key, which has lost the times sign that tells a size. A brand or a line
- * alone is covered by a row that starts with it. Without a name, as for a stored key alone, a run of the label's words that spells the key covers it.
+ * (`researchSameOption`), read from the candidate's name and never its key, which has lost the times sign that tells a size. Without a name, as for
+ * a stored key alone, a run of the label's words that spells the key covers it.
  */
 export function researchCandidateRow(frame: Pick<ResearchFrame, "rows">, key: string, name?: string): ResearchMatrixRow | null {
   if (name === undefined) return frame.rows.find(({ label }) => spells(label, key)) ?? null;
-  // A name of one word as written is a brand or a line, which a row starting with it covers; any other name only a row of the same option, since a
-  // row whose label holds it among other words may be another model (codex review, 2026-11-03: Hermes-3-Llama-3.1-8B is no Llama-3.1-8B).
-  const lone = withoutSizes(name).split(/[^\p{L}\p{N}+]+/u).filter((word) => word.length > 0).length === 1;
-  return frame.rows.find(({ label }) => researchSameOption(label, name) || (lone && startsWithName(label, key))) ?? null;
-}
-
-/** Whether a label's first words spell the key, however either splits it into words: DreamLine Вельвет starts with Dreamline. */
-function startsWithName(label: string, key: string): boolean {
-  const wanted = spelling(key);
-  let spelled = "";
-  for (const word of nameWords(label)) {
-    spelled += word;
-    if (spelled === wanted) return true;
-    if (!wanted.startsWith(spelled)) return false;
-  }
-  return false;
+  // Only a row of the same option covers a named candidate: a row whose label holds the name among other words may be another option (codex review,
+  // 2026-11-03: Hermes-3-Llama-3.1-8B is no Llama-3.1-8B, and MinIO AIStor no MinIO), so such a candidate stays open for the main agent to decide.
+  return frame.rows.find(({ label }) => researchSameOption(label, name)) ?? null;
 }
 
 /** The candidate a name was noted under, written either way. */

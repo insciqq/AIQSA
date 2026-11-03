@@ -63,11 +63,14 @@ describe("a candidate's key", () => {
     expect(researchCandidateKey("Щ".repeat(RESEARCH_FRAME_LIMITS.labelCharacters)).length).toBeLessThanOrEqual(RESEARCH_FRAME_LIMITS.labelCharacters);
   });
 
-  it("is covered by a row of the same option once sizes go, and a brand alone by a row that starts with it, however either splits it", () => {
+  it("is covered by a row of the same option once sizes go, however either splits it, and by nothing else", () => {
     const row = (name: string, frame: Pick<ResearchFrame, "rows"> = FRAME) => researchCandidateRow(frame, researchCandidateKey(name), name);
     expect(row("Аскона Balance Forma")).toMatchObject({ key: "forma" });
     expect(row("Dream line Kombi-3 S1000")).toMatchObject({ key: "kombi-3" });
-    expect(row("Dreamline")).toMatchObject({ key: "kombi-3" });
+    // A brand alone, or a one-word option, stays open for the main agent: MinIO is no MinIO AIStor (codex review, 2026-11-03).
+    expect(row("Dreamline")).toBeNull();
+    expect(row("MinIO", { rows: [{ key: "aistor", label: "MinIO AIStor" }] })).toBeNull();
+    expect(row("Ceph", { rows: [{ key: "rgw", label: "Ceph RGW" }] })).toBeNull();
     // Another model of a line a row holds is no row: the option a real run lost; and a shorter or longer name may be another model.
     expect(row("Dreamline SleepDream Medium S1000")).toBeNull();
     expect(row("Kombi-3 S1000 Plus")).toBeNull();
@@ -139,7 +142,8 @@ describe("noting a candidate", () => {
 
   it("stores nothing for a name a row already covers, and says which row", () => {
     expect(refusal(researchFrameWithNote(FRAME, { label: "Askona Balance Forma", reason: "R." }, stamp()))).toContain("already row forma (Askona Balance Forma 160x200)");
-    expect(refusal(researchFrameWithNote(FRAME, { label: "Dreamline", reason: "R." }, stamp()))).toContain("not only its brand or line");
+    // A brand alone is no row's option: it is noted, and the main agent decides on it.
+    expect(value(researchFrameWithNote(FRAME, { label: "Dreamline", reason: "R." }, stamp())).candidates).toHaveLength(1);
   });
 
   it("stores nothing for a name with no letter or digit, a second note by the same agent, or one set aside", () => {
