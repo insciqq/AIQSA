@@ -324,6 +324,7 @@ describe("the method", () => {
     expect(footer).toContain("verbatim quote");
     expect(footer).toContain("A CAPTCHA, a block page or a sign-in ends work on that site");
     expect(footer).toContain("record it as unreachable with its reason and go on; never wait for a person");
+    expect(footer).toContain("A closed site does not close your question: answer it from another site that states the answer in its own text");
     expect(footer).toContain("Never read a page through third-party readers, mirrors or proxies other than the run's own");
     expect(footer).toContain("no check can read it");
     expect(footer).not.toContain("browser_handoff");
