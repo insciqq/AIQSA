@@ -224,5 +224,6 @@ describe("where a researcher reads the method", () => {
     expect(RESEARCH_REVIEWS_GUIDANCE).toContain(`Fewer than ${RESEARCH_SMALL_SAMPLE_BELOW} kept reviews is a small sample`);
     expect(RESEARCH_REVIEWS_GUIDANCE).toContain("never work around it");
     expect(RESEARCH_REVIEWS_GUIDANCE).toContain("`unreachable`");
+    expect(RESEARCH_REVIEWS_GUIDANCE).toContain("go on at once; never wait for a person");
   });
 });

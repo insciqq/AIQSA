@@ -152,6 +152,24 @@ describe("fetch_url provenance", () => {
     expect(loadSearchUrls).toHaveBeenCalled();
   });
 
+  it("reads a link a search cited with OpenAI's attribution as the source it names, sending only that source's link", async () => {
+    // The search's text carries the cited form; its source keeps the page's own link (acceptance run 3, 2026-11-03).
+    const source = "https://www.shop.example/product/sleep-medium-2850683628/?at=1hWp1PXQ";
+    const s = session({ loadSearchUrls: async () => [source], plan: { userUrlDigests: [], version: 1 } });
+    const cited = `${source}&utm_source=openai`;
+    const opened = await s.execute(call(cited), { signal });
+    expect(opened.status).toBe("complete");
+    expect(vi.mocked(s.fetchPage).mock.calls.map(([url]) => url)).toEqual([source]);
+    // The page keeps the name the agent asked for, which its records cite.
+    expect(json(opened)).toMatchObject({ url: cited });
+    // Attribution authorizes no other page: one without the source's own parameters is another page, and so is another host's.
+    for (const other of ["https://www.shop.example/product/sleep-medium-2850683628/?utm_source=openai",
+      "https://elsewhere.example/?at=1hWp1PXQ&utm_source=openai", `${source}&utm_source=openai&ref=chat`]) {
+      expect(json(await s.execute(call(other), { signal })).error).toBe("fetch_url_not_in_conversation");
+    }
+    expect(s.fetchPage).toHaveBeenCalledTimes(1);
+  });
+
   it("finds a link a later search returned, and asks the database only for a link it has not found yet", async () => {
     const found = ["https://found.example/first"];
     const loadSearchUrls = vi.fn(async () => found);

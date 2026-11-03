@@ -117,7 +117,7 @@ export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields 
           ...optional("requestAnchor", item.requestAnchor) };
       case "tool_result":
         return { name: item.name, outcome: item.outcome, output: item.output, ...optional("handle", item.handle),
-          ...optional("image", item.image), ...(item.inFlight ? { inFlight: true } : {}) };
+          ...optional("image", item.image), ...(item.inFlight ? { inFlight: true } : {}), ...(item.cleared ? { cleared: true } : {}) };
       case "compaction":
         return { origin: item.origin, ...optional("keepFromId", item.keepFromId), ...optional("native", item.native),
           ...optional("outputTokens", item.outputTokens), ...optional("retained", item.retained), ...optional("summary", item.summary) };
@@ -174,9 +174,12 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
       if (!boundedString(body.name, TRANSCRIPT_ITEM_LIMITS.nameLength) ||
         !OUTCOMES.includes(body.outcome as typeof OUTCOMES[number]) ||
         (body.handle !== undefined && !boundedString(body.handle, TRANSCRIPT_ITEM_LIMITS.identityLength)) ||
-        (body.inFlight !== undefined && (body.inFlight !== true || body.outcome !== "unknown"))) return invalid();
+        (body.inFlight !== undefined && (body.inFlight !== true || body.outcome !== "unknown")) ||
+        // A stub stands for a completed result, and holds no image.
+        (body.cleared !== undefined && (body.cleared !== true || body.outcome !== "complete" || body.image !== undefined))) return invalid();
       const resultImage = image(body.image, body.name, body.outcome);
-      return { callId: row.callId!, ...(typeof body.handle === "string" ? { handle: body.handle } : {}), id,
+      return { callId: row.callId!, ...(body.cleared === true ? { cleared: true as const } : {}),
+        ...(typeof body.handle === "string" ? { handle: body.handle } : {}), id,
         ...(resultImage ? { image: resultImage } : {}), ...(body.inFlight === true ? { inFlight: true as const } : {}), kind,
         name: body.name, outcome: body.outcome as typeof OUTCOMES[number], output: text(body.output) };
     }

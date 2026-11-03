@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   decodeResearchDraft,
+  decodeResearchDraftReferences,
   decodeResearchPlan,
   decodeResearchPlanAnswer,
   decodeResearchPlanEdit,
@@ -8,6 +9,7 @@ import {
   decodeResearchStart,
   PROPOSE_RESEARCH_PLAN_TOOL_NAME,
   RESEARCH_TIME_MS,
+  researchDraftText,
   researchPlanFromProposal,
   researchPlanProposalDocument,
   START_RESEARCH_TOOL_NAME,
@@ -36,12 +38,14 @@ import { harnessToolError } from "../tools/harnessTool";
 import { proposeResearchPlanTool, researchDraftReservedInstruction, researchScopingInstructions, researchScopingOverMessage, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { PlanUpdate } from "../tools/updatePlan";
+import { researchCandidatesLine } from "./candidates";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
-import { createResearchRounds, researchFilledCells, researchMatrix } from "./matrix";
-import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate } from "./method";
+import { createResearchRounds, researchFilledCells, researchKeySpecs, researchLeadingRows, researchMatrix, researchProgressCells, researchUnconfirmedKeyCells } from "./matrix";
+import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
+import { researchDraftWithLinkedRecords } from "./reportCheck";
 import { createResearchSources } from "./sources";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
@@ -133,13 +137,16 @@ const PICKED_UP_LINE = "Continuing from what was recorded";
 const pickedUpCells = (filled: number, cells: number) => `${filled} of ${cells} cells filled`;
 
 const SUBMIT_FIRST = `Your message was not shown to the user: while research runs, only a report handed in reaches them. Call ` +
-  `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the whole report, the ids of the records it rests on and what could not be reached.`;
+  `${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the summary, the whole report, the ids of the records it rests on and what could not be reached.`;
 
 const PROPOSE_FIRST = `Your message was not shown to the user: research has started and the user is waiting for your plan. Call ` +
   `${PROPOSE_RESEARCH_PLAN_TOOL_NAME} with what you have, naming what you lack as assumptions; do not ask the user anything.`;
 
 const RESEARCHERS_AFTER_PLAN = `Nothing started: researchers start after the plan. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} first.`;
 const REBUILD_FIRST = `Nothing started: the user changed the plan, so your questions must follow it first. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} again with questions rebuilt from the user's words.`;
+
+/** How long `fetch_url` trusts its last read of the unreachable sites: a researcher's record reaches the others within it. */
+const UNREACHABLE_SITES_FRESH_MS = 5_000;
 
 const PICK_UP_FIRST = `The research of the interrupted answer can be picked up from what it recorded. Call ${START_RESEARCH_TOOL_NAME} with its goal now: ` +
   "its plan and records come back with it, and nothing else carries on that research.";
@@ -148,7 +155,7 @@ const PICKED_UP = "Research picked up from what was recorded: the plan stands as
 /** What the model reads of the report it handed in before the interruption, by what the checks came to. */
 const DRAFT_LEFT = {
   accepted: `The checks passed the report you handed in before the interruption, but it never reached the user. Hand it in again with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}, and it is checked afresh.`,
-  sent_back: `The checks sent back the report you handed in before the interruption, and what they said of it stands. Answer it, then hand in the whole report again with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}.`,
+  sent_back: `The checks sent back the report you handed in before the interruption, and what they said of it stands. Answer it, then submit edits or the whole report with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}.`,
   unfinished: `The checks never finished on the report you handed in before the interruption, so hand it in again with ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} once the empty cells are filled or cannot be.`
 };
 const NOTHING_PICKED_UP = "Nothing of the earlier research could be picked up, so research starts over with the plan. What it found in this conversation still counts, " +
@@ -157,6 +164,7 @@ const NOTHING_PICKED_UP = "Nothing of the earlier research could be picked up, s
 /** Around what the gates said, in the call's result: an approval continuation reads it back from there (`researchOfTurn`). */
 const SENT_BACK_START = "Not shown to the user yet. ";
 const SENT_BACK_END = ` Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with the whole report.`;
+const SENT_BACK_EDITS_END = ` Then call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} again with edits or the whole report, and all reference fields in full.`;
 /** The gate a send back came from, by its place: the cap counts it even from a result too long to be stored whole. */
 const SENT_BACK_BY = /^\{"status":"sent_back","gate":"([^"\\]{1,64})"/u;
 
@@ -237,6 +245,8 @@ export function createRunResearch(input: RunResearchInput) {
   let accepted: HeldDraft | null = null;
   /** The report that stands: the latest one handed in since the last delivered follow-up, with its gates' notes once they ended. */
   let held: HeldDraft | null = null;
+  /** The latest draft sent back, whose report and summary an edit-only submission can reuse. */
+  let editableDraft: ResearchDraft | null = null;
   /** The report a delivered follow-up superseded: what a run that fails or says nothing more still has to show. */
   let superseded: HeldDraft | null = null;
   /** What to give back if the batch refuses the start this response opened scoping with. */
@@ -257,6 +267,8 @@ export function createRunResearch(input: RunResearchInput) {
   const isAccepted = () => accepted !== null;
   /** Researchers whose brief already holds the method, by the name their thread has (`normalizeSubagentName`). */
   const briefed = new Set<string>();
+  /** The unreachable sites `fetch_url` last read, so a run's hundreds of page reads do not each read every record. */
+  let unreachable: Readonly<{ at: number; sites: ReadonlyMap<string, string> }> | null = null;
   /**
    * The researcher calls running now, by the name their thread has, which is what the store lists and stops, one entry each: a
    * second call of a name in one batch is refused, and must not take the first off.
@@ -301,7 +313,12 @@ export function createRunResearch(input: RunResearchInput) {
   const gates = [...ports.report.gates, ...input.deps.gates ?? RESEARCH_GATES];
   const rounds = createResearchRounds(async (signal) => {
     const matrix = await researchMatrix(ports.coverage, signal);
-    return matrix && researchFilledCells(matrix.coverage);
+    // A confirmation the last draft's options needed counts as a new cell; only a frame with key specifications reads the records for it.
+    const confirming = matrix !== null && researchKeySpecs(matrix.frame).length > 0 && researchLeadingRows(attempts.at(-1)?.draft).length > 0;
+    if (!matrix || !confirming) return matrix && researchFilledCells(matrix.coverage);
+    // Records that could not be read leave nothing to compare, as a matrix that could not be: the round counts neither way.
+    const records = await liveRecords(signal);
+    return records && researchProgressCells(matrix, records, attempts.at(-1)?.draft);
   });
   /** What building the answer from the records came to: a run composes once, however many of its ends ask. */
   let composing: Promise<string | null> | null = null;
@@ -312,9 +329,11 @@ export function createRunResearch(input: RunResearchInput) {
     if (attemptText.trim() && attemptText.length >= lastHeld.length) return researchAnswerText(attemptText, [researchNote(plan ? "incomplete" : "before_plan")]);
     return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted")]) : null;
   };
+  /** A report going out on how the run ended: that note says it is not fully checked and why, so the plain word that a check did not finish goes. */
+  const endedWith = (notes: readonly string[], ending: "run_failed" | "stopped" | "time_out") => [...notes.filter((note) => note !== researchNote("gate_failed")), researchNote(ending)];
   const wroteReport = () => Math.max(attemptText.trim().length, lastHeld.trim().length) >= REPORT_AS_TEXT_CHARACTERS;
-  /** A draft no gate has finished on: an earlier draft's counts are not its own, and only what the gates carry holds for it. */
-  const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: researchCarriedNotes(gates, draft, attempts) });
+  /** A draft no gate has finished on: an earlier draft's notes are not its own, only what the gates carry holds for it, and it is not fully checked. */
+  const unchecked = (draft: ResearchDraft): HeldDraft => ({ draft, notes: [...researchCarriedNotes(gates, draft, attempts), researchNote("gate_failed")] });
   /** The plan stands: research proper starts, and its phases count from here. */
   const planStands = (stands: ResearchPlan) => {
     plan = stands;
@@ -411,12 +430,13 @@ export function createRunResearch(input: RunResearchInput) {
     if (rebuilt && held === rebuilt) held = unchecked(researchDraftWithRecords(rebuilt.draft, records));
   }
 
-  async function check(submitted: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<void> {
-    if (!plan) return;
-    // Only what has ids to fill reads the store, so a draft with none costs no read.
-    const records = awaitsRecords(submitted) || attempts.some((earlier) => awaitsRecords(earlier.draft)) ? await liveRecords(execution.signal) : null;
+  async function check(submitted: ResearchDraft, execution: EngineToolExecution, toolsOpen: boolean): Promise<ResearchDraft | null> {
+    if (!plan) return null;
+    // A linked record can be the draft's first citation, so assembly reads records even when no id was supplied.
+    const records = submitted.recordIds !== undefined || attempts.some((earlier) => awaitsRecords(earlier.draft)) ? await liveRecords(execution.signal) : null;
     if (records) fillAttempts(records);
-    const draft = records ? researchDraftWithRecords(submitted, records) : submitted;
+    const draft = records ? researchDraftWithRecords(researchDraftWithLinkedRecords(submitted, records), records) : submitted;
+    editableDraft = null;
     held = unchecked(draft);
     const attempt = attempts.length + 1;
     await rounds.settle(execution.signal);
@@ -442,7 +462,9 @@ export function createRunResearch(input: RunResearchInput) {
     } else {
       sentBack = outcome.message;
       sentBackBy = outcome.gate;
+      editableDraft = draft;
     }
+    return draft;
   }
 
   /**
@@ -491,10 +513,13 @@ export function createRunResearch(input: RunResearchInput) {
     rounds.ran(execution.round);
     const matrix = await researchMatrix(ports.coverage, execution.signal);
     if (!matrix) return result;
-    const line = researchCoverageLine(matrix, await rounds.newCells(researchFilledCells(matrix.coverage)));
     const records = await liveRecords(execution.signal);
+    const line = researchCoverageLine(matrix, await rounds.newCells(researchFilledCells(matrix.coverage)), researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft));
+    // Beside it, the options agents noted that are neither a row nor set aside: the main agent decides on each before a draft.
+    const candidates = researchCandidatesLine(matrix.frame);
     const list = records && researchRecordList(records, listedRecords);
-    return { ...result, content: [...result.content, { text: line, type: "text" }, ...list ? [{ text: list, type: "text" as const }] : []] };
+    return { ...result, content: [...result.content, { text: line, type: "text" }, ...candidates ? [{ text: candidates, type: "text" as const }] : [],
+      ...list ? [{ text: list, type: "text" as const }] : []] };
   }
 
   /** A Continue's start: the plan stands as its row keeps it, its phases start afresh, and the model reads what is filled before it plans a round. */
@@ -506,6 +531,7 @@ export function createRunResearch(input: RunResearchInput) {
     attempts.push(...turn.attempts);
     const rebuilt = turn.draft && unchecked(turn.draft);
     held = rebuilt ?? held;
+    editableDraft = turn.draftChecked === "sent_back" ? turn.draft : null;
     if (turn.owedRebuild) {
       rebuildOwed = true;
       standing = turn.owedRebuild;
@@ -520,10 +546,12 @@ export function createRunResearch(input: RunResearchInput) {
     const { questions, skipped_source_classes } = researchPlanProposalDocument(state.answer.plan);
     // No researcher need follow, so this is where the ids a draft cites come from. It rides behind the server's fields, whatever its length.
     const list = records && researchRecordList(records, listedRecords, PICKED_UP_RECORD_LIST_CHARACTERS);
+    const candidates = matrix && researchCandidatesLine(matrix.frame);
     // The server's fields, first and in this order: a later approval or Continue reads them back (`researchOfTurn`).
     const result = resultOf(call, { research_run: researchRunId, status: "resumed", opened_from: openedFrom, plan: { goal: state.goal, questions, skipped_source_classes },
       instructions: [PICKED_UP, ...records ? [`${records.length} records stand.${list ? " The ids a draft cites them by end this result." : ""}`] : [],
-        ...matrix ? [researchCoverageLine(matrix, null)] : [], ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
+        ...matrix ? [researchCoverageLine(matrix, null, researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft)), ...candidates ? [candidates] : []] : [],
+        ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
       ...rebuildOwed ? {} : { method: researchMethodText(stands) } });
     return list ? { ...result, content: [...result.content, { text: list, type: "text" }] } : result;
   }
@@ -647,24 +675,26 @@ export function createRunResearch(input: RunResearchInput) {
       }
       if (checking) return refused("research_check_running", "Another report is being checked; wait for its result.");
       const fromText = call.id.startsWith(TEXT_DRAFT_CALL);
-      const decoded: DecodedResearch<ResearchDraft> = decodeResearchDraft(call.arguments);
+      const decoded: DecodedResearch<ResearchDraft> = decodeResearchDraft(call.arguments, editableDraft);
       if (!decoded.ok) return refused("research_draft_invalid", decoded.message);
       checking = true;
+      let checked: ResearchDraft | null;
       try {
-        await check(fromText ? { ...decoded.value, origin: "plain_text" } : decoded.value, execution, !closedForText);
+        checked = await check(fromText ? { ...decoded.value, origin: "plain_text" } : decoded.value, execution, !closedForText);
       } finally {
         checking = false;
       }
-      if (isAccepted()) return resultOf(call, { message: "The report is shown to the user exactly as you wrote it. Your answer is complete.", status: "accepted" });
+      // Store only the server's additions, before a possibly excerpted message. Replay keeps these even if later records make a URL ambiguous.
+      const added = checked?.recordIds?.filter((id) => !decoded.value.recordIds?.includes(id)) ?? [];
+      const citations = added.length > 0 ? { auto_cited_record_ids: added } : {};
+      if (isAccepted()) return resultOf(call, { status: "accepted", ...citations, message: "The report is shown to the user exactly as you wrote it. Your answer is complete." });
       input.rearmReservedCall();
       // The fields keep this order: `researchOfTurn` reads the gate back by its place.
-      return resultOf(call, { status: "sent_back", ...sentBackBy === null ? {} : { gate: sentBackBy }, message: `${SENT_BACK_START}${lastWord() ?? ""}${SENT_BACK_END}`.trim() });
+      return resultOf(call, { status: "sent_back", ...sentBackBy === null ? {} : { gate: sentBackBy }, ...citations, message: `${SENT_BACK_START}${lastWord() ?? ""}${SENT_BACK_EDITS_END}`.trim() });
     }
   };
 
   return {
-    /** Every agent's handoff uses this wait once research starts, since the user may have left. */
-    handoffWaitMs: RESEARCH_TIME_MS.handoffWait,
     /** This run's ports, for what the engine wires beside the run (a sub-agent's `record_evidence` writes through `ports.evidence`). */
     ports,
     reservedCall: { instruction: researchDraftReservedInstruction(), name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME },
@@ -741,6 +771,14 @@ export function createRunResearch(input: RunResearchInput) {
       } : tool.definition.name !== CALL_SUBAGENT_TOOL_NAME ? tool : { ...tool, execute: async (execution) => {
         const { call } = execution;
         if (!researching()) return await pickedUp() ? harnessToolError(call, "research_pick_up_first", PICK_UP_FIRST) : tool.execute(execution);
+        // A message to a background sub-agent already running on the branch is no researcher: it goes to its mailbox as written,
+        // outside research's rounds, briefs and clock, whose end would otherwise stop that sub-agent.
+        // Without `background`, the rare turn that ends between this read and the handler's own continues in the foreground, which Stop ends.
+        if (await turns.runningInBackground(execution)) {
+          const { background: _background, ...message } = call.arguments;
+          void _background;
+          return tool.execute({ ...execution, call: { ...call, arguments: message } });
+        }
         if (!plan) return harnessToolError(call, "research_plan_first", RESEARCHERS_AFTER_PLAN);
         if (rebuildOwed) return harnessToolError(call, "research_plan_rebuild_first", REBUILD_FIRST);
         const closed = ports.time.researcherRefusal();
@@ -753,8 +791,9 @@ export function createRunResearch(input: RunResearchInput) {
         const name = normalizeSubagentName(foreground.name);
         if (typeof message !== "string" || name === null) return researcherOfRound(tool, execution, { ...call, arguments: foreground });
         const matrix = await researchMatrix(ports.coverage, execution.signal);
-        if (briefed.has(name)) return researcherOfRound(tool, execution, { ...call, arguments: { ...foreground, message: researcherMatrixBrief(message, matrix) } });
-        const brief = researcherBrief(message, plan, matrix);
+        const records = await ports.evidence.records(execution.signal);
+        if (briefed.has(name)) return researcherOfRound(tool, execution, { ...call, arguments: { ...foreground, message: researcherMatrixBrief(message, matrix, records) } });
+        const brief = researcherBrief(message, plan, matrix, records);
         if (brief === null) return harnessToolError(call, "research_brief_too_long", "Nothing started: this brief leaves no room for the research method. Shorten it and call again.");
         briefed.add(name);
         // Researchers work on these questions now, so the plan no longer changes.
@@ -763,12 +802,29 @@ export function createRunResearch(input: RunResearchInput) {
       } });
     },
 
+    /**
+     * The sites this research recorded unreachable, for `fetch_url` (`researchUnreachableSites`): read again after a few seconds, and a
+     * failed read keeps the last list, so a store's hiccup never fails a page read.
+     */
+    async unreachableSites(signal: AbortSignal): Promise<ReadonlyMap<string, string>> {
+      const now = input.now();
+      if (unreachable && now - unreachable.at < UNREACHABLE_SITES_FRESH_MS) return unreachable.sites;
+      try {
+        const sites = researchUnreachableSites(await ports.evidence.records(signal));
+        unreachable = { at: now, sites };
+        return sites;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        return unreachable?.sites ?? new Map();
+      }
+    },
+
     /** The loop asks before each round whether the turn's answer is already taken, so no paid round follows. */
     answerTaken(input_: Readonly<{ toolChoice: LoopToolChoice }>): boolean {
       if (accepted) return true;
       if (input_.toolChoice !== "none" || !plan || !held) return false;
-      // Tools closed with a draft in hand: tool-free text could only repeat it. It goes out as it stands.
-      accepted = { draft: held.draft, notes: [...held.notes, researchNote(input.toolTimeLeft() ? "unresolved" : "time_out")] };
+      // Tools closed with a draft in hand: tool-free text could only repeat it. It goes out as it stands, with what its gates said, and time is named only when it is why.
+      accepted = { draft: held.draft, notes: input.toolTimeLeft() ? held.notes : endedWith(held.notes, "time_out") };
       return true;
     },
 
@@ -798,7 +854,7 @@ export function createRunResearch(input: RunResearchInput) {
       }
       // A report handed in stays the report: a message never replaces it, whatever it says.
       if (held) {
-        accepted = { draft: held.draft, notes: [...held.notes, researchNote(toolsOpen ? "unresolved" : "time_out")] };
+        accepted = { draft: held.draft, notes: toolsOpen ? held.notes : endedWith(held.notes, "time_out") };
         return null;
       }
       textDrafts += 1;
@@ -831,21 +887,20 @@ export function createRunResearch(input: RunResearchInput) {
      * continuation goes on with it). What was held goes out rather than being lost.
      */
     finish(waiting: boolean): string | null {
-      if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
+      if (accepted) return researchAnswerText(researchDraftText(accepted.draft), accepted.notes);
       if (!researching() || waiting) return null;
       if (!plan) return lastHeld ? researchAnswerText(lastHeld, [researchNote("not_submitted")]) : null;
-      if (held) return researchAnswerText(held.draft.report, [...held.notes, researchNote("unresolved")]);
-      if (superseded) return researchAnswerText(superseded.draft.report, [...superseded.notes, researchNote("followup_not_applied")]);
+      if (held) return researchAnswerText(researchDraftText(held.draft), held.notes);
+      if (superseded) return researchAnswerText(researchDraftText(superseded.draft), [...superseded.notes, researchNote("followup_not_applied")]);
       return null;
     },
 
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */
     afterEnding(reason: "failed" | "stopped" | "timed_out"): string | null {
-      if (accepted) return researchAnswerText(accepted.draft.report, accepted.notes);
+      if (accepted) return researchAnswerText(researchDraftText(accepted.draft), accepted.notes);
       const report = held ?? superseded;
       if (report) {
-        return researchAnswerText(report.draft.report, [...report.notes,
-          researchNote(reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
+        return researchAnswerText(researchDraftText(report.draft), [...endedWith(report.notes, reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
           ...held ? [] : [researchNote("followup_not_applied")]]);
       }
       if (reason === "stopped") return null;
@@ -879,6 +934,7 @@ export function createRunResearch(input: RunResearchInput) {
       // Before the draft: what the gates carry for it comes from these.
       attempts.push(...found.attempts);
       if (found.draft) held = unchecked(found.draft);
+      editableDraft = found.draftChecked === "sent_back" ? found.draft : null;
       // Resuming answers at once and the records take a read, which is done before the model's first response ends.
       const rebuilt = held;
       if (!attempts.some(({ draft }) => awaitsRecords(draft)) && !(rebuilt && awaitsRecords(rebuilt.draft))) return;
@@ -908,7 +964,22 @@ function gatesWord(result: Extract<TranscriptItem, { kind: "tool_result" }> | un
   if (status === "accepted") return { message: null };
   if (status !== "sent_back" || typeof message !== "string") return undefined;
   const start = message.startsWith(SENT_BACK_START) ? SENT_BACK_START.length : 0;
-  return { ...by, message: message.slice(start, message.endsWith(SENT_BACK_END) ? -SENT_BACK_END.length : undefined) };
+  const ending = [SENT_BACK_END, SENT_BACK_EDITS_END].find((text) => message.endsWith(text));
+  return { ...by, message: message.slice(start, ending === undefined ? undefined : -ending.length) };
+}
+
+/** Added ids fit in the stored result's head (at most one per report link); never search inside the model's message. */
+function citationsOfResult(result: Extract<TranscriptItem, { kind: "tool_result" }> | undefined): readonly string[] {
+  if (result?.outcome !== "complete") return [];
+  const prefix = result.output.split(',"message":', 1)[0]!;
+  const found = /,"auto_cited_record_ids":(\[[^\]]*\])/u.exec(prefix);
+  if (!found) return [];
+  try {
+    const decoded = decodeResearchDraftReferences({ record_ids: JSON.parse(found[1]!) });
+    return decoded.ok ? decoded.value.recordIds : [];
+  } catch {
+    return [];
+  }
 }
 
 /** What a plan call's stored result says, excerpted or not: null when the call was refused or never returned. */
@@ -960,6 +1031,7 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
   historyCut?: true; openedFrom?: string;
   owedRebuild?: StandingPlan; plan: ResearchPlan | null; researchRun?: string }> {
   const attempts: ResearchAttempt[] = [];
+  const submissions: { parsed: unknown; result: Extract<TranscriptItem, { kind: "tool_result" }> | undefined }[] = [];
   const results = new Map<string, Extract<TranscriptItem, { kind: "tool_result" }>>();
   let draft: ResearchDraft | null = null;
   let draftChecked: "accepted" | "sent_back" | undefined;
@@ -1017,13 +1089,19 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
       if (answered.rebuilt) rebuilt = true;
       else released ??= { changed: answered.changed, releasedBy: answered.releasedBy, words: answered.words };
     } else {
-      const decoded = decodeResearchDraft(parsed);
-      if (!decoded.ok) continue;
-      const word = gatesWord(results.get(item.callId));
-      if (draft === null && word !== undefined) draftChecked = word.message === null ? "accepted" : "sent_back";
-      draft ??= decoded.value;
-      if (word !== undefined) attempts.unshift({ draft: decoded.value, ...word });
+      submissions.push({ parsed, result: results.get(item.callId) });
     }
+  }
+  // Walk only this research's submissions forward: every edit uses the last draft sent back, including across Continue boundaries.
+  for (const submission of submissions.reverse()) {
+    if (submission.result?.outcome === "error") continue;
+    const decoded = decodeResearchDraft(submission.parsed, draftChecked === "sent_back" ? draft : null);
+    if (!decoded.ok) continue;
+    const added = citationsOfResult(submission.result);
+    draft = added.length === 0 ? decoded.value : { ...decoded.value, recordIds: [...new Set([...decoded.value.recordIds ?? [], ...added])] };
+    const word = gatesWord(submission.result);
+    draftChecked = word === undefined ? undefined : word.message === null ? "accepted" : "sent_back";
+    if (word !== undefined) attempts.push({ draft, ...word });
   }
   const owed = plan && !rebuilt ? released as StandingPlan | null : null;
   return { attempts, draft, ...draftChecked === undefined ? {} : { draftChecked }, ...goal === undefined ? {} : { goal }, ...goal !== undefined && !began ? { historyCut: true as const } : {},

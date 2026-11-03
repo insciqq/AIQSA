@@ -12,16 +12,20 @@ import {
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
   TOOL_BATCH_LIMITS,
+  TOOL_CALL_LIMIT_OUTPUT,
   ToolBatchInactiveError,
   TOOL_TIME_EXHAUSTED_OUTPUT,
   transcriptRecord,
+  TURN_TOOL_CALL_LIMIT_OUTPUT,
   UNKNOWN_OUTCOME_APPROVAL_OUTPUT,
   UNKNOWN_OUTCOME_REPEAT_OUTPUT,
   type ToolBatchDeps
 } from "./toolBatch";
 import { createToolCallStore, type ToolCallBeginResult, type ToolCallRow, type ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry";
-import { TOOL_RESULT_LIMITS } from "./toolResults";
+import { TOOL_RESULT_LIMITS, toolModelOutput, toolOutputExcerpt, toolResultOutputText } from "./toolResults";
+import { rehydratePersistedSearchToolExecutionResult } from "../search/toolResult";
+import { threeEngineResult } from "../search/toolResult.testFixtures";
 import { createUnknownEffects, unknownEffectsOf } from "./unknownEffects";
 import { createTranscriptRepository } from "./transcriptRepository";
 import { SearchToolCancelledError } from "../search/toolExecutor";
@@ -270,6 +274,86 @@ describe("native tool batch", () => {
     expect(outcome.results.map((item) => item.outcome)).toEqual(["complete", "error"]);
   });
 
+  describe("a turn's own budget", () => {
+    const budget = (limit: number) => ({ exempt: new Set(["record"]), limit, spent: { calls: 0 } });
+
+    it("counts the turn's calls but its exempt tools, refuses past them, keeping recording open, and ends each counted result with what is left", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, `page ${String(call.arguments.page)}`));
+      const record = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
+      const { store } = fakeStore();
+      const turnBudget = budget(2);
+      const state = { calls: 0 };
+      const outcome = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup), record: tool("record", "local", record) }, store,
+        { maxToolCalls: null, turnBudget }), state, { round: 1, calls: [
+        { arguments: { page: 1 }, id: "c1", name: "lookup" },
+        { arguments: { claim: "a" }, id: "r1", name: "record" },
+        { arguments: { page: 2 }, id: "c2", name: "lookup" },
+        { arguments: { page: 3 }, id: "c3", name: "lookup" },
+        { arguments: { claim: "b" }, id: "r2", name: "record" }
+      ] });
+      expect(outcome.results.map((item) => [item.callId, item.outcome, item.output])).toEqual([
+        ["c1", "complete", "page 1\n\nCalls left in this task: 1."],
+        ["r1", "complete", "recorded"],
+        ["c2", "complete", "page 2\n\nCalls left in this task: 0."],
+        ["c3", "error", TURN_TOOL_CALL_LIMIT_OUTPUT(2)],
+        // Recording is never what a spent budget refuses.
+        ["r2", "complete", "recorded"]
+      ]);
+      // Not the loop's budget refusal, which closes every tool: what ran can still be recorded next round.
+      expect(outcome.budgetExhausted).toBe(false);
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(record).toHaveBeenCalledTimes(2);
+      expect(turnBudget.spent.calls).toBe(2);
+      // The run's own count goes on as before: every call that ran, records included.
+      expect(state.calls).toBe(4);
+      const refused = store.refuse.mock.calls.at(-1)![0] as { providerCallId: string; result: unknown };
+      expect(refused.providerCallId).toBe("c3");
+      expect(JSON.stringify(refused.result)).toContain("turn_tool_call_limit_reached");
+    });
+
+    it("gives the count back for a call that never runs, so the budget pays for work done", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "page"));
+      const turnBudget = budget(2);
+      const outcome = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup), unbound: tool("unbound", "none", vi.fn(), { links: () => null }) },
+        fakeStore().store, { maxToolCalls: null, turnBudget }), { calls: 0 }, { round: 1, calls: [
+        { arguments: {}, id: "u1", name: "unbound" },
+        { arguments: { page: 1 }, id: "c1", name: "lookup" },
+        { arguments: { page: 2 }, id: "c2", name: "lookup" }
+      ] });
+      expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["u1", "error"], ["c1", "complete"], ["c2", "complete"]]);
+      expect(outcome.results[0]!.output).not.toContain("Calls left in this task");
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(turnBudget.spent.calls).toBe(2);
+    });
+
+    it("keeps counting across the turn's batches, and the run's budget still refuses first when it is the smaller", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+      const turnBudget = budget(3);
+      const batch = deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store, { maxToolCalls: null, turnBudget });
+      const state = { calls: 0 };
+      const first = await runToolBatch(batch, state, { round: 1, calls: [{ arguments: { id: 1 }, id: "a", name: "lookup" }, { arguments: { id: 2 }, id: "b", name: "lookup" }] });
+      expect(first.budgetExhausted).toBe(false);
+      const second = await runToolBatch(batch, state, { round: 2, calls: [{ arguments: { id: 3 }, id: "c", name: "lookup" }, { arguments: { id: 4 }, id: "d", name: "lookup" }] });
+      expect(second.results.map((item) => item.output)).toEqual(["done\n\nCalls left in this task: 0.", TURN_TOOL_CALL_LIMIT_OUTPUT(3)]);
+      expect(second).toMatchObject({ budgetExhausted: false, executed: 1 });
+      // A batch of only refused calls ran nothing, so the loop closes tools as for any such batch.
+      const third = await runToolBatch(batch, state, { round: 3, calls: [{ arguments: { id: 7 }, id: "g", name: "lookup" }] });
+      expect(third).toMatchObject({ budgetExhausted: false, correctable: 0, executed: 0 });
+
+      const run = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store, { maxToolCalls: 1, turnBudget: budget(5) }), { calls: 0 },
+        { round: 1, calls: [{ arguments: { id: 5 }, id: "e", name: "lookup" }, { arguments: { id: 6 }, id: "f", name: "lookup" }] });
+      expect(run.results.map((item) => item.output)).toEqual(["done\n\nCalls left in this task: 4.", TOOL_CALL_LIMIT_OUTPUT(1)]);
+    });
+
+    it("adds no line and refuses nothing without a turn budget", async () => {
+      const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+      const calls = Array.from({ length: 20 }, (_, index) => ({ arguments: { id: index }, id: `c${index}`, name: "lookup" }));
+      const outcome = await runToolBatch(deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store, { maxToolCalls: null }), { calls: 0 }, { round: 1, calls });
+      expect(outcome.results.every((item) => item.output === "done")).toBe(true);
+      expect(outcome.budgetExhausted).toBe(false);
+    });
+  });
+
   it("refuses no call for a count without a call budget, and still blocks an identical repeat", async () => {
     const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, `page ${String(call.arguments.page)}`));
     const { store } = fakeStore();
@@ -371,6 +455,47 @@ describe("native tool batch", () => {
     expect(outcome.results.map((item) => item.callId)).toEqual([...asks.map((call) => call.id), "after-1", "after-2"]);
     expect(vi.mocked(store.begin).mock.calls.map(([input]) => [input.providerCallId, input.ordinal]))
       .toEqual(expect.arrayContaining(asks.map((call, ordinal) => [call.id, ordinal])));
+  });
+
+  it("runs a delegated tool's calls in places of their own, beside the batch's shared ones, and queues those past its own", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const started: string[] = [];
+    const hold = async ({ call }: { call: ModelToolCall }) => {
+      started.push(call.id);
+      await held;
+      return ok(call);
+    };
+    const { store } = fakeStore();
+    const delegated = Array.from({ length: TOOL_BATCH_LIMITS.delegatedConcurrency + 1 }, (_, index) => ({ arguments: { name: `r${index}` }, id: `agent-${index}`, name: "agent" }));
+    const lookups = Array.from({ length: TOOL_BATCH_LIMITS.concurrency + 1 }, (_, index) => ({ arguments: { page: index }, id: `look-${index}`, name: "lookup" }));
+    const running = runToolBatch(deps({ agent: tool("agent", "local", vi.fn(hold), { delegated: true }), lookup: tool("lookup", "none", vi.fn(hold)) }, store, { maxToolCalls: null }),
+      { calls: 0 }, { round: 1, calls: [...delegated, ...lookups] });
+    // Every delegated call up to its own limit and every shared place's call start together; one of each waits.
+    await vi.waitFor(() => expect(started).toHaveLength(TOOL_BATCH_LIMITS.delegatedConcurrency + TOOL_BATCH_LIMITS.concurrency));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started.filter((id) => id.startsWith("agent-"))).toHaveLength(TOOL_BATCH_LIMITS.delegatedConcurrency);
+    expect(started.filter((id) => id.startsWith("look-"))).toHaveLength(TOOL_BATCH_LIMITS.concurrency);
+    release();
+    const outcome = await running;
+    expect(started).toHaveLength(delegated.length + lookups.length);
+    expect(outcome.results.map((item) => item.callId)).toEqual([...delegated, ...lookups].map((call) => call.id));
+  });
+
+  it("keeps a queued delegated call in its own places when the registry stops resolving its tool, and refuses it there", async () => {
+    // Research's scoping limit drops call_subagent from the registry while a round's first calls run (codex review, 2026-11-03).
+    let expired = false;
+    const agent = tool("agent", "local", vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      expired = true;
+      return ok(call);
+    }), { delegated: true });
+    const { store } = fakeStore();
+    const batch = deps({ agent }, store, { maxToolCalls: null });
+    const registry = batch.registry;
+    const outcome = await runToolBatch({ ...batch, registry: { ...registry, resolve: (name) => expired ? undefined : registry.resolve(name) } }, { calls: 0 },
+      { round: 1, calls: Array.from({ length: TOOL_BATCH_LIMITS.delegatedConcurrency + 1 }, (_, index) => ({ arguments: { name: `r${index}` }, id: `agent-${index}`, name: "agent" })) });
+    expect(outcome.results).toHaveLength(TOOL_BATCH_LIMITS.delegatedConcurrency + 1);
+    expect(outcome.results.at(-1)).toMatchObject({ callId: `agent-${TOOL_BATCH_LIMITS.delegatedConcurrency}`, outcome: "error" });
   });
 
   it("starts no queued call after the tool time ran out, lets running calls settle and still runs the reserved report", async () => {
@@ -477,6 +602,24 @@ describe("native tool batch", () => {
     expect(outcome.results[0]!.handle).toBe(`tor1_${"b".repeat(32)}`);
     expect(outcome.results[0]!.output.length).toBeLessThan(TOOL_RESULT_LIMITS.inlineChars);
     expect([...rows.values()][0]!.state).toBe("complete");
+  });
+
+  it("shows the model a fair share of each engine of a long merged search result, and saves and records it whole", async () => {
+    const merged = threeEngineResult();
+    const text = toolResultOutputText(merged);
+    const { rows, store } = fakeStore();
+    const batch = deps({ search_selected_engines: tool("search_selected_engines", "none", async ({ call }) => ({ ...merged, callId: call.id }),
+      { observationSource: "search" }) }, store);
+    const outcome = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: { query: "q" }, id: "c1", name: "search_selected_engines" }],
+      round: 1 });
+    expect(batch.saveResult).toHaveBeenCalledWith(expect.objectContaining({ text }));
+    const handle = `tor1_${"b".repeat(32)}`;
+    expect(outcome.results[0]!.handle).toBe(handle);
+    expect(outcome.results[0]!.output).toBe(toolModelOutput({ ...merged, callId: "c1" }, text, toolOutputExcerpt(text, { handle })));
+    for (const name of ["OpenAI", "Perplexity", "DeepSeek"]) expect(outcome.results[0]!.output).toContain(`Search source "${name}":\n`);
+    // The call's row keeps the whole result: its findings, not a view of them.
+    const row = [...rows.values()][0]!;
+    expect(rehydratePersistedSearchToolExecutionResult(row.result as unknown as ToolExecutionResult)?.content).toEqual(merged.content);
   });
 
   it("saves every result over the save bound with a handle and shows it whole; a short one and a read of a saved one stay unsaved", async () => {

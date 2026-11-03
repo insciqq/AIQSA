@@ -164,7 +164,7 @@ const sendingBack = (name: string, seen: string[] = []): ResearchGate => ({ name
 const FRAME: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Durability", key: "durability", why: "It is bought for years." }, { criterion: "Firmness", key: "firmness", why: "It decides comfort." }],
   rows: [{ key: "x1", label: "Lonax X1" }] };
 
-const finding = (rowKey: string, criterionKey: string): ResearchEvidenceRecord => ({ author: { name: null, threadId: null }, claim: "It holds.", createdAt: "", criterionKey, id: `${rowKey}-${criterionKey}`, kind: "finding",
+const finding = (rowKey: string, criterionKey: string): Extract<ResearchEvidenceRecord, { kind: "finding" }> => ({ author: { name: null, threadId: null }, claim: "It holds.", createdAt: "", criterionKey, id: `${rowKey}-${criterionKey}`, kind: "finding",
   pageId: null, publishedOn: null, quote: "It holds.", quoteCheck: { reason: null, status: "found" }, registrableDomain: null, rowKey, runId: "run-1", sequence: 0, sourceClass: "independent_tests",
   standing: "confirmed", supersedes: null, textGroupKey: null, url: "https://lab.example/x1" });
 
@@ -263,7 +263,7 @@ describe("no gate passes its send backs, whatever a model does", () => {
 });
 
 describe("rounds that fill no new cell end research", () => {
-  it("stops after two rounds: the third call starts nothing and says why, the report goes out, and the empty cells are in the answer", async () => {
+  it("stops after two rounds: the third call starts nothing and says why, and the report goes out with nothing of the empty cells after it", async () => {
     const matrix = matrixPorts();
     const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("a")] }, DONE, { calls: [researcher("b")] }, DONE, { calls: [researcher("c")] }, { calls: [submit("one")] }]);
     const memory = engineOf({ gates: [gapCheckGate], ports: matrix.ports });
@@ -271,9 +271,10 @@ describe("rounds that fill no new cell end research", () => {
     expect(memory.admitForeground).toHaveBeenCalledTimes(RESEARCH_ROUND_LIMITS.noNewCellRounds);
     expect(resultsOf(requests[6], CALL_SUBAGENT_TOOL_NAME).at(-1)).toContain("research_no_new_cell");
     expect(requests).toHaveLength(7);
-    expect(memory.published()).toContain("# Report one");
-    expect(memory.published()).toContain("several rounds in a row found nothing new");
-    expect(memory.published()).toContain("Lonax X1: Durability, Firmness");
+    // What stayed empty is the report's to say: no list of cells, and no word of rounds.
+    expect(memory.published()).toMatch(/^# Report one/u);
+    expect(memory.published()).not.toContain("several rounds in a row found nothing new");
+    expect(memory.published()).not.toContain("Lonax X1: Durability, Firmness");
   });
 
   it("counts a batch of one response as one round, whoever else ran in it", async () => {
@@ -327,6 +328,26 @@ describe("rounds that fill no new cell end research", () => {
     expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b", "c", "d"]);
   });
 
+  it("starts no background turn when the mailbox's turn ends between the reads of a message to it", async () => {
+    const matrix = matrixPorts();
+    const message = { arguments: { background: true, message: "Also this.", name: "mail" }, id: "late", name: CALL_SUBAGENT_TOOL_NAME };
+    const { adapter } = scripted([{ calls: begin }, { calls: [message] }, { text: "Outcome: done\nDone." }, { calls: [researcher("a")] }, DONE, { calls: [submit("one")] }]);
+    const memory = engineOf({ gates: [], ports: matrix.ports });
+    const background = new FakeSubagentBackgroundControl();
+    const thread = { anchorRunId: "run-1", definitionId: null, id: "thread-mail", name: "mail", parentThreadId: null, typeName: null };
+    const running = { branchRunId: "run-1", id: "turn-mail", mode: "background", parentRunId: "run-1", state: "running" };
+    const ended = { ...running, state: "done" };
+    let reads = 0;
+    vi.mocked(memory.deps.subagentThreads!.find).mockImplementation(async ({ name }) => {
+      if (name !== "mail") return null;
+      reads += 1;
+      return (reads === 1 ? { active: running, latest: running, thread } : { active: null, latest: ended, thread }) as never;
+    });
+    await run(adapter, memory, { subagents: { background } });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(background.turns).toHaveLength(0);
+  });
+
   it("counts nothing for a message left in a running turn's mailbox", async () => {
     const matrix = matrixPorts();
     const message = (id: string) => ({ arguments: { message: `Also ${id}.`, name: "mail" }, id, name: CALL_SUBAGENT_TOOL_NAME });
@@ -339,6 +360,8 @@ describe("rounds that fill no new cell end research", () => {
     vi.mocked(memory.deps.subagentThreads!.find).mockImplementation(async ({ name }) => (name === "mail" ? { active, latest: active, thread } : null) as never);
     await run(adapter, memory, { subagents: { background } });
     expect(deliver).toHaveBeenCalledTimes(3);
+    // The mailbox gets the model's words as written: no research brief, matrix or unreachable list rides on a message.
+    expect(deliver.mock.calls.map(([input]) => input.message.text)).toEqual(["Also first.", "Also second.", "Also third."]);
     expect(resultsOf(requests[2], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("delivered");
     expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a"]);
   });
@@ -371,6 +394,34 @@ describe("rounds that fill no new cell end research", () => {
     await run(adapter, memory);
     expect(memory.admitForeground).toHaveBeenCalledTimes(3);
     expect(memory.published()).toContain("# Report one");
+  });
+});
+
+describe("the key specifications of the options a draft recommends, through the real engine", () => {
+  const KEYED: ResearchFrame = { ...FRAME, criteria: [{ ...FRAME.criteria[0]!, decisive: true }, FRAME.criteria[1]!] };
+  const leading = (id: string) => ({ arguments: { branch_picks: [], does_not_separate: null, pick_row_key: "x1", record_ids: ["x1-durability", "x1-firmness"], report: `# Report ${id}\n\nTake Lonax X1.`,
+    summary: { row_keys: ["x1"], text: "Take Lonax X1." }, unreachable: [] }, id, name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME });
+  const secondSite: ResearchEvidenceRecord = { ...finding("x1", "durability"), id: "x1-durability-shop", url: "https://shop.example/x1" };
+
+  it("asks a second site in the line after each researcher once a draft names its options, and never before", async () => {
+    const matrix = matrixPorts(KEYED, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("a")] }, DONE, { calls: [leading("one")] }, { calls: [researcher("b")] }, DONE, { calls: [leading("two")] }]);
+    await run(adapter, engineOf({ gates: [sendingBack("judge")], ports: matrix.ports }));
+    const [before, after] = resultsOf(requests[6], CALL_SUBAGENT_TOOL_NAME);
+    expect(before).toContain("Nothing is left for researchers to fill.");
+    expect(after).toContain("To confirm from a second site, the maker's or a seller's, for the options the last draft recommends: x1: durability. Send researchers for these confirmations only.");
+    expect(after).not.toContain("firmness");
+  });
+
+  it("counts a round that confirmed what the last draft's options needed as one that found something, so research goes on", async () => {
+    const matrix = matrixPorts(KEYED, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const confirms = () => { matrix.records.push(secondSite); };
+    const { adapter } = scripted([{ calls: begin }, { calls: [researcher("a")] }, DONE, { calls: [leading("one")] }, { calls: [researcher("b")] }, { ...DONE, onCall: confirms },
+      { calls: [researcher("c")] }, DONE, { calls: [leading("two")] }]);
+    const memory = engineOf({ gates: [sendingBack("judge")], ports: matrix.ports });
+    await run(adapter, memory);
+    // Round a filled nothing new, so without the confirmation of round b, round c would be the third in a row and refused.
+    expect(memory.admitForeground.mock.calls.map(([input]) => input.name)).toEqual(["a", "b", "c"]);
   });
 });
 
@@ -407,7 +458,7 @@ describe("each round is planned from the empty cells", () => {
 });
 
 describe("change_research_frame through the real engine", () => {
-  const change = (id: string, key: string) => ({ arguments: { cases: null, change: "add_row", key, label: `Row ${key}`, reason: "Found along the way.", why: null }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
+  const change = (id: string, key: string) => ({ arguments: { cases: null, change: "add_row", key, label: `Row ${key}`, reason: "Found along the way.", url: null, why: null }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
   const toolsOf = (request: ProviderRunRequest | undefined) => request?.tools?.map((tool) => tool.name) ?? [];
 
   it("reaches the main agent and every researcher, and each change lands under whoever made it", async () => {
@@ -504,6 +555,63 @@ describe("change_research_frame through the real engine", () => {
   });
 });
 
+describe("candidates noted through the real engine", () => {
+  const frameCall = (id: string, change: Record<string, unknown>) => ({ arguments: { cases: null, key: null, label: null, url: null, why: null, ...change }, id, name: CHANGE_RESEARCH_FRAME_TOOL_NAME });
+  const LISTING = "https://www.ozon.ru/category/matrasy-15018/?sorting=rating";
+  const note = (id: string, url: string = LISTING) =>
+    frameCall(id, { change: "note_candidate", label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it.", url });
+  const aside = (id: string) => frameCall(id, { change: "set_aside", key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." });
+
+  it("stores a researcher's note with its page, which the main agent reads after that report, refuses the researcher's set_aside, and the main agent's closes it", async () => {
+    const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] }, { calls: [aside("call-early-aside")] }, DONE,
+      { calls: [aside("call-aside")] }, { calls: [researcher("brands")] }, DONE, { calls: [submit("one")] }]);
+    await run(adapter, engineOf({ gates: [], ports: matrix.ports }));
+    expect(resultsOf(requests[3], CHANGE_RESEARCH_FRAME_TOOL_NAME)[0]).toContain("Candidate noted under key dreamline-sleep-dream-medium-s1000");
+    expect(resultsOf(requests[4], CHANGE_RESEARCH_FRAME_TOOL_NAME)[1]).toContain("only the main agent sets a noted candidate aside");
+    const [first, second] = resultsOf(requests[8], CALL_SUBAGENT_TOOL_NAME);
+    expect(first).toContain("Candidates noted (from the server), neither a row nor set aside: 1. Those named on the most sites come first;");
+    expect(first).toContain('named on 1 site by 1 agent: {"key":"dreamline-sleep-dream-medium-s1000","name":"Dreamline SleepDream Medium S1000",' +
+      '"reason":"An Ozon listing of 180x200 shows it."}');
+    expect(resultsOf(requests[6], CHANGE_RESEARCH_FRAME_TOOL_NAME).at(-1)).toContain("Set aside: dreamline-sleep-dream-medium-s1000.");
+    expect(second).not.toContain("Candidates noted");
+    const frame = matrix.held.frame as ResearchFrame;
+    expect(frame.candidates).toEqual([{ key: "dreamline-sleep-dream-medium-s1000", label: "Dreamline SleepDream Medium S1000",
+      notes: [{ at: expect.any(String), by: { name: "marketplaces", threadId: "thread-1" }, reason: "An Ozon listing of 180x200 shows it.", url: LISTING }] }]);
+    expect(frame.setAside).toEqual([{ at: expect.any(String), key: "dreamline-sleep-dream-medium-s1000", reason: "Sold out in every shop." }]);
+    expect(frame.rows).toEqual(FRAME.rows);
+  });
+
+  it("raises a frequent candidate still open at draft time through the real gap check, and a row covering it closes it", async () => {
+    const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const addRow = frameCall("call-row", { change: "add_row", key: "sleepdream", label: "Dreamline SleepDream Medium S1000", reason: "Ranked among the most sold." });
+    // One researcher saw it on two sites; a repeat from a site it noted is refused and adds nothing.
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] },
+      { calls: [note("call-note-2", "https://market.yandex.ru/catalog--matrasy/1")] }, { calls: [note("call-note-3", "https://ozon.ru/product/sleepdream-1/")] }, DONE,
+      { calls: [submit("one")] }, { calls: [addRow] }, { calls: [submit("two")] }, { text: JSON.stringify({ gaps: [], limits: [] }) }]);
+    const memory = engineOf({ gates: [gapCheckGate], ports: matrix.ports });
+    await run(adapter, memory);
+    expect(resultsOf(requests[4], CHANGE_RESEARCH_FRAME_TOOL_NAME).at(-1)).toContain("named on 2 sites by 1 agent now.");
+    expect(resultsOf(requests[5], CHANGE_RESEARCH_FRAME_TOOL_NAME).at(-1)).toContain("you noted dreamline-sleep-dream-medium-s1000 from ozon.ru already.");
+    expect(resultsOf(requests[7], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("Candidate dreamline-sleep-dream-medium-s1000: add it as a row");
+    expect((matrix.held.frame as ResearchFrame).rows.map(({ key }) => key)).toEqual(["x1", "sleepdream"]);
+    // Once a row covers it nothing is asked of it again, and the report goes out.
+    expect(requests.slice(9).flatMap((request) => resultsOf(request, SUBMIT_RESEARCH_DRAFT_TOOL_NAME)).join("\n")).not.toContain("Candidate dreamline");
+    expect(memory.published()).toContain("Report two");
+  });
+
+  it("leaves a candidate one researcher saw on one site in the pool, with no send back", async () => {
+    const matrix = matrixPorts(FRAME, [finding("x1", "durability"), finding("x1", "firmness")]);
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher("marketplaces")] }, { calls: [note("call-note")] }, DONE, { calls: [submit("one")] },
+      { text: JSON.stringify({ gaps: [], limits: [] }) }]);
+    const memory = engineOf({ gates: [gapCheckGate], ports: matrix.ports });
+    await run(adapter, memory);
+    expect(resultsOf(requests[4], CALL_SUBAGENT_TOOL_NAME)[0]).toContain("named on 1 site by 1 agent");
+    expect(requests.flatMap((request) => resultsOf(request, SUBMIT_RESEARCH_DRAFT_TOOL_NAME)).join("\n")).not.toContain("Candidate dreamline");
+    expect(memory.published()).toContain("Report one");
+  });
+});
+
 describe("the default engine", () => {
   const scope = { branchRunIds: [], chatId: "chat", researchRunId: "run-1", runId: "run-c", userId: "user", now: () => 0 } as unknown as ResearchRunScope;
   const where = { chatId: "chat", modelRunId: "run-1", userId: "user" };
@@ -538,7 +646,7 @@ describe("the default engine", () => {
 
   it("carries a researcher's change through a run to the database, under the research run and that researcher", async () => {
     const database = client();
-    const add = { arguments: { cases: null, change: "add_row", key: "y2", label: "Dreamline Y2", reason: "A shop sells it.", why: null }, id: "call-add", name: CHANGE_RESEARCH_FRAME_TOOL_NAME };
+    const add = { arguments: { cases: null, change: "add_row", key: "y2", label: "Dreamline Y2", reason: "A shop sells it.", url: null, why: null }, id: "call-add", name: CHANGE_RESEARCH_FRAME_TOOL_NAME };
     const { adapter } = scripted([{ calls: begin }, { calls: [researcher("a")] }, { calls: [add] }, DONE, { calls: [submit("one")] }]);
     // The real port alone: the real plan window would wait out its minute here, and this test is about the port's way to the database.
     await run(adapter, engineOf({ gates: [], ports: { coverage: factories(database).coverage! } }));

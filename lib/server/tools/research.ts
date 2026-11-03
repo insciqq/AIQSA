@@ -1,4 +1,4 @@
-import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
+import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, RESEARCH_PLAN_LIMITS, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
 import type { RunTool } from "./types";
 
@@ -62,12 +62,19 @@ export const proposeResearchPlanTool: RunTool = {
         type: "array"
       },
       criteria: {
-        description: "What the answer is judged by, at least one, found in the guides and standards you read while scoping and not from memory. For a knowledge question: its outcomes or sub-questions.",
-        items: keyed({ criterion: { description: "In plain words, in the user's language.", type: "string" }, why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
+        description: "What the answer is judged by, at least one, found in the guides and standards you read while scoping and not from memory. For a knowledge question: its outcomes or sub-questions. " +
+          "For a purchase, the current offer (where to buy, the seller, the price) and owners' reviews are criteria too, so every option found gets them as cells to fill.",
+        items: keyed({ criterion: { description: "In plain words, in the user's language.", type: "string" },
+          decisive: { description: "true for a key specification: a property of the option itself that the pick depends on and sellers may state differently, such as a mattress's " +
+            `load per side, height and layers. Each option the report recommends gets it confirmed from two sites. At most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}; false for the offer, ` +
+            "the price, owners' reviews and a knowledge question's outcomes.", type: "boolean" },
+          why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
         type: "array"
       },
       questions: {
-        description: "The questions that together answer the goal, each small enough for one researcher. Every source class goes to a question or into skipped_source_classes.",
+        description: "The questions that together answer the goal, each small enough for one researcher. Every source class goes to a question or into skipped_source_classes. " +
+          "They run at once, so none may need another's answer: what needs the options found, such as their owners' reviews, current offers or key specifications, is no question but " +
+          "a criterion, whose cells the next round fills once the rows exist.",
         items: {
           additionalProperties: false,
           properties: {
@@ -105,8 +112,10 @@ export const proposeResearchPlanTool: RunTool = {
 export const submitResearchDraftTool: RunTool = {
   capability: "session",
   description: "Hand in the research report once the researchers finished. Nothing you write while research runs reaches the user " +
-    "except this report: the server checks it and either shows it to the user exactly as written, so do not write it again, or " +
-    "tells you what to do before you submit again. Pass the whole report each time. The report rests on records: you pass their ids, never " +
+    "except this report: the server checks it and either shows it to the user exactly as written, its summary above the report, so do not write it again, or " +
+    "tells you what to do before you submit again. Pass the whole report with its summary, or after a send back pass edits against the latest draft the checks saw. " +
+    "With edits, omit report and omit summary to keep it, or give its full replacement. Always give record_ids, pick_row_key, branch_picks, does_not_separate and unreachable " +
+    "in full each time; they are never inherited. The report rests on records: you pass their ids, never " +
     "their text, and every check reads each claim from its record. Refused until the plan stands.",
   inputSchema: {
     additionalProperties: false,
@@ -132,6 +141,23 @@ export const submitResearchDraftTool: RunTool = {
         required: ["row_keys", "statement", "would_decide"],
         type: "object"
       }, { type: "null" }] },
+      edits: {
+        description: `Instead of report after a send back: at most ${RESEARCH_LIMITS.draftEdits} exact old/new pairs, at most ${RESEARCH_LIMITS.draftEditCharacters} characters per text and ` +
+          `${RESEARCH_LIMITS.draftEditsCharacters} characters total. Each old must occur exactly once in the previous report, edits cannot overlap, and all apply or none do. ` +
+          `The resulting report stays within ${RESEARCH_LIMITS.reportCharacters} characters. [] keeps the report while replacing references or summary.`,
+        items: {
+          additionalProperties: false,
+          properties: {
+            new: { description: "Exact replacement text; empty deletes the old text.", maxLength: RESEARCH_LIMITS.draftEditCharacters, type: "string" },
+            old: { description: "Exact text in the previous report, including whitespace; never text from the summary or from another edit's replacement.",
+              maxLength: RESEARCH_LIMITS.draftEditCharacters, minLength: 1, type: "string" }
+          },
+          required: ["old", "new"],
+          type: "object"
+        },
+        maxItems: RESEARCH_LIMITS.draftEdits,
+        type: "array"
+      },
       pick_row_key: { anyOf: [{ description: "The row of the matrix the report picks, for every user alike.", type: "string" }, { type: "null" }] },
       record_ids: {
         description: "The ids of the records the report rests on, as listed after each researcher's report and returned by record_evidence: every record behind a figure, a price, " +
@@ -139,8 +165,21 @@ export const submitResearchDraftTool: RunTool = {
         items: { type: "string" },
         type: "array"
       },
-      report: { description: "The report in Markdown, in the user's language, exactly as the user should read it: a comparison table on the matrix's criteria, why each criterion matters, " +
-        "any criterion added during research with its reason, confirmed, claimed by a party and not verified kept apart, each figure and named claim linked to its page where it is stated, and what could not be reached said plainly.", type: "string" },
+      report: { description: "The report in Markdown, in the user's language, exactly as the user should read it below the summary, which it does not repeat: the comparison table on the matrix's criteria first, " +
+        "why each criterion matters, any criterion added during research with its reason, for a purchase each recommended option's current offers and the options kept in reserve with one reason each, " +
+        "confirmed, claimed by a party and not verified kept apart compactly, each figure and named claim linked to its page where it is stated, and what could not be reached said plainly.", type: "string" },
+      summary: {
+        additionalProperties: false,
+        description: "What the user reads first: the server puts it above the report, and most readers stop there.",
+        properties: {
+          row_keys: { description: "The rows of the matrix the summary recommends, in its order: the pick first, then the alternatives. Empty only when it recommends no row, as for a knowledge question.",
+            items: { type: "string" }, type: "array" },
+          text: { description: `Two to four short paragraphs in the user's language, at most ${RESEARCH_LIMITS.summaryCharacters} characters, no heading and no table: the option to take for the user's ` +
+            "criteria, then the alternatives for their other likely priorities, such as cheaper or a different feel, each named as the matrix names it and, for a purchase, with its price and where to buy it.", type: "string" }
+        },
+        required: ["row_keys", "text"],
+        type: "object"
+      },
       unreachable: {
         description: "Sources that could not be reached; empty when none.",
         items: {
@@ -156,7 +195,8 @@ export const submitResearchDraftTool: RunTool = {
         type: "array"
       }
     },
-    required: ["report", "record_ids", "pick_row_key", "branch_picks", "does_not_separate", "unreachable"],
+    // The non-strict tool keeps both forms optional here; the decoder enforces report or edits and the report check requires the summary.
+    required: ["record_ids", "pick_row_key", "branch_picks", "does_not_separate", "unreachable"],
     type: "object"
   },
   name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
@@ -165,7 +205,7 @@ export const submitResearchDraftTool: RunTool = {
 
 /** The ephemeral last provider message of a round that offers only the reserved draft. */
 export function researchDraftReservedInstruction(): string {
-  return `The time for research is up. Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} now with the whole report from what you have, taking in ` +
+  return `The time for research is up. Call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} now with the summary and the whole report from what you have, taking in ` +
     "anything the user just wrote and naming what could not be checked, and call no other tool.";
 }
 
@@ -177,6 +217,7 @@ export function researchScopingInstructions(): string {
     `Research started with scoping: you have up to ${SCOPING_MINUTES} minutes before the plan. Read a few guides or standards on how such a thing ` +
       "is chosen and find the criteria yourself: the user may not know what matters, and criteria from memory float between runs.",
     "Write each criterion in plain words with why it matters. A knowledge question gets its outcomes or sub-questions in the same place, each with why it matters.",
+    `For a choice between options, mark as decisive the few key specifications a pick depends on, at most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}: the recommended options get them confirmed from two sites.`,
     `Then call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}. Do not wait until the time is up, and do not start researchers: they start after the plan.`,
     "Ask the user nothing, here or in the plan: what you lack becomes a named assumption. What is unknown about the user and changes the result " +
       "becomes a branch with its cases, so the report can say \"up to 70 kg, A; heavier, B\".",

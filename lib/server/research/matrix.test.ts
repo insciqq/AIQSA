@@ -16,8 +16,12 @@ import {
   RESEARCH_WHOLE_QUESTION_ROW,
   researchEmptyByRow,
   researchFilledCells,
+  researchKeyCells,
+  researchLeadingRows,
   researchMatrix,
   researchMatrixCoverage,
+  researchProgressCells,
+  researchUnconfirmedKeyCells,
   type ResearchFrameStore
 } from "./matrix";
 import { NOOP_RESEARCH_PORTS, type ResearchPorts, type ResearchRunScope } from "./ports";
@@ -113,6 +117,68 @@ describe("what fills a cell", () => {
   });
 });
 
+describe("the key specifications of the options a draft leads with", () => {
+  const KEYED: ResearchFrame = { ...FRAME, criteria: [{ ...FRAME.criteria[0]!, decisive: true }, FRAME.criteria[1]!] };
+  const on = (rowKey: string, criterionKey: string, link: string, claim = "c") => ({ ...finding(rowKey, criterionKey), claim, url: link }) as ResearchEvidenceRecord;
+  const cellsOf = (records: readonly ResearchEvidenceRecord[], rowKeys: readonly string[] = ["x1"], frame = KEYED) =>
+    researchKeyCells({ coverage: researchMatrixCoverage(frame, records), frame }, records, rowKeys);
+
+  it("leads with the pick, each case's pick and the summary's options, in that order, once each", () => {
+    expect(researchLeadingRows({ branchPicks: [{ branchKey: "w", caseKey: "heavy", rowKey: "y2" }], pickRowKey: "x1", summary: { rowKeys: ["x1", "z3", "y2"], text: "t" } }))
+      .toEqual(["x1", "y2", "z3"]);
+    expect(researchLeadingRows(undefined)).toEqual([]);
+  });
+
+  it("counts sites, not pages, and takes a cell as confirmed by a second site or by not_found", () => {
+    const [one] = cellsOf([on("x1", "durability", "https://maker.example/a"), on("x1", "durability", "https://www.maker.example/b"), on("x1", "firmness", "https://maker.example/a")]);
+    expect(one).toMatchObject({ confirmed: false, criterion: { key: "durability" }, row: { key: "x1" }, sites: ["maker.example"] });
+    expect(cellsOf([on("x1", "durability", "https://maker.example/a"), on("x1", "durability", "https://shop.example/b")])[0]).toMatchObject({ confirmed: true });
+    expect(cellsOf([on("x1", "durability", "https://maker.example/a"), notFound("x1", "durability")])[0]).toMatchObject({ confirmed: true });
+  });
+
+  it("takes no site from a record whose quote was found only on another page, since its link's site did not show it", () => {
+    const elsewhere = { ...on("x1", "durability", "https://shop.example/b"), quoteCheck: { reason: "other_page", status: "found" } } as ResearchEvidenceRecord;
+    expect(cellsOf([on("x1", "durability", "https://maker.example/a"), elsewhere])[0]).toMatchObject({ confirmed: false, sites: ["maker.example"] });
+  });
+
+  it("takes a not_found as a second site looked for only when written after the cell's last record", () => {
+    // Written before the finding, it says only that the first site was not found yet.
+    expect(cellsOf([notFound("x1", "durability"), on("x1", "durability", "https://maker.example/a")])[0]).toMatchObject({ confirmed: false });
+    const first = on("x1", "durability", "https://maker.example/a");
+    const after = notFound("x1", "durability");
+    expect(cellsOf([first, after, on("x1", "durability", "https://www.maker.example/c")])[0]).toMatchObject({ confirmed: false });
+    expect(cellsOf([{ ...after, createdAt: "2026-11-02T10:05:00.000Z" }, { ...first, createdAt: "2026-11-02T10:00:00.000Z" } as ResearchEvidenceRecord])[0]).toMatchObject({ confirmed: true });
+  });
+
+  it("has none for a criterion not marked decisive, an empty cell, a quote that failed, a row no draft leads with, or a frame that marks none", () => {
+    expect(cellsOf([on("x1", "firmness", "https://maker.example/a")])).toEqual([]);
+    expect(cellsOf([{ ...on("x1", "durability", "https://maker.example/a"), quoteCheck: { reason: null, status: "not_verbatim" } } as ResearchEvidenceRecord])).toEqual([]);
+    expect(cellsOf([on("y2", "durability", "https://maker.example/a")])).toEqual([]);
+    expect(cellsOf([on("x1", "durability", "https://maker.example/a")], ["x1"], FRAME)).toEqual([]);
+  });
+
+  it("finds two sites whose figures each say what the other does not, and none in a figure one of them only adds to", () => {
+    const [cell] = cellsOf([on("x1", "durability", "https://maker.example/a", "Load up to 130 kg per side."), on("x1", "durability", "https://shop.example/b", "Load up to 140 kg per side."),
+      on("x1", "durability", "https://dealer.example/c", "Load up to 130 kg per side, 22 cm high.")]);
+    expect(cell!.disagreements.map(({ figures, records }) => [records.map(({ url }) => url), figures.map((side) => side.map(({ text }) => text))])).toEqual([
+      [["https://maker.example/a", "https://shop.example/b"], [["130 kg"], ["140 kg"]]],
+      [["https://shop.example/b", "https://dealer.example/c"], [["140 kg"], ["130 kg", "22 cm"]]]
+    ]);
+    expect(cellsOf([on("x1", "durability", "https://maker.example/a", "Load 130 kg."), on("x1", "durability", "https://maker.example/b", "Load 140 kg.")])[0]!.disagreements).toEqual([]);
+  });
+
+  it("counts a confirmation of what the last draft recommends as progress for the rounds, and nothing else of a filled cell", () => {
+    const records = [on("x1", "durability", "https://maker.example/a"), on("y2", "durability", "https://maker.example/c")];
+    const matrix = { coverage: researchMatrixCoverage(KEYED, records), frame: KEYED };
+    const draft = { pickRowKey: "x1", summary: { rowKeys: ["x1"], text: "t" } };
+    const before = researchProgressCells(matrix, records, draft);
+    const more = [...records, on("x1", "durability", "https://shop.example/b"), on("y2", "durability", "https://shop.example/d")];
+    const after = researchProgressCells({ coverage: researchMatrixCoverage(KEYED, more), frame: KEYED }, more, draft);
+    expect([...after].filter((cell) => !before.has(cell))).toEqual(["x1/durability#confirmed"]);
+    expect(researchUnconfirmedKeyCells(matrix, records, draft).map(({ row }) => row.key)).toEqual(["x1"]);
+  });
+});
+
 describe("what may change the frame", () => {
   const addRow = (key = "z9"): ResearchFrameChangeRequest => ({ change: "add_row", reason: "A shop sells it.", row: { key, label: "Z9" } });
   const addCriterion = (key = "price"): ResearchFrameChangeRequest => ({ change: "add_criterion", criterion: { criterion: "Price", key, why: "It decides the budget." }, reason: "Prices differ by half." });
@@ -143,6 +209,21 @@ describe("what may change the frame", () => {
     expect(changedResearchFrame({ ...FRAME, criteria: numbered(limits.criteria, (index) => ({ criterion: "C", key: `c${index}`, why: "W" })) }, addCriterion(), STAMP)).toMatchObject({ ok: false });
     expect(changedResearchFrame({ ...FRAME, branches: numbered(limits.branches, (index) => ({ cases: [], key: `b${index}`, unknown: "U" })) }, addBranch(), STAMP)).toMatchObject({ ok: false });
     expect(changedResearchFrame({ ...FRAME, changes: numbered(limits.changes, () => ({ ...STAMP, change: "add_row" as const, key: "r", reason: "R" })) }, addRow(), STAMP)).toMatchObject({ ok: false });
+  });
+
+  it("notes a candidate beside the matrix, out of its log, and counts candidates toward its bound on changes", () => {
+    const limits = RESEARCH_FRAME_LIMITS;
+    const noted = changedResearchFrame(FRAME, { change: "note_candidate", label: "Sealy Hybrid", reason: "A ranking names it." }, STAMP);
+    expect(noted).toMatchObject({ ok: true, value: { candidates: [{ key: "sealy-hybrid", label: "Sealy Hybrid", notes: [{ ...STAMP, reason: "A ranking names it." }] }], changes: [], rows: FRAME.rows } });
+    const changes = Array.from({ length: limits.changes - 1 }, () => ({ ...STAMP, change: "add_row" as const, key: "r", reason: "R" }));
+    const crowded: ResearchFrame = { ...FRAME, candidates: [{ key: "sealy-hybrid", label: "Sealy Hybrid", notes: [{ ...STAMP, reason: "R." }] }], changes };
+    expect(changedResearchFrame(crowded, addRow(), STAMP)).toMatchObject({ message: expect.stringContaining(`its ${limits.changes} changes`), ok: false });
+    expect(changedResearchFrame({ ...FRAME, changes }, addRow(), STAMP)).toMatchObject({ ok: true });
+    // A researcher cannot set one aside: that is the main agent's decision.
+    if (!noted.ok) throw new Error("Expected a note");
+    expect(changedResearchFrame(noted.value, { change: "set_aside", key: "sealy-hybrid", reason: "Over budget." }, STAMP)).toMatchObject({ message: expect.stringContaining("only the main agent"), ok: false });
+    expect(changedResearchFrame(noted.value, { change: "set_aside", key: "sealy-hybrid", reason: "Over budget." }, { ...STAMP, by: { name: null, threadId: null } }))
+      .toMatchObject({ ok: true, value: { setAside: [{ at: STAMP.at, key: "sealy-hybrid", reason: "Over budget." }] } });
   });
 });
 

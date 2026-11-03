@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
-import { RECORD_EVIDENCE_TOOL_NAME, RESEARCH_SOURCE_CLASSES, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
+import { RECORD_EVIDENCE_TOOL_NAME, RESEARCH_SOURCE_CLASSES, RESEARCH_TASK_LIMITS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   type ResearchEvidenceRecord } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
 import type { BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
@@ -189,12 +189,12 @@ afterEach(() => {
 
 describe("a research run's browser handoff", () => {
   const target = "https://shop.example/login";
-  const reason = "The site asks to sign in and the handoff timed out.";
+  const reason = "The site requires sign-in.";
   const record = { arguments: { claim: null, criterion_key: null, dataset: null, kind: "unreachable", quote: null, reason, row_key: null,
     source_class: "action_channel", standing: null, supersedes: null, target, url: null }, id: "record-unreachable", name: RECORD_EVIDENCE_TOOL_NAME };
   const begin = [{ arguments: { goal: "Compare the options." }, id: "start-research", name: START_RESEARCH_TOOL_NAME },
     proposeCall({ questions: [{ question: "Which option?", sites: [target], source_classes: [...RESEARCH_SOURCE_CLASSES] }] })];
-  const submit = { arguments: { findings: [], report: "The shop could not be reached: sign-in handoff timed out.",
+  const submit = { arguments: { findings: [], report: "The shop could not be reached: sign-in required.",
     unreachable: [{ reason, source_class: "action_channel", target }] }, id: "submit-draft", name: SUBMIT_RESEARCH_DRAFT_TOOL_NAME };
 
   function liveWait() {
@@ -205,7 +205,7 @@ describe("a research run's browser handoff", () => {
     return handoff;
   }
 
-  it.each(["main", "researcher"] as const)("lets the %s record an unreachable site and finish after the research wait", async (agent) => {
+  it.each(["main", "researcher"] as const)("lets the %s record an unreachable site and finish without showing or waiting for a handoff", async (agent) => {
     vi.useFakeTimers();
     const handoff = liveWait();
     const records: ResearchEvidenceRecord[] = [];
@@ -227,17 +227,17 @@ describe("a research run's browser handoff", () => {
     ] });
     const reading = events(run.response);
     await vi.advanceTimersByTimeAsync(0);
-    expect(handoff).toHaveBeenCalledWith(expect.objectContaining({ waitMs: RESEARCH_TIME_MS.handoffWait,
-      ...agent === "researcher" ? { agent: { id: "thread-lab", name: "lab" } } : {} }));
-    await vi.advanceTimersByTimeAsync(RESEARCH_TIME_MS.handoffWait - 1);
-    expect(records).toEqual([]);
-    expect(checkReport).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
     const result = await reading;
+    expect(handoff).not.toHaveBeenCalled();
+    expect(run.space.guest.received.some((message) => message.t === "handoff")).toBe(false);
     const handoffOutput = run.model.requests.flatMap((request) => request.history ?? [])
       .find((item) => item.type === "tool_result" && item.name === BROWSER_HANDOFF_TOOL_NAME);
     if (handoffOutput?.type !== "tool_result") throw new Error("Expected the handoff result in the next model request.");
-    expect(JSON.parse(handoffOutput.output)).toMatchObject({ outcome: "timed_out", next: expect.stringContaining('record_evidence with kind "unreachable"') });
+    // A researcher's counted call ends with what its task has left (`turnCallsLeftLine`); the main agent's has no such line.
+    const tracker = /\n\nCalls left in this task: (\d+)\.$/u;
+    expect(tracker.exec(handoffOutput.output)?.[1]).toBe(agent === "researcher" ? String(RESEARCH_TASK_LIMITS.toolCalls - 1) : undefined);
+    expect(JSON.parse(handoffOutput.output.replace(tracker, ""))).toMatchObject({ outcome: "unreachable",
+      next: expect.stringContaining('record_evidence with kind "unreachable"') });
     for (const instruction of ["target set to the site", "reason explaining", "go on with the remaining research"]) {
       expect(handoffOutput.output).toContain(instruction);
     }

@@ -5,7 +5,8 @@ import {
   fetchUrlDigestsOf,
   fetchUrlDisplayTarget,
   isFetchUrlDigest,
-  normalizeFetchUrl
+  normalizeFetchUrl,
+  withoutFetchUrlAttribution
 } from "./urls";
 
 describe("fetch_url address normalization", () => {
@@ -82,5 +83,14 @@ describe("activity display target", () => {
     expect(fetchUrlDisplayTarget("http://example.com:8080/a")).toBe("example.com:8080/a");
     expect(fetchUrlDisplayTarget(`https://example.com/${"a".repeat(200)}`)).toHaveLength(96);
     expect(fetchUrlDisplayTarget("not a url")).toBeNull();
+  });
+
+  it("drops only the utm_* parameters of a query and keeps the rest as written, or says there were none", () => {
+    expect(withoutFetchUrlAttribution("https://shop.example/p/?at=1hWp&utm_source=openai")).toBe("https://shop.example/p/?at=1hWp");
+    expect(withoutFetchUrlAttribution("https://shop.example/find?q=a%20b&UTM_Medium=chat&utm%5Fsource=openai&id=2")).toBe("https://shop.example/find?q=a%20b&id=2");
+    expect(withoutFetchUrlAttribution("https://shop.example/p?utm_source=openai")).toBe("https://shop.example/p");
+    for (const none of ["https://shop.example/p", "https://shop.example/p?at=1", "https://shop.example/p?source=utm_x", "https://shop.example/p?%E0%A4%A=1"]) {
+      expect(withoutFetchUrlAttribution(normalizeFetchUrl(none)!)).toBeNull();
+    }
   });
 });

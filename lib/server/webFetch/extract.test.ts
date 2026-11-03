@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { decodePageBytes, extractPage, truncatePageText } from "./extract";
 import { declaredPageContentKind } from "./pageKinds";
@@ -78,6 +79,56 @@ describe("charset decoding", () => {
 });
 
 describe("HTML main content", () => {
+  it("keeps inactive product tabs from saved HTML without menus, cookie controls or dialogs", () => {
+    const page = extractPage({
+      body: readFileSync(new URL("./tabbedProduct.testFixture.html", import.meta.url)),
+      contentType: "text/html", finalUrl: "https://example.com/product"
+    })!;
+    for (const specification of ["Состав", "| Латекс | 30 мм |", "Кокосовая койра: 10 мм.", "Общая высота: 240 мм.",
+      "До 120 кг на спальное место.", "Независимые пружины: 512 на м².", "Съёмный хлопковый чехол."]) {
+      expect(page.text).toContain(specification);
+    }
+    expect(page.text.match(/Обе стороны матраса предназначены для сна\./gu)).toHaveLength(1);
+    expect(page.text).not.toMatch(/BOILERPLATE|SCRIPT_ONLY_SPECIFICATION/u);
+    expect(page.truncated).toBe(false);
+  });
+
+  it.each(['style="display:none"', "hidden", 'aria-hidden="true"', 'class="tab-pane"'])(
+    "keeps a short specification in an inactive tab (%s)", (attributes) => {
+      const page = extractPage({ body: encoder.encode(article(`<p>${paragraph}</p>
+        <section role="tabpanel" ${attributes}><h2>Состав</h2><p>Латекс: 30 мм.</p></section>`)),
+      contentType: "text/html", finalUrl: "https://example.com/product" })!;
+      expect(page.text).toContain("Латекс: 30 мм.");
+      expect(page.text.match(/Латекс: 30 мм\./gu)).toHaveLength(1);
+    });
+
+  it("reads nested tabs once even when the page has no other article, and keeps the text bound", () => {
+    const body = encoder.encode(`<html><body><nav><div role="tabpanel">MENU_BOILERPLATE</div></nav>
+      <section role="tabpanel" hidden><h2>Specifications</h2><div role="tabpanel" hidden><p>Nested specification.</p></div>
+      <p>${paragraph.repeat(10)}</p></section></body></html>`);
+    const page = extractPage({ body, contentType: "text/html", finalUrl: "https://example.com/product", maxCharacters: 1000 })!;
+    expect(page.text.match(/Nested specification\./gu)).toHaveLength(1);
+    expect(page.text).not.toContain("MENU_BOILERPLATE");
+    expect(page.text.length).toBeLessThanOrEqual(1000);
+    expect(page.truncated).toBe(true);
+  });
+
+  it("reads a page with no tabs as before: content whose class names a menu or a pop-up stays", () => {
+    const page = extractPage({ body: encoder.encode(`<html><body><div class="menu-items"><h2>Dishes</h2><p>Borscht with sour cream, 450 roubles.</p></div>
+      <div class="popup-note"><p>Open daily from noon.</p></div></body></html>`),
+    contentType: "text/html", finalUrl: "https://example.com/menu" })!;
+    expect(page.text).toContain("Borscht with sour cream, 450 roubles.");
+    expect(page.text).toContain("Open daily from noon.");
+  });
+
+  it("does not promote unrelated hidden nodes or script-only specifications into article content", () => {
+    const page = extractPage({ body: encoder.encode(article(`<p>${paragraph}</p>
+      <a role="tab" href="#">Empty tab target</a>
+      <div hidden>UNRELATED_HIDDEN_TEXT</div><script>loadSpecification('SCRIPT_ONLY_SPECIFICATION')</script>`)),
+    contentType: "text/html", finalUrl: "https://example.com/product" })!;
+    expect(page.text).not.toMatch(/UNRELATED_HIDDEN_TEXT|SCRIPT_ONLY_SPECIFICATION/u);
+  });
+
   it("keeps headings, lists, links and code from the main content and drops scripts and navigation", () => {
     const page = extractPage({
       body: encoder.encode(article(`<h2>Section</h2><p>${paragraph}</p>

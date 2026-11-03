@@ -6,11 +6,16 @@ import {
   RESEARCH_SOURCE_CLASSES,
   RESEARCH_STANDINGS,
   type ResearchEvidenceRecord,
-  type ResearchFrame
+  type ResearchFrame,
+  type ResearchStoredPage
 } from "../../contracts/research";
 import { SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import { subagentOffersTool } from "../engine/subagents/registry";
 import type { EngineToolExecution } from "../engine/toolRegistry";
+import type { ResearchEvidenceAppend, ResearchEvidenceRepository } from "../research/evidenceRepository";
+import { createResearchEvidenceStore } from "../research/evidenceStore";
+import type { ResearchRunScope } from "../research/ports";
+import type { ResearchAgentCall } from "../research/sources";
 import { recordEvidenceEngineTool, recordEvidenceTool, type RecordEvidenceTarget } from "./recordEvidence";
 import type { ToolExecutionResult } from "./types";
 
@@ -28,7 +33,8 @@ const properties = recordEvidenceTool.inputSchema.properties as Record<string, R
 function targetOf(written: Awaited<ReturnType<RecordEvidenceTarget["evidence"]["record"]>> = { kind: "recorded", record: stored({ reason: null, status: "found" }) }, researching = true,
   frame: ResearchFrame | null = null) {
   const record = vi.fn(async () => written);
-  return { record, target: { coverage: { frame: async () => frame }, evidence: { record }, researching: () => researching } satisfies RecordEvidenceTarget };
+  const page = vi.fn(async (): Promise<ResearchStoredPage | null> => null);
+  return { page, record, target: { coverage: { frame: async () => frame }, evidence: { page, record }, researching: () => researching } satisfies RecordEvidenceTarget };
 }
 
 const signal = new AbortController().signal;
@@ -39,6 +45,12 @@ const call = (args: Record<string, unknown>): EngineToolExecution =>
 const value = (result: ToolExecutionResult) => (result.content[0] as { value: Record<string, unknown> }).value;
 
 describe("the record_evidence schema", () => {
+  it("keeps a claim to what its quote shows, the cause of most partly verdicts on acceptance runs 2 and 3", () => {
+    expect(properties.claim!.description).toMatch(/no more than its quote shows: .* goes in a record of its own with a quote that holds it, or stays out\./u);
+    // On run 3 eight of fourteen partly verdicts were claims that a page leaves a detail out, which part of a page cannot show.
+    expect(properties.claim!.description).toMatch(/What a page leaves out is no finding: record not_found for that cell\.$/u);
+  });
+
   it("lists every field as required, and the decoder accepts what it describes for each kind", () => {
     expect([...recordEvidenceTool.inputSchema.required as string[]].sort()).toEqual(Object.keys(properties).sort());
     expect(recordEvidenceTool.strict).toBe(false);
@@ -156,13 +168,14 @@ describe("a record_evidence call", () => {
     const result = await recordEvidenceEngineTool(refused.target, { kind: "main" }).execute(call(FINDING));
     expect(result.status).toBe("error");
     expect(value(result)).toEqual({ code: "research_records_full", message: "Nothing was recorded." });
-    const failing = { coverage: { frame: async () => null }, evidence: { record: vi.fn(async () => { throw new Error("down"); }) }, researching: () => true };
+    const failing = { coverage: { frame: async () => null }, evidence: { page: async () => null, record: vi.fn(async () => { throw new Error("down"); }) }, researching: () => true };
     await expect(recordEvidenceEngineTool(failing, { kind: "main" }).execute(call(FINDING))).rejects.toThrow("down");
   });
 
   describe("and the matrix", () => {
     const FRAME: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Firmness", key: "firmness", why: "It decides comfort." }], rows: [{ key: "x1", label: "X1" }] };
-    const at = (rowKey: string | null, criterionKey: string | null) => ({ ...stored({ reason: null, status: "found" }), criterionKey, kind: "finding", rowKey }) as ResearchEvidenceRecord;
+    const at = (rowKey: string | null, criterionKey: string | null) => ({ ...stored({ reason: null, status: "found" }), claim: FINDING.claim, criterionKey, kind: "finding",
+      pageId: null, quote: FINDING.quote, rowKey }) as ResearchEvidenceRecord;
     const result = async (record: ResearchEvidenceRecord, frame: ResearchFrame | null = FRAME) =>
       value(await recordEvidenceEngineTool(targetOf({ kind: "recorded", record }, true, frame).target, { kind: "main" }).execute(call(FINDING))) as { matrix?: string; record_id: string };
 
@@ -212,6 +225,111 @@ describe("a record_evidence call", () => {
       const written = await recordEvidenceEngineTool(target, { kind: "main" }).execute(call(FINDING));
       expect(written.status).toBe("complete");
       expect(value(written)).toMatchObject({ record_id: RECORD_ID });
+    });
+  });
+
+  describe("and the claim's figures", () => {
+    const CLAIM = "Слои: латекс 3 см, кокос 1 см.";
+    const finding = (quote: string, pageId: string | null = "page-1", claim = CLAIM) =>
+      ({ ...stored({ reason: null, status: "found" }), claim, kind: "finding", pageId, quote }) as ResearchEvidenceRecord;
+    const pageOf = (text: string, truncated = false) => ({ id: "page-1", text, truncated }) as ResearchStoredPage;
+    async function result(record: ResearchEvidenceRecord, stored: ResearchStoredPage | null | Error = null) {
+      const { page, target } = targetOf({ kind: "recorded", record });
+      page.mockImplementation(async () => { if (stored instanceof Error) throw stored; return stored; });
+      const written = await recordEvidenceEngineTool(target, { kind: "main" }).execute(call(FINDING));
+      expect(written.status).toBe("complete");
+      return { page, value: value(written) as { figures?: { not_in_quote: string[]; on_page: string[] }; message: string; record_id: string } };
+    }
+
+    it("names each figure the quote lacks, and asks for its passage or a narrower claim, keeping the record", async () => {
+      const { value: answer } = await result(finding("латекс, кокос", null));
+      expect(answer).toMatchObject({ figures: { not_in_quote: ["3 см", "1 см"], on_page: [] }, quote_check: "found", record_id: RECORD_ID });
+      expect(answer.message).toBe("Recorded. The quote is on the page. The claim says more than its quote (3 см, 1 см: not in the quote). The record stands; to correct it, " +
+        "call record_evidence again with supersedes set to this record's id and either a quote of the passage that holds each figure or a claim narrowed to what the quote says.");
+    });
+
+    it("says the figures are on the stored page but not in the quote, reading the stored page and not the agent's context", async () => {
+      const { page, value: answer } = await result(finding("латекс, кокос"), pageOf("Состав: латекс, кокос. Толщина слоёв: латекс 3 см, кокос 1 см."));
+      expect(page).toHaveBeenCalledWith("page-1", signal);
+      expect(answer.figures).toEqual({ not_in_quote: ["3 см", "1 см"], on_page: ["3 см", "1 см"] });
+      expect(answer.message).toContain("(3 см, 1 см: on the page but not in the quote)");
+    });
+
+    it("tells the figures on the page from those nowhere", async () => {
+      const { value: answer } = await result(finding("латекс, кокос"), pageOf("Состав: латекс, кокос. Латекс 3 см."));
+      expect(answer.figures).toEqual({ not_in_quote: ["3 см", "1 см"], on_page: ["3 см"] });
+      expect(answer.message).toContain("(3 см: on the page but not in the quote; 1 см: neither in the quote nor on the page)");
+    });
+
+    it("matches a price however a page groups and names it", async () => {
+      const { value: answer } = await result(finding("Матрас Lumo Flex 20", "page-1", "Lumo Flex 20 стоит 59 732 ₽."), pageOf("Матрас Lumo Flex 20. Цена: 59732 руб."));
+      expect(answer.figures).toEqual({ not_in_quote: ["59 732 ₽"], on_page: ["59 732 ₽"] });
+      expect((await result(finding("Цена: 59 732 руб.", "page-1", "Lumo Flex 20 стоит 59 732 ₽."))).value).not.toHaveProperty("figures");
+    });
+
+    it("says only that a figure is not in the quote when the page is kept in part or cannot be read", async () => {
+      expect((await result(finding("латекс, кокос"), pageOf("Состав: латекс, кокос.", true))).value.message).toContain("(3 см, 1 см: not in the quote)");
+      const failed = await result(finding("латекс, кокос"), new Error("down"));
+      expect(failed.value).toMatchObject({ figures: { not_in_quote: ["3 см", "1 см"], on_page: [] }, record_id: RECORD_ID });
+    });
+
+    it("says nothing, and reads no page, when the quote holds every figure or the claim gives none", async () => {
+      const held = await result(finding("латекс 3 см, кокос 1 см"), pageOf("латекс 3 см, кокос 1 см"));
+      expect(held.value).toEqual({ message: "Recorded. The quote is on the page.", quote_check: "found", record_id: RECORD_ID });
+      expect(held.page).not.toHaveBeenCalled();
+      const none = await result(finding("held up", "page-1", "The X1 holds up, rated 4.8 of 5."), pageOf("held up"));
+      expect(none.value).not.toHaveProperty("figures");
+      expect(none.page).not.toHaveBeenCalled();
+    });
+  });
+
+  it("asks for a page the check can read when the quote rests on shell output or on no page", async () => {
+    const advice = "open this page with fetch_url or the browser so the check can read it; text from shell downloads or third-party readers cannot be checked.";
+    for (const reason of ["other_tool_output", "not_in_opened_text"]) {
+      const { target } = targetOf({ kind: "recorded", record: stored({ reason, status: reason === "other_tool_output" ? "not_checked" : "unsupported" }) });
+      const { message } = value(await recordEvidenceEngineTool(target, { kind: "main" }).execute(call(FINDING))) as { message: string };
+      expect(message).toContain(advice);
+      expect(message).toContain("supersedes");
+    }
+  });
+
+  describe("over the real store and quote check", () => {
+    const SHELL = "mcp__workspace__sandbox_shell";
+    const CARD = "https://shop.example/lumo-flex-20";
+    const shell = (id: string, command: string, text: string): ResearchAgentCall =>
+      ({ arguments: { command }, id, observationId: null, providerCallId: id, result: { callId: id, content: [{ text, type: "text" }], name: SHELL, status: "complete" }, toolName: SHELL });
+
+    /** One agent's calls, with the rows the store writes kept in memory and its page read back by id. */
+    function toolOf(calls: readonly ResearchAgentCall[]) {
+      const appended: ResearchEvidenceAppend[] = [];
+      const repository = {
+        agentCalls: () => ({ calls: async (_agent: unknown, ids: readonly string[]) => calls.filter((one) => ids.includes(one.id)), fetchCalls: async () => [],
+          recentCalls: async () => [...calls].reverse() }),
+        append: async (_scope: unknown, write: ResearchEvidenceAppend) => {
+          appended.push(write);
+          return { kind: "recorded" as const, record: { ...write.record, id: RECORD_ID, pageId: write.page ? "page-1" : null, quoteCheck: write.quoteCheck.kept } as unknown as ResearchEvidenceRecord };
+        },
+        chain: async () => ["run-1"],
+        page: async (_scope: unknown, _runs: unknown, pageId: string) => pageId === "page-1" && appended.at(-1)?.page ? { id: pageId, ...appended.at(-1)!.page! } : null
+      } as unknown as ResearchEvidenceRepository;
+      const run = { branchRunIds: [], chatId: "chat", researchRunId: "run-1", runId: "run-1", userId: "user" } as unknown as ResearchRunScope;
+      const evidence = createResearchEvidenceStore({ repository, savedResults: { read: vi.fn(async () => null) }, threads: { backgroundRunIds: vi.fn(async () => []) } as never })(run);
+      return recordEvidenceEngineTool({ coverage: { frame: async () => null }, evidence, researching: () => true }, { kind: "subagent", name: "shops", threadId: "thread-1" });
+    }
+
+    const price = { ...FINDING, claim: "Lumo Flex 20 стоит 59 732 ₽.", quote: "Матрас Lumo Flex 20", source_class: "action_channel", url: CARD };
+
+    it("finds a price the quote lacks on the page the browser printed", async () => {
+      const tool = toolOf([shell("c1", "aiqsa-browser text", "[browser #2 · shops] open @ shop.example/lumo-flex-20\nМатрас Lumo Flex 20\nЦена: 59732 руб.")]);
+      const answer = value(await tool.execute(call(price)));
+      expect(answer).toMatchObject({ figures: { not_in_quote: ["59 732 ₽"], on_page: ["59 732 ₽"] }, quote_check: "found", record_id: RECORD_ID });
+    });
+
+    it("asks for the page itself when the text came from a shell download through a third-party reader", async () => {
+      const tool = toolOf([shell("c1", `curl -s https://r.jina.ai/${CARD}`, "Матрас Lumo Flex 20\nЦена: 59 732 ₽")]);
+      const answer = value(await tool.execute(call(price))) as { message: string };
+      expect(answer).toMatchObject({ figures: { not_in_quote: ["59 732 ₽"], on_page: [] }, quote_check: "not_checked", record_id: RECORD_ID });
+      expect(answer.message).toContain("open this page with fetch_url or the browser so the check can read it; text from shell downloads or third-party readers cannot be checked");
     });
   });
 

@@ -152,6 +152,12 @@ export type EngineTool = Readonly<{
    * stand open side by side.
    */
   serial?: true;
+  /**
+   * The tool's call waits on work that runs on its own, a sub-agent's turn (`call_subagent`), so its calls of one batch take
+   * places of their own (`TOOL_BATCH_LIMITS.delegatedConcurrency`) and none of the batch's shared ones: a response that
+   * starts a research round runs its researchers side by side instead of four at a time (acceptance run 2, 2026-11-03).
+   */
+  delegated?: true;
   /** The call's own records after it ran (Search rows and their usage). */
   settled?(execution: EngineToolExecution, result: ToolExecutionResult): Promise<void>;
 }>;
@@ -259,6 +265,7 @@ export type ToolRegistryInput = Readonly<{
   fetchUrlSession?: FetchUrlSession;
   /** Earlier main-agent runs whose Search evidence also authorizes this answer's page reads; absent, none. */
   fetchUrlEarlierRunIds?: readonly string[];
+  fetchUrlResearch?: FetchUrlSessionDeps["research"];
   /** The run's accepted MCP runtimes, by server; discovery adds to it. */
   mcpBindings: Map<string, EngineMcpBinding>;
   /**
@@ -556,6 +563,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const repository = input.services.repository;
     const session = input.fetchUrlSession ?? createFetchUrlSession({
       browserStep: () => browserStep,
+      research: input.fetchUrlResearch,
       plan: fetchPlan,
       scheduled: fetchPlan.taskUrlDigests !== undefined,
       searchAvailable: request.searchPlan.options.length > 0,

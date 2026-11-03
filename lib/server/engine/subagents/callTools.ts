@@ -395,7 +395,7 @@ const addressedActivity = (toolName: string) => (call: ModelToolCall) => {
 /** The registry entries of the two tools, for the main agent's registry. */
 export function subagentEngineTools(deps: SubagentCallDeps): readonly EngineTool[] {
   return [
-    { activity: addressedActivity(callSubagentTool.name), definition: callSubagentTool.tool, effects: callSubagentTool.effects,
+    { activity: addressedActivity(callSubagentTool.name), definition: callSubagentTool.tool, delegated: true, effects: callSubagentTool.effects,
       observationSource: "workspace", execute: (execution) => executeCallSubagent(deps, execution) },
     { activity: addressedActivity(stopSubagentTool.name), definition: stopSubagentTool.tool, effects: stopSubagentTool.effects,
       observationSource: "workspace", execute: (execution) => executeStopSubagent(deps, execution) },
@@ -407,7 +407,7 @@ export function subagentEngineTools(deps: SubagentCallDeps): readonly EngineTool
 export function subagentChildEngineTools(deps: SubagentCallDeps & Readonly<{ parentAgent: SubagentParentAgent }>,
   onCall: () => void): readonly EngineTool[] {
   return [
-    { activity: addressedActivity(callChildSubagentTool.name), definition: callChildSubagentTool.tool, effects: callChildSubagentTool.effects,
+    { activity: addressedActivity(callChildSubagentTool.name), definition: callChildSubagentTool.tool, delegated: true, effects: callChildSubagentTool.effects,
       observationSource: "workspace", execute: (execution) => {
         onCall();
         return executeCallSubagent(deps, execution);

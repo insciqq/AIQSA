@@ -17,6 +17,7 @@ import {
   compactionCutCurrent,
   fitToolResults,
   planCompaction,
+  planToolResultClearing,
   usableContextTokens,
   type BackgroundCompactionState,
   type CompactionCut,
@@ -25,7 +26,8 @@ import {
   type CompactionMode,
   type CompactionModelCall,
   type CompactionOutcome,
-  type CompactionPath
+  type CompactionPath,
+  type ToolResultClearingPolicy
 } from "./compaction";
 import {
   contextAnchor, contextMeasureCalibration, measureContext, type ContextAnchor, type ContextMeasure, type ContextMeasureCalibration
@@ -57,6 +59,12 @@ import {
  * - A request that still does not fit leaves the oldest results a handle
  *   reads out of that one request (`fitToolResults`, lossless); it fails with
  *   `context_too_large` only when nothing fits.
+ * - A run given a clearing policy (research researchers) first clears its
+ *   oldest page results once the context passes the policy's mark
+ *   (`planToolResultClearing`): the stubs are transcript items, appended at
+ *   the request boundary and on record like a compaction's, so later turns
+ *   and replay read the same context; a compaction is then planned on what
+ *   is left.
  *
  * A compaction reads the transcript as later turns read it (`record`), so a
  * run-scoped result (Memory) enters it only as its note. Its item is a
@@ -83,6 +91,8 @@ export const COMPACTION_LIFECYCLE = Object.freeze({
 export type RunContextDeps = Readonly<{
   /** Adds items to the run's transcript, in memory and on record. */
   append(items: readonly TranscriptItem[]): Promise<void>;
+  /** Clears the oldest page results past its mark (`compaction/clearing.ts`), with or without a known window; absent, none are. */
+  clearing?: ToolResultClearingPolicy;
   /** The model call of one compaction, extending the run's latest request. */
   compactionCall(request: () => ProviderRunRequest): CompactionModelCall;
   /** Where a compaction still running after the answer goes on; without it, one stops with its run. */
@@ -555,6 +565,26 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     return kept;
   }
 
+  /**
+   * Clears the oldest page results once the measured context passes the policy's mark, down to its low mark in one step:
+   * the stubs go on record with the transcript, and the request is projected again. Nothing happens without a policy, or
+   * when there is too little to clear.
+   */
+  async function clearOldResults(request: ProviderRunRequest): Promise<boolean> {
+    const policy = deps.clearing;
+    if (!policy) return false;
+    const tokens = measure(request);
+    if (tokens <= policy.clearAboveTokens) return false;
+    const { calibration, estimate } = measuring(request);
+    const planned = planToolResultClearing({ calibration, estimate, items: deps.items, nextId: randomUUID, policy, target, tokens });
+    if (!planned) return false;
+    deps.signal.throwIfAborted();
+    await deps.append(planned.items);
+    logEvent("context_compaction", { compacted_items: planned.items.length, kind: "clearing", mode: "foreground", outcome: "compacted",
+      reason: "threshold", run_id: deps.runId, tokens_after: measure(request), tokens_before: tokens });
+    return true;
+  }
+
   /** The request to send: re-projected after a compaction, fitted within `limit` by handle when it is still too large. */
   function finish(request: ProviderRunRequest, changed: boolean, limit: number): ProviderRunRequest {
     const whole = () => projectTranscript(deps.items, target, deps.projection);
@@ -598,6 +628,10 @@ export function createRunContext(deps: RunContextDeps): RunContext {
           join();
         }
         changed = await takeBackground();
+      }
+      // Old pages clear before a compaction is planned, so one runs only on what clearing leaves.
+      changed = await clearOldResults(request) || changed;
+      if (window) {
         for (let step = 0; step < 4; step += 1) {
           deps.signal.throwIfAborted();
           const tokens = measure(request);

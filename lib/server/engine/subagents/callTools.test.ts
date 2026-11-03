@@ -10,7 +10,7 @@ import type { SubagentBackgroundControl, SubagentParentAgent, SubagentTypeSnapsh
 import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import type { EngineToolExecution } from "../toolRegistry";
-import { executeCallSubagent, executeStopSubagent, withSubagentDepthRefusals, type SubagentCallDeps } from "./callTools";
+import { executeCallSubagent, executeStopSubagent, subagentChildEngineTools, subagentEngineTools, withSubagentDepthRefusals, type SubagentCallDeps } from "./callTools";
 import { freezeSubagentModels } from "./modelCatalog";
 import type { HostedSubagentRunner } from "./runner";
 import type { SubagentThreadLookup, SubagentTurnRecord } from "./threadStore";
@@ -566,6 +566,13 @@ describe("a sub-agent's own children", () => {
     const stopping = vi.spyOn(own.deps.runner, "stop").mockResolvedValue(endedSubagentResult("shop", { outcome: undefined, reason: "stop_subagent", state: "stopped" }));
     expect(value(await executeStopSubagent(own.deps, stopCall("shop")))).toMatchObject({ reason: "stop_subagent", state: "stopped" });
     expect(stopping).toHaveBeenCalledWith({ turnId: "turn-child" }, "stop_subagent");
+  });
+
+  it("runs the calls that start sub-agents in places of their own, since each waits on a turn that runs elsewhere, and stops them in the shared ones", () => {
+    const { deps } = setup();
+    const delegated = (tools: readonly { definition: { name: string }; delegated?: true }[]) => Object.fromEntries(tools.map((tool) => [tool.definition.name, tool.delegated === true]));
+    expect(delegated(subagentEngineTools(deps))).toMatchObject({ call_subagent: true, stop_subagent: false });
+    expect(Object.values(delegated(subagentChildEngineTools({ ...deps, parentAgent: { name: "lead", runId: "run", threadId: "thread-lead", toolState: { calls: 0 }, turnId: "turn-lead" } }, () => {})))).toEqual([true, false]);
   });
 
   it("answers a child that calls what it is not offered with its own code, and offers it nothing", async () => {

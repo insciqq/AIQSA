@@ -214,9 +214,10 @@ export type EventFields = {
     estimate_family: "anthropic" | "deepseek" | "gemini" | "openai" | "unknown";
     estimated_tokens: number; reported_input_tokens: number; ratio_permille: number;
   }>;
-  /** One compaction of a native run (`lib/server/engine/runContext.ts`): its path, mode, trigger, sizes and outcome; never content. */
+  /** One compaction of a native run (`lib/server/engine/runContext.ts`): its path, mode, trigger, sizes and outcome; never content.
+   * `clearing`: old page results cleared with no model call (`compacted_items` counts them). */
   context_compaction: Readonly<{
-    run_id: string; kind: "native" | "summary"; mode: "background" | "foreground"; reason: "threshold" | "overflow";
+    run_id: string; kind: "clearing" | "native" | "summary"; mode: "background" | "foreground"; reason: "threshold" | "overflow";
     /** `compacted`: its item entered the transcript; `adopted`: a later run swapped in a compaction it joined;
      * `discarded`: it finished but no longer applied. */
     outcome: "adopted" | "compacted" | "discarded" | "failed" | "cancelled";

@@ -27,6 +27,7 @@ import {
   JOURNEY_LIMITS, discoveredContextWindow, journeyReuseDecision, modelInConnection, readConnections,
   type JourneyConnection
 } from "./context-compaction-journey-support";
+import { RESEARCH_PERPLEXITY_SEARCH_MODEL, RESEARCH_PRODUCTION_SEARCH, RESEARCH_SEARCH_LABELS, researchSearchSourceStatus, type ResearchSearchLabel } from "./research-eval-support";
 
 export const REQUEST_TIMEOUT_MS = 60_000;
 export const SETUP_TIMEOUT_MS = 900_000;
@@ -259,12 +260,44 @@ export async function setWorkspaceEnabled(api: Api, enabled: boolean): Promise<v
 
 type SearchSourceInput = Readonly<{ connectionId: string; kind: "web_search" } | { kind: "deepseek_search_api"; provider: "deepseek"; secret: string }>;
 
-type StandSearchIntegration = Readonly<{ archivedAt: unknown; configurationActive: unknown; enabled: unknown; id: string; kind: unknown; sourceConnectionId: unknown; strategyId: string }>;
+type StandSearchIntegration = Readonly<{ archivedAt: unknown; configuration: unknown; configurationActive: unknown; draftVersion: unknown; enabled: unknown;
+  id: string; kind: unknown; sourceConnectionId: unknown; strategyId: string }>;
+
+/** The Admin Search catalog as the Control Center reads it. */
+async function searchCatalog(api: Api): Promise<Readonly<{ integrations: readonly StandSearchIntegration[]; policy: Readonly<{ version: number }> }>> {
+  const value = await json(api, "/api/admin/search");
+  const search = isRecord(value) && isRecord(value.search) ? value.search : fail("search_catalog_invalid");
+  if (!Array.isArray(search.integrations) || !isRecord(search.policy) || !Number.isSafeInteger(search.policy.version)) fail("search_catalog_invalid");
+  return { integrations: search.integrations as readonly StandSearchIntegration[], policy: search.policy as { version: number } };
+}
 
 async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegration[]> {
-  const value = await json(api, "/api/admin/search");
-  const list = isRecord(value) && isRecord(value.search) && Array.isArray(value.search.integrations) ? value.search.integrations : fail("search_catalog_invalid");
-  return list as readonly StandSearchIntegration[];
+  return (await searchCatalog(api)).integrations;
+}
+
+/**
+ * A family's connection: reused when one exists, else added through Quick Setup as an administrator's first key would add it. DeepSeek's checks
+ * its own two models and its Search API. OpenRouter's first key, by Quick Setup or by hand, adds and checks every built-in OpenRouter model
+ * (`providerSetupModels`), so it runs only when the operator approved that one-time cost (`AIQSA_SUBAGENTS_OPENROUTER_SETUP=approved`,
+ * operator decision 2026-11-02 for the parity acceptance).
+ */
+export async function ensureFamilyConnection(api: Api, provider: "deepseek" | "openrouter", secret: string): Promise<string> {
+  const existing = (await connections(api)).find((connection) => connection.family === provider && !connection.checkRunning);
+  if (existing) return existing.id;
+  const snapshot = await json(api, "/api/admin/providers/quick-setup");
+  const providers = isRecord(snapshot) && Array.isArray(snapshot.providers) ? snapshot.providers as readonly Record<string, unknown>[] : fail("quick_setup_invalid");
+  const offered = providers.find((entry) => entry.provider === provider) ?? fail("quick_setup_not_offered");
+  let result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: offered.stateToken, provider, secret },
+    method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  if (isRecord(result) && result.outcome === "selection_required" && Array.isArray(result.candidates)) {
+    const candidate = (result.candidates as readonly Record<string, unknown>[])[0] ?? fail("quick_setup_no_candidate");
+    result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: result.expectedState, provider, secret,
+      selectedModel: { candidateId: candidate.candidateId, policyVersion: result.policyVersion } }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  }
+  if (!isRecord(result) || typeof result.connectionId !== "string" || (result.outcome !== "ready" && result.outcome !== "partial")) fail("quick_setup_failed");
+  const connectionId = (result as { connectionId: string }).connectionId;
+  await checksIdle(api, connectionId);
+  return connectionId;
 }
 
 /**
@@ -272,30 +305,143 @@ async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegra
  * and runs its one probe search, and a hosted one that the model's own setup created.
  */
 export async function ensureSearchSource(api: Api, input: SearchSourceInput): Promise<string> {
-  let connectionId: string | null = input.kind === "web_search" ? input.connectionId : null;
-  if (input.kind === "deepseek_search_api") {
-    const existing = (await connections(api)).find((connection) => connection.family === input.provider && !connection.checkRunning);
-    if (existing) connectionId = existing.id;
-    else {
-      const snapshot = await json(api, "/api/admin/providers/quick-setup");
-      const providers = isRecord(snapshot) && Array.isArray(snapshot.providers) ? snapshot.providers as readonly Record<string, unknown>[] : fail("quick_setup_invalid");
-      const offered = providers.find((entry) => entry.provider === input.provider) ?? fail("quick_setup_not_offered");
-      let result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: offered.stateToken, provider: input.provider, secret: input.secret },
-        method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
-      if (isRecord(result) && result.outcome === "selection_required" && Array.isArray(result.candidates)) {
-        const candidate = (result.candidates as readonly Record<string, unknown>[])[0] ?? fail("quick_setup_no_candidate");
-        result = await json(api, "/api/admin/providers/quick-setup", { body: { expectedState: result.expectedState, provider: input.provider, secret: input.secret,
-          selectedModel: { candidateId: candidate.candidateId, policyVersion: result.policyVersion } }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
-      }
-      if (!isRecord(result) || typeof result.connectionId !== "string" || (result.outcome !== "ready" && result.outcome !== "partial")) fail("quick_setup_failed");
-      connectionId = (result as { connectionId: string }).connectionId;
-      await checksIdle(api, connectionId);
-    }
-  }
+  const connectionId = input.kind === "web_search" ? input.connectionId : await ensureFamilyConnection(api, input.provider, input.secret);
   const integration = await poll(SETUP_TIMEOUT_MS, async () => (await searchIntegrations(api)).find((entry) =>
     entry.sourceConnectionId === connectionId && entry.kind === input.kind && entry.archivedAt === null && entry.configurationActive) ?? null, "search_source_missing", 3_000);
   if (!integration.enabled) await json(api, `/api/admin/search/${encodeURIComponent(integration.id)}/actions`, { body: { action: "enable" }, method: "POST" });
   return integration.strategyId;
+}
+
+/**
+ * The OpenRouter connection Perplexity searches on: one the stand already has, live, with a default key and the exact model on
+ * OpenRouter's own adapter. The harness never adds one: an OpenRouter connection's first key, through Quick Setup or through the
+ * manual Add provider and key routes alike, adds and checks every built-in OpenRouter model (`activateCredentialSecret` and
+ * `providerSetupModels` in `lib/server/admin/providers/`), which the operator does not allow. Without one: `perplexity_connection_missing`.
+ */
+export async function perplexitySearchConnection(api: Api, upstreamModelId: string): Promise<string> {
+  const found = (await connections(api)).find((connection) => connection.family === "openrouter" && connection.enabled && connection.active &&
+    !connection.checkRunning && connection.defaultCredentialVersionId !== null && connection.models.some((model) => model.enabled && model.activeConfig !== null &&
+      model.activeConfig.upstreamModelId === upstreamModelId && model.activeConfig.adapterKind === "openrouter_chat_completions"));
+  return found?.id ?? fail("perplexity_connection_missing");
+}
+
+export type ClientSearchSource = Readonly<{ id: string; providerModelId: string; strategyId: string }>;
+
+/**
+ * A Search source on one connection's client route with one exact model, through the routes the Control Center uses: kept when
+ * it already searches with that model, re-saved with Save and check when it names another, created with its live check when the
+ * connection has none (a failed check creates nothing), then switched on. The draft is the Control Center's own for a model
+ * choice (`draftForModel` in `components/admin/search/searchSourceView.ts`). Without `upstreamModelId` the connection's first
+ * enabled model carries the source, as the DeepSeek Search API borrows its connection's key and never calls the model.
+ */
+export async function ensureClientSearchSource(api: Api, input: Readonly<{ connectionId: string; displayName: string;
+  kind: "deepseek_search_api" | "perplexity_search" | "web_search"; protocol: string; upstreamModelId: string | null }>): Promise<ClientSearchSource> {
+  const connection = await checksIdle(api, input.connectionId);
+  const model = input.upstreamModelId === null ? connection.models.find((entry) => entry.enabled) ?? null
+    : connection.models.find((entry) => entry.enabled && (entry.activeConfig ?? entry.draftConfig).upstreamModelId === input.upstreamModelId) ?? null;
+  if (!model) return fail(`search_model_missing_${input.kind}`);
+  const draft = { adapterKind: "provider_model_client", credentialMode: "provider_model", maxOutputTokens: null, protocol: input.protocol,
+    providerModelId: model.id, queryMaxCharacters: input.protocol === "deepseek_search_api" ? 128 : 1_000, reasoningPolicy: "lowest_supported", timeoutMs: 120_000 };
+  const description = "Web search available in chat.";
+  const live = async () => (await searchIntegrations(api)).find((entry) => entry.sourceConnectionId === input.connectionId &&
+    entry.kind === input.kind && entry.archivedAt === null) ?? null;
+  const existing = await live();
+  const configuration = existing && isRecord(existing.configuration) ? existing.configuration : null;
+  if (!existing || !configuration) {
+    const created = await json(api, "/api/admin/search", { body: { check: true, description, displayName: input.displayName, draft }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+    if (!isRecord(created) || typeof created.selectedIntegrationId !== "string") fail("search_source_create_invalid");
+  } else if (configuration.providerModelId !== model.id || configuration.protocol !== input.protocol || configuration.adapterKind !== "provider_model_client") {
+    // A DeepSeek source keeps whichever DeepSeek model carries its key: the API never calls it.
+    if (input.upstreamModelId !== null || configuration.protocol !== input.protocol) {
+      await json(api, `/api/admin/search/${encodeURIComponent(existing.id)}/actions`, { body: { action: "save_and_check", description,
+        displayName: input.displayName, draft, expectedDraftVersion: existing.draftVersion }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+    }
+  }
+  const integration = await live() ?? fail(`search_source_missing_${input.kind}`);
+  if (!integration.enabled) await json(api, `/api/admin/search/${encodeURIComponent(integration.id)}/actions`, { body: { action: "enable" }, method: "POST" });
+  // The model the source must search with; the caller's check compares the saved configuration against it.
+  return { id: integration.id, providerModelId: model.id, strategyId: integration.strategyId };
+}
+
+/** Runs a source's live check (the Control Center's Test) and returns the source as the catalog then shows it, for the caller's verdict. */
+export async function checkSearchSource(api: Api, integrationId: string): Promise<Readonly<{ code: string | null; integration: unknown }>> {
+  const response = await request(api, `/api/admin/search/${encodeURIComponent(integrationId)}/actions`, { body: { action: "test" }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  const code = response.ok ? null : await errorCode(response);
+  if (response.ok) await discard(response);
+  return { code, integration: (await searchIntegrations(api)).find((entry) => entry.id === integrationId) ?? null };
+}
+
+/** The organization's default Search plan, as the Control Center saves it; the server's answer must hold exactly this plan. */
+export async function setOrganizationSearchPlan(api: Api, plan: Readonly<{ mode: "all_selected" | "model_choice"; optionIds: readonly string[] }>): Promise<void> {
+  const { policy } = await searchCatalog(api);
+  const updated = await json(api, "/api/admin/search", { body: { defaultPlan: plan, expectedVersion: policy.version }, method: "PATCH" });
+  const saved = isRecord(updated) && isRecord(updated.search) && isRecord(updated.search.policy) && isRecord(updated.search.policy.defaultPlan)
+    ? updated.search.policy.defaultPlan : null;
+  const ids = saved && Array.isArray(saved.optionIds) ? saved.optionIds as readonly unknown[] : null;
+  if (!saved || saved.mode !== plan.mode || !ids || ids.length !== plan.optionIds.length || plan.optionIds.some((id, index) => ids[index] !== id)) {
+    fail("search_default_plan_not_applied");
+  }
+}
+
+const PRODUCTION_SEARCH_NAMES = { deepseek: "DeepSeek Search API", openai: "OpenAI (CodexLB) Search", perplexity: "Perplexity" } as const;
+
+/**
+ * Production's Search plan for scenario T: each selected source (all three by default) on its client route, checked by its own Test,
+ * then together as the organization's default, so research searches with exactly those; resolves the plan's sources with their labels.
+ * A source left out costs no setup: no OpenRouter lookup, DeepSeek key or search model. Every refusal names its source,
+ * `research_search_<source>_<code>`. OpenRouter is resolved first and only ever reused (`perplexitySearchConnection`), so a
+ * stand without it stops before anything is paid for, and no step runs Quick Setup for it.
+ */
+export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot: string; secret: string;
+  /** DeepSeek's key, when `deepseek` is selected. */
+  deepseekKey?: string;
+  /** The codex-lb model OpenAI's source searches with, when `openai` is selected. */
+  searchModel?: string;
+  /** The sources the plan uses, in any order; absent, all three. */
+  sources?: readonly ResearchSearchLabel[];
+  /** Present only when the operator approved OpenRouter's one-time setup: without a live connection it is added once, then reused. */
+  openrouterSetupKey?: string;
+  report(source: string, status: string): void }>): Promise<readonly Readonly<{ label: string; optionId: string }>[]> {
+  const step = async <T>(label: string, work: () => Promise<T>): Promise<T> => {
+    try { return await work(); } catch (error) {
+      return fail(`research_search_${label}_${error instanceof BrowserScenarioError ? error.message.replace(/^browser_scenarios_/u, "") : "setup_failed"}`);
+    }
+  };
+  const selected = RESEARCH_PRODUCTION_SEARCH.filter((spec) => (input.sources ?? RESEARCH_SEARCH_LABELS).includes(spec.label));
+  if (selected.length === 0) fail("research_search_sources_invalid");
+  const wanted = (label: ResearchSearchLabel) => selected.some((spec) => spec.label === label);
+  const perplexity = !wanted("perplexity") ? null : await step("perplexity", async () => {
+    try {
+      return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL);
+    } catch (error) {
+      if (!input.openrouterSetupKey || !(error instanceof BrowserScenarioError)) throw error;
+      await ensureFamilyConnection(api, "openrouter", input.openrouterSetupKey);
+      return poll(SETUP_TIMEOUT_MS, async () => {
+        try { return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL); } catch { return null; }
+      }, "perplexity_connection_missing", 3_000);
+    }
+  });
+  const searchModel = wanted("openai") ? input.searchModel ?? fail("research_search_openai_model_required") : null;
+  const openai = searchModel === null ? null : await step("openai", () => ensureModel(api, { apiRoot: input.apiRoot, model: searchModel }, input.secret,
+    "Research search model", { nativeSearch: true, vision: false }));
+  const deepseek = !wanted("deepseek") ? null
+    : await step("deepseek", () => ensureFamilyConnection(api, "deepseek", input.deepseekKey ?? fail("deepseek_key_required")));
+  const connections = { deepseek, openai: openai?.connectionId ?? null, perplexity };
+  const sources: { label: string; optionId: string }[] = [];
+  for (const spec of selected) {
+    const connectionId = connections[spec.label] ?? fail(`research_search_${spec.label}_connection_missing`);
+    const upstreamModelId = spec.label === "openai" ? searchModel : spec.label === "perplexity" ? spec.upstreamModelId : null;
+    const source = await step(spec.label, () => ensureClientSearchSource(api, { connectionId, displayName: PRODUCTION_SEARCH_NAMES[spec.label],
+      kind: spec.kind, protocol: spec.protocol, upstreamModelId }));
+    const checked = await step(spec.label, () => checkSearchSource(api, source.id));
+    const status = checked.code ?? researchSearchSourceStatus(checked.integration,
+      { protocol: spec.protocol, ...(upstreamModelId === null ? {} : { providerModelId: source.providerModelId }) });
+    input.report(spec.label, status);
+    if (status !== "ok") fail(`research_search_${spec.label}_${status}`);
+    sources.push({ label: spec.label, optionId: source.strategyId });
+  }
+  await step("plan", () => setOrganizationSearchPlan(api, { mode: "all_selected", optionIds: sources.map((source) => source.optionId) }));
+  return sources;
 }
 
 /** The research verifier role on the first enabled answer model of a connection of that family (of another family than the chat's, as the role is meant to be). */

@@ -16,7 +16,7 @@ import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
 import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import type { ToolExecutionResult } from "../tools/types";
 import { UPDATE_PLAN_TOOL_NAME } from "../tools/updatePlan";
-import { normalizeFetchUrl } from "../webFetch/urls";
+import { normalizeFetchUrl, withoutFetchUrlAttribution } from "../webFetch/urls";
 import type { ResearchOpenedSource } from "./gates";
 
 /**
@@ -97,6 +97,18 @@ export function researchRunsOnBranch(run: ResearchRunPlace): readonly string[] {
  */
 const GATE_TURN = /^(?:gap-judge|skeptic|verifier(?:-\d+)?)-\d+$/u;
 
+/**
+ * The addresses a page read answers to by what the agent asked: that link, and the same without its `utm_*` attribution, which
+ * `fetch_url` requests in its place when only that form is authorized (`lib/server/tools/fetchUrl.ts`), so a record citing either
+ * finds the read.
+ */
+function askedAddresses(asked: unknown): string[] {
+  const link = normalizeFetchUrl(asked);
+  if (!link) return [];
+  const bare = withoutFetchUrlAttribution(link);
+  return bare ? [link, bare] : [link];
+}
+
 export function createResearchSources(input: Readonly<{
   chatId: string;
   /** The main agent's items as the run holds them. */
@@ -118,7 +130,8 @@ export function createResearchSources(input: Readonly<{
       for (const list of [input.items(), ...read.map((thread) => thread.items)]) {
         const calls = new Map(list.flatMap((item) => item.kind === "tool_call" ? [[item.callId, item] as const] : []));
         for (const item of list) {
-          if (item.kind !== "tool_result" || item.outcome !== "complete" || AGENT_WRITTEN.has(item.name)) continue;
+          // A cleared result's stub stands for the result it follows, which is read already (`lib/server/engine/compaction/clearing.ts`).
+          if (item.kind !== "tool_result" || item.cleared === true || item.outcome !== "complete" || AGENT_WRITTEN.has(item.name)) continue;
           if (opened.length >= RESEARCH_SOURCE_LIMITS.results || characters >= RESEARCH_SOURCE_LIMITS.totalCharacters) return opened;
           signal.throwIfAborted();
           let text = item.output;
@@ -195,7 +208,7 @@ export function createResearchAgentSources(input: Readonly<{
     if (!result) return null;
     const page = call.toolName === FETCH_URL_TOOL_NAME ? fetchedPage(result) : null;
     const read = page ? { partial: page.partial, text: page.text } : await wholeText(toolResultOutputText(result), call.observationId, signal);
-    const addresses = page ? [isObject(call.arguments) ? call.arguments.url : null, page.finalUrl].flatMap((url) => normalizeFetchUrl(url) ?? []) : [];
+    const addresses = page ? [...askedAddresses(isObject(call.arguments) ? call.arguments.url : null), ...[page.finalUrl].flatMap((url) => normalizeFetchUrl(url) ?? [])] : [];
     return { ...BROWSER_COMMAND.test(JSON.stringify(call.arguments ?? {})) ? { browser: true as const } : {}, ...read, toolName: call.toolName,
       url: addresses.find((url) => links.has(url)) ?? addresses[0] ?? null };
   }
@@ -222,8 +235,8 @@ export function createResearchAgentSources(input: Readonly<{
       const listed = await input.calls.fetchCalls(agent, limits.fetchCalls);
       const counts = new Map<string, number>();
       const ids = listed.flatMap((call) => {
-        const link = normalizeFetchUrl(isObject(call.arguments) ? call.arguments.url : null);
-        if (!link || !links.has(link) || (counts.get(link) ?? 0) >= limits.citedResults) return [];
+        const link = askedAddresses(isObject(call.arguments) ? call.arguments.url : null).find((address) => links.has(address));
+        if (!link || (counts.get(link) ?? 0) >= limits.citedResults) return [];
         counts.set(link, (counts.get(link) ?? 0) + 1);
         return [call.id];
       });
