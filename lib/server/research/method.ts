@@ -47,14 +47,17 @@ const SHORT_TASKS = `Researchers work in short tasks: each has ${RESEARCH_TASK_L
  * opened five pages and added six rows in about a minute from what they showed first; later tasks took two rows each and their cells stayed thin. Shopping
  * research elsewhere finds candidates from official pages, spec pages, reviews and review aggregators (SafeGEO, arXiv 2606.28356), and a planner splits a
  * candidate pool among research agents (APeB, arXiv 2607.03162). So each kind of source gets its own task, every option it names is noted with its page,
- * and the server counts the sites that named each (`candidates.ts`).
+ * and the server counts the sites that named each (`candidates.ts`). On the same run's LLM question, a table of every item of a class, the main agent made
+ * the rows itself from six notes and covered half the developers a reference answer did, so such a question gets the round too, over its own kinds of source.
  */
 const ENUMERATION_ROUND = "Round 1: where the user chooses among options, start two or three enumeration tasks in parallel, one per kind of source, never only " +
   "makers' own sites: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
-  "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews; (c) owners' reviews and discussions. Each task notes " +
+  "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews, opened through the run's browser and proxies where " +
+  "fetch_url is refused; (c) owners' reviews and discussions. Where the user asks for every item of a class, such as a table of all of them, the same round " +
+  "runs over (a) catalogues, registries and aggregators' lists, (b) rankings and leaderboards, and (c) news and release roundups of the period. Each task notes " +
   `every option its sources name with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} note_candidate and the page's link, and adds no rows. Then you add the rows from that ` +
-  "pool, the options named on the most sites first, by the rule for rows below: at least five across price tiers for a purchase. The report's line on that rule " +
-  "says the rows are the options most sites named.";
+  "pool, the options named on the most sites first, by the rule for rows below: at least five across price tiers for a purchase, and every item within the " +
+  "question's limits for a class. The report's line on that rule says the rows are the options most sites named.";
 
 const LATER_ROUNDS = "Later rounds: one task per row, each under a fresh researcher name; a task takes the empty cells of two or three rows only once the matrix has " +
   "more than eight rows. Never give a new task to a researcher name already used in this research: a continued researcher keeps its whole old context, so it is no " +
@@ -74,10 +77,15 @@ const RESEARCHER_TASK = `Your task has ${RESEARCH_TASK_LIMITS.toolCalls} tool ca
 const RESEARCHER_REPORT = "End with a report of at most about 1,500 characters: the server lists your records under it, so say what you covered, which cells stayed " +
   "empty and why, and the options you noted, never each record again.";
 
-/** On acceptance run 2 (2026-11-03) the one enumeration task made every row itself from its first pages, and nobody noted a candidate. */
+/**
+ * On acceptance run 2 (2026-11-03) the one enumeration task made every row itself from its first pages, and nobody noted a candidate. On run 3 a ranking of
+ * thirteen models gave two notes, every option of the pool was named once, and the card of the option a reference answer picked first went unnoted.
+ */
 const RESEARCHER_ROWS = `A task to find the options notes each one with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate: its exact name as the page writes ` +
   "it, the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason. One note per option and page, " +
-  "from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from adds nothing. It adds no rows. In any other task, " +
+  "from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from adds nothing. Note every option a listing, ranking " +
+  "or review you opened names, up to its first twenty, not only those you judge to fit: the server ranks the pool by the sites that name each, and the main agent " +
+  "judges fit. Notes cost no calls, so make a page's notes together in one response. It adds no rows. In any other task, " +
   "an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted the same way. The main agent decides on the rows.";
 
 /**

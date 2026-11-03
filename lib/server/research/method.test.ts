@@ -209,10 +209,14 @@ describe("the method", () => {
     // On acceptance run 2 one enumeration task made six rows in a minute from the first pages it opened: each kind of source gets its own task.
     expect(text).toContain("Round 1: where the user chooses among options, start two or three enumeration tasks in parallel, one per kind of source, never only " +
       "makers' own sites: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
-      "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews; (c) owners' reviews and discussions.");
+      "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews, opened through the run's browser and proxies where " +
+      "fetch_url is refused; (c) owners' reviews and discussions.");
+    // On the LLM question of acceptance run 2 (a table of every item of a class) the lead made the rows itself and six candidates were noted.
+    expect(text).toContain("Where the user asks for every item of a class, such as a table of all of them, the same round runs over (a) catalogues, registries and " +
+      "aggregators' lists, (b) rankings and leaderboards, and (c) news and release roundups of the period.");
     expect(text).toContain("Each task notes every option its sources name with change_research_frame note_candidate and the page's link, and adds no rows.");
     expect(text).toContain("Then you add the rows from that pool, the options named on the most sites first, by the rule for rows below: at least five across " +
-      "price tiers for a purchase. The report's line on that rule says the rows are the options most sites named.");
+      "price tiers for a purchase, and every item within the question's limits for a class. The report's line on that rule says the rows are the options most sites named.");
     expect(text).not.toContain("start one or two enumeration tasks");
     expect(text).toContain("Later rounds: one task per row, each under a fresh researcher name; a task takes the empty cells of two or three rows only once the matrix " +
       "has more than eight rows.");
@@ -239,7 +243,10 @@ describe("the method", () => {
     expect(footer).toContain("A task to find the options notes each one with change_research_frame change note_candidate: its exact name as the page writes it, " +
       "the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason.");
     expect(footer).toContain("One note per option and page, from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from " +
-      "adds nothing. It adds no rows.");
+      "adds nothing.");
+    // On acceptance run 3 a ranking of thirteen models gave two notes, every option of the pool was named once, and the card of a reference answer's first pick went unnoted.
+    expect(footer).toContain("Note every option a listing, ranking or review you opened names, up to its first twenty, not only those you judge to fit: the server ranks " +
+      "the pool by the sites that name each, and the main agent judges fit. Notes cost no calls, so make a page's notes together in one response. It adds no rows.");
     expect(footer).toContain("In any other task, an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted the same way.");
     expect(footer).toContain("The main agent decides on the rows.");
     expect(footer).not.toContain("adds each option its sources name as a row");
