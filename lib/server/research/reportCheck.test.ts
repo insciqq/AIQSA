@@ -222,6 +222,20 @@ describe("the key specifications of the options it recommends", () => {
     report: `# Отчёт\n\nБерите Lonax Memory.\n\n${loadTable(x1)}\n\nhttps://maker.example/x1 https://shop.example/x1 https://shop.example/3\n` });
   const keyedMessages = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[]) => messages(draft, records, matrixOf(KEYED, records));
 
+  it("sends back a draft that picks no option where the plan marked key specifications, even with rows called inseparable, and only there", () => {
+    // Acceptance run 3 (2026-11-03): a purchase answer named no winner because no option passed every check.
+    const none: ResearchDraft = { ...keyed([6, 7]), pickRowKey: null, summary: { rowKeys: [], text: "Победителя не называю." } };
+    const asked = "The plan marked key specifications, so the user chooses among the matrix's options, yet the draft picks none: name in pick_row_key, and first in " +
+      "the summary, the option you would take by default today";
+    expect(keyedMessages(none, AGREE)).toContain(asked);
+    expect(keyedMessages(none, AGREE)).toContain("never a reason to name no option");
+    const inseparable: ResearchDraft = { ...none, doesNotSeparate: { rowKeys: ["x1", "x2"], statement: "Оба.", wouldDecide: "Полежать." } };
+    expect(keyedMessages(inseparable, AGREE)).toContain(asked);
+    expect(keyedMessages(keyed([6, 7]), AGREE)).not.toContain(asked);
+    // No key specification marked, as for a table of a whole class or a knowledge question: choosing nothing stays the model's word.
+    expect(messages(none, AGREE, matrixOf(FRAME, AGREE))).not.toContain(asked);
+  });
+
   it("passes a pick whose key specification two sites hold and the draft cites from both", () => {
     expect(keyedMessages(keyed([6, 7]), AGREE)).toBe("");
   });

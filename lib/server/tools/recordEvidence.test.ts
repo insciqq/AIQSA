@@ -45,8 +45,10 @@ const call = (args: Record<string, unknown>): EngineToolExecution =>
 const value = (result: ToolExecutionResult) => (result.content[0] as { value: Record<string, unknown> }).value;
 
 describe("the record_evidence schema", () => {
-  it("keeps a claim to what its quote shows, the cause of most partly verdicts on acceptance run 2", () => {
-    expect(properties.claim!.description).toMatch(/no more than its quote shows: .* goes in a record of its own with a quote that holds it, or stays out\.$/u);
+  it("keeps a claim to what its quote shows, the cause of most partly verdicts on acceptance runs 2 and 3", () => {
+    expect(properties.claim!.description).toMatch(/no more than its quote shows: .* goes in a record of its own with a quote that holds it, or stays out\./u);
+    // On run 3 eight of fourteen partly verdicts were claims that a page leaves a detail out, which part of a page cannot show.
+    expect(properties.claim!.description).toMatch(/What a page leaves out is no finding: record not_found for that cell\.$/u);
   });
 
   it("lists every field as required, and the decoder accepts what it describes for each kind", () => {

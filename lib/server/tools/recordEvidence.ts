@@ -48,7 +48,7 @@ export const recordEvidenceTool: RunTool = {
     additionalProperties: false,
     properties: {
       claim: nullableText("finding, dataset: what the source says, in one sentence, and no more than its quote shows: a date, version, name or condition the " +
-        "quote does not hold goes in a record of its own with a quote that holds it, or stays out."),
+        "quote does not hold goes in a record of its own with a quote that holds it, or stays out. What a page leaves out is no finding: record not_found for that cell."),
       criterion_key: nullableText("The matrix criterion this is about; required for not_found, otherwise null when none."),
       dataset: { anyOf: [{
         additionalProperties: false,
