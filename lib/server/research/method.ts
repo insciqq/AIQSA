@@ -191,15 +191,18 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       "measurements), owner_reviews (what owners and users report, complaints included), action_channel (where the user will buy or act, " +
       "with current prices, stock and terms).",
     "For each source class of your question, open real pages with fetch_url or the browser: a search snippet is not evidence.",
-    // The newest pages decide a question about a period or the present: on acceptance run 8 all three answers missed what the last weeks before the question
-    // published, forecasts, approvals and disclosures a reference answer led with.
+    // The newest pages decide a question about a period or the latest state of a subject: on acceptance run 8 all three answers missed what the last weeks before
+    // the question published, forecasts, approvals and disclosures a reference answer led with. A purchase is left out: what is current there is its offers, and
+    // a purchase read as "the present" would send researchers after the latest releases instead (two purchase runs of 2026-11-03 under that reading priced two rows
+    // of five; a run without the rule that evening priced three of six, so shops closing caused most of that loss).
     "Source quality: prefer primary documents and measured results with a stated method. A seller's own product claims remain claimed " +
       "even when presented as an independent test. Owners' reviews on a shop page remain owner evidence; maker documents remain primary sources. " +
       "Treat affiliate rating sites as weak evidence. Two pages of one site and " +
       "copies of one press release are one source, not independent corroboration. For a claim that depends on time, use the page's " +
       "explicit publication date and state its age or that the date is unknown; a date mentioned in the article is not its publication date. " +
-      "Where the question is about a period or the present, the newest pages decide: search with the period's month and year and for the latest releases, read " +
-      "the newest source of each kind first, and give a forecast, a status or a version as the latest one published, with its date.",
+      "Where the question is about a period or the latest state of a subject, such as forecasts, approvals or disclosures, the newest pages decide: search with the " +
+      "period's month and year and for the latest releases, read the newest source of each kind first, and give a forecast, a status or a version as the latest one " +
+      "published, with its date. For a purchase, current means the offers below, not the latest releases.",
     RESEARCHER_TASK,
     `Record each finding with ${RECORD_EVIDENCE_TOOL_NAME} as soon as you have it, while you still have the page: the claim, its link, a verbatim quote copied from the ` +
       "page you opened, its source class, and whether it is confirmed, claimed by a party or not verified. Correct it if its result says the quote is not there.",

@@ -327,9 +327,12 @@ describe("the method", () => {
     expect(footer).toContain("A CAPTCHA, a block page or a sign-in ends work on that site");
     expect(footer).toContain("record it as unreachable with its reason and go on; never wait for a person");
     expect(footer).toContain("A closed site does not close your question: answer it from another site that states the answer in its own text");
-    // On acceptance run 8 all three answers missed what the last weeks before the question published: forecasts, approvals, disclosures.
-    expect(footer).toContain("Where the question is about a period or the present, the newest pages decide: search with the period's month and year and for the latest " +
-      "releases, read the newest source of each kind first, and give a forecast, a status or a version as the latest one published, with its date.");
+    // On acceptance run 8 all three answers missed what the last weeks before the question published: forecasts, approvals, disclosures. A purchase stays with
+    // its offers rather than the latest releases.
+    expect(footer).toContain("Where the question is about a period or the latest state of a subject, such as forecasts, approvals or disclosures, the newest pages " +
+      "decide: search with the period's month and year and for the latest releases, read the newest source of each kind first, and give a forecast, a status or a " +
+      "version as the latest one published, with its date. For a purchase, current means the offers below, not the latest releases.");
+    expect(footer).not.toContain("about a period or the present");
     expect(footer).toContain("Never read a page through third-party readers, mirrors or proxies other than the run's own");
     expect(footer).toContain("no check can read it");
     expect(footer).not.toContain("browser_handoff");
