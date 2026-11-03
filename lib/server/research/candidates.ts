@@ -62,6 +62,63 @@ const spelling = (key: string) => key.replace(/-/gu, "");
 
 const sameCandidate = (one: string, other: string) => spelling(one) === spelling(other);
 
+/** A size as one word: 180x200, 180kh200 (Cyrillic х), 180x200x20. */
+const SIZE_WORD = /^\d{2,3}(?:x|kh)\d{2,3}(?:(?:x|kh)\d{1,3})?$/u;
+const SIZE_NUMBER = /^\d{2,3}$/u;
+const SIZE_SEPARATOR = new Set(["x", "kh"]);
+const SIZE_UNIT = new Set(["sm", "cm", "mm"]);
+
+/**
+ * A name's words without the sizes a listing adds to them, "180×200", "160 x 200", "(180×200×20) см", which say what was sold and not which option
+ * it is: on acceptance run 5 (2026-11-03) one model went into the pool under three names that differed by a size and a leading "Матрас".
+ */
+function coreWords(words: readonly string[]): readonly string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]!;
+    let end = index;
+    if (SIZE_WORD.test(word)) end = index + 1;
+    else if (SIZE_NUMBER.test(word)) {
+      let next = index + 1;
+      if (SIZE_SEPARATOR.has(words[next] ?? "")) next += 1;
+      if (SIZE_NUMBER.test(words[next] ?? "")) {
+        next += 1;
+        if (SIZE_SEPARATOR.has(words[next] ?? "") && /^\d{1,3}$/u.test(words[next + 1] ?? "")) next += 2;
+        else if (/^\d{1,3}$/u.test(words[next] ?? "")) next += 1;
+        end = next;
+      }
+    }
+    if (end === index) {
+      kept.push(word);
+      continue;
+    }
+    if (SIZE_UNIT.has(words[end] ?? "")) end += 1;
+    index = end - 1;
+  }
+  return kept;
+}
+
+/**
+ * Whether two names are one option: the same words once sizes go, or the shorter, of two words at least, ending the longer, since pages put a kind
+ * before a model ("Матрас DreamLine Вельвет S1000" is DreamLine Вельвет S1000). A word order that differs, a word added after the model (Plus) or
+ * a lone brand or word is another name.
+ */
+export function researchSameOption(one: string, other: string): boolean {
+  const first = coreWords(nameWords(one)), second = coreWords(nameWords(other));
+  if (first.length === 0 || second.length === 0) return false;
+  const [short, long] = first.join("").length <= second.join("").length ? [first, second] : [second, first];
+  const wanted = short.join("");
+  if (wanted === long.join("")) return true;
+  if (short.length < 2) return false;
+  let tail = "";
+  for (let index = long.length - 1; index >= 0; index -= 1) {
+    tail = `${long[index]}${tail}`;
+    if (tail === wanted) return true;
+    if (!wanted.endsWith(tail)) return false;
+  }
+  return false;
+}
+
 /** Whether a run of the label's words, from one word's start to another's end, spells the key, however either splits it into words. */
 function spells(label: string, key: string): boolean {
   const wanted = spelling(key);
@@ -80,16 +137,19 @@ function spells(label: string, key: string): boolean {
 
 /**
  * The row whose label already names a candidate: "Askona Balance Forma 160x200" covers Askona Balance Forma. A label covers only a run of its own
- * words, so Dreamline Kombi-3 does not cover Dreamline SleepDream, though a name of the brand alone is covered by any of its rows.
+ * words, so Dreamline Kombi-3 does not cover Dreamline SleepDream, though a name of the brand alone is covered by any of its rows. A label that
+ * names the same option once sizes and a leading kind go covers it too (`researchSameOption`).
  */
 export function researchCandidateRow(frame: Pick<ResearchFrame, "rows">, key: string): ResearchMatrixRow | null {
-  return frame.rows.find(({ label }) => spells(label, key)) ?? null;
+  return frame.rows.find(({ label }) => spells(label, key) || researchSameOption(label, key)) ?? null;
 }
 
 /** The candidate a name was noted under, written either way. */
 export function researchNotedCandidate(frame: Pick<ResearchFrame, "candidates">, name: string): ResearchCandidate | null {
   const key = researchCandidateKey(name);
-  return key.length === 0 ? null : frame.candidates?.find((candidate) => sameCandidate(candidate.key, key)) ?? null;
+  if (key.length === 0) return null;
+  const candidates = frame.candidates ?? [];
+  return candidates.find((candidate) => sameCandidate(candidate.key, key)) ?? candidates.find((candidate) => researchSameOption(candidate.label, name)) ?? null;
 }
 
 /** One agent counts once whichever of its turns noted a candidate: the main agent has no name. */
@@ -168,7 +228,7 @@ export function researchFrameWithNote(frame: ResearchFrame, note: Readonly<{ lab
       "the model and not only its brand or line.");
   }
   const candidates = frame.candidates ?? [];
-  const same = candidates.find((candidate) => sameCandidate(candidate.key, key));
+  const same = researchNotedCandidate(frame, note.label) ?? undefined;
   const aside = same && (frame.setAside ?? []).find((entry) => sameCandidate(entry.key, same.key));
   if (same && aside) return refused(`Nothing was noted: ${same.key} was noted before and set aside: ${aside.reason}`);
   const own = same?.notes.filter(({ by }) => sameAgent(by, stamp.by)) ?? [];

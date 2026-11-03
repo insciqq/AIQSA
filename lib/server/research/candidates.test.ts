@@ -11,7 +11,8 @@ import {
   researchFrequentCandidate,
   researchNotedCandidate,
   researchOpenCandidates,
-  researchPooledCandidate
+  researchPooledCandidate,
+  researchSameOption
 } from "./candidates";
 import { changedResearchFrame } from "./matrix";
 
@@ -70,6 +71,37 @@ describe("a candidate's key", () => {
     expect(researchCandidateRow(FRAME, researchCandidateKey("Kombi-3 S1000 Plus"))).toBeNull();
     // Only whole words: "line" is not covered by "Dreamline".
     expect(researchCandidateRow(FRAME, researchCandidateKey("Line"))).toBeNull();
+  });
+});
+
+describe("one option under the names pages give it", () => {
+  // Acceptance run 5 (2026-11-03): a pool of 64 notes held one model under names that differed by a size or a leading kind, so no option had two sites.
+  it("is one option once sizes and a leading kind go, however the size is written", () => {
+    for (const [one, other] of [["Матрас DreamLine Вельвет S1000", "DreamLine Вельвет S1000 180×200"], ["Askona Comfort Optima 180×200", "Аскона Comfort Optima"],
+      ["Dreamline Memory Mix Smart Zone 180 x 200", "Dreamline Memory Mix Smart Zone (160×200)"], ["Матрас ортопедический Классик КОРСИКА", "Классик Корсика 180х200 см"],
+      ["MATRATEX SMART ANATOMIC 180×200×20", "Matratex Smart Anatomic"], ["Dream Line Velvet S1000 160*200", "Матрас DreamLine Velvet S1000"]] as const) {
+      expect(researchSameOption(one, other)).toBe(true);
+      expect(researchSameOption(other, one)).toBe(true);
+    }
+  });
+
+  it("keeps apart another model, another word order, a word after the model, a lone word and another brand's model of that name", () => {
+    for (const [one, other] of [["Dreamline SleepDream Medium S1000", "Dreamline SleepDream Soft S1000"], ["Dreamline Kombi-3 S1000", "Kombi-3 S1000 Plus"],
+      ["SleepDream Medium S 1000 Dreamline", "Dreamline SleepDream Medium S1000"], ["Dreamline Mix", "Mix"], ["Askona Comfort Optima", "Ormatek Comfort Optima"],
+      ["Qwen3-235B-A22B", "Qwen3-235B-A22B-Instruct-2507"], ["GLM-4.5", "GLM-4.5-Air"], ["Galaxy S24", "Galaxy S24+"]] as const) {
+      expect(researchSameOption(one, other)).toBe(false);
+    }
+  });
+
+  it("joins a later note to the candidate it names and counts its site, and a row of the same option covers it", () => {
+    const pooled = seen({ ...FRAME, rows: [] }, ["tests", "Матрас DreamLine Вельвет S1000", "https://shop-a.example/velvet"],
+      ["market", "DreamLine Вельвет S1000 180×200", "https://market.example/card/1"]);
+    expect(pooled.candidates).toHaveLength(1);
+    expect(researchPooledCandidate(pooled.candidates![0]!).sites).toEqual(["shop-a.example", "market.example"]);
+    const withRow: ResearchFrame = { ...pooled, rows: [{ key: "velvet", label: "DreamLine Вельвет S1000 180×200" }] };
+    expect(researchOpenCandidates(withRow)).toEqual([]);
+    expect(refusal(researchFrameWithNote(withRow, { label: "Матрас Dream Line Вельвет S1000 (160×200)", reason: "R." }, stamp(agent("owners")))))
+      .toContain("already row velvet");
   });
 });
 
@@ -132,14 +164,15 @@ describe("a pool of candidates", () => {
       ["marketplaces", "Dreamline SleepDream Medium", "https://www.ozon.ru/category/matrasy-15018/?sorting=rating"],
       ["shops", "SleepDream Medium", "https://ozon.ru/product/sleepdream-medium-123/"],
       ["reviews", "SleepDream Medium", "https://otzovik.com/reviews/dreamline_sleepdream/"]);
-    const [sleepdream, dreamline] = researchOpenCandidates(noted(frame, ["search", "SleepDream Medium"]));
-    expect(sleepdream).toMatchObject({ agents: 4, key: "sleep-dream-medium", sites: ["expertology.ru", "ozon.ru", "otzovik.com"] });
-    expect(researchCandidateSpread(sleepdream!)).toBe("named on 3 sites by 4 agents");
-    expect(dreamline).toMatchObject({ agents: 1, key: "dreamline-sleep-dream-medium", sites: ["ozon.ru"] });
-    expect(researchCandidateSpread(dreamline!)).toBe("named on 1 site by 1 agent");
+    // The brand before the model names the same option (`researchSameOption`), so all five notes are one candidate.
+    const open = researchOpenCandidates(noted(frame, ["search", "SleepDream Medium"]));
+    expect(open).toHaveLength(1);
+    const [sleepdream] = open;
+    expect(sleepdream).toMatchObject({ agents: 5, key: "sleep-dream-medium", sites: ["expertology.ru", "ozon.ru", "otzovik.com"] });
+    expect(researchCandidateSpread(sleepdream!)).toBe("named on 3 sites by 5 agents");
     // Each note keeps its page, and one with none reads as before.
-    expect(frame.candidates![0]!.notes.map(({ url }) => url)).toEqual(["https://expertology.ru/rating/matrasy/", "https://ozon.ru/product/sleepdream-medium-123/",
-      "https://otzovik.com/reviews/dreamline_sleepdream/"]);
+    expect(frame.candidates![0]!.notes.map(({ url }) => url)).toEqual(["https://expertology.ru/rating/matrasy/", "https://www.ozon.ru/category/matrasy-15018/?sorting=rating",
+      "https://ozon.ru/product/sleepdream-medium-123/", "https://otzovik.com/reviews/dreamline_sleepdream/"]);
     const unsourced = researchPooledCandidate(noted({ ...FRAME, rows: [] }, ["a", "Lonax X1"], ["b", "Lonax X1"]).candidates![0]!);
     expect(unsourced).toMatchObject({ agents: 2, sites: [] });
     expect(researchCandidateSpread(unsourced)).toBe("named on 0 sites by 2 agents");

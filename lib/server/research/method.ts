@@ -84,13 +84,14 @@ const RESEARCHER_REPORT = "End with a report of at most about 1,500 characters: 
 
 /**
  * On acceptance run 2 (2026-11-03) the one enumeration task made every row itself from its first pages, and nobody noted a candidate. On run 3 a ranking of
- * thirteen models gave two notes, every option of the pool was named once, and the card of the option a reference answer picked first went unnoted.
+ * thirteen models gave two notes, every option of the pool was named once, and the card of the option a reference answer picked first went unnoted. On
+ * run 5 a shop's plain catalog gave twenty notes in a row, a topper and a mattress cover among them, and the pool reached its bound.
  */
 const RESEARCHER_ROWS = `A task to find the options reads at least four lists of its kind, each on another site, and notes each option with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} change note_candidate: its exact name as the page writes ` +
   "it, the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason. One note per option and page, " +
-  "from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from adds nothing. Note every option a listing, ranking " +
-  "or review you opened names, up to its first twenty, not only those you judge to fit: the server ranks the pool by the sites that name each, and the main agent " +
-  "judges fit. Notes cost no calls, so make a page's notes together in one response. It adds no rows. In any other task, " +
+  "from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from adds nothing. Note every option of the kind asked " +
+  "that a ranking, a recommendation list, a listing sorted by popularity or reviews, or a review names, up to its first ten, not only those you judge to fit, and " +
+  "never a shop's plain catalog or accessories: the server ranks the pool by the sites that name each, and the main agent judges fit. Notes cost no calls, so make a page's notes together in one response. It adds no rows. In any other task, " +
   "an option you saw that the matrix lacks, such as a model a listing or a ranking names, is noted the same way. The main agent decides on the rows.";
 
 /**
