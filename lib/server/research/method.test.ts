@@ -116,6 +116,8 @@ describe("the method", () => {
     expect(text).toContain("submit_research_draft");
     expect(text).toContain("the ids of the records it rests on");
     expect(text).toContain("comparison table");
+    // Acceptance run 4 (2026-11-03): the user asked for the materials and brands first, and the report led with its table.
+    expect(text).toContain("first unless the user asked for another order, such as the materials and brands before the models, which it then follows");
     expect(text).not.toContain("every finding");
     expect(text).toContain("Which one? [primary_official, independent_tests, owner_reviews, action_channel]");
     expect(text).toContain("shop.example");
