@@ -63,14 +63,24 @@ describe("a candidate's key", () => {
     expect(researchCandidateKey("Щ".repeat(RESEARCH_FRAME_LIMITS.labelCharacters)).length).toBeLessThanOrEqual(RESEARCH_FRAME_LIMITS.labelCharacters);
   });
 
-  it("is covered by a row whose label holds the name as a run of its words, however either splits it", () => {
-    expect(researchCandidateRow(FRAME, researchCandidateKey("Аскона Balance Forma"))).toMatchObject({ key: "forma" });
-    expect(researchCandidateRow(FRAME, researchCandidateKey("Dream line Kombi 3"))).toMatchObject({ key: "kombi-3" });
-    // Another model of a line a row holds is no row: the option a real run lost.
-    expect(researchCandidateRow(FRAME, researchCandidateKey("Dreamline SleepDream Medium S1000"))).toBeNull();
-    expect(researchCandidateRow(FRAME, researchCandidateKey("Kombi-3 S1000 Plus"))).toBeNull();
+  it("is covered by a row of the same option once sizes go, and a brand alone by a row that starts with it, however either splits it", () => {
+    const row = (name: string, frame: Pick<ResearchFrame, "rows"> = FRAME) => researchCandidateRow(frame, researchCandidateKey(name), name);
+    expect(row("Аскона Balance Forma")).toMatchObject({ key: "forma" });
+    expect(row("Dream line Kombi-3 S1000")).toMatchObject({ key: "kombi-3" });
+    expect(row("Dreamline")).toMatchObject({ key: "kombi-3" });
+    // Another model of a line a row holds is no row: the option a real run lost; and a shorter or longer name may be another model.
+    expect(row("Dreamline SleepDream Medium S1000")).toBeNull();
+    expect(row("Kombi-3 S1000 Plus")).toBeNull();
+    expect(row("Dream line Kombi 3")).toBeNull();
     // Only whole words: "line" is not covered by "Dreamline".
-    expect(researchCandidateRow(FRAME, researchCandidateKey("Line"))).toBeNull();
+    expect(row("Line")).toBeNull();
+    // Codex review (2026-11-03): a fine-tune's row does not cover its base model, nor a variant's row the model it varies, in either direction.
+    for (const [label, name] of [["Hermes-3-Llama-3.1-8B", "Llama-3.1-8B"], ["Llama-3.1-8B", "Hermes-3-Llama-3.1-8B"], ["GLM-4.5-Air", "GLM-4.5"],
+      ["Qwen3-235B-A22B-Instruct-2507", "Qwen3-235B-A22B"]] as const) {
+      expect(row(name, { rows: [{ key: "row", label }] })).toBeNull();
+    }
+    // A stored key alone, with no name, is covered as before: by a run of the label's words.
+    expect(researchCandidateRow(FRAME, researchCandidateKey("Dream line Kombi 3"))).toMatchObject({ key: "kombi-3" });
   });
 });
 
@@ -91,7 +101,8 @@ describe("one option under the names pages give it", () => {
       ["Dreamline SleepDream Medium S1000", "Dreamline SleepDream Soft S1000"], ["Dreamline Kombi-3 S1000", "Kombi-3 S1000 Plus"],
       ["SleepDream Medium S 1000 Dreamline", "Dreamline SleepDream Medium S1000"], ["Матрас DreamLine Вельвет S1000", "DreamLine Вельвет S1000"],
       ["Askona Comfort Optima", "Ormatek Comfort Optima"], ["Qwen3-235B-A22B", "Qwen3-235B-A22B-Instruct-2507"], ["GLM-4.5", "GLM-4.5-Air"],
-      ["DeepSeek-V3-0324", "DeepSeek-V3"], ["Galaxy S24", "Galaxy S24+"], ["Phone 12 34", "Phone 56 78"]] as const) {
+      ["DeepSeek-V3-0324", "DeepSeek-V3"], ["Galaxy S24", "Galaxy S24+"], ["Phone 12 34", "Phone 56 78"],
+      ["Celestron SkyMaster 15x70", "Celestron SkyMaster 25x70"], ["Router 2x2", "Router 4x4"], ["Подушка 50x70", "Подушка 70x70"]] as const) {
       expect(researchSameOption(one, other)).toBe(false);
     }
   });
