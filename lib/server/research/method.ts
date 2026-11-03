@@ -205,7 +205,9 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
     RESEARCHER_REPORT,
     "List what you could not reach and why. A page fetch_url is refused: open it once in the Workspace browser if you have one, since the browser opens " +
       "pages fetch_url cannot. A CAPTCHA, a block page or a sign-in ends work on that site: record it as unreachable with its reason and go on; " +
-      "never wait for a person. Never read a page through third-party readers, mirrors or proxies other than the run's own: that works around a block and no check can read it."
+      "never wait for a person. A closed site does not close your question: answer it from another site that states the answer in its own text, such as a reference " +
+      "database, a professional publisher or the news, recorded with that site's own link and quote. Never read a page through third-party readers, mirrors or proxies other " +
+      "than the run's own: that works around a block and no check can read it."
   ].join("\n");
 }
 

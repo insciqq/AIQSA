@@ -488,6 +488,17 @@ describe("actionable gaps and page progress", () => {
     expect(instructions).toContain("unreachable are closed with a reason");
   });
 
+  it("asks for another kind of site when a closed one leaves a plan question unanswered, never for a copy of it", async () => {
+    const ctx = context();
+    await gapCheckGate.run(DRAFT, ctx);
+    const instructions = vi.mocked(ctx.subagents.run).mock.calls[0]![0].instructions;
+    expect(instructions).toContain("never ask to open their sites again, nor a copy, cache or other reader of them");
+    expect(instructions).toContain("A closed site does not close its question");
+    expect(instructions).toContain("a reference database, a professional publisher or the news");
+    expect(instructions).toContain("Once findings, or the reasons in nothingFound, show such sites were tried, what they leave open is a limit.");
+    expect(instructions).not.toContain("never gaps");
+  });
+
   it.each(["# Report", "# Отчёт"])("never turns limits or open gaps into a note, whichever way the judge's turn goes on, in %s", async (report) => {
     const limits = ["Ten-year durability cannot be established from these tests."];
     const clean = await gapCheckGate.run({ ...DRAFT, report }, context({ subagents: { run: async () => judged(JSON.stringify({ gaps: [], limits })) } }));
@@ -679,6 +690,27 @@ describe("where a frame exists", () => {
     expect(messageOf(await gapCheckGate.run(DRAFT, withMatrix([], {}, rowless)))).toContain("Fill the cells: durability, firmness.");
   });
 
+  it("shows the judge what was tried and found nothing, bounded, so a question other sites were tried for is a limit", async () => {
+    const nothing = (index: number, reason: string) => ({ criterionKey: "firmness", id: `nf${index}`, kind: "not_found", reason, rowKey: "x1", sourceClass: null }) as unknown as ResearchEvidenceRecord;
+    const tried = "Register timed out; a legal database and news archives name no pending bill.";
+    const ctx = withMatrix(ALL, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => [...ALL, nothing(0, tried)] } });
+    await gapCheckGate.run(DRAFT, ctx);
+    expect(JSON.parse(judge(ctx).brief).nothingFound).toEqual([{ cell: "x1/firmness", reason: tried }]);
+
+    const many = Array.from({ length: 40 }, (_, index) => nothing(index + 1, `${index + 1} ${"r".repeat(1_000)}`));
+    const bounded = withMatrix(ALL, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => many } });
+    await gapCheckGate.run(DRAFT, bounded);
+    const shown = JSON.parse(judge(bounded).brief).nothingFound as { cell: string; reason: string }[];
+    expect(JSON.stringify(shown).length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS / 8);
+    expect(shown.at(-1)!.reason.startsWith("40 ")).toBe(true);
+    expect(shown.every(({ reason }) => reason.length <= 200)).toBe(true);
+    expect(judge(bounded).brief.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
+
+    const down = withMatrix(ALL, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("down"); } } });
+    await gapCheckGate.run(DRAFT, down);
+    expect(JSON.parse(judge(down).brief).nothingFound).toEqual([]);
+  });
+
   it("gives way to coverage: a source class nobody opened is no gap once the matrix is full, and a full matrix reaches the judge", async () => {
     const ctx = withMatrix();
     expect((await gapCheckGate.run(without("owner_reviews"), ctx)).kind).toBe("pass");
@@ -696,6 +728,7 @@ describe("where a frame exists", () => {
     expect(request.instructions).toContain("an empty cell is never your gap");
     expect(request.instructions).toContain("one more detail for a filled one");
     expect(request.instructions).toContain("contradict each other");
+    expect(request.instructions).toContain("a plan question no finding answers while a site of another kind could, as above, also where its cell says nothing was found");
     expect(request.instructions).toContain("change_research_frame");
     expect(JSON.parse(request.brief)).toMatchObject({ matrix: { criteria: ["Durability", "Firmness"], emptyCells: 0, filledCells: 4, rows: ["Lonax X1", "Dreamline Y2"] }, plan: PLAN });
   });
