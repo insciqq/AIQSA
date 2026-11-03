@@ -1725,7 +1725,7 @@ describe("a model that never proposes", () => {
     const calls = Array.from({ length: 9 }, (_, index) => ({ arguments: { message: "Read sources.", name: `agent-${index}` }, id: `agent-${index}`, name: CALL_SUBAGENT_TOOL_NAME }));
     const main = scripted([{ calls: [start()] }, { calls }, { calls: [propose()] }, { calls: [submit()] }]);
     const memory = engineOf({ gates: [] }, { now: () => clock });
-    const original = vi.mocked(memory.toolCalls.begin).getMockImplementation()!;
+    const original = vi.mocked(memory.toolCalls.begin).getMockImplementation() as typeof memory.toolCalls.begin;
     vi.mocked(memory.toolCalls.begin).mockImplementation(async (input) => {
       const result = await original(input);
       if (input.toolName === CALL_SUBAGENT_TOOL_NAME) clock = 1_000_000 + RESEARCH_TIME_MS.scoping + 1;
