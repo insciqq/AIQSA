@@ -1,9 +1,10 @@
 /** Scenario T's evaluation of synthetic answers. Content belongs only in the operator's private files. */
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync, type Stats } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AdminProviderModelConfiguration } from "../lib/contracts/adminProviders";
 import { RESEARCH_PLAN_RELEASES, RESEARCH_TIME_MS } from "../lib/contracts/research";
+import { extractFetchUrls, normalizeFetchUrl } from "../lib/server/webFetch/urls";
 import type { PurposeUsageRow } from "./subagent-scenarios-support";
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -17,7 +18,12 @@ export type TKind = typeof T_KINDS[number];
 /** What a person does on one kind's run: edit the plan and start, press start, leave a site's handoff unanswered, restart the app and press Continue, or wait for the push elsewhere. */
 export const T_ACTS = ["edit", "handoff", "push", "restart", "start"] as const;
 export type TAct = typeof T_ACTS[number];
-export type ResearchJob = Readonly<{ kind: TKind; repeat: number }>;
+/** A built-in kind's question, or a question of the operator's question set (`AIQSA_SUBAGENTS_T_QUESTION_SET`) by its file's name. */
+export type ResearchJob = Readonly<{ kind: TKind; repeat: number }> | Readonly<{ kind: "set"; name: string; repeat: number }>;
+/** A question set's file name: what output and archive names carry for its question, never its text. */
+export const RESEARCH_QUESTION_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+/** What output, comparisons and archive names call a job: its kind, or `set-<name>` for a question of the set. */
+export const researchJobLabel = (job: ResearchJob) => job.kind === "set" ? `set-${job.name}` : job.kind;
 export const T_QUESTION_MS = 110 * 60_000;
 /** Scoping and an abandoned edit precede research; the margin belongs to the same question deadline. */
 export function researchQuestionTimeout(marginSeconds: number): number {
@@ -67,9 +73,269 @@ export function researchEvalOptions(env: Readonly<Record<string, string | undefi
   if (!answersDir) return fail("research_answers_dir_required");
   const checks = role("CHECKS");
   if (checks.model && env.AIQSA_SUBAGENTS_VERIFIER_FAMILY?.trim()) fail("research_checks_role_ambiguous");
-  return { acts, answersDir, answersFile, checks, concurrency: integer(env.AIQSA_SUBAGENTS_T_CONCURRENCY, 3, 8, "research_concurrency_invalid"),
-    jobs: T_KINDS.filter((kind) => kinds.includes(kind)).flatMap((kind) => Array.from({ length: repeats[kind] }, (_, index) => ({ kind, repeat: index + 1 }))),
-    researcher: role("RESEARCHER") };
+  const search = env.AIQSA_SUBAGENTS_T_SEARCH?.trim() || null;
+  if (search !== null && search !== "production") fail("research_search_invalid");
+  const searchModel = env.AIQSA_SUBAGENTS_SEARCH_MODEL?.trim() || null;
+  if (searchModel !== null && (search === null || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(searchModel))) fail("research_search_model_invalid");
+  const rawSources = env.AIQSA_SUBAGENTS_T_SEARCH_SOURCES?.trim() || null;
+  if (rawSources !== null && search === null) fail("research_search_sources_requires_production");
+  const sources: string[] = rawSources === null ? [...RESEARCH_SEARCH_LABELS] : rawSources.split(",").map((part) => part.trim());
+  if (sources.length === 0 || new Set(sources).size !== sources.length || !sources.every((label) => (RESEARCH_SEARCH_LABELS as readonly string[]).includes(label))) {
+    fail("research_search_sources_invalid");
+  }
+  const searchSources = RESEARCH_SEARCH_LABELS.filter((label) => sources.includes(label));
+  // Each selected source needs what it searches with, and nothing is asked for one left out.
+  if (search === "production" && searchSources.includes("openai") && searchModel === null) fail("research_search_model_required");
+  if (search === "production" && !searchSources.includes("openai") && searchModel !== null) fail("research_search_model_unused");
+  if (search === "production" && searchSources.includes("deepseek") && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
+  const kindJobs: ResearchJob[] = T_KINDS.filter((kind) => kinds.includes(kind)).flatMap((kind) => Array.from({ length: repeats[kind] }, (_, index) => ({ kind, repeat: index + 1 })));
+  const questionFile = env.AIQSA_SUBAGENTS_T_QUESTION_FILE?.trim() || null;
+  const questionSet = env.AIQSA_SUBAGENTS_T_QUESTION_SET?.trim() || null;
+  const concurrency = integer(env.AIQSA_SUBAGENTS_T_CONCURRENCY, 3, 8, "research_concurrency_invalid");
+  // A question set replaces the kinds: its questions run one after another, each in a fresh chat, with no act on them.
+  if (questionSet !== null) {
+    if (questionFile !== null) fail("research_question_set_with_file");
+    if (env.AIQSA_SUBAGENTS_T_KINDS?.trim()) fail("research_question_set_with_kinds");
+    if (Object.keys(acts).length > 0) fail("research_question_set_with_acts");
+    if (raw?.includes("=")) fail("research_repeats_invalid");
+    if (env.AIQSA_SUBAGENTS_T_CONCURRENCY?.trim() && concurrency !== 1) fail("research_question_set_sequential");
+  }
+  if (questionFile !== null && !kindJobs.some((job) => job.kind === "purchase")) fail("research_question_file_unused");
+  const appLogCommand = env.AIQSA_SUBAGENTS_T_APP_LOG_COMMAND?.trim() || null;
+  if (appLogCommand !== null && (appLogCommand.length > 4_096 || /[\r\n\u0000]/u.test(appLogCommand))) fail("research_app_log_command_invalid");
+  return { acts, adminProxyFile: env.AIQSA_SUBAGENTS_ADMIN_PROXY_FILE?.trim() || null, answersDir, answersFile,
+    appLog: appLogCommand === null ? null : { command: appLogCommand, timeoutMs: RESEARCH_APP_LOG_TIMEOUT_MS }, checks,
+    concurrency: questionSet === null ? concurrency : 1, jobs: questionSet === null ? kindJobs : [], questionFile, questionSet,
+    researcher: role("RESEARCHER"), search: search === "production" ? { model: searchModel, plan: "production" as const, sources: searchSources } : null,
+    setRepeats: questionSet === null ? 1 : integer(raw, 1, 20, "research_repeats_invalid") };
+}
+
+/** How long the app log command may take to print a question's lines. */
+export const RESEARCH_APP_LOG_TIMEOUT_MS = 120_000;
+/** A question set holds at most this many questions: an acceptance set, not a benchmark. */
+export const RESEARCH_QUESTION_SET_MAX = 20;
+export const RESEARCH_EXPECT_MAX_BYTES = 4_096;
+
+/** Where an expected name must show: a matrix row, the answer's text (a knowledge question's key facts), or either. */
+export const RESEARCH_NAMES_IN = ["rows", "answer", "either"] as const;
+/** What an operator expects of a question's run; each field is optional and checked only when present. */
+export type ResearchExpectations = Readonly<{ names?: readonly string[]; minNames?: number; namesIn?: typeof RESEARCH_NAMES_IN[number];
+  minCandidates?: number; minOffers?: number; minSupportedShare?: number; maxMinutes?: number }>;
+export type ResearchSetQuestion = Readonly<{ name: string; text: string; expect: ResearchExpectations | null }>;
+const EXPECT_KEYS = ["names", "minNames", "namesIn", "minCandidates", "minOffers", "minSupportedShare", "maxMinutes"] as const;
+
+/**
+ * `{ "names": ["…"], "minNames": 2, "namesIn": "rows" | "answer" | "either", "minCandidates": 5, "minOffers": 3, "minSupportedShare": 0.8,
+ * "maxMinutes": 25 }`, any subset of these keys. `minNames` (all names by default) and `namesIn` (`either` by default) need `names`.
+ */
+export function decodeResearchExpectations(raw: string): ResearchExpectations {
+  const invalid = () => fail("research_question_expect_invalid");
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return invalid(); }
+  if (!record(value) || !Object.keys(value).every((name) => (EXPECT_KEYS as readonly string[]).includes(name))) return invalid();
+  const count = (field: unknown, max = 1_000) => field === undefined || typeof field === "number" && Number.isSafeInteger(field) && field >= 0 && field <= max;
+  if (!count(value.minCandidates) || !count(value.minOffers)) return invalid();
+  if (value.minSupportedShare !== undefined && !(typeof value.minSupportedShare === "number" && value.minSupportedShare >= 0 && value.minSupportedShare <= 1)) return invalid();
+  if (value.maxMinutes !== undefined && !(typeof value.maxMinutes === "number" && Number.isFinite(value.maxMinutes) && value.maxMinutes > 0 && value.maxMinutes <= 1_000)) return invalid();
+  if (value.names === undefined) return value.minNames !== undefined || value.namesIn !== undefined ? invalid() : value as ResearchExpectations;
+  const names = value.names;
+  if (!Array.isArray(names) || names.length < 1 || names.length > 50 || !names.every((name) => text(name, 200) && /[\p{L}\p{N}]/u.test(name)) ||
+    new Set(names.map((name: string) => researchMatchText(name))).size !== names.length) return invalid();
+  if (!count(value.minNames, names.length)) return invalid();
+  if (value.namesIn !== undefined && !(RESEARCH_NAMES_IN as readonly unknown[]).includes(value.namesIn)) return invalid();
+  return value as ResearchExpectations;
+}
+
+/**
+ * The operator's question set: a directory of `<name>.txt` questions, each with an optional `<name>.expect.json`, every file
+ * private as the question file is (`readPrivateFile`). Other files are ignored; an expectation without its question is refused.
+ * Questions run in the order of their names.
+ */
+export function readResearchQuestionSet(directory: string): ResearchSetQuestion[] {
+  let entries: string[];
+  try {
+    const stat = lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) fail("research_question_set_invalid");
+    entries = readdirSync(directory);
+  } catch { return fail("research_question_set_invalid"); }
+  const questions = new Set<string>(), expectations = new Set<string>();
+  for (const entry of entries) {
+    const name = entry.endsWith(".expect.json") ? entry.slice(0, -".expect.json".length) : entry.endsWith(".txt") ? entry.slice(0, -".txt".length) : null;
+    if (name === null) continue;
+    if (!RESEARCH_QUESTION_NAME.test(name)) fail("research_question_set_name_invalid");
+    (entry.endsWith(".txt") ? questions : expectations).add(name);
+  }
+  if ([...expectations].some((name) => !questions.has(name))) fail("research_question_set_expect_orphan");
+  if (questions.size === 0) fail("research_question_set_empty");
+  if (questions.size > RESEARCH_QUESTION_SET_MAX) fail("research_question_set_too_large");
+  return [...questions].sort().map((name) => ({ name, text: readPrivateFile(join(directory, `${name}.txt`), RESEARCH_QUESTION_MAX_BYTES, "research_question_set_file").trim(),
+    expect: expectations.has(name) ? decodeResearchExpectations(readPrivateFile(join(directory, `${name}.expect.json`), RESEARCH_EXPECT_MAX_BYTES, "research_question_expect")) : null }));
+}
+
+/** The set's jobs: each question `repeats` times, one after another. */
+export const researchSetJobs = (questions: readonly ResearchSetQuestion[], repeats: number): ResearchJob[] =>
+  questions.flatMap((question) => Array.from({ length: repeats }, (_, index) => ({ kind: "set" as const, name: question.name, repeat: index + 1 })));
+
+const CYRILLIC_LATIN: Readonly<Record<string, string>> = { а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "j", к: "k", л: "l",
+  м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "c", ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya" };
+
+/** A name's tokens for matching: NFKC, CamelCase and letter-digit boundaries split, lowercase, Cyrillic in Latin, punctuation dropped. */
+export function researchNameTokens(value: string): string[] {
+  return value.normalize("NFKC").replace(/(\p{Ll})(\p{Lu})/gu, "$1 $2").replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, "$1 $2")
+    .replace(/(\p{L})(\p{N})/gu, "$1 $2").replace(/(\p{N})(\p{L})/gu, "$1 $2").toLowerCase()
+    .replace(/[а-яё]/gu, (letter) => CYRILLIC_LATIN[letter] ?? letter).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+/** The name's tokens joined: "Deep Rest", "DeepRest" and "deeprest" are one name. */
+export const researchNameKey = (value: string) => researchNameTokens(value).join("");
+
+/** Whether consecutive tokens of `haystack`, joined, spell `needle` exactly: a name never matches inside a longer word. */
+function tokensSpell(haystack: readonly string[], needle: string): boolean {
+  if (!needle) return false;
+  for (let start = 0; start < haystack.length; start += 1) {
+    let joined = "";
+    for (let end = start; end < haystack.length; end += 1) {
+      joined += haystack[end];
+      if (joined === needle) return true;
+      if (joined.length >= needle.length || !needle.startsWith(joined)) break;
+    }
+  }
+  return false;
+}
+
+/**
+ * Text as an expected name is matched in it: NFKC, lowercase, dashes as `-`, whitespace collapsed, and a separator inside a number
+ * (a space of any width, a dot or a comma between digits) read as one, so "490,5", "490.5" and "490 5" are one value.
+ */
+export function researchMatchText(value: string): string {
+  return value.normalize("NFKC").toLowerCase().replace(/\p{Pd}/gu, "-").replace(/(?<=\p{Nd})[\s.,](?=\p{Nd})/gu, ".")
+    .replace(/\s+/gu, " ").trim();
+}
+
+const WORD = /[\p{L}\p{N}]/u;
+const DIGIT = /\p{Nd}/u;
+/**
+ * Whether `needle` occurs in `haystack` (both `researchMatchText`) not inside a longer word or number: "490.5" is not in "1490.5",
+ * and "490" is not in "490.5", since a separator between digits continues the number.
+ */
+function holds(haystack: string, needle: string): boolean {
+  if (!needle) return false;
+  const continues = (separator: string | undefined, next: string | undefined) => separator === "." && next !== undefined && DIGIT.test(next);
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+    const end = at + needle.length;
+    const before = haystack[at - 1], after = haystack[end];
+    const open = !WORD.test(needle[0]!) || before === undefined || !WORD.test(before) && !(DIGIT.test(needle[0]!) && continues(before, haystack[at - 2]));
+    const close = !WORD.test(needle.at(-1)!) || after === undefined || !WORD.test(after) && !(DIGIT.test(needle.at(-1)!) && continues(after, haystack[end + 1]));
+    if (open && close) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a text names `name`: as written after `researchMatchText`, or, for a name with a letter and no separated number, by
+ * `researchNameKey` across tokens ("Deep Rest" for "DeepRest", "Велора" for "Velora"). A bare number matches only as written.
+ */
+function mentions(content: string, tokens: readonly string[], name: string): boolean {
+  const written = researchMatchText(name);
+  if (holds(researchMatchText(content), written)) return true;
+  return /\p{L}/u.test(written) && !/\p{Nd}\.\p{Nd}/u.test(written) && tokensSpell(tokens, researchNameKey(name));
+}
+
+export type ResearchExpectationObserved = Readonly<{ rowLabels: readonly string[]; answer: string; candidates: number | null; offers: number | null;
+  supportedShare: number | null; minutes: number | null }>;
+type Threshold = Readonly<{ expected: number; value: number | null; pass: boolean }>;
+
+/**
+ * Each expected name as a matrix row (a row's label or key names it) and in the answer's text, both reported; it is found where
+ * `namesIn` says (either by default), and `namesFound` counts them against `minNames` (all by default). Each bound comes with its
+ * measured value; an unmeasured value fails its bound.
+ */
+export function researchExpectationResults(expect: ResearchExpectations, observed: ResearchExpectationObserved) {
+  const rows = observed.rowLabels.map((label) => ({ label, tokens: researchNameTokens(label) }));
+  const answerTokens = researchNameTokens(observed.answer);
+  const where = expect.namesIn ?? "either";
+  const found = (expect.names ?? []).map((name) => {
+    const row = rows.some((entry) => mentions(entry.label, entry.tokens, name)), answer = mentions(observed.answer, answerTokens, name);
+    return { name, row, answer, found: where === "rows" ? row : where === "answer" ? answer : row || answer };
+  });
+  const bound = (expected: number | undefined, value: number | null, atMost = false): Threshold | undefined => expected === undefined ? undefined :
+    { expected, value, pass: value !== null && (atMost ? value <= expected : value >= expected) };
+  const checks = { namesFound: expect.names ? bound(expect.minNames ?? expect.names.length, found.filter((name) => name.found).length) : undefined,
+    minCandidates: bound(expect.minCandidates, observed.candidates), minOffers: bound(expect.minOffers, observed.offers),
+    minSupportedShare: bound(expect.minSupportedShare, observed.supportedShare), maxMinutes: bound(expect.maxMinutes, observed.minutes, true) };
+  const defined = Object.fromEntries(Object.entries(checks).filter(([, check]) => check !== undefined)) as Partial<Record<keyof typeof checks, Threshold>>;
+  return { ...(expect.names ? { namesIn: where } : {}), names: found, ...defined, passed: Object.values(defined).every((check) => check.pass) };
+}
+
+/** The expectations for stdout: names by their position in the expectation file, never their text. */
+export function researchExpectationCounts(results: ReturnType<typeof researchExpectationResults>) {
+  const { names: found, ...rest } = results;
+  return { ...rest, names: found.map((name, index) => ({ index: index + 1, row: name.row, answer: name.answer, found: name.found })) };
+}
+
+/** The question file's bound: a long purchase brief fits, a pasted document does not. */
+export const RESEARCH_QUESTION_MAX_BYTES = 16_384;
+export const RESEARCH_ADMIN_PROXY_MAX_BYTES = 4_096;
+
+/**
+ * A private file's text: a regular file (no link), mode exactly 0600, owned by this user, not empty, within the bound.
+ * Refusals are `<prefix>_invalid`, `_mode`, `_empty` and `_too_large`; neither the path nor the text leaves this function.
+ */
+export function readPrivateFile(path: string, maxBytes: number, prefix: string): string {
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return fail(`${prefix}_invalid`); }
+  try {
+    let stat: Stats;
+    try { stat = fstatSync(fd); } catch { return fail(`${prefix}_invalid`); }
+    if (!stat.isFile() || (typeof process.getuid === "function" && stat.uid !== process.getuid())) fail(`${prefix}_invalid`);
+    if ((stat.mode & 0o777) !== 0o600) fail(`${prefix}_mode`);
+    if (stat.size > maxBytes) fail(`${prefix}_too_large`);
+    let bytes: Uint8Array;
+    try { bytes = readFileSync(fd); } catch { return fail(`${prefix}_invalid`); }
+    if (bytes.length > maxBytes) fail(`${prefix}_too_large`);
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return fail(`${prefix}_invalid`); }
+    if (!text.trim()) fail(`${prefix}_empty`);
+    return text;
+  } finally { closeSync(fd); }
+}
+
+/** The purchase question's text for this invocation: the operator's file, else the built-in synthetic one. */
+export function researchQuestionText(kind: TKind, builtIn: string, override: string | null): string {
+  return kind === "purchase" && override !== null ? override.trim() : builtIn;
+}
+
+/** An administrator proxy for one acceptance run, as the admin proxy API takes it. Values stay in memory; nothing prints them. */
+export type ResearchAdminProxy = Readonly<{ country: string; domainHints: readonly string[]; host: string; login: string; password: string;
+  port: number; protocol: "http" | "https" | "socks5"; url: string }>;
+
+/** `{ "url": "http://host:port", "username", "password", "country": "RU", "hints": [".ru"] }`, exactly these keys. */
+export function parseResearchAdminProxy(text: string): ResearchAdminProxy {
+  const invalid = () => fail("research_admin_proxy_file_invalid");
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return invalid(); }
+  if (!record(value) || !exact(value, ["country", "hints", "password", "url", "username"])) return invalid();
+  const { country, hints, password, url, username } = value;
+  if (typeof url !== "string" || typeof username !== "string" || typeof password !== "string" || typeof country !== "string" || !Array.isArray(hints)) return invalid();
+  let parsed: URL;
+  try { parsed = new URL(url.trim()); } catch { return invalid(); }
+  const protocol = parsed.protocol.slice(0, -1);
+  const port = Number(parsed.port);
+  if ((protocol !== "http" && protocol !== "https" && protocol !== "socks5") || !parsed.hostname || parsed.username || parsed.password ||
+    !Number.isSafeInteger(port) || port < 1 || port > 65_535 || (parsed.pathname !== "/" && parsed.pathname !== "") || parsed.search || parsed.hash) return invalid();
+  const bounded = (field: string, max: number) => field.length > 0 && field.length <= max && !/[\u0000-\u001f\u007f]/u.test(field);
+  if (!bounded(username, 255) || !bounded(password, 255) || !/^[A-Z]{2}$/u.test(country)) return invalid();
+  if (hints.length < 1 || hints.length > 50 || !hints.every((hint) => typeof hint === "string" && bounded(hint.trim(), 253))) return invalid();
+  return { country, domainHints: hints.map((hint: string) => hint.trim()), host: parsed.hostname.replace(/^\[|\]$/gu, ""), login: username, password, port,
+    protocol: protocol as ResearchAdminProxy["protocol"], url: url.trim() };
+}
+
+/** Every form a proxy value may take in text the harness keeps: the redaction list for its answers. */
+export const researchAdminProxySecrets = (proxy: ResearchAdminProxy | null): string[] => proxy ? [proxy.url, proxy.host, proxy.login, proxy.password] : [];
+
+/** The admin check's answer as a code: `ok`, the check's own stable status, or `invalid`. */
+export function researchProxyCheckStatus(value: unknown): string {
+  const status = record(value) && record(value.check) ? value.check.status : null;
+  return typeof status === "string" && /^[a-z0-9_]{1,64}$/u.test(status) ? status : "invalid";
 }
 
 /** One explicit level makes the setup probes exercise that level instead of a cheaper default. */
@@ -295,9 +561,9 @@ export function createResearchArchive(directory: string, secrets: readonly strin
   } catch { fail("research_archive_unavailable"); }
   return {
     write(job: ResearchJob, chatId: string, entry: string, contents: unknown) {
-      if (!T_KINDS.includes(job.kind) || !Number.isSafeInteger(job.repeat) || job.repeat < 1 || !/^[a-zA-Z0-9_-]{1,128}$/u.test(chatId) ||
-        !/^[a-zA-Z0-9_-]{1,160}$/u.test(entry)) fail("research_archive_key_invalid");
-      const name = `${job.kind}-${job.repeat}-${chatId}-${invocation}-${entry}.json`;
+      if (!(job.kind === "set" ? RESEARCH_QUESTION_NAME.test(job.name) : T_KINDS.includes(job.kind)) || !Number.isSafeInteger(job.repeat) || job.repeat < 1 ||
+        !/^[a-zA-Z0-9_-]{1,128}$/u.test(chatId) || !/^[a-zA-Z0-9_-]{1,160}$/u.test(entry)) fail("research_archive_key_invalid");
+      const name = `${researchJobLabel(job)}-${job.repeat}-${chatId}-${invocation}-${entry}.json`;
       const clean = `${JSON.stringify(contents, (_name, value: unknown) => typeof value === "string" ? redactResearchSecrets(value, secrets) : value, 2)}\n`;
       try {
         const fd = openSync(join(root, name), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
@@ -334,35 +600,7 @@ const instant = (value: Date | string | null): number | null => value !== null &
 export function researchRoleUsage(rows: readonly ResearchTranscriptRow[], timings: readonly ResearchTiming[], names: ReadonlyMap<string, readonly string[]>) {
   const roles = new Map([...names].flatMap(([name, ids]) => ids.map((id) => [id, researchThreadRole(name)] as const)));
   const threadRole = (id: string | null): ResearchUsageRole => id === null ? "main" : roles.get(id) ?? "unattributed";
-  const lanes = new Map<string, ResearchTranscriptRow[]>();
-  for (const row of new Map(rows.map((row) => [row.id, row])).values()) {
-    const lane = JSON.stringify([row.runId, row.threadId, row.turnId]);
-    const own = lanes.get(lane) ?? [];
-    own.push(row);
-    lanes.set(lane, own);
-  }
-  const responses: { role: ResearchUsageRole; items: Record<string, unknown>[] }[] = [];
-  for (const lane of lanes.values()) {
-    let previous: ResearchTranscriptRow | null = null;
-    let response: typeof responses[number] | null = null;
-    for (const row of lane.sort((a, b) => a.sequence - b.sequence)) {
-      if (!["assistant_text", "reasoning", "tool_call"].includes(row.kind) || !record(row.body) || !record(row.body.origin)) {
-        response = null; previous = row; continue;
-      }
-      if (!response || !previous || row.sequence !== previous.sequence + 1 || instant(row.createdAt) !== instant(previous.createdAt) || record(row.body.requestAnchor)) {
-        response = { role: threadRole(row.threadId), items: [] };
-        responses.push(response);
-      }
-      response.items.push(row.body);
-      previous = row;
-    }
-  }
-  const measured = responses.map((response) => {
-    const anchor = response.items[0]?.requestAnchor;
-    const output = response.items.map((item) => token(item.outputTokens));
-    return { role: response.role, inputTokens: record(anchor) ? token(anchor.inputTokens) : null,
-      outputTokens: output.every((value) => value !== null) ? output.reduce<number>((total, value) => total + value!, 0) : null };
-  });
+  const measured = researchResponses(rows).map((response) => ({ ...response, role: threadRole(response.threadId) }));
   return Object.fromEntries(RESEARCH_USAGE_ROLES.map((role) => {
     const own = measured.filter((response) => response.role === role);
     const turns = timings.filter((timing) => threadRole(timing.threadId) === role);
@@ -374,11 +612,49 @@ export function researchRoleUsage(rows: readonly ResearchTranscriptRow[], timing
       const start = instant(turn.startedAt), end = instant(turn.endedAt);
       return start !== null && end !== null && end >= start ? (end - start) / 60_000 : null;
     });
-    return [role, { responses: own.length, turns: turns.length, inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"),
+    const knownInput = own.filter((response) => response.inputTokens !== null).length;
+    const input = sum("inputTokens");
+    return [role, { responses: own.length, turns: turns.length, inputTokens: input, outputTokens: sum("outputTokens"),
+      // The mean over responses whose input the provider reported; `missingInput` says how many it leaves out.
+      inputPerResponse: input !== null && knownInput > 0 ? Math.round(input / knownInput) : null,
       missing: own.filter((response) => response.inputTokens === null || response.outputTokens === null).length,
       missingInput: own.filter((response) => response.inputTokens === null).length, missingOutput: own.filter((response) => response.outputTokens === null).length,
       minutes: durations.length > 0 && durations.every((duration) => duration !== null) ? durations.reduce<number>((total, duration) => total + duration!, 0) : null }];
   }));
+}
+
+/** One model response of the transcript with the provider's figures, delimited as `researchRoleUsage` describes. */
+export type ResearchResponse = Readonly<{ runId: string; threadId: string | null; turnId: string | null; inputTokens: number | null; outputTokens: number | null }>;
+export function researchResponses(rows: readonly ResearchTranscriptRow[]): ResearchResponse[] {
+  const lanes = new Map<string, ResearchTranscriptRow[]>();
+  for (const row of new Map(rows.map((row) => [row.id, row])).values()) {
+    const lane = JSON.stringify([row.runId, row.threadId, row.turnId]);
+    const own = lanes.get(lane) ?? [];
+    own.push(row);
+    lanes.set(lane, own);
+  }
+  const responses: { row: ResearchTranscriptRow; items: Record<string, unknown>[] }[] = [];
+  for (const lane of lanes.values()) {
+    let previous: ResearchTranscriptRow | null = null;
+    let response: typeof responses[number] | null = null;
+    for (const row of lane.sort((a, b) => a.sequence - b.sequence)) {
+      if (!["assistant_text", "reasoning", "tool_call"].includes(row.kind) || !record(row.body) || !record(row.body.origin)) {
+        response = null; previous = row; continue;
+      }
+      if (!response || !previous || row.sequence !== previous.sequence + 1 || instant(row.createdAt) !== instant(previous.createdAt) || record(row.body.requestAnchor)) {
+        response = { row, items: [] };
+        responses.push(response);
+      }
+      response.items.push(row.body);
+      previous = row;
+    }
+  }
+  return responses.map(({ row, items }) => {
+    const anchor = items[0]?.requestAnchor;
+    const output = items.map((item) => token(item.outputTokens));
+    return { runId: row.runId, threadId: row.threadId, turnId: row.turnId, inputTokens: record(anchor) ? token(anchor.inputTokens) : null,
+      outputTokens: output.every((value) => value !== null) ? output.reduce<number>((total, value) => total + value!, 0) : null };
+  });
 }
 
 /** The grand ledger remains separate: it covers recorded paid attempts, including ones with no retained transcript response. */
@@ -419,10 +695,395 @@ export function researchStoreFacts(store: ResearchStoreRows) {
 export function researchEvaluationSummary(input: Readonly<{ job: ResearchJob; answerCount: number; gateReportCount: number;
   grade: EvalResult<ResearchGrade>; extraction: EvalResult<StructuredResearchAnswer>; failed: boolean; wallSeconds: number }>) {
   const scores = input.grade.value?.scores;
-  return { kind: input.job.kind, repeat: input.job.repeat, answerCount: input.answerCount, gateReportCount: input.gateReportCount,
+  return { kind: input.job.kind, ...(input.job.kind === "set" ? { question: input.job.name } : {}), repeat: input.job.repeat,
+    answerCount: input.answerCount, gateReportCount: input.gateReportCount,
     failed: input.failed, wallSeconds: input.wallSeconds,
     judge: { status: input.grade.status, scores: scores ? Object.fromEntries(RESEARCH_SCORE_KEYS.map((name) => [name, scores[name]])) : null,
       tokens: input.grade.tokens, minutes: input.grade.minutes, limitations: input.grade.value?.limitations.length ?? 0 },
     extraction: { status: input.extraction.status, tokens: input.extraction.tokens, minutes: input.extraction.minutes,
       candidates: input.extraction.value?.candidates.length ?? 0, criteria: input.extraction.value?.criteria.length ?? 0, facts: input.extraction.value?.facts.length ?? 0 } };
+}
+
+/** One Search call's row as the harness reads it: the plan option that ran and the sources it returned. */
+export type ResearchSearchRow = Readonly<{ strategyId: string; sources: unknown }>;
+/** A draft call's arguments and the run's records, as T already reads them. */
+export type ResearchCitationInput = Readonly<{ lastDraft: unknown; evidence: readonly Readonly<{ id: string; url: string | null; dataset: unknown }>[]; answer: string }>;
+
+const recordUrls = (row: ResearchCitationInput["evidence"][number]) => {
+  const examples: readonly unknown[] = record(row.dataset) && Array.isArray(row.dataset.examples) ? row.dataset.examples : [];
+  return [row.url, ...examples.map((example) => record(example) ? example.url : null)]
+    .flatMap((url) => { const normalized = normalizeFetchUrl(url); return normalized ? [normalized] : []; });
+};
+
+/**
+ * The records the final answer cites: those the last draft names by id (its typed findings' links for a draft from before
+ * drafts referred to records), and every record whose link the answer's text carries. Links are `fetch_url`'s form.
+ */
+export function researchCitedUrls(input: ResearchCitationInput): Readonly<{ records: number; urls: readonly string[] }> {
+  const draft = record(input.lastDraft) ? input.lastDraft : {};
+  const cited = new Set<string>();
+  const typed: string[] = [];
+  if (Array.isArray(draft.record_ids)) for (const id of draft.record_ids) if (typeof id === "string") cited.add(id);
+  if (!Array.isArray(draft.record_ids) && Array.isArray(draft.findings)) {
+    for (const finding of draft.findings) if (record(finding)) { const url = normalizeFetchUrl(finding.url); if (url) typed.push(url); }
+  }
+  const linked = new Set(extractFetchUrls(input.answer));
+  for (const row of input.evidence) if (recordUrls(row).some((url) => linked.has(url))) cited.add(row.id);
+  const rows = input.evidence.filter((row) => cited.has(row.id));
+  return { records: rows.length, urls: [...new Set([...rows.flatMap(recordUrls), ...typed])].sort() };
+}
+
+/**
+ * Which Search source surfaced each cited link: per labelled source, the cited links among its results and how many no other
+ * source returned. `labels` maps a plan option id to its source; an unknown option counts as `other`. The full projection
+ * (links included) is for the private answers directory; `researchAttributionCounts` is what stdout may show.
+ */
+export function researchCitationAttribution(cited: readonly string[], searches: readonly ResearchSearchRow[], labels: ReadonlyMap<string, string>) {
+  const surfacedBy = new Map<string, Set<string>>();
+  for (const search of searches) {
+    const label = labels.get(search.strategyId) ?? "other";
+    for (const source of Array.isArray(search.sources) ? search.sources : []) {
+      const url = record(source) ? normalizeFetchUrl(source.url) : null;
+      if (!url) continue;
+      const own = surfacedBy.get(url) ?? new Set<string>();
+      own.add(label);
+      surfacedBy.set(url, own);
+    }
+  }
+  const names = [...new Set([...labels.values(), ...[...surfacedBy.values()].flatMap((set) => [...set])])].sort();
+  const sources = Object.fromEntries(names.map((name) => {
+    const urls = cited.filter((url) => surfacedBy.get(url)?.has(name));
+    return [name, { urls, only: urls.filter((url) => surfacedBy.get(url)!.size === 1).length }];
+  }));
+  return { cited: [...cited], sources, unsurfaced: cited.filter((url) => !surfacedBy.has(url)) };
+}
+
+/** The attribution in counts only. */
+export function researchAttributionCounts(attribution: ReturnType<typeof researchCitationAttribution>, records: number) {
+  return { citedRecords: records, citedUrls: attribution.cited.length, unsurfaced: attribution.unsurfaced.length,
+    sources: Object.fromEntries(Object.entries(attribution.sources).map(([name, entry]) => [name, { cited: entry.urls.length, only: entry.only }])) };
+}
+
+/** The model production's Perplexity source searches with through OpenRouter. */
+export const RESEARCH_PERPLEXITY_SEARCH_MODEL = "perplexity/sonar-pro-search";
+/** Production's Search plan for the acceptance run: each source, its protocol, and the upstream model its client route searches with. */
+export const RESEARCH_PRODUCTION_SEARCH = Object.freeze([
+  { label: "openai", kind: "web_search", protocol: "openai_responses_web_search" },
+  { label: "perplexity", kind: "perplexity_search", protocol: "openrouter_perplexity_chat", upstreamModelId: RESEARCH_PERPLEXITY_SEARCH_MODEL },
+  { label: "deepseek", kind: "deepseek_search_api", protocol: "deepseek_search_api" }
+] as const);
+/** The production sources `AIQSA_SUBAGENTS_T_SEARCH_SOURCES` picks from, in the plan's order: research must work with any one of them. */
+export const RESEARCH_SEARCH_LABELS = Object.freeze(["openai", "perplexity", "deepseek"] as const);
+export type ResearchSearchLabel = typeof RESEARCH_SEARCH_LABELS[number];
+
+/**
+ * Whether an Admin Search source is fit to start research on, as a code: `ok` only when it is live, published, on the
+ * expected client route, and its latest check searched for real and returned sources.
+ */
+export function researchSearchSourceStatus(integration: unknown, expected: Readonly<{ protocol: string; providerModelId?: string }>): string {
+  if (!record(integration)) return "missing";
+  if (integration.archivedAt !== null) return "archived";
+  if (integration.enabled !== true) return "disabled";
+  if (integration.ready !== true) return "not_ready";
+  if (integration.configurationActive !== true || integration.draftDirty === true) return "not_published";
+  const configuration = record(integration.configuration) ? integration.configuration : null;
+  if (!configuration || configuration.adapterKind !== "provider_model_client" || configuration.protocol !== expected.protocol ||
+    (expected.providerModelId !== undefined && configuration.providerModelId !== expected.providerModelId)) return "configuration_mismatch";
+  const evidence = record(integration.draftTestEvidence) ? integration.draftTestEvidence : null;
+  if (!evidence || evidence.method !== "provider_search" || evidence.protocol !== expected.protocol) return "not_checked";
+  if (evidence.status !== "available") return "check_unavailable";
+  return typeof evidence.normalizedSourceCount === "number" && evidence.normalizedSourceCount > 0 ? "ok" : "check_empty";
+}
+
+// Acceptance metrics -------------------------------------------------------------------
+
+/** Nearest-rank percentiles of the known values; null when there are none. */
+export function researchPercentiles(values: readonly number[]): Readonly<{ p50: number | null; p90: number | null; max: number | null }> {
+  if (values.length === 0) return { max: null, p50: null, p90: null };
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (share: number) => sorted[Math.max(0, Math.ceil(share * sorted.length) - 1)]!;
+  return { max: sorted.at(-1)!, p50: at(0.5), p90: at(0.9) };
+}
+
+/**
+ * Per Search source, how long its part of each search took, from the app's content-free `tool_execution` log lines
+ * (`stage: execution`, `engine_index` 1-based in the plan's source order, `duration_ms`). Only lines of the given runs count;
+ * any prefix before a line's JSON (a Compose log prefix) is skipped, and nothing else of a line is kept.
+ */
+export function researchEngineLatency(runIds: ReadonlySet<string>, labels: readonly string[]) {
+  const engines = new Map<string, { durations: number[]; failed: number }>();
+  return {
+    add(line: string) {
+      const start = line.indexOf("{");
+      if (start < 0 || line.length > 65_536) return;
+      let entry: unknown;
+      try { entry = JSON.parse(line.slice(start)); } catch { return; }
+      if (!record(entry) || entry.event !== "tool_execution" || entry.tool_kind !== "search" || entry.stage !== "execution" ||
+        typeof entry.run_id !== "string" || !runIds.has(entry.run_id)) return;
+      const index = entry.engine_index, duration = entry.duration_ms;
+      if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 1 || index > 16) return;
+      const label = labels[index - 1] ?? `engine_${index}`;
+      const own = engines.get(label) ?? { durations: [], failed: 0 };
+      if (entry.outcome === "completed" && typeof duration === "number" && Number.isFinite(duration) && duration >= 0) own.durations.push(duration);
+      else if (entry.outcome === "failed") own.failed += 1;
+      else return;
+      engines.set(label, own);
+    },
+    result(): Record<string, Readonly<{ completed: number; failed: number; p50Ms: number | null; p90Ms: number | null; maxMs: number | null }>> {
+      return Object.fromEntries([...engines].sort(([a], [b]) => a.localeCompare(b)).map(([label, own]) => {
+        const { max, p50, p90 } = researchPercentiles(own.durations);
+        return [label, { completed: own.durations.length, failed: own.failed, maxMs: max, p50Ms: p50, p90Ms: p90 }];
+      }));
+    }
+  };
+}
+
+/** A tool call as the acceptance metrics read it: timings and a few codes drawn from its result in SQL, never its text. */
+export type ResearchAcceptanceCall = Readonly<{ id: string; runId: string; toolName: string; threadId: string | null; turnId: string | null;
+  startedAt: Date | string | null; completedAt: Date | string | null;
+  /** A refused or failed call's error code (`content[0].value.error`). */
+  errorCode: string | null;
+  /** The result carries the per-task budget's footer ("Calls left in this task"): the stand has that budget. */
+  budgetMarker: boolean;
+  /** `call_subagent`: the ended turn's reason as its result gives it (`deadline` when its time ended it). */
+  endReason: string | null;
+  /** `submit_research_draft`: its result's status and gate, and the record ids the draft named. */
+  draftStatus: string | null; draftGate: string | null; recordIds: unknown;
+  /** `change_research_frame`: the kind of change asked for. */
+  frameChange: string | null }>;
+export type ResearchAcceptanceTurn = Readonly<{ id: string; threadId: string; name: string; state: string; reasonCode: string | null;
+  parentToolCallId: string | null; startedAt: Date | string | null; endedAt: Date | string | null;
+  /** A verifier's report, read only for its verdict lines; null for every other role. */
+  report: string | null }>;
+/** A record as the metrics read it; its link only groups offers by page and never leaves the function. */
+export type ResearchAcceptanceEvidence = Readonly<{ id: string; kind: string; sourceClass: string | null; quoteCheck: string | null; rowKey: string | null;
+  supersedesId: string | null; url: string | null }>;
+export type ResearchAcceptanceInput = Readonly<{
+  /** The research run: the run its frame belongs to. */
+  runId: string;
+  /** The chat's main-agent runs. */
+  runs: readonly Readonly<{ id: string; createdAt: Date | string; answerCompletedAt: Date | string | null }>[];
+  frame: Readonly<{ createdAt: Date | string | null; releasedAt: Date | string | null; frame: unknown }> | null;
+  calls: readonly ResearchAcceptanceCall[];
+  turns: readonly ResearchAcceptanceTurn[];
+  responses: readonly ResearchResponse[];
+  evidence: readonly ResearchAcceptanceEvidence[];
+  searches: readonly Readonly<{ strategyId: string; status: string }>[];
+  searchLabels: ReadonlyMap<string, string>;
+  /** `researchEngineLatency(...).result()`; null when no app log was read. */
+  engineLatency: ReturnType<ReturnType<typeof researchEngineLatency>["result"]> | null;
+}>;
+
+const GATE_ROLES = ["gap_judge", "verifier", "skeptic"] as const;
+/** The verifier's report line, as `lib/server/research/verifier.ts` reads it. */
+const VERDICT_LINE = /^\s*(?:[-*]\s*)?\**C(\d{1,3})\**\s*\|\s*\**(supported|partly|unsupported|contradicted|could[_ ]not[_ ]check)\**/iu;
+/** What the per-task budget does not count. */
+const UNCOUNTED_TOOLS = new Set(["record_evidence", "change_research_frame"]);
+const SEARCH_TOOL = /^search_(?:selected_engines|engine_[1-3])$/u;
+const NOTE_CHANGES = new Set(["note_candidate", "set_aside"]);
+const TURN_STATES = new Set(["stopped", "failed", "interrupted", "blocked"]);
+/** A refusal for a call budget: the per-task budget (whatever its code says of a budget or a call limit) or the run's. */
+const budgetRefusal = (call: ResearchAcceptanceCall) => call.errorCode !== null && /budget|call_limit|calls_exhausted/u.test(call.errorCode);
+const stable = (value: string | null) => value === null ? null : /^[a-z0-9_]{1,64}$/u.test(value) ? value : "other";
+const rounded = (value: number, digits: number) => Math.round(value * 10 ** digits) / 10 ** digits;
+type When = Date | string | null | undefined;
+
+/** The matrix rows of a stored frame: key and label, for matching names only. */
+export function researchFrameRows(frame: unknown): Readonly<{ key: string; label: string }>[] {
+  const rows = record(frame) && Array.isArray(frame.rows) ? frame.rows : [];
+  return rows.flatMap((row) => record(row) && typeof row.key === "string" && typeof row.label === "string" ? [{ key: row.key, label: row.label }] : []);
+}
+
+/** Verdicts of one verifier report, one per claim; a claim answered twice differently has none, as the server reads it. */
+function verifierVerdicts(report: string | null): string[] {
+  const verdicts = new Map<string, string | null>();
+  for (const line of (report ?? "").split("\n")) {
+    const match = VERDICT_LINE.exec(line);
+    if (!match) continue;
+    const verdict = match[2]!.toLowerCase().replace(" ", "_");
+    const earlier = verdicts.get(match[1]!);
+    verdicts.set(match[1]!, earlier === undefined || earlier === verdict ? verdict : null);
+  }
+  return [...verdicts.values()].filter((verdict): verdict is string => verdict !== null);
+}
+
+function verdictTally(verdicts: readonly string[]) {
+  const count = (name: string) => verdicts.filter((verdict) => verdict === name).length;
+  const supported = count("supported");
+  return { claims: verdicts.length, supported, partly: count("partly"), unsupported: count("unsupported"), contradicted: count("contradicted"),
+    couldNotCheck: count("could_not_check"), supportedShare: verdicts.length > 0 ? rounded(supported / verdicts.length, 4) : null };
+}
+
+/**
+ * Candidate notes (`change_research_frame` kinds `note_candidate` and `set_aside`, stored as the frame's optional `candidates` and
+ * `setAside`). Null when nothing shows the feature on this stand: no such field, call or change. A note became a row when its key or
+ * label names a row by `researchNameKey`.
+ */
+function candidateNotes(frame: unknown, rows: readonly Readonly<{ key: string; label: string }>[], calls: readonly ResearchAcceptanceCall[]) {
+  const value = record(frame) ? frame : {};
+  const candidates = Array.isArray(value.candidates) ? value.candidates.filter(record) : null;
+  const setAside = Array.isArray(value.setAside) ? value.setAside.filter(record) : null;
+  const changes = Array.isArray(value.changes) ? value.changes.filter(record) : [];
+  const noteCalls = calls.filter((call) => call.toolName === "change_research_frame" && call.frameChange !== null && NOTE_CHANGES.has(call.frameChange));
+  if (candidates === null && setAside === null && noteCalls.length === 0 && !changes.some((change) => typeof change.change === "string" && NOTE_CHANGES.has(change.change))) return null;
+  const keys = (entry: Readonly<Record<string, unknown>>) => [entry.key, entry.label].flatMap((field) => typeof field === "string" && researchNameKey(field) ? [researchNameKey(field)] : []);
+  const rowKeys = new Set(rows.flatMap((row) => keys(row)));
+  const asideKeys = new Set((setAside ?? []).flatMap(keys));
+  const notes = (candidates ?? []).map((entry) => {
+    const own = keys(entry);
+    const row = own.some((name) => rowKeys.has(name));
+    return { aside: !row && own.some((name) => asideKeys.has(name)), row };
+  });
+  return { noted: notes.length, madeRows: notes.filter((note) => note.row).length, setAside: setAside?.length ?? 0,
+    open: notes.filter((note) => !note.row && !note.aside).length,
+    noteCalls: noteCalls.filter((call) => call.frameChange === "note_candidate").length, setAsideCalls: noteCalls.filter((call) => call.frameChange === "set_aside").length };
+}
+
+/**
+ * One question's acceptance metrics from the stand's rows, in numbers and codes: phases in seconds from the research run's start
+ * (scoping, plan window, each research round with its researchers and how many ran at once, drafting, each draft's gates and what
+ * sent it back, publishing); each researcher turn's calls, how it ended (`report`, `budget`, `time_limit` or its state) and its input
+ * tokens per response; searches and each source's latency; rows; candidate notes; the verifier's supported share; offers.
+ * Researchers are numbered by first turn; names, claims and links stay out. A feature the stand lacks (the per-task budget, candidate
+ * notes) reads as null, never as zero.
+ */
+export function researchAcceptanceMetrics(input: ResearchAcceptanceInput) {
+  const run = input.runs.find((entry) => entry.id === input.runId) ?? null;
+  const origin = instant(run?.createdAt ?? null);
+  const at = (value: When) => { const time = instant(value ?? null); return time === null || origin === null ? null : rounded((time - origin) / 1_000, 1); };
+  const span = (start: When, end: When) => {
+    const from = instant(start ?? null), to = instant(end ?? null);
+    return { start: at(start), end: at(end), minutes: from !== null && to !== null && to >= from ? rounded((to - from) / 60_000, 2) : null };
+  };
+  const startOf = (entry: Readonly<{ startedAt: When }>) => instant(entry.startedAt ?? null);
+  const byStart = (a: Readonly<{ startedAt: When }>, b: Readonly<{ startedAt: When }>) => (startOf(a) ?? 0) - (startOf(b) ?? 0);
+  const role = (turn: ResearchAcceptanceTurn) => researchThreadRole(turn.name);
+  const main = input.calls.filter((call) => call.runId === input.runId && call.threadId === null).sort(byStart);
+  const turnOfCall = new Map(input.turns.flatMap((turn) => turn.parentToolCallId ? [[turn.parentToolCallId, turn] as const] : []));
+  const researcherCalls = main.filter((call) => call.toolName === "call_subagent" && turnOfCall.has(call.id) && role(turnOfCall.get(call.id)!) === "researchers");
+  const drafts = main.filter((call) => call.toolName === "submit_research_draft");
+  const firstDraft = drafts[0] ? startOf(drafts[0]) : null;
+
+  // A round is researchers whose calls overlap: those started in one response, and any started before the last of them ended.
+  const rounds: { calls: ResearchAcceptanceCall[]; start: number; end: number }[] = [];
+  for (const call of researcherCalls) {
+    const start = startOf(call);
+    if (start === null) continue;
+    const end = Math.max(start, instant(call.completedAt) ?? start);
+    const current = rounds.at(-1);
+    if (current && start < current.end) { current.calls.push(call); current.end = Math.max(current.end, end); }
+    else rounds.push({ calls: [call], end, start });
+  }
+  const peak = (calls: readonly ResearchAcceptanceCall[]) => {
+    const steps = calls.flatMap((call) => { const start = startOf(call)!; return [[start, 1], [Math.max(start, instant(call.completedAt) ?? start), -1]] as const; })
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let running = 0, most = 0;
+    for (const [, step] of steps) { running += step; most = Math.max(most, running); }
+    return most;
+  };
+  const beforeDraft = rounds.filter((round) => firstDraft === null || round.start < firstDraft);
+  const gatesWithin = (draft: ResearchAcceptanceCall) => {
+    const start = startOf(draft), end = instant(draft.completedAt);
+    return input.turns.filter((turn) => { const time = startOf(turn); return time !== null && start !== null && end !== null && time >= start && time <= end; });
+  };
+  const propose = main.find((call) => call.toolName === "propose_research_plan") ?? null;
+  const released = input.frame?.releasedAt ?? null;
+  const phases = {
+    scoping: propose ? span(run?.createdAt, propose.startedAt) : null,
+    planWindow: input.frame && released ? span(input.frame.createdAt, released) : null,
+    dispatch: released && rounds[0] ? span(released, new Date(rounds[0].start)) : null,
+    rounds: rounds.map((round) => ({ ...span(new Date(round.start), new Date(round.end)), researchers: round.calls.length, parallel: peak(round.calls),
+      afterDraft: firstDraft !== null && round.start >= firstDraft })),
+    drafting: drafts[0] ? span(beforeDraft.length > 0 ? new Date(beforeDraft.at(-1)!.end) : released ?? run?.createdAt, drafts[0].startedAt) : null,
+    attempts: drafts.map((draft, index) => {
+      const next = drafts[index + 1] ?? null;
+      const ended = instant(draft.completedAt), nextStart = next ? startOf(next) : null;
+      const own = gatesWithin(draft);
+      const gates = Object.fromEntries(GATE_ROLES.map((name) => {
+        const turns = own.filter((turn) => role(turn) === name);
+        const starts = turns.flatMap((turn) => { const time = startOf(turn); return time === null ? [] : [time]; });
+        const ends = turns.flatMap((turn) => { const time = instant(turn.endedAt ?? null); return time === null ? [] : [time]; });
+        return [name, { turns: turns.length, minutes: starts.length > 0 && ends.length > 0 ? rounded((Math.max(...ends) - Math.min(...starts)) / 60_000, 2) : null }];
+      }));
+      const researchersAfter = researcherCalls.filter((call) => { const time = startOf(call); return time !== null && ended !== null && time >= ended && (nextStart === null || time < nextStart); }).length;
+      return { attempt: index + 1, ...span(draft.startedAt, draft.completedAt), status: stable(draft.draftStatus), gate: stable(draft.draftGate),
+        sentBack: draft.draftStatus === "sent_back", gates, researchersAfter, revision: next ? span(draft.completedAt, next.startedAt) : null };
+    }),
+    publish: drafts.length > 0 ? span(drafts.at(-1)!.completedAt, run?.answerCompletedAt) : null
+  };
+
+  const callById = new Map(input.calls.map((call) => [call.id, call] as const));
+  const researcherTurns = input.turns.filter((turn) => role(turn) === "researchers").sort(byStart);
+  const threads = [...new Set(researcherTurns.map((turn) => turn.threadId))];
+  const turnsSeen = new Map<string, number>();
+  const turnFacts = researcherTurns.map((turn) => {
+    const own = input.calls.filter((call) => call.turnId === turn.id);
+    const refusals = own.filter(budgetRefusal).length;
+    const parent = turn.parentToolCallId ? callById.get(turn.parentToolCallId) : undefined;
+    const ending = parent?.endReason === "deadline" || turn.reasonCode === "deadline" ? "time_limit"
+      : turn.state === "done" ? refusals > 0 ? "budget" : "report" : TURN_STATES.has(turn.state) ? turn.state : "other";
+    const responses = input.responses.filter((response) => response.turnId === turn.id);
+    const known = responses.flatMap((response) => response.inputTokens === null ? [] : [response.inputTokens]);
+    const ordinal = (turnsSeen.get(turn.threadId) ?? 0) + 1;
+    turnsSeen.set(turn.threadId, ordinal);
+    return { researcher: threads.indexOf(turn.threadId) + 1, turn: ordinal, ...span(turn.startedAt, turn.endedAt), calls: own.length,
+      countedCalls: own.filter((call) => !UNCOUNTED_TOOLS.has(call.toolName)).length, ending,
+      budgetRefusals: refusals > 0 || own.some((call) => call.budgetMarker) ? refusals : null,
+      input: { responses: responses.length, missing: responses.length - known.length, ...researchPercentiles(known) } };
+  });
+  const researcherTurnIds = new Set(researcherTurns.map((turn) => turn.id));
+  const researcherInputs = input.responses.filter((response) => response.turnId !== null && researcherTurnIds.has(response.turnId));
+  const knownInputs = researcherInputs.flatMap((response) => response.inputTokens === null ? [] : [response.inputTokens]);
+  const budgeted = turnFacts.filter((turn) => turn.budgetRefusals !== null);
+
+  const searchCalls = input.calls.filter((call) => SEARCH_TOOL.test(call.toolName));
+  const searchSeconds = searchCalls.flatMap((call) => {
+    const start = startOf(call), end = instant(call.completedAt ?? null);
+    return start !== null && end !== null && end >= start ? [rounded((end - start) / 1_000, 1)] : [];
+  });
+  const engines: Record<string, { rows: number; errors: number }> = {};
+  for (const row of input.searches) {
+    const label = input.searchLabels.get(row.strategyId) ?? "other";
+    const own = engines[label] ??= { errors: 0, rows: 0 };
+    own.rows += 1;
+    if (row.status !== "complete") own.errors += 1;
+  }
+
+  const rows = researchFrameRows(input.frame?.frame);
+  const superseded = new Set(input.evidence.flatMap((entry) => entry.supersedesId ? [entry.supersedesId] : []));
+  const offers = input.evidence.filter((entry) => entry.kind === "finding" && entry.sourceClass === "action_channel" && !superseded.has(entry.id));
+  const live = offers.filter((entry) => entry.quoteCheck === "found");
+  const lastIds = drafts.at(-1)?.recordIds;
+  const cited = Array.isArray(lastIds) ? new Set(lastIds.filter((id): id is string => typeof id === "string")) : null;
+  const citedLive = cited ? live.filter((entry) => cited.has(entry.id)) : null;
+  const verifiers = input.turns.filter((turn) => role(turn) === "verifier");
+  const starts = input.runs.flatMap((entry) => { const time = instant(entry.createdAt); return time === null ? [] : [time]; });
+  const ends = input.runs.map((entry) => instant(entry.answerCompletedAt));
+
+  return {
+    wallMinutes: starts.length > 0 && ends.length > 0 && ends.every((time) => time !== null) ? rounded((Math.max(...ends as number[]) - Math.min(...starts)) / 60_000, 2) : null,
+    phases,
+    researcherTurns: turnFacts,
+    researchers: { researchers: threads.length, turns: turnFacts.length,
+      endings: turnFacts.reduce<Record<string, number>>((totals, turn) => ({ ...totals, [turn.ending]: (totals[turn.ending] ?? 0) + 1 }), {}),
+      budgetRefusals: budgeted.length > 0 ? budgeted.reduce((total, turn) => total + turn.budgetRefusals!, 0) : null,
+      input: { responses: researcherInputs.length, missing: researcherInputs.length - knownInputs.length, ...researchPercentiles(knownInputs) } },
+    searches: { calls: searchCalls.length, callSeconds: researchPercentiles(searchSeconds), engines, latency: input.engineLatency },
+    rows: input.frame ? rows.length : null,
+    candidateNotes: input.frame ? candidateNotes(input.frame.frame, rows, input.calls) : null,
+    verifier: { turns: verifiers.length, ...verdictTally(verifiers.flatMap((turn) => verifierVerdicts(turn.report))),
+      attempts: drafts.map((draft, index) => ({ attempt: index + 1, ...verdictTally(gatesWithin(draft).filter((turn) => role(turn) === "verifier").flatMap((turn) => verifierVerdicts(turn.report))) }))
+        .filter((attempt) => attempt.claims > 0) },
+    // An offer is what the report check takes for one (`lib/server/research/reportCheck.ts`): a shop page's finding whose quote holds.
+    // A shop page also gives specifications, so `cited` counts the pages the final draft cites, not its records.
+    offers: { recorded: offers.length, live: live.length, citedRecords: citedLive?.length ?? null,
+      cited: citedLive ? new Set(citedLive.map((entry) => normalizeFetchUrl(entry.url) ?? `record:${entry.id}`)).size : null,
+      citedRows: citedLive ? new Set(citedLive.flatMap((entry) => entry.rowKey ? [entry.rowKey] : [])).size : null }
+  };
+}
+
+/** What the expectations compare against: the metrics' counts, the matrix rows' names and the final answer's text. */
+export function researchAcceptanceObserved(metrics: ReturnType<typeof researchAcceptanceMetrics>, frame: unknown, answer: string): ResearchExpectationObserved {
+  return { answer, candidates: metrics.rows, minutes: metrics.wallMinutes, offers: metrics.offers.cited,
+    rowLabels: researchFrameRows(frame).flatMap((row) => [row.label, row.key]), supportedShare: metrics.verifier.supportedShare };
 }

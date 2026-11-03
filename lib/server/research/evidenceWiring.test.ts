@@ -19,6 +19,8 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { StorageAdapter } from "../uploads/storage";
+import { WebFetchError } from "../webFetch/transport";
+import { fetchUrlDigest } from "../webFetch/urls";
 import type { ResearchGate, ResearchSubagentRequest } from "./gates";
 import { NOOP_RESEARCH_PORTS, researchPorts, type ResearchEvidencePort, type ResearchEvidenceWrite, type ResearchPortFactories, type ResearchRunScope } from "./ports";
 import { proposeCall } from "./planWindow.testFixtures";
@@ -165,6 +167,62 @@ function resultsOf(request: ProviderRunRequest | undefined, name: string): strin
 afterEach(() => vi.restoreAllMocks());
 
 describe("record_evidence through the real engine", () => {
+  const siteUrls = ["https://www.shop.co.uk/one", "https://reviews.shop.co.uk/two", "https://shop.co.uk/three"];
+  const fetch = (index: number) => ({ arguments: { url: siteUrls[index] }, id: `fetch-${index}`, name: "fetch_url" });
+  const withFetch = () => {
+    const base = prepared();
+    const fetchUrl = { userUrlDigests: siteUrls.map(fetchUrlDigest), version: 1 as const };
+    return { ...base, normalizedRequest: { ...base.normalizedRequest, fetchUrl }, providerRequest: { ...base.providerRequest, fetchUrl } };
+  };
+
+  it.each(["lab", "second"])("passes newly unreachable sites to the next brief (%s) and refuses their fetches", async (name) => {
+    const records: ResearchEvidenceRecord[] = [];
+    const evidence: ResearchEvidencePort = { page: async () => null, records: async () => [...records], record: async (write) => {
+      const saved: ResearchEvidenceRecord = { ...write.record, author: write.author, createdAt: "2026-11-02T00:00:00.000Z", id: RECORD_ID,
+        pageId: null, publishedOn: null, quoteCheck: null, registrableDomain: null, runId: "run-1", sequence: 1, textGroupKey: null };
+      records.push(saved);
+      return { kind: "recorded", record: saved };
+    } };
+    const blocked = { arguments: { ...RECORD, kind: "unreachable", reason: "The shop requires sign-in.", target: siteUrls[0] }, id: "blocked", name: RECORD_EVIDENCE_TOOL_NAME };
+    const next = { ...researcher, arguments: { message: "Check more sources.", name }, id: "next" };
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher] }, { calls: [blocked] }, { text: "Outcome: done\n\nRecorded." },
+      { calls: [next] }, { calls: [fetch(1)] }, { text: "Outcome: done\n\nFinished." }, { calls: [submit] }]);
+    const fetchPage = vi.fn();
+    await run(adapter, engineOf({ gates: [], ports: { evidence: () => evidence } }), { prepared: withFetch(), services: { fetchPage } }).text();
+    expect(JSON.stringify(requests[2]!.history)).not.toContain("# Unreachable sites");
+    expect(JSON.stringify(requests[5]!.history)).toContain("# Unreachable sites");
+    expect(JSON.stringify(requests[5]!.history)).toContain("shop.co.uk");
+    expect(JSON.stringify(requests[5]!.history)).toContain("The shop requires sign-in.");
+    expect(resultsOf(requests[6], "fetch_url")[0]).toContain("already recorded as unreachable");
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
+
+  it("reads a page when the records cannot be read for it: a store's hiccup fails no fetch", async () => {
+    let reads = 0;
+    const evidence: ResearchEvidencePort = { page: async () => null, record: async () => { throw new Error("Not written here."); }, records: async () => {
+      reads += 1;
+      // The brief reads first; the page read's own read fails.
+      if (reads === 2) throw new Error("Store unavailable.");
+      return [];
+    } };
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher] }, { calls: [fetch(0)] }, { text: "Outcome: done\n\nRead." }, { calls: [submit] }]);
+    const fetchPage = vi.fn(async () => { throw new WebFetchError("fetch_timeout", { dispatched: true }); });
+    await run(adapter, engineOf({ gates: [], ports: { evidence: () => evidence } }), { prepared: withFetch(), services: { fetchPage } }).text();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(resultsOf(requests[3], "fetch_url")[0]).not.toContain("already recorded as unreachable");
+  });
+
+  it("shares the run's two connection timeouts with later researchers", async () => {
+    const next = { ...researcher, arguments: { message: "Check more sources.", name: "second" }, id: "next" };
+    const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher] }, { calls: [fetch(0)] }, { calls: [fetch(1)] },
+      { text: "Outcome: done\n\nTimed out." }, { calls: [next] }, { calls: [fetch(2)] }, { text: "Outcome: done\n\nFinished." }, { calls: [submit] }]);
+    const fetchPage = vi.fn(async () => { throw new WebFetchError("fetch_timeout", { dispatched: true }); });
+    await run(adapter, engineOf({ gates: [] }), { prepared: withFetch(), services: { fetchPage } }).text();
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(resultsOf(requests[7], "fetch_url")[0]).toContain("timed out twice");
+  });
+
   it("lands a researcher's call in the run's port, with that researcher as its author", async () => {
     const evidence = evidencePort();
     const { adapter, requests } = scripted([

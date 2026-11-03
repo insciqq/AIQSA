@@ -73,6 +73,11 @@ export type ResearchEvidencePort = Readonly<{
    * `RESEARCH_EVIDENCE_LIMITS.continuationChain`, of the runs it continues. With no frame row it reads its own alone.
    */
   records(signal: AbortSignal): Promise<readonly ResearchEvidenceRecord[]>;
+  /**
+   * Every record of the same runs that corrects another, live or not, to the id it corrects, which `records` leaves out once corrected again. A store without it
+   * gives a check only each live record's own `supersedes`.
+   */
+  supersessions?(signal: AbortSignal): Promise<ReadonlyMap<string, string>>;
 }>;
 
 /**

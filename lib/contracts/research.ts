@@ -14,9 +14,9 @@
  * property is optional, so a tool on these decoders lists every field as
  * required and gives one that does not apply as null. The decoders of the
  * system expect exactly that: a field that may not apply is required and
- * nullable, never optional. Keep it so when a field is added. A draft's
- * references alone also read a left-out field as one that does not apply: their
- * tool is not strict, and a report must not hinge on a field with nothing to say.
+ * nullable, never optional. Keep it so when a field is added to a strict tool. The draft's
+ * tool is not strict: its references also read a left-out field as one that does not apply,
+ * and an edit submission may omit the summary to keep the previous one.
  */
 
 export const START_RESEARCH_TOOL_NAME = "start_research";
@@ -39,6 +39,9 @@ export type ResearchRole = (typeof RESEARCH_ROLES)[number];
 
 export const RESEARCH_LIMITS = Object.freeze({
   claimCharacters: 2_000,
+  draftEditCharacters: 20_000,
+  draftEdits: 32,
+  draftEditsCharacters: 200_000,
   findings: 300,
   goalCharacters: 2_000,
   questionCharacters: 1_000,
@@ -48,6 +51,8 @@ export const RESEARCH_LIMITS = Object.freeze({
   reportCharacters: 200_000,
   sitesPerQuestion: 8,
   siteCharacters: 256,
+  /** A summary is two to four short paragraphs read before the report: past this it is no summary. */
+  summaryCharacters: 4_000,
   targetCharacters: 512,
   unreachable: 64,
   urlCharacters: 2_048
@@ -67,9 +72,18 @@ export const RESEARCH_PLAN_LIMITS = Object.freeze({
 /** Keys stay stable for the run: records, cells and picks refer to them whatever a label says. */
 export const RESEARCH_FRAME_LIMITS = Object.freeze({
   branches: 8,
+  /**
+   * Notes of candidates in all, a further site's or agent's note of one included, and candidates noted: room for the pool round 1 builds from
+   * several kinds of source (`lib/server/research/candidates.ts`). With one set-aside at most per candidate they and the matrix's own additions
+   * (64 rows, 24 criteria, 8 branches) stay within `changes` (64 + 24 + 8 + 160 + 64 = 320), so no note can cost a row.
+   */
+  candidateNotes: 160,
+  candidates: 64,
   casesPerBranch: 6,
-  changes: 200,
+  changes: 320,
   criteria: 24,
+  /** Criteria a plan may mark decisive: the few a pick depends on, each of which every option the report recommends has confirmed on two sites. */
+  decisiveCriteria: 4,
   labelCharacters: 200,
   rows: 64,
   whyCharacters: 500
@@ -108,8 +122,6 @@ export const RESEARCH_TIME_MS = Object.freeze({
    * so seconds at worst, and well inside the minute a turn keeps for its handoff (`TURN_HANDOFF_RESERVE_MS`).
    */
   composeReport: 15_000,
-  /** How long a research handoff waits for the user before the site goes to the unreachable list. */
-  handoffWait: 3 * MINUTE_MS,
   /** From the plan's release: the hard end. */
   hardEnd: 90 * MINUTE_MS,
   /** From the plan's release: what did not pass by now goes out with a note. Report and checks run from `stopRunningResearchers` to here. */
@@ -128,6 +140,39 @@ export const RESEARCH_ROUND_LIMITS = Object.freeze({
   /** Rounds in a row that fill no new cell before the report. */
   noNewCellRounds: 2,
   sendBacksPerCheck: 2
+});
+
+/**
+ * One researcher's turn is one short task (operator-approved plan, 2026-11-03). On acceptance run 1 (2026-11-02) research took 51 of 61
+ * minutes in two 25-minute rounds, both ended by the turn's time rather than by work done, and model responses took 87 of 120
+ * researcher-minutes. `toolCalls`: the calls one turn may make, the upper end of Anthropic's published 5–15 per subagent; past them its
+ * next round writes the report without tools. `record_evidence` and `change_research_frame` never count, so recording is never what a
+ * spent budget discourages. `RESEARCH_TIME_MS.researcherTurn` stays the outer net.
+ */
+export const RESEARCH_TASK_LIMITS = Object.freeze({
+  toolCalls: 15
+});
+
+/**
+ * When a researcher's context sheds its oldest pages (`lib/server/engine/compaction/clearing.ts`), in tokens of the measured context.
+ * Measured on nine runs of 2026-11-02: a research makes 200–350 researcher responses, each reading 85–120 thousand input tokens while a
+ * researcher's first reads about 14 thousand, because every page it opened stayed in its context.
+ *
+ * The marks are the shape of the documented default of Anthropic's context editing, which clears past 100,000 input tokens and keeps the
+ * newest 3 tool results, here every older page in one step, so a clearing costs one miss of the provider's prompt cache (2026-11-03). They
+ * replace a planning guess of 60,000 down to 25,000, which did not hold: on acceptance run 1 (2026-11-02) a researcher's responses still
+ * read 80–100 thousand tokens, and most of that floor was the thread's replayed reasoning and its calls' arguments, which clearing never
+ * removes. Short tasks keep a thread small (`RESEARCH_TASK_LIMITS`); this is the safety net for a long one.
+ */
+export const RESEARCHER_CONTEXT_CLEARING = Object.freeze({
+  /** Past this the oldest page results become stubs that name their handle. */
+  clearAboveTokens: 100_000,
+  /** Less than this to free and the clearing waits, since each clearing costs one miss of the provider's prompt cache. */
+  clearAtLeastTokens: 10_000,
+  /** Nothing but the newest pages stays: every older one becomes a stub in the same step. */
+  clearToTokens: 0,
+  /** The newest page results, which stay whole: a researcher records from the page it has just read. */
+  keepRecentResults: 3
 });
 
 /** Where a research run stands. The first two come before the plan's release; `researchPhaseAt` gives the rest. */
@@ -163,8 +208,12 @@ export type ResearchPlan = Readonly<{
 /** What `start_research` takes once the plan window is live: only the goal, which opens scoping. */
 export type ResearchStart = Readonly<{ goal: string }>;
 
-/** A column of the matrix, with why it matters in plain words. For a knowledge question it is an outcome or a sub-question. */
-export type ResearchCriterion = Readonly<{ criterion: string; key: string; why: string }>;
+/**
+ * A column of the matrix, with why it matters in plain words. For a knowledge question it is an outcome or a sub-question. `decisive`: a key specification, a
+ * property of the option itself that a pick depends on and sellers may state differently, such as a mattress's load per side; present only when true, so a
+ * frame stored before it, and a criterion added on the way, have none.
+ */
+export type ResearchCriterion = Readonly<{ criterion: string; decisive?: true; key: string; why: string }>;
 
 /** A row of the matrix: an option the user could choose. */
 export type ResearchMatrixRow = Readonly<{ key: string; label: string }>;
@@ -177,25 +226,56 @@ export type ResearchBranch = Readonly<{ cases: readonly ResearchBranchCase[]; ke
 /** Who wrote a record or changed the frame: a sub-agent's thread, or both null for the main agent. */
 export type ResearchAgentRef = Readonly<{ name: string | null; threadId: string | null }>;
 
-export const RESEARCH_FRAME_CHANGES = ["add_branch", "add_criterion", "add_row"] as const;
+/** What changes the matrix itself: each is logged in `ResearchFrame.changes`. */
+const RESEARCH_MATRIX_CHANGES = ["add_branch", "add_criterion", "add_row"] as const;
+
+/**
+ * What `change_research_frame` takes: the matrix's own changes, and the candidates beside it. `note_candidate`: any agent names an option it saw
+ * that the matrix may lack, since on a real run a researcher saw whole the option a better answer picked, made no row of it, and nobody named it again.
+ * `set_aside`: the main agent decides a noted one is no option, with its reason. Neither changes the matrix, so neither is in its log.
+ */
+export const RESEARCH_FRAME_CHANGES = [...RESEARCH_MATRIX_CHANGES, "note_candidate", "set_aside"] as const;
 export type ResearchFrameChangeKind = (typeof RESEARCH_FRAME_CHANGES)[number];
 
 /** One entry of the frame's change log; a report names added criteria with their reasons from here. */
-export type ResearchFrameChange = Readonly<{ at: string; by: ResearchAgentRef; change: ResearchFrameChangeKind; key: string; reason: string }>;
+export type ResearchFrameChange = Readonly<{ at: string; by: ResearchAgentRef; change: (typeof RESEARCH_MATRIX_CHANGES)[number]; key: string; reason: string }>;
 
-/** A change an agent asks for (`change_research_frame`); the server stamps who and when. */
+/** A change an agent asks for (`change_research_frame`); the server stamps who and when. A candidate's key is the server's to make from its label. */
 export type ResearchFrameChangeRequest = Readonly<{ reason: string }> & (
   | Readonly<{ branch: ResearchBranch; change: "add_branch" }>
   | Readonly<{ change: "add_criterion"; criterion: ResearchCriterion }>
   | Readonly<{ change: "add_row"; row: ResearchMatrixRow }>
+  | Readonly<{ change: "note_candidate"; label: string; url?: string }>
+  | Readonly<{ change: "set_aside"; key: string }>
 );
 
-/** The matrix of a run with its change log, as `ResearchFrame.frame` keeps it. It only grows while the run lives. */
+/**
+ * One agent's note of a candidate: who, when, and where it was seen and why it may be an option. `url` is the page that names it, absent on a note
+ * that gave none and on one stored before the field: such a note counts its agent and no site.
+ */
+export type ResearchCandidateNote = Readonly<{ at: string; by: ResearchAgentRef; reason: string; url?: string }>;
+
+/**
+ * An option an agent saw that the matrix may lack, with one note per agent that noted it and per further site that agent saw it on. `key` is the
+ * server's normal form of the name (`lib/server/research/candidates.ts`), which merges one option written two ways; `label` is the name as the first
+ * agent wrote it.
+ */
+export type ResearchCandidate = Readonly<{ key: string; label: string; notes: readonly ResearchCandidateNote[] }>;
+
+/** A noted candidate the main agent decided is no option, and why: the report keeps it with the options it does not recommend. */
+export type ResearchSetAside = Readonly<{ at: string; key: string; reason: string }>;
+
+/**
+ * The matrix of a run with its change log, as `ResearchFrame.frame` keeps it. It only grows while the run lives. `candidates` and `setAside` are
+ * absent on a frame stored before them, which reads as none noted.
+ */
 export type ResearchFrame = Readonly<{
   branches: readonly ResearchBranch[];
+  candidates?: readonly ResearchCandidate[];
   changes: readonly ResearchFrameChange[];
   criteria: readonly ResearchCriterion[];
   rows: readonly ResearchMatrixRow[];
+  setAside?: readonly ResearchSetAside[];
 }>;
 
 /**
@@ -355,6 +435,12 @@ export type ResearchDraftReferences = Readonly<{
 }>;
 
 /**
+ * What the user reads first, which the server puts above the report (operator decision 2026-11-02: most readers stop there). `rowKeys` are the
+ * rows it recommends in its order, the pick first, so the checks can hold its words to the matrix.
+ */
+export type ResearchDraftSummary = Readonly<{ rowKeys: readonly string[]; text: string }>;
+
+/**
  * The references are there on a draft that refers to records, and absent on a text draft or one stored from before. `findings` are what
  * every gate reads: a model types none, and the server fills them from the records its ids name (`researchDraftWithRecords`).
  */
@@ -362,15 +448,27 @@ export type ResearchDraft = Partial<ResearchDraftReferences> & Readonly<{
   findings: readonly ResearchFinding[];
   /** What is wrong with references that could not be read: the report stands, and the report check sends it back with this. */
   invalidReferences?: string;
+  /** What is wrong with a summary that could not be read whole: what of it could be read stands, and the report check sends it back with this. */
+  invalidSummary?: string;
   /**
    * `reserved_call`: the model called `submit_research_draft`. `plain_text`: it wrote a final message instead, twice
    * or with its tools closed, so the draft has its text and no findings.
    */
   origin: "plain_text" | "reserved_call";
-  /** The report as the user will read it: an accepted draft is published as it is, with no further model call. */
+  /** The report as the user will read it, below the summary: an accepted draft is published as it is, with no further model call. */
   report: string;
+  /**
+   * Null when the call passed none, which the report check sends back; a draft stored with record_ids from before summaries reads so too, which is harmless,
+   * since only the draft being checked is sent back and a stored one is only read. Absent on a draft with typed findings, stored before records.
+   */
+  summary?: ResearchDraftSummary | null;
   unreachable: readonly ResearchUnreachable[];
 }>;
+
+/** The answer's text of a draft: its summary above the report, as the server places it, with no words of the server's own between them. */
+export function researchDraftText(draft: Pick<ResearchDraft, "report" | "summary">): string {
+  return draft.summary ? `${draft.summary.text.trim()}\n\n${draft.report}` : draft.report;
+}
 
 /** A gate's word on one draft. A gate that fails or runs out of time never loses the answer (`lib/server/research/gates.ts`). */
 export type ResearchGateResult =
@@ -522,7 +620,9 @@ function decodeCriterion(entry: unknown, place: string): DecodedResearch<Researc
   if (!isResearchKey(entry.key)) return refused(`${fieldAt(place, "key")} must be ${KEY_RULE}.`);
   if (!storableText(entry.criterion, limits.labelCharacters)) return refused(`${fieldAt(place, "criterion")} must be 1 to ${limits.labelCharacters} characters.`);
   if (!storableText(entry.why, limits.whyCharacters)) return refused(`${fieldAt(place, "why")} must say in 1 to ${limits.whyCharacters} characters why this criterion matters.`);
-  return { ok: true, value: { criterion: entry.criterion, key: entry.key, why: entry.why } };
+  // Left out or null reads as false: a frame or proposal stored before the field has none.
+  if (entry.decisive !== undefined && entry.decisive !== null && typeof entry.decisive !== "boolean") return refused(`${fieldAt(place, "decisive")} must be true or false.`);
+  return { ok: true, value: { criterion: entry.criterion, ...entry.decisive === true ? { decisive: true as const } : {}, key: entry.key, why: entry.why } };
 }
 
 function decodeBranch(entry: unknown, place: string): DecodedResearch<ResearchBranch> {
@@ -546,6 +646,9 @@ function decodeProposal(value: unknown, steps: ListBounds): DecodedResearch<Rese
   if (!decodedSteps.ok) return decodedSteps;
   const criteria = decodeKeyed(value.criteria, "criteria", { max: frame.criteria, min: 1 }, decodeCriterion);
   if (!criteria.ok) return criteria;
+  if (criteria.value.filter(({ decisive }) => decisive).length > frame.decisiveCriteria) {
+    return refused(`criteria marks more than ${frame.decisiveCriteria} as decisive: mark only the key specifications a pick depends on.`);
+  }
   const rows = decodeKeyed(value.rows, "rows", { max: frame.rows, min: 0 }, decodeRow);
   if (!rows.ok) return rows;
   const branches = decodeKeyed(value.branches, "branches", { max: frame.branches, min: 0 }, decodeBranch);
@@ -642,13 +745,45 @@ function decodeFrameChange(value: unknown, place: string): DecodedResearch<Resea
   if (!isTimestamp(value.at)) return refused(`${place}.at must be a time.`);
   const by = decodeAgentRef(value.by);
   if (!by) return refused(`${place}.by must name the agent.`);
-  if (!isOneOf(RESEARCH_FRAME_CHANGES, value.change)) return refused(`${place}.change must be one of ${RESEARCH_FRAME_CHANGES.join(", ")}.`);
+  if (!isOneOf(RESEARCH_MATRIX_CHANGES, value.change)) return refused(`${place}.change must be one of ${RESEARCH_MATRIX_CHANGES.join(", ")}.`);
   if (!isResearchKey(value.key)) return refused(`${place}.key must be ${KEY_RULE}.`);
   if (!storableText(value.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`${place}.reason must be 1 to ${RESEARCH_LIMITS.reasonCharacters} characters.`);
   return { ok: true, value: { at: value.at, by, change: value.change, key: value.key, reason: value.reason } };
 }
 
-/** A frame as `ResearchFrame.frame` keeps it: it holds at least the plan's criteria. */
+/** A candidate's key, which the server makes from a label: no matrix key, since a name may be long and of any script. */
+const isCandidateKey = (value: unknown): value is string => storableText(value, RESEARCH_FRAME_LIMITS.labelCharacters) && !/\s/u.test(value);
+
+function decodeCandidate(value: unknown, place: string): DecodedResearch<ResearchCandidate> {
+  const limits = RESEARCH_FRAME_LIMITS;
+  if (!isRecord(value)) return refused(`${place} must be one object.`);
+  if (!isCandidateKey(value.key)) return refused(`${place}.key must be 1 to ${limits.labelCharacters} characters without spaces.`);
+  if (!storableText(value.label, limits.labelCharacters)) return refused(`${place}.label must be 1 to ${limits.labelCharacters} characters.`);
+  if (!Array.isArray(value.notes) || value.notes.length < 1 || value.notes.length > limits.candidateNotes) return refused(`${place}.notes must list 1 to ${limits.candidateNotes} entries.`);
+  const notes: ResearchCandidateNote[] = [];
+  for (const [index, entry] of value.notes.entries()) {
+    const at = `${place}.notes[${index}]`;
+    if (!isRecord(entry) || !isTimestamp(entry.at)) return refused(`${at}.at must be a time.`);
+    const by = decodeAgentRef(entry.by);
+    if (!by) return refused(`${at}.by must name the agent.`);
+    if (!storableText(entry.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`${at}.reason must be 1 to ${RESEARCH_LIMITS.reasonCharacters} characters.`);
+    // Left out or null reads as no page: a note stored before the field has none.
+    const url = entry.url;
+    if (url !== undefined && url !== null && !isLink(url)) return refused(`${at}.url must be an http or https link of at most ${RESEARCH_LIMITS.urlCharacters} characters.`);
+    notes.push({ at: entry.at, by, reason: entry.reason, ...isLink(url) ? { url } : {} });
+  }
+  return { ok: true, value: { key: value.key, label: value.label, notes } };
+}
+
+function decodeSetAside(value: unknown, place: string): DecodedResearch<ResearchSetAside> {
+  if (!isRecord(value)) return refused(`${place} must be one object.`);
+  if (!isTimestamp(value.at)) return refused(`${place}.at must be a time.`);
+  if (!isCandidateKey(value.key)) return refused(`${place}.key must be 1 to ${RESEARCH_FRAME_LIMITS.labelCharacters} characters without spaces.`);
+  if (!storableText(value.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`${place}.reason must be 1 to ${RESEARCH_LIMITS.reasonCharacters} characters.`);
+  return { ok: true, value: { at: value.at, key: value.key, reason: value.reason } };
+}
+
+/** A frame as `ResearchFrame.frame` keeps it: it holds at least the plan's criteria. One stored before candidates reads as it was written, with none. */
 export function decodeResearchFrame(value: unknown): DecodedResearch<ResearchFrame> {
   if (!isRecord(value)) return refused("The frame must be one object.");
   const limits = RESEARCH_FRAME_LIMITS;
@@ -665,12 +800,21 @@ export function decodeResearchFrame(value: unknown): DecodedResearch<ResearchFra
     if (!change.ok) return change;
     changes.push(change.value);
   }
-  return { ok: true, value: { branches: branches.value, changes, criteria: criteria.value, rows: rows.value } };
+  const candidates = value.candidates === undefined ? null : decodeKeyed(value.candidates, "candidates", { max: limits.candidates, min: 0 }, decodeCandidate);
+  if (candidates && !candidates.ok) return candidates;
+  const setAside = value.setAside === undefined ? null : decodeKeyed(value.setAside, "setAside", { max: limits.candidates, min: 0 }, decodeSetAside);
+  if (setAside && !setAside.ok) return setAside;
+  return { ok: true, value: { branches: branches.value, ...candidates ? { candidates: candidates.value } : {}, changes, criteria: criteria.value, rows: rows.value,
+    ...setAside ? { setAside: setAside.value } : {} } };
 }
 
-const FRAME_CHANGE_FIELDS = ["cases", "change", "key", "label", "reason", "why"] as const;
+const FRAME_CHANGE_FIELDS = ["cases", "change", "key", "label", "reason", "url", "why"] as const;
 
-/** A change of the frame as `change_research_frame` takes it: `label` is a row's name, a criterion or what is unknown, and `why` and `cases` are null where they do not apply. */
+/**
+ * A change of the frame as `change_research_frame` takes it: `label` is a row's name, a criterion, what is unknown or a candidate's name, `key` is unread for
+ * a candidate noted and names the candidate set aside, `url` is the page that names a noted candidate and unread for any other change, and `why`, `cases`
+ * and `url` are null where they do not apply.
+ */
 export function decodeResearchFrameChange(value: unknown): DecodedResearch<ResearchFrameChangeRequest> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
   const missing = missingField(value, FRAME_CHANGE_FIELDS);
@@ -678,6 +822,18 @@ export function decodeResearchFrameChange(value: unknown): DecodedResearch<Resea
   if (!isOneOf(RESEARCH_FRAME_CHANGES, value.change)) return refused(`change must be one of ${RESEARCH_FRAME_CHANGES.join(", ")}.`);
   if (!storableText(value.reason, RESEARCH_LIMITS.reasonCharacters)) return refused(`reason must say in 1 to ${RESEARCH_LIMITS.reasonCharacters} characters why the frame changes.`);
   const reason = value.reason;
+  if (value.change === "note_candidate") {
+    if (!storableText(value.label, RESEARCH_FRAME_LIMITS.labelCharacters)) return refused(`label must name the option in 1 to ${RESEARCH_FRAME_LIMITS.labelCharacters} characters, as the page writes it.`);
+    const url = value.url;
+    if (url !== null && !isLink(url)) {
+      return refused(`url must be the http or https link of the page that names the option, at most ${RESEARCH_LIMITS.urlCharacters} characters, or null.`);
+    }
+    return { ok: true, value: { change: "note_candidate", label: value.label, reason, ...isLink(url) ? { url } : {} } };
+  }
+  if (value.change === "set_aside") {
+    if (!storableText(value.key, RESEARCH_FRAME_LIMITS.labelCharacters)) return refused("key must name the noted candidate, as the server listed it.");
+    return { ok: true, value: { change: "set_aside", key: value.key, reason } };
+  }
   if (value.change === "add_row") {
     const row = decodeRow({ key: value.key, label: value.label }, "");
     return row.ok ? { ok: true, value: { change: "add_row", reason, row: row.value } } : row;
@@ -802,6 +958,23 @@ export function decodeResearchDraftReferences(value: unknown): DecodedResearch<R
   return { ok: true, value: { branchPicks, doesNotSeparate, pickRowKey, recordIds } };
 }
 
+/**
+ * A draft's summary, read apart from its references, so a mistyped row key costs neither the pick nor the summary's words. A text alone is a summary naming no
+ * row, and the report check says what is missing; so does a missing one, which never refuses the draft (Answer first).
+ */
+function decodeResearchSummary(value: unknown): Readonly<{ invalid?: string; summary: ResearchDraftSummary | null }> {
+  if (value === undefined || value === null) return { summary: null };
+  const entry: Readonly<Record<string, unknown>> = typeof value === "string" ? { row_keys: [], text: value } : isRecord(value) ? value : {};
+  const { row_keys: rowKeys = [], text } = entry;
+  if (!storableText(text, RESEARCH_LIMITS.summaryCharacters)) {
+    return { invalid: `summary.text must be 1 to ${RESEARCH_LIMITS.summaryCharacters} characters: two to four short paragraphs.`, summary: null };
+  }
+  if (!Array.isArray(rowKeys) || rowKeys.length > RESEARCH_FRAME_LIMITS.rows || !rowKeys.every(isResearchKey)) {
+    return { invalid: `summary.row_keys must list at most ${RESEARCH_FRAME_LIMITS.rows} keys of the matrix's rows.`, summary: { rowKeys: [], text } };
+  }
+  return { summary: { rowKeys: [...new Set(rowKeys)], text } };
+}
+
 /** The findings typed into a draft stored before drafts referred to records. */
 function decodeTypedFindings(value: unknown): DecodedResearch<readonly ResearchFinding[]> {
   const limits = RESEARCH_LIMITS;
@@ -826,10 +999,22 @@ function decodeTypedFindings(value: unknown): DecodedResearch<readonly ResearchF
  * It takes a finding to be that form: an empty list says nothing, a stored draft with one loses nothing by reading as a live one, and a live one sent beside a pick
  * would lose the pick and the check with it. A model that sends findings now goes back at the report check, not here, where nothing could say why. The same goes
  * for references that cannot be read: refused here, a key mistyped on the last call would cost the whole report, and past the send-back cap too (Answer first).
+ * Edits need the latest draft the checks sent back, supplied by the run or by transcript replay; only its report and an omitted summary carry forward.
  */
-export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDraft> {
+export function decodeResearchDraft(value: unknown, previous?: ResearchDraft | null): DecodedResearch<ResearchDraft> {
   if (!isRecord(value)) return refused("The arguments must be one object.");
   const limits = RESEARCH_LIMITS;
+  if (value.edits !== undefined) {
+    if (value.report !== undefined) return refused("Pass either report or edits, not both.");
+    if (!previous) return refused("edits needs a previous draft sent back by the checks; pass the whole report first.");
+    const edited = editResearchReport(previous.report, value.edits);
+    if (!edited.ok) return edited;
+    const { edits: _edits, ...fields } = value;
+    const decoded = decodeResearchDraft({ ...fields, report: edited.value });
+    if (!decoded.ok || value.summary !== undefined) return decoded;
+    return { ok: true, value: { ...decoded.value, summary: previous.summary,
+      ...previous.invalidSummary === undefined ? {} : { invalidSummary: previous.invalidSummary } } };
+  }
   if (!boundedText(value.report, limits.reportCharacters)) return refused(`report must be 1 to ${limits.reportCharacters} characters.`);
   const stored = Array.isArray(value.findings) && value.findings.length > 0 && value.record_ids === undefined;
   const findings = stored ? decodeTypedFindings(value.findings) : null;
@@ -849,5 +1034,39 @@ export function decodeResearchDraft(value: unknown): DecodedResearch<ResearchDra
     unreachable.push({ reason: entry.reason, sourceClass, target: entry.target });
   }
   const referred = !references ? {} : references.ok ? references.value : { invalidReferences: references.message };
-  return { ok: true, value: { ...referred, findings: findings?.value ?? [], origin: "reserved_call", report: value.report, unreachable } };
+  const summary = stored ? null : decodeResearchSummary(value.summary);
+  const summarized = !summary ? {} : { summary: summary.summary, ...summary.invalid === undefined ? {} : { invalidSummary: summary.invalid } };
+  return { ok: true, value: { ...referred, ...summarized, findings: findings?.value ?? [], origin: "reserved_call", report: value.report, unreachable } };
+}
+
+/** All matches belong to the previous report, never text another edit inserted. Nothing is applied until every edit is valid. */
+function editResearchReport(report: string, value: unknown): DecodedResearch<string> {
+  const limits = RESEARCH_LIMITS;
+  if (!Array.isArray(value) || value.length > limits.draftEdits) return refused(`edits must list at most ${limits.draftEdits} old/new pairs; [] keeps the report.`);
+  const replacements: { end: number; index: number; start: number; text: string }[] = [];
+  let characters = 0;
+  for (const [index, entry] of value.entries()) {
+    const at = `edits[${index}]`;
+    if (!isRecord(entry) || typeof entry.old !== "string" || entry.old.length === 0 || entry.old.length > limits.draftEditCharacters || entry.old.includes("\u0000")) {
+      return refused(`${at}.old must be 1 to ${limits.draftEditCharacters} characters of exact report text, without NUL.`);
+    }
+    if (typeof entry.new !== "string" || entry.new.length > limits.draftEditCharacters || entry.new.includes("\u0000")) {
+      return refused(`${at}.new must be 0 to ${limits.draftEditCharacters} characters, without NUL; empty deletes the old text.`);
+    }
+    characters += entry.old.length + entry.new.length;
+    if (characters > limits.draftEditsCharacters) return refused(`${at} exceeds the edits total of ${limits.draftEditsCharacters} characters (old and new combined).`);
+    const start = report.indexOf(entry.old);
+    if (start < 0) return refused(`${at}.old was not found in the previous draft's report. No edits were applied.`);
+    if (report.indexOf(entry.old, start + 1) >= 0) return refused(`${at}.old was found more than once in the previous draft's report. No edits were applied.`);
+    const end = start + entry.old.length;
+    const overlap = replacements.find((other) => start < other.end && end > other.start);
+    if (overlap) return refused(`${at} overlaps edits[${overlap.index}] in the previous draft's report. No edits were applied.`);
+    replacements.push({ end, index, start, text: entry.new });
+  }
+  const length = report.length + replacements.reduce((change, edit) => change + edit.text.length - (edit.end - edit.start), 0);
+  if (length > limits.reportCharacters) return refused(`The edited report exceeds ${limits.reportCharacters} characters. No edits were applied.`);
+  let edited = report;
+  for (const edit of replacements.sort((one, other) => other.start - one.start)) edited = edited.slice(0, edit.start) + edit.text + edited.slice(edit.end);
+  if (!boundedText(edited, limits.reportCharacters)) return refused("The edited report is empty. No edits were applied.");
+  return { ok: true, value: edited };
 }

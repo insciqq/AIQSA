@@ -136,6 +136,11 @@ export function createResearchEvidenceStore(deps: ResearchEvidenceStoreDeps) {
       async records(signal) {
         signal.throwIfAborted();
         return deps.repository.records(scope, await deps.repository.chain(scope));
+      },
+
+      async supersessions(signal) {
+        signal.throwIfAborted();
+        return deps.repository.supersessions(scope, await deps.repository.chain(scope));
       }
     };
   };

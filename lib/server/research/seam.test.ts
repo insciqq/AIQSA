@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
-  type ResearchDraft } from "../../contracts/research";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_TASK_LIMITS, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
+  SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -10,6 +10,7 @@ import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRun
 import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
+import { TURN_TOOL_CALL_LIMIT_OUTPUT } from "../engine/toolBatch";
 import { toolOutputExcerpt } from "../engine/toolResults";
 import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
@@ -20,7 +21,7 @@ import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { runResearchGates, type ResearchGate, type ResearchGateContext } from "./gates";
-import { researchNote } from "./notes";
+import { researchAnswerText, researchNote } from "./notes";
 import { createResearchClock } from "./clock";
 import { createResearchPlanHandlers } from "./planHandlers";
 import { createResearchPlanWindow, RESEARCH_PLAN_WINDOW_LIMITS, ResearchPlanWindows, type ResearchPlanStore } from "./planWindow";
@@ -249,7 +250,7 @@ describe("starting research", () => {
     expect(brief).toContain("# Research method (from the server)");
     expect(brief).toContain("Which mattress holds up? [primary_official, independent_tests]");
     expect(brief).toContain("verbatim quote");
-    expect(brief).toContain("browser_handoff");
+    expect(brief).toContain("never wait for a person");
     expect(memory.published()).toBe(REPORT);
   });
 });
@@ -288,6 +289,21 @@ describe("a draft reaches the user", () => {
     // The next turn reads what was said as the answer's text, not only as a call's arguments.
     expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: REPORT });
     expect(memory.runs.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the answer with the draft's summary, then the report, as the server places them, and the gates read both", async () => {
+    const summary = "For your needs take the X1, at 300 in the shop; cheaper, the X2.\n\nBoth were in stock on the day.";
+    const answer = `${summary}\n\n${REPORT}`;
+    const drafts: ResearchDraft[] = [];
+    const { adapter } = scripted([{ calls: begin() },
+      { calls: [submit("call-draft", { record_ids: [], report: REPORT, summary: { row_keys: [], text: summary }, unreachable: [] })] }]);
+    const memory = engineOf({ gates: [gate("spy", async (draft) => { drafts.push(draft); return { kind: "pass" }; })] });
+    const seen = await events(run(adapter, memory));
+    expect(drafts).toEqual([expect.objectContaining({ report: REPORT, summary: { rowKeys: [], text: summary } })]);
+    // It cites no record, so its plain word that nothing was checked against a source follows the report.
+    expect(memory.published()).toBe(researchAnswerText(answer, [researchNote("no_findings")]));
+    expect(tokens(seen).at(-1)).toBe(memory.published());
+    expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: memory.published() });
   });
 
   it("refuses a draft before research started, and an ordinary answer goes on as one", async () => {
@@ -406,14 +422,14 @@ describe("the gap check's needs", () => {
     expect(memory.published()).toContain(researchNote("no_findings"));
   });
 
-  it("does not spend a round on a draft that the repeat guard blocks: the standing draft goes out with a note", async () => {
+  it("does not spend a round on a draft that the repeat guard blocks: the standing draft goes out, marked not fully checked", async () => {
     const stubborn = gate("gap", async () => ({ kind: "send_back", message: "Still open." }));
     const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit("call-1")] }, { calls: [submit("call-2")] }, { calls: [submit("call-3")] }, { calls: [submit("call-4")] }]);
     const memory = engineOf({ gates: [stubborn] });
     await run(adapter, memory).text();
     expect(requests.length).toBeLessThanOrEqual(5);
-    expect(memory.published()).toContain(REPORT);
-    expect(memory.published()).toContain(researchNote("unresolved"));
+    // The draft the guard held back is one no gate finished on; that the send back went unanswered is no news to the reader.
+    expect(memory.published()).toBe(`${REPORT}\n\n---\n\n*${researchNote("gate_failed")}*`);
   });
 });
 
@@ -837,7 +853,7 @@ describe("a draft and its notes stay together", () => {
       sources: { opened: async () => [] }, subagents: { run: async () => ({ code: "x", kind: "refused" as const }) },
       time: { remainingMs: () => 60_000, sendBackAllowed: () => true }, verifierModel: async () => ({ kind: "unavailable" as const }) };
     const draft = { findings: [], origin: "reserved_call" as const, report: "r", unreachable: [] };
-    expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ gate: "first", kind: "sent_back", message: "Again.", notes: ["Carried."] });
+    expect(await runResearchGates({ context, draft, gates: [sendsBack, carrying], runId: "r" })).toEqual({ gate: "first", kind: "sent_back", message: "Again.", notes: [researchNote("gate_failed"), "Carried."] });
     expect(await runResearchGates({ context, draft, gates: [carrying], runId: "r" })).toEqual({ kind: "accepted", notes: ["Its own."] });
     const broken: ResearchGate = { ...carrying, run: async () => { throw new Error("down"); } };
     expect(await runResearchGates({ context, draft, gates: [broken], runId: "r" })).toEqual({ kind: "accepted", notes: [researchNote("gate_failed"), "Carried."] });
@@ -1153,6 +1169,8 @@ describe("researchers on the installation role", () => {
     expect(JSON.stringify(child.requests[0]!.history)).toContain("# Research method (from the server)");
     expect(JSON.stringify(child.requests[0]!.history)).toContain("Проведи исследование матрасов.");
     expect(child.requests[0]!.prompt.system).toContain("Be brief.");
+    // A researcher on the role starts no children either, with every tool.
+    expect(child.requests[0]!.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
     expect(installed.bindings.get(RESEARCH_RESEARCHER_BINDING_KEY)).toMatchObject({ executionSnapshot: { credentialId: "installation-key" } });
     expect(installed.loadRole).toHaveBeenCalledTimes(1);
     expect(installed.runtime.resolve).toHaveBeenCalledExactlyOnceWith("run-1", "answer", RESEARCH_RESEARCHER_BINDING_KEY);
@@ -1235,25 +1253,163 @@ it("runs the gap judge on the checks binding with the user's request and its req
   expect(memory.published()).toBe(REPORT);
 });
 
-it("keeps ordinary caller model and effort selection when researchers are unassigned", async () => {
-  const child = scripted([{ text: "Outcome: done\nFindings." }]);
-  const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
-    arguments: { name: "researcher", message: "Read the sources.", model: "personal-model", effort: "low" } }] }, { calls: [submit()] }]);
-  const memory = engineOf({ gates: [], researcher: { frozenChoice: async () => ({ kind: "not_set" }), route: vi.fn() } });
-  const base = prepared();
-  const request = { ...base.providerRequest, subagentModels: { version: 1 as const, models: [{ connectionId: "personal-provider", contextWindow: null,
-    defaultEffort: "high", displayName: "Personal model", imageInput: false, providerFamily: "fake", providerModelId: "personal-model",
-    reasoningEfforts: ["low", "high"], upstreamModelId: "personal-upstream" }] } };
-  const subagentModels: NonNullable<NativeEngineDeps["subagentModels"]> = { route: async () => ({ ok: true, route: { adapter: child.adapter,
-    request: { modelCapabilities: request.modelCapabilities, modelId: "personal-upstream", params: {}, provider: "fake", reasoningEffort: "low" },
-    snapshot: { connectionId: "personal-provider", providerFamily: "fake", providerModelId: "personal-model",
-      model: { adapterKind: "fake", upstreamModelId: "personal-upstream" } } as never, timeoutMs: 120_000 } }) };
-  await run(main.adapter, { ...memory, deps: { ...memory.deps, subagentModels } }, { prepared: { ...base, normalizedRequest: request, providerRequest: request } }).text();
-  const recorded = await vi.mocked(memory.threads.admitForeground).mock.results[0]!.value;
-  expect(recorded).toMatchObject({ turn: { providerModelId: "personal-model", reasoningEffort: "low" } });
-  expect(child.requests).toHaveLength(1);
-  expect(memory.deps.research?.researcher?.route).not.toHaveBeenCalled();
-  expect(memory.published()).toBe(REPORT);
+describe("researchers with no role", () => {
+  const personal = { connectionId: "personal-provider", contextWindow: null, defaultEffort: "high", displayName: "Personal model", imageInput: false,
+    providerFamily: "fake", providerModelId: "personal-model", reasoningEfforts: ["low", "high"], upstreamModelId: "personal-upstream" };
+  /** A custom sub-agent on another model of the user's at its own effort, as the user's default was in the psaux trace. */
+  const custom = (name: string) => ({ definitionId: `type-${name}`, revisionId: `rev-${name}`, name, description: "", instructions: `Custom ${name} instructions.`,
+    providerModelId: "personal-model", reasoningEffort: "high", toolGroups: null });
+  const offered = (request: ProviderRunRequest | undefined) => request?.tools?.map((tool) => tool.name) ?? [];
+
+  it.each([
+    ["the user's default", { name: "researcher", message: "Read the sources." }],
+    ["the call's type, model and effort", { name: "researcher", type: "specialist", message: "Read the sources.", model: "personal-model", effort: "low" }],
+    ["a custom sub-agent of its name", { name: "specialist", message: "Read the sources." }]
+  ])("runs as the built-in sub-agent on the chat's model and effort, whatever %s names", async (_case, args) => {
+    const child = scripted([{ text: "Must not run." }]);
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: args }] },
+      { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [], researcher: { frozenChoice: async () => ({ kind: "not_set" }), route: vi.fn() } });
+    const base = prepared();
+    const request = { ...base.providerRequest, reasoningEffort: "medium", subagentDefault: { definitionId: "type-deep", name: "deep", version: 1 as const },
+      subagentModels: { version: 1 as const, models: [personal] } };
+    const subagentModels: NonNullable<NativeEngineDeps["subagentModels"]> = { route: vi.fn(async () => ({ ok: true as const, route: { adapter: child.adapter,
+      request: { modelCapabilities: request.modelCapabilities, modelId: "personal-upstream", params: {}, provider: "fake", reasoningEffort: "high" },
+      snapshot: { connectionId: "personal-provider", providerFamily: "fake", providerModelId: "personal-model",
+        model: { adapterKind: "fake", upstreamModelId: "personal-upstream" } } as never, timeoutMs: 120_000 } })) };
+    const resolve = vi.fn(async (scope: { definitionId?: string; name?: string }) =>
+      ({ kind: "found" as const, type: custom(scope.name ?? scope.definitionId?.replace(/^type-/u, "") ?? "deep") }));
+    await run(main.adapter, { ...memory, deps: { ...memory.deps, subagentModels } }, { prepared: { ...base, normalizedRequest: request, providerRequest: request },
+      subagents: { types: { catalog: async () => [], resolve } } }).text();
+    expect(memory.threads.admitForeground).toHaveBeenCalledOnce();
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ definitionId: null, definitionRevisionId: null, typeName: null,
+      binding: { effortSource: "parent", modelId: "fake-qsa", modelSource: "parent", provider: "connection-1", providerModelId: "model-1", reasoningEffort: "medium" } }));
+    expect(subagentModels.route).not.toHaveBeenCalled();
+    expect(memory.deps.research?.researcher?.route).not.toHaveBeenCalled();
+    expect(child.requests).toHaveLength(0);
+    // The researcher's turn ran on the chat's adapter, with the method's brief and none of a custom type's instructions.
+    const researcher = main.requests[2]!;
+    expect(researcher).toMatchObject({ modelId: "fake-qsa", reasoningEffort: "medium" });
+    expect(JSON.stringify(researcher.history)).toContain("# Research method (from the server)");
+    expect(researcher.prompt.system).not.toContain("Custom ");
+    expect(offered(researcher)).toEqual(expect.arrayContaining([CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME]));
+    expect(offered(researcher)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("starts no children: call_subagent is not among a researcher's tools, and a call of it anyway starts nothing", async () => {
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      { calls: [{ id: "child-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "helper", message: "Read the shop.", background: true } }] },
+      { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] });
+    await run(main.adapter, memory).text();
+    expect(offered(main.requests[2])).not.toContain(CALL_SUBAGENT_TOOL_NAME);
+    expect(offered(main.requests[2])).not.toContain("stop_subagent");
+    expect(resultsOf(main.requests[3], CALL_SUBAGENT_TOOL_NAME)).toHaveLength(1);
+    expect(memory.threads.admitForeground).toHaveBeenCalledOnce();
+    expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ name: "lab" }));
+    expect(memory.threads.ensureThread).not.toHaveBeenCalled();
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("leaves the main agent's tool list the same across its turns", async () => {
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    await run(main.adapter, engineOf({ gates: [] })).text();
+    const ofMain = [main.requests[0], main.requests[1], main.requests[3]].map((request) => JSON.stringify(request?.tools));
+    expect(new Set(ofMain).size).toBe(1);
+    expect(offered(main.requests[0])).toContain(CALL_SUBAGENT_TOOL_NAME);
+  });
+});
+
+describe("a researcher's context sheds its old pages", () => {
+  const SAVED = `tor1_${"a".repeat(32)}`;
+  // One task's worth of reads, each a counted call; Russian pages, as the real runs read, pass the clearing's mark within it.
+  const READS = RESEARCH_TASK_LIMITS.toolCalls;
+  const READ_CHARACTERS = 20_000;
+  const book = "Владельцы пишут, что латексный слой держит форму годами; продавец указывает 3 см латекса на кокосе. ".repeat(4_000);
+  const reads = Array.from({ length: READS }, (_, index) => ({ calls: [{ arguments: { handle: SAVED, limit: READ_CHARACTERS, offset: index * READ_CHARACTERS },
+    id: `read-${index}`, name: "read_tool_result" }] }));
+  const reading = (memory: ReturnType<typeof engineOf>) => ({ ...memory, deps: { ...memory.deps,
+    savedResults: { read: vi.fn(async () => ({ arguments: { url: "https://shop.example/x1" }, text: book, toolName: "fetch_url" })) } } });
+  const resultsOfRead = (request: ProviderRunRequest | undefined) => resultsOf(request, "read_tool_result");
+  const cleared = (output: string) => output.startsWith("[Cleared to keep this context small: ");
+  const TRACKER = /\n\nCalls left in this task: (\d+)\.$/u;
+
+  /** The newest reads stay whole, and each older one is a stub naming the read that brings it back. */
+  function expectShed(researcher: readonly ProviderRunRequest[]) {
+    const last = resultsOfRead(researcher.at(-1));
+    expect(last).toHaveLength(READS);
+    // Each read is a counted call of the task, the last one its budget's end.
+    expect(TRACKER.exec(last.at(-1)!)?.[1]).toBe("0");
+    expect(last.slice(-3).map((output) => (JSON.parse(output.replace(TRACKER, "")) as { offset: number; text: string }))).toEqual([12, 13, 14].map((index) =>
+      expect.objectContaining({ offset: index * READ_CHARACTERS, text: book.slice(index * READ_CHARACTERS, (index + 1) * READ_CHARACTERS) })));
+    expect(cleared(last[0]!)).toBe(true);
+    expect(last[0]).toContain(`call read_tool_result with {"handle":"${SAVED}","offset":0,"limit":${READ_CHARACTERS}} to read it again.]`);
+    // The first request after the first clearing is a fraction of the one before it.
+    const sizes = researcher.map((request) => JSON.stringify(request.history).length);
+    expect(Math.min(...sizes.slice(sizes.findIndex((_, index) => resultsOfRead(researcher[index]).some(cleared))))).toBeLessThan(Math.max(...sizes) / 2);
+  }
+
+  it("for a researcher with no role, on the chat's model", async () => {
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      ...reads, { text: "Outcome: done\nFindings." }, { calls: [submit()] }]);
+    const memory = reading(engineOf({ gates: [] }));
+    await run(main.adapter, memory, { prepared: prepared({ noLimits: true }) }).text();
+    expectShed(main.requests.slice(2, 3 + READS));
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("for a researcher on the installation role", async () => {
+    const child = scripted([...reads, { text: "Outcome: done\nFindings." }]);
+    const installed = installedResearchRole(child.adapter);
+    const main = scripted([{ calls: begin() }, { calls: [{ id: "research-call", name: CALL_SUBAGENT_TOOL_NAME, arguments: { name: "lab", message: "Read the sources." } }] },
+      { calls: [submit()] }]);
+    const memory = reading(engineOf({ gates: [], researcher: installed.role }));
+    await run(main.adapter, memory, { prepared: prepared({ noLimits: true }) }).text();
+    expect(child.requests).toHaveLength(READS + 1);
+    expectShed(child.requests);
+    // The main agent's own context is no researcher's: nothing of it is cleared.
+    expect(main.requests.flatMap((request) => request.history ?? []).some((item) => item.type === "tool_result" && cleared(item.output))).toBe(false);
+    expect(memory.published()).toBe(REPORT);
+  });
+});
+
+describe("a researcher's task budget", () => {
+  const read = (id: string) => ({ arguments: { handle: `tor1_${"b".repeat(32)}` }, id, name: "read_tool_result" });
+  const reads = (prefix: string) => Array.from({ length: RESEARCH_TASK_LIMITS.toolCalls + 1 }, (_, index) => read(`${prefix}-${index + 1}`));
+
+  it("refuses a researcher's 16th call and takes its report, while a gate's turn has no budget", async () => {
+    const skeptic = gate("skeptic", async (_draft, context) => {
+      await context.subagents.run({ brief: "Try to refute it.", instructions: "i", model: "main", name: "skeptic", tools: [] }, context.signal);
+      return { kind: "pass" };
+    });
+    const main = scripted([
+      { calls: begin() },
+      { calls: [{ arguments: { message: "Find the options.", name: "options" }, id: "call-options", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { calls: reads("researcher") },
+      { text: "Outcome: partial\nThe options found; their cells stay empty." },
+      { calls: [submit()] },
+      { calls: reads("gate") },
+      { text: "Outcome: done\nNothing refutes it." }
+    ]);
+    const memory = engineOf({ gates: [skeptic] });
+    await run(main.adapter, memory, { prepared: prepared({ noLimits: true }) }).text();
+    const researcher = resultsOf(main.requests[3], "read_tool_result");
+    expect(researcher).toHaveLength(RESEARCH_TASK_LIMITS.toolCalls + 1);
+    expect(researcher[0]).toMatch(/\n\nCalls left in this task: 14\.$/u);
+    expect(researcher[RESEARCH_TASK_LIMITS.toolCalls - 1]).toMatch(/\n\nCalls left in this task: 0\.$/u);
+    expect(researcher.at(-1)).toBe(TURN_TOOL_CALL_LIMIT_OUTPUT(RESEARCH_TASK_LIMITS.toolCalls));
+    // Fifteen of the batch ran, so recording stays open for what they returned; the researcher wrote its report instead.
+    expect(main.requests[3]!.toolChoice).toBe("auto");
+    expect(resultsOf(main.requests[4], CALL_SUBAGENT_TOOL_NAME).join()).toContain("The options found; their cells stay empty.");
+    // The gate's turn ran every call it made, with no line and no refusal, and its next response still had its tools.
+    const checked = resultsOf(main.requests[6], "read_tool_result");
+    expect(checked).toHaveLength(RESEARCH_TASK_LIMITS.toolCalls + 1);
+    expect(checked.some((output) => output.includes("Calls left in this task") || output === TURN_TOOL_CALL_LIMIT_OUTPUT(RESEARCH_TASK_LIMITS.toolCalls))).toBe(false);
+    expect(main.requests[6]!.toolChoice).toBe("auto");
+    expect(memory.published()).toBe(REPORT);
+  });
 });
 
 /** A turn of a new installation: scoping and the plan take rounds of their own. */
@@ -1560,6 +1716,23 @@ describe("a model that never proposes", () => {
     // The tool list stays what it was: nothing is taken off the request.
     expect(main.requests[3]!.tools?.map((tool) => tool.name)).toEqual(main.requests[0]!.tools?.map((tool) => tool.name));
     expect(resultsOf(main.requests[5], "update_plan").at(-1)).not.toContain("time for scoping is up");
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("past scoping's limit answers every queued sub-agent call of a batch that had more than its own places, and the plan still works", async () => {
+    // Codex review (2026-11-03): a queued call whose tool the scoping limit drops must still get its refusal, never leave a hole.
+    let clock = 1_000_000;
+    const calls = Array.from({ length: 9 }, (_, index) => ({ arguments: { message: "Read sources.", name: `agent-${index}` }, id: `agent-${index}`, name: CALL_SUBAGENT_TOOL_NAME }));
+    const main = scripted([{ calls: [start()] }, { calls }, { calls: [propose()] }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] }, { now: () => clock });
+    const original = vi.mocked(memory.toolCalls.begin).getMockImplementation() as typeof memory.toolCalls.begin;
+    vi.mocked(memory.toolCalls.begin).mockImplementation(async (input) => {
+      const result = await original(input);
+      if (input.toolName === CALL_SUBAGENT_TOOL_NAME) clock = 1_000_000 + RESEARCH_TIME_MS.scoping + 1;
+      return result;
+    });
+    await run(main.adapter, memory, FREE).text();
+    expect(resultsOf(main.requests[2], CALL_SUBAGENT_TOOL_NAME)).toHaveLength(9);
     expect(memory.published()).toBe(REPORT);
   });
 

@@ -77,6 +77,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && SSH2_VERSION="$(node -p "require('./node_modules/ssh2/package.json').version")" \
   && PG_VERSION="$(node -p "require('./node_modules/pg/package.json').version")" \
   && YAML_VERSION="$(node -p "require('./node_modules/yaml/package.json').version")" \
+  && TLDTS_VERSION="$(node -p "require('./node_modules/tldts/package.json').version")" \
   && XLSX_SPEC="$(node -p "require('./package.json').dependencies.xlsx")" \
   && npm pkg delete dependencies devDependencies \
   && npm pkg set \
@@ -100,6 +101,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.ssh2=$SSH2_VERSION" \
     "dependencies.pg=$PG_VERSION" \
     "dependencies.yaml=$YAML_VERSION" \
+    "dependencies.tldts=$TLDTS_VERSION" \
     "dependencies.prisma=$PRISMA_VERSION" \
     "dependencies.tsx=$TSX_VERSION" \
     "dependencies.sharp=$SHARP_VERSION" \

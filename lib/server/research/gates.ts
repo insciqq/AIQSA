@@ -28,7 +28,9 @@ import { verifierGate } from "./verifier";
  *   here keeps it alive.
  * - Answer first: a gate that throws or outlasts `time.remainingMs` costs its
  *   check and adds a visible note, never the answer. A send back with no time
- *   left to act on it turns into its `unresolvedNote`.
+ *   left to act on it turns into its `unresolvedNote`, where it has one: only
+ *   what the reader must be told has one, since the answer carries no process
+ *   notes (operator decision 2026-11-02).
  * - A gate sends back at most `RESEARCH_ROUND_LIMITS.sendBacksPerCheck` times in
  *   a research, approvals included: past that its send back turns into its
  *   `unresolvedNote` too and the next gate runs. A real run went round for 70
@@ -44,7 +46,7 @@ import { verifierGate } from "./verifier";
  *   needs the rest, to find the pages it opened itself.
  */
 export type ResearchVerifierModel =
-  /** The administrator's model, or the main model when the role is not set: the answer must say so (operator decision 2026-11-01). */
+  /** The administrator's model, or the main model when the role is not set (operator decision 2026-11-01). The answer names neither (operator decision 2026-11-02). */
   | Readonly<{ kind: "role" | "main_model"; label: string }>
   /** The administrator chose a model this run cannot use: it never runs on another one in its place. */
   | Readonly<{ kind: "unavailable" }>;
@@ -111,7 +113,7 @@ export type ResearchGateContext = Readonly<{
 export type ResearchGate = Readonly<{
   /**
    * What the gate has already said that holds for any later draft of the run: added whenever it did not finish on one (an
-   * earlier gate sent the draft back, it failed, time or Stop came first), so a claim it rejected stays named.
+   * earlier gate sent the draft back, it failed, time or Stop came first), so a fact it rejected that the draft still cites stays named.
    */
   carriedNotes?(draft: ResearchDraft, earlier: readonly ResearchAttempt[]): readonly string[];
   name: string;
@@ -127,6 +129,7 @@ export function researchCarriedNotes(gates: readonly ResearchGate[], draft: Rese
 
 export type ResearchGatesOutcome =
   | Readonly<{ kind: "accepted"; notes: readonly string[] }>
+  /** `notes`: what the answer says if this draft goes out uncorrected, which includes that the checks after the one that sent it back never read it. */
   | Readonly<{ gate: string; kind: "sent_back"; message: string; notes?: readonly string[] }>;
 
 class GateTimedOut extends Error {
@@ -172,10 +175,13 @@ export async function runResearchGates(input: Readonly<{ context: ResearchGateCo
         const capped = context.earlier.filter((attempt) => attempt.gate === gate.name).length >= RESEARCH_ROUND_LIMITS.sendBacksPerCheck;
         if (!capped && context.time.sendBackAllowed()) {
           if (result.unresolvedNote) notes.push(result.unresolvedNote);
+          // These notes are read only if the draft goes out uncorrected, and then the checks after this one never read it.
+          if (gate !== input.gates.at(-1)) notes.push(researchNote("gate_failed"));
           const sentBackNotes = withCarried();
           return { gate: gate.name, kind: "sent_back", message: result.message, ...sentBackNotes.length > 0 ? { notes: sentBackNotes } : {} };
         }
-        notes.push(result.unresolvedNote ?? researchNote(capped ? "unresolved" : "time_out"));
+        // What only says that a send back was missed tells the reader nothing: the report says what it says.
+        if (result.unresolvedNote) notes.push(result.unresolvedNote);
       }
     } catch (error) {
       if (context.signal.aborted) throw error;

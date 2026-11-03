@@ -8,7 +8,7 @@ import { composeResearchReport, createResearchReport, PICKED_UP_RECORD_LIST_CHAR
 import { reportCheckGate } from "./reportCheck";
 import { verifierGate } from "./verifier";
 
-const draftOf = (recordIds: readonly string[], extra: Partial<ResearchDraft> = {}): ResearchDraft => ({ ...DRAFT, pickRowKey: null, recordIds, ...extra });
+const draftOf = (recordIds: readonly string[], extra: Partial<ResearchDraft> = {}): ResearchDraft => ({ ...DRAFT, pickRowKey: null, recordIds, summary: null, ...extra });
 
 describe("a draft's findings from its records", () => {
   it("fills them from the ids, each with its record", () => {
@@ -68,6 +68,9 @@ describe("a draft's findings from its records", () => {
     expect(findings.map(({ recordId }) => recordId)).toEqual([id(1), id(2), id(4), id(5)]);
     const branch = researchDraftWithRecords(draftOf([id(1), id(4)], { branchPicks: [{ branchKey: "weight", caseKey: "light", rowKey: "x2" }] }), RECORDS);
     expect(branch.findings.map(({ recordId }) => recordId)).toEqual([id(4), id(1)]);
+    // What the summary recommends is what the reader buys by, so it comes first beside the pick.
+    const recommended = researchDraftWithRecords(draftOf([id(1), id(4)], { summary: { rowKeys: ["x2"], text: "Take the second." } }), RECORDS);
+    expect(recommended.findings.map(({ recordId }) => recordId)).toEqual([id(4), id(1)]);
   });
 
   it("reads a corrected id as its correction, once however it is named", () => {
@@ -91,10 +94,11 @@ describe("a draft's findings from its records", () => {
     expect(researchDraftWithRecords(text, RECORDS)).toBe(text);
   });
 
-  it("keeps a rejected claim findable by position after a rebuild, as the verifier's message names it", () => {
+  it("keeps a rejected claim findable by position after a rebuild, as the verifier's message names it, and names it while a draft cites it", () => {
     const rebuilt = researchDraftWithRecords(draftOf([id(1), id(4)]), RECORDS);
-    const notes = researchCarriedNotes([verifierGate], DRAFT, [{ draft: rebuilt, gate: "verifier", message: "[Independent check] Not supported.\nFindings the check did not support: 2." }]);
-    expect(notes.join("\n")).toContain("Claim 4.");
+    const attempts = [{ draft: rebuilt, gate: "verifier", message: "[Independent check] Not supported.\nFindings the check did not support: 2." }];
+    expect(researchCarriedNotes([verifierGate], researchDraftWithRecords(draftOf([id(4)]), RECORDS), attempts)).toEqual([expect.stringContaining("The checks did not confirm")]);
+    expect(researchCarriedNotes([verifierGate], researchDraftWithRecords(draftOf([id(1)]), RECORDS), attempts)).toEqual([]);
   });
 });
 
@@ -158,7 +162,7 @@ describe("the answer built from the records", () => {
     expect(first![1]).toContain("(https://shop.example/x1)");
     expect(second![0]).toBe("Optima Classic");
     expect(second![2]).toBe("no data");
-    expect(text).toContain("No report was handed in, so the server built this from what research recorded.");
+    expect(text).toContain("No report was handed in, so this is built from what research recorded");
   });
 
   it("says why each criterion matters and names an added one with its reason", () => {
@@ -172,13 +176,13 @@ describe("the answer built from the records", () => {
     "writes the note of %s in English, as all the product's own words are", (ended, words) => {
       const text = compose({ ended });
       expect(text).toContain(words);
-      expect(text).toContain("It draws no conclusion and picks nothing");
+      expect(text).toContain("it draws no conclusion, picks nothing and is not checked");
       expect(text).toContain("| Option |");
       expect(text).toContain("What research recorded");
     });
 
   it("picks nothing: a conclusion is the model's to draw", () => {
-    expect(compose()).toContain("It draws no conclusion and picks nothing");
+    expect(compose()).toContain("it draws no conclusion, picks nothing and is not checked");
     expect(compose()).not.toMatch(/recommend|\bbest\b|рекоменд|лучший/iu);
   });
 

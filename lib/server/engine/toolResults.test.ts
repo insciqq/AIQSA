@@ -6,10 +6,15 @@ import {
   executeReadToolResult,
   saveToolResultText,
   TOOL_RESULT_LIMITS,
+  toolModelOutput,
   toolOutputExcerpt,
   toolResultOutputText,
   type SavedToolResultReader
 } from "./toolResults";
+import { resultLength } from "./compaction/retained";
+import { quoteIsIn } from "../research/quoteCheck";
+import { proseFindings, searchEngine, searchResult, threeEngineResult } from "../search/toolResult.testFixtures";
+import type { ToolExecutionResult } from "../tools/types";
 
 const handle = `tor1_${"a".repeat(32)}`;
 const call = (args: Record<string, unknown>) => ({ arguments: args, id: "call_1", name: "read_tool_result" });
@@ -64,6 +69,53 @@ describe("tool result excerpts", () => {
     const busy = { withReservation: vi.fn(async () => { throw Object.assign(new Error("busy"), { code: "tool_observation_busy" }); }) };
     await expect(saveToolResultText({ outcome: "complete", producer: { runId: "r", toolCallId: "c", userId: "u" },
       service: busy as never, source: "mcp", text: "long" })).resolves.toEqual({ unsavedReason: "tool_observation_busy" });
+  });
+});
+
+describe("the model's view of a result", () => {
+  const textOf = (result: ToolExecutionResult) => toolResultOutputText(result);
+  const view = (result: ToolExecutionResult, saved: Parameters<typeof toolOutputExcerpt>[1] = { handle }) =>
+    toolModelOutput(result, textOf(result), toolOutputExcerpt(textOf(result), saved));
+
+  it("gives a long merged search result a fair share of each engine, names the handle, and keeps the whole length readable", () => {
+    const result = threeEngineResult();
+    const text = textOf(result);
+    const output = view(result);
+    expect(output).not.toBe(toolOutputExcerpt(text, { handle }).output);
+    for (const name of ["OpenAI", "Perplexity", "DeepSeek"]) expect(output).toContain(`Search source "${name}":\n`);
+    expect(output).toMatch(new RegExp(`\\[\\d+ of ${text.length} characters omitted here: each search source keeps a share`, "u"));
+    expect(output.endsWith(`call read_tool_result with handle "${handle}" and the offset a note names, or 0 (limit up to ` +
+      `${TOOL_RESULT_LIMITS.readChars}), to read it.]`)).toBe(true);
+    expect(output.length).toBeLessThan(TOOL_RESULT_LIMITS.headChars + TOOL_RESULT_LIMITS.tailChars + 1_500);
+    // A compaction stub and summary name the whole result's length, not the view's.
+    expect(resultLength(output)).toBe(text.length);
+    expect(view(threeEngineResult())).toBe(output);
+  });
+
+  it("lets a quote from the visible part check against the saved text", () => {
+    const result = threeEngineResult();
+    const output = view(result);
+    const entry = /\[6\] DeepSeek source 6 — shop-6\.example\nEntry 6 says model M-6 costs 1006 EUR\./u.exec(output)![0];
+    expect(quoteIsIn("Entry 6 says model M-6 costs 1006 EUR.", textOf(result))).toBe(true);
+    expect(textOf(result)).toContain(entry);
+    const perplexity = /Perplexity paragraph 18 reports finding 18 with care \[6\]\./u.exec(output)![0];
+    expect(quoteIsIn(perplexity, textOf(result))).toBe(true);
+  });
+
+  it("passes a short result whole and keeps head and tail for a single engine, an unsaved result and any other tool", () => {
+    const short = searchResult([
+      searchEngine({ count: 2, displayName: "A", findings: proseFindings("A", 2_000, 2), host: "a.example", optionId: "a" }),
+      searchEngine({ count: 2, displayName: "B", findings: proseFindings("B", 2_000, 2), host: "b.example", optionId: "b" })
+    ]);
+    expect(view(short)).toBe(textOf(short));
+    const single = searchResult([searchEngine({ count: 4, displayName: "A", findings: proseFindings("A", 40_000, 4), host: "a.example",
+      optionId: "a" })]);
+    expect(view(single)).toBe(toolOutputExcerpt(textOf(single), { handle }).output);
+    const merged = threeEngineResult();
+    const unsaved = { unsavedReason: "saved_results_budget_reached" };
+    expect(view(merged, unsaved)).toBe(toolOutputExcerpt(textOf(merged), unsaved).output);
+    const other: ToolExecutionResult = { callId: "c", content: [{ text: textOf(merged), type: "text" }], name: "workspace_shell", status: "complete" };
+    expect(view(other)).toBe(toolOutputExcerpt(textOf(merged), { handle }).output);
   });
 });
 

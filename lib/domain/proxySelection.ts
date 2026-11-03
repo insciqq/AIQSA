@@ -11,7 +11,8 @@ import type { ProxyOwner, ProxySelectionFailureCode } from "@/lib/contracts/prox
  * tiers, the most specific hint first and personal before administrator within
  * a hint. Rotation runs inside a tier; a site stays on its proxy within a chat;
  * a failure moves on, through later tiers too. With every match failed the
- * selection fails visibly and never goes direct. No match at all is direct.
+ * selection fails visibly and never goes direct. With no matching hint, a host
+ * follows its site's active, unfailed proxy; without one it goes direct.
  */
 
 export type ProxySelectionEntry = Readonly<{
@@ -179,8 +180,8 @@ function explicitSelection(entries: readonly ProxySelectionEntry[], ref: string)
  * One decision and the state after it; the input state is never changed. An
  * explicit choice reads and writes no state, and is never moved on from: the
  * caller reports its failure. A proxy of the plan that cannot be loaded counts
- * as failed (`recordProxyFailure`), never as inactive, so its site cannot go
- * direct.
+ * as failed (`recordProxyFailure`), never as inactive, so a host with matching
+ * hints cannot go direct.
  */
 export function selectProxy(input: Readonly<{
   entries: readonly ProxySelectionEntry[];
@@ -193,12 +194,18 @@ export function selectProxy(input: Readonly<{
   if (explicit?.kind === "proxy") return { selection: explicitSelection(entries, explicit.ref), state };
 
   const host = normalizeProxySiteHost(input.host);
-  const tiers = host === null ? [] : candidateTiers(entries, host);
-  if (host === null || tiers.length === 0) return { selection: { kind: "direct", reason: "no_match" }, state };
+  if (host === null) return { selection: { kind: "direct", reason: "no_match" }, state };
 
+  const tiers = candidateTiers(entries, host);
   const site = proxySiteKey(host);
   const failed = state.failed[site] ?? [];
   const stayedOn = state.sites[site];
+  if (tiers.length === 0) {
+    if (stayedOn !== undefined && !failed.includes(stayedOn) && entries.some((entry) => entry.id === stayedOn && entry.active)) {
+      return { selection: { hint: null, kind: "proxy", proxyId: stayedOn, reason: "site" }, state };
+    }
+    return { selection: { kind: "direct", reason: "no_match" }, state };
+  }
   const stayedTier = stayedOn === undefined || failed.includes(stayedOn)
     ? undefined
     : tiers.find((tier) => tier.members.includes(stayedOn));

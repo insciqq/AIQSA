@@ -2,6 +2,7 @@ import { brotliDecompressSync, inflateRawSync, unzipSync } from "node:zlib";
 import { mcpSafeFetch, McpSafeFetchError, networkAddressScope, type McpSafeFetchOptions } from "../mcp/safeFetch";
 import { WebFetchError, type WebFetchFailureCode } from "./errors";
 import { fetchProxyHop, type ProxyHopConnection } from "./proxyHop";
+import { RedirectCookieJar } from "./redirectCookies";
 import { FETCH_URL_MAX_LENGTH } from "./urls";
 
 export { WebFetchError, type WebFetchFailureCode } from "./errors";
@@ -10,8 +11,9 @@ export { WebFetchError, type WebFetchFailureCode } from "./errors";
  * The page transport of `fetch_url`: GET only, over the pinned SSRF-safe
  * transport (`mcpSafeFetch`: DNS pinned per hop), or through a proxy whose
  * address is checked and pinned per hop. Proxy DNS resolves target names.
- * Targets use ports 80 and 443 only; no userinfo, cookies or auth headers; one
- * fixed user agent. Redirects are followed manually so each hop is checked
+ * Targets use ports 80 and 443 only; no userinfo or caller credentials; one
+ * fixed user agent. Only this call's site-scoped redirect cookies are sent.
+ * Redirects are followed manually so each hop is checked
  * again. One deadline covers the whole exchange and the body is bounded while
  * it streams.
  */
@@ -26,6 +28,8 @@ const ACCEPT = "text/html,application/xhtml+xml,text/plain;q=0.9,text/markdown;q
   "application/pdf;q=0.8,*/*;q=0.1";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const ALLOWED_PORTS = new Set(["", "80", "443"]);
+// A route continuation can carry the jar, but serialized options never carry cookies.
+const REDIRECT_COOKIES = Symbol("redirectCookies");
 
 export type WebFetchResponse = Readonly<{
   body: Uint8Array;
@@ -36,6 +40,7 @@ export type WebFetchResponse = Readonly<{
 }>;
 
 export type WebFetchOptions = Readonly<{
+  [REDIRECT_COOKIES]?: RedirectCookieJar;
   /** Refuses a response by its media type before its body is read. */
   acceptsContentType(contentType: string | null): boolean;
   /**
@@ -156,6 +161,7 @@ export async function fetchThroughProxy(url: string, connection: ProxyHopConnect
 }
 
 async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHopConnection): Promise<WebFetchResponse> {
+  const cookies = options[REDIRECT_COOKIES] ?? new RedirectCookieJar();
   const limits = { ...WEB_FETCH_LIMITS, ...options.limits };
   const deadline = new AbortController();
   // A native TimeoutError keeps transport observability classifying it as a deadline.
@@ -181,7 +187,7 @@ async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHop
           const aborted = () => reject(signal.reason);
           signal.addEventListener("abort", aborted, { once: true });
           Promise.resolve().then(() => options.redirectRoute!(current.href, {
-            ...options, redirectRoute: undefined, signal,
+            ...options, [REDIRECT_COOKIES]: cookies, redirectRoute: undefined, signal,
             limits: { ...limits, maxRedirects: limits.maxRedirects - redirects }
           })).then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
         });
@@ -190,11 +196,13 @@ async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHop
           return routed;
         }
       }
+      const cookie = cookies.header(current);
+      const headers = { accept: ACCEPT, "accept-encoding": "gzip, deflate, br", "user-agent": WEB_FETCH_USER_AGENT,
+        ...(cookie ? { cookie } : {}) };
       try {
-        response = proxy ? await fetchProxyHop(current, proxy,
-          { accept: ACCEPT, "accept-encoding": "gzip, deflate, br", "user-agent": WEB_FETCH_USER_AGENT }, signal)
+        response = proxy ? await fetchProxyHop(current, proxy, headers, signal)
           : await mcpSafeFetch(current.href, {
-          headers: { accept: ACCEPT, "accept-encoding": "gzip, deflate, br", "user-agent": WEB_FETCH_USER_AGENT },
+          headers,
           method: "GET",
           redirect: "manual",
           signal
@@ -214,6 +222,7 @@ async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHop
       }
       dispatched = true;
       if (!REDIRECT_STATUSES.has(response.status) || !response.headers.has("location")) break;
+      cookies.store(current, response.headers);
       const location = response.headers.get("location") ?? "";
       await discard(response);
       response = undefined;
@@ -257,5 +266,6 @@ async function fetchPage(url: string, options: WebFetchOptions, proxy?: ProxyHop
     throw error;
   } finally {
     clearTimeout(timer);
+    if (!options[REDIRECT_COOKIES]) cookies.clear();
   }
 }

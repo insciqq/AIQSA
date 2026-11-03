@@ -83,6 +83,20 @@ describe("the plan proposal", () => {
     const proposal = value(decodeResearchPlanProposal(PROPOSAL));
     expect(value(decodeResearchPlanProposal(researchPlanProposalDocument(proposal)))).toEqual(proposal);
   });
+
+  it("keeps a criterion marked decisive through the plan, its stored form and the frame, reads one left out or null as not, and bounds how many", () => {
+    const marked = { ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, decisive: true }, { criterion: "Price", decisive: false, key: "price", why: "The budget." }, { criterion: "Reviews", decisive: null, key: "reviews", why: "A year on." }] };
+    const proposal = value(decodeResearchPlanProposal(marked));
+    expect(proposal.criteria.map((criterion) => "decisive" in criterion)).toEqual([true, false, false]);
+    expect(value(decodeResearchPlanProposal(researchPlanProposalDocument(proposal)))).toEqual(proposal);
+    const frame = researchFrameFromPlan(proposal);
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(frame)))).criteria[0]).toEqual({ ...PROPOSAL.criteria[0], decisive: true });
+    expect(value(decodeResearchPlanProposal(PROPOSAL)).criteria[0]).not.toHaveProperty("decisive");
+    expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, decisive: "yes" }] }))).toContain("criteria[0].decisive must be true or false");
+    const many = Array.from({ length: RESEARCH_FRAME_LIMITS.decisiveCriteria + 1 }, (_entry, index) => ({ criterion: `Spec ${index}`, decisive: true, key: `spec-${index}`, why: "It decides." }));
+    expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many }))).toContain(`more than ${RESEARCH_FRAME_LIMITS.decisiveCriteria} as decisive`);
+    expect(value(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many.slice(1) })).criteria).toHaveLength(RESEARCH_FRAME_LIMITS.decisiveCriteria);
+  });
 });
 
 describe("the user's answer", () => {
@@ -204,7 +218,7 @@ describe("the frame", () => {
   });
 
   it("takes a change with its reason, every field given and null where its kind has no use for it", () => {
-    const change = { cases: null, change: "add_row", key: "x2", label: "X2", reason: "A review names it.", why: null };
+    const change = { cases: null, change: "add_row", key: "x2", label: "X2", reason: "A review names it.", url: null, why: null };
     expect(value(decodeResearchFrameChange(change))).toEqual({ change: "add_row", reason: change.reason, row: { key: "x2", label: "X2" } });
     expect(value(decodeResearchFrameChange({ ...change, change: "add_criterion", key: "edge", label: "Edge support", why: "Sleepers roll off a soft edge." })))
       .toEqual({ change: "add_criterion", criterion: { criterion: "Edge support", key: "edge", why: "Sleepers roll off a soft edge." }, reason: change.reason });
@@ -218,6 +232,83 @@ describe("the frame", () => {
     const { why: _why, ...omitted } = change;
     void _why;
     expect(refusal(decodeResearchFrameChange(omitted))).toBe("why must be given: pass null when it does not apply.");
+  });
+
+  it("takes a candidate noted by its name as written and one set aside by its key, each with its reason", () => {
+    const note = { cases: null, change: "note_candidate", key: null, label: "Dreamline SleepDream Medium S1000", reason: "An Ozon listing of 180x200 shows it at 59 521 ₽.",
+      url: null, why: null };
+    expect(value(decodeResearchFrameChange(note))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason });
+    // The server makes a candidate's key, so one a model passes is not read.
+    expect(value(decodeResearchFrameChange({ ...note, key: "anything" }))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason });
+    expect(refusal(decodeResearchFrameChange({ ...note, label: null }))).toContain("label must name the option");
+    // The page that names it, bounded like every research link; null is a note with no page.
+    const url = "https://www.ozon.ru/category/matrasy-15018/?sorting=rating";
+    expect(value(decodeResearchFrameChange({ ...note, url }))).toEqual({ change: "note_candidate", label: note.label, reason: note.reason, url });
+    for (const wrong of ["www.ozon.ru/category", "javascript:alert(1)", `https://example.test/${"a".repeat(RESEARCH_LIMITS.urlCharacters)}`, 7, "https://a.test/\u0000"]) {
+      expect(refusal(decodeResearchFrameChange({ ...note, url: wrong }))).toContain("url must be the http or https link of the page that names the option");
+    }
+    const { url: _url, ...omitted } = note;
+    void _url;
+    expect(refusal(decodeResearchFrameChange(omitted))).toBe("url must be given: pass null when it does not apply.");
+    // Unread for any other change.
+    expect(value(decodeResearchFrameChange({ ...note, change: "add_row", key: "x2", url: "not a link" }))).toEqual({ change: "add_row", reason: note.reason,
+      row: { key: "x2", label: note.label } });
+    const aside = { ...note, change: "set_aside", key: "dreamline-sleep-dream-medium-s1000", label: null, reason: "Sold out in every shop." };
+    expect(value(decodeResearchFrameChange(aside))).toEqual({ change: "set_aside", key: aside.key, reason: aside.reason });
+    expect(refusal(decodeResearchFrameChange({ ...aside, key: null }))).toContain("key must name the noted candidate");
+    expect(refusal(decodeResearchFrameChange({ ...aside, reason: "" }))).toContain("reason must say");
+  });
+});
+
+describe("a frame's candidates", () => {
+  const frame: ResearchFrame = researchFrameFromPlan(value(decodeResearchPlanProposal(PROPOSAL)));
+  const note = (name: string | null) => ({ at: "2026-11-03T10:00:00.000Z", by: name === null ? { name: null, threadId: null } : { name, threadId: `thread-${name}` }, reason: "A listing shows it." });
+  const candidate = { key: "dreamline-sleep-dream-medium-s1000", label: "Dreamline SleepDream Medium S1000", notes: [note("marketplaces"), note("brands")] };
+  const aside = { at: "2026-11-03T10:05:00.000Z", key: "askona-balance", reason: "Same as a row, in another size." };
+
+  it("reads a frame stored before candidates as it was written, with neither field", () => {
+    const stored = JSON.parse(JSON.stringify(frame)) as Record<string, unknown>;
+    const decoded = value(decodeResearchFrame(stored));
+    expect(decoded).toEqual(stored);
+    expect(decoded).not.toHaveProperty("candidates");
+    expect(decoded).not.toHaveProperty("setAside");
+  });
+
+  it("reads back what was noted and set aside, who noted each, where and why", () => {
+    const paged = { ...note("tests"), url: "https://expertology.ru/rating/matrasy/" };
+    const grown = { ...frame, candidates: [{ ...candidate, notes: [...candidate.notes, paged] }, { key: "askona-balance", label: "Askona Balance", notes: [note(null)] }],
+      setAside: [aside] };
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(grown))))).toEqual(grown);
+    expect(value(decodeResearchFrame({ ...frame, candidates: [], setAside: [] }))).toMatchObject({ candidates: [], setAside: [] });
+    // A note stored before its page was kept reads as one with none, and so does a null.
+    const [decoded] = value(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [{ ...note("brands"), url: null }] }] })).candidates!;
+    expect(decoded!.notes[0]).toEqual(note("brands"));
+    expect(decoded!.notes[0]).not.toHaveProperty("url");
+  });
+
+  it("holds a pool: as many candidates and notes as its bounds, and refuses a note's link no writer here could have made", () => {
+    const limits = RESEARCH_FRAME_LIMITS;
+    const notes = Array.from({ length: limits.candidateNotes }, (_entry, index) => ({ ...note(`agent-${index}`), url: `https://site-${index}.example/list` }));
+    const pool = { ...frame, candidates: Array.from({ length: limits.candidates }, (_entry, index) => ({ ...candidate, key: `c${index}`, notes: index === 0 ? notes : [note("a")] })) };
+    expect(value(decodeResearchFrame(pool)).candidates).toHaveLength(limits.candidates);
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [...notes, note("one more")] }] }))).toContain("candidates[0].notes must list 1 to");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [{ ...note("lab"), url: "ozon.ru" }] }] }))).toContain("candidates[0].notes[0].url");
+  });
+
+  it("refuses a candidate no writer here could have made, naming the field", () => {
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: {} }))).toContain("candidates must list 0 to");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, key: "two words" }] }))).toContain("candidates[0].key");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [] }] }))).toContain("candidates[0].notes must list 1 to");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...candidate, notes: [{ ...note("lab"), by: { name: "lab", threadId: null } }] }] }))).toContain("candidates[0].notes[0].by");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: [candidate, candidate] }))).toContain("candidates[1].key repeats");
+    expect(refusal(decodeResearchFrame({ ...frame, candidates: Array.from({ length: RESEARCH_FRAME_LIMITS.candidates + 1 }, (_entry, index) => ({ ...candidate, key: `c${index}` })) })))
+      .toContain("candidates must list 0 to");
+    expect(refusal(decodeResearchFrame({ ...frame, setAside: [{ ...aside, reason: "" }] }))).toContain("setAside[0].reason");
+  });
+
+  it("keeps candidates out of the change log, which holds only what changed the matrix", () => {
+    const logged = { at: "2026-11-01T10:00:00.000Z", by: { name: null, threadId: null }, change: "set_aside", key: "x2", reason: "Why." };
+    expect(refusal(decodeResearchFrame({ ...frame, changes: [logged] }))).toBe("changes[0].change must be one of add_branch, add_criterion, add_row.");
   });
 });
 
@@ -253,10 +344,10 @@ describe("a draft's references", () => {
   });
 
   it("reads a draft that refers to records, with no findings of its own: the server fills those from the records", () => {
-    const decoded = value(decodeResearchDraft({ ...references, report: "# Report", unreachable: [] }));
+    const decoded = value(decodeResearchDraft({ ...references, report: "# Report", summary: { row_keys: ["x1"], text: "Take X1." }, unreachable: [] }));
     expect(decoded).toEqual({ branchPicks: [{ branchKey: "weight", caseKey: "light", rowKey: "x1" }],
       doesNotSeparate: { rowKeys: ["x1", "x2"], statement: references.does_not_separate.statement, wouldDecide: "Trying them." }, findings: [], origin: "reserved_call",
-      pickRowKey: "x1", recordIds: [RECORD_ID], report: "# Report", unreachable: [] });
+      pickRowKey: "x1", recordIds: [RECORD_ID], report: "# Report", summary: { rowKeys: ["x1"], text: "Take X1." }, unreachable: [] });
   });
 
   it("takes the model's ids over any findings it typed beside them", () => {
@@ -285,7 +376,8 @@ describe("a draft's references", () => {
 
   it("reads an empty findings list as a live draft, so its pick reaches the report check: a stored draft with none loses nothing by it", () => {
     expect(value(decodeResearchDraft({ findings: [], pick_row_key: "x9", report: "# Report", unreachable: [] }))).toMatchObject({ findings: [], pickRowKey: "x9", recordIds: [] });
-    expect(value(decodeResearchDraft(draft))).toEqual({ branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "# Report", unreachable: [] });
+    expect(value(decodeResearchDraft(draft))).toEqual({ branchPicks: [], doesNotSeparate: null, findings: [], origin: "reserved_call", pickRowKey: null, recordIds: [], report: "# Report", summary: null,
+      unreachable: [] });
   });
 
   it("still refuses a draft whose report or list of what was unreachable cannot be read", () => {
@@ -306,6 +398,61 @@ describe("a draft's references", () => {
   });
 });
 
+describe("edits to a draft sent back", () => {
+  const fields = { branch_picks: [], does_not_separate: null, pick_row_key: null, record_ids: [], unreachable: [] };
+  const previous = value(decodeResearchDraft({ ...fields, pick_row_key: "x1", record_ids: [RECORD_ID], report: "Alpha.\nBeta.\nAgain again.",
+    summary: { row_keys: ["x1"], text: "Take X1." } }));
+  const edit = (edits: unknown, extra = {}) => decodeResearchDraft({ ...fields, edits, ...extra }, previous);
+
+  it("matches all edits in the previous report, keeps literal replacement text and replaces references in full", () => {
+    const result = value(edit([{ old: "Beta.", new: "Alpha." }, { old: "Alpha.", new: "$& $1\n" }, { old: "Again again.", new: "" }]));
+    expect(result).toMatchObject({ report: "$& $1\n\nAlpha.\n", recordIds: [], pickRowKey: null, branchPicks: [], doesNotSeparate: null, summary: previous.summary });
+    expect(previous.report).toBe("Alpha.\nBeta.\nAgain again.");
+  });
+
+  it("allows reference-only and summary-only changes, carrying a summary error until it is replaced", () => {
+    expect(value(edit([])).report).toBe(previous.report);
+    expect(value(edit([], { summary: { row_keys: [], text: "Try both." } })).summary).toEqual({ rowKeys: [], text: "Try both." });
+    const invalid = { ...previous, invalidSummary: "Bad row key." };
+    expect(value(decodeResearchDraft({ ...fields, edits: [] }, invalid)).invalidSummary).toBe("Bad row key.");
+    expect(value(decodeResearchDraft({ ...fields, edits: [], summary: { row_keys: [], text: "Fixed." } }, invalid)).invalidSummary).toBeUndefined();
+  });
+
+  it.each([
+    [[{ old: "Alpha.", new: "Changed." }, { old: "absent", new: "" }], "edits[1].old was not found"],
+    [[{ old: "Alpha.", new: "Changed." }, { old: "a", new: "" }], "edits[1].old was found more than once"],
+    [[{ old: "Alpha.", new: "Changed." }, { old: "Alpha", new: "" }], "edits[1] overlaps edits[0]"],
+    [[{ old: "Alpha.", new: "Changed." }, { old: "Changed.", new: "" }], "edits[1].old was not found"],
+    [[{ old: "", new: "Added." }], "edits[0].old must be"],
+    [[{ old: "Alpha.", new: "\u0000" }], "edits[0].new must be"]
+  ])("refuses the whole set with the failing edit and reason: %j", (edits, message) => {
+    expect(refusal(edit(edits))).toContain(message);
+    expect(previous.report).toBe("Alpha.\nBeta.\nAgain again.");
+  });
+
+  it("counts overlapping occurrences as ambiguous too", () => {
+    expect(refusal(decodeResearchDraft({ ...fields, edits: [{ old: "aa", new: "b" }] }, { ...previous, report: "aaa" }))).toContain("found more than once");
+  });
+
+  it("requires a previous draft and exactly one report form", () => {
+    expect(refusal(decodeResearchDraft({ ...fields, edits: [] }))).toContain("previous draft");
+    expect(refusal(edit([], { report: "Whole." }))).toContain("either report or edits");
+  });
+
+  it("bounds edit count, each text, their total and the resulting report", () => {
+    expect(refusal(edit(Array.from({ length: RESEARCH_LIMITS.draftEdits + 1 }, () => ({ old: "Alpha.", new: "A" }))))).toContain("edits must list at most");
+    for (const field of ["old", "new"]) {
+      expect(refusal(edit([{ old: "Alpha.", new: "A", [field]: "x".repeat(RESEARCH_LIMITS.draftEditCharacters + 1) }]))).toContain(`edits[0].${field} must be`);
+    }
+    const parts = Array.from({ length: 6 }, (_, index) => String(index).repeat(RESEARCH_LIMITS.draftEditCharacters));
+    const edits = parts.map((old) => ({ old, new: "x".repeat(RESEARCH_LIMITS.draftEditCharacters) }));
+    expect(refusal(decodeResearchDraft({ ...fields, edits }, { ...previous, report: parts.join("") }))).toContain("edits[5] exceeds the edits total");
+    expect(refusal(decodeResearchDraft({ ...fields, edits: [{ old: "A", new: "AA" }] }, { ...previous, report: `A${"x".repeat(RESEARCH_LIMITS.reportCharacters - 1)}` })))
+      .toContain("edited report exceeds");
+    expect(refusal(edit([{ old: previous.report, new: "" }]))).toContain("edited report is empty");
+  });
+});
+
 describe("the start", () => {
   it("takes only the goal as the target contract, while the plan the live tool takes stays as it was", () => {
     expect(value(decodeResearchStart({ goal: "Choose a mattress.", questions: [] }))).toEqual({ goal: "Choose a mattress." });
@@ -317,7 +464,7 @@ describe("the start", () => {
 describe("the time phases", () => {
   it("follow the operator's minutes from the plan's release", () => {
     const minutes = (value: number) => value * 60_000;
-    expect(RESEARCH_TIME_MS).toMatchObject({ abandonedEdit: minutes(5), handoffWait: minutes(3), hardEnd: minutes(90), notes: minutes(85), planWindow: minutes(1),
+    expect(RESEARCH_TIME_MS).toMatchObject({ abandonedEdit: minutes(5), hardEnd: minutes(90), notes: minutes(85), planWindow: minutes(1),
       researcherTurn: minutes(25), scoping: minutes(3), stopRunningResearchers: minutes(70), stopStartingResearchers: minutes(60) });
     expect(researchPhaseAt(0)).toBe("researching");
     expect(researchPhaseAt(minutes(60) - 1)).toBe("researching");

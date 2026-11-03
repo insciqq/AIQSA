@@ -29,6 +29,7 @@ import type { NativeRunStore } from "../runStore";
 import type { ToolBatchDeps, ToolBatchState } from "../toolBatch";
 import type { ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
+import type { ToolResultClearingPolicy } from "../compaction";
 import type { TranscriptItem, TranscriptTarget } from "../transcript";
 import type { TranscriptRepository } from "../transcriptRepository";
 import type { UnknownEffects } from "../unknownEffects";
@@ -162,8 +163,12 @@ export type PrepareRunSubagentsInput = Readonly<{
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   /** Background turns may start (web chats); never from a Telegram turn or a scheduled occurrence, which still reach them. */
   backgroundAllowed: boolean;
+  /** False: its sub-agents start no children, whatever their tools (a research run's researchers); absent, one with every tool may. */
+  childrenAllowed?: false;
   ports?: SubagentRunPorts;
   recordSearchEvidence: SubagentHost["recordSearchEvidence"];
+  /** Its sub-agents clear their oldest page results past the policy's mark (a research run's researchers); absent, none do. */
+  resultClearing?: ToolResultClearingPolicy;
   runContextItems: readonly TranscriptItem[];
   runId: string;
   saveResult: ToolBatchDeps["saveResult"];
@@ -173,6 +178,8 @@ export type PrepareRunSubagentsInput = Readonly<{
   snapshot: ProviderExecutionSnapshot;
   toolState: ToolBatchState;
   toolTimeLeft(): boolean;
+  /** The calls one turn of its sub-agents may make (`SubagentHost.turnToolCalls`): a research run's researchers; absent, none is counted per turn. */
+  turnToolCalls?: number;
   /** A thread's view of the run's agent fences (`createAgentUnknownEffects`): its own, and every other agent's to find. */
   unknownEffects(threadId: string): UnknownEffects;
   usage: Pick<UsageLedger, "add" | "settle">;
@@ -252,7 +259,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     ...(input.ports?.browserIdentity ? { browserIdentity: input.ports.browserIdentity } : {}),
     callTimeLeft: input.callTimeLeft,
     chatId: input.chatId,
-    children,
+    ...(input.childrenAllowed === false ? {} : { children }),
     // Read at each use: a research run's turn ends later once its plan is released (`execution.ts`).
     get deadlineAt() { return input.deadlineAt; },
     deadlineSignal: input.deadline,
@@ -265,6 +272,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     onWorkspaceLifecycle: input.onWorkspaceLifecycle,
     userFollowups: input.userFollowups,
     recordSearchEvidence: input.recordSearchEvidence,
+    ...(input.resultClearing ? { resultClearing: input.resultClearing } : {}),
     recordDetachedCompaction: ({ item, sequence, thread }) =>
       input.engine.runs.recordDetachedCompaction(input.scope, { item, sequence, status: null, thread }),
     request,
@@ -281,6 +289,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     toolCalls: input.engine.toolCalls,
     toolState: input.toolState,
     toolTimeLeft: input.toolTimeLeft,
+    ...(input.turnToolCalls !== undefined ? { turnToolCalls: input.turnToolCalls } : {}),
     unknownEffects: input.unknownEffects,
     transcripts: input.engine.transcripts,
     usage: (attribution) => input.usage.add(attribution),

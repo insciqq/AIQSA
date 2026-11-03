@@ -714,7 +714,7 @@ describe("everything derived from the turn sees its new end", () => {
     expect(outcome).toMatchObject({ kind: "ended", result: { state: "done" } });
   });
 
-  it("gives a researcher's child the new end, so it is not stopped on arrival past the old one", async () => {
+  it("starts no child of a researcher past the old end either: researchers start no children (decision 2026-11-02)", async () => {
     const child = { arguments: { background: true, message: "Help.", name: "helper" }, id: "call-helper", name: CALL_SUBAGENT_TOOL_NAME };
     const { adapter } = scripted([
       { calls: begin(), sleepMs: released },
@@ -722,11 +722,10 @@ describe("everything derived from the turn sees its new end", () => {
       { calls: [submit()] }
     ], [{ calls: [child], sleepMs: pastTheOldEnd - released - minutes(35) }, { text: "Outcome: done\nFound it." }]);
     const run = harness({ gates: [] }, { workspace: false });
-    const startedAt = Date.now();
     const answer = run.go(adapter);
     await vi.advanceTimersByTimeAsync(released + time.hardEnd);
     await answer;
-    expect(run.background.turns[0]?.input.deadlineAt?.getTime()).toBe(startedAt + released + time.hardEnd);
+    expect(run.background.turns).toHaveLength(0);
   });
 
   it("leaves a check its tools past the main agent's, which close when the researchers stop", async () => {

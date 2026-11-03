@@ -17,7 +17,8 @@ import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
  *   results are pulled up to their call's response, a call without a recorded
  *   result gets an explicit unknown outcome, a result without its call stays
  *   out; of several results of one call the latest recorded wins (a call that
- *   waited for the user's approval and then ran);
+ *   waited for the user's approval and then ran, or the stub that cleared an
+ *   old page result, `compaction/clearing.ts`);
  * - replay starts at the latest compaction the target can use: its own native
  *   compaction item, or a summary text any target can read; a compaction
  *   that keeps a recent tail verbatim (`keepFromId`) replays that tail right
@@ -124,6 +125,11 @@ export type TranscriptToolResultItem = Readonly<{
   /** Hydrated from the durable row, never the model/body; includes a continuation's newer in-flight record. */
   recordedAt?: Date;
   callId: string;
+  /**
+   * A stub that took the call's earlier result out of the context (`compaction/clearing.ts`): it supersedes that result as any
+   * later result does, names how `read_tool_result` reads it back, and is no new outcome of the call.
+   */
+  cleared?: true;
   /** The saved whole result (`read_tool_result`) when `output` is an excerpt of it. */
   handle?: string;
   id: string;

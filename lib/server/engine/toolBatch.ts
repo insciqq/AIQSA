@@ -29,7 +29,7 @@ import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import { recordToolCall, type SettledToolCall } from "./toolCallTelemetry";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
-import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolOutputExcerpt, toolResultImage, toolResultOutputText } from "./toolResults";
+import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolModelOutput, toolOutputExcerpt, toolResultImage, toolResultOutputText } from "./toolResults";
 import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
 import type { UnknownEffects } from "./unknownEffects";
 
@@ -49,6 +49,12 @@ import type { UnknownEffects } from "./unknownEffects";
 export const TOOL_BATCH_LIMITS = Object.freeze({
   /** Calls of one batch that run at once. */
   concurrency: 4,
+  /**
+   * Calls of a delegated tool (`EngineTool.delegated`) of one batch that run at once, beside the others. Each holds a sub-agent's
+   * turn, which `SUBAGENT_LIMITS.runningPerChat` bounds per chat; eight is a research round of one task per row, which the method
+   * groups past eight rows (`lib/server/research/method.ts`).
+   */
+  delegatedConcurrency: 8,
   /** Retries of a read-only call that failed in transport. */
   readOnlyRetries: 2,
   /** Attempts to settle a call's record after it ran; a record that stays unsettled only logs. */
@@ -107,6 +113,17 @@ export const AUTO_TOOL_NOT_LOADED_OUTPUT = (name: string, query: string) =>
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
 
+/**
+ * A call past its turn's own budget (`ToolBatchDeps.turnBudget`). It is no budget refusal of the loop's kind, which closes every tool: the exempt
+ * tools stay open, so what the batch's last calls returned can still be recorded, and a response of only refused calls closes tools as any batch
+ * of which nothing ran does, so the turn's next round is its report (review finding 2026-11-03).
+ */
+export const TURN_TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
+  `Not run: this task's ${limit} tool calls are spent. Record what your results show, then write your report with what you found and what is left to check.`;
+
+/** The line that ends the result of each call a turn's own budget counted. */
+export const turnCallsLeftLine = (left: number) => `Calls left in this task: ${left}.`;
+
 /** A call that would have started after the turn's time for tools ran out. */
 export const TOOL_TIME_EXHAUSTED_OUTPUT =
   "Not run: this answer's time for tools has run out. Answer with what you have and say what you could not check.";
@@ -156,6 +173,12 @@ export type ToolBatchDeps = Readonly<{
    * reserve, is refused like one past the call budget; calls already running settle. Absent: no time check here.
    */
   toolTimeLeft?(tool: RunTool): boolean;
+  /**
+   * A turn's own call budget beside the run's (`SubagentHost.turnToolCalls`): absent, no turn counts its own calls. It counts what
+   * the run's budget counts, but its `exempt` tools, as each call starts, so the response's order decides; past `limit` a call is
+   * refused as a budget refusal, and the result of each counted call that ran ends with what is left (`turnCallsLeftLine`).
+   */
+  turnBudget?: ToolTurnBudget;
   /** Effects of the chat's earlier calls that are still unknown; the batch adds its own. */
   unknownEffects: UnknownEffects;
   userId: string;
@@ -169,6 +192,9 @@ export type ApprovedToolCall = Readonly<{ approvalId: string; callId: string; un
 
 /** What the run has spent on tools so far; `reservedCalled`: the reserved report's first call ran. */
 export type ToolBatchState = { calls: number; reservedCalled?: boolean };
+
+/** One turn's call budget: `spent` belongs to the turn, so each turn counts afresh. */
+export type ToolTurnBudget = Readonly<{ exempt: ReadonlySet<string>; limit: number; spent: { calls: number } }>;
 
 export type ToolBatchOutcome = Readonly<{
   /** Approval card ids of calls that wait for the initiator. */
@@ -259,6 +285,11 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
         toolName: call.name };
     }
+    const turn = deps.turnBudget;
+    if (!exempt && turn && !turn.exempt.has(call.name) && turn.spent.calls >= turn.limit) {
+      const message = TURN_TOOL_CALL_LIMIT_OUTPUT(turn.limit);
+      return { kind: "refuse", output: message, result: jsonError(call, { error: "turn_tool_call_limit_reached", message }), toolName: call.name };
+    }
     // A read of a saved result is never a loop to stop: after a compaction it is the only way back to that text.
     const repeatOf = call.name === READ_TOOL_RESULT_NAME ? null : deps.history.blockFor({ arguments: call.arguments, toolName: call.name }, round, {
       batch: batch.filter((other) => other !== call).map((other) => ({ arguments: other.arguments, toolName: other.name })),
@@ -304,6 +335,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
         ...(sourceBinding ? { sourceBinding } : {}), text, toolCallId: row.id })
       : null;
     const excerpt = tool.runScopedResult ? { handle: null, output: text } : toolOutputExcerpt(text, saved);
+    const modelOutput = toolModelOutput(result, text, excerpt);
     const rowResult = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) ??
       snapshotToolExecutionResult({ callId: result.callId, content: [{ text: excerpt.output, type: "text" }], name: result.name,
         status: result.status }, toolLoopPersistenceLimits.resultBytes)!;
@@ -326,7 +358,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       kind: "tool_result",
       name: execution.call.name,
       outcome: result.status,
-      output: identical === null ? excerpt.output : `${excerpt.output}\n\n${repeatIdenticalNote(identical)}`
+      output: identical === null ? modelOutput : `${modelOutput}\n\n${repeatIdenticalNote(identical)}`
     };
   }
 
@@ -417,8 +449,22 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     }
     const tool = before.tool;
     if (!before.exempt) state.calls += 1;
+    // Counted before anything awaits, as the run's count is, so the calls of one response take what is left in their order.
+    const turn = deps.turnBudget;
+    let left: number | null = null;
+    if (!before.exempt && turn && !turn.exempt.has(call.name)) {
+      turn.spent.calls += 1;
+      left = turn.limit - turn.spent.calls;
+    }
+    // A call that never runs (its connection gone, handed back for approval, waiting for one) gives its turn's count back: the budget is
+    // for work done (review finding 2026-11-03).
+    const refund = () => {
+      if (left !== null && turn) turn.spent.calls -= 1;
+      left = null;
+    };
     const links = tool.links ? tool.links(call) : {};
     if (links === null) {
+      refund();
       const message = "This tool's connection is no longer available to this answer, so nothing was sent.";
       const result = jsonError(call, { error: "tool_binding_unavailable", message });
       const row = await deps.store.refuse({ ...record, result, toolName: call.name });
@@ -439,6 +485,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     deps.signal.throwIfAborted();
     // A sub-agent never asks the user itself: the call that would wait goes back to the main agent, unsent and card-free.
     if (deps.approvalHandBack && approval && !humanApproved && approval.guard?.decision !== "allow") {
+      refund();
       const result = jsonError(call, { error: "needs_approval", message: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT });
       const row = await deps.store.refuse({ ...record, result, toolName: call.name });
       if (!row) throw new ToolBatchInactiveError();
@@ -454,6 +501,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {
+      refund();
       recordToolCall({ toolName: call.name, kind, settled: { kind: "awaiting_approval" } });
       approvals.push(begun.approvalId);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
@@ -472,10 +520,11 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     // The live step settles once the call's record and outputs have; an unknown effect never reads as success, and a
     // stopped call gets nothing here, since the run's end settles it.
     let result: ToolExecutionResult;
+    // A call that ran ends its result with what its turn has left; a refusal keeps its exact words, which other code reads.
     const finished = (item: TranscriptToolResultItem, status: "complete" | "error"): TranscriptToolResultItem => {
       const facts = activity.origin === "web_fetch" ? fetchUrlActivityFacts(call.name, call.arguments, result) : {};
       deps.onLiveEvent(liveToolCallStatus(call, { ...activity, ...facts }, { ordinal, settled: { durationMs, status } }));
-      return item;
+      return left === null ? item : { ...item, output: `${item.output}\n\n${turnCallsLeftLine(left)}` };
     };
     try {
       result = await executeWithRetries(deps, tool, execution);
@@ -518,19 +567,25 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);
   /** The calls not started yet, in the response's order. */
   const waiting = input.calls.map((_, index) => index);
-  const isSerial = (index: number) => deps.registry.resolve(input.calls[index]!.name)?.serial === true;
+  // Each call's place is fixed as the batch starts: a registry that stops resolving a tool meanwhile (research's scoping
+  // limit) refuses that call when it starts, and must never move it to a pool with no workers, where it would never run.
+  const serialCalls = input.calls.map((call) => deps.registry.resolve(call.name)?.serial === true);
+  const delegatedCall = input.calls.map((call) => deps.registry.resolve(call.name)?.delegated === true);
+  const isSerial = (index: number) => serialCalls[index]!;
+  const isDelegated = (index: number) => delegatedCall[index]!;
   let serialRunning = false;
   /**
-   * The next call that may start. A serial call (`EngineTool.serial`) waits for the one before it here, holding no
-   * worker, so the workers take the calls behind it; the running one's worker takes the next when it ends.
+   * The next call that may start among the delegated calls or the others, each with its own workers. A serial call
+   * (`EngineTool.serial`) waits for the one before it here, holding no worker, so the workers take the calls behind it;
+   * the running one's worker takes the next when it ends.
    */
-  const nextCall = () => {
-    const position = waiting.findIndex((index) => !serialRunning || !isSerial(index));
+  const nextCall = (delegated: boolean) => {
+    const position = waiting.findIndex((index) => isDelegated(index) === delegated && (!serialRunning || !isSerial(index)));
     return position < 0 ? undefined : waiting.splice(position, 1)[0];
   };
-  const worker = async () => {
+  const worker = (delegated: boolean) => async () => {
     for (;;) {
-      const index = nextCall();
+      const index = nextCall(delegated);
       if (index === undefined) return;
       const serial = isSerial(index);
       if (serial) serialRunning = true;
@@ -541,6 +596,10 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));
+  const delegatedCalls = delegatedCall.filter(Boolean).length;
+  await Promise.all([
+    ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length - delegatedCalls) }, worker(false)),
+    ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.delegatedConcurrency, delegatedCalls) }, worker(true))
+  ]);
   return { approvals, budgetExhausted, correctable, executed, results };
 }
