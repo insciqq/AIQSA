@@ -210,7 +210,7 @@ describe("the method", () => {
     expect(text).toContain("every task of a round in one response, so they work in parallel");
     // On acceptance run 2 one enumeration task made six rows in a minute from the first pages it opened: each kind of source gets its own task.
     expect(text).toContain("Round 1: where the user chooses among options, start two or three enumeration tasks in parallel, one per kind of source, never only " +
-      "makers' own sites: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
+      "makers' own sites, and each reads at least four lists of its kind, each on another site, so that the options several sites name stand out: (a) independent tests, rankings and recommendation lists; (b) the options with the most owners' reviews or sales on marketplaces or large " +
       "shops that can be reached, read from their listing or category pages sorted by popularity or by reviews, opened through the run's browser and proxies where " +
       "fetch_url is refused; (c) owners' reviews and discussions.");
     // On the LLM question of acceptance run 2 (a table of every item of a class) the lead made the rows itself and six candidates were noted.
@@ -226,9 +226,12 @@ describe("the method", () => {
     // A continued researcher keeps its whole old context: on acceptance run 1 its input grew with its new brief.
     expect(text).toContain("Never give a new task to a researcher name already used in this research: a continued researcher keeps its whole old context");
     expect(text).toContain("The one exception is a researcher whose call waited for the user's approval: continue that one");
-    // Acceptance run 2 cited no marketplace offer.
-    expect(text).toContain("Once the leading options are clear, one offers task finds their current offers: their cards in marketplaces and shops that can be reached " +
-      "and the maker's own store, opened through the run's browser and proxies where fetch_url is refused.");
+    // Acceptance run 2 cited no marketplace offer; run 4 kept 28 offers and its answer priced only its pick.
+    expect(text).toContain("Once the rows stand, offers tasks, one for every two or three rows, find a current offer for every row, the leading options first: a card " +
+      "in a marketplace or shop that can be reached, else the maker's own store or a dealer, opened through the run's browser and proxies where fetch_url is refused.");
+    expect(text).toContain("For a purchase, the table gives every option its current price, with the shop and the date seen, where a record holds one");
+    // Run 4's pool had nearly every option named by one site: each enumeration task reads several lists of its kind.
+    expect(text).toContain("never only makers' own sites, and each reads at least four lists of its kind, each on another site, so that the options several sites name stand out:");
     expect(text).not.toContain("one call per question");
     // Round 1 and the questions it starts beside the enumeration come before the later rounds.
     expect(text.indexOf("Round 1:")).toBeLessThan(text.indexOf("Start now only the questions that need no other's answer"));
@@ -242,7 +245,7 @@ describe("the method", () => {
     expect(footer).toContain("Make two or three independent searches in one response: the calls of one response run at once.");
     expect(footer).toContain("End with a report of at most about 1,500 characters: the server lists your records under it");
     expect(footer).toContain("never each record again");
-    expect(footer).toContain("A task to find the options notes each one with change_research_frame change note_candidate: its exact name as the page writes it, " +
+    expect(footer).toContain("A task to find the options reads at least four lists of its kind, each on another site, and notes each option with change_research_frame change note_candidate: its exact name as the page writes it, " +
       "the model and not only its brand or line, as the label, the page's link as the url, and where you saw it as the reason.");
     expect(footer).toContain("One note per option and page, from listings, rankings and reviews, never only makers' sites; a second page of a site you noted it from " +
       "adds nothing.");
