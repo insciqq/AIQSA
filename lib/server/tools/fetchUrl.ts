@@ -22,7 +22,7 @@ import {
   type WebFetchOptions,
   type WebFetchResponse
 } from "../webFetch/transport";
-import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl } from "../webFetch/urls";
+import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl, withoutFetchUrlAttribution } from "../webFetch/urls";
 import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
 import { BROWSER_HANDOFF_TOOL_NAME, RESEARCH_UNREACHABLE_NEXT } from "./browserHandoff";
 import { FETCH_URL_LIMITS, persistedFetchUrlFacts, type FetchUrlPlan } from "./fetchUrlPlan";
@@ -386,6 +386,19 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
     return searchLinks.has(url);
   }
 
+  /**
+   * The link to request for an asked one, or null when it is not authorized. A search cites a page with OpenAI's attribution
+   * (`utm_source=openai`) in the text the model reads, while its source keeps the page's own link (`openaiResponsesSearch.ts`):
+   * on acceptance run 3 (2026-11-03) a researcher was refused, twice, the exact link of the option a reference answer picked
+   * first. Such a link is requested as the authorized one, without its `utm_*` parameters, so nothing is sent that the
+   * authorized link lacks; the asked link stays the page's name, which the agent's records cite.
+   */
+  async function authorizedRequest(url: string, followupTexts: (() => readonly string[]) | undefined): Promise<string | null> {
+    if (await authorized(url, followupTexts)) return url;
+    const bare = withoutFetchUrlAttribution(url);
+    return bare !== null && await authorized(bare, followupTexts) ? bare : null;
+  }
+
   async function fetchAndExtract(url: string, signal: AbortSignal, reader = fetchPage, researching = false): Promise<Outcome> {
     let response: WebFetchResponse;
     try {
@@ -444,8 +457,9 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       if (explicit === null) return refuse("fetch_url_invalid", null);
       const url = normalizeFetchUrl(call.arguments.url);
       if (!url) return refuse("fetch_url_invalid", null);
-      if (!await authorized(url, input.followupTexts)) return refuse("fetch_url_not_in_conversation", url);
-      const policy = webFetchUrlRefusal(new URL(url));
+      const request = await authorizedRequest(url, input.followupTexts);
+      if (!request) return refuse("fetch_url_not_in_conversation", url);
+      const policy = webFetchUrlRefusal(new URL(request));
       if (policy) return refuse(policy, url);
       const unreachable = await deps.research?.(input.signal) ?? null;
       const researching = unreachable !== null;
@@ -518,7 +532,8 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           const reader = connection
             ? (target: string, options: WebFetchOptions) => (deps.fetchProxyPage ?? fetchThroughProxy)(target, connection, options)
             : checkRedirects ? (target: string, options: WebFetchOptions) => fetchPage(target, { ...options, redirectRoute }) : fetchPage;
-          const work = fetchAndExtract(url, input.signal, reader, researching).then((result): Outcome => {
+          const work = fetchAndExtract(request, input.signal, reader, researching).then((fetched): Outcome => {
+            const result: Outcome = fetched.kind === "read" && request !== url ? { ...fetched, value: { ...fetched.value, url } } : fetched;
             if (!actualProxy) return result;
             return result.kind === "read" ? { ...result, value: { ...result.value, proxy: actualProxy } } : { ...result, proxy: actualProxy };
           });

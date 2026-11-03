@@ -39,6 +39,31 @@ export function normalizeFetchUrl(value: unknown): string | null {
   return normalized.length <= FETCH_URL_MAX_LENGTH ? normalized : null;
 }
 
+/**
+ * A normalized URL without its `utm_*` parameters, the rest of its query as written, or null when it has none. Only a
+ * comparison and request form for `fetch_url`'s authority: digests and every other comparison keep the whole URL.
+ */
+export function withoutFetchUrlAttribution(normalizedUrl: string): string | null {
+  const url = new URL(normalizedUrl);
+  if (!url.search) return null;
+  const parts = url.search.slice(1).split("&");
+  const kept = parts.filter((part) => !isAttribution(part));
+  if (kept.length === parts.length) return null;
+  url.search = kept.length > 0 ? `?${kept.join("&")}` : "";
+  return normalizeFetchUrl(url.href);
+}
+
+function isAttribution(part: string): boolean {
+  const name = part.split("=", 1)[0]!.replace(/\+/gu, " ");
+  let decoded = name;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    // A malformed escape is no attribution name.
+  }
+  return decoded.toLowerCase().startsWith("utm_");
+}
+
 /** The frozen authority form of a normalized URL: its SHA-256, hex. */
 export function fetchUrlDigest(normalizedUrl: string): string {
   return createHash("sha256").update(normalizedUrl, "utf8").digest("hex");
