@@ -567,8 +567,12 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);
   /** The calls not started yet, in the response's order. */
   const waiting = input.calls.map((_, index) => index);
-  const isSerial = (index: number) => deps.registry.resolve(input.calls[index]!.name)?.serial === true;
-  const isDelegated = (index: number) => deps.registry.resolve(input.calls[index]!.name)?.delegated === true;
+  // Each call's place is fixed as the batch starts: a registry that stops resolving a tool meanwhile (research's scoping
+  // limit) refuses that call when it starts, and must never move it to a pool with no workers, where it would never run.
+  const serialCalls = input.calls.map((call) => deps.registry.resolve(call.name)?.serial === true);
+  const delegatedCall = input.calls.map((call) => deps.registry.resolve(call.name)?.delegated === true);
+  const isSerial = (index: number) => serialCalls[index]!;
+  const isDelegated = (index: number) => delegatedCall[index]!;
   let serialRunning = false;
   /**
    * The next call that may start among the delegated calls or the others, each with its own workers. A serial call
@@ -592,7 +596,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       }
     }
   };
-  const delegatedCalls = input.calls.filter((_, index) => isDelegated(index)).length;
+  const delegatedCalls = delegatedCall.filter(Boolean).length;
   await Promise.all([
     ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length - delegatedCalls) }, worker(false)),
     ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.delegatedConcurrency, delegatedCalls) }, worker(true))

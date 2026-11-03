@@ -1719,6 +1719,23 @@ describe("a model that never proposes", () => {
     expect(memory.published()).toBe(REPORT);
   });
 
+  it("past scoping's limit answers every queued sub-agent call of a batch that had more than its own places, and the plan still works", async () => {
+    // Codex review (2026-11-03): a queued call whose tool the scoping limit drops must still get its refusal, never leave a hole.
+    let clock = 1_000_000;
+    const calls = Array.from({ length: 9 }, (_, index) => ({ arguments: { message: "Read sources.", name: `agent-${index}` }, id: `agent-${index}`, name: CALL_SUBAGENT_TOOL_NAME }));
+    const main = scripted([{ calls: [start()] }, { calls }, { calls: [propose()] }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] }, { now: () => clock });
+    const original = vi.mocked(memory.toolCalls.begin).getMockImplementation()!;
+    vi.mocked(memory.toolCalls.begin).mockImplementation(async (input) => {
+      const result = await original(input);
+      if (input.toolName === CALL_SUBAGENT_TOOL_NAME) clock = 1_000_000 + RESEARCH_TIME_MS.scoping + 1;
+      return result;
+    });
+    await run(main.adapter, memory, FREE).text();
+    expect(resultsOf(main.requests[2], CALL_SUBAGENT_TOOL_NAME)).toHaveLength(9);
+    expect(memory.published()).toBe(REPORT);
+  });
+
   it("past scoping's limit lets a call already running finish", async () => {
     let clock = 1_000_000;
     const main = scripted([{ calls: [start()] }, { calls: [fetchCall("call-running")] }, { calls: [propose()] }, { calls: [submit()] }]);
