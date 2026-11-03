@@ -482,6 +482,22 @@ describe("native tool batch", () => {
     expect(outcome.results.map((item) => item.callId)).toEqual([...delegated, ...lookups].map((call) => call.id));
   });
 
+  it("keeps a queued delegated call in its own places when the registry stops resolving its tool, and refuses it there", async () => {
+    // Research's scoping limit drops call_subagent from the registry while a round's first calls run (codex review, 2026-11-03).
+    let expired = false;
+    const agent = tool("agent", "local", vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      expired = true;
+      return ok(call);
+    }), { delegated: true });
+    const { store } = fakeStore();
+    const batch = deps({ agent }, store, { maxToolCalls: null });
+    const registry = batch.registry;
+    const outcome = await runToolBatch({ ...batch, registry: { ...registry, resolve: (name) => expired ? undefined : registry.resolve(name) } }, { calls: 0 },
+      { round: 1, calls: Array.from({ length: TOOL_BATCH_LIMITS.delegatedConcurrency + 1 }, (_, index) => ({ arguments: { name: `r${index}` }, id: `agent-${index}`, name: "agent" })) });
+    expect(outcome.results).toHaveLength(TOOL_BATCH_LIMITS.delegatedConcurrency + 1);
+    expect(outcome.results.at(-1)).toMatchObject({ callId: `agent-${TOOL_BATCH_LIMITS.delegatedConcurrency}`, outcome: "error" });
+  });
+
   it("starts no queued call after the tool time ran out, lets running calls settle and still runs the reserved report", async () => {
     let timeLeft = true;
     let started = 0;
