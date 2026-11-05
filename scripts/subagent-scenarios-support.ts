@@ -546,11 +546,12 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       "Если какую-то прочитать не удалось, возьми следующую из отчёта. Ответь одним предложением, сколько страниц прочитано."
   }),
   U: Object.freeze({
-    // The sleep outlasts the start of the long answer and ends while it streams, so its callback races the written answer.
+    // A sub-agent with no tool reports within seconds, while the long answer streams, so its callback races the written answer
+    // (stand run drr-u1, 2026-11-06: with a Workspace `sleep 30` the VM's start put the callback after a 30-second answer).
     start: (word: string) => `Сделай ровно два шага. 1. Запусти в фоне (background: true) ровно одного суб-агента ${SUBAGENT_NAMES.racer}. ` +
-      "Его задание: выполнить в Workspace одну команду `sleep 30`, а затем написать отчёт ровно из одного слова " + `${word}. ` +
+      "Его задание: ничего не вызывая, сразу написать отчёт ровно из одного слова " + `${word}. ` +
       "2. Сразу после запуска, не дожидаясь его отчёта и ничего больше не вызывая, напиши окончательный ответ: подробное объяснение " +
-      "примерно на 600 слов о том, как работает холодильник, обычными абзацами без заголовков и списков. Первый абзац — не меньше трёх " +
+      "примерно на 1500 слов о том, как работает холодильник, обычными абзацами без заголовков и списков. Первый абзац — не меньше трёх " +
       "предложений. О суб-агенте в ответе не пиши."
   }),
   P: Object.freeze({
