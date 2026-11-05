@@ -159,6 +159,12 @@ export const RESEARCH_TIME_MS = Object.freeze({
   hardEnd: 90 * MINUTE_MS,
   /** From the plan's release: what did not pass by now goes out with a note. Report and checks run from `stopRunningResearchers` to here. */
   notes: 85 * MINUTE_MS,
+  /**
+   * The page a finished research writes from its final report while the answer waits (operator decision 2026-11-05, `lib/server/research/page.ts`):
+   * one response that writes it, its call and the one send back of its check. It starts only when the hard end, less the turn's handoff reserve, still
+   * leaves this much, and it never moves the hard end: past it the answer goes out without a page.
+   */
+  page: 8 * MINUTE_MS,
   planWindow: 60_000,
   /** One researcher's turn, so one stuck agent cannot spend the whole budget. */
   researcherTurn: 25 * MINUTE_MS,

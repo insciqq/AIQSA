@@ -47,7 +47,7 @@ import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, t
 import { createResearchRounds, researchFilledCells, researchKeySpecs, researchLeadingRows, researchMatrix, researchProgressCells, researchUnconfirmedKeyCells } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchReadHost,
   researchUnreachableSites } from "./method";
-import { researchAnswerText, researchNote } from "./notes";
+import { researchAnswerText, researchContentNotes, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { researchDraftWithLinkedRecords } from "./reportCheck";
@@ -1043,6 +1043,17 @@ export function createRunResearch(input: RunResearchInput) {
       if (held) return researchAnswerText(researchDraftText(held.draft), held.notes);
       if (superseded) return researchAnswerText(researchDraftText(superseded.draft), [...superseded.notes, researchNote("followup_not_applied")]);
       return null;
+    },
+
+    /**
+     * What a finished research's page is written from (`page.ts`): the draft whose text `finish` gives the answer (its summary, `researchSummaryText`, above its
+     * report), and as `caveats` the notes of that answer about its content, such as a fact the checks rejected, which the page must not show as plain fact. None
+     * before the plan stood, or for an answer the server built from the records or the model's last words. The engine asks only at research's real end, never
+     * at an approval's pause, so one research writes one page.
+     */
+    pageSource(): Readonly<{ caveats: readonly string[]; draft: ResearchDraft; goal: string; report: string }> | null {
+      const final = plan ? accepted ?? (researching() ? held ?? superseded : null) : null;
+      return final && plan ? { caveats: researchContentNotes(final.notes), draft: final.draft, goal: plan.goal, report: researchDraftText(final.draft) } : null;
     },
 
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */

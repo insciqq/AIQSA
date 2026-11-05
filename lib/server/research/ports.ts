@@ -185,9 +185,24 @@ export type ResearchResumePort = Readonly<{
   link(state: ResearchResumeState, signal: AbortSignal): Promise<void>;
 }>;
 
+/** The page a finished research wrote (`page.ts`): the version its `create_artifact` call made, of the run's user. */
+export type ResearchPageArtifact = Readonly<{ artifactId: string; entrypoint: string | null; title: string; versionId: string }>;
+
+/** What the page's check found: it passes, or it goes back once with `message`, which names what does not match and nothing else. */
+export type ResearchPageVerdict = Readonly<{ kind: "pass" }> | Readonly<{ kind: "mismatch"; message: string }>;
+
+/**
+ * The page's check before it reaches the answer, to be filled by a later task with no model call: it reads the version `page` names and compares it with
+ * `report`, the text the page was written from. A second mismatch, or a check that throws, keeps the page out of the answer, which keeps its full text either way.
+ */
+export type ResearchPagePort = Readonly<{
+  check(input: Readonly<{ page: ResearchPageArtifact; report: string; signal: AbortSignal }>): Promise<ResearchPageVerdict>;
+}>;
+
 export type ResearchPorts = Readonly<{
   coverage: ResearchCoveragePort;
   evidence: ResearchEvidencePort;
+  page: ResearchPagePort;
   planWindow: ResearchPlanWindowPort;
   report: ResearchReportPort;
   resume: ResearchResumePort;
@@ -198,6 +213,7 @@ export type ResearchPorts = Readonly<{
 export type ResearchPortFactories = Readonly<{
   coverage?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchCoveragePort;
   evidence?: (run: ResearchRunScope) => ResearchEvidencePort;
+  page?: (run: ResearchRunScope) => ResearchPagePort;
   planWindow?: (run: ResearchRunScope) => ResearchPlanWindowPort;
   report?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchReportPort;
   resume?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchResumePort;
@@ -216,6 +232,9 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     page: async () => null,
     record: async () => ({ code: "research_evidence_unavailable", kind: "refused", message: "This run keeps no evidence records." }),
     records: async () => []
+  },
+  page: {
+    check: async () => ({ kind: "pass" })
   },
   planWindow: {
     open: async ({ proposal }) => ({ changed: false, plan: proposal, releasedBy: "timer" })
@@ -246,6 +265,7 @@ export function researchPorts(factories: ResearchPortFactories | undefined, run:
   return {
     coverage,
     evidence,
+    page: factories?.page?.(run) ?? NOOP_RESEARCH_PORTS.page,
     planWindow: factories?.planWindow?.(run) ?? NOOP_RESEARCH_PORTS.planWindow,
     report: factories?.report?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.report,
     resume: factories?.resume?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.resume,
