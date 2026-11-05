@@ -62,7 +62,7 @@ const flag = (value: boolean) => value ? 1 : 0;
  * sub-agent that waits. N: a DOCX attached in one turn and answered from in the
  * next, with the Workspace off for the installation.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -80,7 +80,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }, U: {}
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -189,6 +189,7 @@ export const SUBAGENT_NAMES = Object.freeze({
   idle: ["idle-1", "idle-2"],
   listener: "p-listener",
   reader: "q-reader",
+  racer: "u-sleeper",
   notary: "notary",
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
@@ -543,6 +544,14 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       "без браузера и Workspace. В отчёте перечислить все ссылки из результатов поиска, которые он не читал, и по одному предложению о каждой прочитанной странице.",
     next: () => "Теперь сам, инструментом fetch_url, прочитай 4 разные ссылки из отчёта этого суб-агента, которые он не читал, только через fetch_url, без поиска, браузера и Workspace. " +
       "Если какую-то прочитать не удалось, возьми следующую из отчёта. Ответь одним предложением, сколько страниц прочитано."
+  }),
+  U: Object.freeze({
+    // The sleep outlasts the start of the long answer and ends while it streams, so its callback races the written answer.
+    start: (word: string) => `Сделай ровно два шага. 1. Запусти в фоне (background: true) ровно одного суб-агента ${SUBAGENT_NAMES.racer}. ` +
+      "Его задание: выполнить в Workspace одну команду `sleep 30`, а затем написать отчёт ровно из одного слова " + `${word}. ` +
+      "2. Сразу после запуска, не дожидаясь его отчёта и ничего больше не вызывая, напиши окончательный ответ: подробное объяснение " +
+      "примерно на 600 слов о том, как работает холодильник, обычными абзацами без заголовков и списков. Первый абзац — не меньше трёх " +
+      "предложений. О суб-агенте в ответе не пиши."
   }),
   P: Object.freeze({
     // The brief says nothing about the user: following the message is the product's doing, not this prompt's.
@@ -1697,28 +1706,34 @@ export function researchServerNotes(answer: string): string[] {
   return [...answer.matchAll(/\*((?:Проверено|Independently checked|Checked by|Проверил|Проверка|Одну из проверок|The check|Не удалось|Source could|Время вышло|Time ran out|Отчёт|This report|Research ended|Исследование завершилось|В этом отчёте|Этот отчёт|В сравнении|За некоторыми|Выбор в этом|Записи, на которых|Находки этого|Критерии|Criteria added|Данные не разделяют|The data does not|Some links|The records behind|The answer failed|No report was|Ответ прервался|A check|Stopped before|What you wrote|Evidence against)[^*]{0,1500})\*/gu)].map((match) => match[1]);
 }
 
-/** The phrases of R: the wish for a thorough result starts research, a simple question does not (operator decision 2026-11-01). */
-export const SCENARIO_R_PHRASES: readonly Readonly<{ start: boolean; text: string }>[] = Object.freeze([
-  { start: true, text: "поищи хорошо, какой робот-пылесос лучше" },
-  { start: true, text: "проведи исследование рынка электросамокатов" },
-  { start: true, text: "глубокий анализ тарифов мобильной связи" },
-  { start: true, text: "проанализируй, какой ноутбук взять для работы" },
-  { start: true, text: "сравни эти матрасы, хочу купить надолго: Askona и Ormatek" },
-  { start: false, text: "поищи, какие матрасы есть современные" },
-  { start: false, text: "какой сейчас курс доллара" },
-  { start: false, text: "найди сайт магазина DNS" },
-  { start: false, text: "что такое OLED" },
-  { start: false, text: "когда вышел последний iPhone" }
+/**
+ * The phrases of R, sent without Deep research. Since 2026-11-05 only the `+` menu's Deep research starts research, so no phrase does, even the five
+ * that ask in words for a thorough result (the first five, which started it under the 2026-11-01 rule).
+ */
+export const SCENARIO_R_PHRASES: readonly Readonly<{ text: string }>[] = Object.freeze([
+  { text: "поищи хорошо, какой робот-пылесос лучше" },
+  { text: "проведи исследование рынка электросамокатов" },
+  { text: "глубокий анализ тарифов мобильной связи" },
+  { text: "проанализируй, какой ноутбук взять для работы" },
+  { text: "сравни эти матрасы, хочу купить надолго: Askona и Ormatek" },
+  { text: "поищи, какие матрасы есть современные" },
+  { text: "какой сейчас курс доллара" },
+  { text: "найди сайт магазина DNS" },
+  { text: "что такое OLED" },
+  { text: "когда вышел последний iPhone" }
 ]);
 
-/** A phrase that should start research and got a question instead fails: the model asks nothing first (operator decision 2026-11-01). */
-export type RPhraseResult = Readonly<{ expected: boolean; index: number; started: boolean; status: string }>;
+/**
+ * One phrase's run: `offered`, admitted with Deep research (`normalizedRequest.deepResearch`, the only thing that puts the research tools on a
+ * run); `started`, a `start_research` call in it.
+ */
+export type RPhraseResult = Readonly<{ index: number; offered: boolean; started: boolean; status: string }>;
 
-/** R's verdict by phrase index: the words stay in this file, and each wrong direction has a name of its own. */
+/** R's verdict by phrase index: no phrase is offered research or starts it (operator decision 2026-11-05); the words stay in this file. */
 export function oracleR(results: readonly RPhraseResult[]): OracleVerdict {
-  const failed = results.flatMap((result) => result.started === result.expected ? [] : [`phrase_${result.index}_${result.expected ? "not_started" : "started"}`]);
-  return { counts: { asked: results.length, correct: results.filter((result) => result.started === result.expected).length,
-    started: results.filter((result) => result.started).length }, failed };
+  const failed = results.flatMap((result) => [...result.offered ? [`phrase_${result.index}_offered`] : [], ...result.started ? [`phrase_${result.index}_started`] : []]);
+  return { counts: { asked: results.length, correct: results.filter((result) => !result.offered && !result.started).length,
+    offered: results.filter((result) => result.offered).length, started: results.filter((result) => result.started).length }, failed };
 }
 
 /** M's verdict: every acceptance line of the task, each with a name of its own when it fails. */
