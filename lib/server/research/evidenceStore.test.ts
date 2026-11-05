@@ -7,12 +7,14 @@ import {
   RESEARCH_PAGE_LIMITS,
   type ResearchAgentRef,
   type ResearchEvidenceRecord,
+  type ResearchFrame,
   type ResearchRecordInput
 } from "../../contracts/research";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import * as observability from "../observability";
 import { createResearchEvidenceRepository } from "./evidenceRepository";
 import { createResearchEvidenceStore, storedPageText } from "./evidenceStore";
+import { researchMatrixCoverage } from "./matrix";
 import type { ResearchEvidencePort, ResearchEvidenceWritten, ResearchRunScope } from "./ports";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { RESEARCH_WRITE_SOURCE_LIMITS } from "./sources";
@@ -346,6 +348,35 @@ describe("writing a record", () => {
       // A quote not on the page keeps its own word: that is what to correct first.
       await expect(recorded(port, rated("Рейтинг 4,9 · 1 824 отзыва"))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "not_verbatim" } });
       await expect(port.records(signal)).resolves.toHaveLength(3);
+    });
+
+    it("reads its numbers as the page writes them: a line break parts them, and a count is never one group or mantissa of a larger one", async () => {
+      const memory = tables();
+      const LINES = "Dr. Ivanova\n4.7\n318 reviews\nBook a visit";
+      const GROUPED = "Рейтинг 4,7 ★ 12 345 оценок · 4.8 (12K ratings)";
+      fetched(memory, CARD, LINES);
+      fetched(memory, OTHER_LINK, GROUPED);
+      const { port } = storeOf(memory);
+      const record = (quote: string, url: string, score: number, count: number) => finding(quote, url, { criterionKey: "ratings",
+        rating: { ...rating, count, counted: "ratings", score }, rowKey: "ivanova", sourceClass: "owner_reviews" });
+      await expect(recorded(port, record("4.7\n318 reviews", CARD, 4.7, 318))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+      await expect(recorded(port, record("4,7 ★ 12 345 оценок", OTHER_LINK, 4.7, 12_345))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+      await expect(recorded(port, record("4.8 (12K ratings)", OTHER_LINK, 4.8, 12_000))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+      for (const [quote, score, count] of [["4,7 ★ 12 345 оценок", 4.7, 12], ["4.8 (12K ratings)", 4.8, 12]] as const) {
+        await expect(recorded(port, record(quote, OTHER_LINK, score, count))).resolves.toMatchObject({ quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" } });
+      }
+    });
+
+    it("fills its cell of the matrix only when its numbers stand in its quote", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const frame: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Рейтинг и отзывы", key: "ratings", ratings: true, why: "W." }],
+        rows: [{ key: "ivanova", label: "Иванова" }, { key: "petrov", label: "Петров" }] };
+      await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов"));
+      await recorded(port, { ...rated("Рейтинг 4,9 · 1 284 отзыва пациентов", { count: 12 }), rowKey: "petrov" });
+      const coverage = researchMatrixCoverage(frame, await port.records(signal));
+      expect(coverage.cells.map(({ rowKey, state }) => [rowKey, state])).toEqual([["ivanova", "filled"], ["petrov", "empty"]]);
     });
 
     it("leaves a finding that is no rating as its quote's check has it", async () => {
