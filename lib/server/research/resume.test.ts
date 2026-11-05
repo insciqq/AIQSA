@@ -57,6 +57,7 @@ function storeOf(overrides: Partial<ResearchResumeStore> = {}) {
     interrupted: vi.fn(async () => true),
     link: vi.fn(async () => undefined),
     recorded: vi.fn(async () => true),
+    sentWithDeepResearch: vi.fn(async (_key: { runId: string }, runIds: readonly string[]) => runIds.includes("run-a")),
     source: vi.fn(async () => SOURCE as ResearchResumeSource | null),
     ...overrides
   } satisfies ResearchResumeStore;
@@ -82,6 +83,17 @@ describe("what the store gives a Continue", () => {
     await createResearchResume({ store })(scopeOf({ branchRunIds: ["run-a", "run-a2"] })).load("run-a", running);
     expect(store.interrupted).toHaveBeenCalledExactlyOnceWith(keyOf("run-a2"));
     expect(store.source).toHaveBeenCalledExactlyOnceWith(keyOf("run-a"));
+  });
+
+  it("says whether one of the branch's runs was sent with Deep research, by the store's frozen field, and no run off the branch counts", async () => {
+    const store = storeOf();
+    const port = createResearchResume({ store })(scopeOf({ branchRunIds: ["run-a", "run-a2"] }));
+    await expect(port.sentWithDeepResearch(["run-a2", "run-a"], running)).resolves.toBe(true);
+    expect(store.sentWithDeepResearch).toHaveBeenLastCalledWith(keyOf("run-b"), ["run-a2", "run-a"]);
+    await expect(port.sentWithDeepResearch(["run-a2"], running)).resolves.toBe(false);
+    store.sentWithDeepResearch.mockClear();
+    await expect(port.sentWithDeepResearch(["run-of-another-branch"], running)).resolves.toBe(false);
+    expect(store.sentWithDeepResearch).not.toHaveBeenCalled();
   });
 
   it("says whether the branch's last run was interrupted, the one fact that lets a Continue offer research, and never for an approval or an empty branch", async () => {
@@ -208,7 +220,7 @@ function portsOf(load: () => Promise<ResearchResumeState | null> = async () => S
       return { ...NOOP_RESEARCH_PORTS.evidence, records: async () => records };
     },
     planWindow: () => ({ open }),
-    resume: () => ({ interrupted: async () => true, link, load: resume }),
+    resume: () => ({ interrupted: async () => true, link, load: resume, sentWithDeepResearch: async (runIds) => runIds.includes("run-a") }),
     time: () => ({ ...NOOP_RESEARCH_PORTS.time, planReleased })
   };
   return { link, open, planReleased, ports, resume, scope: () => scope! };
@@ -448,14 +460,22 @@ describe("a plan the user changed", () => {
 });
 
 describe("what is no Continue, or has nothing to pick up", () => {
-  it("offers a Continue research only on the store's word that the turn before was interrupted, and a store that fails offers none", async () => {
+  it("lets a Continue research only on the server's word: the turn before was interrupted and a turn it goes on from was sent with Deep research", async () => {
     const parts = portsOf();
-    await expect(runOn(turn(), parts.ports, { request: "continue" }).research.continues()).resolves.toBe(true);
-    const ended = { ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume }) };
-    await expect(runOn(turn(), ended, { request: "continue" }).research.continues()).resolves.toBe(false);
+    const authorized = (ports: ResearchPortFactories, extra: Partial<RunResearchInput> = {}) =>
+      runOn(turn(), ports, { authorityRunIds: ["run-a"], request: "continue", ...extra }).research.authorized();
+    await expect(authorized(parts.ports)).resolves.toBe(true);
+    // A start call in the items is no authority: a run admitted without Deep research authorizes nothing, and neither does none at all.
+    await expect(authorized(parts.ports, { authorityRunIds: ["run-other"] })).resolves.toBe(false);
+    await expect(authorized(parts.ports, { authorityRunIds: [] })).resolves.toBe(false);
+    await expect(authorized({ ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, sentWithDeepResearch: async () => true }) })).resolves.toBe(false);
+    // An approval continuation needs the choice alone; the user's own choice needs nothing more.
+    await expect(authorized({ ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, sentWithDeepResearch: async (runIds) => runIds.includes("run-a") }) },
+      { request: "approval" })).resolves.toBe(true);
+    await expect(authorized({}, { request: "chosen" })).resolves.toBe(true);
     const log = vi.spyOn(observability, "logEvent").mockImplementation(() => undefined);
     const failing = { ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, interrupted: async () => { throw new Error("database down"); } }) };
-    await expect(runOn(turn(), failing, { request: "continue" }).research.continues()).resolves.toBe(false);
+    await expect(authorized(failing)).resolves.toBe(false);
     expect(log).toHaveBeenCalledWith("service_operation", expect.objectContaining({ code: "research_resume_failed" }));
     log.mockRestore();
   });
