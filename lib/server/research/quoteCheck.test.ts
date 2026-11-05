@@ -318,4 +318,36 @@ describe("a rating's numbers", () => {
     expect(ratingNumbersNotIn(rating(4.6, 12_345), "4,7 ★ 12 345 оценок")).toEqual(["score"]);
     expect(ratingNumbersNotIn(rating(4.7, 12_345), "Отличный врач, рекомендую")).toEqual(["score", "count"]);
   });
+
+  // The figure reader joined numbers across a line break and read a thousands group or a mantissa as a number of its own (review of 2026-11-06).
+  it.each([
+    ["4.7\n318 reviews", 4.7, 318],
+    [JSON.stringify("4.7\n318 reviews"), 4.7, 318],
+    ["4,7 ★ 12 345 оценок", 4.7, 12_345],
+    ["4,7 ★ 12\u202F345 оценок", 4.7, 12_345],
+    ["4.8 (12K ratings)", 4.8, 12_000],
+    ["Рейтинг 4,9 из 5 · 1 024 отзыва", 4.9, 1_024],
+    ["4.6/5 based on 2,310 reviews", 4.6, 2_310],
+    ["4.5 of 5 · 12.345 valoraciones", 4.5, 12_345],
+    ["4,8 · 12,3 тыс. оценок", 4.8, 12_300],
+    ["4,8 | 1,2 млн оценок", 4.8, 1_200_000]
+  ] as const)("read %j as score %s from %s ratings", (text, score, count) => {
+    expect(ratingNumbersNotIn(rating(score, count), text)).toEqual([]);
+  });
+
+  it.each([
+    ["12 345 оценок", 12, ["count"]],
+    ["12K ratings", 12, ["count"]],
+    ["12,3 тыс. оценок", 12, ["count"]],
+    ["3180 reviews", 318, ["count"]],
+    ["4.7 318 reviews", 7_318, ["count"]]
+  ] as const)("refuse in %j a count of %s that is only part of what it writes", (text, count, missing) => {
+    expect(ratingNumbersNotIn(rating(4.7, count), `4.7 · ${text}`)).toEqual(missing);
+  });
+
+  it("refuse a score the text writes more exactly, and a count of what is no count", () => {
+    expect(ratingNumbersNotIn(rating(4.7, 318), "4.75 · 318 reviews")).toEqual(["score"]);
+    expect(ratingNumbersNotIn(rating(4.7, 47), "4.7 · no reviews yet")).toEqual(["count"]);
+    expect(ratingNumbersNotIn(rating(4.7, 24), "Galaxy S24 · 4.7")).toEqual(["count"]);
+  });
 });
