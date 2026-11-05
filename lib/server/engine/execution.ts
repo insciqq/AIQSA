@@ -85,7 +85,7 @@ import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
-import { createRunResearch, deepResearchRefusal, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
+import { createRunResearch, deepResearchRefusal, researchAuthorityRuns, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
   type RunResearch } from "../research/run";
 
 /**
@@ -690,18 +690,21 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         runSubagents = subagents;
         // Research is the main agent's (`research/run.ts`): its tools ride beside the sub-agent tools, which its researchers run on, and
         // only on the run of a message the user sent with Deep research, an approval continuation of its research or a Continue of it
-        // (operator decision 2026-11-05). No words in a chat offer it.
+        // (operator decision 2026-11-05). No words in a chat offer it, and a start call in the items authorizes nothing: the turns a
+        // continuation goes on from must have been sent with it.
         const researchAvailability: ResearchAvailability = { monitoring: normalizedRequest.monitoringVerdictTool === true, scheduled: input.scheduled === true,
           searchOptions: normalizedRequest.searchPlan.options.length, subagents: Boolean(subagents && engine.research && engine.subagentThreads), telegram: input.telegram === true };
         const researchRequest = researchRequestOf({ approval: Boolean(input.approvalContinuation), chosen: normalizedRequest.deepResearch === true, items: conversation.items });
         const offeredResearch = subagents && engine.research && engine.subagentThreads && researchRequest && researchOffered({ ...researchAvailability, request: researchRequest })
-          ? createRunResearch({ chatId: scope.chatId, deps: engine.research, extendTurn, gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
+          ? createRunResearch({ authorityRunIds: researchRequest === "chosen" ? [] : researchAuthorityRuns({ continuationTurns, messages: conversationMessages,
+            runsByAnswer: nativeRuns }), chatId: scope.chatId, deps: engine.research, extendTurn,
+            gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
             items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; }, request: researchRequest,
             // An approval continuation is a new run of the research its turn started, and works on that run's rows.
             researchRunId: input.approvalContinuation ? researchRunOf(conversation.items, { branchRunIds, runId }) : runId, runId,
             savedResults: engine.savedResults, subagentInput, threads: engine.subagentThreads, toolTimeLeft, userId: input.userId,
             userMessage: subagentInput.userMessage }) : null;
-        const runResearch = offeredResearch && (researchRequest !== "continue" || await offeredResearch.continues()) ? offeredResearch : null;
+        const runResearch = offeredResearch && await offeredResearch.authorized() ? offeredResearch : null;
         research = runResearch;
         // Admission refused a message sent with Deep research that cannot research (`deepResearchRefusal`); one that still cannot is refused here,
         // before any model call, never answered another way.

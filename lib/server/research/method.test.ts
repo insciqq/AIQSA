@@ -11,7 +11,7 @@ import { researchMatrixCoverage, researchUnconfirmedKeyCells } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researcherMatrixFooter, researcherMethodFooter, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { finding as recordFinding, notFound as recordNotFound } from "./report.testFixtures";
-import { deepResearchRefusal, researchOffered, researchRequestOf } from "./run";
+import { deepResearchRefusal, researchAuthorityRuns, researchOffered, researchRequestOf } from "./run";
 import { createResearchSources, researchRunsOnBranch } from "./sources";
 import { researchTurnName } from "./turns";
 
@@ -381,6 +381,22 @@ describe("the method", () => {
     expect(researchRequestOf({ approval: false, chosen: false, items: [...start, typed(CONTINUE_TURN_TEXT)] })).toBe("continue");
     expect(researchRequestOf({ approval: false, chosen: false, items: [...ordinary, typed(CONTINUE_TURN_TEXT)] })).toBeNull();
     expect(researchRequestOf({ approval: false, chosen: false, items: [...start, typed("How much is it?")] })).toBeNull();
+    // An approval continuation is the server's turn, whatever its request says.
+    expect(researchRequestOf({ approval: true, chosen: true, items: start })).toBe("approval");
+  });
+
+  it("looks for a continuation's authority back through the approvals and Continues it goes on from, to the first turn that did not, and no further", () => {
+    const content = (text: string) => ({ blocks: [{ text, type: "text" }] });
+    const message = (id: string, role: "assistant" | "user", text = "", extra: object = {}) => ({ content: content(text), id, role, ...extra });
+    const runsByAnswer = new Map([["a0", "run-0"], ["a1", "run-1"], ["a2", "run-2"], ["a3", "run-3"]]);
+    const messages = [message("q0", "user", "Earlier."), message("a0", "assistant"), message("q1", "user", "Choose a mattress."), message("a1", "assistant"),
+      message("skills", "user", "Skills.", { purpose: "skill_catalog" }), message("approved", "user", "The user approved it."), message("a2", "assistant"),
+      message("follow", "user", "A follow-up.", { followupOf: { answerId: "a2", delivered: true } }), message("continue", "user", ` ${CONTINUE_TURN_TEXT} `),
+      message("a3", "assistant"), message("current", "user", CONTINUE_TURN_TEXT)];
+    expect(researchAuthorityRuns({ continuationTurns: new Set(["approved"]), messages, runsByAnswer })).toEqual(["run-3", "run-2", "run-1"]);
+    // Without the approval's server turn on record, the chain stops at it: the turn before an ordinary message never counts.
+    expect(researchAuthorityRuns({ continuationTurns: new Set(), messages, runsByAnswer })).toEqual(["run-3", "run-2"]);
+    expect(researchAuthorityRuns({ continuationTurns: new Set(), messages: [message("current", "user", CONTINUE_TURN_TEXT)], runsByAnswer })).toEqual([]);
   });
 
   it("says in the system prompt what research does once started, with no words that would start it", () => {
