@@ -47,6 +47,8 @@ export type ResearchPageStepInput = Readonly<{
   /** When the turn must hand over its answer: the hard end less its handoff reserve, read as the step starts. */
   latestEnd: number;
   now(): number;
+  /** The final draft's citations, for the check alone; never added to the page's instructions. */
+  recordIds?: readonly string[];
   /** The report the answer goes out with, the page's only source. */
   report: string;
   /** One response of the run's model to the step's conversation, offering `create_artifact` alone. */
@@ -123,7 +125,8 @@ export async function writeResearchPage(input: ResearchPageStepInput): Promise<R
       const artifact = card && researchPageArtifact(card);
       if (!card || !artifact) return failed("research_page_not_written");
       if (created === null && createdBy(card)) created = artifact.artifactId;
-      const verdict = await untilAborted(Promise.resolve().then(() => input.check({ page: artifact, report: input.report, signal })), signal);
+      const verdict = await untilAborted(Promise.resolve().then(() => input.check({ caveats: input.caveats, page: artifact,
+        recordIds: input.recordIds, report: input.report, signal })), signal);
       if (verdict.kind === "pass") return { artifact, card };
       if (attempt >= PAGE_ATTEMPTS) return failed("research_page_mismatch");
       const others = response.calls.filter((made) => made !== call).map((made): TranscriptToolResultItem => ({ callId: made.id, id: randomUUID(),

@@ -89,8 +89,8 @@ describe("the page step", () => {
     expect(respond).toHaveBeenCalledOnce();
     expect(seen[0]).toEqual([expect.objectContaining({ kind: "user", text: researchPageInstruction({ caveats: [CAVEAT], goal: "Выбрать матрас.", report: REPORT }) })]);
     expect(runCall).toHaveBeenCalledWith(pageCall(), 1, expect.any(AbortSignal));
-    // The seam a later check fills: called with the version the call made and the report the page was written from.
-    expect(check).toHaveBeenCalledExactlyOnceWith({ page: page!.artifact, report: REPORT, signal: expect.any(AbortSignal) });
+    // The check gets the version the call made and the same content the page was written from.
+    expect(check).toHaveBeenCalledExactlyOnceWith({ caveats: [CAVEAT], page: page!.artifact, recordIds: undefined, report: REPORT, signal: expect.any(AbortSignal) });
   });
 
   it("passes every page by default, so the step works before any check is wired", async () => {

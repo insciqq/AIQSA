@@ -1024,7 +1024,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           // A page the answer does not show leaves the chat's artifacts, archived as its owner would, so no later turn reads it.
           const discard = artifacts?.archive ? async (artifactId: string) => { await artifacts?.archive?.({ artifactId, ownerUserId: input.userId }); } : null;
           const page = await writeResearchPage({ caveats: pageSource.caveats, check: runResearch.ports.page.check, ...(discard ? { discard } : {}),
-            goal: pageSource.goal, latestEnd: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)), now, report: pageSource.report, runId,
+            goal: pageSource.goal, latestEnd: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)), now,
+            recordIds: pageSource.draft.recordIds, report: pageSource.report, runId,
             // Answer first: what the answer will say is on its message before the step, so a restart during it leaves recovery this text.
             save: async () => {
               await answer.flush();
