@@ -325,6 +325,17 @@ describe("what the user named as mattering", () => {
     expect(priorityMessages(valued([answer("Lonax Memory лучше.")]), offersAt("30 000 ₽", "25 000 руб."))).toContain("Optima Classic (x2) from 25 000 руб");
   });
 
+  it("reads no instalment as an offer's price, so it neither hides a dearer pick nor makes a cheaper one look dear", () => {
+    const instalment = (rowKey: string, number: number) => offer(number, rowKey, "Рассрочка 2 500 ₽ в месяц на 24 месяца");
+    const dear = [...offersAt("60 000 ₽", "20 000 ₽"), instalment("x1", 6)];
+    const text = priorityMessages(valued([answer("Lonax Memory лучше всех по соотношению цены и качества.", [id(2), id(6)])], { recordIds: [...ALL, id(6)] }), dear);
+    expect(text).toContain("the pick Lonax Memory (x1) costs from 60 000 ₽, more than options the summary also recommends: Optima Classic (x2) from 20 000 ₽.");
+    // The reverse: the cheaper pick stands, whatever the alternative's monthly payment.
+    const cheap = valued([answer("Optima Classic держит нагрузку не хуже.", [id(5), id(4)])], { pickRowKey: "x2", recordIds: [...ALL, id(6)],
+      summary: { priorities: [answer("Optima Classic держит нагрузку не хуже.", [id(5), id(4)])], rowKeys: ["x2", "x1"], text: "Берите Optima Classic за 20 000 ₽; Lonax Memory дороже." } });
+    expect(priorityMessages(cheap, dear)).toBe("");
+  });
+
   it("leaves the price to the model's word where the offers do not read as one price in one currency, or the pick is the cheapest", () => {
     const silent = valued([answer("Lonax Memory лучше.")]);
     for (const records of [offersAt("30 000 ₽", "$300"), offersAt("30 000 ₽", "25 000 ₽, было 32 000 ₽"), offersAt("30 000 ₽", "от 20 000 до 25 000 ₽"), offersAt("30 000 ₽", "25 000–28 000 ₽"),

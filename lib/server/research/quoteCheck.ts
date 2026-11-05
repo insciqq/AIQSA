@@ -405,13 +405,30 @@ const UPPER_BOUND_BEFORE = /(?:^|[\s(])(?:до|to|under|below|hasta|fins a)\s$/i
 /** A size before a price, as in `160×200 — 25 000 ₽`: a spaced dash after a dimension is no range, and the price is what follows it. */
 const SIZE_THEN_PRICE = /^.*\d ?[x×хX] ?\d[^-]* - (\d[^x×хX-]*)$/u;
 
+/** Not a letter on either side, which `\b` cannot say of Cyrillic. */
+const word = (words: string) => `(?<!\\p{L})(?:${words})(?!\\p{L})`;
+
+/**
+ * What makes a claim's amounts no full price today: an instalment, a credit or a periodic payment (`2 500 ₽/мес`, `× 24`), and an earlier or crossed-out price
+ * (`было 49 990 ₽`). On review a claim of an instalment read as the cheapest offer of its option. Months alone are no sign, since a warranty gives them too.
+ */
+const NOT_A_PRICE_NOW = new RegExp([
+  "рассрочк", "кредит", "платеж", "платёж", "ежемесячн", `в ${word("мес|мес\\.|месяц")}`, "/ ?мес", "instal{1,2}ment", "financ", "monthly", "per month", word("a month"),
+  "/ ?mo(?!\\p{L})", "/ ?month", "cuota", "a plazos", word("al mes"), "/ ?mes(?!\\p{L})", "mensual", "[$€£¥₽] ?[x×хX] ?\\d", "руб\\.? ?[x×хX] ?\\d",
+  "(?:[$€£¥₽]|руб\\.?) ?(?:на|за) \\d+ ?мес",
+  word("было"), "стар(?:ая|ой) цен", "зач[её]ркн", word("вместо"), "без скидки", "до скидки", "old price", "regular price", "before discount", word("was"),
+  "precio anterior", word("antes")
+].join("|"), "iu");
+
 /**
  * The prices a claim gives, found as `claimFigures` finds figures, with a currency sign before the number or a currency after it, a count such as `тыс.` or `k`
  * in between taken in. A range or a dimension is no one price, nor is a range's upper end. A lone point or comma before three digits groups thousands, since no
- * price has three decimals.
+ * price has three decimals. A claim of an instalment or of an earlier price gives none at all (`NOT_A_PRICE_NOW`): which of its amounts is the full price now is
+ * not something its words show reliably, so it stays the model's word.
  */
 export function claimPrices(claim: string): readonly ClaimPrice[] {
   const text = normalizeQuotedText(claim);
+  if (NOT_A_PRICE_NOW.test(text)) return [];
   const prices: ClaimPrice[] = [];
   for (const match of text.matchAll(CLAIM_NUMBERS)) {
     const token = SIZE_THEN_PRICE.exec(match[0])?.[1] ?? match[0];

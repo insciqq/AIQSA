@@ -341,7 +341,10 @@ function uncitedOffers(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
   return { message: `The summary recommends options whose current offers you did not cite: add at least one id of each, so the checks read the price and the seller you state. ${listed(missing, "; ")}.` };
 }
 
-/** An offer whose claim gives one price in one currency. A claim with two, such as a price beside a discount or an old price, stays the model's word. */
+/**
+ * An offer whose claim gives one price in one currency. A claim with two, and one of an instalment or an earlier price (`claimPrices`), stay the model's word: a
+ * monthly payment read as an offer would be its option's cheapest.
+ */
 type PricedOffer = Readonly<{ price: ClaimPrice; record: ClaimRecord }>;
 
 function pricedOffers(records: readonly ResearchEvidenceRecord[], rejected: ReadonlySet<string>): readonly PricedOffer[] {
