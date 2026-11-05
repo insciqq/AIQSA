@@ -3,7 +3,7 @@ import { RESEARCH_EVIDENCE_LIMITS, RESEARCH_FRAME_LIMITS, RESEARCH_LIMITS, type 
 import { researchCarriedNotes } from "./gates";
 import type { ResearchMatrix } from "./matrix";
 import { NOOP_RESEARCH_PORTS, type ResearchRunScope } from "./ports";
-import { DATASET, dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, notFound, RECORDS, unreachable } from "./report.testFixtures";
+import { DATASET, dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, notFound, RATED, rating, RECORDS, unreachable } from "./report.testFixtures";
 import { composeResearchReport, createResearchReport, PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { reportCheckGate } from "./reportCheck";
 import { verifierGate } from "./verifier";
@@ -163,6 +163,16 @@ describe("the answer built from the records", () => {
     expect(second![0]).toBe("Optima Classic");
     expect(second![2]).toBe("no data");
     expect(text).toContain("No report was handed in, so this is built from what research recorded");
+  });
+
+  it("gives a rating as the one from the most ratings, with its count, its platform, a small sample's word and what reviews say beside it (operator decisions 2026-11-05)", () => {
+    const worst = finding(9, "x1", "ratings", { claim: "Двое владельцев пишут, что матрас просел за месяц.", sourceClass: "owner_reviews", url: "https://market.example/x1/reviews" });
+    const records = [...RECORDS, rating(6, "x1", 5, 7, "lonax.example"), rating(7, "x1", 4.6, 3_000, "market.example"), worst, rating(8, "x2", 5, 7, "optima.example")];
+    const [header, , first, second] = tableOf(compose({ matrix: matrixOf(RATED, records), records }));
+    expect(header![4]).toBe("Рейтинг и отзывы");
+    expect(first![4]).toBe("4.6 of 5, 3000 ratings [market.example](https://market.example/x1); Двое владельцев пишут, что матрас просел за месяц. " +
+      "[market.example](https://market.example/x1/reviews) (+1)");
+    expect(second![4]).toBe("5 of 5, 7 ratings, a small sample [optima.example](https://optima.example/x2)");
   });
 
   it("says why each criterion matters and names an added one with its reason", () => {

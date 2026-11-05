@@ -185,13 +185,50 @@ export function researchKeyCells(matrix: ResearchMatrix, records: readonly Resea
 export const researchUnconfirmedKeyCells = (matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: LeadingDraft): readonly ResearchKeyCell[] =>
   researchKeyCells(matrix, records, researchLeadingRows(draft)).filter(({ confirmed }) => !confirmed);
 
+/** The frame's ratings criterion (`ResearchCriterion.ratings`), or null where it holds none, as a knowledge question's frame and one stored before it do. */
+export const researchRatingsCriterion = (frame: ResearchFrame): ResearchCriterion | null => frame.criteria.find(({ ratings }) => ratings === true) ?? null;
+
 /**
- * What a round is measured by: the cells filled, and the key specifications of the last draft's options confirmed, since a round that confirmed what was asked of it
- * found something. Only those options': a confirmation nobody asked for buys no further round.
+ * Whether an option's lowest-rated reviews were read (operator decision 2026-11-05): a trusted record of owners' reviews under the ratings criterion that is no rating, what
+ * they complain of or a dataset of them, or a not_found there. Only a not_found written after the option's last rating says the reviews were looked for: one written before
+ * says only that a rating was not found yet. That the reviews read were the lowest-rated stays the researcher's word.
+ */
+function worstReviewsRead(records: readonly ResearchEvidenceRecord[], rowKey: string, criterionKey: string): boolean {
+  const ratings = records.filter((record) => record.kind === "finding" && record.rating !== undefined && record.rowKey === rowKey);
+  return records.some((record) => {
+    if (record.rowKey !== rowKey || record.criterionKey !== criterionKey) return false;
+    if (record.kind === "not_found") return ratings.every((rating) => later(record, rating));
+    const reviews = record.kind === "dataset" || (record.kind === "finding" && record.rating === undefined);
+    return reviews && record.sourceClass === "owner_reviews" && cellWord(record) === "filled";
+  });
+}
+
+/**
+ * The options a draft leads with whose lowest-rated reviews nobody has read yet (operator decision 2026-11-05): in a reviewed chat the first pick fell to one owner's report
+ * of sagging within a month, which the user found alone, so each recommended option's worst reviews are read before a pick. Only where the frame has a ratings criterion,
+ * and not while that cell is empty: an empty cell is asked for as one.
+ */
+export function researchUnreadWorstReviews(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: LeadingDraft): readonly ResearchMatrixRow[] {
+  const criterion = researchRatingsCriterion(matrix.frame);
+  if (!criterion) return [];
+  const empty = new Set(matrix.coverage.cells.filter((cell) => cell.state === "empty").map((cell) => cellId(cell.rowKey, cell.criterionKey)));
+  return researchLeadingRows(draft).flatMap((rowKey) => {
+    const row = matrix.frame.rows.find(({ key }) => key === rowKey);
+    return row && !empty.has(cellId(rowKey, criterion.key)) && !worstReviewsRead(records, rowKey, criterion.key) ? [row] : [];
+  });
+}
+
+/**
+ * What a round is measured by: the cells filled, and the key specifications of the last draft's options confirmed and their lowest-rated reviews read, since a round that
+ * did what was asked of it found something. Only those options': a confirmation nobody asked for buys no further round.
  */
 export function researchProgressCells(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: LeadingDraft): ReadonlySet<string> {
-  const confirmed = researchKeyCells(matrix, records, researchLeadingRows(draft)).filter((cell) => cell.confirmed).map((cell) => `${cellId(cell.row.key, cell.criterion.key)}#confirmed`);
-  return new Set([...researchFilledCells(matrix.coverage), ...confirmed]);
+  const leading = researchLeadingRows(draft);
+  const confirmed = researchKeyCells(matrix, records, leading).filter((cell) => cell.confirmed).map((cell) => `${cellId(cell.row.key, cell.criterion.key)}#confirmed`);
+  const ratings = researchRatingsCriterion(matrix.frame);
+  const reviewed = ratings ? leading.filter((rowKey) => matrix.frame.rows.some(({ key }) => key === rowKey) && worstReviewsRead(records, rowKey, ratings.key))
+    .map((rowKey) => `${cellId(rowKey, ratings.key)}#reviews`) : [];
+  return new Set([...researchFilledCells(matrix.coverage), ...confirmed, ...reviewed]);
 }
 
 const refused = (message: string) => ({ message, ok: false as const });

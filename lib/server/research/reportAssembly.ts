@@ -1,12 +1,15 @@
 import {
-  RESEARCH_LIMITS, type ResearchCriterion, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchMatrixCell, type ResearchUnreachable
+  RESEARCH_LIMITS, type ResearchCriterion, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchMatrixCell, type ResearchRating,
+  type ResearchUnreachable
 } from "../../contracts/research";
-import { researchDatasetWords } from "./dataCollection";
+import { researchDatasetWords, researchSampleIsSmall } from "./dataCollection";
 import { RESEARCH_WHOLE_QUESTION_ROW, researchMatrix, type ResearchMatrix } from "./matrix";
 import { researchAnswerText, researchNote, type ResearchNoteKey } from "./notes";
 import type { ResearchPorts, ResearchReportEnding, ResearchReportPort, ResearchRunScope } from "./ports";
 import { reportCheckGate } from "./reportCheck";
-import { researchSourceAgeMonths, researchSourceClass, researchSourceCounts, researchSourceStanding, researchRegistrableDomain } from "./sourceQuality";
+import {
+  researchMostRated, researchSourceAgeMonths, researchSourceClass, researchSourceCounts, researchSourceStanding, researchRegistrableDomain, researchTrustedRating
+} from "./sourceQuality";
 
 /**
  * What the server makes of the records for a report: a draft's findings from its ids, the list of ids the main agent cites from, and the answer it
@@ -118,7 +121,10 @@ const WORDS = { added: "added during research", asOf: "Data as of", claimed: "cl
   classes: { action_channel: "sellers", independent_tests: "tests", owner_reviews: "owners", primary_official: "official" },
   found: "What was found", independent: "Independent sources", leftOut: (count: number) => `Left out, as their quotes did not check out: ${count}.`,
   months: (count: number) => `${count} mo. old`, more: (count: number) => `and ${count} more`,
-  noData: "no data", notFound: "not found", notVerified: "not verified", option: "Option", other: "Other records", recorded: "What was recorded",
+  noData: "no data", notFound: "not found", notVerified: "not verified", option: "Option", other: "Other records",
+  rating: ({ count, counted, scaleMax, score, variantsMerged }: ResearchRating) =>
+    `${score} of ${scaleMax}, ${count} ${counted}${researchSampleIsSmall(count) ? ", a small sample" : ""}${variantsMerged ? ", variants merged" : ""}`,
+  recorded: "What was recorded",
   sources: "Sources", title: "What research recorded", unreachable: "Could not be reached" } as const;
 
 /** Text of a record inside the answer: it came off web pages, so nothing in it may become a link, an image, a table cell or markup. */
@@ -160,6 +166,13 @@ function cellWords(cell: ResearchMatrixCell | undefined, composing: Composing): 
   const claims = held.filter(isClaim).map((record) => ({ rank: STANDING_ORDER[researchSourceStanding(record, witnesses) ?? "not_verified"], record }));
   const [first, ...rest] = claims;
   if (!first) return words.noData;
+  // A rating shows as the one from the most ratings, with its count and platform, and what reviews say beside it (operator decisions 2026-11-05).
+  const rated = researchMostRated(held.filter(researchTrustedRating));
+  if (rated) {
+    const said = claims.find(({ record }) => record.kind === "dataset" || (record.kind === "finding" && record.rating === undefined));
+    const others = claims.length - 1 - (said ? 1 : 0);
+    return `${words.rating(rated.rating)} ${sourceLink(rated, composing)}${said ? `; ${claimWords(said.record, composing, CELL_CHARACTERS / 2)}` : ""}${others > 0 ? ` (+${others})` : ""}`;
+  }
   const best = rest.reduce((one, other) => other.rank < one.rank ? other : one, first);
   return `${claimWords(best.record, composing, CELL_CHARACTERS)}${rest.length > 0 ? ` (+${rest.length})` : ""}`;
 }

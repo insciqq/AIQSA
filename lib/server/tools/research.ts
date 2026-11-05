@@ -252,7 +252,8 @@ export function researchScopingInstructions(): string {
     `For a choice between options, mark as decisive the few key specifications a pick depends on, at most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}: the recommended options get them confirmed from two sites.`,
     `Mark as a priority only what the user's own message names as mattering to them, such as value for money, at most ${RESEARCH_FRAME_LIMITS.priorityCriteria}: those decide the pick.`,
     "Where the user chooses among options people rate publicly, products and services alike, doctors, clinics, hotels, schools and contractors included, one criterion is " +
-      "their ratings and reviews, written in the user's language and marked ratings.",
+      "their ratings and reviews, written in the user's language and marked ratings. For people and services such as doctors and clinics, their qualification from official " +
+      "sources, such as a register or a licence, is a criterion of its own beside it, marked decisive: a rating never stands for a qualification.",
     `Then call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}. Do not wait until the time is up, and do not start researchers: they start after the plan.`,
     "Ask the user nothing, here or in the plan: what you lack becomes a named assumption. What is unknown about the user and changes the result " +
       "becomes a branch with its cases, so the report can say \"up to 70 kg, A; heavier, B\".",

@@ -215,6 +215,26 @@ describe("the method", () => {
     expect(footer.length).toBeLessThan(RUN_FOLLOWUP_MAX_CHARS / 2);
   });
 
+  it("weighs a rating by its sample, reads the worst reviews before a pick and keeps a doctor's qualification beside the rating (operator decisions 2026-11-05)", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain("so 4.8 from 5,000 ratings outranks 5.0 from 7, and a seller's own page counts only where no place with more ratings rates the option.");
+    expect(text).toContain("Before you hand in the draft, send researchers to read the lowest-rated reviews of each option you will recommend, recorded under the ratings criterion");
+    expect(text).toContain("the summary names that option's score with its number of ratings and says why the pick still comes first; where nothing outweighs it, that option is the pick.");
+    // The report's rules: the table and the summary show scores with their counts.
+    expect(text).toContain("Where the matrix has a ratings criterion, the table gives each option its score with its number of ratings and the platform, from the place with the most " +
+      "ratings, says a small sample plainly in its count, such as only 7 reviews, and puts the main complaints of its lowest-rated reviews beside the score; the summary gives the " +
+      "pick's score with its number of ratings and the platform.");
+    expect(text).toContain("For a doctor or a clinic the qualification has its own column and its own words in the summary, beside the rating.");
+    expect(text).toContain("a rating never replaces a qualification, and a high score never stands for one.");
+    expect(researchScopingInstructions()).toContain("For people and services such as doctors and clinics, their qualification from official sources, such as a register or a licence, is a " +
+      "criterion of its own beside it, marked decisive: a rating never stands for a qualification.");
+    const footer = researcherMethodFooter(plan);
+    expect(footer).toContain("Once you have an option's rating, read its lowest-rated reviews on that place: sort or filter them by rating, lowest first, and read the newest of them.");
+    expect(footer).toContain("Record what they complain of under the ratings criterion as owner_reviews findings, each quote word for word, or as a dataset of counts");
+    expect(footer).toContain("A doctor's or a clinic's qualification comes from official sources and is recorded under its own criterion, never as a rating.");
+    expect(footer.length).toBeLessThan(RUN_FOLLOWUP_MAX_CHARS / 2);
+  });
+
   it("reaches the plan's first rows too, which are written before the method is read and never change", () => {
     const { rows } = proposeResearchPlanTool.inputSchema.properties as { rows: { description: string } };
     expect(rows.description).toContain("Chosen by a rule you can state, not by what a search showed first: leave it empty if you have not applied it yet, and researchers add them.");

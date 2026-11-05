@@ -21,7 +21,9 @@ import {
   researchMatrix,
   researchMatrixCoverage,
   researchProgressCells,
+  researchRatingsCriterion,
   researchUnconfirmedKeyCells,
+  researchUnreadWorstReviews,
   type ResearchFrameStore
 } from "./matrix";
 import { NOOP_RESEARCH_PORTS, type ResearchPorts, type ResearchRunScope } from "./ports";
@@ -194,6 +196,35 @@ describe("the key specifications of the options a draft leads with", () => {
     const after = researchProgressCells({ coverage: researchMatrixCoverage(KEYED, more), frame: KEYED }, more, draft);
     expect([...after].filter((cell) => !before.has(cell))).toEqual(["x1/durability#confirmed"]);
     expect(researchUnconfirmedKeyCells(matrix, records, draft).map(({ row }) => row.key)).toEqual(["x1"]);
+  });
+});
+
+describe("the lowest-rated reviews of the options a draft leads with (operator decision 2026-11-05)", () => {
+  const RATED: ResearchFrame = { ...FRAME, criteria: [...FRAME.criteria, { criterion: "Ratings and reviews", key: "ratings", ratings: true, why: "Many ratings say more." }] };
+  const rated = (rowKey: string) => ({ ...finding(rowKey, "ratings"), rating: { count: 5_000, counted: "ratings", scaleMax: 5, score: 4.8, variantsMerged: false } }) as ResearchEvidenceRecord;
+  const draft = { pickRowKey: "x1", summary: { rowKeys: ["x1", "y2"], text: "t" } };
+  const unread = (records: readonly ResearchEvidenceRecord[], frame = RATED) =>
+    researchUnreadWorstReviews({ coverage: researchMatrixCoverage(frame, records), frame }, records, draft).map(({ key }) => key);
+
+  it("finds the frame's ratings criterion by its mark, and none in a frame that marks none", () => {
+    expect(researchRatingsCriterion(RATED)?.key).toBe("ratings");
+    expect(researchRatingsCriterion(FRAME)).toBeNull();
+  });
+
+  it("owes the reviews of each option it leads with whose ratings cell holds a rating and no review, and none of an empty cell or a frame with no ratings criterion", () => {
+    const ratings = [rated("x1"), rated("y2")];
+    expect(unread(ratings)).toEqual(["x1", "y2"]);
+    expect(unread([...ratings, finding("x1", "ratings")])).toEqual(["y2"]);
+    expect(unread([rated("x1")])).toEqual(["x1"]);
+    expect(unread(ratings, FRAME)).toEqual([]);
+  });
+
+  it("counts the reviews read of what the last draft recommends as progress for the rounds", () => {
+    const records = [rated("x1"), rated("y2")];
+    const before = researchProgressCells({ coverage: researchMatrixCoverage(RATED, records), frame: RATED }, records, draft);
+    const more = [...records, finding("x1", "ratings"), notFound("y2", "ratings")];
+    const after = researchProgressCells({ coverage: researchMatrixCoverage(RATED, more), frame: RATED }, more, draft);
+    expect([...after].filter((cell) => !before.has(cell))).toEqual(["x1/ratings#reviews", "y2/ratings#reviews"]);
   });
 });
 
