@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_TASK_LIMITS, RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME,
-  SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, DEEP_RESEARCH_REFUSALS, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, RESEARCH_TASK_LIMITS, RESEARCH_TIME_MS,
+  START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDraft } from "../../contracts/research";
+import { CONTINUE_TURN_TEXT } from "../../contracts/runs";
 import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_ERROR_CODES, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -26,6 +27,8 @@ import { createResearchClock } from "./clock";
 import { createResearchPlanHandlers } from "./planHandlers";
 import { createResearchPlanWindow, RESEARCH_PLAN_WINDOW_LIMITS, ResearchPlanWindows, type ResearchPlanStore } from "./planWindow";
 import { proposeCall, proposalArguments } from "./planWindow.testFixtures";
+import { RESEARCH_CONTROL_LINE } from "../engine/prompts/harness";
+import { DEEP_RESEARCH_CHOSEN_GUIDANCE } from "../tools/research";
 import { researchOfTurn, type ResearchEngineDeps } from "./run";
 import { researchModelIdentity } from "./turns";
 import { createResearchVerifierRole, RESEARCH_RESEARCHER_BINDING_KEY, type ResearchVerifierRole } from "./verifierRole";
@@ -148,9 +151,11 @@ function repository() {
   };
 }
 
-function prepared(options: Readonly<{ noLimits?: boolean; noSearch?: boolean }> = {}): MaterializedPreparedRunData {
+/** A run of a message sent with Deep research, unless `chosen` is false (operator decision 2026-11-05: only that choice starts research). */
+function prepared(options: Readonly<{ chosen?: boolean; noLimits?: boolean; noSearch?: boolean }> = {}): MaterializedPreparedRunData {
   const text = "Проведи исследование матрасов.";
   const request = {
+    ...options.chosen === false ? {} : { deepResearch: true },
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -169,6 +174,19 @@ function prepared(options: Readonly<{ noLimits?: boolean; noSearch?: boolean }> 
         providerFamily: "fake", providerModelId: "model-1" } } } as never,
     providerRequest: request, providerRequestPreview: {}, sourceKind: "send"
   };
+}
+
+/** The user's Continue right after a turn that started research: with the store's word that it was interrupted, the run offers research without the choice. */
+function continueOfResearch(memory: ReturnType<typeof engineOf>): MaterializedPreparedRunData {
+  vi.mocked(memory.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map([["answer-0", "run-0"]]));
+  vi.mocked(memory.deps.transcripts.loadRuns).mockResolvedValue(new Map([["run-0", [{ arguments: JSON.stringify({ goal: PLAN.goal }), callId: "old-start", id: "old-call",
+    kind: "tool_call", name: START_RESEARCH_TOOL_NAME }] as TranscriptItem[]]]));
+  const content = (text: string) => ({ blocks: [{ text, type: "text" as const }] });
+  const base = prepared({ chosen: false });
+  const request = { ...base.normalizedRequest, context: { messages: [{ content: content("Mattresses."), id: "question", role: "user" as const },
+    { content: content(""), id: "answer-0", role: "assistant" as const }, { content: content(CONTINUE_TURN_TEXT), id: "current-user-message", role: "user" as const }],
+  mode: "branch_path" as const } } as ProviderRunRequest;
+  return { ...base, normalizedRequest: request, providerRequest: request };
 }
 
 const created = { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" };
@@ -200,23 +218,27 @@ const gate = (name: string, body: ResearchGate["run"]): ResearchGate => ({ name,
 afterEach(() => vi.restoreAllMocks());
 
 describe("starting research", () => {
-  it("offers its tools only where research can run: Search on, a web chat, and never a scheduled or Telegram turn", async () => {
+  it("offers its tools only on a message sent with Deep research, whatever another message says, and only where research can run", async () => {
     const offered = async (extra: Partial<NativeRunExecutionInput>, research: ResearchEngineDeps | undefined = {}) => {
-      const { adapter, requests } = scripted([{ text: "Answer." }]);
-      await run(adapter, engineOf(research), extra).text();
-      return requests[0]!.tools?.map((tool) => tool.name).includes(START_RESEARCH_TOOL_NAME);
+      const { adapter, requests } = scripted([{ calls: begin() }, { calls: [propose()] }, { calls: [submit()] }]);
+      const repo = repository();
+      await run(adapter, engineOf(research), extra, repo).text();
+      return { failed: repo.failRun.mock.calls.map((call) => (call as unknown[])[2]), offered: requests[0]?.tools?.map((tool) => tool.name).includes(START_RESEARCH_TOOL_NAME) };
     };
-    expect(await offered({})).toBe(true);
-    expect(await offered({ prepared: prepared({ noSearch: true }) })).toBe(false);
-    expect(await offered({ telegram: true })).toBe(false);
-    expect(await offered({ scheduled: true })).toBe(false);
-    expect(await offered({}, undefined as never)).toBe(true);
+    expect(await offered({})).toEqual({ failed: [], offered: true });
+    // The message asks for research in words ("Проведи исследование"): with no choice it is an ordinary turn (operator decision 2026-11-05).
+    expect((await offered({ prepared: prepared({ chosen: false }) })).offered).toBe(false);
+    // Where it cannot run, the run is refused before any model call, never answered another way.
+    for (const extra of [{ prepared: prepared({ noSearch: true }) }, { telegram: true }, { scheduled: true }] as const) {
+      expect(await offered(extra)).toEqual({ failed: [expect.objectContaining({ code: DEEP_RESEARCH_REFUSALS.unavailable })], offered: undefined });
+    }
+    expect((await offered({}, undefined as never)).offered).toBe(true);
   });
 
   it("refuses a call of the tool where it is not offered, as any unknown tool, and the answer still arrives", async () => {
     const { adapter, requests } = scripted([{ calls: begin() }, { text: "Answered directly." }]);
     const memory = engineOf({});
-    await run(adapter, memory, { telegram: true }).text();
+    await run(adapter, memory, { prepared: prepared({ chosen: false }) }).text();
     expect(memory.published()).toBe("Answered directly.");
     expect(memory.toolCalls.begin).not.toHaveBeenCalled();
     expect(resultsOf(requests[1], START_RESEARCH_TOOL_NAME).join()).toContain("does not exist");
@@ -234,6 +256,28 @@ describe("starting research", () => {
     const plans = seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity" ? [event.data.payload] : []) as unknown as { items?: { text: string }[]; kind: string }[];
     expect(plans.filter((entry) => entry.kind === "plan").at(-1)?.items?.map((item) => item.text)).toEqual(["Which mattress holds up?", "What do owners and shops say?"]);
     expect(memory.published()).toBe(REPORT);
+  });
+
+  it("sends one tool list and one system prompt on two ordinary turns of a chat, naming the control once, and a research turn differs", async () => {
+    const turn = async (words: string, chosen: boolean) => {
+      const { adapter, requests } = scripted(chosen ? [{ calls: begin() }, { calls: [submit()] }] : [{ text: "Answer." }]);
+      const base = prepared({ chosen });
+      const request = { ...base.normalizedRequest, content: { blocks: [{ text: words, type: "text" }] },
+        context: { messages: [{ content: { blocks: [{ text: words, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const } } as ProviderRunRequest;
+      await run(adapter, engineOf({ gates: [] }), { prepared: { ...base, normalizedRequest: request, providerRequest: request } }).text();
+      return { system: requests[0]!.prompt.system ?? "", tools: JSON.stringify(requests[0]!.tools) };
+    };
+    const first = await turn("Проведи глубокое исследование матрасов.", false);
+    const second = await turn("А сколько это стоит?", false);
+    expect(second).toEqual(first);
+    expect(first.tools).not.toContain(START_RESEARCH_TOOL_NAME);
+    expect(first.system).not.toContain("# Research");
+    expect(first.system.split(RESEARCH_CONTROL_LINE)).toHaveLength(2);
+    // The accepted cost: a research turn's prompt and tools differ, once, at the start of a long run.
+    const research = await turn("Проведи глубокое исследование матрасов.", true);
+    expect(research.tools).toContain(START_RESEARCH_TOOL_NAME);
+    expect(research.system).toContain("# Research");
+    expect(research.system).not.toContain(RESEARCH_CONTROL_LINE);
   });
 
   it("gives every researcher the method and its source classes, whatever the main agent's brief says", async () => {
@@ -306,10 +350,43 @@ describe("a draft reaches the user", () => {
     expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: memory.published() });
   });
 
-  it("refuses a draft before research started, and an ordinary answer goes on as one", async () => {
-    const { adapter, requests } = scripted([{ calls: [submit()] }, { text: "Plain answer." }]);
+  it("runs nothing before the start the user's choice owes, shows no text, asks once, and fails visibly when the model never starts", async () => {
+    const { adapter, requests } = scripted([{ calls: [submit(), { arguments: { query: "mattress" }, id: "call-search", name: "search_selected_engines" }] },
+      { text: "Plain answer." }, { text: "Plain answer again." }]);
     const memory = engineOf({});
-    const seen = await events(run(adapter, memory));
+    const repo = repository();
+    const seen = await events(run(adapter, memory, {}, repo));
+    for (const name of [SUBMIT_RESEARCH_DRAFT_TOOL_NAME, "search_selected_engines"]) {
+      expect(resultsOf(requests[1], name)[0]).toContain(`the user chose Deep research for this message, so ${START_RESEARCH_TOOL_NAME} comes first`);
+    }
+    expect(memory.toolCalls.begin).not.toHaveBeenCalled();
+    expect(JSON.stringify(requests[2]!.history)).toContain("only research answers it");
+    expect(requests).toHaveLength(3);
+    expect(memory.published()).toBeNull();
+    expect(tokens(seen)).toEqual([]);
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "deep_research_not_started" }), expect.anything());
+  });
+
+  it("starts research on the first step of a message sent with Deep research, with its turn context saying so", async () => {
+    const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [] });
+    const chosen = prepared();
+    const request = { ...chosen.normalizedRequest, prompt: { ...chosen.normalizedRequest.prompt, system: `Be brief.\n\n${DEEP_RESEARCH_CHOSEN_GUIDANCE}`,
+      turnGuidance: [DEEP_RESEARCH_CHOSEN_GUIDANCE] } } as ProviderRunRequest;
+    await run(adapter, memory, { prepared: { ...chosen, normalizedRequest: request, providerRequest: request } }).text();
+    expect(requests[0]!.tools?.map((tool) => tool.name)).toContain(START_RESEARCH_TOOL_NAME);
+    expect(requests[0]!.prompt.system).not.toContain(DEEP_RESEARCH_CHOSEN_GUIDANCE);
+    expect(JSON.stringify(requests[0]!.history)).toContain(DEEP_RESEARCH_CHOSEN_GUIDANCE);
+    expect(memory.toolCalls.begin.mock.calls[0]![0]).toMatchObject({ roundIndex: 1, toolName: START_RESEARCH_TOOL_NAME });
+    expect(memory.published()).toBe(REPORT);
+  });
+
+  it("refuses a draft before research started in a run that offers research without the choice, and an ordinary answer goes on as one", async () => {
+    // A Continue of an interrupted research offers its tools before the start; the store gives nothing back to pick up.
+    const { adapter, requests } = scripted([{ calls: [submit()] }, { text: "Plain answer." }]);
+    const memory = engineOf({ ports: { resume: () => ({ interrupted: async () => true, link: async () => undefined, load: async () => null }) } });
+    const seen = await events(run(adapter, memory, { prepared: continueOfResearch(memory) }));
+    expect(requests[0]!.tools?.map((tool) => tool.name)).toContain(START_RESEARCH_TOOL_NAME);
     expect(resultsOf(requests[1], SUBMIT_RESEARCH_DRAFT_TOOL_NAME)[0]).toContain("research_not_started");
     expect(memory.published()).toBe("Plain answer.");
     expect(tokens(seen)).toEqual(["Plain answer."]);
@@ -489,9 +566,14 @@ describe("the verifier's needs", () => {
     seen.length = 0;
     const second = scripted([{ calls: [start()] }, { text: "Research is unavailable." }]);
     const gone: ResearchVerifierRole = { frozenChoice: async () => ({ effort: null, kind: "set", providerModelId: "gone" }), route: async () => null };
-    await run(second.adapter, engineOf({ gates: [reader], verifier: gone })).text();
+    const repo = repository();
+    const memory = engineOf({ gates: [reader], verifier: gone });
+    await run(second.adapter, memory, {}, repo).text();
     expect(seen).toEqual([]);
     expect(resultsOf(second.requests[1], START_RESEARCH_TOOL_NAME).join()).toContain("research_verifier_unavailable");
+    // The user chose Deep research, so the model's words are no answer: the run fails under the role's code.
+    expect(memory.published()).toBeNull();
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "research_verifier_unavailable" }), expect.anything());
   });
 
   it("gives each gate's turn on one draft a call of its own, since a call has one turn in the database", async () => {
@@ -653,11 +735,22 @@ describe("review findings", () => {
     expect(memory.published()).toBe(REPORT);
   });
 
-  it("does not start research for a start the batch refused, and what follows is an ordinary answer", async () => {
+  it("does not start research for a start the batch refused, and what follows is no answer passing for research", async () => {
     let clock = 0;
     const main = scripted([{ calls: begin(), onCall: () => { clock = 55 * 60_000; } }, { text: "Answered without research." }]);
     const memory = engineOf({}, { now: () => clock });
-    const seen = await events(run(main.adapter, memory));
+    const repo = repository();
+    const seen = await events(run(main.adapter, memory, {}, repo));
+    expect(tokens(seen)).toEqual([]);
+    expect(memory.published()).toBeNull();
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "deep_research_not_started" }), expect.anything());
+  });
+
+  it("does not start research for a start the batch refused in a run that offers it without the choice, and what follows is an ordinary answer", async () => {
+    let clock = 0;
+    const main = scripted([{ calls: begin(), onCall: () => { clock = 55 * 60_000; } }, { text: "Answered without research." }]);
+    const memory = engineOf({ ports: { resume: () => ({ interrupted: async () => true, link: async () => undefined, load: async () => null }) } }, { now: () => clock });
+    const seen = await events(run(main.adapter, memory, { prepared: continueOfResearch(memory) }));
     expect(tokens(seen)).toEqual(["Answered without research."]);
     expect(memory.published()).toBe("Answered without research.");
   });
@@ -1020,13 +1113,14 @@ describe("what ends research", () => {
     expect(activeRunControllerRegistry.executing()).not.toContain(runId);
   });
 
-  it("Stop before any draft shows nothing it held", async () => {
+  it("Stop before any draft shows nothing it held, nor what the run of a message sent with Deep research wrote beside its start", async () => {
     const runId = "run-stop-early";
     const main = scripted([{ calls: begin(), text: "Starting." }, { onCall: () => activeRunControllerRegistry.abort(runId), text: "HELD NARRATION" }]);
     const memory = engineOf({});
     const seen = await events(run(main.adapter, memory, { runId }));
     expect(seen.at(-1)).toMatchObject({ data: { status: "cancelled" }, type: "done" });
-    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.anything(), "Starting.");
+    expect(tokens(seen)).toEqual([]);
+    expect(memory.runs.saveStoppedText).not.toHaveBeenCalled();
   });
 
   it("a run that fails with a report in hand keeps it with a note", async () => {
@@ -1069,7 +1163,7 @@ describe("what ends research", () => {
     const memory = engineOf({});
     vi.mocked(memory.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map([["answer-0", "run-0"]]));
     vi.mocked(memory.deps.transcripts.loadRuns).mockResolvedValue(new Map([["run-0", interrupted]]));
-    const base = prepared();
+    const base = prepared({ chosen: false });
     const messages = [{ content: { blocks: [{ text: "Проведи исследование.", type: "text" }] }, id: "q0", role: "user" as const },
       { content: { blocks: [{ text: "", type: "text" }] }, id: "answer-0", role: "assistant" as const },
       { content: { blocks: [{ text: "Continue", type: "text" }] }, id: "current-user-message", role: "user" as const }];
@@ -1077,6 +1171,8 @@ describe("what ends research", () => {
     const seen = await events(run(main.adapter, memory, { prepared: { ...base, normalizedRequest: request, providerRequest: request } }));
     expect(main.requests).toHaveLength(1);
     expect(JSON.stringify(main.requests[0]!.history)).toContain(START_RESEARCH_TOOL_NAME);
+    // The store does not say that turn was interrupted (the no-op port): the word alone offers no research.
+    expect(main.requests[0]!.tools?.map((tool) => tool.name)).not.toContain(START_RESEARCH_TOOL_NAME);
     expect(tokens(seen)).toEqual(["Continuing as an ordinary answer."]);
     expect(memory.published()).toBe("Continuing as an ordinary answer.");
   });
@@ -1222,12 +1318,15 @@ describe("researchers on the installation role", () => {
     const main = scripted([{ calls: [start(), { id: "research-call", name: CALL_SUBAGENT_TOOL_NAME,
       arguments: { name: "researcher", message: "Read the sources." } }] }, { text: "Research could not start." }]);
     const memory = engineOf({ gates: [], researcher: installed.role });
-    await run(main.adapter, memory).text();
+    const repo = repository();
+    await run(main.adapter, memory, {}, repo).text();
     expect(resultsOf(main.requests[1], START_RESEARCH_TOOL_NAME).join()).toContain("research_researcher_unavailable");
     expect(resultsOf(main.requests[1], CALL_SUBAGENT_TOOL_NAME).join()).toContain("research_plan_first");
     expect(memory.threads.admitForeground).not.toHaveBeenCalled();
     expect(child.requests).toHaveLength(0);
-    expect(memory.published()).toBe("Research could not start.");
+    // The user chose Deep research: the run fails visibly under the role's code, never with the model's words for an answer.
+    expect(memory.published()).toBeNull();
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "research_researcher_unavailable" }), expect.anything());
   });
 });
 
@@ -1656,23 +1755,22 @@ describe("the plan window through the real engine", () => {
     expect(memory.published()).toBe(REPORT);
   });
 
-  it("refuses a plan before research started, and an ordinary answer goes on", async () => {
+  it("refuses a plan before research started, and an ordinary answer goes on where the run offers research without the choice", async () => {
     const main = scripted([{ calls: [propose()] }, { text: "Plain answer." }]);
-    const memory = engineOf({});
-    await run(main.adapter, memory, FREE).text();
+    const memory = engineOf({ ports: { resume: () => ({ interrupted: async () => true, link: async () => undefined, load: async () => null }) } });
+    await run(main.adapter, memory, { prepared: continueOfResearch(memory) }).text();
     expect(resultsOf(main.requests[1], PROPOSE_RESEARCH_PLAN_TOOL_NAME)[0]).toContain("research_not_started");
     expect(memory.published()).toBe("Plain answer.");
   });
 
-  it("rides on every request of a run that offers research, and not where research is off", async () => {
+  it("rides on every request of a run that offers research, and not on a run without the choice, whatever its message says", async () => {
     const offered = async (extra: Partial<NativeRunExecutionInput>) => {
-      const { adapter, requests } = scripted([{ text: "Answer." }]);
-      await run(adapter, engineOf({}), extra).text();
-      return requests[0]!.tools?.map((tool) => tool.name).includes(PROPOSE_RESEARCH_PLAN_TOOL_NAME);
+      const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }, { text: "Answer." }]);
+      await run(adapter, engineOf({ gates: [] }), extra).text();
+      return requests.map((request) => request.tools?.map((tool) => tool.name).includes(PROPOSE_RESEARCH_PLAN_TOOL_NAME));
     };
-    expect(await offered({})).toBe(true);
-    expect(await offered({ telegram: true })).toBe(false);
-    expect(await offered({ scheduled: true })).toBe(false);
+    expect(await offered({})).toEqual([true, true]);
+    expect((await offered({ prepared: prepared({ chosen: false }) })).every((included) => included === false)).toBe(true);
   });
 });
 
@@ -1778,7 +1876,7 @@ describe("a model that never proposes", () => {
     let clock = 1_000_000;
     const plain = scripted([{ calls: [fetchCall("call-a")], onCall: () => { clock += RESEARCH_TIME_MS.scoping + 1; } }, { calls: [fetchCall("call-b")] }, { text: "Plain answer." }]);
     const memory = engineOf({}, { now: () => clock });
-    await run(plain.adapter, memory, FREE).text();
+    await run(plain.adapter, memory, { prepared: prepared({ chosen: false, noLimits: true }) }).text();
     expect(resultsOf(plain.requests[2], "update_plan").join()).not.toContain("scoping");
     expect(memory.published()).toBe("Plain answer.");
 

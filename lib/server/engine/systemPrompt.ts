@@ -98,6 +98,8 @@ export type NativeSystemPromptInput = Readonly<{
   now: Date;
   /** The request admission froze. */
   request: ProviderRunRequest;
+  /** The main agent's run could research but was not asked to: the harness names the Deep research control (`HarnessPromptInput`). */
+  researchControl?: boolean;
   scope: RunSecretScope;
   /** The saved secrets `read_secret` reads; they go into the environment when the tool is offered. */
   secrets?: RunSecretSource;
@@ -142,6 +144,7 @@ export async function withNativeSystemPrompt(input: NativeSystemPromptInput): Pr
   const prompt = systemPromptFor({ modelId: request.modelId, provider: input.snapshot.providerFamily,
     upstreamModelId: input.snapshot.model.upstreamModelId }, {
     environment: { now: input.now, timeZone, ...(secrets ? { secrets } : {}) },
+    ...(input.researchControl ? { researchControl: true } : {}),
     ...(input.selfService !== undefined ? { selfService: input.selfService } : {}),
     ...(input.subagents ? { subagents: input.subagents } : {}),
     tools,
