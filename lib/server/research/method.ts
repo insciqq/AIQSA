@@ -151,6 +151,23 @@ const USER_PRIORITIES = "The criteria the plan marked as priorities are what the
   "specifications passed the checks, the pick is the one that best fits them. Where value for money or the price is one of them, a pick that costs more than another option you " +
   "recommend with the same checked key specifications says what the extra money buys, from a record; where no record shows it, the cheaper option is the pick.";
 
+/**
+ * Ratings count, for products and services alike (operator decision 2026-11-05): a real person looks at the score and the number of ratings first. On two reviewed
+ * runs one option of 220 records, and none of 175, had a score with its number of ratings, and a shop page's few reviews carried a pick while a marketplace's score
+ * from thousands of ratings stayed out of the answer, while only a purchase was told of reviews, and as a hint. So the server adds the column (`researchFrameFromPlan`).
+ */
+const RATINGS = "Ratings count for whatever people rate publicly, products and services alike, a doctor, a clinic, a hotel, a school or a contractor as much as goods. Where the " +
+  "user chooses among options, the matrix has a ratings criterion, which the server adds where the plan has none: send researchers for its cells like any other, for each " +
+  "option its score with the top of its scale, the number of ratings and what they count, from the place with the most ratings for that exact option and also the seller's own " +
+  "where that is what can be reached. A cell with no rating to find is recorded as not found, and the table says so in plain words.";
+
+/** What a researcher records of a rating: one record per place, its numbers in its quote, and whether variants share the card. */
+const RATING_RECORDS = "A public rating of an option, a product's or a service's such as a doctor's or a hotel's, is a finding with rating under the matrix's ratings criterion: " +
+  "its score, the top of its scale, the number of ratings and what they count, with a quote that holds the score and the number as the page writes them, which the server checks. " +
+  "Record it from the place with the most ratings for that exact option, and also the seller's own where that is what you can reach, each as its own record; a card that merges " +
+  "its variants' ratings gets variants_merged, and the claim says so. An option with no public rating you can reach: record not_found for its ratings cell, with where you looked. " +
+  "A rating seen only in search results is a lead: open its page.";
+
 /** What a plan that stands returns: how the main agent runs what it planned. */
 export function researchMethodText(plan: ResearchPlan): string {
   return [
@@ -165,6 +182,7 @@ export function researchMethodText(plan: ResearchPlan): string {
     LEAD_CANDIDATES,
     KEY_SPECIFICATIONS,
     USER_PRIORITIES,
+    RATINGS,
     `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the summary, the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
       "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
@@ -221,6 +239,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
     "Give each record the row_key and criterion_key of its cell in the matrix below. A cell you cannot fill: record not_found for it, so nobody looks there again. " +
       `${RESEARCHER_ROWS} ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} A criterion only when the question needs it, with your reason.`,
     KEY_SPECIFICATION_RECORDS,
+    RATING_RECORDS,
     OFFERS,
     `The goal: ${cut(plain(plan.goal), GOAL_CHARACTERS)} ${READER_WORDS}`,
     RESEARCH_REVIEWS_REFERENCE,
@@ -253,7 +272,8 @@ export function researcherMatrixFooter(matrix: ResearchMatrix, room: number): st
     `adds the rows. Where the question has none, row_key is not read: leave it null, or use "all" where a record needs one.`;
   const rowKeys = frame.rows.length > 0 ? `Rows: ${frame.rows.map(({ key }) => key).join(", ")}.` : noRows;
   const keySpecs = researchKeySpecs(frame);
-  const keySpecKeys = keySpecs.length > 0 ? ` Key specifications: ${keySpecs.map(({ key }) => key).join(", ")}.` : "";
+  const ratings = frame.criteria.find((criterion) => criterion.ratings === true);
+  const keySpecKeys = `${keySpecs.length > 0 ? ` Key specifications: ${keySpecs.map(({ key }) => key).join(", ")}.` : ""}${ratings ? ` Ratings: ${ratings.key}.` : ""}`;
   const criterionKeys = `Criteria: ${frame.criteria.map(({ key }) => key).join(", ")}.${keySpecKeys}`;
   const total = `${coverage.empty} of ${coverage.cells.length} cells are still empty.`;
   const forms = [

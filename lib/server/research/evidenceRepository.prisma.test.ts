@@ -176,6 +176,43 @@ describe("what a write reads of its agent", () => {
   });
 });
 
+describe("a rating (operator decision 2026-11-05)", () => {
+  const CARD = "https://clinic.example/doctors/ivanova";
+  const CARD_PAGE = "Иванова Анна, дерматолог. Рейтинг 4,9 · 1 284 отзыва пациентов.";
+  const rating = { count: 1_284, counted: "reviews" as const, scaleMax: 5, score: 4.9, variantsMerged: false };
+  const rated: ResearchRecordInput = { claim: "Пациенты оценивают Иванову на 4,9 из 5 по 1 284 отзывам.", criterionKey: "ratings", kind: "finding",
+    quote: "Рейтинг 4,9 · 1 284 отзыва пациентов", rating, rowKey: "ivanova", sourceClass: "owner_reviews", standing: "confirmed", supersedes: null, url: CARD };
+
+  it("is kept with its finding in a column of its own and read back with it, and a finding with none reads as before", async () => {
+    const run = await newRun();
+    await fetched(run, LAB.threadId, CARD, CARD_PAGE);
+    await fetched(run, LAB.threadId);
+    const record = await recorded(storeOf(run), rated);
+    expect(record).toMatchObject({ kind: "finding", quoteCheck: { reason: null, status: "found" }, rating });
+    await expect(prisma.researchEvidence.findFirstOrThrow({ select: { dataset: true, rating: true }, where: { ...keys(run), id: record.id } }))
+      .resolves.toEqual({ dataset: null, rating: { count: 1_284, counted: "reviews", scale_max: 5, score: 4.9, variants_merged: false } });
+    const plain = await recorded(storeOf(run), finding());
+    await expect(prisma.researchEvidence.findFirstOrThrow({ select: { rating: true }, where: { ...keys(run), id: plain.id } })).resolves.toEqual({ rating: null });
+    const live = await storeOf(run).records(signal);
+    expect(live).toEqual([expect.objectContaining({ id: record.id, rating }), expect.objectContaining({ id: plain.id })]);
+    expect(live[1]).not.toHaveProperty("rating");
+  });
+
+  it("is refused by the database on any record but a finding, and as anything but one object", async () => {
+    const run = await newRun();
+    const document = { count: 1_284, counted: "reviews", scale_max: 5, score: 4.9, variants_merged: false };
+    await expect(prisma.researchEvidence.create({ data: { ...keys(run), criterionKey: "ratings", kind: "not_found", rating: document, reason: "Nowhere.", rowKey: "ivanova",
+      sequence: 0 } })).rejects.toThrow();
+    await expect(prisma.researchEvidence.create({ data: { ...keys(run), kind: "unreachable", rating: document, reason: "It asks to sign in.", target: "clinic.example",
+      sequence: 1 } })).rejects.toThrow();
+    const finding = { ...keys(run), claim: "Rated 4.9.", kind: "finding", quote: "Рейтинг 4,9", quoteCheck: "found", sourceClass: "owner_reviews", standing: "confirmed", url: CARD };
+    await expect(prisma.researchEvidence.create({ data: { ...finding, rating: [document], sequence: 2 } })).rejects.toThrow();
+    await expect(prisma.researchEvidence.create({ data: { ...finding, rating: 4.9, sequence: 3 } })).rejects.toThrow();
+    await expect(prisma.researchEvidence.create({ data: { ...finding, rating: document, sequence: 4 } })).resolves.toMatchObject({ rating: document });
+    await expect(prisma.researchEvidence.count({ where: keys(run) })).resolves.toBe(1);
+  });
+});
+
 describe("a Continue", () => {
   it("reaches the earlier run's records and pages, corrects them, and stops at the bound", async () => {
     const userId = await owner();

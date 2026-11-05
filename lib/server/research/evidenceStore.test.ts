@@ -61,8 +61,8 @@ function tables() {
       }),
       create: vi.fn(async ({ data }: { data: Row }) => {
         const row = { claim: null, createdAt: new Date(), criterionKey: null, dataset: null, id: randomUUID(), pageId: null, publishedOn: null, quote: null, quoteCheck: null,
-          quoteCheckReason: null, reason: null, registrableDomain: null, rowKey: null, sourceClass: null, standing: null, supersedesId: null, target: null, textGroupKey: null,
-          url: null, ...data };
+          quoteCheckReason: null, rating: null, reason: null, registrableDomain: null, rowKey: null, sourceClass: null, standing: null, supersedesId: null, target: null,
+          textGroupKey: null, url: null, ...data };
         evidence.push(row);
         return row;
       }),
@@ -313,6 +313,50 @@ describe("writing a record", () => {
     if (!dataset.ok) throw new Error(dataset.message);
     await expect(recorded(port, dataset.value)).resolves.toMatchObject({ quoteCheck: { reason: null, status: "not_verbatim" } });
     expect(memory.pages).toHaveLength(1);
+  });
+
+  describe("a rating (operator decision 2026-11-05)", () => {
+    const CARD = "https://clinic.example/doctors/ivanova";
+    const CARD_PAGE = "Иванова Анна, дерматолог. Рейтинг 4,9 · 1 284 отзыва пациентов. Записаться.";
+    const rating = { count: 1_284, counted: "reviews" as const, scaleMax: 5, score: 4.9, variantsMerged: false };
+    const rated = (quote: string, change: Partial<typeof rating> = {}) => finding(quote, CARD, { claim: "Пациенты оценивают Иванову на 4,9 из 5 по 1 284 отзывам.",
+      criterionKey: "ratings", rating: { ...rating, ...change }, rowKey: "ivanova", sourceClass: "owner_reviews" });
+
+    it("passes when its score and number of ratings stand in a quote the page holds, and is read back with its rating", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const record = await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов"));
+      expect(record).toMatchObject({ kind: "finding", quoteCheck: { reason: null, status: "found" }, rating, rowKey: "ivanova" });
+      expect(record.pageId).toBe(memory.pages[0]!.id);
+      // Its row keeps the rating in the tool's form, in a column of its own.
+      expect(memory.evidence[0]).toMatchObject({ dataset: null, rating: { count: 1_284, counted: "reviews", scale_max: 5, score: 4.9, variants_merged: false } });
+      await expect(port.records(signal)).resolves.toEqual([expect.objectContaining({ id: record.id, rating })]);
+    });
+
+    it("is marked as a wrong quote, kept with its page, when the page does not write its count, and counts as no evidence until corrected", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const wrong = await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов", { count: 1_824 }));
+      expect(wrong).toMatchObject({ kind: "finding", quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" }, rating: { ...rating, count: 1_824 } });
+      expect(wrong.pageId).toBe(memory.pages[0]!.id);
+      // A quote that leaves the count out shows nothing of it either.
+      await expect(recorded(port, rated("Рейтинг 4,9"))).resolves.toMatchObject({ quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" } });
+      // A quote not on the page keeps its own word: that is what to correct first.
+      await expect(recorded(port, rated("Рейтинг 4,9 · 1 824 отзыва"))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "not_verbatim" } });
+      await expect(port.records(signal)).resolves.toHaveLength(3);
+    });
+
+    it("leaves a finding that is no rating as its quote's check has it", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const plain = await recorded(port, finding("Записаться", CARD));
+      expect(plain.quoteCheck).toEqual({ reason: null, status: "found" });
+      expect(plain).not.toHaveProperty("rating");
+      expect(memory.evidence[0]).toMatchObject({ rating: null });
+    });
   });
 
   it("stands when its writer's results cannot be read, marked so, and gives a stopped run's abort back", async () => {

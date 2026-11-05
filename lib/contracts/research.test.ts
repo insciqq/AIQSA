@@ -25,6 +25,7 @@ import {
   researchPlanFromProposal,
   researchPlanProposalDocument,
   researchPlanWithEdit,
+  researchRatingDocument,
   type DecodedResearch,
   type ResearchFrame,
   type ResearchPlanProposal
@@ -119,6 +120,19 @@ describe("the plan proposal", () => {
     expect(value(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many.slice(1) })).criteria).toHaveLength(RESEARCH_FRAME_LIMITS.priorityCriteria);
   });
 
+  it("keeps the criterion marked as ratings through the plan, its stored form and the frame, and holds a plan to one", () => {
+    const marked = { ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, decisive: true }, { criterion: "Owners' ratings", key: "stars", ratings: true, why: "Thousands rated it." }] };
+    const proposal = value(decodeResearchPlanProposal(marked));
+    expect(proposal.criteria[1]).toEqual({ criterion: "Owners' ratings", key: "stars", ratings: true, why: "Thousands rated it." });
+    expect(proposal.criteria[0]).not.toHaveProperty("ratings");
+    expect(value(decodeResearchPlanProposal(researchPlanProposalDocument(proposal)))).toEqual(proposal);
+    // The model's own column stands, in its words: the server adds none beside it.
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(researchFrameFromPlan(proposal))))).criteria).toEqual(proposal.criteria);
+    expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, ratings: "yes" }] }))).toContain("criteria[0].ratings must be true or false");
+    const twice = { ...marked, criteria: [...marked.criteria, { criterion: "Reviews", key: "reviews", ratings: true, why: "A year on." }] };
+    expect(refusal(decodeResearchPlanProposal(twice))).toContain(`more than ${RESEARCH_FRAME_LIMITS.ratingsCriteria} as ratings`);
+  });
+
   it("never makes a criterion added on the way a priority: only the user's own message names one", () => {
     const added = value(decodeResearchFrameChange({ cases: null, change: "add_criterion", key: "value", label: "Value", priority: true, reason: "Matters.", url: null, why: "It matters." }));
     expect(added).toMatchObject({ change: "add_criterion", criterion: { key: "value" } });
@@ -207,6 +221,39 @@ describe("an evidence record", () => {
     expect(refusal(decodeResearchRecord({ ...UNREACHABLE, reason: "" }))).toContain("reason must say");
   });
 
+  const RATING = { count: 12_345, counted: "ratings", scale_max: 5, score: 4.7, variants_merged: false };
+
+  it("takes a finding's public rating with its score, scale, number of ratings and what they count, and reads one with none, or stored before it, as no rating", () => {
+    expect(value(decodeResearchRecord({ ...FINDING, rating: RATING }))).toEqual({ ...value(decodeResearchRecord(FINDING)),
+      rating: { count: 12_345, counted: "ratings", scaleMax: 5, score: 4.7, variantsMerged: false } });
+    expect(value(decodeResearchRecord({ ...FINDING, rating: { ...RATING, counted: "reviews", scale_max: 10, score: 9.2, variants_merged: true } })))
+      .toMatchObject({ rating: { counted: "reviews", scaleMax: 10, score: 9.2, variantsMerged: true } });
+    // The form its row keeps it in reads back as it was written.
+    const rated = value(decodeResearchRecord({ ...FINDING, rating: RATING }));
+    const rating = rated.kind === "finding" ? rated.rating! : null;
+    expect(researchRatingDocument(rating!)).toEqual(RATING);
+    // A row stored before the field, and a call that leaves it out or passes null, keep their finding with no rating.
+    expect(value(decodeResearchRecord(FINDING))).not.toHaveProperty("rating");
+    expect(value(decodeResearchRecord({ ...FINDING, rating: null }))).not.toHaveProperty("rating");
+    // Only a finding carries one: the other kinds never read it.
+    expect(value(decodeResearchRecord({ ...NOT_FOUND, rating: RATING }))).not.toHaveProperty("rating");
+  });
+
+  it("refuses a rating it cannot read, naming the field, and one of no option", () => {
+    const rated = (change: Record<string, unknown>) => ({ ...FINDING, rating: { ...RATING, ...change } });
+    expect(refusal(decodeResearchRecord({ ...FINDING, rating: "4.7 of 5" }))).toContain("rating must be one object");
+    expect(refusal(decodeResearchRecord(rated({ scale_max: 0 })))).toContain("rating.scale_max");
+    expect(refusal(decodeResearchRecord(rated({ scale_max: RESEARCH_EVIDENCE_LIMITS.ratingScale + 1 })))).toContain("rating.scale_max");
+    expect(refusal(decodeResearchRecord(rated({ score: 5.5 })))).toContain("rating.score");
+    expect(refusal(decodeResearchRecord(rated({ score: -1 })))).toContain("rating.score");
+    expect(refusal(decodeResearchRecord(rated({ count: 0 })))).toContain("rating.count");
+    expect(refusal(decodeResearchRecord(rated({ count: 12.5 })))).toContain("rating.count");
+    expect(refusal(decodeResearchRecord(rated({ count: RESEARCH_EVIDENCE_LIMITS.ratingCount + 1 })))).toContain("rating.count");
+    expect(refusal(decodeResearchRecord(rated({ counted: "stars" })))).toContain("rating.counted must be one of ratings, reviews, buyers");
+    expect(refusal(decodeResearchRecord(rated({ variants_merged: null })))).toContain("rating.variants_merged");
+    expect(refusal(decodeResearchRecord({ ...FINDING, rating: RATING, row_key: null }))).toContain("row_key must name the option this rating is of");
+  });
+
   it("refuses a dataset without its method, sample size, what was left out or examples, and a count past its sample", () => {
     const dataset = (change: Record<string, unknown>) => ({ ...DATASET, dataset: { ...DATASET.dataset, ...change } });
     expect(refusal(decodeResearchRecord({ ...DATASET, dataset: null }))).toContain("dataset must be one object");
@@ -230,6 +277,44 @@ describe("the frame", () => {
     const grown = { ...frame, changes: [{ at: "2026-11-01T10:00:00.000Z", by: { name: "lab", threadId: "thread-1" }, change: "add_row", key: "x2", reason: "A review names it." },
       { at: "2026-11-01T10:01:00.000Z", by: { name: null, threadId: null }, change: "add_criterion", key: "price", reason: "The user's budget." }] };
     expect(value(decodeResearchFrame(grown))).toEqual(grown);
+  });
+
+  describe("a choice among options", () => {
+    const planOf = (understood: string, criteria: readonly Record<string, unknown>[]) => value(decodeResearchPlanProposal({ ...PROPOSAL, criteria, understood }));
+    const ratingsOf = (plan: ResearchPlanProposal) => researchFrameFromPlan(plan).criteria.filter((criterion) => criterion.ratings === true);
+
+    it("has a ratings column in the plan's language for a product, where the plan marked key specifications", () => {
+      const product = planOf("Матрас для двоих до 60 000 рублей.", [{ criterion: "Нагрузка на спальное место", decisive: true, key: "load", why: "Двое тяжелее одного." }]);
+      const frame = researchFrameFromPlan(product);
+      expect(frame.criteria).toEqual([...product.criteria, { criterion: "Рейтинг и отзывы", key: "ratings", ratings: true, why: expect.stringContaining("оценили") }]);
+      // It is stored and read back as any criterion is.
+      expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(frame))))).toEqual(frame);
+    });
+
+    it("has one for a service too, where the plan marked only the user's priorities", () => {
+      const doctor = planOf("A dermatologist in Lisbon the user can see within a month.", [{ criterion: "Waiting time", key: "wait", priority: true, why: "The user asked for soon." },
+        { criterion: "Experience", key: "experience", why: "Years of practice." }]);
+      expect(ratingsOf(doctor)).toEqual([{ criterion: "Ratings and reviews", key: "ratings", ratings: true, why: expect.stringContaining("rated") }]);
+      const spanish = planOf("Una clínica dental en Madrid para un implante, con buena relación calidad precio.", [{ criterion: "Precio del implante", key: "price", priority: true, why: "El usuario lo pidió." }]);
+      expect(ratingsOf(spanish)).toEqual([expect.objectContaining({ criterion: "Valoraciones y reseñas", key: "ratings" })]);
+    });
+
+    it("takes a key no criterion has, and adds nothing past what a frame may hold", () => {
+      const taken = planOf("A hotel in Rome.", [{ criterion: "Location", decisive: true, key: "ratings", why: "Near the sights." }]);
+      expect(ratingsOf(taken)).toEqual([expect.objectContaining({ key: "ratings-2" })]);
+      const full = Array.from({ length: RESEARCH_FRAME_LIMITS.criteria }, (_entry, index) => ({ criterion: `Spec ${index}`, ...index === 0 ? { decisive: true } : {}, key: `spec-${index}`, why: "It decides." }));
+      expect(researchFrameFromPlan(planOf("A school.", full)).criteria).toHaveLength(RESEARCH_FRAME_LIMITS.criteria);
+    });
+
+    it("gives a knowledge question no such column", () => {
+      const knowledge = planOf("How the 2026 tax changes affect a freelancer.", [{ criterion: "What changed for freelancers", key: "changes", why: "The question itself." }]);
+      expect(researchFrameFromPlan(knowledge).criteria).toEqual(knowledge.criteria);
+    });
+
+    it("reads a frame stored before the column as it was written, with none", () => {
+      const stored = { branches: [], changes: [], criteria: [{ criterion: "Load", decisive: true, key: "load", why: "Two sleep on it." }], rows: [] };
+      expect(value(decodeResearchFrame(stored)).criteria).toEqual(stored.criteria);
+    });
   });
 
   it("refuses a frame that is not one, naming the field", () => {
