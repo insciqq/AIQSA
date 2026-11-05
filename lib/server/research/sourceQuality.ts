@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { getDomain } from "tldts";
 import {
-  RESEARCH_PAGE_LIMITS, type ResearchEvidenceRecord, type ResearchRecordInput, type ResearchSourceClass, type ResearchStanding
+  RESEARCH_PAGE_LIMITS, RESEARCH_RATING_WEIGHING, type ResearchEvidenceRecord, type ResearchRating, type ResearchRecordInput, type ResearchSourceClass, type ResearchStanding
 } from "../../contracts/research";
 import { normalizeFetchUrl } from "../webFetch/urls";
 
@@ -257,3 +257,41 @@ export const countIndependentSources = (records: readonly ResearchEvidenceRecord
 /** Coverage counts include every effective class; only the separate independent total excludes primary and action-channel sources. */
 export const countIndependentSourcesByClass = (records: readonly ResearchEvidenceRecord[], researchRecords: readonly ResearchEvidenceRecord[] = records): Readonly<Record<ResearchSourceClass, number>> =>
   researchSourceCounts(records, researchRecords).byClass;
+
+/** A finding of a public rating as the store keeps it (`ResearchRating`). */
+export type ResearchRatingRecord = Extract<ResearchEvidenceRecord, Readonly<{ kind: "finding" }>> & Readonly<{ rating: ResearchRating }>;
+
+/**
+ * A rating whose numbers stand: a finding with its rating whose quote checked out or could not be checked. One whose quote lacks its score or its count is marked as a
+ * wrong quote is (`rating_not_in_quote`, `evidenceStore.ts`) and weighs nothing, like any quote that did not check out.
+ */
+export const researchTrustedRating = (record: ResearchEvidenceRecord): record is ResearchRatingRecord =>
+  record.kind === "finding" && record.rating !== undefined && (record.quoteCheck?.status === "found" || record.quoteCheck?.status === "not_checked");
+
+/**
+ * A rating weighed by its sample (operator decision 2026-11-05, `RESEARCH_RATING_WEIGHING`): its score as a share of its scale, pulled towards the neutral share as though
+ * the prior's ratings had been given too, so ratings on scales of 5, 10 or 100 compare and 4.8 from 5,000 ratings stands above 5.0 from 7. What its number counts and whether
+ * its card merges variants weigh nothing: the report says those.
+ */
+export function researchWeighedRating(rating: Pick<ResearchRating, "count" | "scaleMax" | "score">): number {
+  const { neutralShare, priorRatings } = RESEARCH_RATING_WEIGHING;
+  return (rating.count * (rating.score / rating.scaleMax) + priorRatings * neutralShare) / (rating.count + priorRatings);
+}
+
+/**
+ * Of an option's ratings, the one it is compared by: the one from the most ratings, as researchers are told to take it (operator decision 2026-11-05). So a seller's own page,
+ * whose few reviews carried a real run's pick, is shown and never compared where a platform with more ratings rates the option, and counts where none does. A tie goes to the
+ * higher weighed score, then to the later record. Null with none: no score is ever guessed.
+ */
+export function researchMostRated(ratings: readonly ResearchRatingRecord[]): ResearchRatingRecord | null {
+  return ratings.reduce<ResearchRatingRecord | null>((best, record) => {
+    if (best === null || record.rating.count > best.rating.count) return record;
+    if (record.rating.count < best.rating.count) return best;
+    return researchWeighedRating(record.rating) >= researchWeighedRating(best.rating) ? record : best;
+  }, null);
+}
+
+/** The rating an option of the matrix is compared by (`researchMostRated`), of its trusted ratings no check rejected, whatever criterion they were recorded under. */
+export function researchComparedRating(records: readonly ResearchEvidenceRecord[], rowKey: string, rejected: ReadonlySet<string> = new Set()): ResearchRatingRecord | null {
+  return researchMostRated(records.filter((record): record is ResearchRatingRecord => researchTrustedRating(record) && record.rowKey === rowKey && !rejected.has(record.id)));
+}

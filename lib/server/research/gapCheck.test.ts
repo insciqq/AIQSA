@@ -25,7 +25,9 @@ import { researchMatrixCoverage } from "./matrix";
 import { researchAnswerText, researchNote } from "./notes";
 import { NOOP_RESEARCH_PORTS, type ResearchCoveragePort } from "./ports";
 import { researchOpenCandidates } from "./candidates";
-import { DRAFT as RECORD_DRAFT, finding as recordFinding, FRAME as RECORD_FRAME, matrixOf, notFound, RECORDS } from "./report.testFixtures";
+import {
+  dataset as recordDataset, DRAFT as RECORD_DRAFT, finding as recordFinding, FRAME as RECORD_FRAME, matrixOf, notFound, rating as ratingOf, RECORDS
+} from "./report.testFixtures";
 import { researchDraftWithRecords } from "./reportAssembly";
 import { REPORT_CHECK_GATE, reportCheckGate } from "./reportCheck";
 import { createResearchSources } from "./sources";
@@ -856,6 +858,75 @@ describe("where a frame exists", () => {
     it("costs only the confirmations when the records cannot be read", async () => {
       const ctx = keyed(ONE_SITE, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("down"); } } });
       expect(await gapCheckGate.run(leading, ctx)).toEqual({ kind: "pass" });
+    });
+  });
+
+  describe("the lowest-rated reviews of the options the summary recommends (operator decision 2026-11-05)", () => {
+    const RATED_FRAME: ResearchFrame = { ...FRAME, criteria: [...FRAME.criteria, { criterion: "Ratings and reviews", key: "ratings", ratings: true, why: "Many ratings say more than a few." }] };
+    const filled = (number: number, rowKey: string, criterionKey: string) => recordFinding(number, rowKey, criterionKey, { url: `https://maker.example/${number}` });
+    const BASE = [filled(1, "x1", "durability"), filled(2, "x1", "firmness"), filled(3, "y2", "durability"), filled(4, "y2", "firmness"),
+      ratingOf(5, "x1", 4.8, 5_000, "market.example"), ratingOf(6, "y2", 4.6, 2_000, "market.example")];
+    // Synthetic: what an option's lowest-rated reviews say, as a researcher records it.
+    const worst = (number: number, rowKey: string) => recordFinding(number, rowKey, "ratings", { claim: "Two owners report sagging within a month.", sourceClass: "owner_reviews",
+      url: `https://market.example/${rowKey}/reviews` });
+    const rated = (records: readonly ResearchEvidenceRecord[], overrides: Partial<ResearchGateContext> = {}) =>
+      withMatrix(records, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: vi.fn(async () => records) }, ...overrides }, RATED_FRAME);
+    const leading: ResearchDraft = { ...DRAFT, pickRowKey: "x1", summary: { rowKeys: ["x1"], text: "Take Lonax X1." } };
+    const STEP = "Read the lowest-rated reviews of row x1: on the place with the most ratings for it, sort or filter its reviews by rating, lowest first, and read the newest " +
+      "of them; record what they complain of under ratings as findings of owners' reviews, each quote word for word, or as a dataset of counts. If it has none, record not_found for " +
+      "that cell saying so.";
+
+    it("asks once, with no model, for the lowest-rated reviews of a recommended option with none recorded, nothing of one it does not recommend, and nothing past the cap", async () => {
+      const ctx = rated(BASE);
+      const result = await gapCheckGate.run(leading, ctx);
+      expect(result.kind).toBe("send_back");
+      expect(messageOf(result)).toContain("Lonax X1: Ratings and reviews, its lowest-rated reviews not read");
+      expect(messageOf(result)).toContain(STEP);
+      expect(messageOf(result)).not.toContain("y2");
+      expect(ctx.subagents.run).not.toHaveBeenCalled();
+      // Asked once: the next draft, with nothing new opened, goes on.
+      const asked = [{ draft: leading, gate: gapCheckGate.name, message: messageOf(result) }];
+      expect(await gapCheckGate.run(leading, { ...ctx, attempt: 2, earlier: asked })).toEqual({ kind: "pass" });
+      const capped = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: leading, gate: gapCheckGate.name, message: "Missing." }));
+      expect(await runResearchGates({ context: { ...rated(BASE), attempt: 3, earlier: capped }, draft: leading, gates: [gapCheckGate], runId: "r" }))
+        .toEqual({ kind: "accepted", notes: [] });
+    });
+
+    it("asks nothing once a review is recorded under the ratings criterion, a dataset of them, or a not_found written after the rating, and the judge then runs", async () => {
+      for (const records of [[...BASE, worst(7, "x1")], [...BASE, recordDataset(7, "x1", "ratings")], [...BASE, notFound(7, "x1", "ratings")]]) {
+        const ctx = rated(records);
+        expect(await gapCheckGate.run(leading, ctx)).toEqual({ kind: "pass" });
+        expect(ctx.subagents.run).toHaveBeenCalledOnce();
+      }
+    });
+
+    it("reads no rating, no record of another kind, no quote that did not check out, and no not_found written before the rating as its reviews read", async () => {
+      const notReviews = [...BASE, ratingOf(7, "x1", 5, 7, "lonax.example"), recordFinding(8, "x1", "ratings", { sourceClass: "action_channel", url: "https://market.example/x1" }),
+        { ...worst(9, "x1"), quoteCheck: { reason: null, status: "not_verbatim" as const } }];
+      for (const records of [notReviews, [notFound(0, "x1", "ratings"), ...BASE]]) {
+        expect(messageOf(await gapCheckGate.run(leading, rated(records)))).toContain("Read the lowest-rated reviews of row x1:");
+      }
+    });
+
+    it("asks a newly recommended option's reviews with no new page, and leaves an empty ratings cell to be asked as a cell", async () => {
+      const records = [...BASE, worst(7, "x1")];
+      const ctx = rated(records);
+      expect(await gapCheckGate.run(leading, ctx)).toEqual({ kind: "pass" });
+      const switched: ResearchDraft = { ...DRAFT, pickRowKey: "y2", summary: { rowKeys: ["y2"], text: "Take Dreamline Y2." } };
+      const earlier: ResearchAttempt[] = [{ draft: leading, gate: "verifier", message: "[Independent check] A check did not support some of them." }];
+      const result = await gapCheckGate.run(switched, { ...ctx, attempt: 2, earlier });
+      expect(messageOf(result)).toContain("Read the lowest-rated reviews of row y2:");
+      expect(messageOf(result)).not.toContain("row x1");
+      const unrated = messageOf(await gapCheckGate.run(switched, rated(records.filter(({ id }) => id !== BASE[5]!.id))));
+      expect(unrated).toContain("Fill the cells of row y2: ratings.");
+      expect(unrated).not.toContain("lowest-rated reviews");
+    });
+
+    it("asks nothing where the frame has no ratings criterion, as before, and costs only these asks when the records cannot be read", async () => {
+      const plain = withMatrix(BASE, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: vi.fn(async () => BASE) } }, FRAME);
+      expect(await gapCheckGate.run(leading, plain)).toEqual({ kind: "pass" });
+      const down = rated(BASE, { evidence: { ...NOOP_RESEARCH_PORTS.evidence, records: async () => { throw new Error("down"); } } });
+      expect(await gapCheckGate.run(leading, down)).toEqual({ kind: "pass" });
     });
   });
 

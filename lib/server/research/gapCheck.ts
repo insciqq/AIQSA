@@ -6,7 +6,9 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import { researchCandidateSpread, researchEarlierSpread, researchOpenCandidates, researchOwedCandidate } from "./candidates";
 import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
-import { researchEmptyByRow, researchKeySpecs, researchLeadingRows, researchMatrix, researchUnconfirmedKeyCells, type ResearchMatrix } from "./matrix";
+import {
+  researchEmptyByRow, researchKeySpecs, researchLeadingRows, researchMatrix, researchRatingsCriterion, researchUnconfirmedKeyCells, researchUnreadWorstReviews, type ResearchMatrix
+} from "./matrix";
 import { researchNote } from "./notes";
 import { researchGatePorts } from "./ports";
 import { REPORT_CHECK_GATE } from "./reportCheck";
@@ -197,14 +199,40 @@ function confirmationGaps(matrix: ResearchMatrix, records: readonly ResearchEvid
   });
 }
 
-/** What the gate reads of the records, only where there is something to confirm. A store that cannot be read costs the confirmations: the report check fails on the same read. */
-async function confirmationRecords(context: ResearchGateContext, matrix: ResearchMatrix | null, draft: ResearchDraft): Promise<readonly ResearchEvidenceRecord[]> {
-  if (!matrix || researchKeySpecs(matrix.frame).length === 0 || researchLeadingRows(draft).length === 0) return [];
+/** How a worst-reviews next step names its row, which is how an earlier send back says it asked, an approval's or a Continue's rebuilt one included. */
+const REVIEWS_STEP = /the lowest-rated reviews of row ([a-z0-9][a-z0-9_-]{0,47}):/gu;
+
+/** The rows whose lowest-rated reviews this research's earlier send backs of this gate asked for. */
+const askedReviews = (earlier: ResearchGateContext["earlier"]): ReadonlySet<string> =>
+  new Set(sentBackBefore(earlier).flatMap((message) => [...message.matchAll(REVIEWS_STEP)].map(([, row]) => row!)));
+
+/**
+ * The options a draft recommends whose lowest-rated reviews nobody read (`researchUnreadWorstReviews`, operator decision 2026-11-05: in a reviewed chat the pick fell
+ * to one owner's report of sagging within a month, which the user found alone). One gap per option, mechanical like the confirmations, and each asked once, so one an
+ * earlier send back asked for is left out, answered or not. A frame with no ratings criterion asks none.
+ */
+function worstReviewGaps(matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], draft: ResearchDraft, asked: ReadonlySet<string>): Gap[] {
+  const criterion = researchRatingsCriterion(matrix.frame);
+  if (!criterion) return [];
+  const limit = RESEARCH_LIMITS.questionCharacters;
+  return researchUnreadWorstReviews(matrix, records, draft).filter(({ key }) => !asked.has(key)).map((row) => ({
+    issue: line(`${row.label}: ${space(criterion.criterion)}, its lowest-rated reviews not read`, limit),
+    next_step: line(`Read the lowest-rated reviews of row ${row.key}: on the place with the most ratings for it, sort or filter its reviews by rating, lowest first, and read the ` +
+      `newest of them; record what they complain of under ${criterion.key} as findings of owners' reviews, each quote word for word, or as a dataset of counts. If it has none, ` +
+      "record not_found for that cell saying so.", limit) }));
+}
+
+/**
+ * What the gate reads of the records, only where there is something to ask of the options a draft recommends: their key specifications or their lowest-rated reviews. A
+ * store that cannot be read is null and costs those asks, since no records would read as none read: the report check fails on the same read.
+ */
+async function leadingRecords(context: ResearchGateContext, matrix: ResearchMatrix | null, draft: ResearchDraft): Promise<readonly ResearchEvidenceRecord[] | null> {
+  if (!matrix || (researchKeySpecs(matrix.frame).length === 0 && !researchRatingsCriterion(matrix.frame)) || researchLeadingRows(draft).length === 0) return [];
   try {
     return await researchGatePorts(context).evidence.records(context.signal);
   } catch {
     context.signal.throwIfAborted();
-    return [];
+    return null;
   }
 }
 
@@ -283,7 +311,7 @@ The entire reply must fit ${RUN_FOLLOWUP_MAX_CHARS} characters. Only gaps reques
  * and still sent it back four times, each time for one more detail.
  */
 const JUDGE_MATRIX_INSTRUCTIONS = `${JUDGE_INSTRUCTIONS}
-The brief's matrix is what the server tracks: which row has evidence for which criterion. It checks the empty cells itself, so an empty cell is never your gap, and it asks a second site for each key specification of the options the summary recommends, so neither is a second source, nor one more detail for a filled one, however useful.
+The brief's matrix is what the server tracks: which row has evidence for which criterion. It checks the empty cells itself, so an empty cell is never your gap, and it asks a second site for each key specification of the options the summary recommends, so neither is a second source, nor one more detail for a filled one, however useful. It also asks for the lowest-rated reviews of each option the summary recommends, so those are never your gap either.
 Return gaps only for what the matrix cannot see, where the report would otherwise mislead: findings that contradict each other on something the report rests on, except two sites' figures for one key specification, which the report names as they stand; evidence that sits in a cell but does not answer its criterion or is about another model; a plan question no finding answers while a site of another kind could, as above, also where its cell says nothing was found; a criterion or a candidate the goal plainly needs and the matrix lacks, in which case next_step says to add it with change_research_frame and send researchers for it.
 A purchase's matrix with fewer than five options, or with options of a single price tier, while the findings name more candidates within the question's limits, lacks candidates the goal needs. matrix.recommended are the options the report's summary recommends, its pick first: for a purchase, one with no current offer among the findings, giving its link, seller and price, is a gap whose next_step says to open that option's offers.`;
 
@@ -422,10 +450,12 @@ export const gapCheckGate: ResearchGate = {
     }
 
     // A source class whose opening cannot be told stays neither covered nor missing.
-    const confirmations = matrix ? confirmationGaps(matrix, await confirmationRecords(context, matrix, draft), draft, askedConfirmations(context.earlier)) : [];
+    const leading = matrix ? await leadingRecords(context, matrix, draft) : null;
+    const confirmations = matrix && leading ? confirmationGaps(matrix, leading, draft, askedConfirmations(context.earlier)) : [];
+    const reviews = matrix && leading ? worstReviewGaps(matrix, leading, draft, askedReviews(context.earlier)) : [];
     // With researchers closed nobody could fill a candidate's row.
     const candidates = matrix && !closed ? candidateGaps(matrix, askedCandidates(context.earlier)) : [];
-    const missing = matrix ? [...matrixGaps(matrix), ...confirmations, ...candidates] : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
+    const missing = matrix ? [...matrixGaps(matrix), ...confirmations, ...reviews, ...candidates] : coverageGaps(context.plan, sourceCoverage(draft, opened), "missing");
     // An unfinished judgment costs the check, never the answer, and the answer says only that it is not fully checked, and whether time is why. Evidence that
     // did not change pays for no new judgment, so the last one's word stands, an unfinished one included, until a judgment completes.
     const said = (cause: Unfinished): ResearchGateResult => ({ kind: "pass", notes: [researchNote(cause === "time" ? "time_out" : "gate_failed")] });
@@ -434,12 +464,12 @@ export const gapCheckGate: ResearchGate = {
       return said(cause);
     };
     const asBefore = (): ResearchGateResult => progress?.unfinished ? said(progress.unfinished) : { kind: "pass" };
-    // An option the draft newly recommends needs its key specifications confirmed however few pages are new or findings changed: what the draft leans on changed,
-    // not its evidence. Only these go back then, with the frequent candidates still open, which need a decision and no page; each is asked once, and the caps hold. The
-    // candidates go back so alone only with no cell open: with cells open they ride with the cells, and never spend a send back of their own.
-    const owed = confirmations.length > 0 || (candidates.length > 0 && matrix?.coverage.empty === 0);
+    // An option the draft newly recommends needs its key specifications confirmed and its lowest-rated reviews read however few pages are new or findings changed: what
+    // the draft leans on changed, not its evidence. Only these go back then, with the frequent candidates still open, which need a decision and no page; each is asked once,
+    // and the caps hold. The candidates go back so alone only with no cell open: with cells open they ride with the cells, and never spend a send back of their own.
+    const owed = confirmations.length > 0 || reviews.length > 0 || (candidates.length > 0 && matrix?.coverage.empty === 0);
     if (owed && (noNewPages || addedNothing(draft, context))) {
-      return gapsResult(draft, context, { gaps: [...confirmations, ...candidates], kind: "mechanical", limits: previous?.limits ?? [], pages }, closed, true);
+      return gapsResult(draft, context, { gaps: [...confirmations, ...reviews, ...candidates], kind: "mechanical", limits: previous?.limits ?? [], pages }, closed, true);
     }
     if (noNewPages) return asBefore();
     if (missing.length) return gapsResult(draft, context, { gaps: missing, kind: "mechanical", limits: previous?.limits ?? [], pages }, closed);

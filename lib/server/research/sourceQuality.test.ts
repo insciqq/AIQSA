@@ -1,6 +1,6 @@
 import type { Prisma, ResearchEvidence } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RESEARCH_PAGE_LIMITS, type ResearchEvidenceRecord, type ResearchRecordInput, type ResearchStanding } from "../../contracts/research";
+import { RESEARCH_PAGE_LIMITS, RESEARCH_RATING_WEIGHING, type ResearchEvidenceRecord, type ResearchRecordInput, type ResearchStanding } from "../../contracts/research";
 import { createResearchEvidenceRepository, type ResearchEvidenceAppend } from "./evidenceRepository";
 import { createResearchEvidenceStore } from "./evidenceStore";
 import { researcherMethodFooter } from "./method";
@@ -358,5 +358,59 @@ describe("source quality in the store", () => {
     for (const phrase of ["primary documents", "measured results", "seller's", "affiliate rating sites", "publication date"]) expect(method).toContain(phrase);
     expect(method).toContain("Owners' reviews on a shop page remain owner evidence");
     expect(method).toContain("maker documents remain primary sources");
+  });
+});
+
+describe("ratings weighed by their sample (operator decision 2026-11-05)", () => {
+  const weighed = (score: number, count: number, scaleMax = 5) => quality.researchWeighedRating({ count, scaleMax, score });
+
+  it("ranks 4.8 from 5,000 ratings above 5.0 from 7", () => {
+    expect(weighed(4.8, 5_000)).toBeGreaterThan(weighed(5, 7));
+    // Seven ratings leave a perfect score near 3.8 of 5, while thousands carry theirs whole.
+    expect(weighed(5, 7) * 5).toBeCloseTo(3.82, 2);
+    expect(weighed(4.8, 5_000) * 5).toBeCloseTo(4.8, 2);
+    expect(weighed(4.8, 5_000) - weighed(5, 7)).toBeGreaterThanOrEqual(RESEARCH_RATING_WEIGHING.clearlyBelow);
+  });
+
+  it("pulls a few ratings towards a neutral score from either side, lets hundreds decide, and compares scales of 5, 10 and 100", () => {
+    expect(weighed(1, 3) * 5).toBeGreaterThan(2.5);
+    expect(weighed(4.9, 300)).toBeGreaterThan(weighed(4.7, 2_000));
+    expect(weighed(9.6, 5_000, 10)).toBeCloseTo(weighed(4.8, 5_000), 10);
+    expect(weighed(96, 5_000, 100)).toBeCloseTo(weighed(4.8, 5_000), 10);
+    // A tenth of a star between two scores from thousands is not clearly apart.
+    expect(weighed(4.8, 3_000) - weighed(4.7, 1_200)).toBeLessThan(RESEARCH_RATING_WEIGHING.clearlyBelow);
+  });
+
+  describe("the rating an option is compared by", () => {
+    const rated = (number: number, rowKey: string, score: number, count: number, url: string, extra: Partial<StoredFinding> = {}): StoredFinding =>
+      record(url, null, { claim: `Rated ${score} by ${count}.`, id: `rating-${number}`, quoteCheck: { reason: null, status: "found" },
+        rating: { count, counted: "ratings", scaleMax: 5, score, variantsMerged: false }, rowKey, sequence: number, sourceClass: "owner_reviews", ...extra });
+    const SELLER = rated(1, "lonax", 5, 7, "https://lonax.example/memory");
+    const MARKET = rated(2, "lonax", 4.6, 3_000, "https://market.example/lonax");
+
+    it("shows a seller's own page and compares by the platform with more ratings, whatever the order they were recorded in", () => {
+      expect(quality.researchComparedRating([SELLER, MARKET], "lonax")?.id).toBe(MARKET.id);
+      expect(quality.researchComparedRating([MARKET, SELLER], "lonax")?.id).toBe(MARKET.id);
+    });
+
+    it("compares by a seller's own page where no place with more ratings rates the option", () => {
+      const own = rated(3, "lonax", 4.9, 400, "https://lonax.example/reviews");
+      expect(quality.researchComparedRating([own, rated(4, "lonax", 4.2, 30, "https://market.example/lonax")], "lonax")?.id).toBe(own.id);
+    });
+
+    it("weighs no rating whose quote did not check out, that a check rejected, or of another option, and guesses none", () => {
+      const wrong = { ...MARKET, quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" as const } };
+      expect(quality.researchComparedRating([SELLER, wrong], "lonax")?.id).toBe(SELLER.id);
+      expect(quality.researchComparedRating([SELLER, MARKET], "lonax", new Set([MARKET.id]))?.id).toBe(SELLER.id);
+      expect(quality.researchComparedRating([SELLER, MARKET], "optima")).toBeNull();
+      expect(quality.researchComparedRating([record()], "mattress")).toBeNull();
+    });
+
+    it("breaks a tie of counts by the higher score, then by the later record", () => {
+      const lower = rated(5, "lonax", 4.5, 3_000, "https://other.example/lonax");
+      expect(quality.researchMostRated([MARKET, lower].filter(quality.researchTrustedRating))?.id).toBe(MARKET.id);
+      const again = rated(6, "lonax", 4.6, 3_000, "https://market.example/lonax?page=2");
+      expect(quality.researchMostRated([MARKET, again].filter(quality.researchTrustedRating))?.id).toBe(again.id);
+    });
   });
 });
