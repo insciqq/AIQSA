@@ -265,42 +265,28 @@ export function researchReadHost(record: ResearchEvidenceRecord): string | null 
   return researchSiteHost(record.url);
 }
 
-/** What `fetch_url`'s reader knows of a stored page: whether it is a bot check, and when the store kept it. */
-export type ResearchReadPage = Readonly<{ block: boolean; capturedAt: string }>;
-
 /**
- * The hosts this research closed, with their reasons (operator decision 2026-11-05). An unreachable record closes its host; a read of
- * that host (`researchReadHost`) on a page stored after the host's latest closure, that is no block page, opens it again, and a later
- * record closes it once more. Records come in the store's order, and every record stays in the history.
+ * The hosts this research closed, with their reasons (operator decision 2026-11-05). An unreachable record closes its host; a trusted
+ * read of that host (`researchReadHost`) recorded after its latest closure, in the store's order, on a stored page that is no block
+ * page, opens it again; a later unreachable record closes it once more. Every record stays in the history.
  *
- * "Stored after" is read twice over, since the store keeps one page however many records cite it (`keptPage`): the page must first
- * appear in the records after the closure, by the store's order under its lock, and where `pages` knows it (`fetch_url`'s reader,
- * `lib/server/research/run.ts`), it must have been captured no earlier than the closure, which also catches a page first cited by a
- * record since corrected. So a finding written after a closure but quoting a page read before it opens nothing, and neither does a
- * re-read whose text matches that older page word for word: the site stays closed until a page with other text is read. A page `pages`
- * cannot find opens nothing. A brief has the records alone and takes a first-seen page for a read that is no check.
+ * The read's own record decides, not when its page was first stored: the store keeps one page however many records cite it, and a
+ * neighbouring researcher closed a site in the same seconds another was reading a card there, so a successful read around a closure
+ * shows the site opens. `blockPage` says whether a stored page is a check or cannot be found: `fetch_url`'s reader reads the pages
+ * (`lib/server/research/run.ts`); a brief has the records alone and takes a page a quote was found on for no check.
  */
-export function researchUnreachableSites(records: readonly ResearchEvidenceRecord[], pages?: (pageId: string) => ResearchReadPage | null): ReadonlyMap<string, string> {
-  const sites = new Map<string, Readonly<{ at: string; reason: string }>>();
-  const seen = new Set<string>();
+export function researchUnreachableSites(records: readonly ResearchEvidenceRecord[], blockPage: (pageId: string) => boolean = () => false): ReadonlyMap<string, string> {
+  const sites = new Map<string, string>();
   for (const record of records) {
     if (record.kind === "unreachable") {
       const host = researchSiteHost(record.target);
-      const reason = sites.get(host ?? "")?.reason ?? cut(plain(record.reason.replace(/[\u0000-\u001f\u007f]/gu, " ")), UNREACHABLE_REASON_CHARACTERS);
-      if (host) sites.set(host, { at: record.createdAt, reason });
+      if (host && !sites.has(host)) sites.set(host, cut(plain(record.reason.replace(/[\u0000-\u001f\u007f]/gu, " ")), UNREACHABLE_REASON_CHARACTERS));
       continue;
     }
-    const pageId = record.pageId;
-    if (pageId === null) continue;
-    const firstSeen = !seen.has(pageId);
-    seen.add(pageId);
     const host = researchReadHost(record);
-    const closed = host === null ? undefined : sites.get(host);
-    if (!closed || !firstSeen) continue;
-    const page = pages ? pages(pageId) : { block: false, capturedAt: closed.at };
-    if (page && !page.block && page.capturedAt >= closed.at) sites.delete(host!);
+    if (host && sites.has(host) && !blockPage(record.pageId!)) sites.delete(host);
   }
-  return new Map([...sites].map(([host, { reason }]) => [host, reason]));
+  return sites;
 }
 
 /**

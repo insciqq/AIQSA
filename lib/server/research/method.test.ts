@@ -571,26 +571,22 @@ describe("unreachable sites in later briefs", () => {
     }
     expect(researchUnreachableSites([closed, read("https://shop.example/card"), record("shop.example", "Checks the browser again.")]).get("shop.example"))
       .toBe("Checks the browser again.");
-    const later = { block: false, capturedAt: "2026-11-02T00:00:01.000Z" };
-    expect(researchUnreachableSites([closed, read("https://shop.example/card")], () => ({ ...later, block: true })).has("shop.example")).toBe(true);
-    expect(researchUnreachableSites([closed, read("https://shop.example/card")], () => null).has("shop.example")).toBe(true);
-    expect(researchUnreachableSites([closed, read("https://shop.example/card")], () => later).has("shop.example")).toBe(false);
+    expect(researchUnreachableSites([closed, read("https://shop.example/card")], (pageId) => pageId === "page-1").has("shop.example")).toBe(true);
+    expect(researchUnreachableSites([closed, read("https://shop.example/card")], () => false).has("shop.example")).toBe(false);
   });
 
-  it("opens a host only on a page stored after its latest closure, never on one read before it and quoted after", () => {
-    const at = (iso: string, entry: ResearchEvidenceRecord) => ({ ...entry, createdAt: iso });
-    const closed = at("2026-11-02T00:00:05.000Z", record("shop.example"));
-    // The store keeps one page per text and link, so a finding after the closure may cite the page a read before it stored.
-    const before = read("https://shop.example/card", "page-old", { reason: null, status: "not_verbatim" });
-    expect(researchUnreachableSites([before, closed, read("https://shop.example/card", "page-old")]).has("shop.example")).toBe(true);
-    // A page first cited by a record since corrected shows its age only by when it was captured.
-    const captured = (capturedAt: string) => () => ({ block: false, capturedAt });
-    expect(researchUnreachableSites([closed, read("https://shop.example/card", "page-old")], captured("2026-11-02T00:00:01.000Z")).has("shop.example")).toBe(true);
-    expect(researchUnreachableSites([closed, read("https://shop.example/card", "page-new")], captured("2026-11-02T00:00:06.000Z")).has("shop.example")).toBe(false);
-    // A second closure moves the mark: a page captured between the two opens nothing.
-    const again = at("2026-11-02T00:00:09.000Z", record("https://shop.example/", "CAPTCHA."));
-    expect(researchUnreachableSites([closed, again, read("https://shop.example/card", "page-new")], captured("2026-11-02T00:00:06.000Z")).get("shop.example"))
-      .toBe("Sign-in required.");
+  it("opens a host on a trusted read recorded after its latest closure, even on a page the store kept before it", () => {
+    // The store keeps one page per text and link, so a re-read after the closure may cite the page an earlier read stored.
+    const earlier = read("https://shop.example/card", "page-old", { reason: null, status: "not_verbatim" });
+    expect(researchUnreachableSites([earlier, record("shop.example"), read("https://shop.example/card", "page-old")]).has("shop.example")).toBe(false);
+    // Only a read after the latest closure counts: a second closure after the read closes the host again.
+    expect(researchUnreachableSites([record("shop.example"), read("https://shop.example/card"), record("https://shop.example/", "CAPTCHA.")]).get("shop.example"))
+      .toBe("CAPTCHA.");
+    // A block page or an unaddressed quote opens nothing, whenever it was recorded.
+    expect(researchUnreachableSites([record("shop.example"), read("https://shop.example/card", "page-check")], (pageId) => pageId === "page-check").has("shop.example"))
+      .toBe(true);
+    expect(researchUnreachableSites([record("shop.example"), read("https://shop.example/card", "page-1", { reason: "unaddressed_page", status: "found" })])
+      .has("shop.example")).toBe(true);
   });
 
   it("bounds count, reasons and the whole brief, and keeps reasons as untrusted single-line data", () => {

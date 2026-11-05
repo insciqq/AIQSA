@@ -596,7 +596,7 @@ describe("what a closed site needs (operator decision 2026-11-05)", () => {
   it("knows the hosts an agent's own browser navigations tried, from its call rows alone", async () => {
     const memory = tables();
     command(memory, { args: ["open", "https://www.shop.example/card"], command: "aiqsa-browser" }, "");
-    command(memory, { args: ["proxied", "curl", "https://proxied.example/"], command: "aiqsa-browser" }, "[browser #1] open @ proxied.example/");
+    command(memory, { args: ["proxied", "curl", "https://proxied.example/"], command: "aiqsa-browser" }, "HTTP/2 403");
     command(memory, { args: ["open", "https://main.example/"], command: "aiqsa-browser" }, "", null);
     const { port } = storeOf(memory);
     await expect(port.browsed!(RESEARCHER, "shop.example", signal)).resolves.toBe(true);
