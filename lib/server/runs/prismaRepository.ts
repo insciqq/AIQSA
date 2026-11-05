@@ -150,7 +150,7 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
           const marker = row.messageId ? { followupOf: { answerId: row.messageId, delivered: entry.delivered } } : {};
           return [
             ...(entry.precedingText ? [{ id: `${entry.id}-partial`, ...marker, role: "assistant" as const,
-              content: textMessageContent(`Partial answer before follow-up:\n${entry.precedingText}`) }] : []),
+              content: textMessageContent(`Answer before follow-up:\n${entry.precedingText}`) }] : []),
             { id: entry.id, contextTurnId: row.messageParentId!, ...marker, role: "user" as const,
               content: textMessageContent(`${entry.delivered ? "Follow-up" : "Follow-up not delivered to the previous answer"}:\n${entry.text}`) }
           ];
