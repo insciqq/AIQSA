@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME } from "../../../contracts/research";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME, type ResearchEvidenceRecord } from "../../../contracts/research";
 import { SUBAGENT_TOOL_GROUPS } from "../../../contracts/subagents";
 import { callSubagentTool, stopSubagentTool } from "../../subagents/tools";
+import { recordEvidenceEngineTool } from "../../tools/recordEvidence";
 import type { RunTool } from "../../tools/types";
+import { namespacedWorkspaceToolName } from "../../workspace/toolCatalog";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import { subagentToolRegistry, withoutResearchBookkeeping } from "./registry";
 
@@ -68,6 +70,26 @@ describe("sub-agent tool registry", () => {
       expect(registry.resolve(CHANGE_RESEARCH_FRAME_TOOL_NAME)).toBeDefined();
       expect(subagentToolRegistry(research, []).definitions().map((definition) => definition.name)).toEqual(expect.arrayContaining(bookkeeping));
       expect(registry.resolve("read_secret")).toBeUndefined();
+    });
+
+    it("gives a researcher narrowed to web tools no browser, so it records an unreachable site at once (operator decision 2026-11-05)", async () => {
+      const record = vi.fn(async () => ({ kind: "recorded" as const, record: { id: "record-1", kind: "unreachable", quoteCheck: null } as unknown as ResearchEvidenceRecord }));
+      const browsed = vi.fn(async () => false);
+      const recorder = recordEvidenceEngineTool({ coverage: { frame: async () => null }, evidence: { browsed, page: async () => null, record }, researching: () => true },
+        { kind: "subagent", name: "lab", threadId: "thread-lab" }, { browser: () => true });
+      const offered = [tool(namespacedWorkspaceToolName("sandbox_exec"), "workspace"), tool("fetch_url", "web_fetch"), recorder];
+      const withBrowser: ToolRegistry = { definitions: () => offered.map((entry) => entry.definition), resolve: (name) => offered.find((entry) => entry.definition.name === name) };
+      const unreachable = { claim: null, criterion_key: null, dataset: null, kind: "unreachable", quote: null, reason: "Blocked.", row_key: null, source_class: null,
+        standing: null, supersedes: null, target: "shop.example", url: null };
+      const recordIn = (registry: ToolRegistry) => registry.resolve(RECORD_EVIDENCE_TOOL_NAME)!.execute({ call: { arguments: unreachable, id: "call", name: RECORD_EVIDENCE_TOOL_NAME },
+        ordinal: 0, persistedToolCallId: "row", round: 1, signal: new AbortController().signal });
+      const web = subagentToolRegistry(withBrowser, [SUBAGENT_TOOL_GROUPS.web_search, SUBAGENT_TOOL_GROUPS.web_fetch]);
+      expect(web.resolve(RECORD_EVIDENCE_TOOL_NAME)).toBe(web.resolve(RECORD_EVIDENCE_TOOL_NAME));
+      expect((await recordIn(web)).status).toBe("complete");
+      expect(browsed).not.toHaveBeenCalled();
+      for (const groups of [[SUBAGENT_TOOL_GROUPS.workspace], null]) expect((await recordIn(subagentToolRegistry(withBrowser, groups))).status).toBe("error");
+      expect(browsed).toHaveBeenCalledTimes(2);
+      expect(record).toHaveBeenCalledOnce();
     });
 
     it("offers it to no run that does not bind it", () => {

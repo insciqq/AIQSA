@@ -19,6 +19,23 @@ export function researchRegistrableDomain(link: string): string | null {
   }
 }
 
+/**
+ * The site a closing names (`researchUnreachableSites`): its host, without `www.`, a port or a final dot (operator decision 2026-11-05),
+ * so a shop on a portal's subdomain closes only itself, while sources are still told apart by registrable domain. A target can be a bare
+ * host or a URL; null for anything that is no http(s) host.
+ */
+export function researchSiteHost(target: string): string | null {
+  const trimmed = target.trim();
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const host = url.hostname.toLowerCase().replace(/\.$/u, "").replace(/^www\./u, "");
+    return host && host.length <= 253 ? host : null;
+  } catch {
+    return null;
+  }
+}
+
 const linkOf = (record: ResearchRecordInput): string | null =>
   record.kind === "finding" || record.kind === "dataset" ? record.url : record.kind === "unreachable" ? record.target : null;
 

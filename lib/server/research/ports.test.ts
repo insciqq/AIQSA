@@ -826,6 +826,49 @@ describe("the run research belongs to", () => {
   });
 });
 
+describe("the sites fetch_url finds closed (operator decision 2026-11-05)", () => {
+  const base = { author: { name: "lab", threadId: "lab" }, createdAt: "2026-11-05T00:00:00.000Z", criterionKey: null, publishedOn: null, registrableDomain: null,
+    rowKey: null, runId: "run-1", supersedes: null, textGroupKey: null };
+  const closed = (sequence: number, reason: string): ResearchEvidenceRecord => ({ ...base, id: `closed-${sequence}`, kind: "unreachable", pageId: null, quoteCheck: null,
+    reason, sequence, sourceClass: null, target: "https://www.shop.example/card" });
+  const read = (sequence: number, pageId: string): ResearchEvidenceRecord => ({ ...base, claim: "The card lists it at 10.", id: `read-${sequence}`, kind: "finding", pageId,
+    quote: "10", quoteCheck: { reason: null, status: "found" }, sequence, sourceClass: "action_channel", standing: "claimed", url: "https://shop.example/card" });
+  type Page = NonNullable<Awaited<ReturnType<ResearchPorts["evidence"]["page"]>>>;
+  const stored = (id: string, text: string): Page => ({ capturedAt: base.createdAt, contentHash: id, id, obtainedBy: "browser", sizeBytes: text.length, text, truncated: false,
+    url: "https://shop.example/card" });
+
+  it("opens a host on a later read of its stored page, keeps it closed while that page is a bot check, reads each page once, and closes it again on a later record", async () => {
+    let records: readonly ResearchEvidenceRecord[] = [closed(0, "Checking your browser."), read(1, "check"), read(2, "card")];
+    const pages = new Map([["check", stored("check", "[browser #1 · lab] open @ shop.example/card\nChecking your browser before accessing shop.example.")],
+      ["card", stored("card", "[browser #2 · lab] text @ shop.example/card\nThe card lists it at 10.")]]);
+    const page = vi.fn(async (pageId: string) => pages.get(pageId) ?? null);
+    let clock = 1_000_000;
+    const research = direct({ gates: [], ports: { evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, page, records: async () => records }) } }, { now: () => clock });
+    const signal = new AbortController().signal;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map());
+    expect(page).toHaveBeenCalledTimes(2);
+    records = [closed(0, "Checking your browser."), read(1, "check")];
+    clock += 10_000;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map([["shop.example", "Checking your browser."]]));
+    records = [closed(0, "Checking your browser."), read(1, "card"), read(2, "gone"), closed(3, "A CAPTCHA in the browser.")];
+    clock += 10_000;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map([["shop.example", "A CAPTCHA in the browser."]]));
+    records = [closed(0, "Checking your browser."), read(1, "gone")];
+    clock += 10_000;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map([["shop.example", "Checking your browser."]]));
+    expect(page.mock.calls.map(([pageId]) => pageId)).toEqual(["check", "card", "gone"]);
+  });
+
+  it("opens a host on a read recorded after the closure whose page the store kept before it, the same text read again", async () => {
+    const old = { ...stored("old", "[browser #1 · lab] text @ shop.example/card\nThe card lists it at 10."), capturedAt: "2026-11-04T23:59:00.000Z" };
+    const page = vi.fn(async () => old);
+    const research = direct({ gates: [], ports: { evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, page,
+      records: async () => [read(0, "old"), closed(1, "Checking your browser."), read(2, "old")] }) } });
+    await expect(research.unreachableSites(new AbortController().signal)).resolves.toEqual(new Map());
+    expect(page).toHaveBeenCalledOnce();
+  });
+});
+
 describe("the migration", () => {
   const sql = readFileSync("prisma/migrations/20261101140000_research_system_contract/migration.sql", "utf8");
 

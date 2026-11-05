@@ -186,7 +186,8 @@ function resultsOf(request: ProviderRunRequest | undefined, name: string): strin
 afterEach(() => vi.restoreAllMocks());
 
 describe("record_evidence through the real engine", () => {
-  const siteUrls = ["https://www.shop.co.uk/one", "https://reviews.shop.co.uk/two", "https://shop.co.uk/three"];
+  // One host, www. or not: a site closes by its host (operator decision 2026-11-05).
+  const siteUrls = ["https://www.shop.example/one", "https://shop.example/two", "https://shop.example/three"];
   const fetch = (index: number) => ({ arguments: { url: siteUrls[index] }, id: `fetch-${index}`, name: "fetch_url" });
   const withFetch = () => {
     const base = prepared();
@@ -210,7 +211,7 @@ describe("record_evidence through the real engine", () => {
     await run(adapter, engineOf({ gates: [], ports: { evidence: () => evidence } }), { prepared: withFetch(), services: { fetchPage } }).text();
     expect(JSON.stringify(requests[2]!.history)).not.toContain("# Unreachable sites");
     expect(JSON.stringify(requests[5]!.history)).toContain("# Unreachable sites");
-    expect(JSON.stringify(requests[5]!.history)).toContain("shop.co.uk");
+    expect(JSON.stringify(requests[5]!.history)).toContain("shop.example");
     expect(JSON.stringify(requests[5]!.history)).toContain("The shop requires sign-in.");
     expect(resultsOf(requests[6], "fetch_url")[0]).toContain("already recorded as unreachable");
     expect(fetchPage).not.toHaveBeenCalled();

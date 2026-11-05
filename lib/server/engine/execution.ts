@@ -710,7 +710,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         if (input.approvalContinuation) runResearch?.resume(conversation.items);
         const registry = subagents ? withSubagentTools(mainRegistry, [...(runResearch?.withResearcherBriefs(subagents.tools) ?? subagents.tools),
-          ...(runResearch?.tools ?? []), ...(runResearch ? [recordEvidenceEngineTool(researchEvidenceTarget(runResearch), { kind: "main" }),
+          ...(runResearch?.tools ?? []), ...(runResearch ? [recordEvidenceEngineTool(researchEvidenceTarget(runResearch), { kind: "main" },
+            { browser: () => mainRegistry.browser === true }),
             changeResearchFrameEngineTool(researchFrameTarget(runResearch), { kind: "main" })] : [])]) : mainRegistry;
         // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
         // only for this run rides in with its input (`systemPrompt.ts`).

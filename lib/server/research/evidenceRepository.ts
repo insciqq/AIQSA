@@ -216,6 +216,11 @@ export function createResearchEvidenceRepository(client: EvidenceClient) {
         state: "complete" as const, subagentThreadId: agent.threadId });
       const newest: Prisma.ModelRunToolCallOrderByWithRelationInput[] = [{ createdAt: "desc" }, { id: "desc" }];
       return {
+        async attempts(agent, { limit, toolNames }) {
+          const rows = await client.modelRunToolCall.findMany({ orderBy: newest, select: CALL_SELECT, take: limit,
+            where: { ...own(agent), state: { in: ["complete", "error"] }, toolName: { in: [...toolNames] } } });
+          return rows.map(callOf);
+        },
         async calls(agent, ids) {
           const rows = await client.modelRunToolCall.findMany({ select: CALL_SELECT, where: { ...own(agent), id: { in: [...ids] } } });
           return rows.sort((one, other) => ids.indexOf(one.id) - ids.indexOf(other.id)).map(callOf);

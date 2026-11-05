@@ -161,7 +161,7 @@ function hostOf(link: string): string | null {
  */
 const BROWSER_STEP = /(?:^|")\[browser #\d+[^\]\n]*\][^\n]* @ ([^\s/"]+)/gmu;
 
-function browserHosts(text: string): readonly string[] {
+export function browserHosts(text: string): readonly string[] {
   if (!text.includes("[browser #")) return [];
   return [...unescaped(text).matchAll(BROWSER_STEP)].map((match) => match[1]!.replace(/:\d+$/u, "").replace(/^www\./u, "").toLowerCase());
 }
