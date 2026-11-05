@@ -1403,12 +1403,14 @@
     min-width: 2.75rem;
   }
 
-  /* A finger-sized ×: it fills the chip's height and stays inside the chip. */
+  /* A finger-sized ×: it fills the chip's height, overhangs only the face's
+     own edge (the face keeps the height of the other chips) and stays inside
+     the chip. */
   .v2-composer-research > .v2-composer-indicator-face { padding-right: 0; }
   .v2-composer-research-remove {
     width: 2.75rem;
     height: 2.75rem;
-    margin-block: -0.5rem;
+    margin-block: calc(-0.5rem - 1px);
     margin-inline-start: -0.625rem;
   }
 }
