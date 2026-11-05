@@ -431,6 +431,25 @@ describe("the matrix in a brief", () => {
   const large: ResearchFrame = { ...frame, criteria: Array.from({ length: 24 }, (_value, index) => ({ criterion: "A criterion in many words", key: `criterion-${index}`, why: "W." })),
     rows: Array.from({ length: 64 }, (_value, index) => ({ key: `row-${index}`, label: "A candidate with a long name" })) };
 
+  it("preserves Russian/English spaces in the supplied brief and the server's plan and matrix text", () => {
+    const message = "Проверь критерий durability для строки x1.\nСохрани два пробела  firmness и табуляцию\tprice. ";
+    const mixedPlan: ResearchPlan = { ...plan, goal: "Сравнить варианты x1 и y2", questions: [{ ...plan.questions[0]!, question: "Проверить критерий durability?" }] };
+    const mixedFrame: ResearchFrame = { ...frame, rows: [{ key: "x1", label: "Вариант x1" }], criteria: [{ key: "durability", criterion: "Критерий durability", why: "Выбор." }] };
+    const matrix = matrixOf(mixedFrame);
+    const first = researcherBrief(message, mixedPlan, matrix)!;
+    const next = researcherMatrixBrief(message, matrix);
+    for (const brief of [first, next]) {
+      expect(brief.slice(0, message.length)).toBe(message);
+      expect(brief).toContain("Rows: x1 (Вариант x1).");
+      expect(brief).toContain("Criteria: durability (Критерий durability).");
+      expect(brief).not.toMatch(/(?:критерийdurability|строкиx1|Вариантx1|Критерийdurability)/u);
+    }
+    expect(first).toContain("Проверить критерий durability?");
+    expect(first).toContain("The goal: Сравнить варианты x1 и y2 ");
+    // Already glued call arguments stay glued: assembly never rewrites the model's message.
+    expect(researcherBrief("Проверь критерийdurability для строкиx1.", mixedPlan, matrix)).toMatch(/^Проверь критерийdurability для строкиx1\.\n\n/u);
+  });
+
   it("names the keys with their words and the cells still empty, on one line each", () => {
     const footer = researcherMatrixFooter(matrixOf(), 10_000)!;
     expect(footer).toBe(["# The matrix (from the server)", "Rows: x1 (Lonax X1), y2 (Dreamline Y2).", "Criteria: durability (Durability), firmness (Firmness).",
