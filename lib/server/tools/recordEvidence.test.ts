@@ -328,6 +328,14 @@ describe("a record_evidence call", () => {
       const tool = toolOf([shell("c1", "aiqsa-browser text", "[browser #2 · shops] open @ shop.example/lumo-flex-20\nМатрас Lumo Flex 20\nЦена: 59732 руб.")]);
       const answer = value(await tool.execute(call(price)));
       expect(answer).toMatchObject({ figures: { not_in_quote: ["59 732 ₽"], on_page: ["59 732 ₽"] }, quote_check: "found", record_id: RECORD_ID });
+      expect(tool.appended[0]!.quoteCheck.kept).toEqual({ reason: null, status: "found" });
+    });
+
+    it("marks a quote found in browser output with no address of its own, which opens no closed site", async () => {
+      const tool = toolOf([shell("c1", "aiqsa-browser text", "Матрас Lumo Flex 20\nЦена: 59732 руб.")]);
+      expect(value(await tool.execute(call(price)))).toMatchObject({ quote_check: "found", record_id: RECORD_ID });
+      expect(tool.appended[0]!.quoteCheck.kept).toEqual({ reason: "unaddressed_page", status: "found" });
+      expect(tool.appended[0]!.page).toMatchObject({ obtainedBy: "browser", url: CARD });
     });
 
     it("asks for the page itself when the text came from a shell download through a third-party reader", async () => {
@@ -378,6 +386,35 @@ describe("a record_evidence call", () => {
         expect(value(await subdomain.execute(call(unreachable("market.portal.example"))))).toMatchObject({ record_id: RECORD_ID });
         const faked = toolOf([exec("c1", { args: ["[browser #1] open @ shop.example/"], command: "echo" }, "[browser #1] open @ shop.example/")], true);
         expect((await faked.execute(call(unreachable("shop.example")))).status).toBe("error");
+      });
+
+      it("counts only a navigation the browser ran, never a proxied command, a proxy listing, an echo or a step line a script printed", async () => {
+        const SHELL = namespacedWorkspaceToolName("sandbox_shell");
+        const shellLine = (command: string, stdout: string): ResearchAgentCall => ({ ...exec("s1", { command }, stdout), toolName: SHELL });
+        for (const notOpened of [
+          exec("c1", { args: ["proxied", "curl", "-I", "https://shop.example/"], command: "aiqsa-browser" }, "HTTP/2 403"),
+          exec("c1", { args: ["proxies", "https://shop.example/"], command: "aiqsa-browser" }, "shop.example opens directly."),
+          exec("c1", { args: ["text"], command: "aiqsa-browser" }, "[browser #2 · shops] text @ shop.example/card\nA card."),
+          exec("c1", { args: ["-c", "from aiqsa import browser as b\nprint('[browser #1] open @ shop.example/')"], command: "python3" }, "[browser #1] open @ shop.example/"),
+          exec("c1", { args: ["https://shop.example/", "[browser #1] open @ shop.example/"], command: "printf" }, "[browser #1] open @ shop.example/"),
+          shellLine("echo \"aiqsa-browser open https://shop.example/\"", "aiqsa-browser open https://shop.example/"),
+          shellLine("echo aiqsa-browser open https://shop.example/; cat notes.txt", "[browser #1] open @ shop.example/"),
+          shellLine("aiqsa-browser proxied curl -sS https://shop.example/ | head", "<html>")
+        ]) {
+          const tool = toolOf([notOpened], true);
+          expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ code: "research_unreachable_browser_first" });
+        }
+        for (const opened of [
+          shellLine("cd /workspace/project && aiqsa-browser open --proxy KZ1 'https://www.shop.example/card'", ""),
+          shellLine("python3 - <<'EOF'\nfrom aiqsa import browser as b\nb.open(\"https://shop.example/card\")\nEOF", ""),
+          exec("c1", { args: ["new-tab", "--quiet", "https://shop.example/card"], command: "/usr/local/bin/aiqsa-browser" }, ""),
+          exec("c1", { args: ["-c", "aiqsa-browser open \"$1\"", "sh", "https://shop.example/"], command: "bash" },
+            "[browser #1 · shops] open @ shop.example/"),
+          exec("c1", { args: ["open", "https://short.example/r"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ www.shop.example/card")
+        ]) {
+          const tool = toolOf([opened], true);
+          expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ record_id: RECORD_ID });
+        }
       });
 
       it("is not held back when the agent's calls cannot be read, or by a store that cannot say", async () => {

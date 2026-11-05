@@ -18,6 +18,7 @@ import { claimFigures, figuresNotIn } from "../research/quoteCheck";
 import { researchSiteHost } from "../research/sourceQuality";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { harnessToolError } from "./harnessTool";
 import type { RunTool, ToolExecutionResult } from "./types";
 
@@ -225,6 +226,12 @@ function recordedResult(call: Readonly<{ id: string; name: string }>, record: Re
 }
 
 /** The tool of one agent, whose author is that agent's: the main agent's, or a sub-agent's by its thread. */
+/** The Workspace tool the browser's commands run through (`browserGuidance.ts`). */
+const BROWSER_TOOL = namespacedWorkspaceToolName("sandbox_exec");
+
+/** How each tool was built, so a narrower registry can build it again for the tools its agent really has. */
+const rebuilds = new WeakMap<EngineTool, (offers: (name: string) => boolean) => EngineTool>();
+
 export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: WorkspaceAgent | undefined, tools: RecordEvidenceAgentTools = {}): EngineTool {
   const author: ResearchAgentRef = agent?.kind === "subagent" ? { name: agent.name, threadId: agent.threadId } : { name: null, threadId: null };
   /** Whether the agent's browser tried this site; a store that cannot say, or a read that fails, does not hold the record back. */
@@ -235,7 +242,7 @@ export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: Wo
       return true;
     });
   };
-  return {
+  const tool: EngineTool = {
     activity: () => ({ origin: "tool", serverName: "Research", toolName: "Recording evidence" }),
     definition: recordEvidenceTool,
     effects: "local",
@@ -256,4 +263,15 @@ export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: Wo
       return recordedResult(call, written.record, frame && cellHint(written.record, frame), figures);
     }
   };
+  rebuilds.set(tool, (offers) => recordEvidenceEngineTool(target, agent, { browser: () => tools.browser?.() === true && offers(BROWSER_TOOL) }));
+  return tool;
+}
+
+/**
+ * `record_evidence` as a registry narrowed by a sub-agent's tool groups offers it (`lib/server/engine/subagents/registry.ts`): the browser
+ * counts only while that registry still offers the Workspace command tool the browser runs through, so a researcher narrowed to web tools
+ * records an unreachable site at once. A tool this module did not build is returned as it is.
+ */
+export function recordEvidenceForOfferedTools(tool: EngineTool, offers: (name: string) => boolean): EngineTool {
+  return rebuilds.get(tool)?.(offers) ?? tool;
 }

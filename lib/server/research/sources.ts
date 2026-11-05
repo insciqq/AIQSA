@@ -41,14 +41,26 @@ export const RESEARCH_SOURCE_LIMITS = Object.freeze({ results: 2_000, totalChara
  */
 export const RESEARCH_WRITE_SOURCE_LIMITS = Object.freeze({ browserCalls: 200, characters: 3_000_000, citedResults: 4, fetchCalls: 500, recentResults: 48 });
 
-/** The Workspace tools that run a command, and so may drive the browser. */
-const COMMAND_TOOLS: readonly string[] = (["sandbox_exec", "sandbox_exec_start", "sandbox_shell"] as const).map(namespacedWorkspaceToolName);
+/** The Workspace tools that run a command, and so may drive the browser: a shell line, or a program with its arguments. */
+const SHELL_TOOL = namespacedWorkspaceToolName("sandbox_shell");
+const COMMAND_TOOLS: readonly string[] = [SHELL_TOOL, ...(["sandbox_exec", "sandbox_exec_start"] as const).map(namespacedWorkspaceToolName)];
 
-/** A link a browser command names, up to where its argument ends in the call's JSON. */
-const COMMAND_LINK = /https?:\/\/[^\s"'\\<>]+/giu;
+/**
+ * A browser navigation in a shell line (`ops/workspace-guest/python/aiqsa/browser/cli.py`): `aiqsa-browser open URL` or `new-tab URL`,
+ * past their flags, where a command starts (a line's start, or after `;`, `&`, `|` or `(`). In a quoted string or after `echo` it is
+ * text, and `proxies` or `proxied` open no page in the browser.
+ */
+const SHELL_NAVIGATION = /(?:^|[;&|(\n])\s*(?:[^\s;&|()'"]*\/)?aiqsa-browser\s+(?:open|new-tab)\s+(?:(?:--quiet|--proxy(?:=|\s+)[^\s;&|]+)\s+)*['"]?(https?:\/\/[^\s'";&|)]+)?/gu;
+/** Python run inline from a shell line, where a command starts. */
+const SHELL_PYTHON = /(?:^|[;&|(\n])\s*(?:[^\s;&|()'"]*\/)?python3?(?:\.\d+)?(?:\s|$)/u;
+const PYTHON_BROWSER = /from\s+aiqsa\s+import\s+browser|import\s+aiqsa\.browser/u;
+/** The helper's navigations (`b.open(url)`, `b.new_tab(url)`), with the link when the code writes it out. */
+const PYTHON_NAVIGATION = /\.(?:open|new_tab)\(\s*(?:url\s*=\s*)?(?:(['"])(https?:\/\/[^'"\s]+)\1)?/gu;
+/** A program by its name, wherever it is installed. */
+const programOf = (command: string) => command.trim().split("/").at(-1) ?? "";
 
-/** The host of a step line at a line's start in a command's output, as `browserHosts` in `quoteCheck.ts` reads one: `[browser #3] open @ shop.example/`. */
-const BROWSER_STEP_HOST = /^\[browser #\d+[^\]\n]*\][^\n]* @ ([^\s/"]+)/gmu;
+/** The host of a navigation's step line at a line's start (`_format.py`): `[browser #3] open @ shop.example/`, `new_tab` alike. */
+const NAVIGATION_STEP_HOST = /^\[browser #\d+[^\]\n]*\] (?:open|new_tab)\b[^\n]* @ ([^\s/"]+)/gmu;
 
 const stringsOf = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(stringsOf)
   : isObject(value) ? Object.values(value).flatMap(stringsOf) : [];
@@ -60,6 +72,58 @@ function printedText(text: string): string {
   } catch {
     return text;
   }
+}
+
+/** A navigation one call ran: the links its own navigation arguments name, which a failed open has as its only trace. */
+type Navigation = Readonly<{ links: readonly string[] }>;
+
+function pythonNavigation(code: string): Navigation | null {
+  if (!PYTHON_BROWSER.test(code)) return null;
+  const calls = [...code.matchAll(PYTHON_NAVIGATION)];
+  return calls.length > 0 ? { links: calls.flatMap((match) => match[2] ?? []) } : null;
+}
+
+function shellNavigation(line: string): Navigation | null {
+  const opened = [...line.matchAll(SHELL_NAVIGATION)];
+  const python = SHELL_PYTHON.test(line) ? pythonNavigation(line) : null;
+  if (opened.length === 0 && !python) return null;
+  return { links: [...opened.flatMap((match) => match[1] ?? []), ...python?.links ?? []] };
+}
+
+/** `aiqsa-browser open|new-tab [--quiet] [--proxy NAME] URL` as a program and its arguments. */
+function browserNavigation(args: readonly string[]): Navigation | null {
+  const [action, ...rest] = args;
+  if (action !== "open" && action !== "new-tab") return null;
+  const links: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]!;
+    if (value === "--proxy") index += 1;
+    else if (!value.startsWith("--")) {
+      links.push(value);
+      break;
+    }
+  }
+  return { links };
+}
+
+/**
+ * Whether one command call navigated the browser, and to what: the CLI's `open` or `new-tab`, run as a program, from a shell line at
+ * a command's start, or the Python helper's `open` or `new_tab` in code a Python interpreter runs inline. Never what a command only
+ * prints or passes along (`echo`, `cat`, `proxied curl`).
+ */
+function navigationOf(call: ResearchAgentCall): Navigation | null {
+  const input = isObject(call.arguments) ? call.arguments : null;
+  const command = input && typeof input.command === "string" ? input.command : null;
+  if (!input || command === null) return null;
+  if (call.toolName === SHELL_TOOL) return shellNavigation(command);
+  const listed: unknown = input.args;
+  const args = Array.isArray(listed) && listed.every((value) => typeof value === "string") ? listed as string[] : [];
+  const program = programOf(command);
+  const inline = args.indexOf("-c") >= 0 ? args[args.indexOf("-c") + 1] : undefined;
+  if (program === "aiqsa-browser") return browserNavigation(args);
+  if (/^(?:ba|da)?sh$/u.test(program)) return inline === undefined ? null : shellNavigation(inline);
+  if (/^python3?(?:\.\d+)?$/u.test(program)) return inline === undefined ? null : pythonNavigation(inline);
+  return null;
 }
 
 /** A command that drives the Workspace browser: the same reading as `drivesBrowser` in `lib/server/engine/toolRegistry.ts`. Reads such as its `text` print no step line. */
@@ -273,10 +337,9 @@ export function createResearchAgentSources(input: Readonly<{
     },
 
     /**
-     * The hosts the agent's own browser commands opened or tried, from its call rows and never from its word: the links a browser command
-     * names and the hosts its step lines show, each as `researchSiteHost` writes it. Only a call that drives the browser
-     * counts, so a shell command that prints a step line opens nothing. Bounded to its newest command calls; null when the calls
-     * cannot be listed.
+     * The hosts the agent's own browser navigations opened or tried, from its call rows and never from its word (`navigationOf`): the
+     * link each navigation names, and the hosts its own call's navigation step lines show, a redirect's or a variable's. A call that
+     * navigated nowhere shows no host, whatever it printed. Bounded to its newest command calls; null when the calls cannot be listed.
      */
     async browsedHosts(agent: ResearchAgentScope, signal: AbortSignal): Promise<ReadonlySet<string> | null> {
       if (!input.calls.attempts) return null;
@@ -284,11 +347,11 @@ export function createResearchAgentSources(input: Readonly<{
       const hosts = new Set<string>();
       for (const call of calls) {
         signal.throwIfAborted();
-        const command = JSON.stringify(call.arguments ?? {});
-        if (!BROWSER_COMMAND.test(command)) continue;
+        const navigation = navigationOf(call);
+        if (!navigation) continue;
         const result = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result as ToolLoopJsonValue);
-        const shown = result ? [...printedText(toolResultOutputText(result)).matchAll(BROWSER_STEP_HOST)].map(([, host]) => host!) : [];
-        for (const host of [...[...command.matchAll(COMMAND_LINK)].map(([link]) => link), ...shown].flatMap((site) => researchSiteHost(site) ?? [])) hosts.add(host);
+        const shown = result ? [...printedText(toolResultOutputText(result)).matchAll(NAVIGATION_STEP_HOST)].map(([, host]) => host!) : [];
+        for (const host of [...navigation.links, ...shown].flatMap((site) => researchSiteHost(site) ?? [])) hosts.add(host);
       }
       return hosts;
     },
