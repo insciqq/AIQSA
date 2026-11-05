@@ -55,6 +55,7 @@ export type {
 } from "../../contracts/chats";
 
 export type ChatMessageRecord = {
+  deepResearch?: true;
   followups?: ChatMessageWire["followups"];
   workspacePreparation?: true;
   providerWait?: RunProviderWait;
@@ -289,6 +290,7 @@ function iso(value: Date | string): string {
 
 function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
   return {
+    ...(message.deepResearch === true && message.role === "user" ? { deepResearch: true as const } : {}),
     ...(message.followups ? { followups: message.followups } : {}),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     ...(message.workspacePreparation === true ? { workspacePreparation: true as const } : {}),

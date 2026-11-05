@@ -146,6 +146,10 @@ export function humanizeErrorCode(code: string): string {
     skills_invalid: "Choose distinct Skills and try again",
     skills_count_exceeded: "Pin up to 32 Skills, including Assistant Skills, and try again",
     // Admission summarizes earlier messages, so only this turn's own part can be over.
+    // Deep research refusals at admission (`DEEP_RESEARCH_REFUSALS`): the chip and the draft stay for another try.
+    deep_research_needs_search: "Turn on Search to use Deep research",
+    deep_research_unavailable: "Deep research is not available here. Turn off Deep research to send this message",
+    deep_research_invalid: "Deep research could not be requested. Reload the page and send again",
     context_too_large: "This message does not fit the selected model's context window beside its instructions and tools. " +
       "Shorten the message or remove attachments, or choose a model with a larger context window",
     skills_budget_exceeded: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window",

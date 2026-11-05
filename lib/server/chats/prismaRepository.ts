@@ -360,6 +360,8 @@ type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
   select: typeof archivedChatSummarySelect;
 }>;
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }> & {
+  /** A user message sent with Deep research (`loadDeepResearchMessageIds`). */
+  sentWithDeepResearch?: true;
   /** A wake-up turn's sub-agents (`loadSubagentCallbackNames`). */
   subagentCallbackNames?: readonly string[];
 };
@@ -646,17 +648,33 @@ async function hydrateMessagePath(
       : message.branchSourceModelRun?.id
         ? [message.branchSourceModelRun.id]
         : []);
-  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks, callbackNames] = await Promise.all([
+  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks, callbackNames, deepResearchIds] = await Promise.all([
     loadMemoryRunActions(tx, { runIds, userId }),
     loadMemoryRunSources(tx, { runIds, userId }),
     loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
       (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
-    loadSubagentCallbackNames(tx, chatId, ordered)
+    loadSubagentCallbackNames(tx, chatId, ordered),
+    loadDeepResearchMessageIds(tx, chatId, ordered)
   ]);
   return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, parents, scheduledTasks,
-    messages: ordered.map((message) => callbackNames.has(message.id)
-      ? { ...message, subagentCallbackNames: callbackNames.get(message.id)! } : message) };
+    messages: ordered.map((message) => {
+      const named = callbackNames.has(message.id) ? { ...message, subagentCallbackNames: callbackNames.get(message.id)! } : message;
+      return deepResearchIds.has(message.id) ? { ...named, sentWithDeepResearch: true as const } : named;
+    }) };
+}
+
+/**
+ * The page's user messages the user sent with Deep research: one of the main agent's runs of the message was admitted with the
+ * choice. Only that frozen field is read, in the database: a run's request holds the whole branch's context, which a page never loads.
+ */
+async function loadDeepResearchMessageIds(tx: Prisma.TransactionClient, chatId: string,
+  messages: readonly Readonly<{ id: string; role: string }>[]): Promise<ReadonlySet<string>> {
+  const ids = messages.filter((message) => message.role === "user").map((message) => message.id);
+  if (ids.length === 0) return new Set();
+  const runs = await tx.modelRun.findMany({ distinct: ["userMessageId"], select: { userMessageId: true }, where: { chatId,
+    normalizedRequest: { equals: true, path: ["deepResearch"] }, subagentTurnId: null, userMessageId: { in: ids } } });
+  return new Set(runs.map((run) => run.userMessageId));
 }
 
 /**
@@ -922,6 +940,7 @@ function serializeHydratedMessage(
       )
     : null;
   return {
+    ...(message.role === "user" && message.sentWithDeepResearch ? { deepResearch: true as const } : {}),
     ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
       projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
         ? { phase: modelRun.status === "error" ? "failed" : "cancelled",

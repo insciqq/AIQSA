@@ -558,6 +558,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const artifactPanel = useArtifactPanelStore(state => state.open);
   const composerArtifactEdit = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactEdit ?? null);
   const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
+  const composerDeepResearch = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.deepResearch ?? false);
+  const editingDeepResearch = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.editingDeepResearch ?? false);
   const followupSubmission = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.followupSubmission ?? null);
   const uploadSourceKey = useComposerSessionStore(state => state.activeSessionKey);
   const composerComments = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.comments);
@@ -1001,6 +1003,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   ]);
   const canSubmitFollowup = Boolean(latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
     composer.submitFollowup);
+  const setComposerDeepResearch = useCallback((on: boolean) => {
+    const store = useComposerSessionStore.getState();
+    store.updateSession(store.activeSessionKey, { deepResearch: on });
+  }, []);
   const composerSurface = (
     <ComposerV2
       sessionKey={skillScopeKey}
@@ -1019,6 +1025,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         const store = useComposerSessionStore.getState();
         store.updateSession(store.activeSessionKey, { artifactCreate: null });
       }}
+      deepResearch={composerDeepResearch}
+      onDeepResearchChange={setComposerDeepResearch}
       onRemoveArtifactEdit={() => {
         const store = useComposerSessionStore.getState();
         store.updateSession(store.activeSessionKey, { artifactEdit: null });
@@ -1299,10 +1307,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       // Owner-only files sent with this exact message, above its bubble,
       // rendered from the labels the thread snapshot already exposes.
       const sentAttachments = attachmentBlocksFromThreadContent(source.content);
+      // A message sent with Deep research says so above its bubble (`ChatMessageWire.deepResearch`).
+      const researchLabel = source.deepResearch ? <p className="v2-followup-label">Deep research</p> : null;
       return (
         <ConversationTurnV2
-          aboveContent={sentAttachments.length > 0
-            ? <SentAttachmentsV2 blocks={sentAttachments} canSave={!temporarySession} /> : undefined}
+          aboveContent={sentAttachments.length > 0 || researchLabel ? <>
+            {researchLabel}
+            {sentAttachments.length > 0 ? <SentAttachmentsV2 blocks={sentAttachments} canSave={!temporarySession} /> : null}
+          </> : undefined}
           actions={actions}
           afterContent={pagerSlot}
           anchorId={source.id}
@@ -1316,6 +1328,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           quoteEligible={source.status === "complete"}
           edit={thread.editingMessageId === source.id ? {
             attachmentSlot: <SentAttachmentsV2 blocks={sentAttachments} />,
+            deepResearch: editingDeepResearch ? { onTurnOff: () => {
+              const store = useComposerSessionStore.getState();
+              store.updateSession(store.activeSessionKey, { editingDeepResearch: false });
+            } } : null,
             draft: thread.editingMessageDraft,
             error: thread.editingMessageError,
             onCancel: () => thread.cancelMessageEdit(source.id),
