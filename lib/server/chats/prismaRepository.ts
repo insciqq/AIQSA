@@ -655,7 +655,7 @@ async function hydrateMessagePath(
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
       (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
     loadSubagentCallbackNames(tx, chatId, ordered),
-    loadDeepResearchMessageIds(tx, chatId, ordered)
+    loadDeepResearchMessageIds(tx, { chatId, userId }, ordered)
   ]);
   return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, parents, scheduledTasks,
     messages: ordered.map((message) => {
@@ -668,12 +668,12 @@ async function hydrateMessagePath(
  * The page's user messages the user sent with Deep research: one of the main agent's runs of the message was admitted with the
  * choice. Only that frozen field is read, in the database: a run's request holds the whole branch's context, which a page never loads.
  */
-async function loadDeepResearchMessageIds(tx: Prisma.TransactionClient, chatId: string,
+async function loadDeepResearchMessageIds(tx: Prisma.TransactionClient, { chatId, userId }: Readonly<{ chatId: string; userId: string }>,
   messages: readonly Readonly<{ id: string; role: string }>[]): Promise<ReadonlySet<string>> {
   const ids = messages.filter((message) => message.role === "user").map((message) => message.id);
   if (ids.length === 0) return new Set();
   const runs = await tx.modelRun.findMany({ distinct: ["userMessageId"], select: { userMessageId: true }, where: { chatId,
-    normalizedRequest: { equals: true, path: ["deepResearch"] }, subagentTurnId: null, userMessageId: { in: ids } } });
+    normalizedRequest: { equals: true, path: ["deepResearch"] }, subagentTurnId: null, userId, userMessageId: { in: ids } } });
   return new Set(runs.map((run) => run.userMessageId));
 }
 
