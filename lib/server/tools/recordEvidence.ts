@@ -15,7 +15,9 @@ import { researchClaimGivesRate, researchSmallSampleNote } from "../research/dat
 import { RESEARCH_CHECK_REASONS } from "../research/evidenceStore";
 import type { ResearchCoveragePort, ResearchEvidencePort } from "../research/ports";
 import { claimFigures, figuresNotIn } from "../research/quoteCheck";
+import { researchSiteHost } from "../research/sourceQuality";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
+import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
 import { harnessToolError } from "./harnessTool";
 import type { RunTool, ToolExecutionResult } from "./types";
 
@@ -40,7 +42,8 @@ export const recordEvidenceTool: RunTool = {
   description: "Keep one piece of evidence as soon as you have it, while you still have the page: it lasts whatever happens to the report. kind finding: a claim " +
     "with its link and a quote copied word for word from the page you opened. The server checks the quote on the spot against what you read and keeps that page's text " +
     "with the record, so do not repeat it here. not_found: nothing was found for a matrix cell (row_key and criterion_key), which counts as filled. dataset: what a " +
-    "script collected, with its method, sample and verbatim examples. unreachable: a site you could not reach, and why. Every field is required: pass null where a " +
+    "script collected, with its method, sample and verbatim examples. unreachable: a site you could not reach, and why; if you have the Workspace browser, " +
+    "only once it failed on that site too. Every field is required: pass null where a " +
     "kind has no use for it. Nothing is ever changed or deleted: to correct a record, write a new one with supersedes set to its id. Result: the record's id, what the " +
     `quote check found, any figure of the claim the quote lacks, and what to do next. Refused until ${START_RESEARCH_TOOL_NAME} ran, once the research holds as ` +
     "many records as it may, and for a supersedes that names no record of this research or one already corrected.",
@@ -88,7 +91,23 @@ export const recordEvidenceTool: RunTool = {
  * from `start_research` on, scoping included, and not from the plan's release: what scoping finds is a finding. `coverage` is read only to tell
  * the agent at once that a record fills no cell, and `evidence.page` to look for a claim's figures on the page its quote was checked on.
  */
-export type RecordEvidenceTarget = Readonly<{ coverage: Pick<ResearchCoveragePort, "frame">; evidence: Pick<ResearchEvidencePort, "page" | "record">; researching(): boolean }>;
+export type RecordEvidenceTarget = Readonly<{ coverage: Pick<ResearchCoveragePort, "frame">; evidence: Pick<ResearchEvidencePort, "browsed" | "page" | "record">;
+  researching(): boolean }>;
+
+/**
+ * What the registry that builds an agent's tool knows of it. `browser`: this agent drives the Workspace browser in this run, read when
+ * a record is made, since the registry learns its Workspace tools after this tool is added (`lib/server/engine/toolRegistry.ts`).
+ */
+export type RecordEvidenceAgentTools = Readonly<{ browser?: () => boolean }>;
+
+/**
+ * The browser comes first (operator decision 2026-11-05): a passive check, or a refusal only `fetch_url` met, closed sites the browser
+ * opened. An agent with the browser records a site unreachable only once its own browser commands opened or tried that host.
+ */
+const browserFirst = (host: string) => `Nothing was recorded: your Workspace browser has not opened ${host} in this research, and the browser opens ` +
+  `pages fetch_url cannot. Open the page once in it (read ${WORKSPACE_GUIDE_PATHS.browser} first). If the page only says the browser is being checked, ` +
+  "wait about 15 seconds and read it once more. Only if the browser is refused too, or shows a CAPTCHA, a block page or a sign-in, record the site " +
+  "as unreachable; never solve or click a check.";
 
 const CORRECT = `call ${RECORD_EVIDENCE_TOOL_NAME} again with supersedes set to this record's id`;
 
@@ -206,8 +225,16 @@ function recordedResult(call: Readonly<{ id: string; name: string }>, record: Re
 }
 
 /** The tool of one agent, whose author is that agent's: the main agent's, or a sub-agent's by its thread. */
-export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: WorkspaceAgent | undefined): EngineTool {
+export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: WorkspaceAgent | undefined, tools: RecordEvidenceAgentTools = {}): EngineTool {
   const author: ResearchAgentRef = agent?.kind === "subagent" ? { name: agent.name, threadId: agent.threadId } : { name: null, threadId: null };
+  /** Whether the agent's browser tried this site; a store that cannot say, or a read that fails, does not hold the record back. */
+  const browserTried = async (host: string, signal: AbortSignal): Promise<boolean> => {
+    if (!target.evidence.browsed) return true;
+    return target.evidence.browsed(author, host, signal).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      return true;
+    });
+  };
   return {
     activity: () => ({ origin: "tool", serverName: "Research", toolName: "Recording evidence" }),
     definition: recordEvidenceTool,
@@ -217,6 +244,10 @@ export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: Wo
       if (!target.researching()) return harnessToolError(call, "research_not_started", NOT_STARTED);
       const decoded = decodeResearchRecord(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_record_invalid", decoded.message);
+      const unreachableHost = decoded.value.kind === "unreachable" && tools.browser?.() === true ? researchSiteHost(decoded.value.target) : null;
+      if (unreachableHost !== null && !await browserTried(unreachableHost, signal)) {
+        return harnessToolError(call, "research_unreachable_browser_first", browserFirst(unreachableHost));
+      }
       const written = await target.evidence.record({ author, record: decoded.value }, signal);
       if (written.kind !== "recorded") return harnessToolError(call, written.code, written.message);
       // The record is on file by now, so a matrix or a page that cannot be read costs only its advice.

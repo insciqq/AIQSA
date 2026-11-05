@@ -106,6 +106,12 @@ export function createResearchEvidenceStore(deps: ResearchEvidenceStoreDeps) {
     }
 
     return {
+      async browsed(author, host, signal) {
+        signal.throwIfAborted();
+        const agent = await agentScope(author.threadId, await deps.repository.chain(scope));
+        return (await sources.browsedHosts(agent, signal))?.has(host) ?? true;
+      },
+
       async page(pageId, signal) {
         signal.throwIfAborted();
         return deps.repository.page(scope, await deps.repository.chain(scope), pageId);
