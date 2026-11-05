@@ -25,6 +25,7 @@ import {
   researchPlanFromProposal,
   researchPlanProposalDocument,
   researchPlanWithEdit,
+  researchRatingDocument,
   type DecodedResearch,
   type ResearchFrame,
   type ResearchPlanProposal
@@ -227,6 +228,10 @@ describe("an evidence record", () => {
       rating: { count: 12_345, counted: "ratings", scaleMax: 5, score: 4.7, variantsMerged: false } });
     expect(value(decodeResearchRecord({ ...FINDING, rating: { ...RATING, counted: "reviews", scale_max: 10, score: 9.2, variants_merged: true } })))
       .toMatchObject({ rating: { counted: "reviews", scaleMax: 10, score: 9.2, variantsMerged: true } });
+    // The form its row keeps it in reads back as it was written.
+    const rated = value(decodeResearchRecord({ ...FINDING, rating: RATING }));
+    const rating = rated.kind === "finding" ? rated.rating! : null;
+    expect(researchRatingDocument(rating!)).toEqual(RATING);
     // A row stored before the field, and a call that leaves it out or passes null, keep their finding with no rating.
     expect(value(decodeResearchRecord(FINDING))).not.toHaveProperty("rating");
     expect(value(decodeResearchRecord({ ...FINDING, rating: null }))).not.toHaveProperty("rating");

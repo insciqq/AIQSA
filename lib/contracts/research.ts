@@ -1001,7 +1001,12 @@ function decodeDataset(value: unknown): DecodedResearch<ResearchDataset> {
 const isNumberWithin = (value: unknown, least: number, most: number): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= least && value <= most;
 
-/** A finding's rating in its tool's form; null where the finding is no rating. */
+/** A rating in its tool's form, which is how `ResearchEvidence.rating` keeps it: `decodeResearchRecord` reads both. */
+export function researchRatingDocument(rating: ResearchRating) {
+  return { count: rating.count, counted: rating.counted, scale_max: rating.scaleMax, score: rating.score, variants_merged: rating.variantsMerged };
+}
+
+/** A finding's rating in its tool's form, or as a row keeps it; null where the finding is no rating. */
 function decodeRating(value: unknown): DecodedResearch<ResearchRating | null> {
   if (value === undefined || value === null) return { ok: true, value: null };
   const limits = RESEARCH_EVIDENCE_LIMITS;
