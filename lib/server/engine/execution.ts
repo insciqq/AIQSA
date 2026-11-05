@@ -109,6 +109,13 @@ export class EngineFailure extends Error {
 export const CONTEXT_TOO_LARGE_MESSAGE =
   "This conversation no longer fits the model's context window. Start a new chat, or continue in a new chat from this answer.";
 
+/**
+ * The note an agent's message carries when it arrives as a written answer ends, on its delivered item and never in the
+ * system prompt: the answer stays as written, so the model adds only what is new (operator decision 2026-11-05).
+ */
+export const ANSWER_STANDS_INSTRUCTION = "[Server note, not from the user] Your answer above stands and the user already has it. " +
+  "Do not repeat or rewrite it: write only what this adds or changes, which will appear below it. If there is nothing new, write nothing.";
+
 export type NativeEngineDeps = SubagentEngineDeps & Readonly<{
   /** The approved call an approval continuation sends, while its approval may still continue. */
   approvedCall(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
@@ -885,26 +892,35 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             if (batch.entries.some((entry) => entry.delivery === "accepted")) return false;
             return followupOps.close({ revision: batch.revision, runId, userId: input.userId });
           },
-          deliverFollowups: async (): Promise<readonly TranscriptUserItem[]> => {
+          deliverFollowups: async ({ ending }): Promise<readonly TranscriptUserItem[]> => {
             if (!followupOps) return [];
             const batch = await followupOps.load({ runId, userId: input.userId });
             const accepted = batch?.entries.filter((entry) => entry.delivery === "accepted") ?? [];
             if (!batch || accepted.length === 0) return [];
             // Only the user's own follow-ups are their speech and link authority; what a sub-agent sends is untrusted data.
-            const fromUser = accepted.filter((entry) => entry.origin === undefined || entry.origin === "user");
+            const fromUser = accepted.filter(userAuthoredFollowup);
+            // Only the user's own follow-up starts the answer over. What agents send alone adds to the answer the user
+            // already has and never rewrites or empties it (operator decision 2026-11-05).
+            const startsOver = fromUser.length > 0;
             await answer.flush();
-            if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: answer.text, revision: batch.revision, runId,
-              userId: input.userId })) return [];
+            if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: startsOver ? answer.text : null,
+              revision: batch.revision, runId, userId: input.userId })) return [];
             followupRevision = batch.revision;
             delivered.push(...fromUser.map((entry) => entry.text));
-            if (fromUser.length > 0) unknownEffects.userSpoke();
+            if (startsOver) unknownEffects.userSpoke();
             runResearch?.followupDelivered();
-            // The answer starts over after the user's follow-up, as the delivered record shows.
-            answer.restart();
-            sink.send({ data: { round: batch.revision }, type: "message_reset" });
+            if (startsOver) {
+              // The answer starts over after the user's follow-up, as the delivered record shows.
+              answer.restart();
+              sink.send({ data: { round: batch.revision }, type: "message_reset" });
+            }
+            // Delivered as a written answer ends, agents' messages are told that the answer stands. Between tool rounds the
+            // turn is not done, and a held research answer is not yet the user's.
+            const note = !startsOver && ending && answer.text.trim() && !runResearch?.holding() ? ANSWER_STANDS_INSTRUCTION : null;
             await chatUpdate();
-            return accepted.map((entry) => ({ ...(fromUser.includes(entry) ? {} : { callback: true as const }),
-              followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
+            return accepted.map((entry, index) => ({ ...(fromUser.includes(entry) ? {} : { callback: true as const }),
+              followup: true as const, id: randomUUID(), kind: "user" as const,
+              text: note && index === accepted.length - 1 ? `${entry.text}\n\n${note}` : entry.text }));
           },
           ...(runResearch ? { draft: {
             answerTaken: (taken: Readonly<{ toolChoice: LoopToolChoice }>) => runResearch.answerTaken(taken),

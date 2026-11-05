@@ -94,6 +94,7 @@ Code: `lib/server/telegram/`.
 
 - One active run per thread (operator, 2026-10-29): only the main agent's run blocks sends, edits and branch switches; its Stop spares background sub-agents (foreground turns end with it); deleting stops them first, archiving refuses (`subagents_running`). Accepted risk: wake-up chains run until usage limits refuse.
 - A callback wakes the main agent through the ordinary send as the owner, on the branch's latest turn. Wake-up turns and callbacks into a running answer are the server's, never the user's speech: they authorize nothing, and wake-up turns stay out of exports and shares (`lib/server/runs/subagentBackground/wakeUp.ts`).
+- What an agent sends into a running answer adds below it and never rewrites it (operator decision 2026-11-05): a callback that came as the final answer streamed started it over, so a long answer became a short addition or an empty completion. Only the user's own follow-up starts the answer over, keeping the replaced text with it; an answer still empty after that fails as `model_answer_empty` (`lib/server/engine/loop.ts`).
 
 ## Research
 

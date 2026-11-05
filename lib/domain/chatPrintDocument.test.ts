@@ -68,7 +68,7 @@ describe("chat print document", () => {
   it("shows durable follow-ups as the Markdown export does, before the answer", () => {
     const turns = chatPrintDocument(source(), new Map(), at(0)).turns.slice(-3);
     expect(turns.map((turn) => [turn.role, turn.text])).toEqual([
-      ["assistant", "Partial answer before follow-up:\n\nЧерновик ответа"],
+      ["assistant", "Answer before follow-up:\n\nЧерновик ответа"],
       ["user", "Follow-up 1:\n\nДобавь откат"],
       ["assistant", "Готово: $$E=mc^2$$"]
     ]);
