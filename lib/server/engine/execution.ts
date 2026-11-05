@@ -85,7 +85,7 @@ import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
-import { createRunResearch, deepResearchRefusal, researchAuthorityRuns, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
+import { createRunResearch, deepResearchRefusal, researchAuthorityChain, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
   type RunResearch } from "../research/run";
 import { researchPageRequest, writeResearchPage } from "../research/page";
 import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
@@ -700,7 +700,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           searchOptions: normalizedRequest.searchPlan.options.length, subagents: Boolean(subagents && engine.research && engine.subagentThreads), telegram: input.telegram === true };
         const researchRequest = researchRequestOf({ approval: Boolean(input.approvalContinuation), chosen: normalizedRequest.deepResearch === true, items: conversation.items });
         const offeredResearch = subagents && engine.research && engine.subagentThreads && researchRequest && researchOffered({ ...researchAvailability, request: researchRequest })
-          ? createRunResearch({ authorityRunIds: researchRequest === "chosen" ? [] : researchAuthorityRuns({ continuationTurns, messages: conversationMessages,
+          ? createRunResearch({ authority: researchRequest === "chosen" ? [] : researchAuthorityChain({ continuationTurns, messages: conversationMessages,
             runsByAnswer: nativeRuns }), chatId: scope.chatId, deps: engine.research, extendTurn,
             gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
             items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; }, request: researchRequest,
