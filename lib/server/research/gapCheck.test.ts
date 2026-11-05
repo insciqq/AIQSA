@@ -948,6 +948,26 @@ describe("where a frame exists", () => {
       expect(message.length).toBeLessThanOrEqual(RUN_FOLLOWUP_MAX_CHARS);
       expect(message).toContain("Candidate model-0: add");
     });
+
+    it("asks once about an option earlier research recommended, though no agent of this research named it, and not once it is a row or set aside", async () => {
+      // A real chat (2026-11-05): the first research's best option fitted the second's budget, and the second never named it.
+      const EARLIER: ResearchFrame = { ...FRAME, candidates: [{ earlier: { on: "2026-11-04", pick: true }, key: "askona-balance-forma", label: "Askona Balance Forma",
+        notes: [{ at: "2026-11-05T10:00:00.000Z", by: { name: null, threadId: null }, reason: "Earlier research in this chat recommended it on 2026-11-04 as its pick.",
+          url: "https://shop.example/askona" }] }] };
+      const step = "Candidate askona-balance-forma: add it as a row";
+      const ctx = withMatrix(ALL, {}, EARLIER);
+      const result = await gapCheckGate.run(DRAFT, ctx);
+      expect(messageOf(result)).toContain('"Askona Balance Forma": a candidate neither a row nor set aside, recommended by earlier research in this chat on 2026-11-04 as its pick, ' +
+        "its page then: https://shop.example/askona; its records then prove nothing now");
+      expect(messageOf(result)).toContain(step);
+      expect(ctx.subagents.run).not.toHaveBeenCalled();
+      const asked: ResearchAttempt[] = [{ draft: DRAFT, gate: gapCheckGate.name, message: messageOf(result) }];
+      expect(await gapCheckGate.run(DRAFT, { ...withMatrix(ALL, { plan: ctx.plan }, EARLIER), attempt: 2, earlier: asked })).toEqual({ kind: "pass" });
+      const row: ResearchFrame = { ...EARLIER, rows: [...FRAME.rows, { key: "askona", label: "Askona Balance Forma 160x200" }] };
+      const aside: ResearchFrame = { ...EARLIER, setAside: [{ at: "2026-11-05T10:05:00.000Z", key: "askona-balance-forma", reason: "Over the new budget." }] };
+      expect(messageOf(await gapCheckGate.run(DRAFT, withMatrix(ALL, {}, row)))).not.toContain("Candidate ");
+      expect(messageOf(await gapCheckGate.run(DRAFT, withMatrix(ALL, {}, aside)))).not.toContain("Candidate ");
+    });
   });
 
   it("past the cap its gaps go nowhere: the answer is the report", async () => {
