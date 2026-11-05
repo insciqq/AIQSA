@@ -24,6 +24,7 @@ import {
 } from "../webFetch/transport";
 import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl, withoutFetchUrlAttribution } from "../webFetch/urls";
 import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
+import { isBotCheckPage } from "./botCheckPage";
 import { BROWSER_HANDOFF_TOOL_NAME, RESEARCH_UNREACHABLE_NEXT } from "./browserHandoff";
 import { FETCH_URL_LIMITS, persistedFetchUrlFacts, type FetchUrlPlan } from "./fetchUrlPlan";
 import { createFetchUrlProxySession, fetchUrlCacheKey, fetchUrlProxyChoice, fetchUrlProxyIdentity, isFetchUrlProxyFailure,
@@ -94,6 +95,7 @@ function megabytes(bytes: number): string {
 export type FetchUrlBrowserStep = "nobody" | "user";
 
 type FailureContext = Readonly<{
+  botCheck?: true;
   browserStep?: FetchUrlBrowserStep | null;
   researching?: boolean;
   researchRefusal?: string;
@@ -102,9 +104,9 @@ type FailureContext = Readonly<{
 }>;
 
 /**
- * The next step after a 401 or 403, which often only means the site refuses automated reading (operator decision
+ * The next step after a 401, 403 or bot check, which often only means the site refuses automated reading (operator decision
  * 2026-10-31). Starting the browser costs a Workspace VM and only a page that shows a challenge needs the user, so
- * neither is the first answer; the refused body is never read, so only the browser can tell what the site wants.
+ * neither is the first answer; a fetch refusal alone does not tell whether the browser can open the page.
  */
 function refusedPageNextStep(step: FetchUrlBrowserStep): string {
   const open = " The site may be refusing automated reading. If this page is needed and other sources will not do, open it once " +
@@ -154,8 +156,9 @@ function failureMessage(code: FailureCode, context: FailureContext): string {
     case "fetch_unsupported_content_type":
       return "This link is not a web page, text or PDF (for example an image or an archive). Ask the user to upload the file instead.";
     case "fetch_http_status":
-      return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.` +
-        (PROXY_BLOCKED_HTTP_STATUSES.some((status) => status === httpStatus)
+      return (context.botCheck ? "The site returned a bot check instead of the page; the page was not read."
+        : `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.`) +
+        (context.botCheck || PROXY_BLOCKED_HTTP_STATUSES.some((status) => status === httpStatus)
           ? context.researching ? researchRefusedPageNextStep(proxiesToTry(context), context.browserStep ?? null)
             : proxiesToTry(context) + (context.browserStep ? refusedPageNextStep(context.browserStep) : "") : "");
     case "fetch_network_error": return "The site could not be reached.";
@@ -190,7 +193,7 @@ type ReadValue = Readonly<{
 
 type Outcome =
   | Readonly<{ kind: "read"; value: ReadValue }>
-  | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true; proxy?: FetchUrlProxyIdentity }>;
+  | Readonly<{ botCheck?: true; code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true; proxy?: FetchUrlProxyIdentity }>;
 
 type FailedOptions = Readonly<{ proxiesToTry?: readonly string[]; browserStep?: FetchUrlBrowserStep | null; pdfMaxBytes: number;
   refusalScope?: FetchUrlRefusalScope; searchAvailable?: boolean; researching?: boolean; researchRefusal?: string }>;
@@ -205,7 +208,7 @@ function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outco
       error: outcome.code,
       ...(outcome.proxy ? { proxy: outcome.proxy.name } : {}),
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
-      message: failureMessage(outcome.code, { proxiesToTry: options.proxiesToTry, browserStep: options.browserStep, httpStatus: outcome.httpStatus, pdf,
+      message: failureMessage(outcome.code, { botCheck: outcome.botCheck, proxiesToTry: options.proxiesToTry, browserStep: options.browserStep, httpStatus: outcome.httpStatus, pdf,
         pdfMaxBytes: options.pdfMaxBytes, scope, researching: options.researching, researchRefusal: options.researchRefusal,
         searchAvailable: options.searchAvailable })
     } }],
@@ -438,6 +441,9 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
         : { code: extractionFailureCode(error), dispatched: true, kind: "failed" };
     }
     if (!page) return { code: "fetch_unsupported_content_type", dispatched: true, kind: "failed" };
+    if (isBotCheckPage(page, response.body)) {
+      return { botCheck: true, code: "fetch_http_status", dispatched: true, httpStatus: response.status, kind: "failed" };
+    }
     if (!page.text.trim()) return { code: "fetch_no_readable_text", dispatched: true, kind: "failed", ...(pdf ? { pdf } : {}) };
     return { kind: "read", value: {
       contentType: page.kind, fetchedAt: now().toISOString(), finalUrl: response.finalUrl, text: page.text,

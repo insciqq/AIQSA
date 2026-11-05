@@ -321,10 +321,11 @@ describe("the method", () => {
     expect(researcherMethodFooter({ ...plan, goal: `Выбрать ${"матрас ".repeat(300)}` }).length).toBeLessThan(researcherMethodFooter(plan).length + 400);
   });
 
-  it("ends every brief with the source classes, the finding's form, and immediate refusal of blocked sites", () => {
+  it("ends every brief with the source classes, the finding's form, and refusal of sites blocked in the browser", () => {
     const footer = researcherMethodFooter(plan);
     expect(footer).toContain("verbatim quote");
-    expect(footer).toContain("A CAPTCHA, a block page or a sign-in ends work on that site");
+    expect(footer).toContain("A page fetch_url is refused: open it once in the Workspace browser if you have one");
+    expect(footer).toContain("A CAPTCHA, a block page or a sign-in shown in the browser ends work on that site");
     expect(footer).toContain("record it as unreachable with its reason and go on; never wait for a person");
     expect(footer).toContain("A closed site does not close your question: answer it from another site that states the answer in its own text");
     // On acceptance run 8 all three answers missed what the last weeks before the question published: forecasts, approvals, disclosures. A purchase stays with
