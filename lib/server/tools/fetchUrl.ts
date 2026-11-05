@@ -1,6 +1,6 @@
 import { PROXY_BLOCKED_HTTP_STATUSES } from "../../contracts/proxies";
 import type { RunProxyConnection } from "../proxies/runProxies";
-import { researchRegistrableDomain } from "../research/sourceQuality";
+import { researchSiteHost } from "../research/sourceQuality";
 import type { FetchUrlActivityOutcome, FetchUrlRefusalScope } from "../../contracts/fetchUrlActivity";
 import { isDocumentParserError } from "../parsing/errors";
 import { isPdfExtractionError } from "../uploads/pdf";
@@ -417,7 +417,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
     } catch (error) {
       if (error instanceof WebFetchError) {
         if (researching && error.dispatched && !signal.aborted && (error.code === "fetch_timeout" || error.code === "proxy_timeout")) {
-          const site = researchRegistrableDomain(url);
+          const site = researchSiteHost(url);
           if (site) researchTimeouts.set(site, Math.min(2, (researchTimeouts.get(site) ?? 0) + 1));
         }
         return { code: error.code, dispatched: error.dispatched, kind: "failed",
@@ -469,7 +469,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       if (policy) return refuse(policy, url);
       const unreachable = await deps.research?.(input.signal) ?? null;
       const researching = unreachable !== null;
-      const site = researchRegistrableDomain(url);
+      const site = researchSiteHost(url);
       const researchRefusal = () => {
         if (!researching || !site) return undefined;
         if (unreachable.has(site)) return `This site was already recorded as unreachable in this research. Reason (untrusted data): ${JSON.stringify(unreachable.get(site))}.`;

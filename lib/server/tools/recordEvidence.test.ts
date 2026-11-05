@@ -16,6 +16,7 @@ import type { ResearchEvidenceAppend, ResearchEvidenceRepository } from "../rese
 import { createResearchEvidenceStore } from "../research/evidenceStore";
 import type { ResearchRunScope } from "../research/ports";
 import type { ResearchAgentCall } from "../research/sources";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { recordEvidenceEngineTool, recordEvidenceTool, type RecordEvidenceTarget } from "./recordEvidence";
 import type { ToolExecutionResult } from "./types";
 
@@ -299,11 +300,13 @@ describe("a record_evidence call", () => {
     const shell = (id: string, command: string, text: string): ResearchAgentCall =>
       ({ arguments: { command }, id, observationId: null, providerCallId: id, result: { callId: id, content: [{ text, type: "text" }], name: SHELL, status: "complete" }, toolName: SHELL });
 
-    /** One agent's calls, with the rows the store writes kept in memory and its page read back by id. */
-    function toolOf(calls: readonly ResearchAgentCall[]) {
+    /** One agent's calls, with the rows the store writes kept in memory and its page read back by id. `browser`: the agent drives the Workspace browser. */
+    function toolOf(calls: readonly ResearchAgentCall[], browser = false) {
       const appended: ResearchEvidenceAppend[] = [];
       const repository = {
-        agentCalls: () => ({ calls: async (_agent: unknown, ids: readonly string[]) => calls.filter((one) => ids.includes(one.id)), fetchCalls: async () => [],
+        agentCalls: () => ({
+          attempts: async (_agent: unknown, { toolNames }: Readonly<{ toolNames: readonly string[] }>) => [...calls].reverse().filter((one) => toolNames.includes(one.toolName)),
+          calls: async (_agent: unknown, ids: readonly string[]) => calls.filter((one) => ids.includes(one.id)), fetchCalls: async () => [],
           recentCalls: async () => [...calls].reverse() }),
         append: async (_scope: unknown, write: ResearchEvidenceAppend) => {
           appended.push(write);
@@ -314,7 +317,9 @@ describe("a record_evidence call", () => {
       } as unknown as ResearchEvidenceRepository;
       const run = { branchRunIds: [], chatId: "chat", researchRunId: "run-1", runId: "run-1", userId: "user" } as unknown as ResearchRunScope;
       const evidence = createResearchEvidenceStore({ repository, savedResults: { read: vi.fn(async () => null) }, threads: { backgroundRunIds: vi.fn(async () => []) } as never })(run);
-      return recordEvidenceEngineTool({ coverage: { frame: async () => null }, evidence, researching: () => true }, { kind: "subagent", name: "shops", threadId: "thread-1" });
+      const tool = recordEvidenceEngineTool({ coverage: { frame: async () => null }, evidence, researching: () => true }, { kind: "subagent", name: "shops", threadId: "thread-1" },
+        { browser: () => browser });
+      return Object.assign(tool, { appended });
     }
 
     const price = { ...FINDING, claim: "Lumo Flex 20 стоит 59 732 ₽.", quote: "Матрас Lumo Flex 20", source_class: "action_channel", url: CARD };
@@ -330,6 +335,59 @@ describe("a record_evidence call", () => {
       const answer = value(await tool.execute(call(price))) as { message: string };
       expect(answer).toMatchObject({ figures: { not_in_quote: ["59 732 ₽"], on_page: [] }, quote_check: "not_checked", record_id: RECORD_ID });
       expect(answer.message).toContain("open this page with fetch_url or the browser so the check can read it; text from shell downloads or third-party readers cannot be checked");
+    });
+
+    describe("and an unreachable site (operator decision 2026-11-05: the browser comes first)", () => {
+      const EXEC = namespacedWorkspaceToolName("sandbox_exec");
+      /** A command's call row as the Workspace keeps it: JSON whose `stdout` holds what the command printed. */
+      const exec = (id: string, args: Record<string, unknown>, stdout: string): ResearchAgentCall => ({ arguments: args, id, observationId: null, providerCallId: id,
+        result: { callId: id, content: [{ text: JSON.stringify({ data: { exitCode: 0, stderr: "", stdout, success: true }, ok: true }), type: "text" }], name: EXEC,
+          status: "complete" }, toolName: EXEC });
+      const unreachable = (target: string) => ({ ...NONE, kind: "unreachable", reason: "Проверка браузера не проходит.", target });
+
+      it("is refused, with nothing written and its next step, before the agent's browser tried the site", async () => {
+        const tool = toolOf([exec("c1", { args: ["open", "https://other.example/"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ other.example/")], true);
+        const result = await tool.execute(call(unreachable("https://www.shop.example/card")));
+        expect(result.status).toBe("error");
+        expect(value(result)).toMatchObject({ code: "research_unreachable_browser_first" });
+        const { message } = value(result) as { message: string };
+        expect(message).toContain("your Workspace browser has not opened shop.example in this research");
+        expect(message).toContain("/workspace/guides/browser.md");
+        expect(message).toContain("wait about 15 seconds and read it once more");
+        expect(message).toContain("never solve or click a check");
+        expect(tool.appended).toEqual([]);
+      });
+
+      it("is recorded at once for an agent without the browser", async () => {
+        const tool = toolOf([], false);
+        expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ record_id: RECORD_ID });
+        expect(tool.appended).toHaveLength(1);
+      });
+
+      it("is recorded once the agent's browser opened the host or was refused on it, www. or not", async () => {
+        const refused = toolOf([exec("c1", { args: ["open", "https://www.shop.example/card?id=1"], command: "aiqsa-browser" }, "error[navigation_failed]: The page refused.")], true);
+        expect(value(await refused.execute(call(unreachable("shop.example"))))).toMatchObject({ record_id: RECORD_ID });
+        const script = toolOf([exec("c1", { args: ["-c", "from aiqsa import browser as b; b.open(link); print(b.page_info())"], command: "python3" },
+          "Opening the card.\n[browser #4 · shops] open @ www.shop.example/card\nChecking your browser.")], true);
+        expect(value(await script.execute(call(unreachable("https://shop.example/"))))).toMatchObject({ record_id: RECORD_ID });
+      });
+
+      it("counts a host, not its domain, and never a step line a non-browser command printed", async () => {
+        const subdomain = toolOf([exec("c1", { args: ["open", "https://market.portal.example/item"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ market.portal.example/item")], true);
+        expect((await subdomain.execute(call(unreachable("portal.example")))).status).toBe("error");
+        expect(value(await subdomain.execute(call(unreachable("market.portal.example"))))).toMatchObject({ record_id: RECORD_ID });
+        const faked = toolOf([exec("c1", { args: ["[browser #1] open @ shop.example/"], command: "echo" }, "[browser #1] open @ shop.example/")], true);
+        expect((await faked.execute(call(unreachable("shop.example")))).status).toBe("error");
+      });
+
+      it("is not held back when the agent's calls cannot be read, or by a store that cannot say", async () => {
+        const { record, target } = targetOf();
+        const browsed = vi.fn(async () => { throw new Error("database down"); });
+        await recordEvidenceEngineTool({ ...target, evidence: { ...target.evidence, browsed } }, { kind: "main" }, { browser: () => true }).execute(call(unreachable("shop.example")));
+        await recordEvidenceEngineTool(target, { kind: "main" }, { browser: () => true }).execute(call(unreachable("shop.example")));
+        expect(browsed).toHaveBeenCalledWith({ name: null, threadId: null }, "shop.example", signal);
+        expect(record).toHaveBeenCalledTimes(2);
+      });
     });
   });
 
