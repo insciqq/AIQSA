@@ -30,6 +30,16 @@ export function researchNote(key: ResearchNoteKey): string {
   return NOTES[key];
 }
 
+const PROCESS_NOTES: ReadonlySet<string> = new Set(Object.values(NOTES));
+
+/**
+ * The notes of an answer that say something about its content, each once: the facts the checks rejected, the narrower support behind recommendations and the
+ * evidence against the conclusion. The plain words that the answer is incomplete or not fully checked are about how it was made, so a research's page leaves them out.
+ */
+export function researchContentNotes(notes: readonly string[]): readonly string[] {
+  return [...new Set(notes.map((note) => note.trim()).filter((note) => note && !PROCESS_NOTES.has(note)))];
+}
+
 /** What the check that tries to refute a report found. `quote` only where the quote check found it on an opened page: the gate's memory keeps it, the reader never sees it. */
 export type ResearchCounterEvidence = Readonly<{ claim: string; quote: string | null; url: string }>;
 

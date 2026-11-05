@@ -3,6 +3,7 @@ import { RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_
 import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunExecutionInput } from "../engine/execution";
+import { reconcileNativeRuns } from "../engine/recovery";
 import { interruptNativeRun } from "../engine/runInterruption";
 import type { NativeRunStore } from "../engine/runStore";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
@@ -89,7 +90,9 @@ function artifacts(options: Readonly<{ fail?: boolean }> = {}) {
     return { artifacts: [{ data: { artifactType: "generated_artifact", payload }, type: "artifact" }], callId: call.id, content: [{ type: "json", value: payload }],
       name: call.name, status: "complete" };
   });
-  return { execute };
+  // What archiving a page the answer does not show takes; the owner is the run's user.
+  const archive = vi.fn(async (_input: Readonly<{ artifactId: string; ownerUserId: string }>) => true);
+  return { archive, execute };
 }
 
 function engineOf(research: ResearchEngineDeps, options: Readonly<{ gated?: string; now?: () => number }> = {}) {
@@ -142,9 +145,12 @@ function engineOf(research: ResearchEngineDeps, options: Readonly<{ gated?: stri
   return { appended, deps, published: () => published, runs, toolCalls };
 }
 
+/** The run's repository; `content()` is the answer message's saved text, which `appendAssistantText` replaces and a failure keeps, as the real one does. */
 function repository() {
+  let content = "";
   return {
-    appendAssistantText: vi.fn(async (_id: string, _text: string) => undefined), appendRunOutputEvent: vi.fn(async (_runId: string, event: unknown) => event),
+    appendAssistantText: vi.fn(async (_id: string, text: string) => { content = text; }), appendRunOutputEvent: vi.fn(async (_runId: string, event: unknown) => event),
+    content: () => content,
     failRun: vi.fn(async (_runId: string, _message: string, _payload: unknown) => true), getChatUpdateForRun: vi.fn(async () => null),
     getRunControlForUser: vi.fn(async () => ({ status: "streaming" })), loadModelPricing: vi.fn(async () => null),
     loadProviderModelCostBasis: vi.fn(async () => null), loadRunMcpApprovalCards: vi.fn(async () => []),
@@ -179,11 +185,10 @@ function prepared(options: Readonly<{ artifactTool?: boolean }> = {}): Materiali
 let runs = 0;
 
 async function go(adapter: ProviderAdapter, memory: ReturnType<typeof engineOf>, extra: Partial<NativeRunExecutionInput> & Readonly<{ artifactTool?: boolean;
-  service?: ReturnType<typeof artifacts> }> = {}) {
+  repo?: ReturnType<typeof repository>; service?: ReturnType<typeof artifacts> }> = {}) {
   runs += 1;
   const runId = `run-page-${runs}`;
-  const repo = repository();
-  const { artifactTool, service = artifacts(), ...rest } = extra;
+  const { artifactTool, repo = repository(), service = artifacts(), ...rest } = extra;
   const response = createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: `answer-${runs}`, runId, userMessageId: `question-${runs}` }, engine: memory.deps,
     prepared: prepared({ ...artifactTool === undefined ? {} : { artifactTool } }), repository: repo as unknown as RunRepository, services: { artifacts: service }, userId: "user",
     ...rest });
@@ -220,6 +225,9 @@ describe("a finished research writes its page", () => {
     expect(requests.page).toHaveLength(1);
     const [step] = requests.page;
     expect(step!.tools?.map((tool) => tool.name)).toEqual([ARTIFACT_TOOL_NAME]);
+    // No Search rides on it, while the run's own rounds keep theirs.
+    expect(step!.searchPlan.options).toEqual([]);
+    expect(requests.main[0]!.searchPlan.options).toHaveLength(1);
     expect(step!.history).toHaveLength(1);
     const asked = JSON.stringify(step!.history);
     expect(asked).toContain(JSON.stringify(RESEARCH_PAGE_GUIDE.slice(0, 200)).slice(1, -1));
@@ -262,10 +270,57 @@ describe("a finished research writes its page", () => {
     const mismatch: ResearchPagePort = { check: async () => ({ kind: "mismatch", message: "Wrong price." }) };
     const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }], [{ calls: [pageCall()] }, { calls: [pageCall("call-fix", "update")] }]);
     const memory = engineOf({ ports: { page: () => mismatch } });
-    const { cards } = await go(adapter, memory);
+    const { cards, service } = await go(adapter, memory);
     expect(requests.page).toHaveLength(2);
     expect(cards).toEqual([]);
     expect(memory.published()).toBe(answerOf(PURCHASE));
+    // The page it made leaves the chat's artifacts too, archived for the run's user.
+    expect(service.archive).toHaveBeenCalledExactlyOnceWith({ artifactId: "artifact-1", ownerUserId: "user" });
+  });
+
+  it("hands the page the answer's caveats beside the report, and none of its words about how it was made", async () => {
+    const caveat = "The checks did not confirm these facts this report cites, so do not rely on them: Model X2 — Load.";
+    const verifier: ResearchGate = { name: "verifier", run: async () => ({ kind: "pass", notes: [caveat] }) };
+    const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [verifier] });
+    await go(adapter, memory);
+    const asked = JSON.stringify(requests.page[0]!.history);
+    expect(asked).toContain(JSON.stringify(`</report>\n\n## Caveats\n- ${caveat}`).slice(1, -1));
+    expect(asked).not.toContain(JSON.stringify(researchNote("no_findings")).slice(1, -1));
+    expect(memory.published()).toBe(researchAnswerText(`${PURCHASE.summary}\n\n${PURCHASE.report}`, [caveat, researchNote("no_findings")]));
+  });
+});
+
+describe("the answer the page step holds", () => {
+  it("is on the answer message before the step, so a restart during it leaves recovery the whole answer", async () => {
+    let runId = "";
+    const repo = repository();
+    let recovered: string | null = null;
+    let reconciled: Promise<number> = Promise.resolve(0);
+    const { adapter } = scripted([{ calls: begin() }, { calls: [submit()] }], [{ hang: true, onCall: () => {
+      // What a restarted process finds while the step's model is writing: the run in the database, and no execution of it here.
+      reconciled = reconcileNativeRuns({ bootedAt: new Date(Date.now() + 60_000), liveRunIds: () => [],
+        findOrphans: async () => [{ answerCompletedAt: null, assistantMessageId: `answer-${runs}`, chatId: "chat", id: runId, normalizedRequest: {}, userId: "user" }],
+        repository: { failRun: async () => { recovered = repo.content(); return true; } } as never, runs: { complete: async () => true } })
+        .finally(() => activeRunControllerRegistry.abort(runId));
+    } }]);
+    const memory = engineOf({});
+    runId = `run-page-${runs + 1}`;
+    await go(adapter, memory, { repo });
+    expect(await reconciled).toBe(1);
+    expect(recovered).toBe(answerOf(PURCHASE));
+  });
+
+  it("goes out at once with no page when it cannot be saved first", async () => {
+    const repo = repository();
+    const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }]);
+    repo.appendAssistantText.mockImplementation(async (_id, text) => { if (text === answerOf(PURCHASE)) throw new Error("database down"); });
+    const memory = engineOf({});
+    const { cards } = await go(adapter, memory, { repo });
+    expect(requests.page).toEqual([]);
+    expect(cards).toEqual([]);
+    expect(memory.published()).toBe(answerOf(PURCHASE));
+    expect(memory.runs.complete).toHaveBeenCalledOnce();
   });
 });
 
