@@ -134,14 +134,19 @@ export type ResearchKeyCell = Readonly<{
 const KEY_CELL_RECORDS = 12;
 
 /**
- * The pairs of sites whose figures each say what the other does not, as two shops stating a load of 130 and of 140 kg do. Which one is right stays the report's to
- * say; records that describe different parts of one cell read as such a pair too, and cost nothing once the report states both.
+ * The pairs of sites whose figures differ within a shared dimension, as two shops stating a load of 130 and of 140 kg do. Figures with no known dimension compare
+ * only with others with none; different dimensions in one cell are no disagreement. Which figure is right stays the report's to say.
  */
 function disagreementsOf(records: readonly ResearchClaimRecord[]): readonly ResearchDisagreement[] {
   const read = records.slice(0, KEY_CELL_RECORDS).map((record) => ({ figures: claimFigures(record.claim), record, site: researchRecordSite(record) }));
   return read.flatMap((one, index) => read.slice(index + 1).flatMap((other): ResearchDisagreement[] => {
     if (one.site === null || other.site === null || one.site === other.site) return [];
-    const figures = [figuresNotIn(one.figures, other.record.claim), figuresNotIn(other.figures, one.record.claim)] as const;
+    const oneMissing = figuresNotIn(one.figures, other.record.claim);
+    const otherMissing = figuresNotIn(other.figures, one.record.claim);
+    const figures = [
+      oneMissing.filter(({ scale }) => otherMissing.some((figure) => figure.scale?.dimension === scale?.dimension)),
+      otherMissing.filter(({ scale }) => oneMissing.some((figure) => figure.scale?.dimension === scale?.dimension))
+    ] as const;
     return figures[0].length > 0 && figures[1].length > 0 ? [{ figures, records: [one.record, other.record] }] : [];
   }));
 }
