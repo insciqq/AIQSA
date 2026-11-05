@@ -87,7 +87,8 @@ import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from ".
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
 import { createRunResearch, deepResearchRefusal, researchAuthorityChain, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
   type RunResearch } from "../research/run";
-import { researchPageRequest, writeResearchPage } from "../research/page";
+import { researchAnswerLayout } from "../research/notes";
+import { researchPageCard, researchPageRequest, writeResearchPage } from "../research/page";
 import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
 
 /**
@@ -1054,7 +1055,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               return { cards, result: batch.results[0]! };
             } });
           pageHeld = null;
-          if (page) await sink.publish(page.card);
+          // The card says it is this answer's page, and where the answer's summary ends, from the draft its text was made of.
+          if (page) await sink.publish(researchPageCard(page.card, researchAnswerLayout(answer.shown(held), pageSource.draft, answer.shown)));
         }
         if (researched !== null) await showResearchAnswer(researched);
         // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
