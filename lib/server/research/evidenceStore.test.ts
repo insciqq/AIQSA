@@ -315,6 +315,46 @@ describe("writing a record", () => {
     expect(memory.pages).toHaveLength(1);
   });
 
+  describe("a rating (operator decision 2026-11-05)", () => {
+    const CARD = "https://clinic.example/doctors/ivanova";
+    const CARD_PAGE = "Иванова Анна, дерматолог. Рейтинг 4,9 · 1 284 отзыва пациентов. Записаться.";
+    const rating = { count: 1_284, counted: "reviews" as const, scaleMax: 5, score: 4.9, variantsMerged: false };
+    const rated = (quote: string, change: Partial<typeof rating> = {}) => finding(quote, CARD, { claim: "Пациенты оценивают Иванову на 4,9 из 5 по 1 284 отзывам.",
+      criterionKey: "ratings", rating: { ...rating, ...change }, rowKey: "ivanova", sourceClass: "owner_reviews" });
+
+    it("passes when its score and number of ratings stand in a quote the page holds", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const record = await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов"));
+      expect(record).toMatchObject({ kind: "finding", quoteCheck: { reason: null, status: "found" }, rowKey: "ivanova" });
+      expect(record.pageId).toBe(memory.pages[0]!.id);
+    });
+
+    it("is marked as a wrong quote, kept with its page, when the page does not write its count, and counts as no evidence until corrected", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const wrong = await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов", { count: 1_824 }));
+      expect(wrong).toMatchObject({ kind: "finding", quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" } });
+      expect(wrong.pageId).toBe(memory.pages[0]!.id);
+      // A quote that leaves the count out shows nothing of it either.
+      await expect(recorded(port, rated("Рейтинг 4,9"))).resolves.toMatchObject({ quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" } });
+      // A quote not on the page keeps its own word: that is what to correct first.
+      await expect(recorded(port, rated("Рейтинг 4,9 · 1 824 отзыва"))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "not_verbatim" } });
+      await expect(port.records(signal)).resolves.toHaveLength(3);
+    });
+
+    it("leaves a finding that is no rating as its quote's check has it", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const plain = await recorded(port, finding("Записаться", CARD));
+      expect(plain.quoteCheck).toEqual({ reason: null, status: "found" });
+      expect(plain).not.toHaveProperty("rating");
+    });
+  });
+
   it("stands when its writer's results cannot be read, marked so, and gives a stopped run's abort back", async () => {
     const memory = tables();
     memory.database.modelRunToolCall.findMany.mockRejectedValue(new Error("down"));
