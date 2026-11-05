@@ -21,9 +21,10 @@ import { UPDATE_PLAN_TOOL_NAME } from "../tools/updatePlan";
 import { createResearchClock } from "./clock";
 import type { ResearchGate } from "./gates";
 import { researchAnswerText, researchNote } from "./notes";
+import { createResearchPageCheck } from "./pageCheck";
 import { RESEARCH_PAGE_GUIDE } from "./pageGuide";
 import { proposeCall } from "./planWindow.testFixtures";
-import type { ResearchPagePort, ResearchPortFactories, ResearchRunScope } from "./ports";
+import type { ResearchPortFactories, ResearchRunScope } from "./ports";
 import type { ResearchEngineDeps } from "./run";
 
 // The step's bound, short enough for a test to reach it on real timers; every other number stays the product's.
@@ -250,30 +251,35 @@ describe("a finished research writes its page", () => {
 
   it("checks the page against the report through the seam, sends a mismatch back once, and shows the corrected page", async () => {
     const reports: string[] = [];
-    let checks = 0;
-    const page: ResearchPortFactories["page"] = () => ({ check: async ({ page: made, report }) => {
-      reports.push(`${made.versionId}:${report}`);
-      checks += 1;
-      return checks === 1 ? { kind: "mismatch", message: "The X1 costs 300 ₽ in the report." } : { kind: "pass" };
+    const source = vi.fn(async ({ versionId }: { versionId: string }) => ({ versionId, files: [{ mimeType: "text/html", path: "index.html",
+      text: `<p>${versionId === "version-1" ? "399" : "300"} ₽</p>` }] }));
+    const factory = createResearchPageCheck({ source });
+    const page: ResearchPortFactories["page"] = (run, parts) => ({ check: async (input) => {
+      reports.push(`${input.page.versionId}:${input.report}`);
+      expect(input.recordIds).toEqual(["cited-1"]);
+      return factory(run, parts).check(input);
     } });
-    const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }], [{ calls: [pageCall()] }, { calls: [pageCall("call-fix", "update")] }]);
+    const { adapter, requests } = scripted([{ calls: begin() }, { calls: [{ ...submit(), arguments: { ...draftOf(PURCHASE), record_ids: ["cited-1"] } }] }],
+      [{ calls: [pageCall()] }, { calls: [pageCall("call-fix", "update")] }]);
     const memory = engineOf({ ports: { page } });
     const { cards } = await go(adapter, memory);
     expect(reports).toEqual([`version-1:${PURCHASE.summary}\n\n${PURCHASE.report}`, `version-2:${PURCHASE.summary}\n\n${PURCHASE.report}`]);
-    expect(JSON.stringify(requests.page[1]!.history)).toContain("The X1 costs 300 ₽ in the report.");
+    expect(JSON.stringify(requests.page[1]!.history)).toContain("399 ₽");
     expect(JSON.stringify(requests.page[1]!.history)).toContain("base_version_id \\\"version-1\\\"");
     expect(cards.map((card) => card.versionId)).toEqual(["version-2"]);
     expect(memory.published()).toBe(answerOf(PURCHASE));
   });
 
   it("keeps a page that fails its check twice out of the answer, which keeps its full text", async () => {
-    const mismatch: ResearchPagePort = { check: async () => ({ kind: "mismatch", message: "Wrong price." }) };
+    const source = vi.fn(async ({ versionId }: { versionId: string }) => ({ versionId, files: [{ mimeType: "text/html", path: "index.html", text: "<p>25 990 ₽</p>" }] }));
     const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }], [{ calls: [pageCall()] }, { calls: [pageCall("call-fix", "update")] }]);
-    const memory = engineOf({ ports: { page: () => mismatch } });
+    const memory = engineOf({ ports: { page: createResearchPageCheck({ source }) } });
     const { cards, service } = await go(adapter, memory);
     expect(requests.page).toHaveLength(2);
     expect(cards).toEqual([]);
     expect(memory.published()).toBe(answerOf(PURCHASE));
+    expect(JSON.stringify(requests.page[1]!.history)).toContain("25 990 ₽");
+    expect(source.mock.calls.map(([input]) => input.versionId)).toEqual(["version-1", "version-2"]);
     // The page it made leaves the chat's artifacts too, archived for the run's user.
     expect(service.archive).toHaveBeenCalledExactlyOnceWith({ artifactId: "artifact-1", ownerUserId: "user" });
   });
@@ -349,9 +355,9 @@ describe("a page that cannot be written leaves the answer as it would have gone 
   it("when its bound is reached, and the run completes", async () => {
     const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }], [{ hang: true }]);
     const memory = engineOf({});
-    const startedAt = Date.now();
+    const startedAt = performance.now();
     const { cards, repo } = await go(adapter, memory);
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(RESEARCH_TIME_MS.page - 50);
+    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(RESEARCH_TIME_MS.page - 50);
     expect(requests.page).toHaveLength(1);
     expect(cards).toEqual([]);
     expect(memory.published()).toBe(answerOf(PURCHASE));

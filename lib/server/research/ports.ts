@@ -192,11 +192,11 @@ export type ResearchPageArtifact = Readonly<{ artifactId: string; entrypoint: st
 export type ResearchPageVerdict = Readonly<{ kind: "pass" }> | Readonly<{ kind: "mismatch"; message: string }>;
 
 /**
- * The page's check before it reaches the answer, to be filled by a later task with no model call: it reads the version `page` names and compares it with
- * `report`, the text the page was written from. A second mismatch, or a check that throws, keeps the page out of the answer, which keeps its full text either way.
+ * The mechanical check (`pageCheck.ts`) reads the version `page` names and compares its figures and links with the report, caveats and cited records.
+ * A second mismatch, or a check that throws, keeps the page out of the answer, which keeps its full text either way.
  */
 export type ResearchPagePort = Readonly<{
-  check(input: Readonly<{ page: ResearchPageArtifact; report: string; signal: AbortSignal }>): Promise<ResearchPageVerdict>;
+  check(input: Readonly<{ caveats: readonly string[]; page: ResearchPageArtifact; recordIds?: readonly string[]; report: string; signal: AbortSignal }>): Promise<ResearchPageVerdict>;
 }>;
 
 export type ResearchPorts = Readonly<{
@@ -213,7 +213,7 @@ export type ResearchPorts = Readonly<{
 export type ResearchPortFactories = Readonly<{
   coverage?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchCoveragePort;
   evidence?: (run: ResearchRunScope) => ResearchEvidencePort;
-  page?: (run: ResearchRunScope) => ResearchPagePort;
+  page?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchPagePort;
   planWindow?: (run: ResearchRunScope) => ResearchPlanWindowPort;
   report?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchReportPort;
   resume?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchResumePort;
@@ -265,7 +265,7 @@ export function researchPorts(factories: ResearchPortFactories | undefined, run:
   return {
     coverage,
     evidence,
-    page: factories?.page?.(run) ?? NOOP_RESEARCH_PORTS.page,
+    page: factories?.page?.(run, { evidence }) ?? NOOP_RESEARCH_PORTS.page,
     planWindow: factories?.planWindow?.(run) ?? NOOP_RESEARCH_PORTS.planWindow,
     report: factories?.report?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.report,
     resume: factories?.resume?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.resume,
