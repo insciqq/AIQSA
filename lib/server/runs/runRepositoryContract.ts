@@ -736,6 +736,8 @@ export type RunRepository = {
     followups?: import("./runFollowups").RegenerationFollowups;
     artifactEdit?: unknown;
     artifactIntent?: unknown;
+    /** `true` when the message's run was sent with Deep research (`NormalizedRunRequest.deepResearch`). */
+    deepResearch?: true;
     assistantMessage: {
       id: string;
       modelId: string | null;

@@ -25,6 +25,31 @@ export const PROPOSE_RESEARCH_PLAN_TOOL_NAME = "propose_research_plan";
 export const RECORD_EVIDENCE_TOOL_NAME = "record_evidence";
 export const CHANGE_RESEARCH_FRAME_TOOL_NAME = "change_research_frame";
 
+/**
+ * The send field that asks for Deep research on one message (operator decision 2026-11-05): the `+` menu's Deep research item, and
+ * nothing written in a chat, starts research. It goes at the top level of a send's JSON body (`POST /api/chats/:chatId/messages`) and
+ * of the regenerate that runs an edited message (`POST /api/messages/:messageId/regenerate`), as `true` only; leave it out otherwise.
+ * Admission freezes it with the run's bindings, and a regenerate without it keeps what the message was sent with.
+ */
+export const DEEP_RESEARCH_SEND_FIELD = "deepResearch";
+
+/**
+ * Why a send that asked for Deep research was refused, as the response's `error`: `invalid` (400) for a field that is not `true`;
+ * `needsSearch` (409) for a message with no Search source, which Search turned on mends; `unavailable` (409) where research never
+ * runs: Telegram, scheduled tasks and monitoring checks, or a run without tools. The message is never answered another way.
+ */
+export const DEEP_RESEARCH_REFUSALS = Object.freeze({
+  invalid: "deep_research_invalid",
+  needsSearch: "deep_research_needs_search",
+  unavailable: "deep_research_unavailable"
+} as const);
+
+/** The send field's value: true when Deep research was asked for, null when it was not, and "invalid" for anything but `true`. */
+export function decodeDeepResearchRequest(value: unknown): true | null | "invalid" {
+  if (value === undefined) return null;
+  return value === true ? true : "invalid";
+}
+
 /** Where a claim's evidence comes from. Each class is assigned, or skipped with a reason, before anyone searches. */
 export const RESEARCH_SOURCE_CLASSES = ["primary_official", "independent_tests", "owner_reviews", "action_channel"] as const;
 export type ResearchSourceClass = (typeof RESEARCH_SOURCE_CLASSES)[number];

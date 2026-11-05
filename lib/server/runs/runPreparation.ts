@@ -7,6 +7,8 @@ import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageGenerationUnavailable
 import { artifactFileInstructions, artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
+import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
+import { DEEP_RESEARCH_CHOSEN_GUIDANCE } from "../tools/research";
 import { freezeSubagentModels, type FrozenSubagentModels, type SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
 import { freezeSubagentDefault } from "../subagents/typeCatalog";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
@@ -313,6 +315,8 @@ export type RegenerateRunPreparationSource = Readonly<{
     followups?: RegenerationFollowups;
     artifactEdit?: unknown;
     artifactIntent?: unknown;
+    /** What the message's run froze (`NormalizedRunRequest.deepResearch`): a regenerate keeps it. */
+    deepResearch?: unknown;
     assistantMessage: Readonly<{
       modelId: string | null;
       provider: string | null;
@@ -1060,6 +1064,12 @@ export async function prepareRun(
     : input.source.kind === "regenerate" ? input.source.source.artifactEdit : undefined;
   const artifactEdit = artifactEditValue === undefined ? undefined : decodeArtifactEdit(artifactEditValue);
   if (artifactEdit === null) return failure("artifact_edit_invalid", 400);
+  // Deep research belongs to the message (operator decision 2026-11-05): a regenerate without the field keeps what the message
+  // was sent with, and a turn the server wrote never carries it. Whether this run can research is the handler's call.
+  const deepResearch = decodeDeepResearchRequest(input.serverAuthoredInput ? undefined
+    : body && Object.hasOwn(body, DEEP_RESEARCH_SEND_FIELD) ? body[DEEP_RESEARCH_SEND_FIELD]
+      : input.source.kind === "regenerate" ? input.source.source.deepResearch : undefined);
+  if (deepResearch === "invalid") return failure(DEEP_RESEARCH_REFUSALS.invalid, 400);
   const toolBudgets = deps.runPolicy
     ? await deps.runPolicy.load()
     : DEFAULT_TOOL_RUN_BUDGETS;
@@ -1764,6 +1774,7 @@ export async function prepareRun(
   // The frozen prompt names a scheduled run's missing sources through recovery.
   appendTurnGuidance(scheduledUnavailableSourcesNotice(scheduledMissingSources));
   if (artifactIntent) appendTurnGuidance("The user explicitly asked for an artifact: call create_artifact for this message.");
+  if (deepResearch === true) appendTurnGuidance(DEEP_RESEARCH_CHOSEN_GUIDANCE);
   // The check's server-owned instruction, frozen with the accepted prompt: it
   // compares with the previous shown result only while the context holds it.
   if (monitoringCheck) {
@@ -1949,6 +1960,7 @@ export async function prepareRun(
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
+    ...(deepResearch === true ? { deepResearch: true as const } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
     ...(scheduledTaskManagementTool ? { scheduledTaskManagementTool } : {}),
     ...(skillSaveTool ? { skillSaveTool: true as const } : {}),

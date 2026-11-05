@@ -6,6 +6,7 @@ import {
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   type ResearchEvidenceRecord
 } from "../../contracts/research";
+import { CONTINUE_TURN_TEXT } from "../../contracts/runs";
 import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_GROUPS } from "../../contracts/subagents";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { defaultNativeEngineHandlerDeps } from "../engine/defaultEngine";
@@ -127,6 +128,8 @@ function repository() {
 function prepared(): MaterializedPreparedRunData {
   const text = "Проведи исследование матрасов.";
   const request = {
+    // The user chose Deep research for the message (operator decision 2026-11-05).
+    deepResearch: true,
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -143,6 +146,22 @@ function prepared(): MaterializedPreparedRunData {
     providerRequest: request, providerRequestPreview: {}, sourceKind: "send"
   };
 }
+
+/** The user's Continue right after a turn that started research, which the store says was interrupted: the run offers research before any start. */
+function continueOf(deps: NativeEngineDeps): MaterializedPreparedRunData {
+  vi.mocked(deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map([["answer-0", "run-0"]]));
+  vi.mocked(deps.transcripts.loadRuns).mockResolvedValue(new Map([["run-0", [{ arguments: JSON.stringify({ goal: "Choose a mattress." }), callId: "old-start",
+    id: "old-call", kind: "tool_call", name: START_RESEARCH_TOOL_NAME }] as TranscriptItem[]]]));
+  const content = (text: string) => ({ blocks: [{ text, type: "text" as const }] });
+  const { deepResearch: _chosen, ...base } = prepared().normalizedRequest;
+  void _chosen;
+  const request = { ...base, context: { messages: [{ content: content("Mattresses."), id: "question", role: "user" as const },
+    { content: content(""), id: "answer-0", role: "assistant" as const }, { content: content(CONTINUE_TURN_TEXT), id: "current-user-message", role: "user" as const }],
+  mode: "branch_path" as const } } as ProviderRunRequest;
+  return { ...prepared(), normalizedRequest: request, providerRequest: request };
+}
+
+const interrupted: ResearchPortFactories["resume"] = () => ({ ...NOOP_RESEARCH_PORTS.resume, interrupted: async () => true });
 
 function run(adapter: ProviderAdapter, deps: NativeEngineDeps, extra: Partial<NativeRunExecutionInput> = {}) {
   return createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" }, engine: deps, prepared: prepared(),
@@ -254,11 +273,13 @@ describe("record_evidence through the real engine", () => {
     const evidence = evidencePort();
     const { adapter, requests } = scripted([{ calls: [record("call-early")] }, { text: "A direct answer." }]);
     await run(adapter, engineOf({ gates: [], ports: { evidence: evidence.factory } })).text();
-    expect(resultsOf(requests[1], RECORD_EVIDENCE_TOOL_NAME)[0]).toContain("research_not_started");
+    // The user chose Deep research: nothing but the start runs before it.
+    expect(resultsOf(requests[1], RECORD_EVIDENCE_TOOL_NAME)[0]).toContain(`${START_RESEARCH_TOOL_NAME} comes first`);
     expect(evidence.record).not.toHaveBeenCalled();
     const early = evidencePort();
     const sub = scripted([{ calls: [researcher] }, { calls: [record("call-early")] }, { text: "Outcome: done\n\nDone." }, { text: "A direct answer." }]);
-    await run(sub.adapter, engineOf({ gates: [], ports: { evidence: early.factory } })).text();
+    const deps = engineOf({ gates: [], ports: { evidence: early.factory, resume: interrupted } });
+    await run(sub.adapter, deps, { prepared: continueOf(deps) }).text();
     expect(resultsOf(sub.requests[2], RECORD_EVIDENCE_TOOL_NAME)[0]).toContain("research_not_started");
     expect(early.record).not.toHaveBeenCalled();
   });
@@ -279,19 +300,26 @@ describe("record_evidence through the real engine", () => {
     expect(toolsOf(requests[3])).not.toContain(RECORD_EVIDENCE_TOOL_NAME);
   });
 
-  it("is offered only where research can run, to no agent elsewhere", async () => {
+  it("is offered only where research runs, to no agent elsewhere", async () => {
     const offered = async (extra: Partial<NativeRunExecutionInput>, research: ResearchEngineDeps = { gates: [] }) => {
-      const { adapter, requests } = scripted([{ calls: [researcher] }, { text: "Outcome: done\n\nDone." }, { text: "Answer." }]);
+      const { adapter, requests } = scripted([{ calls: begin }, { calls: [researcher] }, { text: "Outcome: done\n\nDone." }, { calls: [submit] }]);
       await run(adapter, engineOf(research), extra).text();
-      return [toolsOf(requests[0]).includes(RECORD_EVIDENCE_TOOL_NAME), toolsOf(requests[1]).includes(RECORD_EVIDENCE_TOOL_NAME)];
+      return [toolsOf(requests[0]).includes(RECORD_EVIDENCE_TOOL_NAME), toolsOf(requests[2]).includes(RECORD_EVIDENCE_TOOL_NAME)];
     };
     await expect(offered({})).resolves.toEqual([true, true]);
+    // Telegram and a scheduled occurrence never research: the message is refused before any request.
     await expect(offered({ telegram: true })).resolves.toEqual([false, false]);
     await expect(offered({ scheduled: true })).resolves.toEqual([false, false]);
+    // A message sent without Deep research is an ordinary turn, and its sub-agent records nothing.
+    const { deepResearch: _chosen, ...ordinary } = prepared().normalizedRequest;
+    void _chosen;
+    const plain = scripted([{ calls: [researcher] }, { text: "Outcome: done\n\nDone." }, { text: "Answer." }]);
+    await run(plain.adapter, engineOf({ gates: [] }), { prepared: { ...prepared(), normalizedRequest: ordinary as ProviderRunRequest, providerRequest: ordinary as ProviderRunRequest } }).text();
+    expect([toolsOf(plain.requests[0]), toolsOf(plain.requests[1])].map((tools) => tools.includes(RECORD_EVIDENCE_TOOL_NAME))).toEqual([false, false]);
     const none = scripted([{ calls: [researcher] }, { text: "Outcome: done\n\nDone." }, { text: "Answer." }]);
     const { research: _research, ...deps } = engineOf({});
     void _research;
-    await run(none.adapter, deps).text();
+    await run(none.adapter, deps, { prepared: { ...prepared(), normalizedRequest: ordinary as ProviderRunRequest, providerRequest: ordinary as ProviderRunRequest } }).text();
     expect(toolsOf(none.requests[1])).not.toContain(RECORD_EVIDENCE_TOOL_NAME);
   });
 });
