@@ -35,6 +35,11 @@ export type HarnessPromptInput = Readonly<{
   /** The run admitted web Search, also a provider's hosted one with no tool of its own. */
   webSearch?: boolean;
   /**
+   * The user can start Deep research from the `+` menu of this chat's message box, and this request has no research tools: one constant
+   * line says so, the way forward for a request in words alone (operator decision 2026-11-05).
+   */
+  researchControl?: boolean;
+  /**
    * The AIQSA self-description (`./selfService.ts`); `systemPromptFor`
    * fills it in for the request's tools when it is not given.
    */
@@ -74,22 +79,23 @@ function savedSecret(secret: SavedSecretFact): string {
 }
 
 /**
- * When to start research (operator decision 2026-11-01): no chip or control, the model decides from the user's words,
- * so the rule and its examples in both directions are the whole trigger. It asks the user nothing first: the user may give
- * the request and leave, so what is missing goes into the plan the user can correct.
+ * What research does once it starts. Only the user starts it, by choosing Deep research for a message (operator decision
+ * 2026-11-05, replacing the model's choice from the user's words of 2026-11-01), so this section rides only on a request that has
+ * the research tools and lists no words that would start it. It asks the user nothing first: the user may give the request and
+ * leave, so what is missing goes into the plan the user can correct.
  */
 function researchPromptSection(): string {
   return [
     "# Research",
-    `\`${START_RESEARCH_TOOL_NAME}\` starts the research method: parallel researchers, source classes assigned up front and a report the server checks before the user sees it. It takes much longer and costs much more than an ordinary answer, and the user sees a plan first.`,
-    "- Call it as your first step, before any search, when the user's goal is a thorough result: they ask to research, analyze or search carefully, or they will base a serious decision on the answer. Such words are enough on their own, whatever the topic and even when you could answer without it, and answering them with a few searches is the mistake to avoid: \"поищи хорошо\", \"проведи исследование\", \"глубокий анализ тарифов\", \"глубокий анализ\", \"проанализируй, какой телефон взять\", \"проанализируй рынок роботов-пылесосов\", \"сравни эти ноутбуки, хочу купить один надолго\", \"do a deep dive on this\".",
-    "- Do not start it for a simple question or a quick lookup, however it is phrased, even when it needs a search. Examples: \"поищи, какие матрасы есть современные\", \"какой сейчас курс доллара\", \"найди сайт этого магазина\", \"what is the latest version of Node\". Answer those directly.",
+    `\`${START_RESEARCH_TOOL_NAME}\` starts the research method the user chose with Deep research for their message: parallel researchers, source classes assigned up front and a report the server checks before the user sees it. It takes much longer than an ordinary answer, and the user sees a plan first.`,
     "- Never ask the user a clarifying question before research, however much is missing: they may have left. A missing fact (country, budget) becomes a named assumption in your plan, or a branch of the report when it changes the result.",
-    "- When nothing in the message asks for thoroughness and you are unsure, answer directly and offer to research it. If the user asks for research again in a later message, start it again; earlier findings in this conversation still count.",
     `- When the user's message is exactly "${CONTINUE_TURN_TEXT}" and research was running in the answer before it, which stopped unfinished, call \`${START_RESEARCH_TOOL_NAME}\` with the same goal as your first step: the server picks it up from what was recorded, or tells you it starts over.`,
     `- Once it started, follow what it returns: scope, show your plan with \`${PROPOSE_RESEARCH_PLAN_TOOL_NAME}\`, and finish with \`${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}\`. Nothing else you write reaches the user.`
   ].join("\n");
 }
+
+/** The way forward for deep research asked for in words alone: the control's name stays as the interface writes it. */
+export const RESEARCH_CONTROL_LINE = "- When the user asks in words for deep research, answer as usual and add one sentence saying that choosing Deep research in the + menu of the message box starts it; keep the name Deep research as the menu writes it.";
 
 export function harnessPromptSection(input: HarnessPromptInput): string {
   const has = new Set(input.tools);
@@ -120,7 +126,8 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       "# Web search",
       "- Your knowledge stops at a cutoff and the world keeps changing. Search before you answer anything that may have changed or that you are not sure about: news, prices and rates, versions and releases, schedules, people, laws, documentation, anything tied to today's date. Do not answer such questions from memory.",
       "- Write focused queries, in the language most likely to find good sources. When results are thin or disagree, search again with a different query; independent searches can run in parallel.",
-      "- Base the answer on what the sources say and link the ones you rely on. Say so when the results do not settle the question."
+      "- Base the answer on what the sources say and link the ones you rely on. Say so when the results do not settle the question.",
+      ...(input.researchControl === true && !has.has(START_RESEARCH_TOOL_NAME) ? [RESEARCH_CONTROL_LINE] : [])
     ]] : []),
     ...(input.workspace ? [[
       "# Workspace",

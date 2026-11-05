@@ -5,7 +5,7 @@ import { fetchUrlDigest } from "../webFetch/urls";
 import { createFetchUrlSession, type FetchUrlSessionDeps } from "./fetchUrl";
 import type { ToolExecutionResult } from "./types";
 
-const urls = ["https://www.shop.co.uk/one", "https://reviews.shop.co.uk/two", "https://shop.co.uk/three", "https://other.example/"];
+const urls = ["https://www.shop.example/one", "https://reviews.shop.example/two", "https://shop.example/three", "https://other.example/"];
 const signal = new AbortController().signal;
 const call = (index: number) => ({ arguments: { url: urls[index] }, id: `call-${index}`, name: "fetch_url" });
 const timeout = () => new WebFetchError("fetch_timeout", { dispatched: true });
@@ -22,13 +22,13 @@ const session = (extra: Partial<FetchUrlSessionDeps> = {}) => createFetchUrlSess
 });
 
 describe("research refuses unreachable fetch_url sites", () => {
-  it("reloads recorded sites before every read, including cached pages, and closes the whole registrable domain", async () => {
+  it("reloads recorded sites before every read, including cached pages, and closes the host alone, www. or not", async () => {
     const unreachable = new Map<string, string>();
     const fetchPage = vi.fn(async () => page);
     const s = session({ fetchPage, research: async () => new Map(unreachable) });
     expect((await s.execute(call(0), { signal })).status).toBe("complete");
-    unreachable.set("shop.co.uk", "The site requires sign-in.");
-    for (const index of [0, 1]) {
+    unreachable.set("shop.example", "The site requires sign-in.");
+    for (const index of [0, 2]) {
       const result = await s.execute(call(index), { signal });
       expect(result.status).toBe("error");
       expect(json(result).message).toContain("already recorded as unreachable");
@@ -37,22 +37,35 @@ describe("research refuses unreachable fetch_url sites", () => {
       expect(result.rawPreview).toMatchObject({ fetchUrl: { dispatched: false } });
     }
     expect(fetchPage).toHaveBeenCalledTimes(1);
-    expect((await s.execute(call(3), { signal })).status).toBe("complete");
+    for (const index of [1, 3]) expect((await s.execute(call(index), { signal })).status).toBe("complete");
   });
 
-  it("stops after two connection timeouts across pages and subdomains, and keeps counts only in this run", async () => {
+  it("opens a host again once a read of it reaches the closed sites, and closes it again on a later record", async () => {
+    let sites = new Map([["shop.example", "Checking your browser."]]);
+    const fetchPage = vi.fn(async () => page);
+    const s = session({ fetchPage, research: async () => sites });
+    expect((await s.execute(call(2), { signal })).status).toBe("error");
+    sites = new Map();
+    expect((await s.execute(call(2), { signal })).status).toBe("complete");
+    sites = new Map([["shop.example", "A CAPTCHA in the browser."]]);
+    expect(json(await s.execute(call(0), { signal })).message).toContain("A CAPTCHA in the browser.");
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops after two connection timeouts on one host, counting a subdomain apart, and keeps counts only in this run", async () => {
     const fetchPage = vi.fn(async () => { throw timeout(); });
     const s = session({ fetchPage });
     expect(json(await s.execute(call(0), { signal })).message).not.toContain("record_evidence");
-    expect(json(await s.execute(call(1), { signal })).message).toContain("timed out twice");
-    const refused = await s.execute(call(2), { signal });
+    expect(json(await s.execute(call(1), { signal })).message).not.toContain("timed out twice");
+    expect(json(await s.execute(call(2), { signal })).message).toContain("timed out twice");
+    const refused = await s.execute(call(0), { signal });
     expect(json(refused).message).toContain('record_evidence with kind "unreachable"');
     expect(refused.rawPreview).toMatchObject({ fetchUrl: { dispatched: false } });
-    expect(fetchPage).toHaveBeenCalledTimes(2);
-    await s.execute(call(3), { signal });
     expect(fetchPage).toHaveBeenCalledTimes(3);
-    await session({ fetchPage }).execute(call(2), { signal });
+    await s.execute(call(3), { signal });
     expect(fetchPage).toHaveBeenCalledTimes(4);
+    await session({ fetchPage }).execute(call(2), { signal });
+    expect(fetchPage).toHaveBeenCalledTimes(5);
   });
 
   it("counts one shared network request once even when several agents await it", async () => {
@@ -64,11 +77,11 @@ describe("research refuses unreachable fetch_url sites", () => {
     reject(timeout());
     const results = await Promise.all(waiting);
     expect(results.every((result) => !String(json(result).message).includes("timed out twice"))).toBe(true);
-    const second = s.execute(call(1), { signal });
+    const second = s.execute(call(2), { signal });
     await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(2));
     reject(timeout());
     await second;
-    await s.execute(call(2), { signal });
+    await s.execute(call(0), { signal });
     expect(fetchPage).toHaveBeenCalledTimes(2);
   });
 
@@ -80,8 +93,8 @@ describe("research refuses unreachable fetch_url sites", () => {
     expect(fetchPage).toHaveBeenCalledTimes(3);
     researching = true;
     expect(json(await s.execute(call(0), { signal })).message).not.toContain("timed out twice");
-    expect(json(await s.execute(call(1), { signal })).message).toContain("timed out twice");
-    await s.execute(call(2), { signal });
+    expect(json(await s.execute(call(2), { signal })).message).toContain("timed out twice");
+    await s.execute(call(0), { signal });
     expect(fetchPage).toHaveBeenCalledTimes(5);
   });
 
@@ -93,7 +106,7 @@ describe("research refuses unreachable fetch_url sites", () => {
   });
 
   it("keeps link authority ahead of research refusal and makes no request", async () => {
-    const research = vi.fn(async () => new Map([["shop.co.uk", "Sign-in required."]]));
+    const research = vi.fn(async () => new Map([["shop.example", "Sign-in required."]]));
     const fetchPage = vi.fn(async () => page);
     const s = session({ fetchPage, plan: { userUrlDigests: [], version: 1 }, research });
     expect(json(await s.execute(call(0), { signal })).error).toBe("fetch_url_not_in_conversation");

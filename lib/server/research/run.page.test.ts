@@ -163,6 +163,8 @@ function prepared(options: Readonly<{ artifactTool?: boolean }> = {}): Materiali
       modelId: "fake-qsa", optionId: "hosted", protocol: "hosted", provider: "fake", providerModelId: "model-1", revisionId: "rev", searchStrategyRowId: "strategy" }] },
     toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null },
     toolMode: "auto" as const,
+    // The user chose Deep research for this message.
+    deepResearch: true,
     ...options.artifactTool === false ? {} : { artifactTool: true as const }
   } as unknown as ProviderRunRequest;
   return {

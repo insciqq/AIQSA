@@ -25,6 +25,31 @@ export const PROPOSE_RESEARCH_PLAN_TOOL_NAME = "propose_research_plan";
 export const RECORD_EVIDENCE_TOOL_NAME = "record_evidence";
 export const CHANGE_RESEARCH_FRAME_TOOL_NAME = "change_research_frame";
 
+/**
+ * The send field that asks for Deep research on one message (operator decision 2026-11-05): the `+` menu's Deep research item, and
+ * nothing written in a chat, starts research. It goes at the top level of a send's JSON body (`POST /api/chats/:chatId/messages`) and
+ * of the regenerate that runs an edited message (`POST /api/messages/:messageId/regenerate`), as `true` only; leave it out otherwise.
+ * Admission freezes it with the run's bindings, and a regenerate without it keeps what the message was sent with.
+ */
+export const DEEP_RESEARCH_SEND_FIELD = "deepResearch";
+
+/**
+ * Why a send that asked for Deep research was refused, as the response's `error`: `invalid` (400) for a field that is not `true`;
+ * `needsSearch` (409) for a message with no Search source, which Search turned on mends; `unavailable` (409) where research never
+ * runs: Telegram, scheduled tasks and monitoring checks, or a run without tools. The message is never answered another way.
+ */
+export const DEEP_RESEARCH_REFUSALS = Object.freeze({
+  invalid: "deep_research_invalid",
+  needsSearch: "deep_research_needs_search",
+  unavailable: "deep_research_unavailable"
+} as const);
+
+/** The send field's value: true when Deep research was asked for, null when it was not, and "invalid" for anything but `true`. */
+export function decodeDeepResearchRequest(value: unknown): true | null | "invalid" {
+  if (value === undefined) return null;
+  return value === true ? true : "invalid";
+}
+
 /** Where a claim's evidence comes from. Each class is assigned, or skipped with a reason, before anyone searches. */
 export const RESEARCH_SOURCE_CLASSES = ["primary_official", "independent_tests", "owner_reviews", "action_channel"] as const;
 export type ResearchSourceClass = (typeof RESEARCH_SOURCE_CLASSES)[number];
@@ -44,6 +69,9 @@ export const RESEARCH_LIMITS = Object.freeze({
   draftEditsCharacters: 200_000,
   findings: 300,
   goalCharacters: 2_000,
+  /** One sentence on how the pick does on one of the user's priorities (`ResearchPriorityAnswer`), and the records it rests on. */
+  priorityAnswerCharacters: 500,
+  priorityAnswerRecords: 8,
   questionCharacters: 1_000,
   questions: 16,
   quoteCharacters: 4_000,
@@ -85,6 +113,11 @@ export const RESEARCH_FRAME_LIMITS = Object.freeze({
   /** Criteria a plan may mark decisive: the few a pick depends on, each of which every option the report recommends has confirmed on two sites. */
   decisiveCriteria: 4,
   labelCharacters: 200,
+  /**
+   * Criteria a plan may mark as priorities: only what the user's own message names as mattering, such as value for money, which then decides the pick
+   * (operator decision 2026-11-05). A few, since the summary answers each in a line of its own.
+   */
+  priorityCriteria: 3,
   rows: 64,
   whyCharacters: 500
 });
@@ -216,10 +249,11 @@ export type ResearchStart = Readonly<{ goal: string }>;
 
 /**
  * A column of the matrix, with why it matters in plain words. For a knowledge question it is an outcome or a sub-question. `decisive`: a key specification, a
- * property of the option itself that a pick depends on and sellers may state differently, such as a mattress's load per side; present only when true, so a
- * frame stored before it, and a criterion added on the way, have none.
+ * property of the option itself that a pick depends on and sellers may state differently, such as a mattress's load per side. `priority`: what the user's own
+ * message names as mattering, such as value for money, which decides the pick (operator decision 2026-11-05). Each is present only when true, so a frame
+ * stored before it, and a criterion added on the way, have none.
  */
-export type ResearchCriterion = Readonly<{ criterion: string; decisive?: true; key: string; why: string }>;
+export type ResearchCriterion = Readonly<{ criterion: string; decisive?: true; key: string; priority?: true; why: string }>;
 
 /** A row of the matrix: an option the user could choose. */
 export type ResearchMatrixRow = Readonly<{ key: string; label: string }>;
@@ -440,11 +474,15 @@ export type ResearchDraftReferences = Readonly<{
   recordIds: readonly string[];
 }>;
 
+/** One sentence on how the pick does on a priority the plan marked, against the next option the summary recommends, and the records it rests on. */
+export type ResearchPriorityAnswer = Readonly<{ criterionKey: string; recordIds: readonly string[]; text: string }>;
+
 /**
  * What the user reads first, which the server puts above the report (operator decision 2026-11-02: most readers stop there). `rowKeys` are the
- * rows it recommends in its order, the pick first, so the checks can hold its words to the matrix.
+ * rows it recommends in its order, the pick first, so the checks can hold its words to the matrix. `priorities` answer what the user named as mattering,
+ * each in a line right under the text (operator decision 2026-11-05); absent where it answers none, as on a summary stored before them.
  */
-export type ResearchDraftSummary = Readonly<{ rowKeys: readonly string[]; text: string }>;
+export type ResearchDraftSummary = Readonly<{ priorities?: readonly ResearchPriorityAnswer[]; rowKeys: readonly string[]; text: string }>;
 
 /**
  * The references are there on a draft that refers to records, and absent on a text draft or one stored from before. `findings` are what
@@ -471,9 +509,18 @@ export type ResearchDraft = Partial<ResearchDraftReferences> & Readonly<{
   unreachable: readonly ResearchUnreachable[];
 }>;
 
+/**
+ * The summary as its reader reads it: its text, then a line for each priority it answers, right under it, so the answers stay part of the summary. No words
+ * of the server's own: each line is the model's sentence, kept to one line.
+ */
+export function researchSummaryText(summary: ResearchDraftSummary): string {
+  const lines = (summary.priorities ?? []).map(({ text }) => `- ${text.replace(/\s+/gu, " ").trim()}`);
+  return lines.length > 0 ? `${summary.text.trim()}\n\n${lines.join("\n")}` : summary.text.trim();
+}
+
 /** The answer's text of a draft: its summary above the report, as the server places it, with no words of the server's own between them. */
 export function researchDraftText(draft: Pick<ResearchDraft, "report" | "summary">): string {
-  return draft.summary ? `${draft.summary.text.trim()}\n\n${draft.report}` : draft.report;
+  return draft.summary ? `${researchSummaryText(draft.summary)}\n\n${draft.report}` : draft.report;
 }
 
 /** A gate's word on one draft. A gate that fails or runs out of time never loses the answer (`lib/server/research/gates.ts`). */
@@ -627,8 +674,11 @@ function decodeCriterion(entry: unknown, place: string): DecodedResearch<Researc
   if (!storableText(entry.criterion, limits.labelCharacters)) return refused(`${fieldAt(place, "criterion")} must be 1 to ${limits.labelCharacters} characters.`);
   if (!storableText(entry.why, limits.whyCharacters)) return refused(`${fieldAt(place, "why")} must say in 1 to ${limits.whyCharacters} characters why this criterion matters.`);
   // Left out or null reads as false: a frame or proposal stored before the field has none.
-  if (entry.decisive !== undefined && entry.decisive !== null && typeof entry.decisive !== "boolean") return refused(`${fieldAt(place, "decisive")} must be true or false.`);
-  return { ok: true, value: { criterion: entry.criterion, ...entry.decisive === true ? { decisive: true as const } : {}, key: entry.key, why: entry.why } };
+  for (const flag of ["decisive", "priority"] as const) {
+    if (entry[flag] !== undefined && entry[flag] !== null && typeof entry[flag] !== "boolean") return refused(`${fieldAt(place, flag)} must be true or false.`);
+  }
+  return { ok: true, value: { criterion: entry.criterion, ...entry.decisive === true ? { decisive: true as const } : {}, key: entry.key,
+    ...entry.priority === true ? { priority: true as const } : {}, why: entry.why } };
 }
 
 function decodeBranch(entry: unknown, place: string): DecodedResearch<ResearchBranch> {
@@ -654,6 +704,9 @@ function decodeProposal(value: unknown, steps: ListBounds): DecodedResearch<Rese
   if (!criteria.ok) return criteria;
   if (criteria.value.filter(({ decisive }) => decisive).length > frame.decisiveCriteria) {
     return refused(`criteria marks more than ${frame.decisiveCriteria} as decisive: mark only the key specifications a pick depends on.`);
+  }
+  if (criteria.value.filter(({ priority }) => priority).length > frame.priorityCriteria) {
+    return refused(`criteria marks more than ${frame.priorityCriteria} as priorities: mark only what the user's own message names as mattering to them.`);
   }
   const rows = decodeKeyed(value.rows, "rows", { max: frame.rows, min: 0 }, decodeRow);
   if (!rows.ok) return rows;
@@ -964,21 +1017,47 @@ export function decodeResearchDraftReferences(value: unknown): DecodedResearch<R
   return { ok: true, value: { branchPicks, doesNotSeparate, pickRowKey, recordIds } };
 }
 
+/** A summary's answers to the user's priorities: left out or null is none, as on a summary stored before them. */
+function decodePriorityAnswers(value: unknown): DecodedResearch<readonly ResearchPriorityAnswer[]> {
+  if (value === undefined || value === null) return { ok: true, value: [] };
+  const limits = RESEARCH_LIMITS;
+  const most = RESEARCH_FRAME_LIMITS.priorityCriteria;
+  if (!Array.isArray(value) || value.length > most) return refused(`summary.priorities must list at most ${most} answers, one for each priority the plan marked.`);
+  const answers: ResearchPriorityAnswer[] = [];
+  for (const [index, entry] of value.entries()) {
+    const at = `summary.priorities[${index}]`;
+    if (!isRecord(entry) || !isResearchKey(entry.criterion_key)) return refused(`${at}.criterion_key must be the key of a criterion the plan marked as a priority.`);
+    if (answers.some(({ criterionKey }) => criterionKey === entry.criterion_key)) return refused(`${at}.criterion_key repeats an earlier answer's: one answer for each priority.`);
+    if (!storableText(entry.text, limits.priorityAnswerCharacters)) return refused(`${at}.text must be one sentence of 1 to ${limits.priorityAnswerCharacters} characters.`);
+    const recordIds: unknown = entry.record_ids ?? [];
+    if (!Array.isArray(recordIds) || recordIds.length > limits.priorityAnswerRecords || !recordIds.every(isCitedRecord)) {
+      return refused(`${at}.record_ids must list at most ${limits.priorityAnswerRecords} ids, each whole as the server gave it.`);
+    }
+    answers.push({ criterionKey: entry.criterion_key, recordIds: [...new Set(recordIds)], text: entry.text });
+  }
+  return { ok: true, value: answers };
+}
+
 /**
  * A draft's summary, read apart from its references, so a mistyped row key costs neither the pick nor the summary's words. A text alone is a summary naming no
- * row, and the report check says what is missing; so does a missing one, which never refuses the draft (Answer first).
+ * row, and the report check says what is missing; so does a missing one, which never refuses the draft (Answer first). So do answers to the priorities that
+ * cannot be read: the summary keeps its words and rows without them.
  */
 function decodeResearchSummary(value: unknown): Readonly<{ invalid?: string; summary: ResearchDraftSummary | null }> {
   if (value === undefined || value === null) return { summary: null };
   const entry: Readonly<Record<string, unknown>> = typeof value === "string" ? { row_keys: [], text: value } : isRecord(value) ? value : {};
-  const { row_keys: rowKeys = [], text } = entry;
+  const { priorities: rawPriorities, row_keys: rowKeys = [], text } = entry;
   if (!storableText(text, RESEARCH_LIMITS.summaryCharacters)) {
     return { invalid: `summary.text must be 1 to ${RESEARCH_LIMITS.summaryCharacters} characters: two to four short paragraphs.`, summary: null };
   }
-  if (!Array.isArray(rowKeys) || rowKeys.length > RESEARCH_FRAME_LIMITS.rows || !rowKeys.every(isResearchKey)) {
-    return { invalid: `summary.row_keys must list at most ${RESEARCH_FRAME_LIMITS.rows} keys of the matrix's rows.`, summary: { rowKeys: [], text } };
-  }
-  return { summary: { rowKeys: [...new Set(rowKeys)], text } };
+  const problems: string[] = [];
+  const rowsRead = Array.isArray(rowKeys) && rowKeys.length <= RESEARCH_FRAME_LIMITS.rows && rowKeys.every(isResearchKey);
+  if (!rowsRead) problems.push(`summary.row_keys must list at most ${RESEARCH_FRAME_LIMITS.rows} keys of the matrix's rows.`);
+  const priorities = decodePriorityAnswers(rawPriorities);
+  if (!priorities.ok) problems.push(priorities.message);
+  const answered = priorities.ok && priorities.value.length > 0 ? { priorities: priorities.value } : {};
+  const summary = { ...answered, rowKeys: rowsRead ? [...new Set(rowKeys as readonly string[])] : [], text };
+  return problems.length > 0 ? { invalid: problems.join(" "), summary } : { summary };
 }
 
 /** The findings typed into a draft stored before drafts referred to records. */

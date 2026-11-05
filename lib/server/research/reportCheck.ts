@@ -4,7 +4,7 @@ import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchGate } from "./gates";
 import { researchKeyCells, researchLeadingRows, researchMatrix, researchRecordSite, type ResearchMatrix } from "./matrix";
 import { researchGatePorts } from "./ports";
-import { figuresNotIn, type ClaimFigure } from "./quoteCheck";
+import { claimPrices, figuresNotIn, type ClaimFigure, type ClaimPrice } from "./quoteCheck";
 import { researchRejectedRecords } from "./verifier";
 import { researchRegistrableDomain } from "./sourceQuality";
 
@@ -18,11 +18,12 @@ import { researchRegistrableDomain } from "./sourceQuality";
  * - a report resting on several pages links at least half of them, so its reader can trace what it says;
  * - a comparison has its table, naming every criterion, and a criterion added on the way is named;
  * - the summary the reader reads first is there, starts with the pick, names in its text the rows it lists, and the offers of the options it recommends are cited;
+ * - each priority the user named has its answer under the summary, and under a priority of price a dearer pick's answer names the cheaper option;
  * - a key specification of an option it leads with is cited from two sites where two hold it, and where they disagree both are cited and both figures stated.
  *
  * What stays the model's word: that the prose says what the cited records say (the verifier reads the records, not the prose), that the pick follows
- * from the comparison, why each criterion matters, a statement that rows do not separate, any pick written only in prose, and the summary's prices, shops and
- * length. Advice with its summary that cites nothing, picks nothing and links nothing passes where the plan marked no key specification, as does a text draft, which has no ids. Names are matched
+ * from the comparison, why each criterion matters, a statement that rows do not separate, any pick written only in prose, the summary's prices, shops and
+ * length, and what an answer to a priority says beyond naming a cheaper option. Advice with its summary that cites nothing, picks nothing and links nothing passes where the plan marked no key specification and no priority, as does a text draft, which has no ids. Names are matched
  * generously: a false alarm costs a paid rewrite of the whole report, a missed one a table column, so only a report that holds no word of a criterion goes back.
  */
 export const REPORT_CHECK_GATE = "report_check";
@@ -154,12 +155,16 @@ function recordsByUrl(records: readonly ResearchEvidenceRecord[]): ReadonlyMap<s
   return holders;
 }
 
-/** Assemble citations before any gate reads the draft, so the verifier sees the newly cited claims too. Ambiguous URLs still need the model's choice. */
+/**
+ * Assemble citations before any gate reads the draft, so the verifier sees the newly cited claims too. Ambiguous URLs still need the model's choice. The live records an
+ * answer to a priority names are cited too, since its line is part of the summary: one that names no live record is the priority check's to name.
+ */
 export function researchDraftWithLinkedRecords(draft: ResearchDraft, records: readonly ResearchEvidenceRecord[]): ResearchDraft {
   if (draft.origin === "plain_text" || draft.recordIds === undefined || draft.invalidReferences !== undefined) return draft;
   const holders = recordsByUrl(records);
   const cited = citedRecords(draft.recordIds, records);
-  const added = new Set<string>();
+  const live = new Set(records.map(({ id }) => id));
+  const added = new Set([...citedRecords(draft.summary?.priorities?.flatMap(({ recordIds }) => recordIds) ?? [], records)].filter((id) => live.has(id) && !cited.has(id)));
   for (const link of reportLinks(researchDraftText(draft))) {
     const matches = holders.get(normalizeFetchUrl(link) ?? "");
     if (matches?.size !== 1) continue;
@@ -278,11 +283,11 @@ const SUMMARY_FORM = "Pass summary with its text, two to four short paragraphs i
   "the rows it recommends in that order, the pick first.";
 
 /**
- * What a draft that chooses no option hears where the plan marked key specifications, the decisions it depends on, and the matrix holds options. On acceptance
- * run 3 (2026-11-03) a purchase answer said it named no winner and advised paying for none, because no option had passed every check: the reader had asked for
- * models and could act on nothing. Checks that could not confirm everything are the report's limits, not a reason to choose nothing.
+ * What a draft that chooses no option hears where the plan marked key specifications, the decisions it depends on, or what the user named as mattering, and the
+ * matrix holds options. On acceptance run 3 (2026-11-03) a purchase answer said it named no winner and advised paying for none, because no option had passed every
+ * check: the reader had asked for models and could act on nothing. Checks that could not confirm everything are the report's limits, not a reason to choose nothing.
  */
-const DEFAULT_PICK = "The plan marked key specifications, so the user chooses among the matrix's options, yet the draft picks none: name in pick_row_key, and first " +
+const DEFAULT_PICK = "The plan marked key specifications or the user's priorities, so the user chooses among the matrix's options, yet the draft picks none: name in pick_row_key, and first " +
   "in the summary, the option you would take by default today for the user's stated priorities, marked plainly as a default with what is not confirmed. What the " +
   "checks could not confirm goes in the report's limits and is never a reason to name no option; where rows do not separate, say so in does_not_separate and still " +
   "name the default.";
@@ -299,7 +304,7 @@ function summaryTrouble(draft: ResearchDraft, frame: ResearchFrame | null): Trou
   const problems: string[] = draft.invalidSummary === undefined ? [] : [draft.invalidSummary];
   const picked = pickedRows(draft);
   const inseparable = (draft.doesNotSeparate?.rowKeys ?? []).filter((key) => !picked.includes(key));
-  if (picked.length === 0 && frame && frame.rows.length >= 2 && frame.criteria.some((criterion) => criterion.decisive)) problems.push(DEFAULT_PICK);
+  if (picked.length === 0 && frame && frame.rows.length >= 2 && frame.criteria.some((criterion) => criterion.decisive || criterion.priority)) problems.push(DEFAULT_PICK);
   if (summary.rowKeys.length === 0 && picked.length + inseparable.length > 0) {
     const leaning = [...picked.length > 0 ? [`picks ${listed(picked)}`] : [], ...inseparable.length > 0 ? [`calls ${listed(inseparable)} inseparable`] : []].join(" and ");
     problems.push(`The summary names no row of the matrix while the draft ${leaning}: list in row_keys the rows it recommends, the pick first, and name each in its text.`);
@@ -334,6 +339,100 @@ function uncitedOffers(draft: ResearchDraft, ids: ReadonlySet<string>, records: 
   });
   if (missing.length === 0) return null;
   return { message: `The summary recommends options whose current offers you did not cite: add at least one id of each, so the checks read the price and the seller you state. ${listed(missing, "; ")}.` };
+}
+
+/**
+ * An offer whose claim gives one price in one currency. A claim with two, and one of an instalment or an earlier price (`claimPrices`), stay the model's word: a
+ * monthly payment read as an offer would be its option's cheapest.
+ */
+type PricedOffer = Readonly<{ price: ClaimPrice; record: ClaimRecord }>;
+
+function pricedOffers(records: readonly ResearchEvidenceRecord[], rejected: ReadonlySet<string>): readonly PricedOffer[] {
+  return records.flatMap((record) => {
+    if (!isClaim(record) || record.sourceClass !== "action_channel" || !quoteHolds(record) || rejected.has(record.id)) return [];
+    const prices = claimPrices(record.claim);
+    return prices.length === 1 ? [{ price: prices[0]!, record }] : [];
+  });
+}
+
+const cheapestOf = (rowKey: string, offers: readonly PricedOffer[]) => offers.filter(({ record }) => record.rowKey === rowKey)
+  .reduce<PricedOffer | null>((cheapest, offer) => cheapest && cheapest.price.value <= offer.price.value ? cheapest : offer, null);
+
+const PRIORITY_FORM = "Give summary.priorities one answer for each: its criterion_key, one sentence in the user's language that names the priority and says how the pick does on it " +
+  "against the next option the summary recommends, and the ids of the records that sentence rests on. The server puts each answer on its own line right under the summary's text.";
+
+/**
+ * Under a priority of value for money or of the price, a pick that costs more than another option the summary recommends names that option in its answer, which says what
+ * the extra money buys (operator decision 2026-11-05): a user who asked for value got a pick more than twice the price of a comparable option, and no record showed what
+ * more it gave. A priority is about price where an offer with a price is filed under it or its answer cites one. Prices are read from the offers' claims, and only where
+ * every offer of these rows read so is in one currency; any other figure, and whether the sentence says what the money buys, stay the model's word.
+ */
+function dearerPick(draft: ResearchDraft, frame: ResearchFrame, records: readonly ResearchEvidenceRecord[], rejected: ReadonlySet<string>): string | null {
+  const { pickRowKey: pick, summary } = draft;
+  if (!pick || !summary) return null;
+  const offers = pricedOffers(records, rejected);
+  const answers = summary.priorities ?? [];
+  const answerOf = (key: string) => answers.find(({ criterionKey }) => criterionKey === key);
+  const priced = frame.criteria.filter(({ key, priority }) => {
+    if (priority !== true) return false;
+    const cited = citedRecords(answerOf(key)?.recordIds ?? [], records);
+    return offers.some(({ record }) => record.criterionKey === key || cited.has(record.id));
+  });
+  if (priced.length === 0) return null;
+  const others = summary.rowKeys.filter((key) => key !== pick && frame.rows.some((row) => row.key === key));
+  if (new Set(offers.filter(({ record }) => record.rowKey !== null && [pick, ...others].includes(record.rowKey)).map(({ price }) => price.currency)).size !== 1) return null;
+  const own = cheapestOf(pick, offers);
+  if (!own) return null;
+  const cheaper = others.flatMap((key) => {
+    const offer = cheapestOf(key, offers);
+    return offer && offer.price.value < own.price.value ? [{ key, offer }] : [];
+  });
+  const named = priced.some(({ key }) => {
+    const answer = answerOf(key);
+    return answer !== undefined && cheaper.some((row) => namesLabel(folded(answer.text), rowLabel(frame, row.key)));
+  });
+  if (cheaper.length === 0 || named) return null;
+  const against = listed(cheaper.map(({ key, offer }) => `${plain(rowLabel(frame, key))} (${key}) from ${plain(offer.price.text)}`));
+  return `By the offers recorded, the pick ${plain(rowLabel(frame, pick))} (${pick}) costs from ${plain(own.price.text)}, more than options the summary also recommends: ${against}. ` +
+    `The answer to ${listed(priced.map(({ criterion }) => plain(criterion)))} names none of them: name the cheaper option there and say what the extra money buys, from a record ` +
+    "with its id; where no record shows it, make the cheaper option the pick.";
+}
+
+/**
+ * What the user named as mattering (operator decision 2026-11-05: it outranks price as a mere tie-break). Each priority the plan marked has its answer under the summary,
+ * no answer stands for a criterion that is no priority, since its line sits right under the summary, and an answer cites records where the options it compares hold some
+ * of its criterion. A draft of a plan that marked none, with none, passes as before.
+ */
+function priorityTrouble(draft: ResearchDraft, frame: ResearchFrame, records: readonly ResearchEvidenceRecord[], rejected: ReadonlySet<string>): Trouble | null {
+  const { summary } = draft;
+  if (!summary) return null;
+  const priorities = frame.criteria.filter(({ priority }) => priority === true);
+  const answers = summary.priorities ?? [];
+  if (priorities.length === 0 && answers.length === 0) return null;
+  const problems: string[] = [];
+  const unanswered = priorities.filter(({ key }) => !answers.some(({ criterionKey }) => criterionKey === key));
+  if (unanswered.length > 0) {
+    problems.push(`The user named these as mattering, and the summary does not answer them: ${listed(unanswered.map(({ criterion, key }) => `${plain(criterion)} (${key})`))}. ${PRIORITY_FORM}`);
+  }
+  const strays = answers.filter(({ criterionKey }) => !priorities.some(({ key }) => key === criterionKey)).map(({ criterionKey }) => criterionKey);
+  if (strays.length > 0) {
+    problems.push(`summary.priorities answers ${listed(strays)}, which the plan did not mark as the user's priorities: leave out each such answer, since it would stand right under the summary.`);
+  }
+  const live = new Set(records.map(({ id }) => id));
+  const unknown = [...new Set(answers.flatMap(({ recordIds }) => [...citedRecords(recordIds, records)].filter((id) => !live.has(id))))];
+  if (unknown.length > 0) problems.push(`summary.priorities names ids of no live record of this research: ${listed(unknown)}. Use each id as it was listed after a researcher's report.`);
+  const compared = [...new Set([...draft.pickRowKey ? [draft.pickRowKey] : [], ...summary.rowKeys])].slice(0, 2);
+  const bare = answers.filter(({ criterionKey, recordIds }) => recordIds.length === 0 && priorities.some(({ key }) => key === criterionKey)).flatMap(({ criterionKey }) => {
+    const held = records.filter((record) => isClaim(record) && quoteHolds(record) && !rejected.has(record.id) && record.criterionKey === criterionKey &&
+      (frame.rows.length === 0 || (record.rowKey !== null && compared.includes(record.rowKey))));
+    return held.length > 0 ? [`${criterionKey}: ${held.slice(0, IDS_PER_CELL).map(({ id }) => id).join(", ")}`] : [];
+  });
+  if (bare.length > 0) {
+    problems.push(`These answers in summary.priorities cite no record, while the options they compare hold records of their criterion: add the ids each sentence rests on. ${listed(bare, "; ")}.`);
+  }
+  const dearer = dearerPick(draft, frame, records, rejected);
+  if (dearer) problems.push(dearer);
+  return problems.length > 0 ? { message: problems.join(" ") } : null;
 }
 
 /**
@@ -429,7 +528,7 @@ export function researchReportFindings(draft: ResearchDraft, records: readonly R
     keySpecTrouble(draft, ids, matrix, records, report, rejected)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
-  const summary = [summaryTrouble(draft, matrix?.frame ?? null), uncitedOffers(draft, ids, records, matrix)];
+  const summary = [summaryTrouble(draft, matrix?.frame ?? null), uncitedOffers(draft, ids, records, matrix), matrix && priorityTrouble(draft, matrix.frame, records, rejected)];
   return { troubles: [unknown, ...summary, ...rows ?? [], links, unlinkedPages(draft, ids, records, report), ...table].flatMap((trouble) => trouble ?? []) };
 }
 

@@ -2,6 +2,8 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { InstructionPresetError } from "../instructions/store";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
+import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
+import { deepResearchRefusal } from "../research/run";
 import {
   MCP_APPROVAL_CONTINUATION_KIND,
   MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
@@ -200,6 +202,10 @@ async function readJson(
     !decodeArtifactEdit((value as Record<string, unknown>).artifactEdit)) {
     return [null, Response.json({ error: "artifact_edit_invalid" }, { status: 400 })];
   }
+  if (value && typeof value === "object" && !Array.isArray(value) &&
+    decodeDeepResearchRequest((value as Record<string, unknown>)[DEEP_RESEARCH_SEND_FIELD]) === "invalid") {
+    return [null, Response.json({ error: DEEP_RESEARCH_REFUSALS.invalid }, { status: 400 })];
+  }
   return [
     typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
     requestBodyErrorResponse(value)
@@ -230,6 +236,7 @@ async function approvalContinuationBody(
     artifactIntent: _artifactIntent,
     attachmentIds: _attachmentIds,
     content: _content,
+    deepResearch: _deepResearch,
     systemTurn: _systemTurn,
     text: _text,
     ...rest
@@ -251,6 +258,20 @@ function runPreparationFailureResponse(failure: RunPreparationFailure): Response
     },
     { status: failure.status }
   );
+}
+
+/**
+ * A message sent with Deep research that this run cannot research is refused before anything is accepted (operator decision 2026-11-05),
+ * never answered another way: the same facts decide as when the run offers research (`deepResearchRefusal`, `lib/server/engine/execution.ts`).
+ */
+function deepResearchAdmissionResponse(deps: Pick<RunHandlerDeps, "nativeEngine" | "scheduledOccurrence" | "telegramTurn">,
+  request: MaterializedPreparedRunData["normalizedRequest"]): Response | null {
+  if (request.deepResearch !== true) return null;
+  const { engine } = deps.nativeEngine;
+  const code = deepResearchRefusal({ monitoring: request.monitoringVerdictTool === true, scheduled: deps.scheduledOccurrence !== undefined,
+    searchOptions: request.searchPlan.options.length, subagents: Boolean(engine.research && engine.subagentThreads) && request.toolMode !== "none",
+    telegram: deps.telegramTurn === true });
+  return code ? Response.json({ error: code }, { status: 409 }) : null;
 }
 
 const PRIVATE_RUN_CACHE_CONTROL = "private, no-store, max-age=0";
@@ -675,6 +696,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     let preparedData = materializePreparedRunData(preparation.prepared);
     const engineRefusal = engineAdmissionRefusal(preparedData);
     if (engineRefusal) return Response.json({ error: engineRefusal.code }, { status: engineRefusal.status });
+    const researchRefusal = deepResearchAdmissionResponse(deps, preparedData.normalizedRequest);
+    if (researchRefusal) return researchRefusal;
     const systemTurn = continuationBody && body?.systemTurn && typeof body.systemTurn === "object"
       ? body.systemTurn as Record<string, unknown> : null;
     const approvalId = typeof systemTurn?.approvalId === "string" ? systemTurn.approvalId : undefined;
@@ -869,6 +892,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     }
     if (retry) {
       if (body?.artifactIntent !== undefined && body.artifactIntent !== retry.prepared.normalizedRequest.artifactIntent) return Response.json({ error: "artifact_intent_unavailable" }, { status: 409 });
+      // A document retry runs its frozen preparation, Deep research or not: a request for the other is never quietly dropped.
+      if (body?.[DEEP_RESEARCH_SEND_FIELD] !== undefined && retry.prepared.normalizedRequest.deepResearch !== true) {
+        return Response.json({ error: DEEP_RESEARCH_REFUSALS.unavailable }, { status: 409 });
+      }
       const artifactEdit = retry.prepared.normalizedRequest.artifactEdit;
       const requestedEdit = body?.artifactEdit === undefined ? undefined : decodeArtifactEdit(body.artifactEdit);
       if (requestedEdit && (!artifactEdit || requestedEdit.artifactId !== artifactEdit.artifactId || requestedEdit.versionId !== artifactEdit.versionId)) {
@@ -916,6 +943,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     // A document retry runs its frozen preparation again, so the model it froze must still be one the agent can run.
     const engineRefusal = engineAdmissionRefusal(preparedData);
     if (engineRefusal) return Response.json({ error: engineRefusal.code }, { status: engineRefusal.status });
+    const researchRefusal = deepResearchAdmissionResponse(deps, preparedData.normalizedRequest);
+    if (researchRefusal) return researchRefusal;
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({

@@ -5,9 +5,10 @@ import { READ_AIQSA_GUIDE_TOOL_NAME } from "../../tools/aiqsaGuide";
 import { APPLY_PATCH_TOOL_NAME } from "../../tools/applyPatch";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
 import { READ_SECRET_TOOL_NAME } from "../../tools/readSecret";
+import { recordEvidenceForOfferedTools } from "../../tools/recordEvidence";
 import type { RunTool } from "../../tools/types";
 import { UPDATE_PLAN_TOOL_NAME } from "../../tools/updatePlan";
-import type { ToolRegistry } from "../toolRegistry";
+import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import { READ_TOOL_RESULT_NAME } from "../toolResults";
 
 /**
@@ -63,9 +64,12 @@ export function withoutResearchBookkeeping(registry: ToolRegistry): ToolRegistry
 
 /** The parent's registry as a sub-agent sees it. */
 export function subagentToolRegistry(registry: ToolRegistry, groups: readonly SubagentToolGroup[] | null): ToolRegistry {
-  const offered = (name: string) => {
+  /** `record_evidence` reads the browser from these tools, not the parent's: groups without the Workspace leave a researcher no browser. */
+  let recorder: EngineTool | undefined;
+  const offered = (name: string): EngineTool | undefined => {
     const tool = registry.resolve(name);
-    return tool && subagentOffersTool(tool.definition, groups) ? tool : undefined;
+    if (!tool || !subagentOffersTool(tool.definition, groups)) return undefined;
+    return name === RECORD_EVIDENCE_TOOL_NAME ? recorder ??= recordEvidenceForOfferedTools(tool, (other) => offered(other) !== undefined) : tool;
   };
   return {
     definitions: () => registry.definitions().filter((definition) => subagentOffersTool(definition, groups)),

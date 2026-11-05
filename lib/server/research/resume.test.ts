@@ -84,6 +84,18 @@ describe("what the store gives a Continue", () => {
     expect(store.source).toHaveBeenCalledExactlyOnceWith(keyOf("run-a"));
   });
 
+  it("says whether the branch's last run was interrupted, the one fact that lets a Continue offer research, and never for an approval or an empty branch", async () => {
+    const store = storeOf();
+    await expect(createResearchResume({ store })(scopeOf({ branchRunIds: ["run-a", "run-a2"] })).interrupted(running)).resolves.toBe(true);
+    expect(store.interrupted).toHaveBeenCalledExactlyOnceWith(keyOf("run-a2"));
+    expect(store.source).not.toHaveBeenCalled();
+    await expect(createResearchResume({ store: storeOf({ interrupted: async () => false }) })(scopeOf()).interrupted(running)).resolves.toBe(false);
+    const quiet = storeOf();
+    await expect(createResearchResume({ store: quiet })(scopeOf({ researchRunId: "run-a" })).interrupted(running)).resolves.toBe(false);
+    await expect(createResearchResume({ store: quiet })(scopeOf({ branchRunIds: [] })).interrupted(running)).resolves.toBe(false);
+    expect(quiet.interrupted).not.toHaveBeenCalled();
+  });
+
   it.each<[string, Partial<ResearchResumeStore>]>([
     ["a run that was not interrupted", { interrupted: async () => false }],
     ["a run that does not exist or kept no frame", { source: async () => null }],
@@ -196,7 +208,7 @@ function portsOf(load: () => Promise<ResearchResumeState | null> = async () => S
       return { ...NOOP_RESEARCH_PORTS.evidence, records: async () => records };
     },
     planWindow: () => ({ open }),
-    resume: () => ({ link, load: resume }),
+    resume: () => ({ interrupted: async () => true, link, load: resume }),
     time: () => ({ ...NOOP_RESEARCH_PORTS.time, planReleased })
   };
   return { link, open, planReleased, ports, resume, scope: () => scope! };
@@ -436,6 +448,18 @@ describe("a plan the user changed", () => {
 });
 
 describe("what is no Continue, or has nothing to pick up", () => {
+  it("offers a Continue research only on the store's word that the turn before was interrupted, and a store that fails offers none", async () => {
+    const parts = portsOf();
+    await expect(runOn(turn(), parts.ports, { request: "continue" }).research.continues()).resolves.toBe(true);
+    const ended = { ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume }) };
+    await expect(runOn(turn(), ended, { request: "continue" }).research.continues()).resolves.toBe(false);
+    const log = vi.spyOn(observability, "logEvent").mockImplementation(() => undefined);
+    const failing = { ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, interrupted: async () => { throw new Error("database down"); } }) };
+    await expect(runOn(turn(), failing, { request: "continue" }).research.continues()).resolves.toBe(false);
+    expect(log).toHaveBeenCalledWith("service_operation", expect.objectContaining({ code: "research_resume_failed" }));
+    log.mockRestore();
+  });
+
   it("leaves any other message an ordinary start, and asks no store", async () => {
     const parts = portsOf();
     const items = [...turn().slice(0, -1), { id: "msg-other", kind: "user" as const, text: "Продолжай, но про подушки." }];
