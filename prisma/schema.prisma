@@ -3344,6 +3344,8 @@ model ResearchEvidence {
   target            String?
   /// A `dataset` record's method, sample and examples, in its tool's form.
   dataset           Json?
+  /// A `finding`'s public rating, in its tool's form; null on every other record and on a finding that is no rating.
+  rating            Json?
   /// The quote check's result when the record was written.
   quoteCheck        String?           @db.VarChar(16)
   quoteCheckReason  String?           @db.VarChar(32)
