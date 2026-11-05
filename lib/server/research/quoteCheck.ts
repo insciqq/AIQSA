@@ -490,11 +490,47 @@ export function figuresNotIn(figures: readonly ClaimFigure[], text: string): rea
 }
 
 /**
- * Which of a rating's numbers a text does not write, read as `figuresNotIn` reads one: its score (`4,7` is 4.7) and its number of ratings, which a page may group
- * or shorten (`12 345`, `12,3 тыс.`, `1.2K`). A shortened count is the number it writes, so 12,3 тыс. is 12 300 and never 12 345. The top of the scale is not asked
- * for, since a card often shows its stars and no "of 5".
+ * A number as a rating's text writes it: digits, thousands groups split by a space of any width or an apostrophe before exactly three digits, then points or commas.
+ * A line break never groups, nor does a space after a decimal part, so `4.7\n318` and `4,7 318` are two numbers; a symbol or a letter between two numbers parts them, and
+ * a number glued to a letter on its left is a name's (`S24`).
+ */
+const RATING_NUMBER = /(?<![\p{L}\p{N}])(?:\d{1,3}(?:[ \u00A0\u2009\u202F'\u2019]\d{3}(?!\d))+|\d+)(?:[.,]\d+)*/gu;
+
+/** What shortens a count right after its number: the count is the number it scales to (`12K` is 12 000), never the bare mantissa. */
+const RATING_COUNT_SCALE = /[ \u00A0\u2009\u202F]?(K|k|M|[Тт]ыс\p{L}*|млн|миллион\p{L}*|thousands?|millions?|mil)(?!\p{L})/uy;
+const MILLIONS = /^(?:M|млн|миллион|million)/u;
+
+/**
+ * The scores and the counts a rating's text writes. A score is any number not shortened, its decimal mark a point or a comma; a count is a whole number, a grouped one
+ * read whole (`12 345`, `12,345`, and `12.345`, which may be either), or a shortened one scaled. Unlike `textValues`, which reads a page's figures leniently, no group
+ * or mantissa stands for a number of its own, so a wrong count is not found in a right one.
+ */
+function ratingNumbers(text: string): Readonly<{ counts: ReadonlySet<number>; scores: ReadonlySet<number> }> {
+  const written = unescaped(text).normalize("NFC").replace(INVISIBLE, "");
+  const counts = new Set<number>();
+  const scores = new Set<number>();
+  for (const match of written.matchAll(RATING_NUMBER)) {
+    const values = valuesOf(match[0]);
+    RATING_COUNT_SCALE.lastIndex = match.index + match[0].length;
+    const scale = RATING_COUNT_SCALE.exec(written);
+    if (scale) {
+      const factor = MILLIONS.test(scale[1]!) ? 1_000_000 : 1000;
+      for (const value of values) counts.add(canonical(value * factor));
+      continue;
+    }
+    for (const value of values) {
+      scores.add(value);
+      if (Number.isInteger(value)) counts.add(value);
+    }
+  }
+  return { counts, scores };
+}
+
+/**
+ * Which of a rating's numbers a text does not write: its score (`4,7` is 4.7, and `4.6/5`, `4,9 из 5` or `4.7 of 5` hold theirs) and its number of ratings as the page
+ * writes it (`12 345`, `2,310`, `12,3 тыс.` is 12 300, `12K` is 12 000). The top of the scale is not asked for, since a card often shows its stars and no "of 5".
  */
 export function ratingNumbersNotIn(rating: Pick<ResearchRating, "count" | "score">, text: string): readonly ("count" | "score")[] {
-  const keys = textValues(text);
-  return (["score", "count"] as const).filter((part) => !keys.has(`number:${canonical(rating[part])}`));
+  const { counts, scores } = ratingNumbers(text);
+  return [...scores.has(canonical(rating.score)) ? [] : ["score" as const], ...counts.has(rating.count) ? [] : ["count" as const]];
 }
