@@ -162,9 +162,27 @@ describe("the key specifications of the options a draft leads with", () => {
       on("x1", "durability", "https://dealer.example/c", "Load up to 130 kg per side, 22 cm high.")]);
     expect(cell!.disagreements.map(({ figures, records }) => [records.map(({ url }) => url), figures.map((side) => side.map(({ text }) => text))])).toEqual([
       [["https://maker.example/a", "https://shop.example/b"], [["130 kg"], ["140 kg"]]],
-      [["https://shop.example/b", "https://dealer.example/c"], [["140 kg"], ["130 kg", "22 cm"]]]
+      [["https://shop.example/b", "https://dealer.example/c"], [["140 kg"], ["130 kg"]]]
     ]);
     expect(cellsOf([on("x1", "durability", "https://maker.example/a", "Load 130 kg."), on("x1", "durability", "https://maker.example/b", "Load 140 kg.")])[0]!.disagreements).toEqual([]);
+  });
+
+  it.each([
+    ["Load 110 kg.", "Load 130 kg.", [[["110 kg"], ["130 kg"]]]],
+    ["Load 110 kg.", "Load 130000 g.", [[["110 kg"], ["130000 g"]]]],
+    ["Load 110 kg.", "Load 110000 g.", []],
+    ["Load 110 kg.", "Spring count 500 pcs/m².", []],
+    ["Foam density 30 kg/m³.", "Thickness 3 cm.", []],
+    ["Load 110 kg.", "Height 22 cm.", []],
+    ["Support 5 zones.", "Support 7 zones.", [[["5 zones"], ["7 zones"]]]],
+    ["Foam density 30 kg/m³.", "Foam density 40 kg/m³.", [[["30 kg/m³"], ["40 kg/m³"]]]],
+    ["Load 110 kg, height 22 cm.", "Load 110 kg, spring count 500 pcs/m².", []],
+    ["Load 110 kg, height 22 cm.", "Load 130 kg, height 24 cm.", [[["110 kg", "22 cm"], ["130 kg", "24 cm"]]]]
+  ] as const)("compares only matching dimensions: %s / %s", (one, other, expected) => {
+    const records = [on("x1", "durability", "https://maker.example/a", one), on("x1", "durability", "https://shop.example/b", other)];
+    const figuresOf = (pair: readonly ResearchEvidenceRecord[]) => cellsOf(pair)[0]!.disagreements.map(({ figures }) => figures.map((side) => side.map(({ text }) => text)));
+    expect(figuresOf(records)).toEqual(expected);
+    expect(figuresOf([...records].reverse())).toEqual(expected.map(([left, right]) => [right, left]));
   });
 
   it("counts a confirmation of what the last draft recommends as progress for the rounds, and nothing else of a filled cell", () => {
