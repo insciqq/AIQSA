@@ -215,7 +215,8 @@ export type EngineMcpBindingRow = Readonly<{ id: string; runtimeGenerationFinger
 
 export type ToolRegistryServices = Readonly<{
   mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "check">;
-  artifacts?: Pick<ArtifactService, "execute">;
+  /** `archive` takes back a research page that the answer does not show (`lib/server/research/page.ts`). */
+  artifacts?: Pick<ArtifactService, "execute"> & Partial<Pick<ArtifactService, "archive">>;
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
   extractPage?: FetchUrlSessionDeps["extractPage"];
   fetchPage?: FetchUrlSessionDeps["fetchPage"];
