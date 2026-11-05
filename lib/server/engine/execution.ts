@@ -114,7 +114,8 @@ export const CONTEXT_TOO_LARGE_MESSAGE =
  * system prompt: the answer stays as written, so the model adds only what is new (operator decision 2026-11-05).
  */
 export const ANSWER_STANDS_INSTRUCTION = "[Server note, not from the user] Your answer above stands and the user already has it. " +
-  "Do not repeat or rewrite it: write only what this adds or changes, which will appear below it. If there is nothing new, write nothing.";
+  "Do not repeat or rewrite it: write only what this adds or changes, which will appear below it. If there is nothing new, write nothing. " +
+  "You may still call tools, for example to answer an agent or to make a call it handed back.";
 
 export type NativeEngineDeps = SubagentEngineDeps & Readonly<{
   /** The approved call an approval continuation sends, while its approval may still continue. */
