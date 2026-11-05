@@ -14,6 +14,7 @@ import {
   type ResearchPlanWindowView
 } from "../../contracts/research";
 import { logEvent } from "../observability";
+import { researchFrameWithEarlier } from "./candidates";
 import type { ResearchPlanWindowPort, ResearchRunScope } from "./ports";
 
 /**
@@ -138,6 +139,8 @@ export function researchPlanRowView(row: ResearchPlanWindowRow, runId: string, n
 
 export type ResearchPlanWindowDeps = Readonly<{ store: ResearchPlanStore; windows: ResearchPlanWindows }>;
 
+type OpenInput = Parameters<ResearchPlanWindowPort["open"]>[0];
+
 /** The plan port of one run. `run` holds the clock and what the user wrote; the row is the research run's. */
 export function createResearchPlanWindow(run: ResearchRunScope, deps: ResearchPlanWindowDeps): ResearchPlanWindowPort {
   const key: ResearchPlanWindowKey = { chatId: run.chatId, runId: run.researchRunId, userId: run.userId };
@@ -148,17 +151,20 @@ export function createResearchPlanWindow(run: ResearchRunScope, deps: ResearchPl
   });
   let answered: ResearchPlanAnswer | null = null;
 
-  async function rebuild(earlier: ResearchPlanAnswer, proposal: ResearchPlanProposal): Promise<ResearchPlanAnswer> {
+  /** The frame a plan opens with, the options earlier research recommended first among its candidates (`ResearchPlanWindowPort.open`). */
+  const frameOf = (plan: ResearchPlanProposal, seeds: OpenInput["earlier"]) => researchFrameWithEarlier(researchFrameFromPlan(plan), seeds ?? []);
+
+  async function rebuild(earlier: ResearchPlanAnswer, proposal: ResearchPlanProposal, seeds: OpenInput["earlier"]): Promise<ResearchPlanAnswer> {
     const answer = { ...earlier, plan: proposal };
     answered = answer;
-    await saving(deps.store.rebuilt(key, { answer, frame: researchFrameFromPlan(proposal) }));
+    await saving(deps.store.rebuilt(key, { answer, frame: frameOf(proposal, seeds) }));
     return answer;
   }
 
   return {
-    async open({ goal, proposal, signal }) {
+    async open({ earlier: seeds, goal, proposal, signal }) {
       signal.throwIfAborted();
-      if (answered) return rebuild(answered, proposal);
+      if (answered) return rebuild(answered, proposal, seeds);
       /** The latest this window may stay open, whatever holds it: it closes then as it would for nobody there. */
       const latest = () => run.turnEndsAt() - RESEARCH_PLAN_WINDOW_LIMITS.releaseReserveMs;
       let windowEndsAt = Math.min(run.now() + RESEARCH_TIME_MS.planWindow, latest());
@@ -185,7 +191,7 @@ export function createResearchPlanWindow(run: ResearchRunScope, deps: ResearchPl
       const close = async (answer: ResearchPlanAnswer): Promise<void> => {
         closing = answer;
         clear();
-        await saving(deps.store.closed(key, { answer, frame: researchFrameFromPlan(answer.plan), releasedAt: new Date(run.now()) }));
+        await saving(deps.store.closed(key, { answer, frame: frameOf(answer.plan, seeds), releasedAt: new Date(run.now()) }));
         answered = answer;
         deps.windows.remove(window);
         settle(answer);
@@ -244,7 +250,7 @@ export function createResearchPlanWindow(run: ResearchRunScope, deps: ResearchPl
         closing = stored.value;
         clear();
         deps.windows.remove(window);
-        return rebuild(stored.value, proposal);
+        return rebuild(stored.value, proposal, seeds);
       }
       if (!closing && !signal.aborted) arm();
 

@@ -1,6 +1,7 @@
-import { researchChoosesAmongOptions, researchDraftText, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFrame } from "../../contracts/research";
+import { researchChoosesAmongOptions, researchDraftText, type ResearchCandidate, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFrame } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
+import { researchCandidateRow, researchEarlierCandidatesOf, researchEarlierSpread, researchNamedIn } from "./candidates";
 import type { ResearchGate } from "./gates";
 import { researchKeyCells, researchLeadingRows, researchMatrix, researchRecordSite, type ResearchMatrix } from "./matrix";
 import { researchGatePorts } from "./ports";
@@ -19,6 +20,7 @@ import { researchRegistrableDomain } from "./sourceQuality";
  * - a comparison has its table, naming every criterion, and a criterion added on the way is named;
  * - the summary the reader reads first is there, starts with the pick, names in its text the rows it lists, and the offers of the options it recommends are cited;
  * - each priority the user named has its answer under the summary, and under a priority of price a dearer pick's answer names the cheaper option;
+ * - each option earlier research on the branch recommended is named in the answer, and one the draft leans on has a record of this research;
  * - a key specification of an option it leads with is cited from two sites where two hold it, and where they disagree both are cited and both figures stated.
  *
  * What stays the model's word: that the prose says what the cited records say (the verifier reads the records, not the prose), that the pick follows
@@ -221,11 +223,47 @@ function openBranches(draft: ResearchDraft, frame: ResearchFrame, report: string
     "where the case changes nothing, and say in the report who each pick is for." };
 }
 
+/** The rows that are options earlier research on the branch recommended, by key, each with its candidate. */
+function earlierRows(frame: ResearchFrame): ReadonlyMap<string, ResearchCandidate> {
+  return new Map(researchEarlierCandidatesOf(frame).flatMap((candidate) => {
+    const row = researchCandidateRow(frame, candidate.key, candidate.label);
+    return row ? [[row.key, candidate] as const] : [];
+  }));
+}
+
+const earlierName = ({ earlier, label }: ResearchCandidate) => `"${plain(label)}" (${researchEarlierSpread(earlier!)})`;
+
+/**
+ * What became of each option earlier research on the branch recommended (`ResearchCandidate.earlier`): in a real chat one fitted a second research's budget,
+ * the second never named it, and the user was not told. So the answer names each, as a row of the comparison or in one sentence on why it went, and old
+ * records prove nothing new: an option the draft leans on that this research holds no record of goes back to the reserve, with its date. That the sentence
+ * gives a reason, and an old figure its date, stays the model's word.
+ */
+function earlierTrouble(draft: ResearchDraft, frame: ResearchFrame, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
+  const earlier = researchEarlierCandidatesOf(frame);
+  if (earlier.length === 0) return null;
+  const rows = earlierRows(frame);
+  const unbacked = leanedOn(draft).flatMap((key) => {
+    const candidate = rows.get(key);
+    return candidate && !records.some((record) => isClaim(record) && record.rowKey === key) ? [`${key}, ${earlierName(candidate)}`] : [];
+  });
+  const unnamed = earlier.filter(({ label }) => !researchNamedIn(report, label)).map(earlierName);
+  const problems = [
+    ...unbacked.length > 0 ? [`This research holds no record of ${listed(unbacked, "; ")}, and records of earlier research prove nothing now. An option that could not be reached ` +
+      "again is not the pick and is not recommended: keep it in the reserve with the date it was recommended, and say so in one sentence, or send a researcher for its cells first."] : [],
+    ...unnamed.length > 0 ? [`The answer does not say what became of these options earlier research recommended: ${listed(unnamed, "; ")}. Name each, as a row of the comparison or in ` +
+      "one sentence on why it went, such as the reason you set it aside or that it could not be reached again; a figure from earlier research is given with its date, such as a price on that date."] : []
+  ];
+  return problems.length > 0 ? { message: problems.join(" ") } : null;
+}
+
 /** Cells of the rows the draft leans on whose evidence it does not cite, which is how a pick's prices and reviews stayed out of a real run's checks. */
 function uncitedRows(draft: ResearchDraft, ids: ReadonlySet<string>, matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], report: string): Trouble | null {
   const rows = new Set(matrix.frame.rows.map(({ key }) => key));
   const leaning = leanedOn(draft).filter((key) => rows.has(key));
-  const bare = leaning.filter((key) => !records.some((record) => isClaim(record) && record.rowKey === key));
+  // An option earlier research recommended goes back with its own words (`earlierTrouble`).
+  const earlier = earlierRows(matrix.frame);
+  const bare = leaning.filter((key) => !earlier.has(key) && !records.some((record) => isClaim(record) && record.rowKey === key));
   const cells = matrix.coverage.cells.filter((cell) => cell.state === "filled" && leaning.includes(cell.rowKey) && !cell.recordIds.some((id) => ids.has(id)));
   if (bare.length === 0 && cells.length === 0) return null;
   const missing = cells.map((cell) => `${cell.rowKey} / ${cell.criterionKey}: ${cell.recordIds.slice(0, IDS_PER_CELL).join(", ")}`);
@@ -525,7 +563,7 @@ export function researchReportFindings(draft: ResearchDraft, records: readonly R
   const unknown = unknownRecords(ids, records, report);
   const links = unbackedLinks(draft, ids, records, report);
   const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report),
-    keySpecTrouble(draft, ids, matrix, records, report, rejected)];
+    earlierTrouble(draft, matrix.frame, records, report), keySpecTrouble(draft, ids, matrix, records, report, rejected)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
   const summary = [summaryTrouble(draft, matrix?.frame ?? null), uncitedOffers(draft, ids, records, matrix), matrix && priorityTrouble(draft, matrix.frame, records, rejected)];

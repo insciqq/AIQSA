@@ -17,6 +17,7 @@ import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } fr
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createPrismaRunProxies } from "../proxies/store";
 import { createResearchClock } from "../research/clock";
+import { createResearchEarlier, createResearchEarlierStore } from "../research/earlier";
 import { createResearchEvidenceRepository } from "../research/evidenceRepository";
 import { createResearchEvidenceStore } from "../research/evidenceStore";
 import { createResearchCoverage, createResearchFrameStore } from "../research/matrix";
@@ -67,6 +68,7 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
     // The research method (`lib/server/research/run.ts`): its ports, and the researcher and checks roles as a run freezes them.
     research: { ports: {
       coverage: createResearchCoverage({ store: createResearchFrameStore(client) }),
+      earlier: createResearchEarlier({ store: createResearchEarlierStore(client) }),
       evidence: createResearchEvidenceStore({ repository: createResearchEvidenceRepository(client), savedResults: createSavedToolResultReader({ prisma: client, storage }),
         threads: createSubagentThreadStore(client) }),
       page: createResearchPageCheck(createArtifactService(client, storage)),

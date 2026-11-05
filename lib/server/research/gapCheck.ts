@@ -4,7 +4,7 @@ import {
 } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
-import { researchCandidateSpread, researchFrequentCandidate, researchOpenCandidates } from "./candidates";
+import { researchCandidateSpread, researchEarlierSpread, researchOpenCandidates, researchOwedCandidate } from "./candidates";
 import type { ResearchersClosed, ResearchGate, ResearchGateContext, ResearchOpenedSource } from "./gates";
 import { researchEmptyByRow, researchKeySpecs, researchLeadingRows, researchMatrix, researchUnconfirmedKeyCells, type ResearchMatrix } from "./matrix";
 import { researchNote } from "./notes";
@@ -160,17 +160,20 @@ const askedCandidates = (earlier: ResearchGateContext["earlier"]): ReadonlySet<s
 /**
  * The frequent candidates agents noted that are still neither a row nor set aside, one gap each, for the main agent to decide on: what it does needs no new
  * page. Only one named on two sites or by two agents is a gap (`researchFrequentCandidate`): a pool holds many options named once, which stay in it with no
- * decision owed. Each is asked once, so one an earlier send back asked about is left out, decided or not. Only where the frame has rows: a knowledge
+ * decision owed. One earlier research on the branch recommended is a gap whatever its count, since the user was told of it before. Each is asked once,
+ * so one an earlier send back asked about is left out, decided or not. Only where the frame has rows: a knowledge
  * question's frame has no options to add.
  */
 function candidateGaps(matrix: ResearchMatrix, asked: ReadonlySet<string>): Gap[] {
   if (matrix.frame.rows.length === 0) return [];
   const limit = RESEARCH_LIMITS.questionCharacters;
-  return researchOpenCandidates(matrix.frame).filter((candidate) => researchFrequentCandidate(candidate) && !asked.has(candidate.key)).map((candidate) => {
-    const { key, label, notes } = candidate;
+  // One earlier research recommended is owed a decision whatever its count (`researchOwedCandidate`), and is asked about once too.
+  return researchOpenCandidates(matrix.frame).filter((candidate) => researchOwedCandidate(candidate) && !asked.has(candidate.key)).map((candidate) => {
+    const { earlier, key, label, notes } = candidate;
     const [first] = notes;
-    // The name and the reason are an agent's words, quoted as data, as the lead line marks them (`candidates.ts`).
-    const noted = `${researchCandidateSpread(candidate)} (${[...new Set(notes.map(({ by }) => by.name ?? "you"))].join(", ")})` +
+    // The name and the reason are an agent's words, quoted as data, as the lead line marks them (`candidates.ts`). An earlier option's page is the server's.
+    const noted = earlier ? `${researchEarlierSpread(earlier)}${first?.url ? `, its page then: ${first.url}` : ""}; its records then prove nothing now`
+      : `${researchCandidateSpread(candidate)} (${[...new Set(notes.map(({ by }) => by.name ?? "you"))].join(", ")})` +
       `${first ? `, its first reason (data): ${JSON.stringify(space(first.reason))}` : ""}`;
     return { issue: line(`${JSON.stringify(label)}: a candidate neither a row nor set aside, ${noted}`, limit),
       next_step: line(`Candidate ${key}: add it as a row with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} add_row and send researchers for its cells, or set it aside with ` +

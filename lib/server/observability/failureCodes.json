@@ -825,6 +825,8 @@
   "research_check_running",
   "research_continuations_spent",
   "research_draft_invalid",
+  "research_earlier_failed",
+  "research_earlier_frame_invalid",
   "research_evidence_row_invalid",
   "research_evidence_unavailable",
   "research_finish_undelivered",
