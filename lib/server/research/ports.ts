@@ -164,10 +164,15 @@ export type ResearchResumeState = Readonly<{
  */
 export type ResearchResumePort = Readonly<{
   /**
-   * Whether the branch's last run stopped with its work kept and offered Continue, so a Continue of its research may research again (operator decision
-   * 2026-11-05). It only reads, before the run's tools are chosen.
+   * Whether this run of the branch stopped with its work kept and offered Continue: what makes a Continue of it a research's Continue, the run's own
+   * and each one its authority passes (operator decision 2026-11-05). It only reads, before the run's tools are chosen; a run off the branch never was.
    */
-  interrupted(signal: AbortSignal): Promise<boolean>;
+  endedInterrupted(runId: string, signal: AbortSignal): Promise<boolean>;
+  /**
+   * Whether one of these runs of the branch was sent with Deep research, by its frozen binding (`NormalizedRunRequest.deepResearch`): the only authority
+   * an approval continuation or a Continue has to research (operator decision 2026-11-05). It only reads; a run off the branch counts for nothing.
+   */
+  sentWithDeepResearch(runIds: readonly string[], signal: AbortSignal): Promise<boolean>;
   /**
    * Whether research can be picked up. It only reads, since a run asks this before any `start_research` and a model may never call one, and such a run
    * ran no research and keeps no row.
@@ -180,9 +185,24 @@ export type ResearchResumePort = Readonly<{
   link(state: ResearchResumeState, signal: AbortSignal): Promise<void>;
 }>;
 
+/** The page a finished research wrote (`page.ts`): the version its `create_artifact` call made, of the run's user. */
+export type ResearchPageArtifact = Readonly<{ artifactId: string; entrypoint: string | null; title: string; versionId: string }>;
+
+/** What the page's check found: it passes, or it goes back once with `message`, which names what does not match and nothing else. */
+export type ResearchPageVerdict = Readonly<{ kind: "pass" }> | Readonly<{ kind: "mismatch"; message: string }>;
+
+/**
+ * The page's check before it reaches the answer, to be filled by a later task with no model call: it reads the version `page` names and compares it with
+ * `report`, the text the page was written from. A second mismatch, or a check that throws, keeps the page out of the answer, which keeps its full text either way.
+ */
+export type ResearchPagePort = Readonly<{
+  check(input: Readonly<{ page: ResearchPageArtifact; report: string; signal: AbortSignal }>): Promise<ResearchPageVerdict>;
+}>;
+
 export type ResearchPorts = Readonly<{
   coverage: ResearchCoveragePort;
   evidence: ResearchEvidencePort;
+  page: ResearchPagePort;
   planWindow: ResearchPlanWindowPort;
   report: ResearchReportPort;
   resume: ResearchResumePort;
@@ -193,6 +213,7 @@ export type ResearchPorts = Readonly<{
 export type ResearchPortFactories = Readonly<{
   coverage?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchCoveragePort;
   evidence?: (run: ResearchRunScope) => ResearchEvidencePort;
+  page?: (run: ResearchRunScope) => ResearchPagePort;
   planWindow?: (run: ResearchRunScope) => ResearchPlanWindowPort;
   report?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchReportPort;
   resume?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchResumePort;
@@ -212,6 +233,9 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     record: async () => ({ code: "research_evidence_unavailable", kind: "refused", message: "This run keeps no evidence records." }),
     records: async () => []
   },
+  page: {
+    check: async () => ({ kind: "pass" })
+  },
   planWindow: {
     open: async ({ proposal }) => ({ changed: false, plan: proposal, releasedBy: "timer" })
   },
@@ -220,9 +244,10 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     gates: []
   },
   resume: {
-    interrupted: async () => false,
+    endedInterrupted: async () => false,
     link: async () => undefined,
-    load: async () => null
+    load: async () => null,
+    sentWithDeepResearch: async () => false
   },
   time: {
     gatesEndAt: (turnGatesEndAt) => turnGatesEndAt,
@@ -240,6 +265,7 @@ export function researchPorts(factories: ResearchPortFactories | undefined, run:
   return {
     coverage,
     evidence,
+    page: factories?.page?.(run) ?? NOOP_RESEARCH_PORTS.page,
     planWindow: factories?.planWindow?.(run) ?? NOOP_RESEARCH_PORTS.planWindow,
     report: factories?.report?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.report,
     resume: factories?.resume?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.resume,
