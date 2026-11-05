@@ -164,10 +164,10 @@ export type ResearchResumeState = Readonly<{
  */
 export type ResearchResumePort = Readonly<{
   /**
-   * Whether the branch's last run stopped with its work kept and offered Continue, so a Continue of its research may research again (operator decision
-   * 2026-11-05). It only reads, before the run's tools are chosen.
+   * Whether this run of the branch stopped with its work kept and offered Continue: what makes a Continue of it a research's Continue, the run's own
+   * and each one its authority passes (operator decision 2026-11-05). It only reads, before the run's tools are chosen; a run off the branch never was.
    */
-  interrupted(signal: AbortSignal): Promise<boolean>;
+  endedInterrupted(runId: string, signal: AbortSignal): Promise<boolean>;
   /**
    * Whether one of these runs of the branch was sent with Deep research, by its frozen binding (`NormalizedRunRequest.deepResearch`): the only authority
    * an approval continuation or a Continue has to research (operator decision 2026-11-05). It only reads; a run off the branch counts for nothing.
@@ -225,7 +225,7 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     gates: []
   },
   resume: {
-    interrupted: async () => false,
+    endedInterrupted: async () => false,
     link: async () => undefined,
     load: async () => null,
     sentWithDeepResearch: async () => false

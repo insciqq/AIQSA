@@ -11,7 +11,7 @@ import { researchMatrixCoverage, researchUnconfirmedKeyCells } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researcherMatrixFooter, researcherMethodFooter, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { finding as recordFinding, notFound as recordNotFound } from "./report.testFixtures";
-import { deepResearchRefusal, researchAuthorityRuns, researchOffered, researchRequestOf } from "./run";
+import { deepResearchRefusal, researchAuthorityChain, researchOffered, researchRequestOf } from "./run";
 import { createResearchSources, researchRunsOnBranch } from "./sources";
 import { researchTurnName } from "./turns";
 
@@ -421,10 +421,16 @@ describe("the method", () => {
       message("skills", "user", "Skills.", { purpose: "skill_catalog" }), message("approved", "user", "The user approved it."), message("a2", "assistant"),
       message("follow", "user", "A follow-up.", { followupOf: { answerId: "a2", delivered: true } }), message("continue", "user", ` ${CONTINUE_TURN_TEXT} `),
       message("a3", "assistant"), message("current", "user", CONTINUE_TURN_TEXT)];
-    expect(researchAuthorityRuns({ continuationTurns: new Set(["approved"]), messages, runsByAnswer })).toEqual(["run-3", "run-2", "run-1"]);
+    // Each answer with the message it answered: the store then holds every Continue to an interrupted run before it (`RunResearch.authorized`).
+    expect(researchAuthorityChain({ continuationTurns: new Set(["approved"]), messages, runsByAnswer })).toEqual([
+      { answered: "continue", runId: "run-3" }, { answered: "approval", runId: "run-2" }, { answered: "message", runId: "run-1" }]);
     // Without the approval's server turn on record, the chain stops at it: the turn before an ordinary message never counts.
-    expect(researchAuthorityRuns({ continuationTurns: new Set(), messages, runsByAnswer })).toEqual(["run-3", "run-2"]);
-    expect(researchAuthorityRuns({ continuationTurns: new Set(), messages: [message("current", "user", CONTINUE_TURN_TEXT)], runsByAnswer })).toEqual([]);
+    expect(researchAuthorityChain({ continuationTurns: new Set(), messages, runsByAnswer })).toEqual([
+      { answered: "continue", runId: "run-3" }, { answered: "message", runId: "run-2" }]);
+    expect(researchAuthorityChain({ continuationTurns: new Set(), messages: [message("current", "user", CONTINUE_TURN_TEXT)], runsByAnswer })).toEqual([]);
+    // An answer with no native run is still a step, and authorizes nothing of its own.
+    expect(researchAuthorityChain({ continuationTurns: new Set(), messages: [message("q", "user", "Old."), message("old", "assistant"),
+      message("current", "user", CONTINUE_TURN_TEXT)], runsByAnswer })).toEqual([{ answered: "message", runId: null }]);
   });
 
   it("says in the system prompt what research does once started, with no words that would start it", () => {

@@ -162,7 +162,7 @@ function continueOf(deps: NativeEngineDeps): MaterializedPreparedRunData {
 }
 
 /** The store's word on run-0: interrupted, and sent with Deep research. */
-const interrupted: ResearchPortFactories["resume"] = () => ({ ...NOOP_RESEARCH_PORTS.resume, interrupted: async () => true,
+const interrupted: ResearchPortFactories["resume"] = () => ({ ...NOOP_RESEARCH_PORTS.resume, endedInterrupted: async () => true,
   sentWithDeepResearch: async (runIds) => runIds.includes("run-0") });
 
 function run(adapter: ProviderAdapter, deps: NativeEngineDeps, extra: Partial<NativeRunExecutionInput> = {}) {
