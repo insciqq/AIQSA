@@ -853,12 +853,12 @@ describe("the sites fetch_url finds closed (operator decision 2026-11-05)", () =
     expect(page.mock.calls.map(([pageId]) => pageId)).toEqual(["check", "card", "gone"]);
   });
 
-  it("keeps a host closed on a finding after the closure that quotes a page the store captured before it", async () => {
+  it("opens a host on a read recorded after the closure whose page the store kept before it, the same text read again", async () => {
     const old = { ...stored("old", "[browser #1 · lab] text @ shop.example/card\nThe card lists it at 10."), capturedAt: "2026-11-04T23:59:00.000Z" };
     const page = vi.fn(async () => old);
     const research = direct({ gates: [], ports: { evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, page,
-      records: async () => [closed(0, "Checking your browser."), read(1, "old")] }) } });
-    await expect(research.unreachableSites(new AbortController().signal)).resolves.toEqual(new Map([["shop.example", "Checking your browser."]]));
+      records: async () => [read(0, "old"), closed(1, "Checking your browser."), read(2, "old")] }) } });
+    await expect(research.unreachableSites(new AbortController().signal)).resolves.toEqual(new Map());
     expect(page).toHaveBeenCalledOnce();
   });
 });

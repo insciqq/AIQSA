@@ -380,37 +380,36 @@ describe("a record_evidence call", () => {
         expect(value(await script.execute(call(unreachable("https://shop.example/"))))).toMatchObject({ record_id: RECORD_ID });
       });
 
-      it("counts a host, not its domain, and never a step line a non-browser command printed", async () => {
+      it("counts a host, not its domain", async () => {
         const subdomain = toolOf([exec("c1", { args: ["open", "https://market.portal.example/item"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ market.portal.example/item")], true);
         expect((await subdomain.execute(call(unreachable("portal.example")))).status).toBe("error");
         expect(value(await subdomain.execute(call(unreachable("market.portal.example"))))).toMatchObject({ record_id: RECORD_ID });
-        const faked = toolOf([exec("c1", { args: ["[browser #1] open @ shop.example/"], command: "echo" }, "[browser #1] open @ shop.example/")], true);
-        expect((await faked.execute(call(unreachable("shop.example")))).status).toBe("error");
       });
 
-      it("counts only a navigation the browser ran, never a proxied command, a proxy listing, an echo or a step line a script printed", async () => {
+      it("counts any browser step line in a command's output and any navigation a command names, never a proxied command or a proxy listing", async () => {
         const SHELL = namespacedWorkspaceToolName("sandbox_shell");
         const shellLine = (command: string, stdout: string): ResearchAgentCall => ({ ...exec("s1", { command }, stdout), toolName: SHELL });
         for (const notOpened of [
           exec("c1", { args: ["proxied", "curl", "-I", "https://shop.example/"], command: "aiqsa-browser" }, "HTTP/2 403"),
-          exec("c1", { args: ["proxies", "https://shop.example/"], command: "aiqsa-browser" }, "shop.example opens directly."),
-          exec("c1", { args: ["text"], command: "aiqsa-browser" }, "[browser #2 · shops] text @ shop.example/card\nA card."),
-          exec("c1", { args: ["-c", "from aiqsa import browser as b\nprint('[browser #1] open @ shop.example/')"], command: "python3" }, "[browser #1] open @ shop.example/"),
-          exec("c1", { args: ["https://shop.example/", "[browser #1] open @ shop.example/"], command: "printf" }, "[browser #1] open @ shop.example/"),
-          shellLine("echo \"aiqsa-browser open https://shop.example/\"", "aiqsa-browser open https://shop.example/"),
-          shellLine("echo aiqsa-browser open https://shop.example/; cat notes.txt", "[browser #1] open @ shop.example/"),
+          exec("c1", { args: ["proxies"], command: "aiqsa-browser" }, "KZ1, http, country KZ, hints shop.example, personal"),
+          exec("c1", { args: ["proxies", "shop.example"], command: "aiqsa-browser" }, "shop.example opens directly."),
+          exec("c1", { args: ["-sS", "https://shop.example/"], command: "curl" }, "<html>Checking your browser</html>"),
+          exec("c1", { args: ["text"], command: "aiqsa-browser" }, "Checking your browser."),
           shellLine("aiqsa-browser proxied curl -sS https://shop.example/ | head", "<html>")
         ]) {
           const tool = toolOf([notOpened], true);
           expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ code: "research_unreachable_browser_first" });
         }
         for (const opened of [
+          exec("c1", { args: ["/workspace/project/read_site.py"], command: "python3" }, "Reading.\n[browser #1 · shops] open @ shop.example/card\nChecking your browser."),
+          exec("c1", { args: ["-lc", "aiqsa-browser open https://shop.example/"], command: "bash" }, ""),
+          exec("c1", { args: ["text"], command: "aiqsa-browser" }, "[browser #2 · shops] text @ shop.example/card\nA card."),
           shellLine("cd /workspace/project && aiqsa-browser open --proxy KZ1 'https://www.shop.example/card'", ""),
           shellLine("python3 - <<'EOF'\nfrom aiqsa import browser as b\nb.open(\"https://shop.example/card\")\nEOF", ""),
           exec("c1", { args: ["new-tab", "--quiet", "https://shop.example/card"], command: "/usr/local/bin/aiqsa-browser" }, ""),
-          exec("c1", { args: ["-c", "aiqsa-browser open \"$1\"", "sh", "https://shop.example/"], command: "bash" },
-            "[browser #1 · shops] open @ shop.example/"),
-          exec("c1", { args: ["open", "https://short.example/r"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ www.shop.example/card")
+          exec("c1", { args: ["open", "https://short.example/r"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ www.shop.example/card"),
+          // Accepted risk: text that only prints a step line or a navigation counts too, which is how closing worked before 2026-11-05.
+          exec("c1", { args: ["[browser #1] open @ shop.example/"], command: "echo" }, "[browser #1] open @ shop.example/")
         ]) {
           const tool = toolOf([opened], true);
           expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ record_id: RECORD_ID });
