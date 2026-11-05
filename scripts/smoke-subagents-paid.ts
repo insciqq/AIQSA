@@ -103,15 +103,18 @@
  *   `q-reader` makes 3 searches and reads a link of each with `fetch_url`, and the main agent reads 4 others from its report. Oracles:
  *   more searches than the old limit of 2, no refusal of a link any agent's search found, and more than 5 pages in one answer.
  *   Paid calls: about 8-12 codex-lb requests and 3 searches per route, in about 2-5 minutes.
- * - R: when research starts, only when named: 10 Russian phrases, each in a new chat with Search on. A run that calls `start_research`
- *   is stopped at once to save money. No phrase names what a question would ask, and nothing answers one: the model asks nothing first.
- *   Oracle: each phrase went in its direction, reported by index. Paid calls: about 10-25 codex-lb
+ * - R: no words start research, only when named: 10 Russian phrases, each in a new chat with Search on and without Deep research, five of
+ *   them asking in words for a thorough result. A run that calls `start_research` is stopped at once to save money. Oracle (operator
+ *   decision 2026-11-05: only the `+` menu's Deep research starts research): no phrase's run is offered research (`normalizedRequest.deepResearch`)
+ *   or calls `start_research`, reported by index (`phrase_<n>_offered`, `phrase_<n>_started`). Paid calls: about 10-20 codex-lb
  *   requests and a few searches, in about 5-10 minutes. This needs DEEPSEEK_API_KEY for the Search source, as Q does.
  * - S: proxies end to end, one chat per step, only when named, with the operator's proxy in AIQSA_SUBAGENTS_TEST_PROXY (process only, never printed, never written).
  *   A proxy pasted in chat is saved for `.ru` and tested; the browser opens a hinted page, Yandex Market, Wildberries and Ozon, and an address echo through the named
  *   proxy; `fetch_url` reads through it; a dead proxy fails visibly; a switched-off one is refused by name. Oracles compare exit addresses inside SQL and print booleans. The
  *   answers go to AIQSA_SUBAGENTS_ANSWERS_FILE when set (0600), for reading by hand. Paid calls: about 15-30 codex-lb requests, in about 5-10 minutes.
- * - T: repeatable synthetic research, only when named. AIQSA_SUBAGENTS_T_ACTS gives a kind what a person does on its run, as
+ * - T: repeatable synthetic research, only when named. Every research send carries Deep research (`deepResearch: true`,
+ *   `DEEP_RESEARCH_SEND_FIELD`), as the `+` menu's item sends it; a Continue names nothing and goes on from its run's binding.
+ *   AIQSA_SUBAGENTS_T_ACTS gives a kind what a person does on its run, as
  *   technical=edit,medical=start,market=restart: `edit` and `start` drive the plan card in a browser, `handoff` asks a question behind a
  *   sign-in and leaves the handoff unanswered, and `restart` runs AIQSA_SUBAGENTS_RESTART_COMMAND mid-research and presses Continue.
  *   AIQSA_SUBAGENTS_T_KINDS selects questions; AIQSA_SUBAGENTS_T_REPEATS is
@@ -184,6 +187,38 @@
  *     after them, and on every failure path inside the process, it deletes it and proves it gone from the list and the database. A
  *     proxy of that name left by a killed invocation stops T with `research_admin_proxy_exists`; one that cannot be removed stops the
  *     harness (`admin_proxy_not_removed`). Stdout shows only booleans and codes; values are redacted from the private files.
+ *   - AIQSA_SUBAGENTS_T_STEPS_FILE: a file private as the question file is (0600, this user's, at most 16 KiB), holding a JSON list of 1 to 10
+ *     `{ "text": "...", "deepResearch": true | false }` (exactly those keys, text 1 to 8000 characters). After each question's research ended, the
+ *     steps go in order into that question's chat, each once the previous run is terminal and the chat idle, on the question's Search plan and with
+ *     Deep research only where `deepResearch` is true. Each step's answer goes to the answers directory (`step-<n>-answer-<run>`), its line to
+ *     `step-<n>`. Stdout `steps[]`: `offered` (admitted with Deep research), `startCalled`, `frame` (a research frame row), `researchRan` (both),
+ *     `researchCalls` (calls of the research tools in the run and its sub-agents), `status`, `code`, `minutes`, `tokens`, `cost`, `answerSaved`,
+ *     `ok` and `failed`. Oracle: with Deep research, research ran and the run completed; without it, nothing was offered or called, no frame, and
+ *     the run completed as an ordinary answer (`research_offered`, `research_tool_called`, `research_frame_written`, `run_<status>`). A failed step
+ *     fails the question and ends the steps there; T's judge and extraction grade only the question's own answers.
+ *   Review evidence, after the steps, for every research run of the question's chat (each run with a frame row): stdout `review[]` holds counts and
+ *   booleans, the answers directory `review-<run>` in full (with the final draft's summary), `page-<run>` (the page's entry HTML, read through the
+ *   user's own artifact source route) and `sendbacks-<run>` (the report check's and verifier's send-back messages). Per run: `research` (its
+ *   ordinal in the chat) and `step` (the step that sent it, null for the question); `page` (`card`: a `generated_artifact` card with
+ *   `research_page` on the answer, `summaryEnd`/`notesStart` set, `htmlSaved`, `htmlBytes`); `fetches`; `botChecks` (`fetch_url` refusals
+ *   `fetch_http_status` with `httpStatus` 200: `botChecks`, `hosts`, `browserAfter` where the same agent's later Workspace command named the host
+ *   and drove the browser, matched inside SQL, `laterUnreachable`, `laterRead`, `neither`); `unreachable` (records, hosts, `siblingRefusedAsClosed`
+ *   where `fetch_url` then refused another host of the same registrable domain as closed, `closedRefusals`); `ratings` (findings with a `rating`,
+ *   their rows and platforms, `pickRatings`, `summaryNamesPickScore`, `summaryNamesPickCount`); `priorities` (the plan's priority criteria,
+ *   `answered` by the final summary's `priorities`, `answeredOther`, `allAnswered`, `ratingsCriterion`); `sendBacks` (`sentBack`, `byGate`,
+ *   `mentioningDisagreement`); `earlier` (candidates the frame seeded from earlier research: `earlier`, `earlierPick`, `rows`, `setAside`, `open`);
+ *   `minutes`, `tokens` and `cost` of the run and its sub-agents' turn runs (`cost.status`: `available`, `partial` or `not_available` when no
+ *   `UsageEvent` holds `estimatedCostMicros`; `micros` sums what is known).
+ * - U: the answer race, only when named, one chat and one send. The main agent starts one background sub-agent (`u-sleeper`) that runs
+ *   `sleep 30` in the Workspace and reports a per-run word, and at once writes a long final answer (about 600 words, a first paragraph of its
+ *   own). The run's stream is read as the browser reads it; the streamed text and the word stay in memory. Stdout: `landing` (where the callback
+ *   reached the run, on the database's clock: `during_answer` when text events stood within 2 s on either side of it, `before_answer`,
+ *   `after_answer`, `none`), `resetsAfterText` (`message_reset` events after text had streamed), `rewritten` (resets after which the text no
+ *   longer began with the text before), `paragraphKept` (the saved answer holds the streamed first paragraph, matched inside SQL), `word`
+ *   (`absent`, `after` or `before` that paragraph in the saved answer), `status`, `callbackAfterFirstText` and `textEndAfterFirstText` in seconds.
+ *   Oracle: the run completed, the paragraph was kept, nothing rewrote the answer and the word is not before the paragraph;
+ *   `order_not_reached: true` when the callback did not land during the answer, which is not a failure. Paid calls: about 3-6 codex-lb requests
+ *   (the main agent's two or three rounds, the sub-agent's one or two) in about 2-4 minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -222,7 +257,7 @@
  *   environment is PATH, HOME, USER, LOGNAME and SSH_AUTH_SOCK only.
  * - T's acceptance options (described under T above; each refused without T): AIQSA_SUBAGENTS_T_QUESTION_FILE,
  *   AIQSA_SUBAGENTS_T_QUESTION_SET, AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL and DEEPSEEK_API_KEY
- *   (each only when its source is selected), AIQSA_SUBAGENTS_T_SEARCH_SOURCES, AIQSA_SUBAGENTS_T_APP_LOG_COMMAND and
+ *   (each only when its source is selected), AIQSA_SUBAGENTS_T_SEARCH_SOURCES, AIQSA_SUBAGENTS_T_APP_LOG_COMMAND, AIQSA_SUBAGENTS_T_STEPS_FILE and
  *   AIQSA_SUBAGENTS_ADMIN_PROXY_FILE. Keys are read from the process environment only and never printed.
  * - AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL, AIQSA_BROWSER_SCENARIOS_SHOTS_DIR: as for S5 (C, D, H drive the
  *   live panel; the harness host needs a Chromium for Playwright).
@@ -236,6 +271,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Client as PostgresClient } from "pg";
 import type { CatalogModel } from "../lib/contracts/catalog";
 import { PROXY_ROUTES } from "../lib/contracts/proxies";
+import { DEEP_RESEARCH_SEND_FIELD } from "../lib/contracts/research";
 import { CONTINUE_TURN_TEXT } from "../lib/contracts/runs";
 import { decodeSubagentDefinitionListResponse } from "../lib/contracts/subagentDefinitions";
 import {
@@ -280,6 +316,12 @@ import {
   researchJobLabel, researchResponses, researchSetJobs, type ResearchAcceptanceCall, type ResearchAcceptanceEvidence, type ResearchAcceptanceTurn, type ResearchExpectations,
   type ResearchResponse, type ResearchSearchLabel, type ResearchSetQuestion
 } from "./research-eval-support";
+import {
+  RESEARCH_STEPS_MAX_BYTES, RESEARCH_TOOL_NAMES, answerRaceLanding, answerStreamFacts, createSseReader, oracleU, parseResearchSteps, researchBotCheckOutcomes,
+  researchBotChecks, researchCost, researchEarlierOutcomes, researchFinalSummary, researchPageCard, researchPageEntry, researchPriorityEvidence,
+  researchRatingsEvidence, researchSendBacks, researchStepVerdict, researchUnreachableEvidence, type ResearchFetchRow, type ResearchRecordRow,
+  type ResearchStep, type SseEvent
+} from "./research-review-support";
 
 const SECOND_MODEL_DISPLAY_NAME = "Sub-agents second model";
 /** A main-agent run's wait: the shipped 3600 s turn plus the margin. */
@@ -306,7 +348,9 @@ type Context = Readonly<{
     /** The operator's purchase question (AIQSA_SUBAGENTS_T_QUESTION_FILE) and administrator proxy, in memory only. */
     question: string | null; adminProxy: ResearchAdminProxy | null;
     /** The question set's questions by name (AIQSA_SUBAGENTS_T_QUESTION_SET), in memory only. */
-    questions: ReadonlyMap<string, ResearchSetQuestion> }> | null;
+    questions: ReadonlyMap<string, ResearchSetQuestion>;
+    /** The same-chat steps after each question's research (AIQSA_SUBAGENTS_T_STEPS_FILE), in memory only; none without the file. */
+    steps: readonly ResearchStep[] }> | null;
   session: Session;
   target: StandTarget;
 }>;
@@ -362,20 +406,26 @@ async function waitMainIdle(ctx: Context, chatId: string, timeoutMs = (TURN_SECO
 
 type SendAttempt = Readonly<{ code: string; ok: false } | { ok: true; runId: string }>;
 
-/** One send as the composer would make it, now: a refusal comes back, an accepted send gives the admitted run's id. */
+/**
+ * One send as the composer would make it, now: a refusal comes back, an accepted send gives the admitted run's id. `deepResearch` is the `+` menu's
+ * Deep research (`DEEP_RESEARCH_SEND_FIELD`), the only thing that starts research (operator decision 2026-11-05); `onStream` reads the run's stream
+ * in place of discarding it.
+ */
 async function trySend(ctx: Context, run: Run, chatId: string, text: string,
   files: readonly Readonly<{ attachmentId: string; fileName: string; type: "file" }>[] = [],
-  controls: Readonly<{ mcp?: Readonly<{ mode: "load_all" }>; search?: SearchRoute; workspace?: Readonly<{ enabled: boolean }> }> = {}): Promise<SendAttempt> {
-  const { search, ...others } = controls;
+  controls: Readonly<{ deepResearch?: boolean; mcp?: Readonly<{ mode: "load_all" }>; search?: SearchRoute; workspace?: Readonly<{ enabled: boolean }> }> = {},
+  onStream?: (response: Response) => Promise<void>): Promise<SendAttempt> {
+  const { deepResearch, search, ...others } = controls;
   const leaf = await activeLeaf(ctx, chatId);
   const known = new Set((await mainRuns(ctx.db, chatId)).map((entry) => entry.id));
   const abort = new AbortController();
   const response = await request(ctx.session.api, `/api/chats/${encodeURIComponent(chatId)}/messages`, { body: {
     content: { blocks: [{ text, type: "text" }, ...files] }, expectedActiveLeafId: leaf, ...runControls(search?.model ?? ctx.model), ...others,
+    ...(deepResearch === true ? { [DEEP_RESEARCH_SEND_FIELD]: true } : {}),
     ...(search ? { searchPlan: { mode: search.mode, optionIds: search.sources.map((source) => source.optionId) }, searchStrategy: undefined } : {})
   }, method: "POST", signal: abort.signal });
   if (!response.ok) return { code: await errorCode(response), ok: false };
-  run.streams.push({ abort, drained: discard(response) });
+  run.streams.push({ abort, drained: onStream ? onStream(response).catch(() => undefined) : discard(response) });
   return { ok: true, runId: await poll(120_000, async () => (await mainRuns(ctx.db, chatId))
     .find((entry) => !known.has(entry.id) && !entry.systemTurn)?.id ?? null, "run_not_admitted") };
 }
@@ -1445,6 +1495,79 @@ async function pageReads(db: PostgresClient, chatId: string, threadId: string | 
   return Object.fromEntries(rows.map((row) => [safeCode(row.outcome) ?? "unknown", row.count]));
 }
 
+const U_TURN_MS = 10 * 60_000;
+
+/** The database's clock less the harness's, read at a midpoint: U compares the stream's times with stored ones. */
+async function databaseClockOffset(db: PostgresClient): Promise<number> {
+  const before = Date.now();
+  const at = (await db.query<{ now: Date }>(`SELECT clock_timestamp() AS "now"`)).rows[0]?.now;
+  const after = Date.now();
+  return at ? new Date(at).getTime() - (before + after) / 2 : 0;
+}
+
+/**
+ * U: the answer race (operator decision 2026-11-05: a background sub-agent's message never rewrites a written answer). The main agent starts one
+ * background sub-agent that sleeps and reports a per-run word, and writes a long answer at once; the stream is read as the browser reads it. The
+ * streamed text, its first paragraph and the word stay in memory; the saved answer is matched inside SQL.
+ */
+async function scenarioU(ctx: Context, run: Run): Promise<Outcome> {
+  const started = Date.now();
+  const word = `UWORD-${randomBytes(4).toString("hex").toUpperCase()}`;
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario U");
+  run.chats.push(chat.id);
+  const events: SseEvent[] = [];
+  const sse = createSseReader();
+  const read = async (response: Response) => {
+    const body = response.body?.getReader();
+    if (!body) return;
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { done, value } = await body.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 64 * 1024 * 1024) break;
+        events.push(...sse.push(decoder.decode(value, { stream: true })));
+      }
+    } catch {
+      // The harness aborts the stream once the run is terminal.
+    }
+  };
+  const offsetBefore = await databaseClockOffset(ctx.db);
+  const sent = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.U.start(word), [], {}, read);
+  if (!sent.ok) return fail(`send_${sent.code}`);
+  const runId = sent.runId;
+  const terminal = await waitRun(ctx, runId, U_TURN_MS);
+  await Promise.race([run.streams.at(-1)?.drained, sleep(30_000)]);
+  const settled = await settleCallbacks(ctx, chat.id, 5 * 60_000);
+  const offset = (offsetBefore + await databaseClockOffset(ctx.db)) / 2;
+  const stream = answerStreamFacts(events);
+  const turn = await latestTurnOf(ctx.db, chat.id, SUBAGENT_NAMES.racer);
+  const followup = turn ? (await ctx.db.query<{ createdAt: Date }>(`SELECT "createdAt" FROM "RunFollowup" WHERE "modelRunId" = $1 AND "subagentTurnId" = $2
+    AND "origin"::text = 'subagent_callback' ORDER BY "createdAt" LIMIT 1`, [runId, turn.turnId])).rows[0] ?? null : null;
+  const callbackAt = followup ? new Date(followup.createdAt).getTime() : turn?.endedAt ? new Date(turn.endedAt).getTime() : null;
+  const landing = answerRaceLanding({ callbackAt, intoRun: turn?.callbackRunId === runId, tokenTimes: stream.tokenTimes.map((at) => at + offset) });
+  const saved = (await ctx.db.query<{ paragraphAt: number; wordAt: number }>(`WITH a AS (SELECT coalesce((SELECT string_agg(b->>'text', E'\\n' ORDER BY o)
+      FROM jsonb_array_elements(m."content"->'blocks') WITH ORDINALITY AS x(b, o) WHERE b->>'type' = 'text'), '') AS "text"
+      FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."id" = $1)
+    SELECT CASE WHEN $2::text = '' THEN 0 ELSE strpos(a."text", $2::text) END AS "paragraphAt", strpos(a."text", $3::text) AS "wordAt" FROM a`,
+  [runId, stream.firstParagraph ?? "", word])).rows[0] ?? { paragraphAt: 0, wordAt: 0 };
+  const paragraphKept = stream.firstParagraph === null ? null : saved.paragraphAt > 0;
+  const position = saved.wordAt === 0 ? "absent" as const : saved.paragraphAt > 0 && saved.wordAt < saved.paragraphAt ? "before" as const : "after" as const;
+  const evidence = { landing, paragraphKept, resetsAfterText: stream.resetsAfterText, rewritten: stream.rewritten, status: terminal.status, word: position };
+  const verdict = oracleU(evidence);
+  const seconds1 = (at: number | null) => at === null ? null : Math.round(at / 100) / 10;
+  await keepAnswers(ctx, chat.id, "U");
+  Object.assign(run.line, { checksFailed: verdict.failed, ...evidence, order_not_reached: verdict.orderNotReached, terminal, callbacksSettled: settled,
+    callbackFollowup: followup !== null, callbackIntoRun: turn?.callbackRunId === runId, turnState: turn?.state ?? null,
+    // Seconds on the database's clock from the first text event: when the callback came, and when the stream's text ended.
+    callbackAfterFirstText: callbackAt !== null && stream.firstTokenAt !== null ? seconds1(callbackAt - (stream.firstTokenAt + offset)) : null,
+    textEndAfterFirstText: stream.firstTokenAt !== null ? seconds1((stream.tokenTimes.at(-1) ?? stream.firstTokenAt) - stream.firstTokenAt) : null,
+    textEvents: stream.tokenTimes.length, wallSeconds: seconds(started) });
+  return { success: verdict.failed.length === 0, usage: usageByPurpose(await settledUsage(ctx.db, run.chats)) };
+}
+
 const Q_TURN_MS = 15 * 60_000;
 
 async function scenarioQ(ctx: Context, run: Run): Promise<Outcome> {
@@ -1487,23 +1610,26 @@ async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
   for (const [index, phrase] of SCENARIO_R_PHRASES.entries()) {
     const chat = await createScenarioChat(ctx.session.api, `Sub-agent scenario R ${index}`);
     run.chats.push(chat.id);
-    // Started, or the run ended without starting: either answers this phrase.
+    // Started, or the run ended without starting: either answers this phrase. `offered` is admission's Deep research, which no send here names.
     const outcome = async (runId: string) => {
+      let offered = false;
       const reached = await poll(R_PHRASE_MS, async () => {
-        const { rows } = await ctx.db.query<{ calls: number; started: number; status: string }>(`SELECT r."status"::text AS "status",
+        const { rows } = await ctx.db.query<{ calls: number; offered: boolean; started: number; status: string }>(`SELECT r."status"::text AS "status",
+          coalesce(r."normalizedRequest"->>'deepResearch' = 'true', false) AS "offered",
           (SELECT count(*)::int FROM "ModelRunToolCall" c WHERE c."modelRunId" = r."id") AS "calls",
           (SELECT count(*)::int FROM "ModelRunToolCall" c WHERE c."modelRunId" = r."id" AND c."toolName" = 'start_research') AS "started" FROM "ModelRun" r WHERE r."id" = $1`, [runId]);
         const row = rows[0];
+        offered = row?.offered === true;
         if ((row?.started ?? 0) > 0) return "started" as const;
         return row && TERMINAL_RUN_STATES.has(row.status) ? row.calls === 0 ? "no_tools" as const : "ended" as const : null;
       }, "phrase_timeout", 1_000);
       if (reached === "started") await request(ctx.session.api, `/api/model-runs/${encodeURIComponent(runId)}/cancel`, { body: {}, method: "POST" }).catch(() => undefined);
-      return { reached, terminal: await waitRun(ctx, runId, R_PHRASE_MS) };
+      return { offered, reached, terminal: await waitRun(ctx, runId, R_PHRASE_MS) };
     };
     const sent = await trySend(ctx, run, chat.id, phrase.text, [], { search: route });
     if (!sent.ok) fail(`send_${sent.code}`);
     const reached = await outcome(sent.ok ? sent.runId : "");
-    results.push({ expected: phrase.start, index, started: reached.reached === "started", status: reached.terminal.status });
+    results.push({ index, offered: reached.offered, started: reached.reached === "started", status: reached.terminal.status });
     await waitMainIdle(ctx, chat.id, R_PHRASE_MS);
   }
   const verdict = oracleR(results);
@@ -1803,6 +1929,147 @@ async function researchAttribution(ctx: Context, chatId: string, input: Readonly
   return { attribution, counts: { ...researchAttributionCounts(attribution, cited.records), searchCalls: searches.length } };
 }
 
+/** A research run's sub-agents' own turn runs, by its id as `$1`. */
+const SUBAGENT_TURN_RUNS = `SELECT sr."id" FROM "ModelRun" sr JOIN "SubagentTurn" st ON st."id" = sr."subagentTurnId" WHERE st."parentRunId" = $1`;
+/** The calls a run's evidence spans, by its id as `$1`: its own and its sub-agents', whichever run row holds them. */
+const RUN_SCOPE_CALLS = `(c."modelRunId" = $1 OR c."subagentTurnId" IN (SELECT "id" FROM "SubagentTurn" WHERE "parentRunId" = $1)
+  OR c."modelRunId" IN (${SUBAGENT_TURN_RUNS}))`;
+
+/** A run's text answer, in memory only. */
+async function runAnswer(db: PostgresClient, runId: string): Promise<string> {
+  const { rows } = await db.query<{ content: unknown }>(`SELECT m."content" FROM "ModelRun" r JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."id" = $1`, [runId]);
+  const content = rows[0]?.content;
+  return isRecord(content) && Array.isArray(content.blocks) ? content.blocks.filter((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
+    .map((block: { text: string }) => block.text).join("\n") : "";
+}
+
+/** Minutes, usage and the cost the usage rows hold, of one run and its sub-agents' turn runs. */
+async function runSpend(db: PostgresClient, runId: string) {
+  const timing = (await db.query<{ createdAt: Date; answerCompletedAt: Date | null }>(`SELECT "createdAt", "answerCompletedAt" FROM "ModelRun" WHERE "id" = $1`, [runId])).rows[0];
+  const rows = (await db.query<PurposeUsageRow & { costReported: boolean; estimatedCostMicros: number | null }>(`SELECT "purpose"::text AS "purpose", "inputTokens",
+      "cachedInputTokens", "outputTokens", "estimatedCostMicros", "costReported" FROM "UsageEvent" WHERE "modelRunId" = $1 OR "modelRunId" IN (${SUBAGENT_TURN_RUNS})`, [runId])).rows;
+  const start = timing ? new Date(timing.createdAt).getTime() : null;
+  const end = timing?.answerCompletedAt ? new Date(timing.answerCompletedAt).getTime() : null;
+  return { cost: researchCost(rows), minutes: start !== null && end !== null ? Math.round((end - start) / 6_000) / 10 : null, usage: usageByPurpose(rows) };
+}
+
+/** Whether a run was admitted with Deep research, called a research tool or started research, and holds a frame. */
+async function researchRunObserved(db: PostgresClient, runId: string) {
+  const row = (await db.query<{ offered: boolean; researchCalls: number; started: number; frame: boolean }>(`SELECT
+      coalesce((SELECT r."normalizedRequest"->>'deepResearch' = 'true' FROM "ModelRun" r WHERE r."id" = $1), false) AS "offered",
+      (SELECT count(*)::int FROM "ModelRunToolCall" c WHERE ${RUN_SCOPE_CALLS} AND c."toolName" = ANY($2::text[])) AS "researchCalls",
+      (SELECT count(*)::int FROM "ModelRunToolCall" c WHERE c."modelRunId" = $1 AND c."toolName" = 'start_research') AS "started",
+      EXISTS (SELECT 1 FROM "ResearchFrame" f WHERE f."modelRunId" = $1) AS "frame"`, [runId, [...RESEARCH_TOOL_NAMES]])).rows[0];
+  return { frame: row?.frame ?? false, offered: row?.offered ?? false, researchCalls: row?.researchCalls ?? 0, started: (row?.started ?? 0) > 0 };
+}
+
+/**
+ * One research run's review evidence (the decisions of 2026-11-05), read while the chat exists: its page, bot checks, closed sites, ratings,
+ * priorities, send-backs and earlier options, with minutes, usage and cost. The full projection, the page's HTML and the send-back messages go to
+ * the private answers directory; `counts` is what stdout shows.
+ */
+async function researchReview(ctx: Context, chatId: string, runId: string, save: (entry: string, contents: unknown) => void) {
+  const db = ctx.db;
+  const frame = (await db.query<{ frame: unknown }>(`SELECT "frame" FROM "ResearchFrame" WHERE "modelRunId" = $1`, [runId])).rows[0]?.frame ?? null;
+  // The page: the answer's card with its marker, and its entry HTML through the user's own artifact route.
+  const payloads = (await db.query<{ payload: unknown }>(`SELECT "payload" FROM "ModelRunEvent" WHERE "modelRunId" = $1
+    AND "payload"->>'artifactType' = 'generated_artifact' ORDER BY "sequence"`, [runId])).rows.map((row) => row.payload);
+  const card = researchPageCard(payloads);
+  const page: Record<string, unknown> = { card: card !== null, summaryEnd: card?.summaryEnd !== null && card?.summaryEnd !== undefined,
+    notesStart: card?.notesStart !== null && card?.notesStart !== undefined, htmlSaved: false, htmlBytes: null };
+  if (card) {
+    const response = await request(ctx.session.api, `/api/artifacts/${encodeURIComponent(card.artifactId)}/versions/${encodeURIComponent(card.versionId)}/source`).catch(() => null);
+    const entry = researchPageEntry(response?.ok ? await response.json().catch(() => null) : null, card.entrypoint);
+    if (response && !response.ok) page.sourceStatus = response.status;
+    if (entry) {
+      save(`page-${runId}`, { run: runId, title: card.title, entrypoint: entry.path, files: entry.paths, summaryEnd: card.summaryEnd, notesStart: card.notesStart, html: entry.html });
+      page.htmlSaved = true;
+      page.htmlBytes = Buffer.byteLength(entry.html);
+    }
+  }
+  const fetches = (await db.query<ResearchFetchRow>(`SELECT c."id", c."subagentThreadId" AS "threadId", coalesce(c."startedAt", c."createdAt") AS "at",
+      c."arguments"->>'url' AS "url",
+      CASE WHEN jsonb_typeof(c."result"->'content'->0->'value'->'error') = 'string' THEN c."result"->'content'->0->'value'->>'error' END AS "error",
+      CASE WHEN jsonb_typeof(c."result"->'rawPreview'->'fetchUrl'->'httpStatus') = 'number' THEN (c."result"->'rawPreview'->'fetchUrl'->>'httpStatus')::int END AS "httpStatus",
+      coalesce(c."result"->'rawPreview'->'fetchUrl'->>'outcome' = 'read', false) AS "read",
+      coalesce(strpos(c."result"::text, 'already recorded as unreachable') > 0, false) AS "closedRefusal"
+    FROM "ModelRunToolCall" c WHERE c."toolName" = 'fetch_url' AND ${RUN_SCOPE_CALLS} ORDER BY 3`, [runId])).rows;
+  const records = (await db.query<ResearchRecordRow>(`SELECT "id", "kind", "rowKey", "criterionKey", "url", "rating", "reason", "target", "createdAt" AS "at"
+    FROM "ResearchEvidence" WHERE "modelRunId" = $1 ORDER BY "sequence"`, [runId])).rows;
+  // A bot check's agent then tried the host in its browser: one of its later Workspace commands names the host and drives the browser (or printed a step line).
+  const checks = researchBotChecks(fetches).slice(0, 100);
+  const browserAfter = new Map<string, boolean>();
+  for (const check of checks) {
+    const tried = (await db.query<{ tried: boolean }>(`SELECT EXISTS (SELECT 1 FROM "ModelRunToolCall" c, "ModelRunToolCall" b WHERE b."id" = $2 AND ${RUN_SCOPE_CALLS}
+        AND c."toolName" LIKE 'mcp_workspace%' AND c."subagentThreadId" IS NOT DISTINCT FROM b."subagentThreadId"
+        AND coalesce(c."startedAt", c."createdAt") >= coalesce(b."startedAt", b."createdAt")
+        AND strpos(c."arguments"::text || coalesce(c."result"::text, ''), $3) > 0
+        AND (strpos(c."arguments"::text, 'aiqsa-browser') > 0 OR strpos(c."arguments"::text, 'aiqsa import browser') > 0
+          OR strpos(c."arguments"::text, 'aiqsa.browser') > 0 OR strpos(coalesce(c."result"::text, ''), '[browser #') > 0)) AS "tried"`,
+    [runId, check.callId, check.host])).rows[0]?.tried === true;
+    browserAfter.set(check.callId, tried);
+  }
+  const botChecks = researchBotCheckOutcomes(checks, browserAfter, records, fetches);
+  const unreachable = researchUnreachableEvidence(records, fetches);
+  const drafts = (await db.query<{ arguments: unknown; value: unknown }>(`SELECT c."arguments", c."result"->'content'->0->'value' AS "value" FROM "ModelRunToolCall" c
+    WHERE c."modelRunId" = $1 AND c."toolName" = 'submit_research_draft' ORDER BY coalesce(c."startedAt", c."createdAt")`, [runId])).rows;
+  const summary = researchFinalSummary(drafts.map((draft) => draft.arguments));
+  const ratings = researchRatingsEvidence(records, summary);
+  const priorities = researchPriorityEvidence(frame, summary);
+  const sendBacks = researchSendBacks(drafts.map((draft) => draft.value));
+  const earlier = researchEarlierOutcomes(frame);
+  const spend = await runSpend(db, runId);
+  const fetchCounts = { fetchCalls: fetches.length, read: fetches.filter((call) => call.read).length };
+  save(`review-${runId}`, { chat: chatId, run: runId, page, fetches: fetchCounts, botChecks: botChecks.full, unreachable: unreachable.full, ratings: ratings.full,
+    priorities: priorities.full, summary, earlier: earlier.full, minutes: spend.minutes, usage: spend.usage, cost: spend.cost });
+  if (sendBacks.full.length > 0) save(`sendbacks-${runId}`, { chat: chatId, run: runId, sendBacks: sendBacks.full });
+  return { page, fetches: fetchCounts, botChecks: botChecks.counts, unreachable: unreachable.counts, ratings: ratings.counts, priorities: priorities.counts,
+    sendBacks: sendBacks.counts, earlier: earlier.counts, minutes: spend.minutes, tokens: spend.usage.total, cost: spend.cost };
+}
+
+/**
+ * T's same-chat steps (AIQSA_SUBAGENTS_T_STEPS_FILE), in order in the question's chat once its research ended, each after the previous run's
+ * terminal state and the chat's callbacks. Each step's answer goes to the private answers directory; the line holds codes, numbers and booleans.
+ */
+async function researchSteps(ctx: Context, run: Run, chatId: string, steps: readonly ResearchStep[], route: SearchRoute,
+  save: (entry: string, contents: unknown) => void, clean: (value: string) => string) {
+  const lines: Record<string, unknown>[] = [];
+  const runs = new Map<string, number>();
+  let failed = false;
+  for (const [index, step] of steps.entries()) {
+    const number = index + 1;
+    try {
+      await waitMainIdle(ctx, chatId);
+      const sent = await trySend(ctx, run, chatId, step.text, [], { deepResearch: step.deepResearch, search: route });
+      if (!sent.ok) {
+        lines.push({ step: number, deepResearch: step.deepResearch, refused: sent.code, ok: false });
+        failed = true;
+        break;
+      }
+      runs.set(sent.runId, number);
+      const terminal = await waitRun(ctx, sent.runId, step.deepResearch ? researchQuestionTimeout(ctx.marginSeconds) : undefined);
+      await waitMainIdle(ctx, chatId).catch(() => undefined);
+      await settledUsage(ctx.db, [chatId]);
+      const observed = await researchRunObserved(ctx.db, sent.runId);
+      const verdict = researchStepVerdict(step, { ...observed, status: terminal.status });
+      const answer = await runAnswer(ctx.db, sent.runId);
+      if (answer.trim()) save(`step-${number}-answer-${sent.runId}`, { chat: chatId, run: sent.runId, step: number, deepResearch: step.deepResearch, answer: clean(answer) });
+      const spend = await runSpend(ctx.db, sent.runId);
+      const line = { step: number, deepResearch: step.deepResearch, offered: observed.offered, researchRan: observed.started && observed.frame,
+        startCalled: observed.started, frame: observed.frame, researchCalls: observed.researchCalls, status: terminal.status, code: terminal.errorCode,
+        minutes: spend.minutes, tokens: spend.usage.total, cost: spend.cost, answerSaved: answer.trim().length > 0, ok: verdict.ok, failed: verdict.failed };
+      save(`step-${number}`, { chat: chatId, run: sent.runId, ...line, usage: spend.usage });
+      lines.push(line);
+      failed ||= !verdict.ok;
+    } catch (error) {
+      lines.push({ step: number, deepResearch: step.deepResearch, harnessError: error instanceof BrowserScenarioError ? error.message : "research_step_failed", ok: false });
+      failed = true;
+      break;
+    }
+  }
+  return { failed, lines, runs };
+}
+
 async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
   const route = ctx.search[0] ?? fail("search_route_missing");
   const research = ctx.research ?? fail("research_setup_missing");
@@ -1882,9 +2149,11 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           }
         };
         const act = job.kind === "set" ? null : options.acts[job.kind] ?? null;
-        const sendWords = async (text: string) => {
-          const sent = await trySend(ctx, run, chat.id, text, [], { search: route });
-          return sent.ok ? sent.runId : fail("research_send_failed");
+        // Only the `+` menu's Deep research starts research (operator decision 2026-11-05), so the question carries it; a Continue goes on from the
+        // interrupted run's own binding and names nothing, as the product's Continue does.
+        const sendWords = async (text: string, deepResearch = true) => {
+          const sent = await trySend(ctx, run, chat.id, text, [], { deepResearch, search: route });
+          return sent.ok ? sent.runId : fail(`research_send_failed_${sent.code}`);
         };
         let runId = await sendWords(act === "handoff" ? SCENARIO_T_HANDOFF_QUESTION : question.text);
         if (act === "edit" || act === "start") {
@@ -1907,7 +2176,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
             .then((evidence) => ({ act, ...evidence }), (error: unknown) => ({ act, failed: error instanceof BrowserScenarioError ? error.message : "interaction_failed" }));
         }
         if (act === "restart") {
-          const { continued, facts: restarted } = await restartAndContinue(ctx, run, chat.id, sendWords);
+          const { continued, facts: restarted } = await restartAndContinue(ctx, run, chat.id, (text) => sendWords(text, false));
           runId = continued;
           facts.restart = restarted;
         }
@@ -1982,12 +2251,39 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           await capture?.().catch(() => undefined);
         }
       }
+      // The question's research has ended: the chat's steps follow in it, then each research run of the chat is read for review. Neither enters
+      // the evaluation below, which grades the question's own answers.
+      const processFacts = { ...facts };
+      if (chatId !== null) {
+        const reviewChat = chatId;
+        const save = (entry: string, contents: unknown) => { archive.write(job, reviewChat, entry, { ...job, ...contents as Record<string, unknown> }); };
+        let stepRuns = new Map<string, number>();
+        if (research.steps.length > 0 && facts.harnessError === undefined) {
+          const stepped = await researchSteps(ctx, run, reviewChat, research.steps, route, save, clean);
+          facts.steps = stepped.lines;
+          stepRuns = stepped.runs;
+          if (stepped.failed) questionFailed = true;
+        }
+        try {
+          await settledUsage(ctx.db, [reviewChat]);
+          const researchRuns = (await ctx.db.query<{ runId: string }>(`SELECT "modelRunId" AS "runId" FROM "ResearchFrame" WHERE "chatId" = $1 ORDER BY "createdAt"`,
+            [reviewChat])).rows;
+          const review: Record<string, unknown>[] = [];
+          for (const [index, entry] of researchRuns.entries()) {
+            review.push({ research: index + 1, step: stepRuns.get(entry.runId) ?? null, ...await researchReview(ctx, reviewChat, entry.runId, save) });
+          }
+          facts.review = review;
+        } catch (error) {
+          facts.review = { failed: error instanceof BrowserScenarioError ? error.message : "research_review_failed" };
+        }
+      }
       const answer = [...savedAnswers.values()].join("\n\n---\n\n");
       facts.serverNotes = researchServerNotes(answer);
+      processFacts.serverNotes = facts.serverNotes;
       if (answer && chatId !== null) {
         grade = await evaluateResearch(judge, RESEARCH_JUDGE_PROMPT, { question: question.text, answer,
           drafts: drafts.map((draft) => draft.map((finding) => ({ claim: clean(finding.claim), quote: clean(finding.quote), sourceClass: clean(finding.sourceClass), url: clean(finding.url) }))),
-          gates: [...savedGates.values()], process: facts }, decodeResearchGrade);
+          gates: [...savedGates.values()], process: processFacts }, decodeResearchGrade);
         extraction = await evaluateResearch(judge, RESEARCH_EXTRACTION_PROMPT, { question: question.text, answer }, decodeStructuredResearchAnswer);
         try {
           archive.write(job, chatId, "judge", grade);
@@ -2270,6 +2566,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "R": outcome = await scenarioR(ctx, run); break;
       case "S": outcome = await scenarioS(ctx, run); break;
       case "T": outcome = await scenarioT(ctx, run); break;
+      case "U": outcome = await scenarioU(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
@@ -2336,7 +2633,7 @@ async function main() {
   const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
   const options = subagentHarnessOptions(process.env, scenarios, route.model);
   if (!scenarios.includes("T") && ["AIQSA_SUBAGENTS_T_SEARCH", "AIQSA_SUBAGENTS_T_SEARCH_SOURCES", "AIQSA_SUBAGENTS_T_QUESTION_FILE", "AIQSA_SUBAGENTS_T_QUESTION_SET",
-    "AIQSA_SUBAGENTS_T_APP_LOG_COMMAND", "AIQSA_SUBAGENTS_ADMIN_PROXY_FILE"].some((name) => process.env[name]?.trim())) fail("research_option_requires_t");
+    "AIQSA_SUBAGENTS_T_APP_LOG_COMMAND", "AIQSA_SUBAGENTS_ADMIN_PROXY_FILE", "AIQSA_SUBAGENTS_T_STEPS_FILE"].some((name) => process.env[name]?.trim())) fail("research_option_requires_t");
   const parsedResearch = scenarios.includes("T") ? stable(() => researchEvalOptions(process.env)) : null;
   // The private files are read before anything is set up, so a refused one costs nothing; their text stays in memory.
   const questionSet = parsedResearch?.questionSet ? stable(() => readResearchQuestionSet(parsedResearch.questionSet!)) : null;
@@ -2345,6 +2642,8 @@ async function main() {
     ? stable(() => readPrivateFile(researchOptions.questionFile!, RESEARCH_QUESTION_MAX_BYTES, "research_question_file")) : null;
   const adminProxy = researchOptions?.adminProxyFile
     ? stable(() => parseResearchAdminProxy(readPrivateFile(researchOptions.adminProxyFile!, RESEARCH_ADMIN_PROXY_MAX_BYTES, "research_admin_proxy_file"))) : null;
+  const tSteps = researchOptions?.stepsFile
+    ? stable(() => parseResearchSteps(readPrivateFile(researchOptions.stepsFile!, RESEARCH_STEPS_MAX_BYTES, "research_steps_file"))) : [];
   if (researchOptions) {
     if (process.env.AIQSA_SUBAGENTS_TEST_PROXY?.trim() && !parseTestProxy(process.env.AIQSA_SUBAGENTS_TEST_PROXY)) fail("research_proxy_invalid");
     stable(() => createResearchArchive(researchOptions.answersDir));
@@ -2401,14 +2700,15 @@ async function main() {
         defaultTimeoutMs: 10 * 60_000, initialRequestRetry: { maxAttempts: 1 }, requestIsolation: true });
       research = { options: researchOptions, adminProxy, question: researchQuestion, judge: checks.model ? (instructions, input) => client.create({ model: checks.model,
         instructions, input, max_output_tokens: 16_384, store: false, ...(checks.effort ? { reasoning: { effort: checks.effort } } : {}) }) : null,
-        questions: new Map((questionSet ?? []).map((question) => [question.name, question] as const)) };
+        questions: new Map((questionSet ?? []).map((question) => [question.name, question] as const)), steps: tSteps };
     }
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model, contextWindow: chatProvider.contextWindow,
       reused: chatProvider.reused, secondModel: second !== null, modelWithoutVision: blind !== null, restartHook: options.restart !== null,
       configuredBounds: target.configuredBounds, scenarios, runs: options.runs, searchPlan: search[0]?.name ?? null,
       searchSources: search[0]?.sources.map((source) => source.label) ?? [], questionFile: researchQuestion !== null,
       questionSet: questionSet ? { questions: questionSet.length, withExpectations: questionSet.filter((question) => question.expect !== null).length } : null,
-      appLog: researchOptions?.appLog !== null && researchOptions?.appLog !== undefined, adminProxy: adminProxy !== null });
+      appLog: researchOptions?.appLog !== null && researchOptions?.appLog !== undefined, adminProxy: adminProxy !== null,
+      steps: tSteps.map((step) => ({ deepResearch: step.deepResearch })) });
     const ctx: Context = { blind, db, keepChats: process.env.AIQSA_SUBAGENTS_KEEP_CHATS === "1", marginSeconds, model, options, research, search, second,
       session: { api }, target };
     for (let index = 1; index <= options.runs; index += 1) {
