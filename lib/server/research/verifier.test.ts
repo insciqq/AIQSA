@@ -1210,22 +1210,22 @@ describe("a recommendation whose source supports a narrower claim", () => {
         expect(result.kind).toBe("accepted");
         const answer = researchAnswerText(draft.report, result.notes ?? []);
         expect(answer).toContain("Lonax Memory — Отзывы владельцев");
-        expect(answer).toContain(reason);
-        expect(answer).toContain("The conclusion is limited to what the source establishes.");
+        expect(answer).not.toContain(reason);
+        expect(answer).toContain("The sources establish only part of what this report says about these facts");
         expect(answer).not.toMatch(/partly|not_verified|not verified|not checked|Independent check/u);
       }
     }
     expect(run).toHaveBeenCalledTimes(1);
     const resumed = await runResearchGates({ context: contextOf({ ...options(), earlier: structuredClone(earlier), model: { kind: "unavailable" } }).context,
       draft: picking(), gates: [verifierGate], runId: "run-2" });
-    expect(resumed).toMatchObject({ kind: "accepted", notes: expect.arrayContaining([expect.stringContaining(reason)]) });
+    expect(resumed).toMatchObject({ kind: "accepted", notes: expect.arrayContaining([expect.stringContaining("Lonax Memory — Отзывы владельцев")]) });
   });
 
   it("still asks for narrower wording when researchers closed, and keeps that wording when there is no send-back time", async () => {
     const draft = picking();
     expect((await check(draft, contextOf({ ...options(), closed: "time" }).context)).kind).toBe("send_back");
     const result = await runResearchGates({ context: contextOf({ ...options(), sendBack: false }).context, draft: picking(), gates: [verifierGate], runId: "run-1" });
-    expect(result).toMatchObject({ kind: "accepted", notes: [expect.stringContaining(reason)] });
+    expect(result).toMatchObject({ kind: "accepted", notes: [expect.stringContaining("Lonax Memory — Отзывы владельцев")] });
   });
 
   it("retains the narrower support when an approval or Continue rebuilds the draft and the next check cannot run", async () => {
@@ -1233,9 +1233,10 @@ describe("a recommendation whose source supports a narrower claim", () => {
     const result = sentBack(await check(draft, contextOf(options()).context));
     const earlier = [{ draft: structuredClone(draft), gate: "verifier", message: result.message }];
     const notes = researchCarriedNotes([verifierGate], picking(), earlier);
-    expect(notes).toEqual([expect.stringContaining(reason)]);
+    expect(notes).toEqual([expect.stringContaining("Lonax Memory — Отзывы владельцев")]);
     const unavailable = await check(picking(), contextOf({ ...options(), earlier, model: { kind: "unavailable" } }).context);
-    expect(notesOf(unavailable)).toContain(reason);
+    expect(notesOf(unavailable)).toContain("Lonax Memory — Отзывы владельцев");
+    expect(notesOf(unavailable)).not.toContain(reason);
     expect(researchCarriedNotes([verifierGate], picking({ findings: [] }), earlier)).toEqual([]);
     expect(researchCarriedNotes([verifierGate], picking({ pickRowKey: "x2" }), earlier)).toEqual([]);
   });
@@ -1255,7 +1256,7 @@ describe("a recommendation whose source supports a narrower claim", () => {
     expect(await check(picking({ pickRowKey: "x2" }), contextOf(options()).context)).toEqual({ kind: "pass" });
   });
 
-  it("bounds a send-back with many partial claims and retains every limitation for the current answer", async () => {
+  it("bounds a send-back with many partial claims and names them in one line of the answer", async () => {
     const many = Array.from({ length: 32 }, (_, index) => recordOf(`r${index}`, quote, "p1", { claim: `${claim} ${"Details. ".repeat(20)}`, criterionKey: "reviews", rowKey: "x1" }));
     const draft = picking({ findings: many.map(({ id }) => recorded(id, { claim: `${claim} ${"Details. ".repeat(20)}`, quote })) });
     const longReason = `${reason}. ${"Only that much. ".repeat(15)}`;
@@ -1266,7 +1267,7 @@ describe("a recommendation whose source supports a narrower claim", () => {
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.length).toBeLessThan(many.length);
     for (const line of lines) expect(() => JSON.parse(line.slice("Partial ".length))).not.toThrow();
-    expect(result.notes).toHaveLength(many.length);
+    expect(result.notes).toHaveLength(1);
   });
 });
 

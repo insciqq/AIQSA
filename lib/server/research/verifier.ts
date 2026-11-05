@@ -10,7 +10,7 @@ import { normalizeFetchUrl } from "../webFetch/urls";
 import { researchDatasetWords } from "./dataCollection";
 import type { ResearchAttempt, ResearchGate, ResearchGateContext, ResearchVerifierModel } from "./gates";
 import { researchKeySpecs, researchLeadingRows, researchMatrixCoverage } from "./matrix";
-import { researchNote, researchPartialClaimNote } from "./notes";
+import { researchNote, researchPartialClaimsNote } from "./notes";
 import { researchGatePorts } from "./ports";
 import { checkQuotes, citedPageRead, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, type QuoteCheck, type QuoteExcerpt } from "./quoteCheck";
 import { RESEARCH_VERIFIER_UNAVAILABLE } from "./turns";
@@ -62,8 +62,8 @@ import { RESEARCH_VERIFIER_UNAVAILABLE } from "./turns";
  * left out, the most important claims first.
  *
  * What the verifier writes is untrusted: a page it read may have steered it. Its report is decoded to a verdict and a short
- * bounded reason per claim and nothing else survives. Reasons reach the main agent as data. For partly supported claims behind recommendations,
- * the answer also carries the reason as plain text, to say what the source actually establishes without a technical verdict label.
+ * bounded reason per claim and nothing else survives. The reason reaches only the main agent, labelled as data; the user
+ * reads none of the verifier's words (a narrower support past the cap is named by the server's labels only, `researchPartialClaimsNote`).
  */
 export const VERIFIER_LIMITS = Object.freeze({
   briefCharacters: RUN_FOLLOWUP_MAX_CHARS,
@@ -652,8 +652,12 @@ function rejectedNote(draft: ResearchDraft, rejected: ReadonlyMap<string, Reject
 function carriedNotes(draft: ResearchDraft, earlier: readonly ResearchAttempt[]): readonly string[] {
   const remembered = earlierChecks(earlier);
   const named = rejectedNote(draft, remembered.rejected);
-  return [...named ? [named] : [], ...recommendedPartial(draft, remembered.partial).map(researchPartialClaimNote)];
+  const partly = partialNote(recommendedPartial(draft, remembered.partial));
+  return [...named ? [named] : [], ...partly ? [partly] : []];
 }
+
+/** The reader's one line for narrower support behind recommendations, by the server's labels only. */
+const partialNote = (partial: readonly PartialClaim[]) => researchPartialClaimsNote(partial.map(({ label }) => label), VERIFIER_LIMITS.noteFacts);
 
 /** All recommended rows count, including branch picks and later summary rows, and every criterion can overstate a source. */
 function recommendedPartial(draft: ResearchDraft, partial: ReadonlyMap<string, PartialClaim>): readonly PartialClaim[] {
@@ -940,7 +944,7 @@ async function verifyDraft(draft: ResearchDraft, context: ResearchGateContext): 
   const named = rejectedNote(draft, rejected, { add: new Set(pick.flatMap(({ claim, record }) => claim ? [] : [record])), leaveOut: confirmedElsewhere(claims, rejected, frame) });
   const closed = (context.researchersClosed?.() ?? null) !== null;
   const limited = recommendedPartial(draft, partial);
-  const notes = [notRun, ...limited.map(researchPartialClaimNote)].flatMap((note) => note ?? []);
+  const notes = [notRun, partialNote(limited)].flatMap((note) => note ?? []);
   const sendBack = (message: string): ResearchGateResult => ({ kind: "send_back",
     message: withPartialClaims(message, limited),
     ...notes.length > 0 ? { notes } : {}, ...named ? { unresolvedNote: named } : {} });

@@ -43,13 +43,16 @@ export function researchCounterEvidenceNote(found: readonly ResearchCounterEvide
   return `Evidence against this conclusion, if the report above does not weigh it: ${items.join("; ")}.`;
 }
 
-/** A source supports less than a recommendation claims. Model-written text stays plain, never links, images or markup. */
-export function researchPartialClaimNote(fact: Readonly<{ claim: string; label: string | null; reason: string }>): string {
-  const plain = (text: string) => text.replace(/[\p{Cc}\p{Cf}*_`[\]<>|]+/gu, " ").replace(/\s+/gu, " ").trim();
-  const label = fact.label ? `For ${plain(fact.label)}, the` : "The";
-  const claim = plain(fact.claim).replace(/[.!?…]+$/u, "");
-  const reason = plain(fact.reason).replace(/[.!?…]+$/u, "");
-  return `${label} source supports less than the claim “${claim}”${reason ? `: ${reason}` : ""}. The conclusion is limited to what the source establishes.`;
+/**
+ * The one line the reader gets when sources establish only part of claims behind the options the report recommends and the draft went out unchanged past its cap:
+ * the facts by option and criterion, as the server labels them (`verifier.ts`), never the claim's or the checker's words, since the checker read untrusted pages.
+ */
+export function researchPartialClaimsNote(labels: readonly (string | null)[], shown: number): string | null {
+  if (labels.length === 0) return null;
+  const named = [...new Set(labels.flatMap((label) => label ?? []))];
+  if (named.length === 0) return "The sources establish only part of some facts behind the options this report recommends, so rely only on what they state.";
+  const others = named.length > shown || labels.some((label) => label === null);
+  return `The sources establish only part of what this report says about these facts, so rely only on what they state: ${named.slice(0, shown).join("; ")}${others ? "; and others" : ""}.`;
 }
 
 /** The answer the user reads: the report as written, then the notes, each once. */
