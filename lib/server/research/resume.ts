@@ -86,11 +86,10 @@ export function createResearchResume(deps: Readonly<{ store: ResearchResumeStore
     }
 
     return {
-      async interrupted(signal) {
+      async endedInterrupted(runId, signal) {
         signal.throwIfAborted();
-        // A Continue answers the branch's last run, as in `load`; an approval continuation is no Continue.
-        const last = run.branchRunIds.at(-1);
-        return last !== undefined && run.researchRunId === run.runId && await deps.store.interrupted(keyOf(last));
+        // A stored value: only this branch's runs count, as in `load`. An approval continuation asks it too, of each Continue its turn went on from.
+        return run.branchRunIds.includes(runId) && await deps.store.interrupted(keyOf(runId));
       },
 
       async sentWithDeepResearch(runIds, signal) {

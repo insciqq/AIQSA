@@ -230,6 +230,22 @@ describe("a Continue on an interrupted run", () => {
     const stranger = await owner();
     await expect(portsOf({ ...later, userId: stranger }, [chosen.runId]).resume.sentWithDeepResearch([chosen.runId], signal)).resolves.toBe(false);
   });
+
+  it("says which run of the branch ended interrupted, so a Continue typed after a finished answer carries nothing", async () => {
+    const userId = await owner();
+    const chatId = await chatOf(userId);
+    const finished = await runOf(userId, chatId);
+    const cut = await runOf(userId, chatId, finished.answerId);
+    await interrupted(cut);
+    const later = await runOf(userId, chatId, cut.answerId);
+    const ports = portsOf(later, [finished.runId, cut.runId]);
+    await expect(ports.resume.endedInterrupted(cut.runId, signal)).resolves.toBe(true);
+    await expect(ports.resume.endedInterrupted(finished.runId, signal)).resolves.toBe(false);
+    // Off the branch, or another user's, never was.
+    await expect(portsOf(later, [finished.runId]).resume.endedInterrupted(cut.runId, signal)).resolves.toBe(false);
+    const stranger = await owner();
+    await expect(portsOf({ ...later, userId: stranger }, [cut.runId]).resume.endedInterrupted(cut.runId, signal)).resolves.toBe(false);
+  });
 });
 
 describe("a Continue that gets nothing", () => {

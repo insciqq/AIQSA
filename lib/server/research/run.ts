@@ -171,28 +171,35 @@ export function researchRequestOf(input: Readonly<{ approval: boolean; chosen: b
 const AUTHORITY_TURNS = 32;
 
 /**
- * The runs whose frozen bindings decide whether an approval continuation or a Continue may research, newest first: the answer before the run's
- * own message, which is last in `messages`, and on back through every turn that only went on with the one before it (an approval's server turn,
- * the user's Continue) to the answer of the first that did not. One of them sent with Deep research authorizes it; nothing else does.
+ * One answer a continuation may take its authority from: its run, null for one with no native run, and the message it answered, an approval's
+ * server turn, a message whose words are the Continue button's, or any other.
  */
-export function researchAuthorityRuns(input: Readonly<{ continuationTurns: ReadonlySet<string>; messages: readonly ProviderConversationMessage[];
-  runsByAnswer: ReadonlyMap<string, string> }>): readonly string[] {
+export type ResearchAuthorityStep = Readonly<{ answered: "approval" | "continue" | "message"; runId: string | null }>;
+
+/**
+ * The answers whose runs' frozen bindings may authorize an approval continuation or a Continue, newest first: the answer before the run's own
+ * message, which is last in `messages`, and on back through every turn that only went on with the one before it (an approval's server turn, a
+ * Continue) to the answer of the first that did not. The words alone prove no Continue: the user may type them after an answer that finished, so
+ * `RunResearch.authorized` holds each step that answered one to the store's word that the run before it was interrupted.
+ */
+export function researchAuthorityChain(input: Readonly<{ continuationTurns: ReadonlySet<string>; messages: readonly ProviderConversationMessage[];
+  runsByAnswer: ReadonlyMap<string, string> }>): readonly ResearchAuthorityStep[] {
   const turns = input.messages.filter((message) => message.purpose === undefined && message.followupOf === undefined);
-  const runs: string[] = [];
-  for (let at = turns.length - 1, step = 0; step < AUTHORITY_TURNS; step += 1) {
+  const steps: ResearchAuthorityStep[] = [];
+  for (let at = turns.length - 1; steps.length < AUTHORITY_TURNS;) {
     let answer = at - 1;
     while (answer >= 0 && turns[answer]!.role !== "assistant") answer -= 1;
     if (answer < 0) break;
-    const run = input.runsByAnswer.get(turns[answer]!.id);
-    if (run !== undefined) runs.push(run);
     let asked = answer - 1;
     while (asked >= 0 && turns[asked]!.role !== "user") asked -= 1;
-    if (asked < 0) break;
-    const message = turns[asked]!;
-    if (!input.continuationTurns.has(message.id) && textFromContentBlocks(message.content).trim() !== CONTINUE_TURN_TEXT) break;
+    const message = asked < 0 ? null : turns[asked]!;
+    const answered = message === null ? "message" : input.continuationTurns.has(message.id) ? "approval"
+      : textFromContentBlocks(message.content).trim() === CONTINUE_TURN_TEXT ? "continue" : "message";
+    steps.push({ answered, runId: input.runsByAnswer.get(turns[answer]!.id) ?? null });
+    if (answered === "message") break;
     at = asked;
   }
-  return runs;
+  return steps;
 }
 
 const researchActivity = (toolName: string) => () => ({ origin: "tool" as const, serverName: "Research", toolName });
@@ -298,8 +305,8 @@ export type RunResearchInput = Readonly<{
   rearmReservedCall(): void;
   /** Why this run may research (`researchRequestOf`); absent, as a run of research's own tests, nothing makes the start certain. */
   request?: ResearchRequest;
-  /** For an approval continuation or a Continue, the branch's runs whose frozen choice may authorize it (`researchAuthorityRuns`). */
-  authorityRunIds?: readonly string[];
+  /** For an approval continuation or a Continue, the answers whose runs' frozen choice may authorize it (`researchAuthorityChain`). */
+  authority?: readonly ResearchAuthorityStep[];
   /** The run this one works on (`researchRunOf`), fixed before the ports are made; absent, its own. */
   researchRunId?: string;
   runId: string;
@@ -810,18 +817,26 @@ export function createRunResearch(input: RunResearchInput) {
 
     /**
      * Whether the server's bindings let this run research (operator decision 2026-11-05), never a call a model made: the user's choice frozen with
-     * this message does; an approval continuation or a Continue goes on with research only when one of the turns it continues was sent with Deep
-     * research (`authorityRunIds`, `ResearchResumePort.sentWithDeepResearch`), and a Continue only once the store says the turn before was
-     * interrupted, so a typed word after a research that ended starts nothing. A store that fails authorizes nothing and costs the run nothing;
-     * only Stop goes on as what it is.
+     * this message does; an approval continuation or a Continue goes on with research only when a turn it continues was sent with Deep research
+     * (`authority`, `ResearchResumePort.sentWithDeepResearch`). A Continue counts only where the run before it was interrupted, by the store's word:
+     * this run's own message and every Continue the chain passes alike, since the user may type the word after an answer that finished, and that
+     * turn was an ordinary one whose run may hold a start call no one authorized. The chain stops at the first that does not count, and what lies
+     * behind it authorizes nothing. A store that fails authorizes nothing and costs the run nothing; only Stop goes on as what it is.
      */
     async authorized(): Promise<boolean> {
       if (input.request === "chosen") return true;
       if (input.request === undefined) return false;
       const { signal } = input.subagentInput;
       try {
-        if (input.request === "continue" && !await ports.resume.interrupted(signal)) return false;
-        return await ports.resume.sentWithDeepResearch(input.authorityRunIds ?? [], signal);
+        const runs: string[] = [];
+        let continuing = input.request === "continue";
+        for (const step of input.authority ?? []) {
+          if (continuing && (step.runId === null || !await ports.resume.endedInterrupted(step.runId, signal))) break;
+          if (step.runId !== null) runs.push(step.runId);
+          if (step.answered === "message") break;
+          continuing = step.answered === "continue";
+        }
+        return runs.length > 0 && await ports.resume.sentWithDeepResearch(runs, signal);
       } catch (error) {
         if (signal.aborted) throw error;
         logEvent("service_operation", { action: "degrade", code: "research_resume_failed", error, outcome: "degraded", run_id: input.runId, stage: "read", subsystem: "database" });
