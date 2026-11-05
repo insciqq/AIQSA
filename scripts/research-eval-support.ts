@@ -103,7 +103,7 @@ export function researchEvalOptions(env: Readonly<Record<string, string | undefi
   if (questionFile !== null && !kindJobs.some((job) => job.kind === "purchase")) fail("research_question_file_unused");
   const appLogCommand = env.AIQSA_SUBAGENTS_T_APP_LOG_COMMAND?.trim() || null;
   if (appLogCommand !== null && (appLogCommand.length > 4_096 || /[\r\n\u0000]/u.test(appLogCommand))) fail("research_app_log_command_invalid");
-  return { acts, adminProxyFile: env.AIQSA_SUBAGENTS_ADMIN_PROXY_FILE?.trim() || null, answersDir, answersFile,
+  return { acts, adminProxyFile: env.AIQSA_SUBAGENTS_ADMIN_PROXY_FILE?.trim() || null, answersDir, answersFile, stepsFile: env.AIQSA_SUBAGENTS_T_STEPS_FILE?.trim() || null,
     appLog: appLogCommand === null ? null : { command: appLogCommand, timeoutMs: RESEARCH_APP_LOG_TIMEOUT_MS }, checks,
     concurrency: questionSet === null ? concurrency : 1, jobs: questionSet === null ? kindJobs : [], questionFile, questionSet,
     researcher: role("RESEARCHER"), search: search === "production" ? { model: searchModel, plan: "production" as const, sources: searchSources } : null,

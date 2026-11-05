@@ -40,6 +40,11 @@ describe("question set options", () => {
     expect(() => researchEvalOptions({ ...set, AIQSA_SUBAGENTS_T_CONCURRENCY: "3" })).toThrow("research_question_set_sequential");
   });
 
+  it("names the steps file only when it is set", () => {
+    expect(researchEvalOptions(env).stepsFile).toBeNull();
+    expect(researchEvalOptions({ ...env, AIQSA_SUBAGENTS_T_STEPS_FILE: " /private/steps.json " }).stepsFile).toBe("/private/steps.json");
+  });
+
   it("takes an app log command of one line and refuses one with a line break", () => {
     expect(researchEvalOptions(env).appLog).toBeNull();
     expect(researchEvalOptions({ ...env, AIQSA_SUBAGENTS_T_APP_LOG_COMMAND: " ssh stand 'docker compose logs app' " }).appLog)
