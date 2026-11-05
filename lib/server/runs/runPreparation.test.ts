@@ -27,6 +27,8 @@ import type { NormalizedRunRequest, ProviderAdapter, ProviderConversationMessage
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
 import { SKILL_MAX_AVAILABLE } from "../../contracts/skills";
+import { DEEP_RESEARCH_REFUSALS } from "../../contracts/research";
+import { DEEP_RESEARCH_CHOSEN_GUIDANCE } from "../tools/research";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
@@ -2489,6 +2491,32 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.toolChoice).not.toEqual({ type: "function", name: "create_artifact" });
     await expect(prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, artifactIntent: "other" }))).resolves.toMatchObject({ ok: false, code: "artifact_intent_invalid", status: 400 });
     await expect(prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, tools: "none" }))).resolves.toMatchObject({ ok: false, code: "artifact_intent_unavailable", status: 409 });
+  });
+
+  it("freezes Deep research with the message, keeps it on a regenerate of that message only, and takes no other value", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
+    const chosen = preparedFrom(await prepareRun(harness.deps, sendInput({ ...body, deepResearch: true })));
+    expect(chosen.normalizedRequest.deepResearch).toBe(true);
+    // The first step's instruction holds for this message only: the native engine sends it with the input, never in the system prompt.
+    expect(chosen.normalizedRequest.prompt.turnGuidance).toContain(DEEP_RESEARCH_CHOSEN_GUIDANCE);
+    expect(splitTurnGuidance(admittedRunGuidance(chosen.normalizedRequest.prompt), chosen.normalizedRequest.prompt.turnGuidance).chat)
+      .not.toContain(DEEP_RESEARCH_CHOSEN_GUIDANCE);
+    // Words alone ask for nothing.
+    const worded = preparedFrom(await prepareRun(harness.deps, sendInput({ ...body, content: { blocks: [{ text: "Проведи глубокое исследование", type: "text" }] } })));
+    expect(worded.normalizedRequest.deepResearch).toBeUndefined();
+    expect(worded.normalizedRequest.prompt.turnGuidance ?? []).not.toContain(DEEP_RESEARCH_CHOSEN_GUIDANCE);
+    // A regenerate keeps what the message was sent with; an edited message's regenerate carries the field itself.
+    expect(preparedFrom(await prepareRun(harness.deps, regenerateInput(body, { deepResearch: true }))).normalizedRequest.deepResearch).toBe(true);
+    expect(preparedFrom(await prepareRun(harness.deps, regenerateInput(body))).normalizedRequest.deepResearch).toBeUndefined();
+    expect(preparedFrom(await prepareRun(harness.deps, regenerateInput({ ...body, deepResearch: true }))).normalizedRequest.deepResearch).toBe(true);
+    for (const value of [false, "true", 1, null]) {
+      await expect(prepareRun(harness.deps, sendInput({ ...body, deepResearch: value })))
+        .resolves.toMatchObject({ code: DEEP_RESEARCH_REFUSALS.invalid, ok: false, status: 400 });
+    }
+    // A turn the server wrote never carries it, whatever its body says.
+    const serverTurn = preparedFrom(await prepareRun(harness.deps, { ...sendInput({ ...body, deepResearch: true }), serverAuthoredInput: true }));
+    expect(serverTurn.normalizedRequest.deepResearch).toBeUndefined();
   });
 
   it("freezes an exact artifact edit target and revalidates it for regeneration", async () => {

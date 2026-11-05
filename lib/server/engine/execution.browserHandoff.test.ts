@@ -96,8 +96,10 @@ function engine(now?: () => number): NativeEngineDeps {
   };
 }
 
-function prepared(chatId: string, turnTimeoutSeconds = 900, research = false): MaterializedPreparedRunData {
+function prepared(chatId: string, turnTimeoutSeconds = 900, research = false, chosen = research): MaterializedPreparedRunData {
   const request = {
+    // A research run is one the user sent with Deep research (operator decision 2026-11-05).
+    ...chosen ? { deepResearch: true } : {},
     attachmentIds: [], attachments: [], chatId, content: { blocks: [{ text: "Order from the shop", type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text: "Order from the shop", type: "text" }] }, id: "current-user-message", role: "user" as const }],
       mode: "branch_path" as const },
@@ -142,7 +144,7 @@ function researchThreads(): SubagentThreadStore {
   };
 }
 
-function start(options: Readonly<{ now?: () => number; research?: ResearchEngineDeps; scheduled?: true; steps?: readonly Step[];
+function start(options: Readonly<{ chosen?: boolean; now?: () => number; research?: ResearchEngineDeps; scheduled?: true; steps?: readonly Step[];
   telegram?: true; turnTimeoutSeconds?: number }> = {}) {
   runs += 1;
   currentChat = `chat-${runs}`;
@@ -153,7 +155,7 @@ function start(options: Readonly<{ now?: () => number; research?: ResearchEngine
   const response = createNativeRunExecutionResponse({ adapter: model.adapter, created: { assistantMessageId: `answer-${runs}`, runId,
     userMessageId: `question-${runs}` }, engine: { ...engine(options.now),
       ...options.research ? { research: options.research, subagentThreads: researchThreads() } : {} },
-  prepared: prepared(currentChat, options.turnTimeoutSeconds, options.research !== undefined),
+  prepared: prepared(currentChat, options.turnTimeoutSeconds, options.research !== undefined, options.chosen ?? options.research !== undefined),
   repository: repo as unknown as RunRepository, ...(options.scheduled ? { scheduled: true } : {}),
   ...(options.telegram ? { telegram: true } : {}), services: {}, userId: "user", workspace: space.coordinator });
   return { chatId: currentChat, model, repo, response, runId, space };
@@ -248,10 +250,10 @@ describe("a research run's browser handoff", () => {
     expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
   });
 
-  it("keeps the ordinary wait when research is offered but never starts", async () => {
+  it("keeps the ordinary wait where research could run but the message was not sent with Deep research", async () => {
     vi.useFakeTimers();
     const handoff = liveWait();
-    const run = start({ research: { gates: [] }, turnTimeoutSeconds: BROWSER_HANDOFF_WAIT_MS / 1_000 * 3 });
+    const run = start({ chosen: false, research: { gates: [] }, turnTimeoutSeconds: BROWSER_HANDOFF_WAIT_MS / 1_000 * 3 });
     const reading = events(run.response);
     await vi.advanceTimersByTimeAsync(0);
     expect(handoff).toHaveBeenCalledWith(expect.objectContaining({ waitMs: BROWSER_HANDOFF_WAIT_MS }));
