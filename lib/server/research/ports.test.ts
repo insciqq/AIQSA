@@ -231,7 +231,7 @@ async function afterInterruption(input: Readonly<{ approved?: Readonly<{ later: 
   const stored = [...started(startResult("run-0")), ...held("call-first")];
   const { adapter, requests } = scripted(input.steps);
   // The store says run-0 was interrupted and was sent with Deep research, which is what lets a Continue of its research research (`RunResearch.authorized`).
-  const resume: NonNullable<ResearchPortFactories["resume"]> = (run, parts) => ({ ...input.ports.resume?.(run, parts) ?? NOOP_RESEARCH_PORTS.resume, interrupted: async () => true,
+  const resume: NonNullable<ResearchPortFactories["resume"]> = (run, parts) => ({ ...input.ports.resume?.(run, parts) ?? NOOP_RESEARCH_PORTS.resume, endedInterrupted: async () => true,
     sentWithDeepResearch: async (runIds) => runIds.includes("run-0") });
   const memory = engineOf({ gates: [], ports: { ...input.ports, resume } });
   vi.mocked(memory.deps.approvedCall).mockResolvedValue(approved ? { providerCallId: "call-held", toolName: "mcp_shop_buy" } : null);
