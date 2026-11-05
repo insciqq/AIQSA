@@ -63,7 +63,7 @@ describe("chat export against PostgreSQL", () => {
     expect(document.chat.messages.map((message) => [message.id, message.parentId, message.role, message.text])).toEqual([
       ["m1", null, "user", "Synthetic question"],
       ["m2", "m1", "assistant", "First answer"],
-      ["m3", "m1", "assistant", "Partial answer before follow-up:\n\nSynthetic partial"],
+      ["m3", "m1", "assistant", "Answer before follow-up:\n\nSynthetic partial"],
       ["m4", "m3", "user", "Follow-up 1:\n\nSynthetic clarification"],
       ["m5", "m4", "assistant", "Regenerated answer"],
       ["m6", null, "user", "Edited question"]

@@ -10,15 +10,16 @@ import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineTestFaults } from "./faults";
-import { createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "./execution";
+import { ANSWER_STANDS_INSTRUCTION, createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "./execution";
 import { ANSWER_NOW_INSTRUCTION, MAX_CORRECTION_ROUNDS } from "./loop";
 import type { NativeRunStore } from "./runStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { TranscriptItem } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 
-/** `silent`: the text arrives only with the completed response, never as deltas. */
-type Step = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: unknown; heading?: string; silent?: boolean; text?: string }>;
+/** `silent`: the text arrives only with the completed response, never as deltas. `onStream`: runs as the response starts. */
+type Step = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: unknown; heading?: string; onStream?: () => void; silent?: boolean;
+  text?: string }>;
 
 const snapshot: McpRunPlanSnapshot = {
   servers: [{ fingerprint: "fp-1", revisionId: "rev-1", serverId: "jira", serverName: "Jira" }],
@@ -48,6 +49,7 @@ function scriptedAdapter(steps: readonly Step[]) {
     async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       requests.push(request);
       const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
+      step.onStream?.();
       if (step.heading) yield { data: { artifactType: "summary", payload: { reasoningHeading: step.heading } }, type: "artifact" };
       if (!step.silent) for (const word of (step.text ?? "").split(/(?<= )/u)) if (word) yield { data: { delta: word }, type: "token" };
       if (step.fail) throw step.fail;
@@ -264,10 +266,111 @@ describe("native run execution", () => {
       prepared: { ...prepared(), followupAdmission: { budgetTokens: 1_000 } },
       repository: { ...repository(), followups } as unknown as RunRepository, services: {}, userId: "user" }));
     expect(result.at(-1)).toMatchObject({ type: "done" });
-    expect(memory.published()).toBe("With the research.");
+    // It came as the answer ended: the answer stands, and what the model adds follows it.
+    expect(memory.published()).toBe("First.\n\nWith the research.");
     expect(memory.transcriptRows).toContainEqual(expect.objectContaining({ callback: true, followup: true, kind: "user",
-      text: callback.text }));
+      text: `${callback.text}\n\n${ANSWER_STANDS_INSTRUCTION}` }));
     expect(requests).toHaveLength(2);
+  });
+
+  describe("an agent's message adds to the answer, never rewrites it (operator decision 2026-11-05)", () => {
+    type Arrival = Readonly<{ id: string; origin: "subagent_callback" | "subagent_message" | "user"; text: string }>;
+    const callback: Arrival = { id: "cb", origin: "subagent_callback",
+      text: "[Sub-agent callback, written by the server, not by the user] scout ended (done)" };
+    const user: Arrival = { id: "u1", origin: "user", text: "Make it shorter" };
+
+    /** Follow-ups that arrive while the run works, delivered a revision at a time as the repository does. */
+    function arrivals() {
+      const entries: (Arrival & { delivery: "accepted" | "delivered" })[] = [];
+      let revision = 0;
+      const ops = {
+        accept: vi.fn(),
+        close: vi.fn(async (input: { revision: number }) => input.revision === revision && entries.every((entry) => entry.delivery === "delivered")),
+        deliver: vi.fn(async (input: { precedingText: string | null; revision: number }) => {
+          if (input.revision !== revision) return false;
+          for (const entry of entries) entry.delivery = "delivered";
+          return true;
+        }),
+        load: vi.fn(async () => ({ entries: entries.map((entry, index) => ({ author: "Synthetic author", createdAt: "2026-11-05T10:00:00.000Z",
+          ordinal: index + 1, ...entry })), revision }))
+      };
+      return { arrive: (...added: Arrival[]) => () => {
+        entries.push(...added.map((entry) => ({ ...entry, delivery: "accepted" as const })));
+        revision += added.length;
+      }, ops };
+    }
+
+    async function answered(steps: readonly Step[], queue: ReturnType<typeof arrivals>, tools = false) {
+      const { adapter, requests } = scriptedAdapter(steps);
+      const memory = memoryEngine();
+      const repo = { ...repository(), followups: queue.ops };
+      const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
+      const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+        ...(tools ? { mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never } : {}),
+        prepared: { ...prepared(tools ? { mcp: snapshot } : {}), followupAdmission: { budgetTokens: 1_000 } },
+        repository: repo as unknown as RunRepository, services: {}, userId: "user" }));
+      // What the user's browser shows: a reset empties the answer, tokens add to it.
+      const shown = result.reduce((text, event) => event.type === "message_reset" ? ""
+        : event.type === "token" ? text + event.data.delta : text, "");
+      return { memory, repo, requests, result, shown };
+    }
+    const resets = (result: readonly ModelRunSseEvent[]) => result.filter((event) => event.type === "message_reset").length;
+    const lastInput = (request: ProviderRunRequest) => request.history?.filter((item) => item.type === "user").at(-1);
+
+    it("keeps the answer a callback reached as it ended, and the addition follows it in the stream and the saved message", async () => {
+      const queue = arrivals();
+      const run = await answered([{ onStream: queue.arrive(callback), text: "The full answer." }, { text: "One more offer." }], queue);
+      expect(run.result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+      expect(run.memory.published()).toBe("The full answer.\n\nOne more offer.");
+      expect(run.shown).toBe("The full answer.\n\nOne more offer.");
+      expect(resets(run.result)).toBe(0);
+      // Nothing was started over: no text is kept aside, and the message was never saved emptied.
+      expect(run.repo.followups.deliver).toHaveBeenCalledWith(expect.objectContaining({ precedingText: null }));
+      expect(run.repo.appendAssistantText.mock.calls.every((call) => String((call as unknown[])[1]).startsWith("The full answer.")))
+        .toBe(true);
+      // The model is told, with the delivered item, that its answer stands; the system prompt stays the same.
+      expect(lastInput(run.requests[1]!)).toMatchObject({ text: `${callback.text}\n\n${ANSWER_STANDS_INSTRUCTION}` });
+      expect(run.requests[1]!.prompt.system).toBe(run.requests[0]!.prompt.system);
+    });
+
+    it("leaves the answer as it stands when the model has nothing to add, and completes", async () => {
+      const queue = arrivals();
+      const run = await answered([{ onStream: queue.arrive({ ...callback, origin: "subagent_message" }), text: "The full answer." },
+        { text: "" }], queue);
+      expect(run.result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+      expect(run.memory.published()).toBe("The full answer.");
+      expect(run.shown).toBe("The full answer.");
+      expect(resets(run.result)).toBe(0);
+    });
+
+    it("drops no text when a callback arrives between tool rounds, and tells the model nothing of a finished answer", async () => {
+      const queue = arrivals();
+      const run = await answered([{ calls: [{ arguments: { key: "A-1" }, id: "call-1", name: "mcp_jira_get_issue" }],
+        onStream: queue.arrive(callback), text: "Let me check." }, { text: "A-1 is open." }], queue, true);
+      expect(run.memory.published()).toBe("Let me check.\n\nA-1 is open.");
+      expect(run.shown).toBe("Let me check.\n\nA-1 is open.");
+      expect(resets(run.result)).toBe(0);
+      expect(lastInput(run.requests[1]!)).toMatchObject({ text: callback.text });
+    });
+
+    it.each([["alone", [user]], ["beside an agent's message", [callback, user]]] as const)(
+      "starts the answer over for the user's follow-up %s, as before", async (_label, batch) => {
+        const queue = arrivals();
+        const run = await answered([{ onStream: queue.arrive(...batch), text: "The first draft." }, { text: "Shorter." }], queue);
+        expect(run.memory.published()).toBe("Shorter.");
+        expect(run.shown).toBe("Shorter.");
+        expect(resets(run.result)).toBe(1);
+        expect(run.repo.followups.deliver).toHaveBeenCalledWith(expect.objectContaining({ precedingText: "The first draft." }));
+        // The user's speech is never told the answer stands.
+        expect(JSON.stringify(run.requests[1]!.history)).not.toContain(ANSWER_STANDS_INSTRUCTION);
+      });
+
+    it("fails visibly when nothing follows the user's follow-up that started the answer over", async () => {
+      const queue = arrivals();
+      const run = await answered([{ onStream: queue.arrive(user), text: "The first draft." }, { text: "" }], queue);
+      expect(run.result.at(-1)).toMatchObject({ data: { code: "model_answer_empty" }, type: "error" });
+      expect(run.memory.published()).toBeNull();
+    });
   });
 
   it("reports the whole run as its work duration once the answer is published, however early it talked", async () => {

@@ -8,7 +8,9 @@ import { logEvent } from "../observability";
  * streaming is best effort (the answer is published whole at the end), so a
  * failed write never stops the run. A response that is sent again drops what
  * its failed attempt streamed (`message_reset`, then the kept text once
- * more), and a delivered follow-up starts the answer over. A secret value
+ * more). The user's delivered follow-up starts the answer over, as research
+ * does when it shows what it held (`restart`); what an agent sends only adds
+ * the next round below it (operator decision 2026-11-05). A secret value
  * the turn saved is masked in what the user sees and in what is saved
  * (`mask`, issue #52): a streamed tail that may still become one waits for
  * the next text.
@@ -164,7 +166,7 @@ export function createAnswerStream(ports: AnswerStreamPorts) {
         schedule();
       }
     },
-    /** A follow-up was delivered: the answer starts over after it. */
+    /** The user's follow-up was delivered, or research shows what it held: the answer starts over. */
     restart(): void {
       committed = "";
       round = "";
