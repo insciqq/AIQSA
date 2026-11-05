@@ -74,6 +74,11 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "reasoning-hidden",
         "reasoning-locked",
         "reasoning-running",
+        "research-disabled",
+        "research-edit",
+        "research-menu",
+        "research-on",
+        "research-sent",
         "zero"
       ] as const,
       "default"

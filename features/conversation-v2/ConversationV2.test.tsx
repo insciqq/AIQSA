@@ -182,6 +182,18 @@ describe("Conversation v2", () => {
     expect(onSubmit).toHaveBeenCalledTimes(2);
   });
 
+  it("opens the edit of a message sent with Deep research with its chip, which the × turns off", () => {
+    const onTurnOff = vi.fn();
+    const props = { draft: "Compare quiet kettles", onCancel: vi.fn(), onChange: vi.fn(), onSubmit: vi.fn() };
+    const { rerender } = render(<ConversationInlineEditV2 {...props} deepResearch={{ onTurnOff }} />);
+    expect(screen.getByText("Deep research")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Turn off Deep research" }));
+    expect(onTurnOff).toHaveBeenCalledOnce();
+    expect(screen.getByRole("textbox", { name: "Edit question" })).toHaveFocus();
+    rerender(<ConversationInlineEditV2 {...props} deepResearch={null} />);
+    expect(screen.queryByText("Deep research")).not.toBeInTheDocument();
+  });
+
   it("keeps an unsuccessful inline edit recoverable and locks it while saving", () => {
     render(
       <ConversationInlineEditV2
