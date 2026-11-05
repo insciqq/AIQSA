@@ -164,6 +164,11 @@ export type ResearchResumePort = Readonly<{
    */
   interrupted(signal: AbortSignal): Promise<boolean>;
   /**
+   * Whether one of these runs of the branch was sent with Deep research, by its frozen binding (`NormalizedRunRequest.deepResearch`): the only authority
+   * an approval continuation or a Continue has to research (operator decision 2026-11-05). It only reads; a run off the branch counts for nothing.
+   */
+  sentWithDeepResearch(runIds: readonly string[], signal: AbortSignal): Promise<boolean>;
+  /**
    * Whether research can be picked up. It only reads, since a run asks this before any `start_research` and a model may never call one, and such a run
    * ran no research and keeps no row.
    */
@@ -217,7 +222,8 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
   resume: {
     interrupted: async () => false,
     link: async () => undefined,
-    load: async () => null
+    load: async () => null,
+    sentWithDeepResearch: async () => false
   },
   time: {
     gatesEndAt: (turnGatesEndAt) => turnGatesEndAt,

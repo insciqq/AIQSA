@@ -33,6 +33,8 @@ export type ResearchResumeStore = Readonly<{
   link(key: ResearchResumeKey, write: Readonly<{ answer: unknown; frame: unknown; fromRunId: string; goal: string; proposal: unknown; releasedAt: Date; version: number; windowEndsAt: Date }>): Promise<void>;
   /** Any record under these runs, a correction of one included. */
   recorded(key: ResearchResumeKey, runIds: readonly string[]): Promise<boolean>;
+  /** One of these main-agent runs was admitted with Deep research (`NormalizedRunRequest.deepResearch`). */
+  sentWithDeepResearch(key: ResearchResumeKey, runIds: readonly string[]): Promise<boolean>;
   source(key: ResearchResumeKey): Promise<ResearchResumeSource | null>;
 }>;
 
@@ -57,6 +59,11 @@ export function createResearchResumeStore(client: Pick<PrismaClient, "modelRun" 
     },
     async recorded({ chatId, userId }, runIds) {
       return await client.researchEvidence.findFirst({ select: { id: true }, where: { chatId, modelRunId: { in: [...runIds] }, userId } }) !== null;
+    },
+    // The frozen field alone, read in the database: a request holds the whole branch's context, which this never loads.
+    async sentWithDeepResearch({ chatId, userId }, runIds) {
+      return await client.modelRun.findFirst({ select: { id: true }, where: { chatId, id: { in: [...runIds] },
+        normalizedRequest: { equals: true, path: ["deepResearch"] }, subagentTurnId: null, userId } }) !== null;
     },
     source: ({ chatId, runId, userId }) => client.researchFrame.findFirst({ select: { answer: true, frame: true, goal: true, proposal: true, releasedAt: true, version: true, windowEndsAt: true },
       where: { chatId, modelRunId: runId, userId } })
@@ -84,6 +91,13 @@ export function createResearchResume(deps: Readonly<{ store: ResearchResumeStore
         // A Continue answers the branch's last run, as in `load`; an approval continuation is no Continue.
         const last = run.branchRunIds.at(-1);
         return last !== undefined && run.researchRunId === run.runId && await deps.store.interrupted(keyOf(last));
+      },
+
+      async sentWithDeepResearch(runIds, signal) {
+        signal.throwIfAborted();
+        // A stored value: only this branch's runs count, as in `load`.
+        const own = runIds.filter((runId) => run.branchRunIds.includes(runId));
+        return own.length > 0 && await deps.store.sentWithDeepResearch(keyOf(run.runId), own);
       },
 
       async load(fromRunId, signal) {

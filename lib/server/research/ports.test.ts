@@ -230,8 +230,9 @@ async function afterInterruption(input: Readonly<{ approved?: Readonly<{ later: 
   const { approved, text = CONTINUE_TURN_TEXT } = input;
   const stored = [...started(startResult("run-0")), ...held("call-first")];
   const { adapter, requests } = scripted(input.steps);
-  // The store says run-0 was interrupted, which is what lets a Continue of its research offer research (`RunResearch.continues`).
-  const resume: NonNullable<ResearchPortFactories["resume"]> = (run, parts) => ({ ...input.ports.resume?.(run, parts) ?? NOOP_RESEARCH_PORTS.resume, interrupted: async () => true });
+  // The store says run-0 was interrupted and was sent with Deep research, which is what lets a Continue of its research research (`RunResearch.authorized`).
+  const resume: NonNullable<ResearchPortFactories["resume"]> = (run, parts) => ({ ...input.ports.resume?.(run, parts) ?? NOOP_RESEARCH_PORTS.resume, interrupted: async () => true,
+    sentWithDeepResearch: async (runIds) => runIds.includes("run-0") });
   const memory = engineOf({ gates: [], ports: { ...input.ports, resume } });
   vi.mocked(memory.deps.approvedCall).mockResolvedValue(approved ? { providerCallId: "call-held", toolName: "mcp_shop_buy" } : null);
   const answers = new Map([["answer-0", "run-0"]]);
@@ -262,7 +263,10 @@ const execute = (tool: EngineTool, call: typeof start) => tool.execute({ call, p
 async function continuationScope(stored: readonly (readonly TranscriptItem[])[], ports: ResearchPortFactories = {}): Promise<ResearchRunScope> {
   const scopes: ResearchRunScope[] = [];
   const { adapter } = scripted([{ calls: [submit] }]);
-  const memory = engineOf({ gates: [], ports: { ...ports, evidence: (run) => { scopes.push(run); return NOOP_RESEARCH_PORTS.evidence; } } });
+  // Run-0 was sent with Deep research: the approvals after it go on with its research.
+  const resume: NonNullable<ResearchPortFactories["resume"]> = (run, parts) => ({ ...ports.resume?.(run, parts) ?? NOOP_RESEARCH_PORTS.resume,
+    sentWithDeepResearch: async (runIds) => runIds.includes("run-0") });
+  const memory = engineOf({ gates: [], ports: { ...ports, evidence: (run) => { scopes.push(run); return NOOP_RESEARCH_PORTS.evidence; }, resume } });
   vi.mocked(memory.deps.approvedCall).mockResolvedValue({ providerCallId: "call-held", toolName: "mcp_shop_buy" });
   vi.mocked(memory.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map(stored.map((_items, index) => [`answer-${index}`, `run-${index}`])));
   vi.mocked(memory.deps.transcripts.loadRuns).mockResolvedValue(new Map(stored.map((items, index) => [`run-${index}`, [...items]])));

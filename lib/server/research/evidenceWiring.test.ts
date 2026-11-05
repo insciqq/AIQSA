@@ -161,7 +161,9 @@ function continueOf(deps: NativeEngineDeps): MaterializedPreparedRunData {
   return { ...prepared(), normalizedRequest: request, providerRequest: request };
 }
 
-const interrupted: ResearchPortFactories["resume"] = () => ({ ...NOOP_RESEARCH_PORTS.resume, interrupted: async () => true });
+/** The store's word on run-0: interrupted, and sent with Deep research. */
+const interrupted: ResearchPortFactories["resume"] = () => ({ ...NOOP_RESEARCH_PORTS.resume, interrupted: async () => true,
+  sentWithDeepResearch: async (runIds) => runIds.includes("run-0") });
 
 function run(adapter: ProviderAdapter, deps: NativeEngineDeps, extra: Partial<NativeRunExecutionInput> = {}) {
   return createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" }, engine: deps, prepared: prepared(),
@@ -372,7 +374,8 @@ describe("what the final checks read", () => {
 
   it("reaches what a researcher read in the run before the approval, and no earlier answer's page", async () => {
     const { gate, seen } = quoteGate();
-    const deps = engineOf({ gates: [gate] });
+    // Run-1 was sent with Deep research, which is what lets its approval go on with the research.
+    const deps = engineOf({ gates: [gate], ports: { resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, sentWithDeepResearch: async (runIds) => runIds.includes("run-1") }) } });
     const threads = { "run-0": fetchedItems("call-earlier", EARLIER_LINK, `Shop: ${EARLIER_QUOTE}.`), "run-1": fetchedItems("call-page", LINK, `The X1 ${QUOTE} of use.`) };
     const branch = branchOf(deps, [[], stoppedTurn("run-1")], threads);
     vi.mocked(deps.approvedCall).mockResolvedValue({ providerCallId: "call-held", toolName: "mcp_shop_buy" });
