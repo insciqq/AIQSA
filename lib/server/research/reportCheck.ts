@@ -1,13 +1,16 @@
-import { researchChoosesAmongOptions, researchDraftText, type ResearchCandidate, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFrame } from "../../contracts/research";
+import {
+  RESEARCH_RATING_WEIGHING, researchChoosesAmongOptions, researchDraftText, researchSummaryText, type ResearchCandidate, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFrame
+} from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import { researchCandidateRow, researchEarlierCandidatesOf, researchEarlierSpread, researchNamedIn } from "./candidates";
+import { researchSampleIsSmall } from "./dataCollection";
 import type { ResearchGate } from "./gates";
-import { researchKeyCells, researchLeadingRows, researchMatrix, researchRecordSite, type ResearchMatrix } from "./matrix";
+import { researchKeyCells, researchLeadingRows, researchMatrix, researchRatingsCriterion, researchRecordSite, type ResearchMatrix } from "./matrix";
 import { researchGatePorts } from "./ports";
-import { claimPrices, figuresNotIn, type ClaimFigure, type ClaimPrice } from "./quoteCheck";
+import { claimPrices, figuresNotIn, ratingNumbersNotIn, type ClaimFigure, type ClaimPrice } from "./quoteCheck";
 import { researchRejectedRecords } from "./verifier";
-import { researchRegistrableDomain } from "./sourceQuality";
+import { researchComparedRating, researchRegistrableDomain, researchWeighedRating, type ResearchRatingRecord } from "./sourceQuality";
 
 /**
  * A draft against the records and the matrix (`agent_docs/RUN_CONTRACTS.md`, Research), the first gate a draft meets. It reads only fields, so it
@@ -21,11 +24,14 @@ import { researchRegistrableDomain } from "./sourceQuality";
  * - the summary the reader reads first is there, starts with the pick, names in its text the rows it lists, and the offers of the options it recommends are cited;
  * - each priority the user named has its answer under the summary, and under a priority of price a dearer pick's answer names the cheaper option;
  * - each option earlier research on the branch recommended is named in the answer, and one the draft leans on has a record of this research;
- * - a key specification of an option it leads with is cited from two sites where two hold it, and where they disagree both are cited and both figures stated.
+ * - a key specification of an option it leads with is cited from two sites where two hold it, and where they disagree both are cited and both figures stated;
+ * - where the frame has a ratings criterion, the table gives the rating each option it leans on is compared by with its count, the summary gives the pick's, and a pick
+ *   rated clearly below another option the summary recommends, weighed by their numbers of ratings, names that option's score and count in the summary.
  *
  * What stays the model's word: that the prose says what the cited records say (the verifier reads the records, not the prose), that the pick follows
  * from the comparison, why each criterion matters, a statement that rows do not separate, any pick written only in prose, the summary's prices, shops and
- * length, and what an answer to a priority says beyond naming a cheaper option. Advice with its summary that cites nothing, picks nothing and links nothing passes where the plan marked no key specification and no priority, as does a text draft, which has no ids. Names are matched
+ * length, what an answer to a priority says beyond naming a cheaper option, and the reason a pick rated lower comes first, a rating's platform, a small sample's plain
+ * word and the complaints beside a score. Advice with its summary that cites nothing, picks nothing and links nothing passes where the plan marked no key specification and no priority, as does a text draft, which has no ids. Names are matched
  * generously: a false alarm costs a paid rewrite of the whole report, a missed one a table column, so only a report that holds no word of a criterion goes back.
  */
 export const REPORT_CHECK_GATE = "report_check";
@@ -473,6 +479,56 @@ function priorityTrouble(draft: ResearchDraft, frame: ResearchFrame, records: re
   return problems.length > 0 ? { message: problems.join(" ") } : null;
 }
 
+/** A rating as a send back names it: its score of its scale, its number of ratings and what they count, its platform, and a small sample's word. */
+function ratingWords(record: ResearchRatingRecord): string {
+  const { rating } = record;
+  const site = researchRecordSite(record);
+  return `${rating.score} of ${rating.scaleMax} from ${rating.count} ${rating.counted}${site ? ` on ${site}` : ""}${researchSampleIsSmall(rating.count) ? ", a small sample" : ""}`;
+}
+
+const RATING_FORM = "Give each option's score with its number of ratings and the platform, from the place with the most ratings, a small sample said plainly in its count, such as " +
+  "only 7 reviews, and the main complaints of its lowest-rated reviews beside the score.";
+
+/**
+ * What the user reads of the options' public ratings (operator decisions 2026-11-05: a rating counts with its sample, and 4.8 from thousands outranks 5.0 from seven). Each option
+ * the draft leans on is compared by the rating from its most ratings (`researchComparedRating`): the comparison table gives that one's score and number of ratings as its record
+ * holds them, and the summary gives the pick's, since on two reviewed runs a shop's few reviews carried a pick while a marketplace's thousands stayed out. A pick whose weighed
+ * score (`researchWeighedRating`) is clearly below another option the summary recommends names that option's score and number of ratings in the summary, which says why the pick
+ * comes first all the same: that it gives a reason stays the model's word, as with a dearer pick. A frame with no ratings criterion, and an option with no trusted rating, ask nothing.
+ */
+function ratingTrouble(draft: ResearchDraft, matrix: ResearchMatrix, records: readonly ResearchEvidenceRecord[], report: string, rejected: ReadonlySet<string>): Trouble | null {
+  const { frame } = matrix;
+  if (!researchRatingsCriterion(frame)) return null;
+  const rated = leanedOn(draft).filter((key) => frame.rows.some((row) => row.key === key)).flatMap((key) => {
+    const record = researchComparedRating(records, key, rejected);
+    return record ? [{ key, record }] : [];
+  });
+  if (rated.length === 0) return null;
+  const named = ({ key, record }: (typeof rated)[number]) => `${plain(rowLabel(frame, key))} (${key}), ${ratingWords(record)}`;
+  const problems: string[] = [];
+  const table = tableText(report);
+  const untabled = table ? rated.filter(({ record }) => ratingNumbersNotIn(record.rating, table).length > 0) : [];
+  if (untabled.length > 0) {
+    problems.push(`The comparison table does not give these ratings as their records hold them, the score with its number of ratings: ${listed(untabled.map(named), "; ")}. ${RATING_FORM}`);
+  }
+  const { pickRowKey: pick, summary } = draft;
+  const own = rated.find(({ key }) => key === pick);
+  if (!own || !summary) return problems.length > 0 ? { message: problems.join(" ") } : null;
+  const text = researchSummaryText(summary);
+  if (ratingNumbersNotIn(own.record.rating, text).length > 0) {
+    problems.push(`The summary does not give the pick's rating: ${named(own)}. Give its score with its number of ratings and the platform in the summary's text, a small sample said plainly in its count.`);
+  }
+  const weighed = researchWeighedRating(own.record.rating);
+  const above = rated.filter(({ key, record }) => key !== pick && summary.rowKeys.includes(key) && researchWeighedRating(record.rating) - weighed >= RESEARCH_RATING_WEIGHING.clearlyBelow);
+  const unexplained = above.filter(({ record }) => ratingNumbersNotIn(record.rating, text).length > 0);
+  if (unexplained.length > 0) {
+    problems.push(`Weighed by their numbers of ratings, the pick ${named(own)}, is rated clearly below ${listed(unexplained.map(named), "; ")}, which the summary also recommends: a score ` +
+      "from few ratings says less than one from many. Say in the summary's text why the pick comes first all the same, naming that option's score with its number of ratings, " +
+      "such as the user's priority, a key specification or, for a doctor or a clinic, the qualification from official sources; where nothing outweighs it, make that option the pick.");
+  }
+  return problems.length > 0 ? { message: problems.join(" ") } : null;
+}
+
 /**
  * Links of the report that no cited record stands behind: a live record's id goes back with it, and for the rest it is a record or no link. A link to the root of a site
  * a cited record is on passes: it claims nothing to rest on.
@@ -563,7 +619,7 @@ export function researchReportFindings(draft: ResearchDraft, records: readonly R
   const unknown = unknownRecords(ids, records, report);
   const links = unbackedLinks(draft, ids, records, report);
   const rows = matrix && [outsideMatrix(draft, matrix.frame, report), openBranches(draft, matrix.frame, report), uncitedRows(draft, ids, matrix, records, report),
-    earlierTrouble(draft, matrix.frame, records, report), keySpecTrouble(draft, ids, matrix, records, report, rejected)];
+    earlierTrouble(draft, matrix.frame, records, report), keySpecTrouble(draft, ids, matrix, records, report, rejected), ratingTrouble(draft, matrix, records, report, rejected)];
   const states = named.length > 0 || leanedOn(draft).length > 0;
   const table = matrix && states ? comparison(draft, matrix, records, report) : [];
   const summary = [summaryTrouble(draft, matrix?.frame ?? null), uncitedOffers(draft, ids, records, matrix), matrix && priorityTrouble(draft, matrix.frame, records, rejected)];

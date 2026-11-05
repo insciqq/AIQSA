@@ -61,6 +61,11 @@ describe("the page guide", () => {
       "never show such a fact as established"]) expect(RESEARCH_PAGE_GUIDE).toContain(rule);
   });
 
+  it("shows a rating as the answer does, with its number of ratings and its platform (operator decisions 2026-11-05)", () => {
+    expect(RESEARCH_PAGE_GUIDE).toContain("Where the report gives the options' ratings, the table shows each one's score with its number of ratings and the platform exactly as the " +
+      "report gives them, with a small sample and the main complaints beside it as the report says them.");
+  });
+
   it("prefers inline SVG and allows a library only as the artifact tool does, with one file rule that says so", () => {
     expect(RESEARCH_PAGE_GUIDE).toContain("Only for a chart inline SVG cannot draw, load a chart library");
     expect(RESEARCH_PAGE_GUIDE).toContain("the only other thing it loads is a chart library the server froze");

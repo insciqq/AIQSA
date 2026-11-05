@@ -3,7 +3,7 @@ import { RESEARCH_ROUND_LIMITS, type ResearchDraft, type ResearchEvidenceRecord,
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { runResearchGates, type ResearchAttempt, type ResearchGateContext } from "./gates";
 import type { ResearchMatrix } from "./matrix";
-import { dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, RECORDS, SUMMARY, TABLE, unreachable } from "./report.testFixtures";
+import { dataset, DRAFT, finding, FRAME, id, MATRIX, matrixOf, RATED, rating, RECORDS, SUMMARY, TABLE, unreachable } from "./report.testFixtures";
 import { REPORT_CHECK_GATE, reportCheckGate, researchDraftWithLinkedRecords, researchReportFindings } from "./reportCheck";
 import { VERIFIER_MARKER } from "./verifier";
 
@@ -397,6 +397,131 @@ describe("advice without facts", () => {
 
   it("goes back as soon as it links a source, which is a claim to rest on it", () => {
     expect(messages({ ...ADVICE, report: "See https://elsewhere.example/guide for how to choose." })).toContain("no record of this research");
+  });
+});
+
+describe("ratings weighed by their sample (operator decisions 2026-11-05)", () => {
+  // Synthetic: the pick's own shop shows seven perfect ratings, the alternative's marketplace card five thousand.
+  const SHOP = rating(6, "x1", 5, 7, "lonax.example");
+  const MARKET = rating(7, "x2", 4.8, 5_000, "market.example");
+  const RATED_RECORDS = [...RECORDS, SHOP, MARKET];
+  const ALL = [1, 2, 3, 4, 5, 6, 7].map(id);
+  const ratedTable = (x1: string, x2: string) => ["| Вариант | Цена за 160×200 | Отзывы владельцев | Жёсткость | Рейтинг и отзывы |", "| --- | --- | --- | --- | --- |",
+    `| Lonax Memory | 30 000 ₽ | 3 из 11 | средняя | ${x1} |`, `| Optima Classic | 25 000 ₽ | нет данных | жёсткая | ${x2} |`].join("\n");
+  const TABLED = ratedTable("5,0 — всего 7 оценок, lonax.example; жалуются на запах", "4,8 — 5 000 оценок, market.example; жалуются на продавленность");
+  const LINKS = `${LINKED} https://lonax.example/x1 https://market.example/x2`;
+  const rated = (text: string, table = TABLED, extra: Partial<ResearchDraft> = {}): ResearchDraft =>
+    ({ ...DRAFT, recordIds: ALL, report: `# Отчёт\n\n${table}\n\n${LINKS}\n`, summary: { rowKeys: ["x1", "x2"], text }, ...extra });
+  const PICK_ONLY = "Берите Lonax Memory за 30 000 ₽: 5,0 из 5, но всего по 7 оценкам на сайте магазина. Дешевле — Optima Classic за 25 000 ₽.";
+  const WHY = "Берите Lonax Memory за 30 000 ₽: 5,0 из 5, но всего по 7 оценкам на сайте магазина. У Optima Classic 4,8 из 5 по 5 000 оценкам на маркетплейсе, " +
+    "зато Lonax Memory держит нагрузку до 140 кг на сторону против 100 кг. Optima Classic дешевле, 25 000 ₽.";
+  const ratedMessages = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[] = RATED_RECORDS, frame: ResearchFrame = RATED) => messages(draft, records, matrixOf(frame, records));
+
+  it("passes a draft whose table and summary give the scores with their counts, and whose pick rated lower says why", () => {
+    expect(ratedMessages(rated(WHY))).toBe("");
+  });
+
+  it("sends back a pick clearly below another recommended option, weighed by their numbers of ratings, whose summary gives no reason", () => {
+    const text = ratedMessages(rated(PICK_ONLY));
+    expect(text).toContain("Weighed by their numbers of ratings, the pick Lonax Memory (x1), 5 of 5 from 7 ratings on lonax.example, a small sample, is rated clearly below " +
+      "Optima Classic (x2), 4.8 of 5 from 5000 ratings on market.example, which the summary also recommends: a score from few ratings says less than one from many.");
+    expect(text).toContain("Say in the summary's text why the pick comes first all the same, naming that option's score with its number of ratings");
+    expect(text).toContain("where nothing outweighs it, make that option the pick.");
+    // The other way round the pick needs no reason: it is the better rated.
+    const switched = rated("Берите Optima Classic за 25 000 ₽: 4,8 из 5 по 5 000 оценкам. Lonax Memory дороже, 30 000 ₽.", TABLED, { pickRowKey: "x2" });
+    expect(ratedMessages({ ...switched, summary: { rowKeys: ["x2", "x1"], text: switched.summary!.text } })).toBe("");
+  });
+
+  it("sends back a table that does not give an option's score with its count, and a summary that does not give the pick's", () => {
+    const text = ratedMessages(rated(WHY, ratedTable("отличный", "4,8 — 5 000 оценок")));
+    expect(text).toContain("The comparison table does not give these ratings as their records hold them, the score with its number of ratings: Lonax Memory (x1), 5 of 5 from 7 " +
+      "ratings on lonax.example, a small sample.");
+    expect(text).toContain("a small sample said plainly in its count, such as only 7 reviews, and the main complaints of its lowest-rated reviews beside the score.");
+    expect(text).not.toContain("Optima Classic (x2), 4.8");
+    const summary = ratedMessages(rated("Берите Lonax Memory за 30 000 ₽. У Optima Classic 4,8 из 5 по 5 000 оценкам, но Lonax Memory держит больше. Optima Classic дешевле."));
+    expect(summary).toContain("The summary does not give the pick's rating: Lonax Memory (x1), 5 of 5 from 7 ratings on lonax.example, a small sample.");
+  });
+
+  it("compares an option by the place with the most ratings: its seller's few are shown and never compared", () => {
+    const records = [...RATED_RECORDS, rating(8, "x1", 4.6, 3_000, "market.example")];
+    const ids = [...ALL, id(8)];
+    const both = ratedTable("4,6 — 3 000 оценок, market.example; на сайте магазина 5,0 по 7", "4,8 — 5 000 оценок, market.example");
+    const summary = "Берите Lonax Memory за 30 000 ₽: 4,6 из 5 по 3 000 оценкам. Optima Classic дешевле, 25 000 ₽.";
+    // 4.6 from 3,000 is not clearly below 4.8 from 5,000, so the pick needs no reason; the shop's seven alone in the table go back.
+    expect(ratedMessages(rated(summary, both, { recordIds: ids }), records)).toBe("");
+    const shopOnly = ratedMessages(rated(summary, TABLED, { recordIds: ids }), records);
+    expect(shopOnly).toContain("Lonax Memory (x1), 4.6 of 5 from 3000 ratings on market.example.");
+    expect(shopOnly).not.toContain("rated clearly below");
+  });
+
+  it("asks no reason for a tenth of a star between two scores from thousands", () => {
+    const records = [...RECORDS, rating(6, "x1", 4.7, 1_200, "lonax.example"), MARKET];
+    const table = ratedTable("4,7 — 1 200 оценок", "4,8 — 5 000 оценок");
+    expect(ratedMessages(rated("Берите Lonax Memory за 30 000 ₽: 4,7 из 5 по 1 200 оценкам. Optima Classic дешевле, 25 000 ₽.", table), records)).toBe("");
+  });
+
+  it("weighs no rating whose quote lacks its numbers, nor one a check rejected", () => {
+    const wrong = [...RECORDS, SHOP, { ...MARKET, quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" as const } }];
+    expect(ratedMessages(rated(PICK_ONLY), wrong)).not.toContain("rated clearly below");
+    expect(researchReportFindings(rated(PICK_ONLY), RATED_RECORDS, matrixOf(RATED, RATED_RECORDS), new Set([id(7)])).troubles.map(({ message }) => message).join("\n"))
+      .not.toContain("rated clearly below");
+  });
+
+  it("behaves as before where the frame holds no ratings criterion", () => {
+    expect(messages(rated(PICK_ONLY, ratedTable("отличный", "хороший")), RATED_RECORDS, matrixOf(FRAME, RATED_RECORDS))).toBe("");
+    expect(check(DRAFT, RATED_RECORDS, matrixOf(FRAME, RATED_RECORDS))).toEqual({ troubles: [] });
+  });
+
+  it("sends the pick rated lower back within the report check's cap, and goes on past it", async () => {
+    const context = (earlier: readonly ResearchAttempt[]): ResearchGateContext => ({ attempt: earlier.length + 1,
+      coverage: { change: vi.fn(), coverage: async () => matrixOf(RATED, RATED_RECORDS).coverage, frame: async () => RATED }, earlier,
+      evidence: { page: vi.fn(), record: vi.fn(), records: async () => RATED_RECORDS }, plan: { goal: "Выбрать матрас.", questions: [], skipped: [] }, signal: new AbortController().signal,
+      sources: { opened: async () => [] }, subagents: { run: vi.fn() }, time: { remainingMs: () => 600_000, sendBackAllowed: () => true }, verifierModel: vi.fn() });
+    const run = (draft: ResearchDraft, earlier: readonly ResearchAttempt[] = []) => runResearchGates({ context: context(earlier), draft, gates: [reportCheckGate], runId: "run-1" });
+    expect(await run(rated(PICK_ONLY))).toMatchObject({ gate: REPORT_CHECK_GATE, kind: "sent_back", message: expect.stringContaining("rated clearly below") });
+    const capped = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => ({ draft: rated(PICK_ONLY), gate: REPORT_CHECK_GATE, message: "Say why." }));
+    expect(await run(rated(PICK_ONLY), capped)).toEqual({ kind: "accepted", notes: [] });
+    expect(await run(rated(WHY))).toEqual({ kind: "accepted", notes: [] });
+  });
+
+  describe("a service, as a choice of doctor", () => {
+    /** Synthetic: the doctor with the higher category has fewer ratings and a lower score. The qualification is a key specification from official sources. */
+    const CLINIC: ResearchFrame = { branches: [], changes: [], criteria: [
+      { criterion: "Квалификация по официальным источникам", decisive: true, key: "qualification", why: "Категория и стаж из реестра и лицензии." },
+      { criterion: "Цена приёма", key: "price", why: "Бюджет." }, { criterion: "Рейтинг и отзывы", key: "ratings", ratings: true, why: "Оценка многих пациентов." }],
+    rows: [{ key: "ivanova", label: "Иванова Анна" }, { key: "petrov", label: "Петров Олег" }] };
+    const qualified = (number: number, rowKey: string, claim: string, site: string) => finding(number, rowKey, "qualification", { claim, url: `https://${site}/${rowKey}` });
+    const DOCTORS = [qualified(21, "ivanova", "Высшая категория, стаж 22 года.", "registry.example"), qualified(22, "ivanova", "Высшая категория, стаж 22 года.", "clinic-a.example"),
+      qualified(23, "petrov", "Первая категория, стаж 6 лет.", "registry.example"), qualified(24, "petrov", "Первая категория, стаж 6 лет.", "clinic-b.example"),
+      finding(25, "ivanova", "price", { claim: "Приём 3 500 ₽.", sourceClass: "action_channel", url: "https://clinic-a.example/price" }),
+      finding(26, "petrov", "price", { claim: "Приём 3 000 ₽.", sourceClass: "action_channel", url: "https://clinic-b.example/price" }),
+      rating(27, "ivanova", 4.6, 40, "doctors.example"), rating(28, "petrov", 4.9, 900, "doctors.example")];
+    const LINKS_OF = DOCTORS.map((record) => record.kind === "finding" ? record.url : "").join(" ");
+    const table = (rows: readonly string[]) => rows.join("\n");
+    const APART = table(["| Врач | Квалификация по официальным источникам | Цена приёма | Рейтинг и отзывы |", "| --- | --- | --- | --- |",
+      "| Иванова Анна | высшая категория, стаж 22 года (реестр) | 3 500 ₽ | 4,6 из 5, 40 отзывов, doctors.example |",
+      "| Петров Олег | первая категория, стаж 6 лет (реестр) | 3 000 ₽ | 4,9 из 5, 900 отзывов, doctors.example |"]);
+    // The qualification folded into the rating's column, as though a score stood for it.
+    const FOLDED = table(["| Врач | Цена приёма | Рейтинг и отзывы |", "| --- | --- | --- |", "| Иванова Анна | 3 500 ₽ | 4,6 из 5, 40 отзывов, хороший специалист |",
+      "| Петров Олег | 3 000 ₽ | 4,9 из 5, 900 отзывов, опытный врач |"]);
+    const SAYS = "Идите к Ивановой Анне: высшая категория и 22 года стажа по реестру, 4,6 из 5 по 40 отзывам, приём 3 500 ₽. У Петрова Олега выше оценка, 4,9 из 5 по 900 " +
+      "отзывам, но первая категория и 6 лет стажа; приём 3 000 ₽.";
+    const doctor = (text: string, report = APART): ResearchDraft => ({ ...DRAFT, pickRowKey: "ivanova", recordIds: DOCTORS.map(({ id: own }) => own),
+      report: `# Отчёт\n\n${report}\n\n${LINKS_OF}\n`, summary: { rowKeys: ["ivanova", "petrov"], text } });
+    const doctorMessages = (draft: ResearchDraft) => messages(draft, DOCTORS, matrixOf(CLINIC, DOCTORS));
+
+    it("keeps the qualification and the rating apart: each has its column, and the summary gives both", () => {
+      expect(doctorMessages(doctor(SAYS))).toBe("");
+      const folded = doctorMessages(doctor(SAYS, FOLDED));
+      expect(folded).toContain("The comparison table leaves out these criteria of the matrix: Квалификация по официальным источникам");
+      expect(folded).not.toContain("does not give these ratings");
+    });
+
+    it("asks a pick rated lower why it comes first, a qualification from official sources among the reasons it may give", () => {
+      const text = doctorMessages(doctor("Идите к Ивановой Анне: высшая категория, 4,6 из 5 по 40 отзывам, приём 3 500 ₽. Петров Олег дешевле, 3 000 ₽."));
+      expect(text).toContain("the pick Иванова Анна (ivanova), 4.6 of 5 from 40 ratings on doctors.example, is rated clearly below Петров Олег (petrov), 4.9 of 5 from 900 ratings");
+      expect(text).toContain("for a doctor or a clinic, the qualification from official sources");
+    });
   });
 });
 
