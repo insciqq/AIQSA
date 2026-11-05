@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { researchAnswerText, researchPartialClaimsNote } from "./notes";
+import { researchAnswerText, researchContentNotes, researchCounterEvidenceNote, researchNote, researchPartialClaimsNote } from "./notes";
+
+describe("what a research's page takes of the answer's notes", () => {
+  it("keeps the notes about its content, each once, and leaves out every word about how it was made", () => {
+    const partial = researchPartialClaimsNote(["Model X1 — Owner reviews"], 5)!;
+    const against = researchCounterEvidenceNote([{ claim: "The X1 sags after a year.", quote: null, url: "https://lab.example/x1" }])!;
+    const rejected = "The checks did not confirm these facts this report cites, so do not rely on them: Model X2 — Load.";
+    expect(researchContentNotes([researchNote("no_findings"), partial, ` ${partial} `, researchNote("gate_failed"), against, researchNote("time_out"), rejected,
+      researchNote("followup_not_applied"), ""])).toEqual([partial, against, rejected]);
+  });
+});
 
 describe("a source's narrower support in the answer", () => {
   it("names the facts by the server's labels, never the claim's or the checker's words, and without a technical verdict label", () => {

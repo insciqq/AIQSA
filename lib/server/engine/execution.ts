@@ -87,7 +87,7 @@ import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from ".
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
 import { createRunResearch, deepResearchRefusal, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
   type RunResearch } from "../research/run";
-import { writeResearchPage } from "../research/page";
+import { researchPageRequest, writeResearchPage } from "../research/page";
 import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
 
 /**
@@ -1012,12 +1012,22 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         if (researched === null && runResearch && outcome.kind !== "approval") researched = await runResearch.composed("no_report", stop.signal);
         // A finished research's page (`research/page.ts`), from the final report while the answer waits: one step offering `create_artifact` alone,
         // its own conversation and its own bound, never at an approval's pause. Its card joins the answer only once the page passed its check.
-        const pageSource = researched !== null && outcome.kind !== "approval" ? runResearch?.pageSource(false) ?? null : null;
+        const pageSource = researched !== null && outcome.kind !== "approval" ? runResearch?.pageSource() ?? null : null;
         const pageTool = pageSource && registry.resolve(ARTIFACT_TOOL_NAME);
-        if (pageSource && pageTool && runResearch) {
-          pageHeld = researched;
-          const page = await writeResearchPage({ check: runResearch.ports.page.check, goal: pageSource.goal,
-            latestEnd: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)), now, report: pageSource.report, runId, signal,
+        if (pageSource && pageTool && runResearch && researched !== null) {
+          const held = researched;
+          pageHeld = held;
+          const artifacts = input.services.artifacts;
+          // A page the answer does not show leaves the chat's artifacts, archived as its owner would, so no later turn reads it.
+          const discard = artifacts?.archive ? async (artifactId: string) => { await artifacts?.archive?.({ artifactId, ownerUserId: input.userId }); } : null;
+          const page = await writeResearchPage({ caveats: pageSource.caveats, check: runResearch.ports.page.check, ...(discard ? { discard } : {}),
+            goal: pageSource.goal, latestEnd: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)), now, report: pageSource.report, runId,
+            // Answer first: what the answer will say is on its message before the step, so a restart during it leaves recovery this text.
+            save: async () => {
+              await answer.flush();
+              await input.repository.appendAssistantText(scope.assistantMessageId, held, { runId });
+            },
+            signal,
             respond: async (history, pageSignal) => {
               sink.send(liveRunPhaseStatus({ phase: "model" }));
               const result = await callModel({ adapter: input.adapter, deadlineAt: startedAt + turnMs, faults, now, onDiscard: async () => undefined,
@@ -1027,8 +1037,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
                   setRunProviderWait(runId, wait);
                   sink.send(liveRunPhaseStatus({ phase: "model", ...(wait ? { wait } : {}) }));
                 }, onUsage: recordModelUsage, routing: loopRouting, signal: pageSignal, timeoutMs },
-              { ...base, attachments: [], history: projectTranscript(history, target, {}), params, parallelToolCalls: true, previousProviderResponseId: undefined,
-                providerToolMessages: undefined, toolChoice: "auto", tools: [pageTool.definition] });
+              researchPageRequest(base, { history: projectTranscript(history, target, {}), params, tool: pageTool.definition }));
               // No request anchor: the step's request is not the transcript's, so the next run measures from the loop's last one.
               return { calls: result.toolCalls ?? [], items: modelResponseItems({ estimate: estimateApproxTokens, history: result.history ?? fallbackHistory(result),
                 nextId: randomUUID, origin: target, usage: result.usage }) };

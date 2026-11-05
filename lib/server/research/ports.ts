@@ -187,7 +187,7 @@ export type ResearchPageArtifact = Readonly<{ artifactId: string; entrypoint: st
 export type ResearchPageVerdict = Readonly<{ kind: "pass" }> | Readonly<{ kind: "mismatch"; message: string }>;
 
 /**
- * The page's check before it reaches the answer, filled by `research-page-check`, with no model call: it reads the version `page` names and compares it with
+ * The page's check before it reaches the answer, to be filled by a later task with no model call: it reads the version `page` names and compares it with
  * `report`, the text the page was written from. A second mismatch, or a check that throws, keeps the page out of the answer, which keeps its full text either way.
  */
 export type ResearchPagePort = Readonly<{
