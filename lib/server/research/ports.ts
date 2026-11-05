@@ -1,6 +1,7 @@
 import type {
   DecodedResearch,
   ResearchAgentRef,
+  ResearchCandidate,
   ResearchEvidenceRecord,
   ResearchFrame,
   ResearchFrameChangeRequest,
@@ -96,7 +97,32 @@ export type ResearchPlanWindowPort = Readonly<{
    * `signal`; a closed tab changes nothing. On a window already answered no
    * window opens: the proposal is the plan rebuilt from what the person changed, and it replaces the answer's plan at once.
    */
-  open(input: Readonly<{ goal: string; proposal: ResearchPlanProposal; signal: AbortSignal }>): Promise<ResearchPlanAnswer>;
+  open(input: Readonly<{
+    /** The options earlier research on the branch recommended, which every frame the plan writes holds first among its candidates (`earlier.ts`). */
+    earlier?: readonly ResearchCandidate[];
+    goal: string;
+    proposal: ResearchPlanProposal;
+    signal: AbortSignal;
+  }>): Promise<ResearchPlanAnswer>;
+}>;
+
+/** A record of earlier research as the start reads it: only what tells an option's page and date. */
+export type ResearchEarlierRecord = Readonly<{ createdAt: string; id: string; kind: ResearchEvidenceRecord["kind"]; rowKey: string | null; runId: string; url: string | null }>;
+
+/** What a new research reads of the researches earlier turns of its branch finished. */
+export type ResearchEarlierRead = Readonly<{
+  /** The released frames of those research runs, by run. */
+  frames: ReadonlyMap<string, ResearchFrame>;
+  records: readonly ResearchEarlierRecord[];
+}>;
+
+/**
+ * What a new research starts with of earlier research on its branch (`earlier.ts`), filled by `research-carries-earlier-options`. It only reads, and only
+ * this user's rows of this chat: the run ids and record ids come from the branch's own items, stored values that count only when they are runs of the
+ * branch (`branchRunIds`), never a sibling branch's or another chat's.
+ */
+export type ResearchEarlierPort = Readonly<{
+  read(input: Readonly<{ recordIds: readonly string[]; researchRunIds: readonly string[] }>, signal: AbortSignal): Promise<ResearchEarlierRead>;
 }>;
 
 /**
@@ -201,6 +227,7 @@ export type ResearchPagePort = Readonly<{
 
 export type ResearchPorts = Readonly<{
   coverage: ResearchCoveragePort;
+  earlier: ResearchEarlierPort;
   evidence: ResearchEvidencePort;
   page: ResearchPagePort;
   planWindow: ResearchPlanWindowPort;
@@ -212,6 +239,7 @@ export type ResearchPorts = Readonly<{
 /** How the engine supplies the ports: one factory per port, called once per run and handed the ports it reads, so no part reaches into another's store. */
 export type ResearchPortFactories = Readonly<{
   coverage?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchCoveragePort;
+  earlier?: (run: ResearchRunScope) => ResearchEarlierPort;
   evidence?: (run: ResearchRunScope) => ResearchEvidencePort;
   page?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchPagePort;
   planWindow?: (run: ResearchRunScope) => ResearchPlanWindowPort;
@@ -227,6 +255,9 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     change: async () => ({ message: NO_FRAME, ok: false }),
     coverage: async () => null,
     frame: async () => null
+  },
+  earlier: {
+    read: async () => ({ frames: new Map(), records: [] })
   },
   evidence: {
     page: async () => null,
@@ -264,6 +295,7 @@ export function researchPorts(factories: ResearchPortFactories | undefined, run:
   const coverage = factories?.coverage?.(run, { evidence }) ?? NOOP_RESEARCH_PORTS.coverage;
   return {
     coverage,
+    earlier: factories?.earlier?.(run) ?? NOOP_RESEARCH_PORTS.earlier,
     evidence,
     page: factories?.page?.(run, { evidence }) ?? NOOP_RESEARCH_PORTS.page,
     planWindow: factories?.planWindow?.(run) ?? NOOP_RESEARCH_PORTS.planWindow,

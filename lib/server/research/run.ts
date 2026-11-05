@@ -16,6 +16,7 @@ import {
   START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   type DecodedResearch,
+  type ResearchCandidate,
   type ResearchDraft,
   type ResearchEvidenceRecord,
   type ResearchPlan,
@@ -42,11 +43,12 @@ import { harnessToolError } from "../tools/harnessTool";
 import { proposeResearchPlanTool, researchDraftReservedInstruction, researchScopingInstructions, researchScopingOverMessage, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { PlanUpdate } from "../tools/updatePlan";
-import { researchCandidatesLine } from "./candidates";
+import { researchCandidatesLine, researchEarlierCandidates, researchEarlierCandidatesOf } from "./candidates";
+import { researchEarlierOptions, type ResearchEarlierDraft } from "./earlier";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { createResearchRounds, researchFilledCells, researchKeySpecs, researchLeadingRows, researchMatrix, researchProgressCells, researchUnconfirmedKeyCells } from "./matrix";
-import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchReadHost,
-  researchUnreachableSites } from "./method";
+import { researchCoverageLine, researchEarlierMethodText, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate,
+  researchReadHost, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchContentNotes, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
@@ -384,6 +386,8 @@ export function createRunResearch(input: RunResearchInput) {
   let pickUp: Promise<ResearchResumeState | null> | null = null;
   /** Whether this run's row was written for it, once: only a start writes it, as a run that never starts ran no research. */
   let linking: Promise<boolean> | null = null;
+  /** What earlier research on the branch recommended, read once (`earlierSeeds`). */
+  let seeding: Promise<readonly ResearchCandidate[]> | null = null;
   let askedToPickUp = false;
   /** Where what agents opened starts: at this research's first run, which a Continue moves back past its own. */
   let openedFrom = researchRunId;
@@ -460,6 +464,31 @@ export function createRunResearch(input: RunResearchInput) {
     });
     return linking;
   }
+  /**
+   * The options earlier research on the branch recommended, as this research's first candidates (`earlier.ts`): read once, from the turns of this
+   * run's own items and the store, at a start that picks nothing up; a Continue's frame already holds its research's. A store that fails costs the
+   * seeds, never the run; only Stop goes on as what it is.
+   */
+  function earlierSeeds(): Promise<readonly ResearchCandidate[]> {
+    const { signal } = input.subagentInput;
+    seeding ??= (async () => {
+      const researches = researchEarlierDrafts(input.items(), input.subagentInput.branchRunIds);
+      if (researches.length === 0) return [];
+      const read = await ports.earlier.read({ recordIds: researches.flatMap(({ draft }) => draft.recordIds ?? []),
+        researchRunIds: researches.map(({ researchRunId: run }) => run) }, signal);
+      return researchEarlierCandidates(researchEarlierOptions(researches, read), new Date(input.now()).toISOString());
+    })().catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      logEvent("service_operation", { action: "degrade", code: "research_earlier_failed", error, outcome: "degraded", run_id: input.runId, stage: "read", subsystem: "database" });
+      return [];
+    });
+    return seeding;
+  }
+  /** The method, and what to do with the options earlier research recommended where the frame holds any. */
+  const methodText = (stands: ResearchPlan, earlier: readonly ResearchCandidate[]) => {
+    const carried = researchEarlierMethodText(earlier, "plan");
+    return carried ? `${researchMethodText(stands)}\n\n${carried}` : researchMethodText(stands);
+  };
   const researching = () => goal !== null;
   /**
    * A `start_research` call passed its checks. Research counts as started from the response that holds the call (`goal`), which holds its text
@@ -659,7 +688,8 @@ export function createRunResearch(input: RunResearchInput) {
       instructions: [PICKED_UP, ...records ? [`${records.length} records stand.${list ? " The ids a draft cites them by end this result." : ""}`] : [],
         ...matrix ? [researchCoverageLine(matrix, null, researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft)), ...candidates ? [candidates] : []] : [],
         ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
-      ...rebuildOwed ? {} : { method: researchMethodText(stands) } });
+      // The frame it picked up holds the options earlier research recommended, as its first start seeded them.
+      ...rebuildOwed ? {} : { method: methodText(stands, matrix ? researchEarlierCandidatesOf(matrix.frame) : []) } });
     return list ? { ...result, content: [...result.content, { text: list, type: "text" }] } : result;
   }
 
@@ -683,9 +713,11 @@ export function createRunResearch(input: RunResearchInput) {
       if (plan) return harnessToolError(call, "research_plan_stands", "Research already runs and its plan stands: go on with it.");
       if (continued && state && written) return pickUpResearch(call, { persistedToolCallId, signal }, continued, state);
       await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: PLANNING_LINE }] });
+      // What earlier research on the branch recommended, so the plan's rows can take those that fit.
+      const earlier = researchEarlierMethodText(await earlierSeeds(), "start");
       // The server's fields, first so an excerpt would keep them: an approval continuation reads them back (`researchRunOf`).
       return resultOf(call, { research_run: researchRunId, status: "scoping",
-        instructions: [...continued?.goal === undefined ? [] : [NOTHING_PICKED_UP], researchScopingInstructions()].join("\n") });
+        instructions: [...continued?.goal === undefined ? [] : [NOTHING_PICKED_UP], researchScopingInstructions(), ...earlier ? [earlier] : []].join("\n") });
     }
   };
 
@@ -705,20 +737,22 @@ export function createRunResearch(input: RunResearchInput) {
   }
 
   /** What the model reads when a plan stands. The fields keep this order: `researchOfTurn` reads them back from a stored result, excerpted or not. */
-  function planResult(call: ModelToolCall, answer: ResearchPlanAnswer, status: "rebuilt" | "released", instructions: string, method: ResearchPlan | null) {
+  function planResult(call: ModelToolCall, answer: ResearchPlanAnswer, status: "rebuilt" | "released", instructions: string, method: ResearchPlan | null,
+    earlier: readonly ResearchCandidate[]) {
     return resultOf(call, { status, changed: answer.changed, released_by: answer.releasedBy, user_plan: wordsOf(answer.plan), instructions,
-      ...method ? { method: researchMethodText(method) } : {} });
+      ...method ? { method: methodText(method, earlier) } : {} });
   }
 
   async function rebuildPlan(call: ModelToolCall, on: StandingPlan, execution: EngineToolExecution, researched: string): Promise<ToolExecutionResult> {
     const decoded = rebuiltProposal(call, on);
     if (!decoded.ok) return harnessToolError(call, "research_plan_invalid", decoded.message);
-    await ports.planWindow.open({ goal: researched, proposal: decoded.value, signal: execution.signal });
+    const earlier = await earlierSeeds();
+    await ports.planWindow.open({ earlier, goal: researched, proposal: decoded.value, signal: execution.signal });
     const rebuilt = researchPlanFromProposal(researched, decoded.value);
     rebuildOwed = false;
     planStands(rebuilt);
     await showPlan(execution.persistedToolCallId, "stands", researchPlanUpdate(rebuilt));
-    return planResult(call, { changed: on.changed, plan: decoded.value, releasedBy: on.releasedBy }, "rebuilt", "The plan stands with your rebuilt questions.", rebuilt);
+    return planResult(call, { changed: on.changed, plan: decoded.value, releasedBy: on.releasedBy }, "rebuilt", "The plan stands with your rebuilt questions.", rebuilt, earlier);
   }
 
   const proposeTool: EngineTool = {
@@ -737,11 +771,12 @@ export function createRunResearch(input: RunResearchInput) {
       if (standing) return rebuildPlan(call, standing, execution, researched);
       const decoded = decodeResearchPlanProposal(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_plan_invalid", decoded.message);
+      const earlier = await earlierSeeds();
       windowOpen = true;
       let answer: ResearchPlanAnswer;
       try {
         // Opened first, so the route finds the window as soon as the card shows it, and Stop may reject it while the card is written.
-        const closing = ports.planWindow.open({ goal: researched, proposal: decoded.value, signal });
+        const closing = ports.planWindow.open({ earlier, goal: researched, proposal: decoded.value, signal });
         closing.catch(() => undefined);
         await showPlan(persistedToolCallId, "window", stepsUpdate(decoded.value));
         answer = await closing;
@@ -758,13 +793,13 @@ export function createRunResearch(input: RunResearchInput) {
       if (answer.changed) {
         await showPlan(persistedToolCallId, "words", stepsUpdate(answer.plan));
         return planResult(call, answer, "released", `The user changed your plan. user_plan holds the user's own words, and they outrank yours. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} ` +
-          "again now with your questions, criteria and rows rebuilt from them; no window opens, and no researcher can start until you do.", null);
+          "again now with your questions, criteria and rows rebuilt from them; no window opens, and no researcher can start until you do.", null, earlier);
       }
       await showPlan(persistedToolCallId, "stands", researchPlanUpdate(stands));
       return planResult(call, answer, "released", fromChat
         ? `The user wrote to you while the plan was on the screen. Their message comes right after this result and counts as their edit of the plan: if it changes the plan, call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} ` +
           "again with your questions rebuilt from it before you start researchers."
-        : "The plan stands as you proposed it.", stands);
+        : "The plan stands as you proposed it.", stands, earlier);
     }
   };
 
@@ -1306,4 +1341,26 @@ function continuedTurn(items: readonly TranscriptItem[]): ContinuedTurn | null {
 export function researchRunOf(items: readonly TranscriptItem[], run: Readonly<{ branchRunIds: readonly string[]; runId: string }>): string {
   const { researchRun } = researchOfTurn(items);
   return researchRun !== undefined && run.branchRunIds.includes(researchRun) ? researchRun : run.runId;
+}
+
+/**
+ * The researches earlier turns of the branch finished, newest first, each once: a turn's draft the gates accepted, which is the report its answer showed,
+ * and the research run its start's stored result names, read as an approval continuation and a Continue read their turn (`researchOfTurn`). The items are
+ * the branch's own, its ancestors only, so a sibling branch's research is never among them; the run they name is a stored value, which counts only when it
+ * is an earlier run of the branch, and the store reads it as this user's in this chat (`earlier.ts`). A research the user stopped, one that timed out
+ * with a draft the gates had not accepted, and an interrupted one are left out: no report of theirs was accepted.
+ */
+export function researchEarlierDrafts(items: readonly TranscriptItem[], branchRunIds: readonly string[]): readonly ResearchEarlierDraft[] {
+  const found: ResearchEarlierDraft[] = [];
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const item = items[index]!;
+    // Where a turn starts, as `researchOfTurn` reads it: the turn before ends right here.
+    if (item.kind !== "user" || !item.id.startsWith("msg-")) continue;
+    const turn = researchOfTurn(items.slice(0, index));
+    const run = turn.researchRun;
+    if (turn.goal === undefined || turn.draftChecked !== "accepted" || !turn.draft || run === undefined || !branchRunIds.includes(run)) continue;
+    if (found.some(({ researchRunId }) => researchRunId === run)) continue;
+    found.push({ draft: turn.draft, researchRunId: run });
+  }
+  return found;
 }
