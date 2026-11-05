@@ -162,12 +162,33 @@ const RATINGS = "Ratings count for whatever people rate publicly, products and s
   "option its score with the top of its scale, the number of ratings and what they count, from the place with the most ratings for that exact option and also the seller's own " +
   "where that is what can be reached. A cell with no rating to find is recorded as not found, and the table says so in plain words.";
 
+/**
+ * A rating counts with its sample, and the worst reviews are read before a pick (operator decisions 2026-11-05): 4.8 from thousands of ratings outranks 5.0 from seven, and in a
+ * reviewed chat the first pick fell to one owner's report of sagging within a month, which the user found alone, while the skeptic finds such things late. The report check and
+ * the gap check hold a draft to both (`reportCheck.ts`, `gapCheck.ts`).
+ */
+const RATING_PICK = "Ratings are weighed by their sample: the server compares each option by its rating from the most ratings, its score pulled towards a neutral one when few " +
+  "people gave it, so 4.8 from 5,000 ratings outranks 5.0 from 7, and a seller's own page counts only where no place with more ratings rates the option. Before you hand in the " +
+  "draft, send researchers to read the lowest-rated reviews of each option you will recommend, recorded under the ratings criterion, or not found where it has none. Where your " +
+  "pick is rated clearly lower so than another option you recommend, the summary names that option's score with its number of ratings and says why the pick still comes first; " +
+  "where nothing outweighs it, that option is the pick.";
+
+/** A doctor's rating stands beside the qualification (operator decision 2026-11-05): what patients score says nothing of a licence or a specialty. */
+const QUALIFICATIONS = "For people and services such as a doctor or a clinic, the qualification, its education, specialty, category, licence and experience from official sources " +
+  "such as a register or the clinic's own documents, is a criterion of its own, added where the plan has none, and the rating stands beside it in the table and the summary: a " +
+  "rating never replaces a qualification, and a high score never stands for one.";
+
 /** What a researcher records of a rating: one record per place, its numbers in its quote, and whether variants share the card. */
 const RATING_RECORDS = "A public rating of an option, a product's or a service's such as a doctor's or a hotel's, is a finding with rating under the matrix's ratings criterion: " +
   "its score, the top of its scale, the number of ratings and what they count, with a quote that holds the score and the number as the page writes them, which the server checks. " +
   "Record it from the place with the most ratings for that exact option, and also the seller's own where that is what you can reach, each as its own record; a card that merges " +
   "its variants' ratings gets variants_merged, and the claim says so. An option with no public rating you can reach: record not_found for its ratings cell, with where you looked. " +
   "A rating seen only in search results is a lead: open its page.";
+
+/** The worst reviews first (operator decision 2026-11-05): an owner's report of sagging within a month undid a real pick, and only the user read it. */
+const WORST_REVIEWS = "Once you have an option's rating, read its lowest-rated reviews on that place: sort or filter them by rating, lowest first, and read the newest of them. " +
+  "Record what they complain of under the ratings criterion as owner_reviews findings, each quote word for word, or as a dataset of counts; where it has none, record not_found " +
+  "for that cell saying so. A doctor's or a clinic's qualification comes from official sources and is recorded under its own criterion, never as a rating.";
 
 /** What a plan that stands returns: how the main agent runs what it planned. */
 export function researchMethodText(plan: ResearchPlan): string {
@@ -184,6 +205,8 @@ export function researchMethodText(plan: ResearchPlan): string {
     KEY_SPECIFICATIONS,
     USER_PRIORITIES,
     RATINGS,
+    RATING_PICK,
+    QUALIFICATIONS,
     `When the matrix is covered, or nothing more can fill it, call ${SUBMIT_RESEARCH_DRAFT_TOOL_NAME} with the summary, the report, the ids of the records it rests on, ` +
       "the row it picks and what could not be reached. You pass ids, never their text: the ids are listed after each researcher's report, and the checks read only the records you " +
       "name, so name every record behind a figure, a price, a seller, a review or a link you state, those of your pick above all.",
@@ -200,6 +223,9 @@ export function researchMethodText(plan: ResearchPlan): string {
       "the plan marked, or, where it marked none, best fits the user's criteria with price breaking only a tie among those, marked plainly as a default and not as a finding, " +
       "alongside what would decide. The report keeps apart what is confirmed, what a party claims and what is not verified, marked compactly in the table or in one clause rather than by " +
       "hedging every sentence, and says what could not be reached and why.",
+    "Where the matrix has a ratings criterion, the table gives each option its score with its number of ratings and the platform, from the place with the most ratings, says a " +
+      "small sample plainly in its count, such as only 7 reviews, and puts the main complaints of its lowest-rated reviews beside the score; the summary gives the pick's score " +
+      "with its number of ratings and the platform. For a doctor or a clinic the qualification has its own column and its own words in the summary, beside the rating.",
     "For a purchase, the table gives every option its current price, with the shop and the date seen, where a record holds one, and each option the summary recommends " +
       "has at least one current offer cited, an action_channel record with its link, seller, price and the date it was seen, from any shop; one sentence says which shops could not be reached. Where the maker's own price is known, judge each offer against it. The options considered and not recommended stay " +
       "in the report as a reserve, each with one reason. Where research saw a trap on a card, such as variants merged under one card, a size, the seller or warranty terms, the report " +
@@ -241,6 +267,7 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
       `${RESEARCHER_ROWS} ${ROWS_ARE_OPTIONS} ${ROWS_BY_RULE} A criterion only when the question needs it, with your reason.`,
     KEY_SPECIFICATION_RECORDS,
     RATING_RECORDS,
+    WORST_REVIEWS,
     OFFERS,
     `The goal: ${cut(plain(plan.goal), GOAL_CHARACTERS)} ${READER_WORDS}`,
     RESEARCH_REVIEWS_REFERENCE,

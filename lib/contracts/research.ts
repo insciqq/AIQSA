@@ -441,6 +441,19 @@ export type ResearchRatingCounted = (typeof RESEARCH_RATING_COUNTS)[number];
  */
 export type ResearchRating = Readonly<{ count: number; counted: ResearchRatingCounted; scaleMax: number; score: number; variantsMerged: boolean }>;
 
+/**
+ * How the server weighs a public rating by its sample (operator decision 2026-11-05: 4.8 from thousands of ratings counts for more than 5.0 from seven). Its score, as
+ * a share of its scale's top, is pulled towards `neutralShare`, the middle of a one-to-five scale, as though `priorRatings` more people had given that: seven ratings
+ * leave 5.0 near 3.8, five thousand leave 4.8 at 4.8 (`researchWeighedRating`, `lib/server/research/sourceQuality.ts`). A pick is clearly below another option the
+ * summary recommends when its weighed score is lower by `clearlyBelow` of the scale or more, a quarter of a star on five, so a tenth of a star between two scores from
+ * thousands asks the draft nothing.
+ */
+export const RESEARCH_RATING_WEIGHING = Object.freeze({
+  clearlyBelow: 0.05,
+  neutralShare: 0.6,
+  priorRatings: 10
+});
+
 /** A record as an agent hands it in. `supersedes` names the record it corrects: nothing is changed or deleted while the run lives. */
 export type ResearchRecordInput = Readonly<{ criterionKey: string | null; rowKey: string | null; supersedes: string | null }> & (
   /** `rating` only on a finding of a public rating, and absent on every other one and on one stored before the field. */
