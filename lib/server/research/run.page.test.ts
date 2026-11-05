@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RESEARCH_TIME_MS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "../../contracts/research";
+import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
 import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunExecutionInput } from "../engine/execution";
@@ -13,6 +14,7 @@ import type { TranscriptRepository } from "../engine/transcriptRepository";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
+import { isRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { TURN_HANDOFF_RESERVE_MS } from "../runs/turnDeadline";
 import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
@@ -246,6 +248,28 @@ describe("a finished research writes its page", () => {
     expect(memory.appended.some((item) => item.kind === "tool_call" && item.name === ARTIFACT_TOOL_NAME)).toBe(false);
     expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: answerOf(report) });
     expect(memory.runs.complete).toHaveBeenCalledOnce();
+  });
+
+  it("marks the card it keeps as the answer's page, with where the answer's summary ends and its notes start, for the chat and a reload alike", async () => {
+    const { adapter } = scripted([{ calls: begin() }, { calls: [submit()] }]);
+    const memory = engineOf({});
+    const { repo, seen } = await go(adapter, memory);
+    const published = memory.published()!;
+    expect(published).toBe(answerOf(PURCHASE));
+    const kept = repo.appendRunOutputEvent.mock.calls.map(([, event]) => event as ModelRunSseEvent)
+      .filter((event) => event.type === "artifact" && event.data.artifactType === "generated_artifact");
+    expect(kept).toHaveLength(1);
+    // The saved card is the projection a reload reads back, marker included.
+    expect(isRunOutputArtifactEvent(kept[0]!)).toBe(true);
+    const saved = decodeThreadGeneratedArtifact((kept[0] as { data: { payload: unknown } }).data.payload);
+    const live = seen.find((event) => event.type === "artifact" && event.data.artifactType === "generated_artifact");
+    const streamed = decodeThreadGeneratedArtifact((live as { data: { payload: unknown } }).data.payload);
+    for (const card of [saved, streamed]) {
+      const { notesStart, summaryEnd } = card!.researchPage!;
+      expect(published.slice(0, summaryEnd!)).toBe(PURCHASE.summary);
+      expect(published.slice(notesStart!).trim()).toBe(`---\n\n*${researchNote("no_findings")}*`);
+      expect(published.slice(summaryEnd!, notesStart!).trim()).toBe(PURCHASE.report);
+    }
   });
 
   it("checks the page against the report through the seam, sends a mismatch back once, and shows the corrected page", async () => {

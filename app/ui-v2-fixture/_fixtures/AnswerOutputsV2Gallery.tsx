@@ -16,6 +16,7 @@ import {
 } from "@/features/conversation-v2/ConversationV2";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AnswerOutputsV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { researchAnswerViewV2 } from "@/features/answer-outputs-v2/researchAnswerView";
 import { McpApprovalCardsV2, McpApprovalContinuationTurnV2 } from "@/features/answer-outputs-v2/McpApprovalCardV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import { mcpApprovalContinuationText, type McpApprovalCard } from "@/lib/contracts/mcpApprovals";
@@ -25,7 +26,8 @@ export type AnswerOutputsGalleryState =
   | "complete"
   | "empty"
   | "memory"
-  | "reasoning";
+  | "reasoning"
+  | "research";
 
 const navigationChats: ChatNavigationSummaryWire[] = [{
   activeRun: false,
@@ -185,10 +187,65 @@ const memoryToolActivity: ThreadToolActivity = {
   ]
 };
 
+/* Two synthetic research answers, laid out as the server writes them (`researchDraftText`, then `researchAnswerText`): the first wrote a page, so
+   the chat shows its summary, its notes, the page's card and the report's file; the second wrote none and shows its whole text, as today. */
+const researchSummary = "Лучший выбор для дома — **Contoso Rest 2** за 24 900 ₽: средняя жёсткость и независимые пружины подходят для пары с разным весом, " +
+  "а гарантия 10 лет перекрывает разницу в цене с более дешёвым Fabrikam Base.\n\n" +
+  "- Цена: Contoso Rest 2 дороже Fabrikam Base на 3 100 ₽; разница покупает независимый блок пружин и вдвое более долгую гарантию.\n" +
+  "- Пара с разным весом: независимые пружины Contoso Rest 2 гасят движение соседа, у Fabrikam Base зависимый блок.";
+const researchReport = "## Как выбирали\n\nСравнивали пять матрасов 160×200 по жёсткости, блоку пружин, гарантии и цене в трёх магазинах.\n\n" +
+  "## Сравнение\n\n| Модель | Жёсткость | Блок | Гарантия | Цена |\n| --- | --- | --- | --- | --- |\n" +
+  "| Contoso Rest 2 | средняя | независимый | 10 лет | 24 900 ₽ |\n| Fabrikam Base | средняя | зависимый | 5 лет | 21 800 ₽ |\n" +
+  "| Northwind Cloud | мягкая | независимый | 7 лет | 27 400 ₽ |\n| Adatum Firm | жёсткая | без пружин | 3 года | 18 600 ₽ |\n" +
+  "| Litware Duo | разная по сторонам | независимый | 8 лет | 29 900 ₽ |\n\n" +
+  "## Что важно знать\n\nОтзывы о Northwind Cloud расходятся: два магазина пишут о продавливании через год, производитель этого не подтверждает.\n\n" +
+  "## Источники\n\n1. Каталог Contoso, страница модели.\n2. Обзор трёх магазинов, октябрь 2026.";
+const researchNotes = "*The sources establish only part of what this report says about these facts, so rely only on what they state: Northwind Cloud — warranty.*";
+const researchDraft = `${researchSummary}\n\n${researchReport}`;
+const researchWithPage = `${researchDraft}\n\n---\n\n${researchNotes}`;
+const researchWithoutPage = researchDraft;
+
+const researchMessages: ConversationMessageV2[] = [
+  { content: "Проведи исследование: какой матрас 160×200 купить для пары?", id: "research-question", role: "user" },
+  { content: researchWithPage, id: "research-answer", role: "assistant" },
+  { content: "Проведи то же исследование ещё раз.", id: "research-question-2", role: "user" },
+  { content: researchWithoutPage, id: "research-answer-2", role: "assistant" }
+];
+
+const researchArtifacts: Readonly<Record<string, ThreadArtifactSummary>> = {
+  "research-answer": {
+    citations: [],
+    generatedArtifacts: [{ artifactId: "research-page", entrypoint: "index.html", kind: "html",
+      researchPage: { notesStart: researchDraft.length, summaryEnd: researchSummary.length },
+      title: "Матрас 160×200 для пары: сравнение пяти моделей", versionId: "research-page-v1", versionNumber: 1 }],
+    reasoningText: [],
+    sources: [],
+    workDurationMs: 2_520_000
+  },
+  "research-answer-2": { citations: [], reasoningText: [], sources: [], workDurationMs: 1_980_000 }
+};
+
+function ResearchAnswerOutput({ message }: Readonly<{ message: ConversationMessageV2 }>) {
+  const artifact = researchArtifacts[message.id] ?? null;
+  const view = researchAnswerViewV2(message.content, artifact?.generatedArtifacts);
+  return (
+    <RunAnswerV2
+      actions={{ onCopy: () => undefined, onMore: () => undefined, onReadAloud: () => undefined, onRegenerate: () => undefined }}
+      actionsSlot={<AnswerOutputsV2 artifact={artifact} researchReport={view.download} />}
+      anchorId={message.id}
+      artifact={artifact}
+      content={view.content}
+      presentation={{ kind: "complete", runId: `${message.id}-run` }}
+      workDurationMs={artifact?.workDurationMs ?? null}
+    />
+  );
+}
+
 function artifactFor(state: AnswerOutputsGalleryState): ThreadArtifactSummary | null {
   switch (state) {
     case "approval":
     case "empty":
+    case "research":
       return null;
     case "reasoning":
       return reasoningArtifact;
@@ -241,8 +298,10 @@ export function AnswerOutputsV2Gallery({
           <ConversationV2
             messages={state === "memory"
               ? memoryMessages
-              : state === "approval" ? approvalMessages : messages}
-            renderMessage={(message) => message.id === "answer-outputs-continuation" ? (
+              : state === "approval" ? approvalMessages : state === "research" ? researchMessages : messages}
+            renderMessage={(message) => state === "research" && message.role === "assistant" ? (
+              <ResearchAnswerOutput message={message} />
+            ) : message.id === "answer-outputs-continuation" ? (
               <McpApprovalContinuationTurnV2 anchorId={message.id} content={message.content} />
             ) : message.role === "user" ? (
               <ConversationTurnV2

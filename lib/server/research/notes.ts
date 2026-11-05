@@ -1,3 +1,5 @@
+import { researchDraftText, researchSummaryText, type ResearchDraft } from "../../contracts/research";
+
 /**
  * What the answer says of research that did not fully finish. The server writes these in English, as all of the product's own words are (operator
  * decision 2026-11-02: no other interface language yet), and they are never left to the model: "the answer still arrives, with a visible note"
@@ -63,6 +65,20 @@ export function researchPartialClaimsNote(labels: readonly (string | null)[], sh
   if (named.length === 0) return "The sources establish only part of some facts behind the options this report recommends, so rely only on what they state.";
   const others = named.length > shown || labels.some((label) => label === null);
   return `The sources establish only part of what this report says about these facts, so rely only on what they state: ${named.slice(0, shown).join("; ")}${others ? "; and others" : ""}.`;
+}
+
+/**
+ * Where the summary of an answer's text ends and its notes start, read from the draft the text was made of (`researchDraftText`, then
+ * `researchAnswerText`), never from its prose. `shown` gives a part as the text shows it, so a masked secret moves no offset. Null offsets where the
+ * text is not that draft's, has no summary or no notes, and the chat then shows what the offsets cannot mark.
+ */
+export function researchAnswerLayout(text: string, draft: Pick<ResearchDraft, "report" | "summary">, shown: (part: string) => string = (part) => part):
+  Readonly<{ notesStart: number | null; summaryEnd: number | null }> {
+  const body = shown(researchDraftText(draft).trimEnd());
+  if (!body || !text.startsWith(body)) return { notesStart: null, summaryEnd: null };
+  const summary = draft.summary ? shown(researchSummaryText(draft.summary)) : "";
+  const summaryEnd = summary && summary.length < body.length && body.startsWith(summary) ? summary.length : null;
+  return { notesStart: text.slice(body.length).trim() ? body.length : null, summaryEnd };
 }
 
 /** The answer the user reads: the report as written, then the notes, each once. */
