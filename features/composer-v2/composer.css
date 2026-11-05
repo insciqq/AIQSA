@@ -278,6 +278,44 @@
   font-variant-ligatures: none;
 }
 
+/* Deep research for the next message: the one filled chip, in the accent
+   fill and ink, so it stands apart from the tools in both themes. Its name and
+   × say it is on without the colour. It is not a button itself; the × is. */
+.v2-composer-indicator.v2-composer-research {
+  --v2-chip-border: var(--v2-color-accent);
+  --v2-chip-background: var(--v2-color-accent);
+  color: var(--v2-color-accent-ink);
+  cursor: default;
+}
+.v2-composer-research > .v2-composer-indicator-face {
+  gap: 0.25rem;
+  padding: 0 0.125rem 0 0.5rem;
+}
+.v2-composer-research-remove {
+  display: inline-flex;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.v2-composer-research-remove .v2-icon { width: 0.75rem; height: 0.75rem; stroke-width: 2.25; }
+.v2-composer-research-remove:hover:not(:disabled) { box-shadow: inset 0 0 0 1px currentColor; }
+.v2-composer-research-remove:disabled { cursor: default; opacity: 0.55; }
+/* The shared ring is drawn in the text colour outside the control, which the
+   accent fill around the × would hide. */
+.v2-composer-research-remove:focus-visible {
+  outline-color: var(--v2-color-accent-ink);
+  outline-offset: -2px;
+}
+
 /* One bounded anchor for long descriptions keeps edge chips' tooltips in the
    composer. The icon and badge have their own positioning contexts. */
 .v2-composer-indicator[data-tooltip] { position: static; }
@@ -1203,6 +1241,11 @@
     bottom: 0.0625rem;
     box-shadow: 0 0 0 1px var(--v2-color-surface);
   }
+  /* Deep research keeps its name where the tools become icons, so it never
+     reads as one of them and never overlaps its neighbours. */
+  .v2-composer-research .v2-composer-indicator-label { display: inline; }
+  .v2-composer-indicators .v2-composer-research > .v2-composer-indicator-face { width: auto; padding: 0 0.125rem 0 0.5rem; }
+  .v2-composer-research .v2-composer-indicator-glyph { width: 0.875rem; height: 0.875rem; }
 }
 
 /* A narrow composer (a phone) reads like chatgpt.com: the text takes the full
@@ -1225,6 +1268,9 @@
   .v2-composer-indicators { grid-area: chips; flex-wrap: wrap; gap: 0; }
   .v2-composer-indicator { width: 2.75rem; min-height: 2.75rem; }
   .v2-composer-indicator-face { width: 2.25rem; height: 2.25rem; }
+  .v2-composer-indicators .v2-composer-research { width: auto; margin-inline: 0.25rem; }
+  /* The status line lines up with the text under it, clear of the edge. */
+  .v2-composer-research-note { padding: 0.5rem 0.625rem 0; }
 }
 
 @media (max-width: 840px), (max-height: 32rem) {
@@ -1357,6 +1403,16 @@
     min-width: 2.75rem;
   }
 
+  /* A finger-sized ×: it fills the chip's height, overhangs only the face's
+     own edge (the face keeps the height of the other chips) and stays inside
+     the chip. */
+  .v2-composer-research > .v2-composer-indicator-face { padding-right: 0; }
+  .v2-composer-research-remove {
+    width: 2.75rem;
+    height: 2.75rem;
+    margin-block: calc(-0.5rem - 1px);
+    margin-inline-start: -0.625rem;
+  }
 }
 
 /* Phone composer (operator decision 2026-10-29): an island that rests as one

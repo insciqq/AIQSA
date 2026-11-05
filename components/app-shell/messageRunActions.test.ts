@@ -424,6 +424,32 @@ describe("message run actions", () => {
     expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactCreate: { intent: "create" }, draft: "Create a page", pendingSend: null });
   });
 
+  it("sends Deep research once: kept with the draft on a refusal, dropped once the send is admitted", async () => {
+    const requestBody = (mock: ReturnType<typeof vi.fn>, index = 0) =>
+      JSON.parse(String((mock.mock.calls[index] as unknown as [string, RequestInit])[1].body)) as Record<string, unknown>;
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => Response.json({ error: "deep_research_needs_search" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Compare quiet kettles" });
+    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { deepResearch: true });
+
+    await actions.submitComposer();
+    expect(requestBody(fetchMock)).toMatchObject({ deepResearch: true });
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+      deepResearch: true, draft: "Compare quiet kettles", operationError: expect.stringContaining("Turn on Search to use Deep research")
+    });
+
+    await actions.submitComposer();
+    expect(requestBody(fetchMock, 1)).toMatchObject({ deepResearch: true });
+    expect(actions.session(actions.sourceSessionKey).deepResearch).toBe(false);
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages
+      .find((message) => message.role === "user")).toMatchObject({ deepResearch: true });
+
+    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { draft: "And a short follow-up" });
+    await actions.submitComposer();
+    expect(requestBody(fetchMock, 2)).not.toHaveProperty("deepResearch");
+  });
+
   it("consumes an admitted artifact edit before the answer arrives without releasing send or consuming the next intent", async () => {
     let release!: () => void;
     const stream = new Promise<void>(resolve => { release = resolve; });
@@ -3244,6 +3270,27 @@ describe("message run actions", () => {
       editingMessageId: null,
       pendingEdit: null
     });
+  });
+
+  it.each([true, false])("runs an edit of a message sent with Deep research as Deep research unless the edit turned it off (kept: %s)", async (kept) => {
+    const requestBody = (mock: ReturnType<typeof vi.fn>, index: number) =>
+      JSON.parse(String((mock.mock.calls[index] as unknown as [string, RequestInit])[1].body)) as Record<string, unknown>;
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => editResponse("Edited question"));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Edited question", editingMessageId: "message-1" });
+    const store = useComposerSessionStore.getState();
+    store.cancelEdit(actions.sourceSessionKey);
+    store.startEdit("message-1", "Edited question", true);
+    if (!kept) store.updateSession(actions.sourceSessionKey, { editingDeepResearch: false });
+
+    await actions.submitMessageEdit();
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/messages/message-edited/regenerate");
+    if (kept) expect(requestBody(fetchMock, 1)).toMatchObject({ deepResearch: true });
+    else expect(requestBody(fetchMock, 1)).not.toHaveProperty("deepResearch");
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ editingDeepResearch: false, editingMessageId: null });
   });
 
   it("starts a streamed answer run on the committed branch after editing a user message", async () => {

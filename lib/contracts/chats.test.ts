@@ -145,6 +145,16 @@ describe("chat wire contracts", () => {
       origin: "mcp", round: 1, status: "complete", toolName: "delete_record" }] } }], usageStats }) })).toBeNull();
   });
 
+  it("carries the Deep research mark only as true on a user message", () => {
+    const question = { ...message, id: "question", role: "user", modelRunId: null };
+    const answer = { ...message, parentMessageId: "question" };
+    const decode = (value: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({ messages: [value, answer], usageStats }) });
+    expect(decode({ ...question, deepResearch: true })?.messages[0]?.deepResearch).toBe(true);
+    expect(decode(question)?.messages[0]).not.toHaveProperty("deepResearch");
+    for (const invalid of [{ ...question, deepResearch: false }, { ...question, deepResearch: "true" }]) expect(decode(invalid)).toBeNull();
+    expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...answer, deepResearch: true }], usageStats }) })).toBeNull();
+  });
+
   it("carries the sub-agents a wake-up turn reports on only on that turn, with valid distinct names", () => {
     const turn = { ...message, id: "wake", role: "user", modelRunId: null, systemTurnKind: "subagent_callback",
       content: { blocks: [{ text: "Sub-agent results.", type: "text" }] } };

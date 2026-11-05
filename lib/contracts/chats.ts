@@ -213,6 +213,8 @@ import { decodeThreadSearchEngineActivity, type ThreadSearchEngineActivity } fro
 export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
+  /** See `ChatMessageWire.deepResearch`; the send path also sets it on its optimistic message. */
+  deepResearch?: true;
   followups?: RunFollowupState;
   /** Client only, from the run outcome: what a reader without the live stream shows while the provider is silent. */
   providerWait?: RunProviderWait;
@@ -443,6 +445,11 @@ export type ChatDetail = WorkspaceChatSummary & {
 };
 
 export type ChatMessageWire = {
+  /**
+   * Only on a user message the user sent with Deep research (`DEEP_RESEARCH_SEND_FIELD`): one of its runs was admitted with the
+   * choice. Absent for every other message, and on a message whose run has not been admitted yet.
+   */
+  deepResearch?: true;
   followups?: RunFollowupState;
   providerWait?: RunProviderWait;
   workspacePreparation?: true;
@@ -1362,6 +1369,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   const subagentCallback = value.subagentCallback === undefined ? undefined
     : decodeChatMessageSubagentCallback(value.subagentCallback);
   if (subagentCallback === null || (subagentCallback && value.systemTurnKind !== SUBAGENT_CALLBACK_TURN_KIND)) return null;
+  if (value.deepResearch !== undefined && (value.deepResearch !== true || role !== "user")) return null;
   if (
     !id ||
     citationMessageId === undefined ||
@@ -1378,6 +1386,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     return null;
   }
   return {
+    ...(value.deepResearch === true ? { deepResearch: true as const } : {}),
     ...(pdfPreparation ? { pdfPreparation } : {}),
     ...(followups ? { followups } : {}),
     // A wait this client does not know reads as no wait: it only changes a status line.

@@ -302,6 +302,82 @@ describe("Composer v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove artifact creation" }));
     expect(onRemoveArtifactCreate).toHaveBeenCalledOnce();
   });
+  it("turns Deep research on from the + menu for one message, with its status line, placeholder and ×", () => {
+    function Harness() {
+      const [on, setOn] = useState(false);
+      return <ComposerV2 {...props({ draft: "", onCreateArtifact: vi.fn(), onUploadFiles: vi.fn() })} deepResearch={on} onDeepResearchChange={setOn} />;
+    }
+    render(<Harness />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    expect(field).toHaveAttribute("placeholder", "Ask anything…");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const items = screen.getAllByRole("menuitem").map((item) => item.textContent);
+    // Above Attach files, after Create artifact.
+    expect(items.findIndex((text) => text?.startsWith("Deep research"))).toBe(
+      items.findIndex((text) => text?.startsWith("Attach files")) - 1);
+    const item = screen.getByRole("menuitem", { name: /^Deep research.*Checked report, 30 to 60 minutes/u });
+    expect(item).toBeEnabled();
+    fireEvent.click(item);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    expect(within(screen.getByTestId("composer-v2-deep-research")).getByText("Deep research")).toBeVisible();
+    // Right after Search.
+    expect(screen.getByRole("button", { name: /^Choose web search/u }).nextElementSibling)
+      .toBe(screen.getByTestId("composer-v2-deep-research"));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^Deep research takes 30 to 60 minutes\. You will see a plan first, and you can close this tab\.$/u);
+    expect(field).toHaveAttribute("placeholder", "What should be researched?");
+    // The resting phone composer never hides that the next message researches.
+    expect(screen.getByTestId("composer-v2-surface")).not.toHaveAttribute("data-resting");
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn off Deep research" }));
+    expect(screen.queryByTestId("composer-v2-deep-research")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Deep research takes/u)).not.toBeInTheDocument();
+    expect(field).toHaveAttribute("placeholder", "Ask anything…");
+    expect(field).toHaveFocus();
+  });
+
+  it("disables Deep research without a Search source and drops the chip when Search goes off", () => {
+    const onDeepResearchChange = vi.fn();
+    const value = props({ onDeepResearchChange, selectedSearchOptionIds: [] });
+    const { rerender } = render(<ComposerV2 {...value} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menuitem", { name: /^Deep research.*Turn on Search to use Deep research/u })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    // A source this model cannot run is no source either.
+    rerender(<ComposerV2 {...value} selectedModelId="gpt-5.2-mini" selectedSearchOptionIds={["research-search"]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menuitem", { name: /^Deep research/u })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    rerender(<ComposerV2 {...value} deepResearch selectedSearchOptionIds={["web-primary"]} />);
+    expect(screen.getByTestId("composer-v2-deep-research")).toBeVisible();
+    expect(onDeepResearchChange).not.toHaveBeenCalled();
+    rerender(<ComposerV2 {...value} deepResearch selectedSearchOptionIds={[]} />);
+    expect(screen.queryByTestId("composer-v2-deep-research")).not.toBeInTheDocument();
+    expect(onDeepResearchChange).toHaveBeenCalledWith(false);
+  });
+
+  it("offers no Deep research where it can never run: no handler, a sub-agent, an Assistant's fixed Search without a source", () => {
+    const { rerender } = render(<ComposerV2 {...props()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.queryByRole("menuitem", { name: /^Deep research/u })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    rerender(<ComposerV2 {...props({ onDeepResearchChange: vi.fn(), selectedSearchOptionIds: [],
+      assistant: galleryAssistant({ policies: { search: "fixed" }, values: { search: { mode: "off" } } }) })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.queryByRole("menuitem", { name: /^Deep research/u })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    // An adjustable Search row can still be turned on, so the item stays and says how.
+    rerender(<ComposerV2 {...props({ onDeepResearchChange: vi.fn(), selectedSearchOptionIds: [],
+      assistant: galleryAssistant({ values: { search: { mode: "off" } } }) })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menuitem", { name: /^Deep research.*Turn on Search/u })).toBeDisabled();
+  });
+
   it.each(["Not available in temporary chats"])("explains unavailable creation: %s", reason => {
     render(<ComposerV2 {...props({ onCreateArtifact: vi.fn(), artifactUnavailableReason: reason })} />);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
