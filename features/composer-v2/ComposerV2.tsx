@@ -61,6 +61,7 @@ import {
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
 import { touchInputPrimaryV2 } from "@/components/ui-v2/touchInputV2";
 import type { SearchPlanMode } from "@/lib/domain/search";
+import { reconcileModelSearchPlan } from "@/lib/domain/catalogMatrix";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
@@ -316,6 +317,12 @@ export type ComposerV2Props = Readonly<{
   onCreateArtifact?(): void;
   onRemoveArtifactCreate?(): void;
   /**
+   * Deep research for the next message (operator decision 2026-11-05): the `+` menu's item turns it on and
+   * the chip's × off. Without the handler the composer offers no Deep research.
+   */
+  deepResearch?: boolean;
+  onDeepResearchChange?(on: boolean): void;
+  /**
    * The chat's Assistant: each control shows the Assistant's part in its row
    * and resets it. Without one the composer behaves as an ordinary chat.
    */
@@ -526,6 +533,8 @@ export function ComposerV2({
   artifactUnavailableReason = null,
   onCreateArtifact,
   onRemoveArtifactCreate,
+  deepResearch = false,
+  onDeepResearchChange,
   assistant = null,
   attachmentItems = [],
   attachmentLimitUsage = null,
@@ -1110,6 +1119,20 @@ export function ComposerV2({
     selectedSearchOptionIds.length > 0 || concreteSearchOptions.length > 0 ||
     (searchProvenance !== null && searchProvenance.kind !== "own")
   );
+  // Deep research needs a Search source: the plan a send would carry, from the server-filtered
+  // catalog and this model, never a guess. An Assistant whose fixed Search has none never researches,
+  // so it offers nothing; otherwise the item says how to make it possible.
+  const deepResearchHasSearch = Boolean(config && currentModel) && reconcileModelSearchPlan(
+    currentModel, selectedSearchOptionIds, searchPlanMode, config?.catalog.searchStrategies ?? []
+  ).optionIds.length > 0;
+  const deepResearchOffered = Boolean(onDeepResearchChange) && !messageOnly && !(searchFixed && !deepResearchHasSearch);
+  const deepResearchOn = deepResearch && deepResearchOffered && deepResearchHasSearch;
+  const deepResearchMenuReason = inputBlockedReason ?? (deepResearchHasSearch ? null : "Turn on Search to use Deep research");
+  // Turning Search off, or a model without it, takes the choice away rather than keeping a chip that cannot send.
+  const deepResearchLost = deepResearch && !deepResearchOn && Boolean(config) && !configError;
+  useEffect(() => {
+    if (deepResearchLost) onDeepResearchChange?.(false);
+  }, [deepResearchLost, onDeepResearchChange]);
   const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
   // Transitional states (activating, on-demand idle) are not problems; only
   // the Settings-level "attention"/"failed" presentations count here.
@@ -1281,7 +1304,7 @@ export function ComposerV2({
   // A follow-up sends only its text; a message may also send files or comments alone.
   const nothingToSend = draftEmpty && (followupMode || (attachmentItems.length === 0 && comments.length === 0));
   const resting = !engaged && draftEmpty && attachmentItems.length === 0 && comments.length === 0 &&
-    !layer && !artifactCreate && !artifactEdit && !dragActive;
+    !layer && !artifactCreate && !artifactEdit && !deepResearchOn && !dragActive;
   useEffect(() => {
     if (!engaged || layer) return;
     function disengageOutside(event: PointerEvent) {
@@ -1410,6 +1433,11 @@ export function ComposerV2({
           </div>
         ) : null}
         {dictationUi.status}
+        {deepResearchOn && !followupMode ? (
+          <p className="v2-composer-status v2-composer-research-note" role="status">
+            Deep research takes 30 to 60 minutes. You will see a plan first, and you can close this tab.
+          </p>
+        ) : null}
         <div className="v2-composer-entry">
           <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
             Message
@@ -1427,7 +1455,7 @@ export function ComposerV2({
             aria-autocomplete={paletteOpen ? "list" : undefined}
             aria-controls={paletteOpen ? paletteListboxId : undefined}
             aria-expanded={paletteOpen ? true : undefined}
-            placeholder={messageOnly ? "Message this sub-agent…" : followupMode ? "Follow up…" : artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
+            placeholder={messageOnly ? "Message this sub-agent…" : followupMode ? "Follow up…" : deepResearchOn ? "What should be researched?" : artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
             onChange={(event) => {
               const value = event.target.value;
               if (paletteAllowed && opensComposerPalette(draft, value)) openCommandPalette();
@@ -1474,6 +1502,27 @@ export function ComposerV2({
                   <CapabilityChipContent label={selectedSearchOptionIds.length ? "Search" : "Search off"} icon="globe" count={selectedSearchOptionIds.length > 1 ? selectedSearchOptionIds.length : 0}
                     description={searchDescription} descriptionId={`${layerId}-search-description`} />
                 </button>
+              ) : null}
+              {/* Right after Search, which it needs: the one filled chip, with its name and × in words too. */}
+              {deepResearchOn ? (
+                <span className="v2-composer-indicator v2-composer-research" data-glyph="flask" data-testid="composer-v2-deep-research">
+                  <span className="v2-composer-indicator-face">
+                    <span className="v2-composer-indicator-icon" aria-hidden="true">
+                      <UiV2Icon className="v2-composer-indicator-glyph" name="flask" />
+                    </span>
+                    <span className="v2-composer-indicator-label">Deep research</span>
+                    <button className="v2-composer-research-remove v2-focusable" type="button"
+                      aria-label="Turn off Deep research" data-tooltip="Turn off Deep research" data-tooltip-side="top"
+                      disabled={sending}
+                      onClick={() => {
+                        onDeepResearchChange?.(false);
+                        // The button goes with the chip: focus stays in the composer.
+                        (touchInputPrimaryV2() ? plusTriggerRef.current : textareaRef.current)?.focus({ preventScroll: true });
+                      }}>
+                      <UiV2Icon name="close" />
+                    </button>
+                  </span>
+                </span>
               ) : null}
               <button ref={mcpTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
                 data-quiet={effectiveMcpSelection.mode === "load_all" || effectiveMcpSelection.mode === "exact" ? undefined : ""} data-glyph="tool"
@@ -1868,6 +1917,14 @@ export function ComposerV2({
                     onClick={() => { onCreateArtifact?.(); closeLayer(); textareaRef.current?.focus({ preventScroll: true }); }}>
                     Create artifact
                   </CapabilityRow>
+                  {deepResearchOffered ? (
+                    <CapabilityRow icon="flask" selectionRole="item"
+                      disabled={Boolean(deepResearchMenuReason)}
+                      reason={deepResearchMenuReason ?? "Checked report, 30 to 60 minutes"}
+                      onClick={() => { onDeepResearchChange?.(true); closeLayer(); textareaRef.current?.focus({ preventScroll: true }); }}>
+                      Deep research
+                    </CapabilityRow>
+                  ) : null}
                   <CapabilityRow
                     icon="attach"
                     disabled={attachmentSelectionDisabled}

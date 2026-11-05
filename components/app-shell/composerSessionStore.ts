@@ -59,10 +59,17 @@ export type ComposerSessionSnapshot = {
   artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
   comments: PendingComposerComment[];
+  /**
+   * Deep research for the next message only (the `+` menu's chip): the send carries it once, and the
+   * session drops it when that run is admitted. Never persisted, like the other controls.
+   */
+  deepResearch: boolean;
   draft: string;
   editGeneration: number;
   editRevision: number;
   editingDraft: string;
+  /** The inline edit keeps Deep research: it opens on for a message sent with it, and its × turns it off. */
+  editingDeepResearch: boolean;
   editingError: string | null;
   editingMessageId: string | null;
   latestUploadGeneration: number;
@@ -98,6 +105,7 @@ export type ComposerSendToken = {
   artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
   comments: PendingComposerComment[];
+  deepResearch: boolean;
   draft: string;
   generation: number;
   sourceKey: ComposerSessionKey;
@@ -123,6 +131,8 @@ export type ComposerSessionPatch = Partial<
     | "workspaceEnabled"
     | "artifactEdit"
     | "artifactCreate"
+    | "deepResearch"
+    | "editingDeepResearch"
     | "followupSubmission"
   >
 >;
@@ -172,7 +182,8 @@ type ComposerSessionStore = {
   setAttachments(update: StateUpdate<ComposerAttachment[]>): void;
   setDraft(value: string): void;
   setEditingDraft(value: string): void;
-  startEdit(messageId: string, draft: string): void;
+  /** `deepResearch` opens the edit with Deep research on: the message was sent with it. */
+  startEdit(messageId: string, draft: string, deepResearch?: boolean): void;
   moveUnsentInputIfTargetEmpty(sourceKey: ComposerSessionKey, targetKey: ComposerSessionKey): boolean;
   transferSession(sourceKey: ComposerSessionKey, targetKey: ComposerSessionKey): boolean;
   updateUploadedAttachment(key: ComposerSessionKey, attachment: ComposerAttachment): boolean;
@@ -193,10 +204,12 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   artifactEdit: null,
   attachments: emptyAttachments,
   comments: Object.freeze([]) as unknown as PendingComposerComment[],
+  deepResearch: false,
   draft: "",
   editGeneration: 0,
   editRevision: 0,
   editingDraft: "",
+  editingDeepResearch: false,
   editingError: null,
   editingMessageId: null,
   latestUploadGeneration: 0,
@@ -310,6 +323,9 @@ function patchedSession(
     (patch.workspaceEnabled !== current.workspaceEnabled || !current.workspaceInitialized);
   const artifactEditChanged = hasOwn(patch, "artifactEdit") && patch.artifactEdit !== current.artifactEdit;
   const artifactCreateChanged = hasOwn(patch, "artifactCreate") && patch.artifactCreate !== current.artifactCreate;
+  const deepResearchChanged = hasOwn(patch, "deepResearch") && Boolean(patch.deepResearch) !== current.deepResearch;
+  const editingDeepResearchChanged = hasOwn(patch, "editingDeepResearch") &&
+    Boolean(patch.editingDeepResearch) !== current.editingDeepResearch;
   const followupChanged = hasOwn(patch, "followupSubmission") && patch.followupSubmission !== current.followupSubmission;
 
   if (
@@ -322,7 +338,8 @@ function patchedSession(
     !errorChanged &&
     !retryabilityChanged &&
     !recoveriesChanged &&
-    !workspaceChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged
+    !workspaceChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged &&
+    !deepResearchChanged && !editingDeepResearchChanged
   ) {
     return current;
   }
@@ -334,6 +351,8 @@ function patchedSession(
       ? { followupSubmission: { ...current.followupSubmission, draftChanged: true } } : {}),
     ...(artifactEditChanged ? { artifactEdit: patch.artifactEdit ?? null } : {}),
     ...(artifactCreateChanged ? { artifactCreate: patch.artifactCreate ?? null } : {}),
+    ...(deepResearchChanged ? { deepResearch: Boolean(patch.deepResearch) } : {}),
+    ...(editingDeepResearchChanged ? { editingDeepResearch: Boolean(patch.editingDeepResearch) } : {}),
     ...(attachmentsChanged ? { attachments: [...(patch.attachments ?? [])] } : {}),
     ...(draftChanged ? { draft: patch.draft ?? "" } : {}),
     ...(commentsChanged ? { comments: [...(patch.comments ?? [])] } : {}),
@@ -341,14 +360,16 @@ function patchedSession(
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
-    ...(attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged || artifactCreateChanged || errorPatched
+    ...(attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged || artifactCreateChanged ||
+      deepResearchChanged || errorPatched
       ? { contextRejectionGeneration: null } : {}),
     ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     ...(recoveriesChanged ? { operationErrorRecoveries: recoveries } : {}),
     editRevision:
-      current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
-    revision: current.revision + (attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged || artifactCreateChanged ? 1 : 0)
+      current.editRevision + (editingDraftChanged || editingMessageChanged || editingDeepResearchChanged ? 1 : 0),
+    revision: current.revision + (attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged ||
+      artifactCreateChanged || deepResearchChanged ? 1 : 0)
   };
 }
 
@@ -515,6 +536,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       artifactEdit: session.artifactEdit,
       attachments: [...session.attachments],
       comments: [...session.comments],
+      deepResearch: session.deepResearch,
       draft: session.draft,
       generation,
       sourceKey: key,
@@ -597,6 +619,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           ...session,
           editGeneration: invalidationGeneration,
           editRevision: session.editRevision + (contentChanged ? 1 : 0),
+          editingDeepResearch: false,
           editingDraft: "",
           editingError: null,
           editingMessageId: null,
@@ -630,6 +653,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
             : retireEdit
               ? {
                   editRevision: session.editRevision + 1,
+                  editingDeepResearch: false,
                   editingDraft: "",
                   editingError: null,
                   editingMessageId: null,
@@ -646,7 +670,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     return true;
   },
   acceptArtifactIntent(token) {
-    if (!token.artifactEdit && !token.artifactCreate) return false;
+    if (!token.artifactEdit && !token.artifactCreate && !token.deepResearch) return false;
     const state = get();
     const key = (Object.keys(state.sessionsByKey) as ComposerSessionKey[]).find(
       candidate => state.sessionsByKey[candidate]?.pendingSend?.generation === token.generation
@@ -655,9 +679,12 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     if (!key || !session) return false;
     const clearEdit = token.artifactEdit !== null && session.artifactEdit === token.artifactEdit;
     const clearCreate = token.artifactCreate !== null && session.artifactCreate === token.artifactCreate;
-    if (!clearEdit && !clearCreate) return false;
+    // Deep research is for one message: the admitted send used it.
+    const clearDeepResearch = token.deepResearch && session.deepResearch;
+    if (!clearEdit && !clearCreate && !clearDeepResearch) return false;
     set({ sessionsByKey: { ...state.sessionsByKey, [key]: { ...session,
-      ...(clearEdit ? { artifactEdit: null } : {}), ...(clearCreate ? { artifactCreate: null } : {}) } } });
+      ...(clearEdit ? { artifactEdit: null } : {}), ...(clearCreate ? { artifactCreate: null } : {}),
+      ...(clearDeepResearch ? { deepResearch: false } : {}) } } });
     return true;
   },
   finishSend(token, outcome, error = null, operationErrorLive = true, runId = null, failureCode = null, recoveries = noRecoveries) {
@@ -708,6 +735,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           ...session,
           ...(runId !== null && session.artifactEdit === token.artifactEdit ? { artifactEdit: null } : {}),
           ...(runId !== null && session.artifactCreate === token.artifactCreate ? { artifactCreate: null } : {}),
+          ...(runId !== null && token.deepResearch ? { deepResearch: false } : {}),
           ...(restore
             ? {
                 attachments: restoredAttachments,
@@ -809,7 +837,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       editingError: null
     });
   },
-  startEdit(messageId, draft) {
+  startEdit(messageId, draft, deepResearch = false) {
     const state = get();
     const session = state.sessionsByKey[state.activeSessionKey];
     if (!session || session.pendingEdit || session.pendingSend || session.editingMessageId) {
@@ -817,6 +845,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     }
 
     const next = patchedSession(session, {
+      editingDeepResearch: deepResearch,
       editingDraft: draft,
       editingError: null,
       editingMessageId: messageId

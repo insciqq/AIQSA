@@ -75,6 +75,8 @@ export type ConversationMessagePresentationV2 = Readonly<{
 
 export type ConversationInlineEditV2Props = Readonly<{
   attachmentSlot?: ReactNode;
+  /** The message was sent with Deep research and the edit keeps it until its × turns it off. */
+  deepResearch?: Readonly<{ onTurnOff(): void }> | null;
   draft: string;
   error?: string | null;
   onCancel(): void;
@@ -108,6 +110,7 @@ type ConversationTurnV2Props = Readonly<{
 
 export function ConversationInlineEditV2({
   attachmentSlot = null,
+  deepResearch = null,
   draft,
   error = null,
   onCancel,
@@ -183,6 +186,27 @@ export function ConversationInlineEditV2({
       {attachmentSlot ? (
         <div aria-label="Attachments in this message" className="v2-inline-message-edit-attachments">
           {attachmentSlot}
+        </div>
+      ) : null}
+      {deepResearch ? (
+        /* The composer's chip: the edited message runs as Deep research again unless it is turned off. */
+        <div className="v2-inline-message-edit-research">
+          <span className="v2-composer-indicator v2-composer-research" data-glyph="flask">
+            <span className="v2-composer-indicator-face">
+              <span className="v2-composer-indicator-icon" aria-hidden="true">
+                <UiV2Icon className="v2-composer-indicator-glyph" name="flask" />
+              </span>
+              <span className="v2-composer-indicator-label">Deep research</span>
+              <button className="v2-composer-research-remove v2-focusable" type="button" aria-label="Turn off Deep research"
+                disabled={pending}
+                onClick={() => {
+                  deepResearch.onTurnOff();
+                  textareaRef.current?.focus({ preventScroll: true });
+                }}>
+                <UiV2Icon name="close" />
+              </button>
+            </span>
+          </span>
         </div>
       ) : null}
       <p className="v2-inline-message-edit-note" id={descriptionId}>

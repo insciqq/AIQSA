@@ -183,6 +183,11 @@ html[data-motion="off"] .v2-conversation-turn[data-search-reveal] > .v2-conversa
   min-width: 0;
 }
 
+.v2-inline-message-edit-research {
+  display: flex;
+  min-width: 0;
+}
+
 .v2-inline-message-edit-note,
 .v2-inline-message-edit-error {
   margin: 0;
