@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { decodeResearchDraft, decodeResearchPlan, decodeResearchPlanProposal, RESEARCH_LIMITS, researchDraftText, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES, type ResearchDraft, type ResearchFrame,
-  RESEARCH_TASK_LIMITS, type ResearchEvidenceRecord, type ResearchPlan } from "../../contracts/research";
+import { DEEP_RESEARCH_REFUSALS, decodeResearchDraft, decodeResearchPlan, decodeResearchPlanProposal, RESEARCH_LIMITS, researchDraftText, RESEARCH_ROUND_LIMITS, RESEARCH_SOURCE_CLASSES,
+  type ResearchDraft, type ResearchFrame, RESEARCH_TASK_LIMITS, type ResearchEvidenceRecord, type ResearchPlan } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
-import { harnessPromptSection } from "../engine/prompts/harness";
+import { CONTINUE_TURN_TEXT } from "../../contracts/runs";
+import { harnessPromptSection, RESEARCH_CONTROL_LINE } from "../engine/prompts/harness";
 import type { TranscriptItem } from "../engine/transcript";
 import { proposeResearchPlanTool, researchScopingInstructions, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import { runResearchGates, type ResearchGateContext } from "./gates";
@@ -10,7 +11,7 @@ import { researchMatrixCoverage, researchUnconfirmedKeyCells } from "./matrix";
 import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researcherMatrixFooter, researcherMethodFooter, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { finding as recordFinding, notFound as recordNotFound } from "./report.testFixtures";
-import { researchOffered } from "./run";
+import { deepResearchRefusal, researchOffered, researchRequestOf } from "./run";
 import { createResearchSources, researchRunsOnBranch } from "./sources";
 import { researchTurnName } from "./turns";
 
@@ -346,20 +347,63 @@ describe("the method", () => {
       { status: "in_progress", step: "Which one?" }, { status: "pending", step: "Next?" }] });
   });
 
-  it("offers research only with Search, sub-agents and an interactive web run", () => {
+  it("offers research only on a request, and only with Search, sub-agents and an interactive web run", () => {
     const base = { monitoring: false, scheduled: false, searchOptions: 1, subagents: true, telegram: false };
-    expect(researchOffered(base)).toBe(true);
+    for (const request of ["approval", "chosen", "continue"] as const) expect(researchOffered({ ...base, request })).toBe(true);
+    // No words of a message offer it (operator decision 2026-11-05): with no request, nothing does.
+    expect(researchOffered({ ...base, request: null })).toBe(false);
     for (const off of [{ searchOptions: 0 }, { subagents: false }, { telegram: true }, { scheduled: true }, { monitoring: true }]) {
-      expect(researchOffered({ ...base, ...off })).toBe(false);
+      expect(researchOffered({ ...base, ...off, request: "chosen" })).toBe(false);
     }
   });
 
-  it("says in the system prompt when to start and when not to, with the operator's phrases", () => {
+  it("refuses Deep research where it cannot run with a code the user can act on: Search is the one thing they can turn on", () => {
+    const base = { monitoring: false, scheduled: false, searchOptions: 1, subagents: true, telegram: false };
+    expect(deepResearchRefusal(base)).toBeNull();
+    expect(deepResearchRefusal({ ...base, searchOptions: 0 })).toBe(DEEP_RESEARCH_REFUSALS.needsSearch);
+    for (const off of [{ subagents: false }, { telegram: true }, { scheduled: true }, { monitoring: true }]) {
+      expect(deepResearchRefusal({ ...base, ...off })).toBe(DEEP_RESEARCH_REFUSALS.unavailable);
+      expect(deepResearchRefusal({ ...base, ...off, searchOptions: 0 })).toBe(DEEP_RESEARCH_REFUSALS.unavailable);
+    }
+  });
+
+  it("asks research of a run only by its request: the choice, a research start in an approval's turn, or a Continue right after one", () => {
+    const start: TranscriptItem[] = [{ id: "msg-1", kind: "user", text: "Mattresses." },
+      { arguments: JSON.stringify({ goal: "Choose a mattress." }), callId: "start", id: "c", kind: "tool_call", name: "start_research" }];
+    const ordinary: TranscriptItem[] = [{ id: "msg-1", kind: "user", text: "проведи глубокое исследование матрасов" }, { id: "a", kind: "assistant_text", text: "Answer." }];
+    const typed = (text: string): TranscriptItem => ({ id: "msg-2", kind: "user", text });
+    expect(researchRequestOf({ approval: false, chosen: true, items: ordinary })).toBe("chosen");
+    // The user's words alone, however they ask, request nothing.
+    expect(researchRequestOf({ approval: false, chosen: false, items: [...ordinary, typed("поищи хорошо, проведи исследование")] })).toBeNull();
+    expect(researchRequestOf({ approval: true, chosen: false, items: start })).toBe("approval");
+    expect(researchRequestOf({ approval: true, chosen: false, items: ordinary })).toBeNull();
+    expect(researchRequestOf({ approval: false, chosen: false, items: [...start, typed(CONTINUE_TURN_TEXT)] })).toBe("continue");
+    expect(researchRequestOf({ approval: false, chosen: false, items: [...ordinary, typed(CONTINUE_TURN_TEXT)] })).toBeNull();
+    expect(researchRequestOf({ approval: false, chosen: false, items: [...start, typed("How much is it?")] })).toBeNull();
+  });
+
+  it("says in the system prompt what research does once started, with no words that would start it", () => {
     const prompt = harnessPromptSection({ tools: ["start_research"], workspace: false });
-    for (const phrase of ["поищи хорошо", "проведи исследование", "глубокий анализ", "проанализируй", "поищи, какие матрасы есть современные"]) {
-      expect(prompt).toContain(phrase);
+    expect(prompt).toContain("# Research");
+    expect(prompt).toContain("Deep research");
+    for (const phrase of ["поищи хорошо", "проведи исследование", "глубокий анализ", "проанализируй", "deep dive", "offer to research"]) {
+      expect(prompt).not.toContain(phrase);
     }
     expect(harnessPromptSection({ tools: [], workspace: false })).not.toContain("# Research");
+    const tool = JSON.stringify(startResearchTool);
+    for (const phrase of ["проанализируй", "глубокий анализ", "investiga", "Call this first", "Not for simple questions"]) expect(tool).not.toContain(phrase);
+  });
+
+  it("names the Deep research control in one constant line of an ordinary prompt, and only where research could run and is not on the request", () => {
+    const ordinary = harnessPromptSection({ researchControl: true, tools: ["search_selected_engines"], webSearch: true, workspace: false });
+    expect(ordinary).toContain(RESEARCH_CONTROL_LINE);
+    expect(ordinary.split(RESEARCH_CONTROL_LINE)).toHaveLength(2);
+    expect(RESEARCH_CONTROL_LINE).toContain("Deep research");
+    expect(RESEARCH_CONTROL_LINE).toContain("+ menu");
+    expect(harnessPromptSection({ researchControl: true, tools: ["search_selected_engines"], webSearch: true, workspace: false })).toBe(ordinary);
+    expect(harnessPromptSection({ tools: ["search_selected_engines"], webSearch: true, workspace: false })).not.toContain(RESEARCH_CONTROL_LINE);
+    expect(harnessPromptSection({ researchControl: true, tools: ["search_selected_engines", "start_research"], webSearch: true, workspace: false }))
+      .not.toContain(RESEARCH_CONTROL_LINE);
   });
 
   it("never asks the model to question the user before research: a missing fact is a named assumption or a branch", () => {

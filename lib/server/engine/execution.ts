@@ -1,5 +1,6 @@
 import { registerMcpGuardUsage } from "../mcp/guardUsage";
 import { randomUUID } from "node:crypto";
+import { DEEP_RESEARCH_REFUSALS } from "../../contracts/research";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTasks";
 import { estimateApproxTokens } from "../../domain/contextBudget";
@@ -84,7 +85,8 @@ import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
-import { createRunResearch, researchOffered, researchRunOf, type ResearchEngineDeps, type RunResearch } from "../research/run";
+import { createRunResearch, deepResearchRefusal, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
+  type RunResearch } from "../research/run";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -678,23 +680,35 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         };
         const subagents = await prepareRunSubagents(subagentInput);
         runSubagents = subagents;
-        // Research is the main agent's (`research/run.ts`): its tools ride beside the sub-agent tools, which its researchers run on.
-        const runResearch = subagents && engine.research && engine.subagentThreads && researchOffered({ monitoring: normalizedRequest.monitoringVerdictTool === true,
-          scheduled: input.scheduled === true, searchOptions: normalizedRequest.searchPlan.options.length, subagents: true, telegram: input.telegram === true })
+        // Research is the main agent's (`research/run.ts`): its tools ride beside the sub-agent tools, which its researchers run on, and
+        // only on the run of a message the user sent with Deep research, an approval continuation of its research or a Continue of it
+        // (operator decision 2026-11-05). No words in a chat offer it.
+        const researchAvailability: ResearchAvailability = { monitoring: normalizedRequest.monitoringVerdictTool === true, scheduled: input.scheduled === true,
+          searchOptions: normalizedRequest.searchPlan.options.length, subagents: Boolean(subagents && engine.research && engine.subagentThreads), telegram: input.telegram === true };
+        const researchRequest = researchRequestOf({ approval: Boolean(input.approvalContinuation), chosen: normalizedRequest.deepResearch === true, items: conversation.items });
+        const offeredResearch = subagents && engine.research && engine.subagentThreads && researchRequest && researchOffered({ ...researchAvailability, request: researchRequest })
           ? createRunResearch({ chatId: scope.chatId, deps: engine.research, extendTurn, gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
-            items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; },
+            items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; }, request: researchRequest,
             // An approval continuation is a new run of the research its turn started, and works on that run's rows.
             researchRunId: input.approvalContinuation ? researchRunOf(conversation.items, { branchRunIds, runId }) : runId, runId,
             savedResults: engine.savedResults, subagentInput, threads: engine.subagentThreads, toolTimeLeft, userId: input.userId,
             userMessage: subagentInput.userMessage }) : null;
+        const runResearch = offeredResearch && (researchRequest !== "continue" || await offeredResearch.continues()) ? offeredResearch : null;
         research = runResearch;
+        // Admission refused a message sent with Deep research that cannot research (`deepResearchRefusal`); one that still cannot is refused here,
+        // before any model call, never answered another way.
+        if (normalizedRequest.deepResearch === true && !runResearch) {
+          throw new EngineFailure(DEEP_RESEARCH_REFUSALS.unavailable, "Deep research is unavailable for this message.");
+        }
         if (input.approvalContinuation) runResearch?.resume(conversation.items);
         const registry = subagents ? withSubagentTools(mainRegistry, [...(runResearch?.withResearcherBriefs(subagents.tools) ?? subagents.tools),
           ...(runResearch?.tools ?? []), ...(runResearch ? [recordEvidenceEngineTool(researchEvidenceTarget(runResearch), { kind: "main" }),
             changeResearchFrameEngineTool(researchFrameTarget(runResearch), { kind: "main" })] : [])]) : mainRegistry;
         // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
         // only for this run rides in with its input (`systemPrompt.ts`).
+        // A run that could research but was not asked to names the control once, the same line on every ordinary turn.
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
+          ...(!runResearch && deepResearchRefusal(researchAvailability) === null ? { researchControl: true } : {}),
           secrets: input.services.secrets, snapshot, ...(subagents ? { subagents: subagents.prompt } : {}), tools: registry.definitions() });
         base = native.request;
         // The user's custom sub-agents and default ride in run context like the Skills index, never in the system prompt.
@@ -969,6 +983,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
+        // The user chose Deep research and the turn never started it: a visible failure, never an ordinary answer passing for research.
+        const missed = runResearch?.startMissed();
+        if (missed) throw new EngineFailure(missed.code, missed.message);
         let researched = runResearch?.finish(outcome.kind === "approval") ?? null;
         if (researched === null && runResearch && outcome.kind !== "approval") researched = await runResearch.composed("no_report", stop.signal);
         if (researched !== null) await showResearchAnswer(researched);

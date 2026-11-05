@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEEP_RESEARCH_REFUSALS,
+  DEEP_RESEARCH_SEND_FIELD,
+  decodeDeepResearchRequest,
   decodeResearchDraft,
   decodeResearchDraftReferences,
   decodeResearchFrame,
@@ -472,5 +475,15 @@ describe("the time phases", () => {
     expect(researchPhaseAt(minutes(70))).toBe("reporting");
     expect(researchPhaseAt(minutes(85))).toBe("notes");
     expect(researchPhaseAt(minutes(90))).toBe("ended");
+  });
+});
+
+describe("the Deep research send field", () => {
+  it("takes only true, reads a missing field as no request, and calls anything else invalid", () => {
+    expect(DEEP_RESEARCH_SEND_FIELD).toBe("deepResearch");
+    expect(decodeDeepResearchRequest(true)).toBe(true);
+    expect(decodeDeepResearchRequest(undefined)).toBeNull();
+    for (const value of [false, null, "true", 1, {}, []]) expect(decodeDeepResearchRequest(value)).toBe("invalid");
+    expect(Object.values(DEEP_RESEARCH_REFUSALS)).toEqual(["deep_research_invalid", "deep_research_needs_search", "deep_research_unavailable"]);
   });
 });

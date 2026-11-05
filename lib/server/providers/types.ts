@@ -204,6 +204,9 @@ export type NormalizedRunRequest = {
    * scheduled occurrence admitted: it offers `report_monitoring_result`,
    * reserved outside the tool budgets. Never set from a request field. */
   monitoringVerdictTool?: true;
+  /** The user chose Deep research for this message (`DEEP_RESEARCH_SEND_FIELD`), frozen at admission and kept by a
+   * regenerate of it: the run offers research, and its first step is `start_research` (`lib/server/research/run.ts`). */
+  deepResearch?: true;
   modelId: string;
   personalContext?: Readonly<{
     approxTokens: number;

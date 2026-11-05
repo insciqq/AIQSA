@@ -132,6 +132,8 @@ function repository() {
 function prepared(): MaterializedPreparedRunData {
   const text = "Проведи исследование матрасов.";
   const request = {
+    // The user chose Deep research for the message (operator decision 2026-11-05).
+    deepResearch: true,
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },

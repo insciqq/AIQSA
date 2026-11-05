@@ -138,9 +138,11 @@ function repository() {
   };
 }
 
-function prepared(): MaterializedPreparedRunData {
+/** A run of a message sent with Deep research when `chosen`; otherwise an ordinary message, or a Continue or an approval continuation (operator decision 2026-11-05). */
+function prepared(chosen = true): MaterializedPreparedRunData {
   const text = "Проведи исследование матрасов.";
   const request = {
+    ...chosen ? { deepResearch: true } : {},
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -162,8 +164,10 @@ async function runOf(steps: readonly Step[], research: ResearchEngineDeps, prepa
   const { adapter, requests } = scripted(steps);
   const memory = engineOf(research);
   prepare(memory);
+  // A run whose first step starts research is one the user sent with Deep research; one that never researches is an ordinary message.
+  const chosen = steps[0]?.calls?.some((call) => call.name === START_RESEARCH_TOOL_NAME) === true;
   const input: NativeRunExecutionInput = { adapter, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" }, engine: memory.deps,
-    prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" };
+    prepared: prepared(chosen), repository: repository() as unknown as RunRepository, services: {}, subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" };
   const text = await createNativeRunExecutionResponse(input).text();
   const fresh = (value: string) => value.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu, "<id>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/gu, "<time>");
   const blocks = text.split("\n\n");
@@ -226,7 +230,9 @@ async function afterInterruption(input: Readonly<{ approved?: Readonly<{ later: 
   const { approved, text = CONTINUE_TURN_TEXT } = input;
   const stored = [...started(startResult("run-0")), ...held("call-first")];
   const { adapter, requests } = scripted(input.steps);
-  const memory = engineOf({ gates: [], ports: input.ports });
+  // The store says run-0 was interrupted, which is what lets a Continue of its research offer research (`RunResearch.continues`).
+  const resume: NonNullable<ResearchPortFactories["resume"]> = (run, parts) => ({ ...input.ports.resume?.(run, parts) ?? NOOP_RESEARCH_PORTS.resume, interrupted: async () => true });
+  const memory = engineOf({ gates: [], ports: { ...input.ports, resume } });
   vi.mocked(memory.deps.approvedCall).mockResolvedValue(approved ? { providerCallId: "call-held", toolName: "mcp_shop_buy" } : null);
   const answers = new Map([["answer-0", "run-0"]]);
   const runItems = new Map<string, TranscriptItem[]>([["run-0", stored]]);
@@ -240,7 +246,7 @@ async function afterInterruption(input: Readonly<{ approved?: Readonly<{ later: 
   const messages = [{ content: content("Проведи исследование."), id: "question", role: "user" as const }, { content: content(""), id: "answer-0", role: "assistant" as const },
     ...approved ? [{ content: content(text), id: "continue", role: "user" as const }, { content: content(""), id: "answer-1", role: "assistant" as const }] : [],
     { content: content(approved ? "The user approved it." : text), id: "current-user-message", role: "user" as const }];
-  const base = prepared();
+  const base = prepared(false);
   const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
   await createNativeRunExecutionResponse({ adapter, ...approved ? { approvalContinuation: { approvalId: "approval-1" } } : {},
     created: { assistantMessageId: "answer-c", runId: approved ? "run-d" : "run-c", userMessageId: "current-user-message" }, engine: memory.deps,
@@ -266,7 +272,7 @@ async function continuationScope(stored: readonly (readonly TranscriptItem[])[],
     ...stored.flatMap((_items, index) => [...index === 0 ? [] : [{ content: content("The user approved it."), id: `approved-${index}`, role: "user" as const }],
       { content: content(""), id: `answer-${index}`, role: "assistant" as const }]),
     { content: content("The user approved it."), id: "current-user-message", role: "user" as const }];
-  const base = prepared();
+  const base = prepared(false);
   const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
   await createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" },
     created: { assistantMessageId: "answer-c", runId: "run-c", userMessageId: "current-user-message" }, engine: memory.deps,

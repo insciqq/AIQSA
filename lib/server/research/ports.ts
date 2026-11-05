@@ -159,6 +159,11 @@ export type ResearchResumeState = Readonly<{
  */
 export type ResearchResumePort = Readonly<{
   /**
+   * Whether the branch's last run stopped with its work kept and offered Continue, so a Continue of its research may research again (operator decision
+   * 2026-11-05). It only reads, before the run's tools are chosen.
+   */
+  interrupted(signal: AbortSignal): Promise<boolean>;
+  /**
    * Whether research can be picked up. It only reads, since a run asks this before any `start_research` and a model may never call one, and such a run
    * ran no research and keeps no row.
    */
@@ -210,6 +215,7 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     gates: []
   },
   resume: {
+    interrupted: async () => false,
     link: async () => undefined,
     load: async () => null
   },
