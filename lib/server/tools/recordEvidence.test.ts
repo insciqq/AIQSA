@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   decodeResearchRecord,
   RECORD_EVIDENCE_TOOL_NAME,
+  RESEARCH_RATING_COUNTS,
   RESEARCH_RECORD_KINDS,
   RESEARCH_SOURCE_CLASSES,
   RESEARCH_STANDINGS,
@@ -60,10 +61,25 @@ describe("the record_evidence schema", () => {
     expect(decodeResearchRecord({ ...NONE, kind: "unreachable", reason: "It asks to sign in.", target: "shop.example" })).toMatchObject({ ok: true, value: { kind: "unreachable" } });
     expect(decodeResearchRecord({ ...FINDING, dataset: { counts: [{ count: 3, label: "sagging" }], examples: [{ quote: "It sagged.", url: "https://shop.example/x1" }], left_out: "Other sizes.",
       method: "Read every review.", sample_size: 120 }, kind: "dataset", quote: null, row_key: "x1" })).toMatchObject({ ok: true, value: { kind: "dataset" } });
-    for (const field of Object.keys(properties)) {
+    // Every field but rating: a finding that leaves out what it has no use for is no rating, and is never refused over one.
+    for (const field of Object.keys(properties).filter((key) => key !== "rating")) {
       const rest = Object.fromEntries(Object.entries(FINDING).filter(([key]) => key !== field));
       expect(decodeResearchRecord(rest)).toMatchObject({ message: expect.stringContaining(field), ok: false });
     }
+    expect(decodeResearchRecord(FINDING)).toMatchObject({ ok: true, value: expect.not.objectContaining({ rating: expect.anything() }) });
+  });
+
+  it("takes a public rating on a finding, the score, the top of its scale, the number of ratings and what they count, as the decoder reads them", () => {
+    const rating = properties.rating!.anyOf as Record<string, unknown>[];
+    expect(rating).toEqual([expect.objectContaining({ type: "object" }), { type: "null" }]);
+    const shape = rating[0] as { properties: Record<string, Record<string, unknown>>; required: string[] };
+    expect([...shape.required].sort()).toEqual(Object.keys(shape.properties).sort());
+    expect(shape.properties.counted!.enum).toEqual([...RESEARCH_RATING_COUNTS]);
+    expect(decodeResearchRecord({ ...FINDING, rating: { count: 1_284, counted: "reviews", scale_max: 5, score: 4.9, variants_merged: false }, row_key: "ivanova" }))
+      .toMatchObject({ ok: true, value: { rating: { count: 1_284, counted: "reviews", scaleMax: 5, score: 4.9, variantsMerged: false } } });
+    // Products and services alike, and no site named.
+    expect(String(rating[0]!.description)).toMatch(/a product's, a doctor's, a clinic's or a hotel's/u);
+    expect(JSON.stringify(recordEvidenceTool)).not.toMatch(/ozon|wildberries|yandex|amazon|prodoctorov|booking|tripadvisor|otzovik/iu);
   });
 
   it("offers exactly the contract's lists, and writes a nullable object as anyOf", () => {
@@ -137,6 +153,28 @@ describe("a record_evidence call", () => {
     const record = dataset(11, "27% report sagging.");
     const result = await recordEvidenceEngineTool(targetOf({ kind: "recorded", record }).target, { kind: "main" }).execute(call(FINDING));
     expect(value(result).message).toMatch(/This claim gives a percentage: call record_evidence again with supersedes set to this record's id and the claim in counts\.$/u);
+  });
+
+  describe("of a rating", () => {
+    const RATED = { ...FINDING, criterion_key: "ratings", rating: { count: 12, counted: "ratings", scale_max: 5, score: 5, variants_merged: false }, row_key: "x1" };
+    const rated = (quote: string, quoteCheck: ResearchEvidenceRecord["quoteCheck"], count = 1_284) => ({ ...stored(quoteCheck), claim: "Rated 4.9 of 5.", kind: "finding", quote,
+      rating: { count, counted: "ratings", scaleMax: 5, score: 4.9, variantsMerged: false } }) as ResearchEvidenceRecord;
+    const run = async (record: ResearchEvidenceRecord) => value(await recordEvidenceEngineTool(targetOf({ kind: "recorded", record }).target, { kind: "main" }).execute(call(RATED)));
+
+    it("says which of its numbers its quote does not write, that it counts for nothing until corrected, and how to correct it", async () => {
+      const result = await run(rated("4,9 · 1 248 ratings", { reason: "rating_not_in_quote", status: "not_verbatim" }));
+      expect(result).toMatchObject({ quote_check: "not_verbatim", record_id: RECORD_ID });
+      expect(result.message).toMatch(/^Recorded, but the rating's number of ratings is not in the quote as the page writes it, so the rating counts for nothing\. .*supersedes.*while you still have the page\.$/u);
+      expect((await run(rated("Excellent doctor", { reason: "rating_not_in_quote", status: "not_verbatim" }))).message)
+        .toMatch(/^Recorded, but the rating's score and number of ratings are not in the quote as the page writes them/u);
+    });
+
+    it("says when it rests on few ratings, by the small sample's bound, to look for the place that rates this exact option by more people", async () => {
+      const few = await run(rated("4,9 · 12 ratings", { reason: null, status: "found" }, 12));
+      expect(few).toMatchObject({ sample: "small" });
+      expect(few.message).toBe("Recorded. The quote is on the page. Few ratings: 12, below 30. If another place rates this exact option by more people, record that one too.");
+      expect(await run(rated("4,9 · 1 284 ratings", { reason: null, status: "found" }))).toEqual({ message: "Recorded. The quote is on the page.", quote_check: "found", record_id: RECORD_ID });
+    });
   });
 
   it("says at once that a wrong quote is not on the page, and how to correct it", async () => {

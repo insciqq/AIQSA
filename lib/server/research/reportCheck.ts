@@ -1,4 +1,4 @@
-import { researchDraftText, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFrame } from "../../contracts/research";
+import { researchChoosesAmongOptions, researchDraftText, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFrame } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchGate } from "./gates";
@@ -304,7 +304,7 @@ function summaryTrouble(draft: ResearchDraft, frame: ResearchFrame | null): Trou
   const problems: string[] = draft.invalidSummary === undefined ? [] : [draft.invalidSummary];
   const picked = pickedRows(draft);
   const inseparable = (draft.doesNotSeparate?.rowKeys ?? []).filter((key) => !picked.includes(key));
-  if (picked.length === 0 && frame && frame.rows.length >= 2 && frame.criteria.some((criterion) => criterion.decisive || criterion.priority)) problems.push(DEFAULT_PICK);
+  if (picked.length === 0 && frame && frame.rows.length >= 2 && researchChoosesAmongOptions(frame.criteria)) problems.push(DEFAULT_PICK);
   if (summary.rowKeys.length === 0 && picked.length + inseparable.length > 0) {
     const leaning = [...picked.length > 0 ? [`picks ${listed(picked)}`] : [], ...inseparable.length > 0 ? [`calls ${listed(inseparable)} inseparable`] : []].join(" and ");
     problems.push(`The summary names no row of the matrix while the draft ${leaning}: list in row_keys the rows it recommends, the pick first, and name each in its text.`);

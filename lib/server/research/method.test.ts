@@ -192,7 +192,27 @@ describe("the method", () => {
     const { criteria, questions } = proposeResearchPlanTool.inputSchema.properties as { criteria: { description: string }; questions: { description: string } };
     expect(questions.description).toContain("They run at once, so none may need another's answer");
     expect(questions.description).toContain("is no question but a criterion, whose cells the next round fills once the rows exist");
-    expect(criteria.description).toContain("For a purchase, the current offer (where to buy, the seller, the price) and owners' reviews are criteria too");
+    expect(criteria.description).toContain("their ratings and reviews are a criterion too, marked ratings, and for a purchase so is the current offer (where to buy, the seller, the price)");
+  });
+
+  it("counts ratings for anything people rate publicly, products and services alike, not for a purchase alone (operator decision 2026-11-05)", () => {
+    const { criteria } = proposeResearchPlanTool.inputSchema.properties as { criteria: { description: string; items: { properties: Record<string, { description: string; type: string }>; required: string[] } } };
+    expect(criteria.description).toContain("Where the user chooses among options of any kind people rate publicly, a product or a service such as a doctor, a clinic, a hotel, a school or a contractor");
+    expect(criteria.description).not.toContain("For a purchase, the current offer (where to buy, the seller, the price) and owners' reviews are criteria too");
+    expect(criteria.items.required).toContain("ratings");
+    expect(criteria.items.properties.ratings).toMatchObject({ description: expect.stringContaining("the server adds one"), type: "boolean" });
+    expect(researchScopingInstructions()).toContain("products and services alike, doctors, clinics, hotels, schools and contractors included, one criterion is their ratings and reviews");
+    const text = researchMethodText(plan);
+    expect(text).toContain("Ratings count for whatever people rate publicly, products and services alike");
+    expect(text).toContain("from the place with the most ratings for that exact option and also the seller's own where that is what can be reached");
+    expect(text).toContain("A cell with no rating to find is recorded as not found, and the table says so in plain words.");
+    const footer = researcherMethodFooter(plan);
+    expect(footer).toContain("is a finding with rating under the matrix's ratings criterion: its score, the top of its scale, the number of ratings and what they count, with a quote " +
+      "that holds the score and the number as the page writes them");
+    expect(footer).toContain("a card that merges its variants' ratings gets variants_merged, and the claim says so");
+    expect(footer).toContain("An option with no public rating you can reach: record not_found for its ratings cell, with where you looked.");
+    expect(footer).toContain("A rating seen only in search results is a lead: open its page.");
+    expect(footer.length).toBeLessThan(RUN_FOLLOWUP_MAX_CHARS / 2);
   });
 
   it("reaches the plan's first rows too, which are written before the method is read and never change", () => {
@@ -492,7 +512,7 @@ describe("scoping and the proposal", () => {
     expect(criteria.required).toContain("decisive");
     expect(criteria.properties.decisive).toMatchObject({ type: "boolean" });
     expect(criteria.properties.decisive!.description).toContain("load per side, height and layers");
-    expect(criteria.properties.decisive!.description).toContain("false for the offer, the price, owners' reviews");
+    expect(criteria.properties.decisive!.description).toContain("false for the offer, the price, ratings and reviews");
   });
 });
 
@@ -526,6 +546,12 @@ describe("the matrix in a brief", () => {
     const footer = researcherMatrixFooter(matrixOf(), 10_000)!;
     expect(footer).toBe(["# The matrix (from the server)", "Rows: x1 (Lonax X1), y2 (Dreamline Y2).", "Criteria: durability (Durability), firmness (Firmness).",
       "4 of 4 cells are still empty. x1: durability, firmness; y2: durability, firmness"].join("\n"));
+  });
+
+  it("names the ratings criterion's key, so a researcher files a rating under it", () => {
+    const rated: ResearchFrame = { ...frame, criteria: [...frame.criteria, { criterion: "Рейтинг и отзывы", key: "ratings", ratings: true, why: "W." }] };
+    for (const room of [10_000, 200]) expect(researcherMatrixFooter(matrixOf(rated), room)).toContain("Ratings: ratings.");
+    expect(researcherMatrixFooter(matrixOf(), 10_000)).not.toContain("Ratings:");
   });
 
   it("falls back to counts per row for a long matrix, then to keys alone, and to nothing when no room is left", () => {

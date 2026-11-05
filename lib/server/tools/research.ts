@@ -65,14 +65,17 @@ export const proposeResearchPlanTool: RunTool = {
       },
       criteria: {
         description: "What the answer is judged by, at least one, found in the guides and standards you read while scoping and not from memory. For a knowledge question: its outcomes or sub-questions. " +
-          "For a purchase, the current offer (where to buy, the seller, the price) and owners' reviews are criteria too, so every option found gets them as cells to fill.",
+          "Where the user chooses among options of any kind people rate publicly, a product or a service such as a doctor, a clinic, a hotel, a school or a contractor, their ratings and " +
+          "reviews are a criterion too, marked ratings, and for a purchase so is the current offer (where to buy, the seller, the price), so every option found gets them as cells to fill.",
         items: keyed({ criterion: { description: "In plain words, in the user's language.", type: "string" },
           decisive: { description: "true for a key specification: a property of the option itself that the pick depends on and sellers may state differently, such as a mattress's " +
             `load per side, height and layers. Each option the report recommends gets it confirmed from two sites. At most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}; false for the offer, ` +
-            "the price, owners' reviews and a knowledge question's outcomes.", type: "boolean" },
+            "the price, ratings and reviews, and a knowledge question's outcomes.", type: "boolean" },
           priority: { description: "true only for what the user's own message names as mattering to them, such as value for money, a budget or quiet: these decide the pick, " +
             "and the report answers each. Where the user asks for value for money or a budget, mark the criterion whose cells hold the offers' prices. At most " +
             `${RESEARCH_FRAME_LIMITS.priorityCriteria}; false for everything the user did not say, however much the guides stress it.`, type: "boolean" },
+          ratings: { description: "true for the one criterion of the options' public ratings and reviews, whose cells hold each option's score with its number of ratings; false for every " +
+            "other. Where the user chooses among options and no criterion is marked so, the server adds one.", type: "boolean" },
           why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
         type: "array"
       },
@@ -248,6 +251,8 @@ export function researchScopingInstructions(): string {
     "Write each criterion in plain words with why it matters. A knowledge question gets its outcomes or sub-questions in the same place, each with why it matters.",
     `For a choice between options, mark as decisive the few key specifications a pick depends on, at most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}: the recommended options get them confirmed from two sites.`,
     `Mark as a priority only what the user's own message names as mattering to them, such as value for money, at most ${RESEARCH_FRAME_LIMITS.priorityCriteria}: those decide the pick.`,
+    "Where the user chooses among options people rate publicly, products and services alike, doctors, clinics, hotels, schools and contractors included, one criterion is " +
+      "their ratings and reviews, written in the user's language and marked ratings.",
     `Then call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}. Do not wait until the time is up, and do not start researchers: they start after the plan.`,
     "Ask the user nothing, here or in the plan: what you lack becomes a named assumption. What is unknown about the user and changes the result " +
       "becomes a branch with its cases, so the report can say \"up to 70 kg, A; heavier, B\".",

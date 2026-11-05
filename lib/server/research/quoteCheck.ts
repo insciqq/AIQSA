@@ -1,4 +1,4 @@
-import type { ResearchFinding } from "../../contracts/research";
+import type { ResearchFinding, ResearchRating } from "../../contracts/research";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchOpenedSource } from "./gates";
 import { researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
@@ -487,4 +487,14 @@ export function figuresNotIn(figures: readonly ClaimFigure[], text: string): rea
   if (figures.length === 0) return [];
   const keys = textValues(text);
   return figures.filter((figure) => !figureIn(figure, keys));
+}
+
+/**
+ * Which of a rating's numbers a text does not write, read as `figuresNotIn` reads one: its score (`4,7` is 4.7) and its number of ratings, which a page may group
+ * or shorten (`12 345`, `12,3 тыс.`, `1.2K`). A shortened count is the number it writes, so 12,3 тыс. is 12 300 and never 12 345. The top of the scale is not asked
+ * for, since a card often shows its stars and no "of 5".
+ */
+export function ratingNumbersNotIn(rating: Pick<ResearchRating, "count" | "score">, text: string): readonly ("count" | "score")[] {
+  const keys = textValues(text);
+  return (["score", "count"] as const).filter((part) => !keys.has(`number:${canonical(rating[part])}`));
 }
