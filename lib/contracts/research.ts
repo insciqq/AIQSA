@@ -112,6 +112,11 @@ export const RESEARCH_FRAME_LIMITS = Object.freeze({
   criteria: 24,
   /** Criteria a plan may mark decisive: the few a pick depends on, each of which every option the report recommends has confirmed on two sites. */
   decisiveCriteria: 4,
+  /**
+   * Options earlier research on the branch recommended, which a new research starts with as candidates (`lib/server/research/earlier.ts`): the pick and
+   * the summary's rows of a few researches. They stand outside `candidates`, `candidateNotes` and `changes`, so they cost the pool nothing.
+   */
+  earlierOptions: 10,
   labelCharacters: 200,
   /**
    * Criteria a plan may mark as priorities: only what the user's own message names as mattering, such as value for money, which then decides the pick
@@ -290,11 +295,18 @@ export type ResearchFrameChangeRequest = Readonly<{ reason: string }> & (
 export type ResearchCandidateNote = Readonly<{ at: string; by: ResearchAgentRef; reason: string; url?: string }>;
 
 /**
+ * An option earlier research on the branch recommended (`lib/server/research/earlier.ts`): `on` is the date its records were made, `YYYY-MM-DD`, and
+ * `pick` is there when it was that research's pick. Its old records prove nothing here.
+ */
+export type ResearchEarlierMark = Readonly<{ on: string; pick?: true }>;
+
+/**
  * An option an agent saw that the matrix may lack, with one note per agent that noted it and per further site that agent saw it on. `key` is the
  * server's normal form of the name (`lib/server/research/candidates.ts`), which merges one option written two ways; `label` is the name as the first
- * agent wrote it.
+ * agent wrote it. `earlier` marks one the server seeded at the start from earlier research, whose first note is the server's, with that research's page;
+ * absent on every other candidate and on a frame stored before it.
  */
-export type ResearchCandidate = Readonly<{ key: string; label: string; notes: readonly ResearchCandidateNote[] }>;
+export type ResearchCandidate = Readonly<{ earlier?: ResearchEarlierMark; key: string; label: string; notes: readonly ResearchCandidateNote[] }>;
 
 /** A noted candidate the main agent decided is no option, and why: the report keeps it with the options it does not recommend. */
 export type ResearchSetAside = Readonly<{ at: string; key: string; reason: string }>;
@@ -825,7 +837,19 @@ function decodeCandidate(value: unknown, place: string): DecodedResearch<Researc
     if (url !== undefined && url !== null && !isLink(url)) return refused(`${at}.url must be an http or https link of at most ${RESEARCH_LIMITS.urlCharacters} characters.`);
     notes.push({ at: entry.at, by, reason: entry.reason, ...isLink(url) ? { url } : {} });
   }
-  return { ok: true, value: { key: value.key, label: value.label, notes } };
+  const earlier = decodeEarlierMark(value.earlier);
+  if (earlier === null) return refused(`${place}.earlier must hold on, a date as YYYY-MM-DD, and pick true or nothing.`);
+  return { ok: true, value: { ...earlier === undefined ? {} : { earlier }, key: value.key, label: value.label, notes } };
+}
+
+const EARLIER_DATE = /^\d{4}-\d{2}-\d{2}$/u;
+
+/** A seeded candidate's mark; undefined on any other, null when it cannot be read. */
+function decodeEarlierMark(value: unknown): ResearchEarlierMark | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || typeof value.on !== "string" || !EARLIER_DATE.test(value.on) || !Number.isFinite(Date.parse(value.on))) return null;
+  if (value.pick !== undefined && value.pick !== true) return null;
+  return { on: value.on, ...value.pick === true ? { pick: true as const } : {} };
 }
 
 function decodeSetAside(value: unknown, place: string): DecodedResearch<ResearchSetAside> {
@@ -853,9 +877,14 @@ export function decodeResearchFrame(value: unknown): DecodedResearch<ResearchFra
     if (!change.ok) return change;
     changes.push(change.value);
   }
-  const candidates = value.candidates === undefined ? null : decodeKeyed(value.candidates, "candidates", { max: limits.candidates, min: 0 }, decodeCandidate);
+  // The options earlier research recommended stand outside the pool's limit (`earlierOptions`), and so do their set-asides.
+  const pooled = limits.candidates + limits.earlierOptions;
+  const candidates = value.candidates === undefined ? null : decodeKeyed(value.candidates, "candidates", { max: pooled, min: 0 }, decodeCandidate);
   if (candidates && !candidates.ok) return candidates;
-  const setAside = value.setAside === undefined ? null : decodeKeyed(value.setAside, "setAside", { max: limits.candidates, min: 0 }, decodeSetAside);
+  if (candidates && candidates.value.filter(({ earlier }) => earlier !== undefined).length > limits.earlierOptions) {
+    return refused(`candidates may hold at most ${limits.earlierOptions} options of earlier research.`);
+  }
+  const setAside = value.setAside === undefined ? null : decodeKeyed(value.setAside, "setAside", { max: pooled, min: 0 }, decodeSetAside);
   if (setAside && !setAside.ok) return setAside;
   return { ok: true, value: { branches: branches.value, ...candidates ? { candidates: candidates.value } : {}, changes, criteria: criteria.value, rows: rows.value,
     ...setAside ? { setAside: setAside.value } : {} } };

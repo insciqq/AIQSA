@@ -745,3 +745,40 @@ describe("the gate", () => {
     expect(messages({ ...DRAFT, recordIds: [id(1)], report: "Lonax Memory." }, records, matrixOf(frame, records))).toBe("");
   });
 });
+
+describe("the options earlier research recommended", () => {
+  // A real chat (2026-11-05): the first research's best option fitted the second's budget, the second never named it, and the user was not told.
+  const earlierOf = (label: string, on = "2026-11-04") => ({ earlier: { on }, key: label.toLowerCase().replace(/\s+/gu, "-"), label,
+    notes: [{ at: "2026-11-05T10:00:00.000Z", by: { name: null, threadId: null }, reason: `Earlier research in this chat recommended it on ${on}.` }] });
+  const withEarlier = (labels: readonly string[], extra: Partial<ResearchFrame> = {}): ResearchFrame => ({ ...FRAME, candidates: labels.map((label) => earlierOf(label)), ...extra });
+
+  it("passes when each is a row of the comparison", () => {
+    expect(messages(DRAFT, RECORDS, matrixOf(withEarlier(["Optima Classic"]), RECORDS))).toBe("");
+  });
+
+  it("sends back an answer that does not say what became of one set aside, and passes once one sentence names it with its reason", () => {
+    const frame = withEarlier(["Askona Balance Forma"], { setAside: [{ at: "2026-11-05T10:05:00.000Z", key: "askona-balance-forma", reason: "Over the new budget." }] });
+    const text = messages(DRAFT, RECORDS, matrixOf(frame, RECORDS));
+    expect(text).toContain('The answer does not say what became of these options earlier research recommended: "Askona Balance Forma" (recommended by earlier research in this chat on 2026-11-04).');
+    expect(text).toContain("a figure from earlier research is given with its date");
+    const told = { ...DRAFT, report: `${DRAFT.report}\nAskona Balance Forma, which research recommended on 4 November, no longer fits the budget.` };
+    expect(messages(told, RECORDS, matrixOf(frame, RECORDS))).toBe("");
+  });
+
+  it("names the option however the answer splits its name or writes its script", () => {
+    const frame = withEarlier(["Аскона Balance Forma 160x200"]);
+    const told = { ...DRAFT, report: `${DRAFT.report}\nAskona BalanceForma went: it is sold out.` };
+    expect(messages(told, RECORDS, matrixOf(frame, RECORDS))).toBe("");
+  });
+
+  it("does not let one with no record of this research be the pick or a recommended option, since old records prove nothing new", () => {
+    const records = RECORDS.filter(({ rowKey }) => rowKey !== "x1");
+    const frame = withEarlier(["Lonax Memory"]);
+    const text = messages({ ...DRAFT, recordIds: [] }, records, matrixOf(frame, records));
+    expect(text).toContain('This research holds no record of x1, "Lonax Memory" (recommended by earlier research in this chat on 2026-11-04), and records of earlier research prove nothing now.');
+    expect(text).toContain("keep it in the reserve with the date it was recommended");
+    // Its own words only, not the generic one besides.
+    expect(text).not.toContain("No record holds evidence for x1");
+    expect(messages(DRAFT, RECORDS, matrixOf(frame, RECORDS))).toBe("");
+  });
+});
