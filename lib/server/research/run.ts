@@ -34,6 +34,7 @@ import type { SavedToolResultReader } from "../engine/toolResults";
 import type { TranscriptItem, TranscriptUserItem } from "../engine/transcript";
 import { logEvent } from "../observability";
 import type { SubagentStopReason } from "../subagents/ports";
+import { isBotCheckPage } from "../tools/botCheckPage";
 import { planActivityEntry } from "../tools/harnessActivity";
 import { harnessToolError } from "../tools/harnessTool";
 import { proposeResearchPlanTool, researchDraftReservedInstruction, researchScopingInstructions, researchScopingOverMessage, startResearchTool, submitResearchDraftTool } from "../tools/research";
@@ -42,12 +43,14 @@ import type { PlanUpdate } from "../tools/updatePlan";
 import { researchCandidatesLine } from "./candidates";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { createResearchRounds, researchFilledCells, researchKeySpecs, researchLeadingRows, researchMatrix, researchProgressCells, researchUnconfirmedKeyCells } from "./matrix";
-import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
+import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchReadHost,
+  researchUnreachableSites } from "./method";
 import { researchAnswerText, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { researchDraftWithLinkedRecords } from "./reportCheck";
 import { createResearchSources } from "./sources";
+import { researchSiteHost } from "./sourceQuality";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
 
@@ -316,6 +319,8 @@ export function createRunResearch(input: RunResearchInput) {
   const briefed = new Set<string>();
   /** The unreachable sites `fetch_url` last read, so a run's hundreds of page reads do not each read every record. */
   let unreachable: Readonly<{ at: number; sites: ReadonlyMap<string, string> }> | null = null;
+  /** Whether each stored page that would open a closed host is a bot check or cannot be found, read once: a stored page never changes. */
+  const blockPages = new Map<string, boolean>();
   /**
    * The researcher calls running now, by the name their thread has, which is what the store lists and stops, one entry each: a
    * second call of a name in one batch is refused, and must not take the first off.
@@ -882,14 +887,23 @@ export function createRunResearch(input: RunResearchInput) {
     },
 
     /**
-     * The sites this research recorded unreachable, for `fetch_url` (`researchUnreachableSites`): read again after a few seconds, and a
-     * failed read keeps the last list, so a store's hiccup never fails a page read.
+     * The hosts this research closed, for `fetch_url` (`researchUnreachableSites`): read again after a few seconds, and a failed read
+     * keeps the last list, so a store's hiccup never fails a page read. A read that would open a closed host counts once its stored
+     * page is read and is no bot check (`isBotCheckPage`, on the text alone); a page that cannot be found opens nothing.
      */
     async unreachableSites(signal: AbortSignal): Promise<ReadonlyMap<string, string>> {
       const now = input.now();
       if (unreachable && now - unreachable.at < UNREACHABLE_SITES_FRESH_MS) return unreachable.sites;
       try {
-        const sites = researchUnreachableSites(await ports.evidence.records(signal));
+        const records = await ports.evidence.records(signal);
+        const closed = new Set(records.flatMap((record) => record.kind === "unreachable" ? researchSiteHost(record.target) ?? [] : []));
+        for (const record of records) {
+          const host = researchReadHost(record);
+          if (!host || !closed.has(host) || blockPages.has(record.pageId!)) continue;
+          const page = await ports.evidence.page(record.pageId!, signal);
+          blockPages.set(record.pageId!, page === null || isBotCheckPage({ kind: "text", text: page.text, title: null, truncated: page.truncated }, new Uint8Array()));
+        }
+        const sites = researchUnreachableSites(records, (pageId) => blockPages.get(pageId) ?? true);
         unreachable = { at: now, sites };
         return sites;
       } catch (error) {

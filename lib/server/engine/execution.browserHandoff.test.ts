@@ -250,6 +250,26 @@ describe("a research run's browser handoff", () => {
     expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
   });
 
+  it.each(["main", "researcher"] as const)("refuses the %s's unreachable record until its own browser tried the site (operator decision 2026-11-05)", async (agent) => {
+    const record_ = vi.fn<ResearchEvidencePort["record"]>();
+    const browsed = vi.fn(async () => false);
+    const evidence: ResearchEvidencePort = { browsed, page: async () => null, record: record_, records: async () => [] };
+    const researcher = { arguments: { message: "Check the shop.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME };
+    const run = start({ research: { gates: [], ports: { evidence: () => evidence } }, steps: [
+      { calls: begin }, ...agent === "researcher" ? [{ calls: [researcher] }] : [], { calls: [record] },
+      ...agent === "researcher" ? [{ text: "Outcome: done\n\nThe shop needs the browser first." }] : [], { calls: [submit] }
+    ] });
+    await events(run.response);
+    expect(browsed).toHaveBeenCalledWith(agent === "researcher" ? { name: "lab", threadId: "thread-lab" } : { name: null, threadId: null }, "shop.example",
+      expect.any(AbortSignal));
+    expect(record_).not.toHaveBeenCalled();
+    const refused = run.model.requests.flatMap((request) => request.history ?? [])
+      .find((item) => item.type === "tool_result" && item.name === RECORD_EVIDENCE_TOOL_NAME);
+    if (refused?.type !== "tool_result") throw new Error("Expected the record_evidence result in the next model request.");
+    expect(refused.output).toContain("research_unreachable_browser_first");
+    expect(refused.output).toContain("your Workspace browser has not opened shop.example in this research");
+  });
+
   it("keeps the ordinary wait where research could run but the message was not sent with Deep research", async () => {
     vi.useFakeTimers();
     const handoff = liveWait();
