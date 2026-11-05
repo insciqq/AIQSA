@@ -1614,6 +1614,8 @@ describe("through the engine", () => {
   function prepared(): MaterializedPreparedRunData {
     const text = "Проведи исследование матрасов.";
     const request = {
+      // The user chose Deep research for the message (operator decision 2026-11-05).
+      deepResearch: true,
       attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
       context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
       modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -1719,10 +1721,11 @@ describe("through the engine", () => {
     const main = scripted([{ calls: [start] }, { text: "Research could not start: the checks model is unavailable." }]);
     const memory = engineOf({ verifier: { frozenChoice: async () => ({ effort: null, kind: "set", providerModelId: "gone" }), route: async () => null } });
     await run(main.adapter, memory);
-    expect(main.requests).toHaveLength(2);
+    // Asked once more for the start the user's choice owes, then the run fails visibly under the role's code (`seam.test.ts`), never with these words for an answer.
+    expect(main.requests).toHaveLength(3);
     expect(memory.threads.admitForeground).not.toHaveBeenCalled();
     expect(JSON.stringify(main.requests[1]!.history)).toContain("research_verifier_unavailable");
-    expect(memory.published()).toBe("Research could not start: the checks model is unavailable.");
+    expect(memory.published()).toBeNull();
   });
 
   it("does not lose the answer when the verifier's provider fails", async () => {

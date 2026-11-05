@@ -9,6 +9,7 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import { createTestAuth } from "@/tests/support/auth";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
+import { DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import {
   ProviderAdmissionError,
@@ -1995,6 +1996,78 @@ describe("model run route handlers", () => {
       userId: config.bootstrapUserId });
     expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation",
       content: { blocks: [{ type: "text", text: "The user approved `delete_record` on `Records`. Continue the task." }] } });
+  });
+
+  it("refuses a message sent with Deep research where research cannot run, with a stable code and before anything is accepted", async () => {
+    const { repository, state } = createMemoryRepository();
+    const providers = { fake: createFakeProviderAdapter() };
+    const plain = nativeEngineFake().deps;
+    // An engine that can research; this harness admits no Search source, which is what the user can turn on.
+    const researching = { ...plain, engine: { ...plain.engine, research: {}, subagentThreads: {} as never } };
+    const send = (deps: Partial<TestRunHandlerDeps>, extra: Record<string, unknown>) => createSendMessageHandler({ ...authDeps, nativeEngine: researching,
+      providers, repository, ...deps })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Проведи глубокое исследование матрасов.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] }, ...extra }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    const refusal = async (response: Response) => [response.status, await response.json()];
+
+    for (const value of ["true", false, 1, null]) {
+      expect(await refusal(await send({}, { [DEEP_RESEARCH_SEND_FIELD]: value }))).toEqual([400, { error: DEEP_RESEARCH_REFUSALS.invalid }]);
+    }
+    expect(await refusal(await send({}, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.needsSearch }]);
+    expect(await refusal(await send({ telegramTurn: true }, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.unavailable }]);
+    expect(await refusal(await send({ nativeEngine: plain }, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.unavailable }]);
+    expect(state.created).toBeNull();
+
+    // The same words without the choice are an ordinary message.
+    const ordinary = await send({ nativeEngine: plain }, {});
+    expect(ordinary.status).toBe(200);
+    await ordinary.text();
+    expect(state.created?.normalizedRequest.deepResearch).toBeUndefined();
+  });
+
+  it("keeps Deep research on a regenerate of the message sent with it, and of no other, and never on a turn the server writes", async () => {
+    const { repository, state } = createMemoryRepository();
+    const providers = { fake: createFakeProviderAdapter() };
+    const plain = nativeEngineFake().deps;
+    const researching = { ...plain, engine: { ...plain.engine, research: {}, subagentThreads: {} as never } };
+    const sourceOf = repository.findRegenerationSource.bind(repository);
+    const regenerate = (sentWith: boolean, nativeEngine: typeof plain) => {
+      repository.findRegenerationSource = async (id, userId) => {
+        const source = await sourceOf(id, userId);
+        return source && { ...source, ...sentWith ? { deepResearch: true as const } : {} };
+      };
+      return createRegenerateModelRunHandler({ ...authDeps, nativeEngine, providers, repository })(
+        new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+          body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] } }),
+          headers: { cookie: authCookie() },
+          method: "POST"
+        }), { params: { messageId: "assistant-message-1" } });
+    };
+    // The body names nothing: the message's own choice is what the admission checks, so this harness's missing Search refuses it.
+    const kept = await regenerate(true, researching);
+    expect([kept.status, await kept.json()]).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.needsSearch }]);
+    expect(state.regenerated).toBeNull();
+    const other = await regenerate(false, plain);
+    expect(other.status).toBe(200);
+    await other.text();
+    expect(state.regenerated?.normalizedRequest.deepResearch).toBeUndefined();
+
+    // An engine that cannot research would refuse a flag that reached the run: the continuation's is dropped with the body's other fields.
+    repository.loadMcpApprovalContinuation = async () => ({ serverName: "Records", toolName: "delete_record" });
+    const continued = await createSendMessageHandler({ ...authDeps, nativeEngine: plain, providers, repository })(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({ deepResearch: true, modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
+          systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }), { params: { chatId: "chat-1" } });
+    expect(continued.status).toBe(200);
+    await continued.text();
+    expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation" });
+    expect(state.created?.normalizedRequest.deepResearch).toBeUndefined();
   });
 
   it("writes a sub-agent wake-up turn from the server's callbacks, claims them, and counts it toward no message limit", async () => {

@@ -46,13 +46,16 @@ const aborted = (signal: AbortSignal | undefined) => new Promise<never>((_resolv
 
 const sleep = (ms: number, signal: AbortSignal | undefined) => Promise.race([new Promise<void>((resolve) => { setTimeout(resolve, ms); }), aborted(signal)]);
 
-/** The model of the main agent and of every sub-agent, told apart by the research tools only the main agent has. */
-function scripted(main: readonly Step[], agents: readonly Step[] = []) {
+/**
+ * The model of the main agent and of every sub-agent, told apart by the research tools only the main agent has, or by `isMain` in an ordinary run,
+ * which has none.
+ */
+function scripted(main: readonly Step[], agents: readonly Step[] = [], isMain = (request: ProviderRunRequest) => request.tools?.some((tool) => tool.name === START_RESEARCH_TOOL_NAME) === true) {
   const seen = { agents: [] as Seen[], main: [] as Seen[] };
   const adapter: ProviderAdapter = {
     buildRequestPreview: () => ({}),
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
-      const own = request.tools?.some((tool) => tool.name === START_RESEARCH_TOOL_NAME) ? { lane: seen.main, script: main } : { lane: seen.agents, script: agents };
+      const own = isMain(request) ? { lane: seen.main, script: main } : { lane: seen.agents, script: agents };
       own.lane.push({ at: Date.now(), request });
       const step = own.script[Math.min(own.lane.length - 1, own.script.length - 1)]!;
       if (step.partial) yield { data: { delta: step.partial }, type: "token" };
@@ -98,8 +101,8 @@ function researcherRole(adapter: ProviderAdapter): ResearchVerifierRole {
 
 let runs = 0;
 
-function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<{ listingMs?: number; onRelease?: () => void; turnTimeoutSeconds?: number; window?: ResearchPlanWindowPort;
-  workspace: boolean }>) {
+function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<{ chosen?: boolean; listingMs?: number; onRelease?: () => void; turnTimeoutSeconds?: number;
+  window?: ResearchPlanWindowPort; workspace: boolean }>) {
   runs += 1;
   const runId = `run-time-${runs}`;
   const rows = new Map<string, ToolCallRow>();
@@ -211,6 +214,8 @@ function harness(research: Omit<ResearchEngineDeps, "ports">, options: Readonly<
   };
   const text = "Choose a mattress.";
   const request = {
+    // The user chose Deep research for the message (operator decision 2026-11-05), unless the run is an ordinary one.
+    ...options.chosen === false ? {} : { deepResearch: true },
     attachmentIds: [], attachments: [], chatId: `chat-${runs}`, content: { blocks: [{ text, type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -623,8 +628,15 @@ describe("what a researcher was writing when its time ended", () => {
   });
 
   it("is left out of an ordinary run, where the deadline ends a sub-agent", async () => {
-    const { adapter } = scripted([{ calls: [researcher("alpha")] }], [{ hang: true, partial: written }]);
-    const run = harness({ gates: [] }, { workspace: false });
+    // An ordinary run has no research tools: its first request is the main agent's, and the deadline ends the run before it asks again.
+    let first = true;
+    const firstOnly = () => {
+      const main = first;
+      first = false;
+      return main;
+    };
+    const { adapter } = scripted([{ calls: [researcher("alpha")] }], [{ hang: true, partial: written }], firstOnly);
+    const run = harness({ gates: [] }, { chosen: false, workspace: false });
     const answer = run.go(adapter);
     await vi.advanceTimersByTimeAsync(NATIVE_TURN_LIMITS.turnMs);
     await answer;

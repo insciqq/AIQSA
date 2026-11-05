@@ -138,9 +138,11 @@ function repository() {
   };
 }
 
-function prepared(): MaterializedPreparedRunData {
+/** A run of a message sent with Deep research when `chosen`; otherwise an ordinary message, or a Continue or an approval continuation (operator decision 2026-11-05). */
+function prepared(chosen = true): MaterializedPreparedRunData {
   const text = "Проведи исследование матрасов.";
   const request = {
+    ...chosen ? { deepResearch: true } : {},
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -162,8 +164,10 @@ async function runOf(steps: readonly Step[], research: ResearchEngineDeps, prepa
   const { adapter, requests } = scripted(steps);
   const memory = engineOf(research);
   prepare(memory);
+  // A run whose first step starts research is one the user sent with Deep research; one that never researches is an ordinary message.
+  const chosen = steps[0]?.calls?.some((call) => call.name === START_RESEARCH_TOOL_NAME) === true;
   const input: NativeRunExecutionInput = { adapter, created: { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" }, engine: memory.deps,
-    prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" };
+    prepared: prepared(chosen), repository: repository() as unknown as RunRepository, services: {}, subagents: { background: new FakeSubagentBackgroundControl() }, userId: "user" };
   const text = await createNativeRunExecutionResponse(input).text();
   const fresh = (value: string) => value.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu, "<id>").replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/gu, "<time>");
   const blocks = text.split("\n\n");
@@ -226,7 +230,9 @@ async function afterInterruption(input: Readonly<{ approved?: Readonly<{ later: 
   const { approved, text = CONTINUE_TURN_TEXT } = input;
   const stored = [...started(startResult("run-0")), ...held("call-first")];
   const { adapter, requests } = scripted(input.steps);
-  const memory = engineOf({ gates: [], ports: input.ports });
+  // The store says run-0 was interrupted, which is what lets a Continue of its research offer research (`RunResearch.continues`).
+  const resume: NonNullable<ResearchPortFactories["resume"]> = (run, parts) => ({ ...input.ports.resume?.(run, parts) ?? NOOP_RESEARCH_PORTS.resume, interrupted: async () => true });
+  const memory = engineOf({ gates: [], ports: { ...input.ports, resume } });
   vi.mocked(memory.deps.approvedCall).mockResolvedValue(approved ? { providerCallId: "call-held", toolName: "mcp_shop_buy" } : null);
   const answers = new Map([["answer-0", "run-0"]]);
   const runItems = new Map<string, TranscriptItem[]>([["run-0", stored]]);
@@ -240,7 +246,7 @@ async function afterInterruption(input: Readonly<{ approved?: Readonly<{ later: 
   const messages = [{ content: content("Проведи исследование."), id: "question", role: "user" as const }, { content: content(""), id: "answer-0", role: "assistant" as const },
     ...approved ? [{ content: content(text), id: "continue", role: "user" as const }, { content: content(""), id: "answer-1", role: "assistant" as const }] : [],
     { content: content(approved ? "The user approved it." : text), id: "current-user-message", role: "user" as const }];
-  const base = prepared();
+  const base = prepared(false);
   const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
   await createNativeRunExecutionResponse({ adapter, ...approved ? { approvalContinuation: { approvalId: "approval-1" } } : {},
     created: { assistantMessageId: "answer-c", runId: approved ? "run-d" : "run-c", userMessageId: "current-user-message" }, engine: memory.deps,
@@ -266,7 +272,7 @@ async function continuationScope(stored: readonly (readonly TranscriptItem[])[],
     ...stored.flatMap((_items, index) => [...index === 0 ? [] : [{ content: content("The user approved it."), id: `approved-${index}`, role: "user" as const }],
       { content: content(""), id: `answer-${index}`, role: "assistant" as const }]),
     { content: content("The user approved it."), id: "current-user-message", role: "user" as const }];
-  const base = prepared();
+  const base = prepared(false);
   const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
   await createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" },
     created: { assistantMessageId: "answer-c", runId: "run-c", userMessageId: "current-user-message" }, engine: memory.deps,
@@ -817,6 +823,49 @@ describe("the run research belongs to", () => {
     const planReleased = vi.fn();
     await continuationScope([[...started(startResult("run-0")), ...held("call-held")]], { time: () => ({ ...NOOP_RESEARCH_PORTS.time, planReleased }) });
     expect(planReleased).toHaveBeenCalledOnce();
+  });
+});
+
+describe("the sites fetch_url finds closed (operator decision 2026-11-05)", () => {
+  const base = { author: { name: "lab", threadId: "lab" }, createdAt: "2026-11-05T00:00:00.000Z", criterionKey: null, publishedOn: null, registrableDomain: null,
+    rowKey: null, runId: "run-1", supersedes: null, textGroupKey: null };
+  const closed = (sequence: number, reason: string): ResearchEvidenceRecord => ({ ...base, id: `closed-${sequence}`, kind: "unreachable", pageId: null, quoteCheck: null,
+    reason, sequence, sourceClass: null, target: "https://www.shop.example/card" });
+  const read = (sequence: number, pageId: string): ResearchEvidenceRecord => ({ ...base, claim: "The card lists it at 10.", id: `read-${sequence}`, kind: "finding", pageId,
+    quote: "10", quoteCheck: { reason: null, status: "found" }, sequence, sourceClass: "action_channel", standing: "claimed", url: "https://shop.example/card" });
+  type Page = NonNullable<Awaited<ReturnType<ResearchPorts["evidence"]["page"]>>>;
+  const stored = (id: string, text: string): Page => ({ capturedAt: base.createdAt, contentHash: id, id, obtainedBy: "browser", sizeBytes: text.length, text, truncated: false,
+    url: "https://shop.example/card" });
+
+  it("opens a host on a later read of its stored page, keeps it closed while that page is a bot check, reads each page once, and closes it again on a later record", async () => {
+    let records: readonly ResearchEvidenceRecord[] = [closed(0, "Checking your browser."), read(1, "check"), read(2, "card")];
+    const pages = new Map([["check", stored("check", "[browser #1 · lab] open @ shop.example/card\nChecking your browser before accessing shop.example.")],
+      ["card", stored("card", "[browser #2 · lab] text @ shop.example/card\nThe card lists it at 10.")]]);
+    const page = vi.fn(async (pageId: string) => pages.get(pageId) ?? null);
+    let clock = 1_000_000;
+    const research = direct({ gates: [], ports: { evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, page, records: async () => records }) } }, { now: () => clock });
+    const signal = new AbortController().signal;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map());
+    expect(page).toHaveBeenCalledTimes(2);
+    records = [closed(0, "Checking your browser."), read(1, "check")];
+    clock += 10_000;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map([["shop.example", "Checking your browser."]]));
+    records = [closed(0, "Checking your browser."), read(1, "card"), read(2, "gone"), closed(3, "A CAPTCHA in the browser.")];
+    clock += 10_000;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map([["shop.example", "A CAPTCHA in the browser."]]));
+    records = [closed(0, "Checking your browser."), read(1, "gone")];
+    clock += 10_000;
+    await expect(research.unreachableSites(signal)).resolves.toEqual(new Map([["shop.example", "Checking your browser."]]));
+    expect(page.mock.calls.map(([pageId]) => pageId)).toEqual(["check", "card", "gone"]);
+  });
+
+  it("opens a host on a read recorded after the closure whose page the store kept before it, the same text read again", async () => {
+    const old = { ...stored("old", "[browser #1 · lab] text @ shop.example/card\nThe card lists it at 10."), capturedAt: "2026-11-04T23:59:00.000Z" };
+    const page = vi.fn(async () => old);
+    const research = direct({ gates: [], ports: { evidence: () => ({ ...NOOP_RESEARCH_PORTS.evidence, page,
+      records: async () => [read(0, "old"), closed(1, "Checking your browser."), read(2, "old")] }) } });
+    await expect(research.unreachableSites(new AbortController().signal)).resolves.toEqual(new Map());
+    expect(page).toHaveBeenCalledOnce();
   });
 });
 

@@ -65,6 +65,11 @@ export type ResearchEvidenceWritten =
  * the store drops them.
  */
 export type ResearchEvidencePort = Readonly<{
+  /**
+   * Whether this agent's own browser commands in this research opened or tried `host` (`researchSiteHost`), read from its call rows:
+   * `record_evidence` refuses an unreachable site the agent's browser has not tried. A store without it takes every host as tried.
+   */
+  browsed?(author: ResearchAgentRef, host: string, signal: AbortSignal): Promise<boolean>;
   /** A stored page under `researchRunId` or a run it continues; null for any other id, the same as for one that does not exist. */
   page(pageId: string, signal: AbortSignal): Promise<ResearchStoredPage | null>;
   record(write: ResearchEvidenceWrite, signal: AbortSignal): Promise<ResearchEvidenceWritten>;
@@ -159,6 +164,11 @@ export type ResearchResumeState = Readonly<{
  */
 export type ResearchResumePort = Readonly<{
   /**
+   * Whether the branch's last run stopped with its work kept and offered Continue, so a Continue of its research may research again (operator decision
+   * 2026-11-05). It only reads, before the run's tools are chosen.
+   */
+  interrupted(signal: AbortSignal): Promise<boolean>;
+  /**
    * Whether research can be picked up. It only reads, since a run asks this before any `start_research` and a model may never call one, and such a run
    * ran no research and keeps no row.
    */
@@ -229,6 +239,7 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     gates: []
   },
   resume: {
+    interrupted: async () => false,
     link: async () => undefined,
     load: async () => null
   },
