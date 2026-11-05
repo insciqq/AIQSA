@@ -115,6 +115,10 @@ export function createAnswerStream(ports: AnswerStreamPorts) {
     get text(): string {
       return text();
     },
+    /** A text as the answer would show it, with the turn's secret values masked. */
+    shown(value: string): string {
+      return masked(value);
+    },
     /** A model request starts: its text follows the turn's earlier text. */
     beginRound(): void {
       round = "";
