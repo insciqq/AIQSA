@@ -377,6 +377,80 @@ export function claimFigures(claim: string): readonly ClaimFigure[] {
   return figures;
 }
 
+/** A price a claim gives: one number in one currency, as the claim writes it (`59 732 ₽`, `$1,299`, `25 тыс. руб.`). */
+export type ClaimPrice = Readonly<{ currency: string; text: string; value: number }>;
+
+/**
+ * Currencies as claims write them. A sign several currencies share keeps a code of its own (`$` is the dollar and many pesos, `¥` the yen and the yuan), so
+ * only prices written alike compare; `₽`, `р.` and `руб.` are all the ruble.
+ */
+const CURRENCIES: readonly Readonly<{ code: string; unit: RegExp }>[] = [
+  { code: "RUB", unit: /^(?:₽|руб\p{L}*|р|rub|rubles?|roubles?)$/iu },
+  { code: "EUR", unit: /^(?:€|eur|euros?|евро)$/iu },
+  { code: "GBP", unit: /^(?:£|gbp)$/iu },
+  { code: "USD", unit: /^(?:usd|dollars?|долл\p{L}*)$/iu },
+  { code: "$", unit: /^\$$/u },
+  { code: "¥", unit: /^¥$/u },
+  { code: "MXN", unit: /^mxn$/iu },
+  { code: "ARS", unit: /^ars$/iu },
+  { code: "CLP", unit: /^clp$/iu },
+  { code: "COP", unit: /^cop$/iu },
+  { code: "peso", unit: /^pesos?$/iu }
+];
+
+const currencyOf = (unit: string) => CURRENCIES.find(({ unit: pattern }) => pattern.test(unit.trim().replace(/\.$/u, "")))?.code ?? null;
+
+/** Words that make a price a range's upper end, which is no price: `от 25 000 до 32 000 ₽` gives none, `от 25 000 ₽ до 32 000 ₽` its lower end. */
+const UPPER_BOUND_BEFORE = /(?:^|[\s(])(?:до|to|under|below|hasta|fins a)\s$/iu;
+/** A size before a price, as in `160×200 — 25 000 ₽`: a spaced dash after a dimension is no range, and the price is what follows it. */
+const SIZE_THEN_PRICE = /^.*\d ?[x×хX] ?\d[^-]* - (\d[^x×хX-]*)$/u;
+
+/** Not a letter on either side, which `\b` cannot say of Cyrillic. */
+const word = (words: string) => `(?<!\\p{L})(?:${words})(?!\\p{L})`;
+
+/**
+ * What makes a claim's amounts no full price today: an instalment, a credit or a periodic payment (`2 500 ₽/мес`, `× 24`), and an earlier or crossed-out price
+ * (`было 49 990 ₽`). On review a claim of an instalment read as the cheapest offer of its option. Months alone are no sign, since a warranty gives them too.
+ */
+const NOT_A_PRICE_NOW = new RegExp([
+  "рассрочк", "кредит", "платеж", "платёж", "ежемесячн", `в ${word("мес|мес\\.|месяц")}`, "/ ?мес", "instal{1,2}ment", "financ", "monthly", "per month", word("a month"),
+  "/ ?mo(?!\\p{L})", "/ ?month", "cuota", "a plazos", word("al mes"), "/ ?mes(?!\\p{L})", "mensual", "[$€£¥₽] ?[x×хX] ?\\d", "руб\\.? ?[x×хX] ?\\d",
+  "(?:[$€£¥₽]|руб\\.?) ?(?:на|за) \\d+ ?мес",
+  word("было"), "стар(?:ая|ой) цен", "зач[её]ркн", word("вместо"), "без скидки", "до скидки", "old price", "regular price", "before discount", word("was"),
+  "precio anterior", word("antes")
+].join("|"), "iu");
+
+/**
+ * The prices a claim gives, found as `claimFigures` finds figures, with a currency sign before the number or a currency after it, a count such as `тыс.` or `k`
+ * in between taken in. A range or a dimension is no one price, nor is a range's upper end. A lone point or comma before three digits groups thousands, since no
+ * price has three decimals. A claim of an instalment or of an earlier price gives none at all (`NOT_A_PRICE_NOW`): which of its amounts is the full price now is
+ * not something its words show reliably, so it stays the model's word.
+ */
+export function claimPrices(claim: string): readonly ClaimPrice[] {
+  const text = normalizeQuotedText(claim);
+  if (NOT_A_PRICE_NOW.test(text)) return [];
+  const prices: ClaimPrice[] = [];
+  for (const match of text.matchAll(CLAIM_NUMBERS)) {
+    const token = SIZE_THEN_PRICE.exec(match[0])?.[1] ?? match[0];
+    const start = match.index + match[0].length - token.length;
+    const sign = CURRENCY_BEFORE.exec(text.slice(Math.max(0, start - 2), start));
+    const from = sign ? start - sign[0].length : start;
+    const unit = unitAt(text, start + token.length, NAME_BEFORE.test(text.slice(Math.max(0, from - 40), from)));
+    const count = unit ? scaleOf(unit.unit) : null;
+    const factor = count?.dimension === "number" ? count.factor : 1;
+    const after = unit && factor !== 1 ? unitAt(text, unit.end, false) : unit;
+    const currency = sign ? currencyOf(sign[0]) : after ? currencyOf(after.unit) : null;
+    const parts = token.split(JOINER).map(valuesOf);
+    if (currency === null || parts.length !== 1 || parts[0]!.length === 0 || UPPER_BOUND_BEFORE.test(text.slice(Math.max(0, from - 12), from))) continue;
+    const end = (sign ? factor !== 1 ? unit : null : after)?.end ?? start + token.length;
+    const shown = text.slice(from, end).replace(/\.$/u, "");
+    if (prices.some((price) => price.text === shown)) continue;
+    prices.push({ currency, text: shown, value: canonical(Math.max(...parts[0]!) * factor) });
+    if (prices.length >= CLAIM_FIGURE_LIMIT) break;
+  }
+  return prices;
+}
+
 /**
  * Every value a text writes a number for, read leniently, so that a figure there is rarely called missing: each meaning of an
  * ambiguous number, each group of a spaced one as well as the whole, small numbers in words, and a scaled unit's value in its

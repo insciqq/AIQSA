@@ -378,6 +378,18 @@ describe("a draft reaches the user", () => {
     expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: memory.published() });
   });
 
+  it("puts each answer to the user's priorities on its own line right under the summary's text, above the report", async () => {
+    const summary = "For your needs take the X1, at 300 in the shop; cheaper, the X2.";
+    const priorities = [{ criterion_key: "value", record_ids: [], text: "On value the X1 costs 50 more than the X2\nand lasts twice as long." }];
+    const drafts: ResearchDraft[] = [];
+    const { adapter } = scripted([{ calls: begin() },
+      { calls: [submit("call-draft", { record_ids: [], report: REPORT, summary: { priorities, row_keys: [], text: summary }, unreachable: [] })] }]);
+    const memory = engineOf({ gates: [gate("spy", async (draft) => { drafts.push(draft); return { kind: "pass" }; })] });
+    await events(run(adapter, memory));
+    expect(drafts).toEqual([expect.objectContaining({ summary: { priorities: [{ criterionKey: "value", recordIds: [], text: priorities[0]!.text }], rowKeys: [], text: summary } })]);
+    expect(memory.published()).toBe(researchAnswerText(`${summary}\n\n- On value the X1 costs 50 more than the X2 and lasts twice as long.\n\n${REPORT}`, [researchNote("no_findings")]));
+  });
+
   it("runs nothing before the start the user's choice owes, shows no text, asks once, and fails visibly when the model never starts", async () => {
     const { adapter, requests } = scripted([{ calls: [submit(), { arguments: { query: "mattress" }, id: "call-search", name: "search_selected_engines" }] },
       { text: "Plain answer." }, { text: "Plain answer again." }]);

@@ -102,6 +102,13 @@ describe("the plan and the draft", () => {
     expect(researchDraftText({ report: "Body." })).toBe("Body.");
   });
 
+  it("puts each answer to a priority on its own line right under the summary's text, inside the summary and with no words of the server's own", () => {
+    const priorities = [{ criterionKey: "value", recordIds: [], text: "По цене X1 дешевле\nY2 на треть." }, { criterionKey: "quiet", recordIds: [], text: "Тише Y2 на 3 дБ." }];
+    expect(researchDraftText({ report: "# Report", summary: { priorities, rowKeys: ["x1"], text: "Take X1.\n" } }))
+      .toBe("Take X1.\n\n- По цене X1 дешевле Y2 на треть.\n- Тише Y2 на 3 дБ.\n\n# Report");
+    expect(researchDraftText({ report: "# Report", summary: { priorities: [], rowKeys: ["x1"], text: "Take X1." } })).toBe("Take X1.\n\n# Report");
+  });
+
   it("requires every field of a proposal, which stays out of strict mode like its neighbours", () => {
     const schema = proposeResearchPlanTool.inputSchema as { properties: Record<string, unknown>; required: readonly string[] };
     expect([...schema.required].sort()).toEqual(Object.keys(schema.properties).sort());
@@ -292,12 +299,33 @@ describe("the method", () => {
 
   it("asks for a default when evidence does not separate rows, marked as one, beside what would decide and without inventing a difference", () => {
     const text = researchMethodText(plan);
-    expect(text).toContain("which of them it would take by default today and why: the option whose key specifications passed the checks and that best fits the user's stated " +
-      "priorities, price breaking only a tie among those, marked plainly as a default and not as a finding");
+    expect(text).toContain("which of them it would take by default today and why: the option whose key specifications passed the checks and that best fits the priorities " +
+      "the plan marked, or, where it marked none, best fits the user's criteria with price breaking only a tie among those, marked plainly as a default and not as a finding");
     expect(text).toContain("what would decide");
     expect(text).toContain("instead of inventing a difference");
     // A real run's default was the cheaper of two lookalikes.
     expect(text).not.toContain("cheapest");
+  });
+
+  it("lets what the user named as mattering decide the pick, and a dearer pick under a value priority say what the extra buys (operator decision 2026-11-05)", () => {
+    const text = researchMethodText(plan);
+    expect(text).toContain("The criteria the plan marked as priorities are what the user's own message named as mattering, and they decide the pick: among the options whose key " +
+      "specifications passed the checks, the pick is the one that best fits them.");
+    expect(text).toContain("a pick that costs more than another option you recommend with the same checked key specifications says what the extra money buys, from a record; " +
+      "where no record shows it, the cheaper option is the pick.");
+    expect(text).toContain("the summary's priorities answer each in one sentence on how the pick does on it against the next option the summary recommends, with the ids of the " +
+      "records it rests on; the server puts these lines right under the summary's text.");
+    const criteria = (proposeResearchPlanTool.inputSchema as { properties: { criteria: { items: { properties: Record<string, { description?: string; type: string }>; required: string[] } } } })
+      .properties.criteria.items;
+    expect(criteria.required).toContain("priority");
+    expect(criteria.properties.priority).toMatchObject({ type: "boolean" });
+    expect(criteria.properties.priority!.description).toContain("true only for what the user's own message names as mattering to them");
+    expect(researchScopingInstructions()).toContain("Mark as a priority only what the user's own message names as mattering to them");
+    const summary = (submitResearchDraftTool.inputSchema as { properties: { summary: { properties: Record<string, { items: { required: string[] }; type: string }>; required: string[] } } })
+      .properties.summary;
+    // Optional, so a draft of a plan with no priorities is written as before.
+    expect(summary.required).toEqual(["row_keys", "text"]);
+    expect(summary.properties.priorities).toMatchObject({ items: { required: ["criterion_key", "text", "record_ids"] }, type: "array" });
   });
 
   it("rests a pick's key specifications on two sites, names a disagreement, and never lets a pick stand on a rejected one", () => {

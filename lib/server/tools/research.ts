@@ -70,6 +70,9 @@ export const proposeResearchPlanTool: RunTool = {
           decisive: { description: "true for a key specification: a property of the option itself that the pick depends on and sellers may state differently, such as a mattress's " +
             `load per side, height and layers. Each option the report recommends gets it confirmed from two sites. At most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}; false for the offer, ` +
             "the price, owners' reviews and a knowledge question's outcomes.", type: "boolean" },
+          priority: { description: "true only for what the user's own message names as mattering to them, such as value for money, a budget or quiet: these decide the pick, " +
+            "and the report answers each. Where the user asks for value for money or a budget, mark the criterion whose cells hold the offers' prices. At most " +
+            `${RESEARCH_FRAME_LIMITS.priorityCriteria}; false for everything the user did not say, however much the guides stress it.`, type: "boolean" },
           why: { description: "Why it matters to the user, in plain words.", type: "string" } }),
         type: "array"
       },
@@ -174,6 +177,23 @@ export const submitResearchDraftTool: RunTool = {
         additionalProperties: false,
         description: "What the user reads first: the server puts it above the report, and most readers stop there.",
         properties: {
+          priorities: {
+            description: "One answer for each criterion the plan marked as the user's priority; empty or left out when it marked none. The server puts each answer on its own line " +
+              "right under the text. Where value for money or the price is the priority and the pick costs more than another option the summary recommends, the answer names that " +
+              "option and says what the extra money buys, from a record; where no record shows it, the cheaper option is the pick.",
+            items: {
+              additionalProperties: false,
+              properties: {
+                criterion_key: { description: "The key of the criterion the plan marked as a priority.", type: "string" },
+                record_ids: { description: `The ids of the records the sentence rests on, at most ${RESEARCH_LIMITS.priorityAnswerRecords}.`, items: { type: "string" }, type: "array" },
+                text: { description: `One sentence in the user's language, at most ${RESEARCH_LIMITS.priorityAnswerCharacters} characters, that names the priority and says how the pick ` +
+                  "does on it against the next option the summary recommends, each named as the matrix names it.", type: "string" }
+              },
+              required: ["criterion_key", "text", "record_ids"],
+              type: "object"
+            },
+            type: "array"
+          },
           row_keys: { description: "The rows of the matrix the summary recommends, in its order: the pick first, then the alternatives. Empty only when it recommends no row, as for a knowledge question.",
             items: { type: "string" }, type: "array" },
           text: { description: `Two to four short paragraphs in the user's language, at most ${RESEARCH_LIMITS.summaryCharacters} characters, no heading and no table: the option to take for the user's ` +
@@ -227,6 +247,7 @@ export function researchScopingInstructions(): string {
       "is chosen and find the criteria yourself: the user may not know what matters, and criteria from memory float between runs.",
     "Write each criterion in plain words with why it matters. A knowledge question gets its outcomes or sub-questions in the same place, each with why it matters.",
     `For a choice between options, mark as decisive the few key specifications a pick depends on, at most ${RESEARCH_FRAME_LIMITS.decisiveCriteria}: the recommended options get them confirmed from two sites.`,
+    `Mark as a priority only what the user's own message names as mattering to them, such as value for money, at most ${RESEARCH_FRAME_LIMITS.priorityCriteria}: those decide the pick.`,
     `Then call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME}. Do not wait until the time is up, and do not start researchers: they start after the plan.`,
     "Ask the user nothing, here or in the plan: what you lack becomes a named assumption. What is unknown about the user and changes the result " +
       "becomes a branch with its cases, so the report can say \"up to 70 kg, A; heavier, B\".",

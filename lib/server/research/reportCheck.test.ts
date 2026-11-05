@@ -225,8 +225,8 @@ describe("the key specifications of the options it recommends", () => {
   it("sends back a draft that picks no option where the plan marked key specifications, even with rows called inseparable, and only there", () => {
     // Acceptance run 3 (2026-11-03): a purchase answer named no winner because no option passed every check.
     const none: ResearchDraft = { ...keyed([6, 7]), pickRowKey: null, summary: { rowKeys: [], text: "Победителя не называю." } };
-    const asked = "The plan marked key specifications, so the user chooses among the matrix's options, yet the draft picks none: name in pick_row_key, and first in " +
-      "the summary, the option you would take by default today";
+    const asked = "The plan marked key specifications or the user's priorities, so the user chooses among the matrix's options, yet the draft picks none: name in pick_row_key, " +
+      "and first in the summary, the option you would take by default today";
     expect(keyedMessages(none, AGREE)).toContain(asked);
     expect(keyedMessages(none, AGREE)).toContain("never a reason to name no option");
     const inseparable: ResearchDraft = { ...none, doesNotSeparate: { rowKeys: ["x1", "x2"], statement: "Оба.", wouldDecide: "Полежать." } };
@@ -275,6 +275,114 @@ describe("the key specifications of the options it recommends", () => {
 
   it("reads no key specification in a frame that marks none, as every frame stored before did", () => {
     expect(messages(keyed([6]), DISAGREE, matrixOf({ ...KEYED, criteria: [...FRAME.criteria, { criterion: "Нагрузка на сторону", key: "load", why: "Двое разного веса." }] }, DISAGREE))).toBe("");
+  });
+});
+
+describe("what the user named as mattering", () => {
+  /** The plan marked the price as the user's priority, as for a user who asked for value for money: synthetic offers, the pick dearer than the reserve. */
+  const VALUED: ResearchFrame = { ...FRAME, criteria: FRAME.criteria.map((criterion) => criterion.key === "price" ? { ...criterion, priority: true as const } : criterion) };
+  const offer = (number: number, rowKey: string, claim: string, criterionKey: string | null = "price") =>
+    finding(number, rowKey, criterionKey, { claim, sourceClass: "action_channel", url: `https://shop.example/${rowKey}` });
+  const offersAt = (x1: string, x2: string, criterionKey: string | null = "price") => [RECORDS[0]!, offer(2, "x1", `Lonax Memory 160×200: ${x1}.`, criterionKey), RECORDS[2]!, RECORDS[3]!,
+    offer(5, "x2", `Optima Classic 160×200: ${x2}.`, criterionKey)];
+  const OFFERS = offersAt("30 000 ₽", "25 000 ₽");
+  const ALL = [id(1), id(2), id(3), id(4), id(5)];
+  const answer = (text: string, recordIds = [id(2), id(5)], criterionKey = "price") => ({ criterionKey, recordIds, text });
+  const SAYS = answer("Lonax Memory дороже Optima Classic на 5 000 ₽, зато держит на 30 кг больше на сторону.");
+  const valued = (priorities: readonly ReturnType<typeof answer>[], extra: Partial<ResearchDraft> = {}): ResearchDraft => ({ ...DRAFT, recordIds: ALL, report: `${DRAFT.report}\n\n${LINKED}`,
+    summary: { priorities, rowKeys: ["x1", "x2"], text: "Для ваших условий берите Lonax Memory за 30 000 ₽; дешевле Optima Classic за 25 000 ₽." }, ...extra });
+  const priorityMessages = (draft: ResearchDraft, records: readonly ResearchEvidenceRecord[] = OFFERS, frame: ResearchFrame = VALUED) => messages(draft, records, matrixOf(frame, records));
+
+  it("passes a draft that answers each priority, and one of a plan that marked none, with none, as before", () => {
+    expect(priorityMessages(valued([SAYS]))).toBe("");
+    expect(priorityMessages(valued([]), OFFERS, FRAME)).toBe("");
+    expect(check(DRAFT)).toEqual({ troubles: [] });
+  });
+
+  it("sends back a priority the summary does not answer, saying how to answer it", () => {
+    const text = priorityMessages(valued([]));
+    expect(text).toContain("The user named these as mattering, and the summary does not answer them: Цена за 160×200 (price).");
+    expect(text).toContain("one sentence in the user's language that names the priority and says how the pick does on it against the next option the summary recommends");
+    expect(text).toContain("right under the summary's text");
+    expect(priorityMessages({ ...valued([]), summary: { rowKeys: ["x1", "x2"], text: "Берите Lonax Memory; дешевле Optima Classic." } })).toContain("does not answer them");
+  });
+
+  it("sends back an answer to what is no priority, one that names no live record, and one that cites none where its records exist", () => {
+    expect(priorityMessages(valued([SAYS, answer("Optima Classic жёстче.", [id(4)], "firmness")]))).toContain("summary.priorities answers firmness, which the plan did not mark");
+    expect(priorityMessages(valued([answer(SAYS.text, [id(2), id(99)])]))).toContain(`summary.priorities names ids of no live record of this research: ${id(99)}.`);
+    expect(priorityMessages(valued([answer(SAYS.text, [])]))).toContain(`These answers in summary.priorities cite no record, while the options they compare hold records of their criterion: add the ids each sentence rests on. price: ${id(2)}, ${id(5)}.`);
+    // Nothing recorded for it, the sentence may say so with no record.
+    const bare = OFFERS.filter(({ criterionKey }) => criterionKey !== "price");
+    expect(priorityMessages(valued([answer(SAYS.text, [])]), bare)).not.toContain("cite no record");
+  });
+
+  it("sends back a dearer pick whose answer names no cheaper option, where the offers read as prices in one currency", () => {
+    const text = priorityMessages(valued([answer("Lonax Memory лучше всех по соотношению цены и качества.")]));
+    expect(text).toContain("By the offers recorded, the pick Lonax Memory (x1) costs from 30 000 ₽, more than options the summary also recommends: Optima Classic (x2) from 25 000 ₽.");
+    expect(text).toContain("The answer to Цена за 160×200 names none of them: name the cheaper option there and say what the extra money buys, from a record with its id; where no " +
+      "record shows it, make the cheaper option the pick.");
+    // The ruble written another way is the same currency.
+    expect(priorityMessages(valued([answer("Lonax Memory лучше.")]), offersAt("30 000 ₽", "25 000 руб."))).toContain("Optima Classic (x2) from 25 000 руб");
+  });
+
+  it("reads no instalment as an offer's price, so it neither hides a dearer pick nor makes a cheaper one look dear", () => {
+    const instalment = (rowKey: string, number: number) => offer(number, rowKey, "Рассрочка 2 500 ₽ в месяц на 24 месяца");
+    const dear = [...offersAt("60 000 ₽", "20 000 ₽"), instalment("x1", 6)];
+    const text = priorityMessages(valued([answer("Lonax Memory лучше всех по соотношению цены и качества.", [id(2), id(6)])], { recordIds: [...ALL, id(6)] }), dear);
+    expect(text).toContain("the pick Lonax Memory (x1) costs from 60 000 ₽, more than options the summary also recommends: Optima Classic (x2) from 20 000 ₽.");
+    // The reverse: the cheaper pick stands, whatever the alternative's monthly payment.
+    const cheap = valued([answer("Optima Classic держит нагрузку не хуже.", [id(5), id(4)])], { pickRowKey: "x2", recordIds: [...ALL, id(6)],
+      summary: { priorities: [answer("Optima Classic держит нагрузку не хуже.", [id(5), id(4)])], rowKeys: ["x2", "x1"], text: "Берите Optima Classic за 20 000 ₽; Lonax Memory дороже." } });
+    expect(priorityMessages(cheap, dear)).toBe("");
+  });
+
+  it("leaves the price to the model's word where the offers do not read as one price in one currency, or the pick is the cheapest", () => {
+    const silent = valued([answer("Lonax Memory лучше.")]);
+    for (const records of [offersAt("30 000 ₽", "$300"), offersAt("30 000 ₽", "25 000 ₽, было 32 000 ₽"), offersAt("30 000 ₽", "от 20 000 до 25 000 ₽"), offersAt("30 000 ₽", "25 000–28 000 ₽"),
+      offersAt("20 000 ₽", "25 000 ₽")]) {
+      expect(priorityMessages(silent, records)).toBe("");
+    }
+  });
+
+  it("takes a priority for one of price where its answer cites the offers, though they are filed under another criterion", () => {
+    const frame: ResearchFrame = { ...FRAME, criteria: [...FRAME.criteria, { criterion: "Цена и качество", key: "value", priority: true, why: "Пользователь просил выгодно." }] };
+    const table = TABLE.replace("| Жёсткость |", "| Жёсткость | Цена и качество |");
+    const draft = (text: string, recordIds: readonly string[]) => ({ ...valued([answer(text, [...recordIds], "value")]), report: `# Отчёт\n\n${table}\n\n${LINKED}` });
+    expect(priorityMessages(draft("Lonax Memory выгоднее.", [id(2), id(5)]), OFFERS, frame)).toContain("The answer to Цена и качество names none of them");
+    expect(priorityMessages(draft("Lonax Memory дороже Optima Classic, зато держит больше.", [id(2), id(5)]), OFFERS, frame)).toBe("");
+    // Citing no offer, its sentence stays the model's word.
+    expect(priorityMessages(draft("Lonax Memory выгоднее.", [id(1)]), OFFERS, frame)).toBe("");
+  });
+
+  it("asks a default of a draft that picks nothing where the user named a priority", () => {
+    const none = valued([], { pickRowKey: null, summary: { rowKeys: [], text: "Победителя не называю." } });
+    expect(priorityMessages(none)).toContain("The plan marked key specifications or the user's priorities, so the user chooses among the matrix's options, yet the draft picks none");
+  });
+
+  it("cites the live records an answer names before any gate reads the draft, and leaves one of no record to the priority check", () => {
+    // A report with no links, so only the answers add citations.
+    const draft = valued([answer(SAYS.text, [id(2), id(5), id(99)])], { recordIds: [id(1), id(3), id(4)], report: DRAFT.report });
+    expect(researchDraftWithLinkedRecords(draft, OFFERS).recordIds).toEqual([id(1), id(3), id(4), id(2), id(5)]);
+    const corrected = [...OFFERS, offer(6, "x1", "Lonax Memory 160×200: 29 000 ₽.")].map((record) => record.id === id(6) ? { ...record, supersedes: id(2) } : record).filter(({ id: own }) => own !== id(2));
+    expect(researchDraftWithLinkedRecords(valued([answer(SAYS.text, [id(2)])], { recordIds: [id(1)], report: DRAFT.report }), corrected).recordIds).toEqual([id(1), id(6)]);
+  });
+
+  describe("the gate", () => {
+    const context = (earlier: readonly ResearchAttempt[]): ResearchGateContext => ({ attempt: earlier.length + 1,
+      coverage: { change: vi.fn(), coverage: async () => matrixOf(VALUED, OFFERS).coverage, frame: async () => VALUED }, earlier,
+      evidence: { page: vi.fn(), record: vi.fn(), records: async () => OFFERS }, plan: { goal: "Выбрать выгодно.", questions: [], skipped: [] }, signal: new AbortController().signal,
+      sources: { opened: async () => [] }, subagents: { run: vi.fn() }, time: { remainingMs: () => 600_000, sendBackAllowed: () => true }, verifierModel: vi.fn() });
+    const run = (draft: ResearchDraft, earlier: readonly ResearchAttempt[] = []) => runResearchGates({ context: context(earlier), draft, gates: [reportCheckGate], runId: "run-1" });
+
+    it("sends an unanswered priority back within its cap, and goes on past it", async () => {
+      const unanswered = valued([]);
+      expect(await run(unanswered)).toMatchObject({ gate: REPORT_CHECK_GATE, kind: "sent_back", message: expect.stringContaining("does not answer them") });
+      const once = [{ draft: unanswered, gate: REPORT_CHECK_GATE, message: "Answer the priorities." }];
+      expect(await run(unanswered, once)).toMatchObject({ kind: "sent_back" });
+      const capped = Array.from({ length: RESEARCH_ROUND_LIMITS.sendBacksPerCheck }, () => once[0]!);
+      expect(await run(unanswered, capped)).toEqual({ kind: "accepted", notes: [] });
+      expect(await run(valued([SAYS]))).toEqual({ kind: "accepted", notes: [] });
+    });
   });
 });
 
