@@ -97,6 +97,30 @@ describe("the plan proposal", () => {
     expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many }))).toContain(`more than ${RESEARCH_FRAME_LIMITS.decisiveCriteria} as decisive`);
     expect(value(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many.slice(1) })).criteria).toHaveLength(RESEARCH_FRAME_LIMITS.decisiveCriteria);
   });
+
+  it("keeps a criterion marked as the user's priority through the plan, its stored form and the frame, reads one left out or null as not, and bounds how many", () => {
+    const marked = { ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, decisive: true, priority: false }, { criterion: "Value for money", key: "value", priority: true, why: "The user asked for it." },
+      { criterion: "Reviews", key: "reviews", priority: null, why: "A year on." }] };
+    const proposal = value(decodeResearchPlanProposal(marked));
+    expect(proposal.criteria.map((criterion) => "priority" in criterion)).toEqual([false, true, false]);
+    expect(proposal.criteria[0]).toEqual({ ...PROPOSAL.criteria[0], decisive: true });
+    expect(value(decodeResearchPlanProposal(researchPlanProposalDocument(proposal)))).toEqual(proposal);
+    expect(value(decodeResearchPlanAnswer(researchPlanAnswerDocument({ changed: false, plan: proposal, releasedBy: "timer" }))).plan).toEqual(proposal);
+    const frame = researchFrameFromPlan(proposal);
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(frame)))).criteria[1]).toEqual({ criterion: "Value for money", key: "value", priority: true, why: "The user asked for it." });
+    // A frame stored before the field reads as it was written, with no priority.
+    expect(value(decodeResearchFrame({ branches: [], changes: [], criteria: PROPOSAL.criteria, rows: [] })).criteria[0]).not.toHaveProperty("priority");
+    expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: [{ ...PROPOSAL.criteria[0]!, priority: "yes" }] }))).toContain("criteria[0].priority must be true or false");
+    const many = Array.from({ length: RESEARCH_FRAME_LIMITS.priorityCriteria + 1 }, (_entry, index) => ({ criterion: `Wish ${index}`, key: `wish-${index}`, priority: true, why: "The user said so." }));
+    expect(refusal(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many }))).toContain(`more than ${RESEARCH_FRAME_LIMITS.priorityCriteria} as priorities`);
+    expect(value(decodeResearchPlanProposal({ ...PROPOSAL, criteria: many.slice(1) })).criteria).toHaveLength(RESEARCH_FRAME_LIMITS.priorityCriteria);
+  });
+
+  it("never makes a criterion added on the way a priority: only the user's own message names one", () => {
+    const added = value(decodeResearchFrameChange({ cases: null, change: "add_criterion", key: "value", label: "Value", priority: true, reason: "Matters.", url: null, why: "It matters." }));
+    expect(added).toMatchObject({ change: "add_criterion", criterion: { key: "value" } });
+    expect(added.change === "add_criterion" && "priority" in added.criterion).toBe(false);
+  });
 });
 
 describe("the user's answer", () => {
@@ -395,6 +419,49 @@ describe("a draft's references", () => {
       report: "# Report", unreachable: [{ reason: "Blocked.", source_class: null, target: "shop.example" }] };
     expect(value(decodeResearchDraft(stored))).toEqual({ findings: [{ claim: "It holds.", quote: "held up", sourceClass: "independent_tests", standing: "confirmed",
       url: "https://lab.example/x1" }], origin: "reserved_call", report: "# Report", unreachable: [{ reason: "Blocked.", sourceClass: null, target: "shop.example" }] });
+  });
+});
+
+describe("a summary's answers to the user's priorities", () => {
+  const answer = { criterion_key: "value", record_ids: [RECORD_ID, RECORD_ID], text: "X1 costs a third more than X2 and holds 30 kg more per side." };
+  const summaryOf = (summary: unknown) => value(decodeResearchDraft({ pick_row_key: "x1", record_ids: [RECORD_ID], report: "# Report", summary, unreachable: [] }));
+
+  it("reads each answer with its criterion and records, and a summary stored before them, or with none, as it always read", () => {
+    expect(summaryOf({ priorities: [answer], row_keys: ["x1", "x2"], text: "Take X1." }).summary)
+      .toEqual({ priorities: [{ criterionKey: "value", recordIds: [RECORD_ID], text: answer.text }], rowKeys: ["x1", "x2"], text: "Take X1." });
+    for (const priorities of [undefined, null, []]) {
+      const decoded = summaryOf({ priorities, row_keys: ["x1"], text: "Take X1." });
+      expect(decoded.summary).toEqual({ rowKeys: ["x1"], text: "Take X1." });
+      expect(decoded.invalidSummary).toBeUndefined();
+    }
+    expect(summaryOf({ priorities: [{ ...answer, record_ids: undefined }], row_keys: [], text: "Take X1." }).summary?.priorities).toEqual([{ criterionKey: "value", recordIds: [], text: answer.text }]);
+  });
+
+  it("keeps the summary's words and rows when its answers cannot be read, and says what is wrong, so the report check sends it back", () => {
+    const most = RESEARCH_FRAME_LIMITS.priorityCriteria;
+    for (const [priorities, wrong] of [
+      [Array.from({ length: most + 1 }, (_entry, index) => ({ ...answer, criterion_key: `wish-${index}` })), `at most ${most} answers`],
+      [[answer, answer], "summary.priorities[1].criterion_key repeats"],
+      [[{ ...answer, criterion_key: "Цена" }], "summary.priorities[0].criterion_key"],
+      [[{ ...answer, text: "x".repeat(RESEARCH_LIMITS.priorityAnswerCharacters + 1) }], "summary.priorities[0].text"],
+      [[{ ...answer, record_ids: [42] }], "summary.priorities[0].record_ids"],
+      ["value", "summary.priorities must list"]
+    ] as const) {
+      const decoded = summaryOf({ priorities, row_keys: ["x1"], text: "Take X1." });
+      expect(decoded.invalidSummary).toContain(wrong);
+      expect(decoded.summary).toEqual({ rowKeys: ["x1"], text: "Take X1." });
+      expect(decoded.pickRowKey).toBe("x1");
+    }
+    const both = summaryOf({ priorities: "value", row_keys: ["X 1"], text: "Take X1." });
+    expect(both.invalidSummary).toContain("summary.row_keys");
+    expect(both.invalidSummary).toContain("summary.priorities");
+  });
+
+  it("carries the answers with the summary an edit leaves out, and replaces them with one it gives", () => {
+    const fields = { branch_picks: [], does_not_separate: null, pick_row_key: "x1", record_ids: [], unreachable: [] };
+    const previous = value(decodeResearchDraft({ ...fields, report: "Alpha.", summary: { priorities: [answer], row_keys: ["x1"], text: "Take X1." } }));
+    expect(value(decodeResearchDraft({ ...fields, edits: [] }, previous)).summary?.priorities).toEqual(previous.summary?.priorities);
+    expect(value(decodeResearchDraft({ ...fields, edits: [], summary: { row_keys: ["x1"], text: "Take X1." } }, previous)).summary).not.toHaveProperty("priorities");
   });
 });
 

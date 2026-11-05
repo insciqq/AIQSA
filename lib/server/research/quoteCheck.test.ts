@@ -3,7 +3,7 @@ import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECOR
 import type { TranscriptItem } from "../engine/transcript";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import type { ResearchOpenedSource } from "./gates";
-import { checkQuotes, claimFigures, figuresNotIn, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn } from "./quoteCheck";
+import { checkQuotes, claimFigures, claimPrices, figuresNotIn, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn } from "./quoteCheck";
 import { createResearchSources, researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 
 const LINK = "https://lab.example/x1";
@@ -206,6 +206,32 @@ describe("what the sources read of a run", () => {
       { callId: "b", id: "b2", kind: "tool_result", name: SHELL, outcome: "complete", output: "held up" }
     ]);
     expect(opened.map((source) => researchEvidenceKind(source))).toEqual(["page", "other"]);
+  });
+});
+
+describe("a claim's prices", () => {
+  const prices = (claim: string) => claimPrices(claim).map(({ currency, text, value }) => ({ currency, text, value }));
+
+  it("reads one number in one currency, the sign before it or the currency after it, a count between taken in", () => {
+    expect(prices("Lonax Memory 160×200 в shop.example: 59 732 ₽, продавец ИП Иванов, 2026-11-01.")).toEqual([{ currency: "RUB", text: "59 732 ₽", value: 59_732 }]);
+    expect(prices("Optima 160×200 — 25 000 руб.")).toEqual([{ currency: "RUB", text: "25 000 руб", value: 25_000 }]);
+    expect(prices("Цена 30 000 р. за штуку")).toEqual([{ currency: "RUB", text: "30 000 р", value: 30_000 }]);
+    expect(prices("От 25 тыс. руб.")).toEqual([{ currency: "RUB", text: "25 тыс. руб", value: 25_000 }]);
+    expect(prices("Now $1,299 at the shop")).toEqual([{ currency: "$", text: "$1,299", value: 1_299 }]);
+    expect(prices("Around $25k")).toEqual([{ currency: "$", text: "$25k", value: 25_000 }]);
+    expect(prices("Precio 1.500 € con envío")).toEqual([{ currency: "EUR", text: "1.500 €", value: 1_500 }]);
+    expect(prices("Precio 1.299,90 EUR")).toEqual([{ currency: "EUR", text: "1.299,90 EUR", value: 1_299.9 }]);
+    expect(prices("Costs 120 USD")).toEqual([{ currency: "USD", text: "120 USD", value: 120 }]);
+  });
+
+  it("reads no price from a size, a share, a rating, a range or a range's upper end, and two from a price beside an old one", () => {
+    expect(prices("Матрас 160×200 см, скидка 10%, 4,8 из 5")).toEqual([]);
+    expect(prices("25 000–28 000 ₽")).toEqual([]);
+    expect(prices("25 000 — 28 000 ₽")).toEqual([]);
+    expect(prices("от 25 000 до 32 000 ₽")).toEqual([]);
+    expect(prices("up to $300")).toEqual([]);
+    expect(prices("от 25 000 ₽ до 32 000 ₽")).toEqual([{ currency: "RUB", text: "25 000 ₽", value: 25_000 }]);
+    expect(prices("25 000 ₽, было 32 000 ₽")).toHaveLength(2);
   });
 });
 
