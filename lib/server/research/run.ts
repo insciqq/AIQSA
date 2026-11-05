@@ -895,6 +895,16 @@ export function createRunResearch(input: RunResearchInput) {
       return null;
     },
 
+    /**
+     * What a finished research's page is written from (`page.ts`): the draft whose text `finish` gives the answer, with no notes, since the answer keeps
+     * them. None at an approval's pause, before the plan stood, or for an answer the server built from the records or the model's last words: only a final
+     * draft at the research's real end has a page, so one research writes one.
+     */
+    pageSource(waiting: boolean): Readonly<{ draft: ResearchDraft; goal: string; report: string }> | null {
+      const final = waiting || !plan ? null : accepted ?? (researching() ? held ?? superseded : null);
+      return final && plan ? { draft: final.draft, goal: plan.goal, report: researchDraftText(final.draft) } : null;
+    },
+
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */
     afterEnding(reason: "failed" | "stopped" | "timed_out"): string | null {
       if (accepted) return researchAnswerText(researchDraftText(accepted.draft), accepted.notes);

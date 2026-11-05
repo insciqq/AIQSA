@@ -85,6 +85,8 @@ import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
 import { createRunResearch, researchOffered, researchRunOf, type ResearchEngineDeps, type RunResearch } from "../research/run";
+import { writeResearchPage } from "../research/page";
+import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -436,6 +438,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       let research: RunResearch | null = null;
       /** Puts what research held into the answer, as what the user reads. */
       let showResearchAnswer: ((text: string) => Promise<void>) | null = null;
+      /** The answer held while its research's page is written: what Stop or a failure then keeps, exactly as it would have gone out. */
+      let pageHeld: string | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
@@ -988,6 +992,39 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           code: "waiting_approval" });
         let researched = runResearch?.finish(outcome.kind === "approval") ?? null;
         if (researched === null && runResearch && outcome.kind !== "approval") researched = await runResearch.composed("no_report", stop.signal);
+        // A finished research's page (`research/page.ts`), from the final report while the answer waits: one step offering `create_artifact` alone,
+        // its own conversation and its own bound, never at an approval's pause. Its card joins the answer only once the page passed its check.
+        const pageSource = researched !== null && outcome.kind !== "approval" ? runResearch?.pageSource(false) ?? null : null;
+        const pageTool = pageSource && registry.resolve(ARTIFACT_TOOL_NAME);
+        if (pageSource && pageTool && runResearch) {
+          pageHeld = researched;
+          const page = await writeResearchPage({ check: runResearch.ports.page.check, goal: pageSource.goal,
+            latestEnd: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)), now, report: pageSource.report, runId, signal,
+            respond: async (history, pageSignal) => {
+              sink.send(liveRunPhaseStatus({ phase: "model" }));
+              const result = await callModel({ adapter: input.adapter, deadlineAt: startedAt + turnMs, faults, now, onDiscard: async () => undefined,
+                // Nothing of the step streams: the answer is the report, and the page reaches it as its card.
+                onEvent: async () => undefined,
+                onProviderWait: (wait) => {
+                  setRunProviderWait(runId, wait);
+                  sink.send(liveRunPhaseStatus({ phase: "model", ...(wait ? { wait } : {}) }));
+                }, onUsage: recordModelUsage, routing: loopRouting, signal: pageSignal, timeoutMs },
+              { ...base, attachments: [], history: projectTranscript(history, target, {}), params, parallelToolCalls: true, previousProviderResponseId: undefined,
+                providerToolMessages: undefined, toolChoice: "auto", tools: [pageTool.definition] });
+              // No request anchor: the step's request is not the transcript's, so the next run measures from the loop's last one.
+              return { calls: result.toolCalls ?? [], items: modelResponseItems({ estimate: estimateApproxTokens, history: result.history ?? fallbackHistory(result),
+                nextId: randomUUID, origin: target, usage: result.usage }) };
+            },
+            // The run's ordinary tool path, outside the call budget as the reserved draft is, after the loop's last round.
+            runCall: async (call, attempt, pageSignal) => {
+              const cards: ModelRunSseEvent[] = [];
+              const batch = await runToolBatch({ ...batchDeps, maxToolCalls: null, onEvent: async (event) => { cards.push(event); }, signal: pageSignal,
+                toolTimeLeft: () => !pageSignal.aborted }, { calls: 0 }, { calls: [call], round: outcome.rounds + attempt });
+              return { cards, result: batch.results[0]! };
+            } });
+          pageHeld = null;
+          if (page) await sink.publish(page.card);
+        }
         if (researched !== null) await showResearchAnswer(researched);
         // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
         if (researched === null && (outcome.kind === "empty" || outcome.kind === "answered" && runResearch?.holding() === true && !answer.text.trim())) {
@@ -1048,7 +1085,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...failureCauseFields({ cancelled, failure, stopped: stop.signal.aborted, timedOut: deadline.signal.aborted, turnMs,
             workspaceRun: Boolean(workspace) }) });
         // Answer first: a report research held reaches the answer whatever ended the run, with a note saying so.
-        let heldReport = answerPublished ? null : research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
+        let heldReport = answerPublished ? null : pageHeld ?? research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
         if (heldReport === null && research && !answerPublished && !cancelled) heldReport = await research.composed(deadline.signal.aborted ? "timed_out" : "failed", stop.signal);
         if (heldReport !== null) await showResearchAnswer?.(heldReport);
         answer.stop();
