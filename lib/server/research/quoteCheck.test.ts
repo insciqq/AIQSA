@@ -224,14 +224,25 @@ describe("a claim's prices", () => {
     expect(prices("Costs 120 USD")).toEqual([{ currency: "USD", text: "120 USD", value: 120 }]);
   });
 
-  it("reads no price from a size, a share, a rating, a range or a range's upper end, and two from a price beside an old one", () => {
+  it("reads no price from a size, a share, a rating, a range or a range's upper end, and two from a claim of two prices", () => {
     expect(prices("Матрас 160×200 см, скидка 10%, 4,8 из 5")).toEqual([]);
     expect(prices("25 000–28 000 ₽")).toEqual([]);
     expect(prices("25 000 — 28 000 ₽")).toEqual([]);
     expect(prices("от 25 000 до 32 000 ₽")).toEqual([]);
     expect(prices("up to $300")).toEqual([]);
     expect(prices("от 25 000 ₽ до 32 000 ₽")).toEqual([{ currency: "RUB", text: "25 000 ₽", value: 25_000 }]);
-    expect(prices("25 000 ₽, было 32 000 ₽")).toHaveLength(2);
+    expect(prices("25 000 ₽, a 32 000 ₽ in another shop")).toHaveLength(2);
+  });
+
+  it("reads no price from a claim of an instalment, a monthly payment or an earlier price, which would pass for the cheapest offer", () => {
+    for (const claim of ["Рассрочка 2 500 ₽ в месяц на 24 месяца", "От 2 500 ₽/мес на 24 месяца", "Цена: 29 990 (было 49 990 ₽)", "30 000 ₽ вместо 45 000 ₽",
+      "Старая цена 45 000 ₽, сейчас 30 000 ₽", "Зачёркнутая цена 45 000 ₽", "Платёж 2 500 ₽ × 24", "2 500 ₽ × 24", "60 000 ₽ на 24 месяца", "Was $450, now $300", "$99/mo",
+      "Instalments of €50 per month", "12 cuotas de $1.000", "Кредит от 3 000 руб. в мес."]) {
+      expect(prices(claim)).toEqual([]);
+    }
+    // Months alone are a warranty's too, and a place is no month.
+    expect(prices("Гарантия 12 мес., цена 30 000 ₽")).toEqual([{ currency: "RUB", text: "30 000 ₽", value: 30_000 }]);
+    expect(prices("30 000 ₽, самовывоз в месте выдачи")).toEqual([{ currency: "RUB", text: "30 000 ₽", value: 30_000 }]);
   });
 });
 
