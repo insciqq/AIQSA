@@ -3,7 +3,7 @@ import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECOR
 import type { TranscriptItem } from "../engine/transcript";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import type { ResearchOpenedSource } from "./gates";
-import { checkQuotes, claimFigures, claimPrices, figuresNotIn, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn } from "./quoteCheck";
+import { checkQuotes, claimFigures, claimPrices, figuresNotIn, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn, ratingNumbersNotIn } from "./quoteCheck";
 import { createResearchSources, researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 
 const LINK = "https://lab.example/x1";
@@ -298,5 +298,24 @@ describe("a claim's figures", () => {
 
   it("read a JSON-escaped page as the quote check does", () => {
     expect(missing("Латекс 3 см.", JSON.stringify(JSON.stringify("латекс 3 см")))).toEqual([]);
+  });
+});
+
+describe("a rating's numbers", () => {
+  const rating = (score: number, count: number) => ({ count, score });
+
+  it("are in a text that writes the score and the number of ratings, however the page groups or shortens them", () => {
+    expect(ratingNumbersNotIn(rating(4.7, 12_345), "4,7 ★ 12 345 оценок")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(4.7, 12_345), "4.7 out of 5 stars, 12,345 global ratings")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(4.8, 12_300), "Рейтинг 4.8 (12,3 тыс. оценок)")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(5, 1_200), "5.0 · 1.2K reviews")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(9.2, 318), JSON.stringify("Puntuación 9,2 — 318 valoraciones"))).toEqual([]);
+  });
+
+  it("name each number the text does not write: a shortened count is the number it writes, never a closer guess", () => {
+    expect(ratingNumbersNotIn(rating(4.7, 12_354), "4,7 ★ 12 345 оценок")).toEqual(["count"]);
+    expect(ratingNumbersNotIn(rating(4.8, 12_345), "Рейтинг 4.8 (12,3 тыс. оценок)")).toEqual(["count"]);
+    expect(ratingNumbersNotIn(rating(4.6, 12_345), "4,7 ★ 12 345 оценок")).toEqual(["score"]);
+    expect(ratingNumbersNotIn(rating(4.7, 12_345), "Отличный врач, рекомендую")).toEqual(["score", "count"]);
   });
 });

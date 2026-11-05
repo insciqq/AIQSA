@@ -118,6 +118,8 @@ export const RESEARCH_FRAME_LIMITS = Object.freeze({
    * (operator decision 2026-11-05). A few, since the summary answers each in a line of its own.
    */
   priorityCriteria: 3,
+  /** The one criterion that holds the options' public ratings and reviews (`ResearchCriterion.ratings`). */
+  ratingsCriteria: 1,
   rows: 64,
   whyCharacters: 500
 });
@@ -128,6 +130,9 @@ export const RESEARCH_EVIDENCE_LIMITS = Object.freeze({
   datasetCounts: 16,
   datasetExamples: 8,
   methodCharacters: 2_000,
+  /** The most ratings one rating may count, and the highest top of its scale (`ResearchRating`): a scale of 100 is the widest a public one uses. */
+  ratingCount: 1_000_000_000,
+  ratingScale: 100,
   /** At their longest these are about 12 MB, and no report rests on more. */
   recordsPerRun: 2_000,
   sampleSize: 1_000_000
@@ -250,10 +255,18 @@ export type ResearchStart = Readonly<{ goal: string }>;
 /**
  * A column of the matrix, with why it matters in plain words. For a knowledge question it is an outcome or a sub-question. `decisive`: a key specification, a
  * property of the option itself that a pick depends on and sellers may state differently, such as a mattress's load per side. `priority`: what the user's own
- * message names as mattering, such as value for money, which decides the pick (operator decision 2026-11-05). Each is present only when true, so a frame
- * stored before it, and a criterion added on the way, have none.
+ * message names as mattering, such as value for money, which decides the pick (operator decision 2026-11-05). `ratings`: the column of the options' public
+ * ratings and reviews, whose cells hold each option's rating records (operator decision 2026-11-05: ratings count, for products and services alike). Each is
+ * present only when true, so a frame stored before it, and a criterion added on the way, have none.
  */
-export type ResearchCriterion = Readonly<{ criterion: string; decisive?: true; key: string; priority?: true; why: string }>;
+export type ResearchCriterion = Readonly<{ criterion: string; decisive?: true; key: string; priority?: true; ratings?: true; why: string }>;
+
+/**
+ * Whether the user chooses among options: the plan marked key specifications or the user's priorities. A knowledge question has neither. The report check asks such
+ * a draft for a pick, and the frame of such a plan holds a ratings criterion (`researchFrameFromPlan`).
+ */
+export const researchChoosesAmongOptions = (criteria: readonly ResearchCriterion[]): boolean =>
+  criteria.some((criterion) => criterion.decisive === true || criterion.priority === true);
 
 /** A row of the matrix: an option the user could choose. */
 export type ResearchMatrixRow = Readonly<{ key: string; label: string }>;
@@ -404,9 +417,22 @@ export type ResearchDataset = Readonly<{
   sampleSize: number;
 }>;
 
+/** What a rating's number counts: ratings given, written reviews, or buyers who rated. */
+export const RESEARCH_RATING_COUNTS = ["ratings", "reviews", "buyers"] as const;
+export type ResearchRatingCounted = (typeof RESEARCH_RATING_COUNTS)[number];
+
+/**
+ * A public rating of one option, a product's or a service's such as a doctor's, as a finding carries it (operator decision 2026-11-05): a real person looks at the
+ * score and the number of ratings first. Its platform is the site of the finding's link and its date the record's, so neither is typed in. Its score and count stand
+ * in the finding's quote as the page writes them, which the store checks (`lib/server/research/evidenceStore.ts`). `variantsMerged`: the card merges the ratings of
+ * the option's variants, such as sizes or versions, so the score is not this exact option's alone.
+ */
+export type ResearchRating = Readonly<{ count: number; counted: ResearchRatingCounted; scaleMax: number; score: number; variantsMerged: boolean }>;
+
 /** A record as an agent hands it in. `supersedes` names the record it corrects: nothing is changed or deleted while the run lives. */
 export type ResearchRecordInput = Readonly<{ criterionKey: string | null; rowKey: string | null; supersedes: string | null }> & (
-  | Readonly<{ claim: string; kind: "finding"; quote: string; sourceClass: ResearchSourceClass; standing: ResearchStanding; url: string }>
+  /** `rating` only on a finding of a public rating, and absent on every other one and on one stored before the field. */
+  | Readonly<{ claim: string; kind: "finding"; quote: string; rating?: ResearchRating; sourceClass: ResearchSourceClass; standing: ResearchStanding; url: string }>
   | Readonly<{ criterionKey: string; kind: "not_found"; reason: string; rowKey: string; sourceClass: ResearchSourceClass | null }>
   | Readonly<{ claim: string; dataset: ResearchDataset; kind: "dataset"; rowKey: string; sourceClass: ResearchSourceClass; standing: ResearchStanding; url: string }>
   | Readonly<{ kind: "unreachable"; reason: string; sourceClass: ResearchSourceClass | null; target: string }>
@@ -674,11 +700,11 @@ function decodeCriterion(entry: unknown, place: string): DecodedResearch<Researc
   if (!storableText(entry.criterion, limits.labelCharacters)) return refused(`${fieldAt(place, "criterion")} must be 1 to ${limits.labelCharacters} characters.`);
   if (!storableText(entry.why, limits.whyCharacters)) return refused(`${fieldAt(place, "why")} must say in 1 to ${limits.whyCharacters} characters why this criterion matters.`);
   // Left out or null reads as false: a frame or proposal stored before the field has none.
-  for (const flag of ["decisive", "priority"] as const) {
+  for (const flag of ["decisive", "priority", "ratings"] as const) {
     if (entry[flag] !== undefined && entry[flag] !== null && typeof entry[flag] !== "boolean") return refused(`${fieldAt(place, flag)} must be true or false.`);
   }
   return { ok: true, value: { criterion: entry.criterion, ...entry.decisive === true ? { decisive: true as const } : {}, key: entry.key,
-    ...entry.priority === true ? { priority: true as const } : {}, why: entry.why } };
+    ...entry.priority === true ? { priority: true as const } : {}, ...entry.ratings === true ? { ratings: true as const } : {}, why: entry.why } };
 }
 
 function decodeBranch(entry: unknown, place: string): DecodedResearch<ResearchBranch> {
@@ -707,6 +733,9 @@ function decodeProposal(value: unknown, steps: ListBounds): DecodedResearch<Rese
   }
   if (criteria.value.filter(({ priority }) => priority).length > frame.priorityCriteria) {
     return refused(`criteria marks more than ${frame.priorityCriteria} as priorities: mark only what the user's own message names as mattering to them.`);
+  }
+  if (criteria.value.filter(({ ratings }) => ratings).length > frame.ratingsCriteria) {
+    return refused(`criteria marks more than ${frame.ratingsCriteria} as ratings: one criterion holds the options' public ratings and reviews.`);
   }
   const rows = decodeKeyed(value.rows, "rows", { max: frame.rows, min: 0 }, decodeRow);
   if (!rows.ok) return rows;
@@ -787,9 +816,40 @@ export function researchPlanFromProposal(goal: string, proposal: ResearchPlanPro
   return { goal, questions: proposal.questions, skipped: proposal.skipped };
 }
 
-/** The frame a released plan opens with. */
+/** The words of the ratings criterion the server adds, in the research languages. */
+const RATINGS_CRITERION_WORDS = Object.freeze({
+  en: { criterion: "Ratings and reviews", why: "How many people rated each option and how: a score from many ratings says more than a few reviews." },
+  es: { criterion: "Valoraciones y reseñas", why: "Cuántas personas valoraron cada opción y cómo: una nota de muchas valoraciones dice más que unas pocas reseñas." },
+  ru: { criterion: "Рейтинг и отзывы", why: "Сколько людей оценили каждый вариант и как: оценка по многим отзывам говорит больше, чем несколько отзывов." }
+});
+
+/** Spanish function words: two of them, or a letter only Spanish writes, mark a plan written in Spanish. */
+const SPANISH_WORDS = /(?<!\p{L})(?:el|la|los|las|del|para|por|con|una|que|y|más|cómo|cuál|qué)(?!\p{L})/gu;
+
+/** The language of the plan's words for the user: what it understood and its criteria, which it writes in the user's language. */
+function planLanguage(plan: Pick<ResearchPlanProposal, "criteria" | "understood">): keyof typeof RATINGS_CRITERION_WORDS {
+  const words = [plan.understood, ...plan.criteria.map(({ criterion }) => criterion)].join(" ").toLowerCase();
+  if (/\p{Script=Cyrillic}/u.test(words)) return "ru";
+  return /[ñ¿¡]/u.test(words) || (words.match(SPANISH_WORDS) ?? []).length >= 2 ? "es" : "en";
+}
+
+/**
+ * The plan's criteria with a column for ratings and reviews where the user chooses among options (operator decision 2026-11-05): a real person looks at the
+ * score and the number of ratings first, for a product and for a service such as a doctor, and on two reviewed runs a few shop reviews carried a pick while a
+ * marketplace's thousands of ratings stayed out. A criterion the plan marked as ratings stands as the model wrote it; otherwise the server adds one in the
+ * plan's language under a key no criterion has. A knowledge question gets none, and neither does a plan already holding all the criteria a frame may.
+ */
+function criteriaWithRatings(plan: ResearchPlanProposal): readonly ResearchCriterion[] {
+  const { criteria } = plan;
+  if (!researchChoosesAmongOptions(criteria) || criteria.some(({ ratings }) => ratings) || criteria.length >= RESEARCH_FRAME_LIMITS.criteria) return criteria;
+  const taken = new Set(criteria.map(({ key }) => key));
+  const key = ["ratings", ...Array.from({ length: RESEARCH_FRAME_LIMITS.criteria }, (_entry, index) => `ratings-${index + 2}`)].find((candidate) => !taken.has(candidate))!;
+  return [...criteria, { ...RATINGS_CRITERION_WORDS[planLanguage(plan)], key, ratings: true as const }];
+}
+
+/** The frame a released plan opens with: the plan's matrix, with the ratings criterion a choice among options holds. */
 export function researchFrameFromPlan(plan: ResearchPlanProposal): ResearchFrame {
-  return { branches: plan.branches, changes: [], criteria: plan.criteria, rows: plan.rows };
+  return { branches: plan.branches, changes: [], criteria: criteriaWithRatings(plan), rows: plan.rows };
 }
 
 function decodeAgentRef(value: unknown): ResearchAgentRef | null {
@@ -938,6 +998,31 @@ function decodeDataset(value: unknown): DecodedResearch<ResearchDataset> {
   return { ok: true, value: { counts, examples, leftOut: value.left_out, method: value.method, sampleSize } };
 }
 
+const isNumberWithin = (value: unknown, least: number, most: number): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= least && value <= most;
+
+/** A rating in its tool's form, which is how `ResearchEvidence.rating` keeps it: `decodeResearchRecord` reads both. */
+export function researchRatingDocument(rating: ResearchRating) {
+  return { count: rating.count, counted: rating.counted, scale_max: rating.scaleMax, score: rating.score, variants_merged: rating.variantsMerged };
+}
+
+/** A finding's rating in its tool's form, or as a row keeps it; null where the finding is no rating. */
+function decodeRating(value: unknown): DecodedResearch<ResearchRating | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  const limits = RESEARCH_EVIDENCE_LIMITS;
+  if (!isRecord(value)) return refused("rating must be one object, score, scale_max, count, counted and variants_merged, or null for a finding that is no rating.");
+  const { count, counted, scale_max: scaleMax, score, variants_merged: variantsMerged } = value;
+  if (!isNumberWithin(scaleMax, Number.MIN_VALUE, limits.ratingScale)) return refused(`rating.scale_max must be the top of the scale, such as 5 or 10, at most ${limits.ratingScale}.`);
+  if (!isNumberWithin(score, 0, scaleMax)) return refused("rating.score must be the score as the page shows it, from 0 to rating.scale_max.");
+  if (!isNumberWithin(count, 1, limits.ratingCount) || !Number.isInteger(count)) {
+    return refused(`rating.count must be the whole number of ratings the score is out of, 1 to ${limits.ratingCount}: an option with none is not_found for its cell.`);
+  }
+  if (!isOneOf(RESEARCH_RATING_COUNTS, counted)) return refused(`rating.counted must be one of ${RESEARCH_RATING_COUNTS.join(", ")}.`);
+  if (typeof variantsMerged !== "boolean") return refused("rating.variants_merged must say whether the card merges the ratings of the option's variants.");
+  return { ok: true, value: { count, counted, scaleMax, score, variantsMerged } };
+}
+
+/** `rating` is not among them: left out reads as none, so a call that leaves out what it has no use for, and a row stored before the field, keep their finding. */
 const RECORD_FIELDS = ["claim", "criterion_key", "dataset", "kind", "quote", "reason", "row_key", "source_class", "standing", "supersedes", "target", "url"] as const;
 
 const SOURCE_CLASS_RULE = `must be one of ${RESEARCH_SOURCE_CLASSES.join(", ")}`;
@@ -976,7 +1061,10 @@ export function decodeResearchRecord(value: unknown): DecodedResearch<ResearchRe
     return dataset.ok ? { ok: true, value: { ...cell, ...source, dataset: dataset.value, kind, rowKey } } : dataset;
   }
   if (!storableText(value.quote, limits.quoteCharacters)) return refused(`quote must be 1 to ${limits.quoteCharacters} characters copied from the source.`);
-  return { ok: true, value: { ...cell, ...source, kind, quote: value.quote } };
+  const rating = decodeRating(value.rating);
+  if (!rating.ok) return rating;
+  if (rating.value && rowKey === null) return refused("row_key must name the option this rating is of.");
+  return { ok: true, value: { ...cell, ...source, kind, quote: value.quote, ...rating.value ? { rating: rating.value } : {} } };
 }
 
 /**
