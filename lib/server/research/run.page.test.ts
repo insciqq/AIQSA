@@ -366,7 +366,7 @@ describe("a page that cannot be written leaves the answer as it would have gone 
 
   it("when its call fails, or its model makes none", async () => {
     for (const [service, page] of [[artifacts({ fail: true }), [{ calls: [pageCall()] }]], [artifacts(), [{ text: "Here is the page." }]]] as const) {
-      const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }], page.map((step) => ({ ...step, ..."calls" in step ? { calls: [...step.calls] } : {} })));
+      const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }], page.map((step) => "calls" in step ? { calls: [...step.calls] } : { text: step.text }));
       const memory = engineOf({});
       const { cards } = await go(adapter, memory, { service });
       expect(requests.page).toHaveLength(1);
