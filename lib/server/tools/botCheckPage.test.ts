@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { extractPage } from "../webFetch/extract";
 import type { FetchedPage } from "../webFetch/pageKinds";
 import { isBotCheckPage } from "./botCheckPage";
-import { BOT_CHECK_PAGES, CAPTCHA_ARTICLES, htmlPage } from "./botCheckPage.testFixtures";
+import { BOT_CHECK_PAGES, CAPTCHA_ARTICLES, FORM_WITH_CAPTCHA, htmlPage } from "./botCheckPage.testFixtures";
 
 const extracted = (html: string) => {
   const body = new TextEncoder().encode(html);
@@ -20,6 +20,12 @@ describe("bot check pages", () => {
   it.each(CAPTCHA_ARTICLES)("reads $name despite markers in its title, body and widget", ({ html }) => {
     const { body, page } = extracted(html);
     expect(page.text.length).toBeGreaterThan(4_000);
+    expect(isBotCheckPage(page, body)).toBe(false);
+  });
+
+  it("reads a short real page whose form carries a CAPTCHA widget", () => {
+    const { body, page } = extracted(FORM_WITH_CAPTCHA);
+    expect(page.text.replace(/\s+/gu, " ").length).toBeGreaterThan(300);
     expect(isBotCheckPage(page, body)).toBe(false);
   });
 

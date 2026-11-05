@@ -9,8 +9,15 @@ export const BOT_CHECK_PAGES = [
   { name: "Russian body", html: htmlPage("Ещё один шаг", "<p>Подтвердите, что вы не робот.</p>") },
   { name: "Russian widget label", html: htmlPage("Ещё один шаг", "<p>Капча: введите символы с картинки.</p>") },
   { name: "widget", html: htmlPage("One more step", '<p>Complete the check to continue.</p><div class="captcha-widget"></div>') },
-  { name: "empty widget shell", html: htmlPage("One more step", '<div id="captcha-widget"></div>') }
+  { name: "empty widget shell", html: htmlPage("One more step", '<div id="captcha-widget"></div>') },
+  { name: "English verifying", html: htmlPage("Just a moment...", "<p>Verifying you are human. This may take a few seconds.</p>") },
+  { name: "Russian requests", html: htmlPage("Ещё один шаг", "<p>Подтвердите, что запросы отправляли вы, а не робот.</p>") }
 ] as const;
+
+/** A real short page whose form carries a CAPTCHA widget: there is text to read, so it is no challenge. */
+export const FORM_WITH_CAPTCHA = htmlPage("Contact the clinic", `<main><h1>Contact the clinic</h1>${
+  "<p>The clinic is open on weekdays from 8 to 20 and on Saturdays from 9 to 15. Appointments are made by phone or with the form below.</p>".repeat(3)
+}<form><input name="name"><div class="g-recaptcha"></div><button>Send</button></form></main>`);
 
 export const CAPTCHA_ARTICLES = [
   { name: "English article", quote: "CAPTCHA widgets ask visitors to verify they are human.", html: htmlPage("Checking your browser: how CAPTCHA works",
