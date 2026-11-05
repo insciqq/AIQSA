@@ -14,6 +14,7 @@ import * as observability from "../observability";
 import { createResearchEvidenceRepository } from "./evidenceRepository";
 import { createResearchEvidenceStore, storedPageText } from "./evidenceStore";
 import type { ResearchEvidencePort, ResearchEvidenceWritten, ResearchRunScope } from "./ports";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { RESEARCH_WRITE_SOURCE_LIMITS } from "./sources";
 
 /**
@@ -240,7 +241,7 @@ describe("writing a record", () => {
     const memory = tables();
     addCall(memory, [{ text: excerpt.output, type: "text" }], { args: { command: "aiqsa-browser text" }, observationId: "a".repeat(32), tool: SHELL });
     const saved = storeOf(memory, { read: async () => whole });
-    await expect(recorded(saved.port, finding())).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+    await expect(recorded(saved.port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "unaddressed_page", status: "found" } });
     expect(saved.savedRead).toHaveBeenCalledWith(expect.objectContaining({ chatId: "chat", handle: `tor1_${"a".repeat(32)}`, userId: "user" }));
     expect(memory.pages[0]).toMatchObject({ obtainedBy: "browser", truncated: false });
     await expect(recorded(storeOf(memory, { read: async () => null }).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "partial_source", status: "not_checked" } });
@@ -264,7 +265,7 @@ describe("writing a record", () => {
     expect(memory.pages[0]!.text).toBe(`${start}ж`);
     const short = tables();
     printed(short, `${QUOTE} ${"x".repeat(RESEARCH_PAGE_LIMITS.bytesPerPage)}`);
-    await expect(recorded(storeOf(short).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+    await expect(recorded(storeOf(short).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "unaddressed_page", status: "found" } });
     expect(short.pages[0]).toMatchObject({ truncated: true });
   });
 
@@ -575,5 +576,32 @@ describe("reading", () => {
     const { port } = storeOf(tables());
     await expect(port.records(stop.signal)).rejects.toThrow("stopped");
     await expect(port.page("page", stop.signal)).rejects.toThrow("stopped");
+  });
+});
+
+describe("what a closed site needs (operator decision 2026-11-05)", () => {
+  const EXEC = namespacedWorkspaceToolName("sandbox_exec");
+  const command = (memory: Tables, args: Row, stdout: string, thread: string | null = "thread-lab") =>
+    addCall(memory, [{ text: JSON.stringify({ data: { exitCode: 0, stderr: "", stdout, success: true }, ok: true }), type: "text" }], { args, thread, tool: EXEC });
+
+  it("keeps a quote found in browser output an address only where a step line shows the cited host", async () => {
+    const shown = tables();
+    printed(shown, `[browser #2 · lab] text @ lab.example/x1\n${PAGE}`);
+    await expect(recorded(storeOf(shown).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+    const bare = tables();
+    printed(bare, PAGE);
+    await expect(recorded(storeOf(bare).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "unaddressed_page", status: "found" } });
+  });
+
+  it("knows the hosts an agent's own browser navigations tried, from its call rows alone", async () => {
+    const memory = tables();
+    command(memory, { args: ["open", "https://www.shop.example/card"], command: "aiqsa-browser" }, "");
+    command(memory, { args: ["proxied", "curl", "https://proxied.example/"], command: "aiqsa-browser" }, "[browser #1] open @ proxied.example/");
+    command(memory, { args: ["open", "https://main.example/"], command: "aiqsa-browser" }, "", null);
+    const { port } = storeOf(memory);
+    await expect(port.browsed!(RESEARCHER, "shop.example", signal)).resolves.toBe(true);
+    await expect(port.browsed!(RESEARCHER, "proxied.example", signal)).resolves.toBe(false);
+    await expect(port.browsed!(RESEARCHER, "main.example", signal)).resolves.toBe(false);
+    await expect(port.browsed!(MAIN, "main.example", signal)).resolves.toBe(true);
   });
 });
