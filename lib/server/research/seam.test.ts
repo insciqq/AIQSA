@@ -400,7 +400,7 @@ describe("a draft reaches the user", () => {
     const memory = engineOf({ gates: [] });
     const chosen = prepared();
     const request = { ...chosen.normalizedRequest, prompt: { ...chosen.normalizedRequest.prompt, system: `Be brief.\n\n${DEEP_RESEARCH_CHOSEN_GUIDANCE}`,
-      turnGuidance: [DEEP_RESEARCH_CHOSEN_GUIDANCE] } } as ProviderRunRequest;
+      turnGuidance: [DEEP_RESEARCH_CHOSEN_GUIDANCE] } } as unknown as ProviderRunRequest;
     await run(adapter, memory, { prepared: { ...chosen, normalizedRequest: request, providerRequest: request } }).text();
     expect(requests[0]!.tools?.map((tool) => tool.name)).toContain(START_RESEARCH_TOOL_NAME);
     expect(requests[0]!.prompt.system).not.toContain(DEEP_RESEARCH_CHOSEN_GUIDANCE);
