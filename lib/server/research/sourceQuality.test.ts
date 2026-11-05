@@ -262,7 +262,7 @@ function appendDatabase(full = false) {
         const row: ResearchEvidence = { authorName: null, authorThreadId: null, claim: null, criterionKey: null, pageId: null, publishedOn: null,
           quote: null, quoteCheck: null, quoteCheckReason: null, reason: null, registrableDomain: null, rowKey: null, sourceClass: null, standing: null,
           supersedesId: null, target: null, textGroupKey: null, url: null, id: `record-${evidence.length}`, ...data,
-          createdAt: new Date("2026-11-02T00:00:00Z"), dataset: null };
+          createdAt: new Date("2026-11-02T00:00:00Z"), dataset: null, rating: null };
         evidence.push(row);
         return row;
       }),
