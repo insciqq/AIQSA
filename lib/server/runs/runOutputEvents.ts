@@ -14,7 +14,7 @@ import { projectAnswerCitation } from "../../domain/answerCitations";
 import { projectReasoningRecord, type ReasoningRecord } from "../../domain/answerReasoning";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
-import { decodeThreadGeneratedArtifact, type ThreadCitation } from "../../contracts/chats";
+import { decodeThreadGeneratedArtifact, type ThreadCitation, type ThreadResearchPage } from "../../contracts/chats";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadSearchActivitySnapshot, type ThreadSearchActivitySnapshot } from "../../contracts/searchActivity";
 import { decodeScheduledTaskCard, type ScheduledTaskCard } from "../../contracts/scheduledTasks";
@@ -26,6 +26,8 @@ type RunOutputGeneratedArtifact = {
   artifactId: string;
   entrypoint: string | null;
   kind: "chart" | "game" | "html" | "image" | "slides" | "svg";
+  /** The answer's research page and where its summary ends (`ThreadResearchPage`). */
+  researchPage?: ThreadResearchPage;
   title: string;
   versionId: string;
   versionNumber: number;
@@ -100,10 +102,19 @@ function projectGeneratedArtifact(value: unknown): RunOutputGeneratedArtifact | 
     artifactId: decoded.artifactId,
     entrypoint: decoded.entrypoint,
     kind: decoded.kind,
+    ...(decoded.researchPage ? { researchPage: decoded.researchPage } : {}),
     title: decoded.title,
     versionId: decoded.versionId,
     versionNumber: decoded.versionNumber
   };
+}
+
+/** Only the projection's own output, a research page's marker as it projects. */
+function isExactGeneratedArtifact(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["artifactId", "byteSize", "entrypoint", "kind", "researchPage", "title", "versionId", "versionNumber"])) return false;
+  const projected = projectGeneratedArtifact(value);
+  return projected !== null && (value.researchPage === undefined ||
+    JSON.stringify(sortedKeys(value.researchPage)) === JSON.stringify(sortedKeys(projected.researchPage ?? null)));
 }
 
 function isExactCitation(value: unknown): value is ThreadCitation {
@@ -271,9 +282,7 @@ export function isRunOutputArtifactEvent(
   if (event.type !== "artifact" ||
     !hasOnlyKeys(event.data, ["artifactType", "payload"])) return false;
 
-  if (event.data.artifactType === "generated_artifact") return isRecord(event.data.payload) &&
-    hasOnlyKeys(event.data.payload, ["artifactId", "byteSize", "entrypoint", "kind", "title", "versionId", "versionNumber"]) &&
-    projectGeneratedArtifact(event.data.payload) !== null;
+  if (event.data.artifactType === "generated_artifact") return isExactGeneratedArtifact(event.data.payload);
   if (event.data.artifactType === "image") return decodeThreadGeneratedImage(event.data.payload) !== null;
   if (event.data.artifactType === "context_status") {
     return decodeSessionContextStatus(event.data.payload) !== null;

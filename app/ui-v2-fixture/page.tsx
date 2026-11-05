@@ -124,7 +124,8 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "complete",
         "empty",
         "memory",
-        "reasoning"
+        "reasoning",
+        "research"
       ] as const,
       "complete"
     );

@@ -90,6 +90,16 @@ export function researchPageArtifact(card: ModelRunSseEvent): ResearchPageArtifa
   return { artifactId, entrypoint: typeof entrypoint === "string" ? entrypoint : null, title, versionId };
 }
 
+/**
+ * The page's card as the answer shows it: marked as the answer's research page, with where the answer's summary ends and its notes start
+ * (`researchAnswerLayout`), so the chat shows the summary, the card and the report's download while the message keeps the whole text.
+ */
+export function researchPageCard(card: ModelRunSseEvent, layout: Readonly<{ notesStart: number | null; summaryEnd: number | null }>): ModelRunSseEvent {
+  if (card.type !== "artifact" || card.data.artifactType !== "generated_artifact" || typeof card.data.payload !== "object" || card.data.payload === null) return card;
+  return { ...card, data: { ...card.data, payload: { ...card.data.payload as Record<string, unknown>,
+    research_page: { notes_start: layout.notesStart, summary_end: layout.summaryEnd } } } };
+}
+
 /** A card of an artifact's first version: one the step's own call created, never an earlier artifact it may have updated. */
 const createdBy = (card: ModelRunSseEvent) => card.type === "artifact" && (card.data.payload as { version_number?: unknown } | null)?.version_number === 1;
 
