@@ -107,7 +107,7 @@ describe("aiqsa.chat v1 serializer", () => {
         },
         {
           createdAt: "2026-09-01T12:04:00.000Z", id: "m3", model: { modelId: "model-a", provider: "provider-a" },
-          parentId: "m1", role: "assistant", status: "complete", text: "Partial answer before follow-up:\n\nPartial draft"
+          parentId: "m1", role: "assistant", status: "complete", text: "Answer before follow-up:\n\nPartial draft"
         },
         {
           createdAt: "2026-09-01T12:04:00.000Z", id: "m4", parentId: "m3", role: "user", status: "complete",
@@ -162,7 +162,7 @@ describe("active-branch Markdown", () => {
   it("renders the visible branch with follow-ups and a stopped empty answer as the chat shows it", () => {
     expect(chatExportActiveBranchMarkdown(branchedSource())).toBe(
       "# Release plan\n\n## User\n\nPlan the release\n\n" +
-      "## Assistant\n\nPartial answer before follow-up:\n\nPartial draft\n\n" +
+      "## Assistant\n\nAnswer before follow-up:\n\nPartial draft\n\n" +
       "## User\n\nFollow-up 1:\n\nAlso cover rollback\n\n## Assistant\n\nFinal plan with rollback\n"
     );
     const stopped = branchedSource("db-answer-first");

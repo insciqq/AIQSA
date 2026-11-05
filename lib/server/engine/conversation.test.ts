@@ -158,7 +158,7 @@ describe("native run conversation", () => {
         { id: "msg-user-2", kind: "user", text: "Shorter" }
       ]);
       expect(texts(conversation.items).filter((text) => text.includes("Make it rhyme"))).toHaveLength(1);
-      expect(texts(conversation.items).some((text) => text.includes("Partial answer before follow-up"))).toBe(false);
+      expect(texts(conversation.items).some((text) => text.includes("Answer before follow-up"))).toBe(false);
     });
 
     it("keeps an old-core answer's follow-ups as text, as before", () => {
@@ -166,7 +166,7 @@ describe("native run conversation", () => {
         messages: branch(), nativeAnswers: new Map() });
       expect(conversation.items).toEqual([
         { id: "msg-user-1", kind: "user", text: "Write a poem" },
-        { id: "msg-f1-partial", kind: "assistant_text", text: "Partial answer before follow-up:\nRoses are red" },
+        { id: "msg-f1-partial", kind: "assistant_text", text: "Answer before follow-up:\nRoses are red" },
         { id: "msg-f1", kind: "user", text: "Follow-up:\nMake it rhyme" },
         { id: "msg-f2", kind: "user", text: "Follow-up not delivered to the previous answer:\nAdd a title" },
         { id: "msg-answer-1", kind: "assistant_text", text: "Roses are red, violets are blue." },

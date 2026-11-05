@@ -104,7 +104,12 @@ export type RunFollowupBatch = Readonly<{
 export type RunFollowupOperations = Readonly<{
   accept(input: RunFollowupInput & { runId: string; userId: string }): Promise<AcceptRunFollowupResult>;
   load(input: { runId: string; userId: string }): Promise<RunFollowupBatch | null>;
-  deliver(input: { runId: string; userId: string; revision: number; precedingText: string; budgetTokens: number }): Promise<boolean>;
+  /**
+   * Delivers the batch up to `revision`. `precedingText`: the answer the user's own follow-up starts over from, saved
+   * with the first of theirs, and the answer message is emptied for the new answer; null when the batch holds only what
+   * agents sent, so the answer stands with its message as it is.
+   */
+  deliver(input: { runId: string; userId: string; revision: number; precedingText: string | null; budgetTokens: number }): Promise<boolean>;
   /** The final answer can settle only after this compare-and-close wins. */
   close(input: { runId: string; userId: string; revision: number }): Promise<boolean>;
 }>;

@@ -10,7 +10,7 @@ export function RunFollowupHistoryV2({ entries, waitingForStep }: Readonly<{
   return <div className="v2-followup-history" aria-label="Follow-ups">
     {entries.map(entry => <Fragment key={entry.id}>
       {entry.precedingText ? <ConversationTurnV2 role="assistant" content={entry.precedingText}
-        beforeContent={<p className="v2-followup-label">Partial answer before follow-up</p>} /> : null}
+        beforeContent={<p className="v2-followup-label">Answer before follow-up</p>} /> : null}
       <ConversationTurnV2 role="user" content={entry.text} anchorId={`followup-${entry.id}`}
         beforeContent={<p className="v2-followup-label">{entry.author ? `${entry.author} · ` : ""}Follow-up {entry.ordinal}</p>}
         afterContent={<p className="v2-followup-label" role="status" title={entry.delivery === "delivered"

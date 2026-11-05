@@ -6,7 +6,7 @@ import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { mergeWorkspaceActivity } from "../../domain/workspaceActivity";
 import { FakeSubagentBackgroundControl } from "../../../tests/support/subagentPorts";
-import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunExecutionInput } from "../engine/execution";
+import { ANSWER_STANDS_INSTRUCTION, createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunExecutionInput } from "../engine/execution";
 import type { SubagentModelRoute } from "../engine/subagents/modelRoutes";
 import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
@@ -289,6 +289,34 @@ describe("a draft reaches the user", () => {
     // The next turn reads what was said as the answer's text, not only as a call's arguments.
     expect(memory.appended.at(-1)).toMatchObject({ kind: "assistant_text", text: REPORT });
     expect(memory.runs.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a held run as it was when a sub-agent's callback arrives: nothing streams, and only the report replaces the answer", async () => {
+    let arrived = false;
+    let delivered = false;
+    const callback = "[Sub-agent callback, written by the server, not by the user] scout ended (done)";
+    const followups = { close: vi.fn(async () => !arrived || delivered), deliver: vi.fn(async () => { delivered = true; return true; }),
+      load: vi.fn(async () => ({ entries: arrived ? [{ delivery: delivered ? "delivered" as const : "accepted" as const, id: "cb",
+        origin: "subagent_callback" as const, text: callback }] : [], revision: arrived ? 1 : 0 })) };
+    const { adapter, requests } = scripted([
+      { calls: begin(), onCall: () => { arrived = true; }, text: "Starting the research." },
+      { calls: [submit()], text: "DRAFT NARRATION beside the call." }
+    ]);
+    const memory = engineOf({ gates: [] });
+    const seen = await events(run(adapter, memory, { prepared: { ...prepared(), followupAdmission: {} as never } },
+      { ...repository(), followups } as never));
+    expect(requests).toHaveLength(2);
+    expect(followups.deliver).toHaveBeenCalledWith(expect.objectContaining({ precedingText: null }));
+    expect(JSON.stringify(requests[1]!.history)).toContain("scout ended");
+    // A held answer is not yet the user's, so the model is not told that it stands.
+    expect(JSON.stringify(requests[1]!.history)).not.toContain(ANSWER_STANDS_INSTRUCTION);
+    expect(memory.published()).toBe(REPORT);
+    expect(tokens(seen).join("")).not.toContain("DRAFT NARRATION");
+    expect(tokens(seen).at(-1)).toBe(REPORT);
+    // The callback resets nothing: the one reset is the report replacing what streamed before research started.
+    const resets = seen.flatMap((event, index) => event.type === "message_reset" ? [index] : []);
+    expect(resets).toHaveLength(1);
+    expect(resets[0]).toBeLessThan(seen.findIndex((event) => event.type === "token" && event.data.delta === REPORT));
   });
 
   it("opens the answer with the draft's summary, then the report, as the server places them, and the gates read both", async () => {

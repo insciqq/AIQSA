@@ -152,6 +152,34 @@ describe("durable in-run Follow-up", () => {
     expect(texts.join("\n")).not.toContain("attacker.example");
   }));
 
+  it("starts the answer over only for the user's own follow-up, and keeps the text before it where every projection reads it", async () => fixture(async f => {
+    const run = await f.create();
+    await prisma.message.update({ where: { id: run.assistantMessageId }, data: { content: textMessageContent("The full answer") } });
+    // A sub-agent's message into the running answer, as `messageMainAgent` writes it: never the user's follow-up.
+    const agentMessage = async (ordinal: number) => {
+      await prisma.runFollowup.create({ data: { authorName: "scout", chatId: f.chatId, modelRunId: run.runId, nonce: `agent-${ordinal}`,
+        ordinal, origin: "subagent_message", text: "[Sub-agent message] It costs 42" } });
+      await prisma.modelRun.update({ data: { followupRevision: ordinal }, where: { id: run.runId } });
+    };
+    const answerText = async () => textFromContentBlocks((await prisma.message.findUniqueOrThrow({
+      where: { id: run.assistantMessageId } })).content as { blocks?: unknown[] });
+    await agentMessage(1);
+    expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: null, budgetTokens: 2_000 })).toBe(true);
+    expect(await answerText()).toBe("The full answer");
+    expect(await prisma.runFollowup.findFirstOrThrow({ where: { modelRunId: run.runId, ordinal: 1 } }))
+      .toMatchObject({ deliveredAt: expect.any(Date), precedingText: null });
+    // A mixed batch, the agent's message first: the text before goes with the user's follow-up, and the answer starts over.
+    await agentMessage(2);
+    expect(await followups.accept(submission(f, run, "user-nonce", "Shorter"))).toMatchObject({ kind: "accepted" });
+    expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 3, precedingText: "The full answer", budgetTokens: 2_000 }))
+      .toBe(true);
+    expect(await prisma.runFollowup.findFirstOrThrow({ where: { modelRunId: run.runId, ordinal: 2 } })).toMatchObject({ precedingText: null });
+    expect((await repository.getRunOutcomeForUser(run.runId, f.userId))?.followups?.entries)
+      .toMatchObject([{ delivery: "delivered", precedingText: "The full answer", text: "Shorter" }]);
+    expect(await answerText()).toBe("");
+    await repository.cancelRun({ runId: run.runId, userId: f.userId, payload: cancelPayload });
+  }));
+
   it("preserves branch history after source deletion and projects readable immutable shares", async () => fixture(async f => {
     const run = await f.create();
     await followups.accept(submission(f, run, "private-nonce", "Clarified question"));
@@ -165,7 +193,7 @@ describe("durable in-run Follow-up", () => {
     expect(projectMessageFollowups(message)).toMatchObject({ available: false, entries: [{ text: "Clarified question", precedingText: "Previous partial" }] });
     const context = (await repository.loadConversationContextForExpectedLeaf(branch!.id, f.userId, branch!.activeLeafMessageId!))!;
     expect(context.map(item => textFromContentBlocks(item.content))).toEqual(["Original question",
-      "Partial answer before follow-up:\nPrevious partial", "Follow-up:\nClarified question", "Updated answer"]);
+      "Answer before follow-up:\nPrevious partial", "Follow-up:\nClarified question", "Updated answer"]);
     const source = await repository.findRegenerationSource(branch!.activeLeafMessageId!, f.userId);
     expect(source?.followups).toMatchObject({ revision: 1, entries: [{ text: "Clarified question" }] });
     const share = await createPrismaShareRepository(prisma).createChatShare({ chatId: branch!.id, activeLeafMessageId: null,
