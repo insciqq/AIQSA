@@ -91,7 +91,7 @@ describe("what the store gives a Continue", () => {
     await expect(port.sentWithDeepResearch(["run-a2", "run-a"], running)).resolves.toBe(true);
     expect(store.sentWithDeepResearch).toHaveBeenLastCalledWith(keyOf("run-b"), ["run-a2", "run-a"]);
     await expect(port.sentWithDeepResearch(["run-a2"], running)).resolves.toBe(false);
-    store.sentWithDeepResearch.mockClear();
+    vi.mocked(store.sentWithDeepResearch).mockClear();
     await expect(port.sentWithDeepResearch(["run-of-another-branch"], running)).resolves.toBe(false);
     expect(store.sentWithDeepResearch).not.toHaveBeenCalled();
   });
