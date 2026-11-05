@@ -74,6 +74,11 @@ describe("sub-agent scenario selection and options", () => {
     expect(subagentHarnessOptions({}, ["L"], "m")).toMatchObject({ restart: null, secondModel: null, textModel: null });
   });
 
+  it("asks for the DeepSeek key for a searching scenario only off production Search, which names its own sources", () => {
+    expect(() => subagentHarnessOptions({}, ["T"], "gpt-6-astra")).toThrow("deepseek_key_required");
+    expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_T_SEARCH: "production" }, ["T"], "gpt-6-astra")).not.toThrow();
+  });
+
   it("refuses a selected scenario whose second model or restart hook is missing before any setup", () => {
     expect(() => subagentHarnessOptions({}, ["C2"], "gpt-6-astra")).toThrow("second_model_required");
     expect(() => subagentHarnessOptions({}, ["G"], "gpt-6-astra")).toThrow("restart_command_required");

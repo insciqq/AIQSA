@@ -140,7 +140,10 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   const text = env.AIQSA_SUBAGENTS_TEXT_MODEL?.trim() || null;
   if (text !== null && !OPENROUTER_MODEL_PATTERN.test(text)) fail("text_model_invalid");
   if (text !== null && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
-  if (needs.some((need) => need.search) && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
+  // Production Search (T's acceptance option) brings its own sources, and `researchEvalOptions` asks for the DeepSeek key only when
+  // that source is selected; without it Q, R and T search on the DeepSeek client route.
+  const productionSearch = env.AIQSA_SUBAGENTS_T_SEARCH?.trim() === "production";
+  if (needs.some((need) => need.search) && !productionSearch && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
   if (needs.some((need) => need.testProxy) && parseTestProxy(env.AIQSA_SUBAGENTS_TEST_PROXY) === null) fail("test_proxy_required");
   return {
     restart: command === null ? null : { command, timeoutMs: timeoutSeconds * 1_000 },
