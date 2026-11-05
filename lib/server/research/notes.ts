@@ -5,8 +5,8 @@
  *
  * The reader gets no process notes (operator decision 2026-11-02): no counts, no model names, no remark that a check ran on the report's own model,
  * no check that found nothing, no list of what could not be reached and nothing that only says a send back was missed. Each note here says in one
- * plain sentence that the answer is incomplete or not fully checked, and only when it is. The two notes of content are the facts the checks
- * rejected that the report still cites (`verifier.ts`) and the evidence against the conclusion the skeptic found (`researchCounterEvidenceNote`).
+ * plain sentence that the answer is incomplete or not fully checked, and only when it is. Content notes name rejected facts and the narrower support for
+ * claims behind recommendations (`verifier.ts`), and evidence against the conclusion (`researchCounterEvidenceNote`).
  */
 export type ResearchNoteKey = "before_plan" | "composed_failed" | "composed_no_report" | "composed_timed_out" | "followup_not_applied" | "gate_failed" | "incomplete" |
   "no_findings" | "not_submitted" | "run_failed" | "stopped" | "time_out";
@@ -41,6 +41,15 @@ export function researchCounterEvidenceNote(found: readonly ResearchCounterEvide
   if (found.length === 0) return null;
   const items = found.map(({ claim, url }) => `${claim.trim().replace(/[.!?…]+$/u, "")} (${url})`);
   return `Evidence against this conclusion, if the report above does not weigh it: ${items.join("; ")}.`;
+}
+
+/** A source supports less than a recommendation claims. Model-written text stays plain, never links, images or markup. */
+export function researchPartialClaimNote(fact: Readonly<{ claim: string; label: string | null; reason: string }>): string {
+  const plain = (text: string) => text.replace(/[\p{Cc}\p{Cf}*_`[\]<>|]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const label = fact.label ? `For ${plain(fact.label)}, the` : "The";
+  const claim = plain(fact.claim).replace(/[.!?…]+$/u, "");
+  const reason = plain(fact.reason).replace(/[.!?…]+$/u, "");
+  return `${label} source supports less than the claim “${claim}”${reason ? `: ${reason}` : ""}. The conclusion is limited to what the source establishes.`;
 }
 
 /** The answer the user reads: the report as written, then the notes, each once. */

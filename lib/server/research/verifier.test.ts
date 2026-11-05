@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchGateResult,
+import { RESEARCH_ROUND_LIMITS, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME, type ResearchDataset, type ResearchDraft, type ResearchEvidenceRecord, type ResearchFinding, type ResearchGateResult,
   type ResearchStoredPage } from "../../contracts/research";
 import { RUN_FOLLOWUP_MAX_CHARS } from "../../contracts/runFollowups";
 import { SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, type EndedSubagentCallResult } from "../../contracts/subagents";
@@ -18,7 +18,7 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { researchCarriedNotes, runResearchGates, type ResearchAttempt, type ResearchersClosed, type ResearchGate, type ResearchGateContext, type ResearchOpenedSource, type ResearchSubagentOutcome, type ResearchSubagentRequest,
   type ResearchVerifierModel } from "./gates";
-import { researchNote } from "./notes";
+import { researchAnswerText, researchNote } from "./notes";
 import { NOOP_RESEARCH_PORTS, type ResearchCoveragePort, type ResearchEvidencePort } from "./ports";
 import { createRunResearch, type ResearchEngineDeps } from "./run";
 import { checkQuotes, QUOTE_EXCERPT_LIMITS, type QuoteCheck } from "./quoteCheck";
@@ -757,7 +757,7 @@ describe("a finding that stands for a record", () => {
       const records = [recordOf("r1", "in stock at 399", "p1"), recordOf("r2", "delivery on Monday", "p1", { claim: "It ships Monday." })];
       const { context } = contextOf({ evidence: evidenceOf(records, [pageOf("p1", CARD_TEXT)]), opened: refused, turn: async () => ended("Outcome: done\nC1 | unsupported | no\nC2 | partly | Monday only in some towns") });
       const { message } = sentBack(await check(draftOf([recorded("r1"), recorded("r2", { claim: "It ships Monday.", quote: "delivery on Monday" })]), context));
-      expect(message).toContain("narrow these in the report to what the source says, or say there that they are not verified");
+      expect(message).toContain("narrow these in the report and summary to what the source says");
       expect(message).not.toContain("mark them the same way");
     });
 
@@ -1172,6 +1172,104 @@ describe("the one correction", () => {
   });
 });
 
+describe("a recommendation whose source supports a narrower claim", () => {
+  const claim = "An owner review of the X1 reports sagging.";
+  const quote = "My mattress sagged within a year.";
+  const reason = "An owner reports sagging, but names no model";
+  const records = [recordOf("r1", quote, "p1", { claim, criterionKey: "reviews", rowKey: "x1", sourceClass: "owner_reviews" })];
+  const evidence = () => evidenceOf(records, [pageOf("p1", quote)]);
+  const picking = (extra: Partial<ResearchDraft> = {}): ResearchDraft => ({ ...draftOf([recorded("r1", { claim, quote })]), pickRowKey: "x1", ...extra });
+  const turn = async () => ended(`Outcome: done\nC1 | partly | ${reason}`);
+  const options = () => ({ coverage: FRAMED, evidence: evidence(), opened: refused, turn });
+
+  it.each<[string, Partial<ResearchDraft>]>([
+    ["the pick", {}],
+    ["a later recommended row", { pickRowKey: "x2", summary: { rowKeys: ["x2", "x1"], text: "Both options." } }],
+    ["a branch pick", { branchPicks: [{ branchKey: "use", caseKey: "light", rowKey: "x1" }], pickRowKey: "x2" }]
+  ])("sends back %s on a partly supported review even with no rejected fact or decisive criterion", async (_name, extra) => {
+    const result = sentBack(await check(picking(extra), contextOf(options()).context));
+    expect(result.message).toContain("Narrow the report and summary");
+    expect(result.message).toContain(claim);
+    expect(result.message).toContain(reason);
+    expect(result.message).toContain('"record":"r1"');
+    expect(result.message).not.toContain("not verified");
+    expect(VERIFIER_INSTRUCTIONS).toContain("the reason states what the source does establish and what it does not");
+  });
+
+  it("keeps the existing cap, then states the source's narrower support without a technical label", async () => {
+    const earlier: ResearchAttempt[] = [];
+    const run = vi.fn(turn);
+    for (let attempt = 0; attempt <= RESEARCH_ROUND_LIMITS.sendBacksPerCheck; attempt += 1) {
+      const draft = picking();
+      const { context } = contextOf({ ...options(), earlier, turn: run });
+      const result = await runResearchGates({ context, draft, gates: [verifierGate], runId: "run-1" });
+      if (attempt < RESEARCH_ROUND_LIMITS.sendBacksPerCheck) {
+        expect(result.kind).toBe("sent_back");
+        if (result.kind === "sent_back") earlier.push({ draft, gate: result.gate, message: result.message });
+      } else {
+        expect(result.kind).toBe("accepted");
+        const answer = researchAnswerText(draft.report, result.notes ?? []);
+        expect(answer).toContain("Lonax Memory — Отзывы владельцев");
+        expect(answer).toContain(reason);
+        expect(answer).toContain("The conclusion is limited to what the source establishes.");
+        expect(answer).not.toMatch(/partly|not_verified|not verified|not checked|Independent check/u);
+      }
+    }
+    expect(run).toHaveBeenCalledTimes(1);
+    const resumed = await runResearchGates({ context: contextOf({ ...options(), earlier: structuredClone(earlier), model: { kind: "unavailable" } }).context,
+      draft: picking(), gates: [verifierGate], runId: "run-2" });
+    expect(resumed).toMatchObject({ kind: "accepted", notes: expect.arrayContaining([expect.stringContaining(reason)]) });
+  });
+
+  it("still asks for narrower wording when researchers closed, and keeps that wording when there is no send-back time", async () => {
+    const draft = picking();
+    expect((await check(draft, contextOf({ ...options(), closed: "time" }).context)).kind).toBe("send_back");
+    const result = await runResearchGates({ context: contextOf({ ...options(), sendBack: false }).context, draft: picking(), gates: [verifierGate], runId: "run-1" });
+    expect(result).toMatchObject({ kind: "accepted", notes: [expect.stringContaining(reason)] });
+  });
+
+  it("retains the narrower support when an approval or Continue rebuilds the draft and the next check cannot run", async () => {
+    const draft = picking();
+    const result = sentBack(await check(draft, contextOf(options()).context));
+    const earlier = [{ draft: structuredClone(draft), gate: "verifier", message: result.message }];
+    const notes = researchCarriedNotes([verifierGate], picking(), earlier);
+    expect(notes).toEqual([expect.stringContaining(reason)]);
+    const unavailable = await check(picking(), contextOf({ ...options(), earlier, model: { kind: "unavailable" } }).context);
+    expect(notesOf(unavailable)).toContain(reason);
+    expect(researchCarriedNotes([verifierGate], picking({ findings: [] }), earlier)).toEqual([]);
+    expect(researchCarriedNotes([verifierGate], picking({ pickRowKey: "x2" }), earlier)).toEqual([]);
+  });
+
+  it("clears the limitation when a corrected record's narrower claim passes", async () => {
+    const draft = picking();
+    const first = sentBack(await check(draft, contextOf(options()).context));
+    const narrow = "An owner reports sagging without naming a model.";
+    const corrected = recordOf("r2", quote, "p1", { claim: narrow, criterionKey: "reviews", rowKey: "x1", supersedes: "r1" });
+    const result = await check(picking({ findings: [recorded("r2", { claim: narrow, quote })] }), contextOf({ ...options(),
+      earlier: [{ draft, gate: "verifier", message: first.message }], evidence: writtenEvidence([...records, corrected], [pageOf("p1", quote)]),
+      turn: async () => ended("Outcome: done\nC1 | supported | the owner names no model") }).context);
+    expect(result).toEqual({ kind: "pass" });
+  });
+
+  it("does not reopen research for a review of a row the draft does not recommend", async () => {
+    expect(await check(picking({ pickRowKey: "x2" }), contextOf(options()).context)).toEqual({ kind: "pass" });
+  });
+
+  it("bounds a send-back with many partial claims and retains every limitation for the current answer", async () => {
+    const many = Array.from({ length: 32 }, (_, index) => recordOf(`r${index}`, quote, "p1", { claim: `${claim} ${"Details. ".repeat(20)}`, criterionKey: "reviews", rowKey: "x1" }));
+    const draft = picking({ findings: many.map(({ id }) => recorded(id, { claim: `${claim} ${"Details. ".repeat(20)}`, quote })) });
+    const longReason = `${reason}. ${"Only that much. ".repeat(15)}`;
+    const result = sentBack(await check(draft, contextOf({ ...options(), evidence: evidenceOf(many, [pageOf("p1", quote)]),
+      turn: async () => ended(`Outcome: done\n${many.map((_, index) => `C${index + 1} | partly | ${longReason}`).join("\n")}`) }).context));
+    expect(result.message.length).toBeLessThanOrEqual(VERIFIER_LIMITS.messageCharacters);
+    const lines = result.message.split("\n").filter((line) => line.startsWith("Partial "));
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.length).toBeLessThan(many.length);
+    for (const line of lines) expect(() => JSON.parse(line.slice("Partial ".length))).not.toThrow();
+    expect(result.notes).toHaveLength(many.length);
+  });
+});
+
 /** A real run put first an option whose layer claim its own check had rejected: a pick, or the summary's first option, cannot stand on a rejected key specification. */
 describe("a pick on a key specification the check rejected", () => {
   const KEYED_FRAME = { ...reportFrame, criteria: reportFrame.criteria.map((criterion) => criterion.key === "firmness" ? { ...criterion, decisive: true as const } : criterion) };
@@ -1236,14 +1334,15 @@ describe("a pick on a key specification the check rejected", () => {
 
   it("lets the pick stand on another site's record of that cell the check did not reject, which the report check wants cited beside it", async () => {
     const { earlier } = await corrected();
-    const both = [...records, recordOf("r4", "Latex 2 cm over coir 1 cm", "p1", { claim: "Latex 2 cm over coir 1 cm.", criterionKey: "firmness", registrableDomain: "maker.example", rowKey: "x1",
+    const both = [...records, recordOf("r4", "Latex 2 cm over coir 1 cm", "p4", { claim: "Latex 2 cm over coir 1 cm.", criterionKey: "firmness", registrableDomain: "maker.example", rowKey: "x1",
       url: "https://maker.example/x1" })];
+    const pages = [pageOf("p1", PAGE_TEXT), pageOf("p4", PAGE_TEXT, { url: "https://maker.example/x1" })];
     const findings = [recorded("r1", { claim: LAYERS, quote: "Latex 2 cm over coir 1 cm" }), recorded("r4", { claim: "Latex 2 cm over coir 1 cm.", quote: "Latex 2 cm over coir 1 cm", url: "https://maker.example/x1" })];
-    const { context } = contextOf({ coverage, earlier, evidence: evidenceOf(both, [pageOf("p1", PAGE_TEXT)]), opened: refused, turn: async () => ended("Outcome: done\nC2 | supported | it says so") });
+    const { context } = contextOf({ coverage, earlier, evidence: evidenceOf(both, pages), opened: refused, turn: async () => ended("Outcome: done\nC2 | supported | it says so") });
     // The report names the rejected one as not confirmed; the reader's line does not warn off a fact a second site confirmed.
     expect(await check(picking("x1", ["x1"], findings), context)).toEqual({ kind: "pass" });
     // Until the second site's record passes, the cell does not count as confirmed for the reader.
-    const unanswered = contextOf({ coverage, earlier, evidence: evidenceOf(both, [pageOf("p1", PAGE_TEXT)]), opened: refused, turn: async () => ended("Outcome: done") });
+    const unanswered = contextOf({ coverage, earlier, evidence: evidenceOf(both, pages), opened: refused, turn: async () => ended("Outcome: done") });
     expect(await check(picking("x1", ["x1"], findings), unanswered.context)).toEqual({ kind: "pass", notes: [researchNote("gate_failed"), LINE] });
   });
 
