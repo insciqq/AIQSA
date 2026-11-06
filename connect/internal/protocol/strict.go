@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,32 +101,6 @@ func strictFields(t reflect.Type) map[string]strictField {
 		}
 	}
 	return fields
-}
-
-// Bytes is terminal output, standard padded base64 on the wire.
-type Bytes []byte
-
-func (b Bytes) MarshalJSON() ([]byte, error) {
-	return json.Marshal(base64.StdEncoding.EncodeToString(b))
-}
-
-func (b *Bytes) UnmarshalJSON(data []byte) error {
-	var encoded string
-	if err := json.Unmarshal(data, &encoded); err != nil {
-		return err
-	}
-	if len(encoded) > (MaxOutputChunkBytes+2)/3*4 {
-		return errors.New("base64 data too long")
-	}
-	if !Base64Regexp.MatchString(encoded) {
-		return errors.New("invalid base64 data")
-	}
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return err
-	}
-	*b = decoded
-	return nil
 }
 
 // Field checks shared by the Validate methods.
