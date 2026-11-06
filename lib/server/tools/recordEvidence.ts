@@ -2,6 +2,7 @@ import {
   CHANGE_RESEARCH_FRAME_TOOL_NAME,
   decodeResearchRecord,
   RECORD_EVIDENCE_TOOL_NAME,
+  RESEARCH_RATING_COUNTS,
   RESEARCH_RECORD_KINDS,
   RESEARCH_SOURCE_CLASSES,
   RESEARCH_STANDINGS,
@@ -11,11 +12,14 @@ import {
   type ResearchFrame
 } from "../../contracts/research";
 import type { EngineTool } from "../engine/toolRegistry";
-import { researchClaimGivesRate, researchSmallSampleNote } from "../research/dataCollection";
+import { RESEARCH_SMALL_SAMPLE_BELOW, researchClaimGivesRate, researchSampleIsSmall, researchSmallSampleNote } from "../research/dataCollection";
 import { RESEARCH_CHECK_REASONS } from "../research/evidenceStore";
 import type { ResearchCoveragePort, ResearchEvidencePort } from "../research/ports";
-import { claimFigures, figuresNotIn } from "../research/quoteCheck";
+import { claimFigures, figuresNotIn, ratingNumbersNotIn } from "../research/quoteCheck";
+import { researchSiteHost } from "../research/sourceQuality";
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
+import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { harnessToolError } from "./harnessTool";
 import type { RunTool, ToolExecutionResult } from "./types";
 
@@ -39,8 +43,10 @@ export const recordEvidenceTool: RunTool = {
   capability: "session",
   description: "Keep one piece of evidence as soon as you have it, while you still have the page: it lasts whatever happens to the report. kind finding: a claim " +
     "with its link and a quote copied word for word from the page you opened. The server checks the quote on the spot against what you read and keeps that page's text " +
-    "with the record, so do not repeat it here. not_found: nothing was found for a matrix cell (row_key and criterion_key), which counts as filled. dataset: what a " +
-    "script collected, with its method, sample and verbatim examples. unreachable: a site you could not reach, and why. Every field is required: pass null where a " +
+    "with the record, so do not repeat it here. A finding of a public rating of one option, a product's or a service's, gives rating, with a quote that holds its " +
+    "score and number of ratings as the page writes them: both are checked in it. not_found: nothing was found for a matrix cell (row_key and criterion_key), which counts as filled. dataset: what a " +
+    "script collected, with its method, sample and verbatim examples. unreachable: a site you could not reach, and why; if you have the Workspace browser, " +
+    "only once it failed on that site too. Every field is required: pass null where a " +
     "kind has no use for it. Nothing is ever changed or deleted: to correct a record, write a new one with supersedes set to its id. Result: the record's id, what the " +
     `quote check found, any figure of the claim the quote lacks, and what to do next. Refused until ${START_RESEARCH_TOOL_NAME} ran, once the research holds as ` +
     "many records as it may, and for a supersedes that names no record of this research or one already corrected.",
@@ -67,8 +73,23 @@ export const recordEvidenceTool: RunTool = {
       }, { type: "null" }] },
       kind: { enum: [...RESEARCH_RECORD_KINDS], type: "string" },
       quote: nullableText("finding only: copied word for word from the page you opened, never paraphrased, holding every figure the claim gives."),
+      rating: { anyOf: [{
+        additionalProperties: false,
+        description: "finding only, for a public rating of one option, such as a product's, a doctor's, a clinic's or a hotel's, as the page shows it: the quote holds the score and the number " +
+          "of ratings as the page writes them. Null for every other record. Its platform is the site of url, and its date the record's.",
+        properties: {
+          count: { description: "How many ratings the score is out of, as the page writes it: a shortened one such as 12.3K is 12300.", type: "integer" },
+          counted: { description: "What count counts: ratings given, written reviews, or buyers who rated.", enum: [...RESEARCH_RATING_COUNTS], type: "string" },
+          scale_max: { description: "The top of the scale, such as 5 or 10.", type: "number" },
+          score: { description: "The score as the page shows it, such as 4.7.", type: "number" },
+          variants_merged: { description: "true when the card merges the ratings of the option's variants, such as sizes, colours or versions, so the score is not this exact " +
+            "option's alone; say so in the claim too.", type: "boolean" }
+        },
+        required: ["score", "scale_max", "count", "counted", "variants_merged"],
+        type: "object"
+      }, { type: "null" }] },
       reason: nullableText("not_found: where you looked. unreachable: why it could not be reached. Written for a reader, in the language of the research goal; name no tool and no error, since the report may carry it as written."),
-      row_key: nullableText("The matrix row this is about; required for not_found and dataset, otherwise null when none."),
+      row_key: nullableText("The matrix row this is about; required for not_found, dataset and a rating, otherwise null when none."),
       source_class: { anyOf: [sourceClass, { type: "null" }] },
       standing: { anyOf: [{ description: "finding, dataset. confirmed: an independent source you opened says so. claimed: only a party with an interest says so. " +
         "not_verified: no opened source settles it.", enum: [...RESEARCH_STANDINGS], type: "string" }, { type: "null" }] },
@@ -76,7 +97,7 @@ export const recordEvidenceTool: RunTool = {
       target: nullableText("unreachable only: the site."),
       url: nullableText("finding, dataset: the source's http or https link.")
     },
-    required: ["kind", "claim", "url", "quote", "source_class", "standing", "row_key", "criterion_key", "reason", "target", "dataset", "supersedes"],
+    required: ["kind", "claim", "url", "quote", "source_class", "standing", "row_key", "criterion_key", "reason", "target", "dataset", "rating", "supersedes"],
     type: "object"
   },
   name: RECORD_EVIDENCE_TOOL_NAME,
@@ -88,7 +109,23 @@ export const recordEvidenceTool: RunTool = {
  * from `start_research` on, scoping included, and not from the plan's release: what scoping finds is a finding. `coverage` is read only to tell
  * the agent at once that a record fills no cell, and `evidence.page` to look for a claim's figures on the page its quote was checked on.
  */
-export type RecordEvidenceTarget = Readonly<{ coverage: Pick<ResearchCoveragePort, "frame">; evidence: Pick<ResearchEvidencePort, "page" | "record">; researching(): boolean }>;
+export type RecordEvidenceTarget = Readonly<{ coverage: Pick<ResearchCoveragePort, "frame">; evidence: Pick<ResearchEvidencePort, "browsed" | "page" | "record">;
+  researching(): boolean }>;
+
+/**
+ * What the registry that builds an agent's tool knows of it. `browser`: this agent drives the Workspace browser in this run, read when
+ * a record is made, since the registry learns its Workspace tools after this tool is added (`lib/server/engine/toolRegistry.ts`).
+ */
+export type RecordEvidenceAgentTools = Readonly<{ browser?: () => boolean }>;
+
+/**
+ * The browser comes first (operator decision 2026-11-05): a passive check, or a refusal only `fetch_url` met, closed sites the browser
+ * opened. An agent with the browser records a site unreachable only once its own browser commands opened or tried that host.
+ */
+const browserFirst = (host: string) => `Nothing was recorded: your Workspace browser has not opened ${host} in this research, and the browser opens ` +
+  `pages fetch_url cannot. Open the page once in it (read ${WORKSPACE_GUIDE_PATHS.browser} first). If the page only says the browser is being checked, ` +
+  "wait about 15 seconds and read it once more. Only if the browser is refused too, or shows a CAPTCHA, a block page or a sign-in, record the site " +
+  "as unreachable; never solve or click a check.";
 
 const CORRECT = `call ${RECORD_EVIDENCE_TOOL_NAME} again with supersedes set to this record's id`;
 
@@ -108,13 +145,25 @@ const NOT_CHECKED: Readonly<Record<string, string>> = {
   sources_unreadable: "your results could not be read just now. The record stands."
 };
 
+const RATING_NUMBERS = { count: "number of ratings", score: "score" } as const;
+
+/** Which of a rating's numbers its quote does not write, for the agent to correct while it still has the page. */
+function ratingMessage(record: ResearchEvidenceRecord): string {
+  const missing = record.kind === "finding" && record.rating ? ratingNumbersNotIn(record.rating, record.quote) : [];
+  const named = missing.length > 0 ? missing.map((part) => RATING_NUMBERS[part]).join(" and ") : "score and number of ratings";
+  return `Recorded, but the rating's ${named} ${missing.length === 1 ? "is" : "are"} not in the quote as the page writes ${missing.length === 1 ? "it" : "them"}, so the ` +
+    `rating counts for nothing. Copy the passage that shows the score and the number of ratings word for word, set rating to what it shows, then ${CORRECT}, while ` +
+    "you still have the page.";
+}
+
 /** What the agent reads of the check: the word, and at once what to do while it still has the page. */
-function checkMessage(check: NonNullable<ResearchEvidenceRecord["quoteCheck"]>): string {
+function checkMessage(check: NonNullable<ResearchEvidenceRecord["quoteCheck"]>, record: ResearchEvidenceRecord): string {
   switch (check.status) {
     case "found":
       return check.reason === RESEARCH_CHECK_REASONS.otherPage ? `Recorded. The quote is on another page you opened, not the link you gave: ${CORRECT} and that page's link.`
         : "Recorded. The quote is on the page.";
     case "not_verbatim":
+      if (check.reason === RESEARCH_CHECK_REASONS.ratingNotInQuote) return ratingMessage(record);
       return `Recorded, but this quote is not on the page. Copy it word for word from the page, then ${CORRECT}, while you still have the page.`;
     case "not_checked":
       return `Recorded, not checked: ${NOT_CHECKED[check.reason ?? ""] ?? "the record stands."}`;
@@ -154,8 +203,15 @@ function cellHint(record: ResearchEvidenceRecord, frame: ResearchFrame): string 
     `or add a new key with ${CHANGE_RESEARCH_FRAME_TOOL_NAME} and it counts as it stands.`;
 }
 
-/** A small sample's word, at once, while the agent can still say it in counts; null for every other record. */
+/**
+ * A small sample's word, at once, while the agent can still say it in counts or look further; null for every other record. A rating from fewer ratings than a
+ * dataset's small sample moves as easily with one more, so the agent hears to look for the place that rates this exact option by more people.
+ */
 function sampleMessage(record: ResearchEvidenceRecord): string | null {
+  if (record.kind === "finding" && record.rating) {
+    const { count } = record.rating;
+    return researchSampleIsSmall(count) ? `Few ratings: ${count}, below ${RESEARCH_SMALL_SAMPLE_BELOW}. If another place rates this exact option by more people, record that one too.` : null;
+  }
   if (record.kind !== "dataset") return null;
   const note = researchSmallSampleNote(record.dataset);
   if (!note) return null;
@@ -199,16 +255,30 @@ function figuresMessage({ notInQuote, onPage, pageRead }: FiguresUnquoted): stri
 function recordedResult(call: Readonly<{ id: string; name: string }>, record: ResearchEvidenceRecord, hint: string | null, figures: FiguresUnquoted | null): ToolExecutionResult {
   const check = record.quoteCheck;
   const sample = sampleMessage(record);
-  const message = [check ? checkMessage(check) : "Recorded.", ...figures ? [figuresMessage(figures)] : [], ...sample ? [sample] : []].join(" ");
+  const message = [check ? checkMessage(check, record) : "Recorded.", ...figures ? [figuresMessage(figures)] : [], ...sample ? [sample] : []].join(" ");
   return { callId: call.id, content: [{ type: "json", value: { ...figures ? { figures: { not_in_quote: figures.notInQuote, on_page: figures.onPage } } : {},
     ...hint ? { matrix: hint } : {}, message, ...check ? { quote_check: check.status } : {}, record_id: record.id, ...sample ? { sample: "small" } : {} } }],
     name: call.name, status: "complete" };
 }
 
 /** The tool of one agent, whose author is that agent's: the main agent's, or a sub-agent's by its thread. */
-export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: WorkspaceAgent | undefined): EngineTool {
+/** The Workspace tool the browser's commands run through (`browserGuidance.ts`). */
+const BROWSER_TOOL = namespacedWorkspaceToolName("sandbox_exec");
+
+/** How each tool was built, so a narrower registry can build it again for the tools its agent really has. */
+const rebuilds = new WeakMap<EngineTool, (offers: (name: string) => boolean) => EngineTool>();
+
+export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: WorkspaceAgent | undefined, tools: RecordEvidenceAgentTools = {}): EngineTool {
   const author: ResearchAgentRef = agent?.kind === "subagent" ? { name: agent.name, threadId: agent.threadId } : { name: null, threadId: null };
-  return {
+  /** Whether the agent's browser tried this site; a store that cannot say, or a read that fails, does not hold the record back. */
+  const browserTried = async (host: string, signal: AbortSignal): Promise<boolean> => {
+    if (!target.evidence.browsed) return true;
+    return target.evidence.browsed(author, host, signal).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      return true;
+    });
+  };
+  const tool: EngineTool = {
     activity: () => ({ origin: "tool", serverName: "Research", toolName: "Recording evidence" }),
     definition: recordEvidenceTool,
     effects: "local",
@@ -217,6 +287,10 @@ export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: Wo
       if (!target.researching()) return harnessToolError(call, "research_not_started", NOT_STARTED);
       const decoded = decodeResearchRecord(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_record_invalid", decoded.message);
+      const unreachableHost = decoded.value.kind === "unreachable" && tools.browser?.() === true ? researchSiteHost(decoded.value.target) : null;
+      if (unreachableHost !== null && !await browserTried(unreachableHost, signal)) {
+        return harnessToolError(call, "research_unreachable_browser_first", browserFirst(unreachableHost));
+      }
       const written = await target.evidence.record({ author, record: decoded.value }, signal);
       if (written.kind !== "recorded") return harnessToolError(call, written.code, written.message);
       // The record is on file by now, so a matrix or a page that cannot be read costs only its advice.
@@ -225,4 +299,15 @@ export function recordEvidenceEngineTool(target: RecordEvidenceTarget, agent: Wo
       return recordedResult(call, written.record, frame && cellHint(written.record, frame), figures);
     }
   };
+  rebuilds.set(tool, (offers) => recordEvidenceEngineTool(target, agent, { browser: () => tools.browser?.() === true && offers(BROWSER_TOOL) }));
+  return tool;
+}
+
+/**
+ * `record_evidence` as a registry narrowed by a sub-agent's tool groups offers it (`lib/server/engine/subagents/registry.ts`): the browser
+ * counts only while that registry still offers the Workspace command tool the browser runs through, so a researcher narrowed to web tools
+ * records an unreachable site at once. A tool this module did not build is returned as it is.
+ */
+export function recordEvidenceForOfferedTools(tool: EngineTool, offers: (name: string) => boolean): EngineTool {
+  return rebuilds.get(tool)?.(offers) ?? tool;
 }

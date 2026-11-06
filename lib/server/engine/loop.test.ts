@@ -197,6 +197,32 @@ describe("native agent loop", () => {
     expect(items.map((item) => item.id)).toContain("f1");
   });
 
+  describe("an agent's message never empties the answer (operator decision 2026-11-05)", () => {
+    const callback: TranscriptUserItem = { callback: true, followup: true, id: "cb", kind: "user", text: "Sub-agent ended" };
+    const followup: TranscriptUserItem = { followup: true, id: "f1", kind: "user", text: "Shorter, please" };
+
+    it("keeps the answer an agent's message follows: a round with nothing to add still answers", async () => {
+      const { ports } = harness([response("Full answer."), response("")], { closes: [false, true], followups: [[callback]] });
+      await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(ports.deliverFollowups).toHaveBeenCalledWith({ ending: true });
+    });
+
+    it("fails an answer the user's follow-up started over when nothing follows it, alone or beside an agent's message", async () => {
+      for (const batch of [[followup], [callback, followup]]) {
+        const { ports } = harness([response("Draft."), response("")], { closes: [false, true], followups: [batch] });
+        await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "empty", rounds: 2 });
+      }
+      const answered = harness([response("Draft."), response("Final.")], { closes: [false, true], followups: [[followup]] });
+      await expect(runAgentLoop(answered.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+    });
+
+    it("says where it delivers: between tool rounds the turn is not ending", async () => {
+      const { ports } = harness([response("Checking.", [call("c1")]), response("")], { followups: [[callback]] });
+      await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(ports.deliverFollowups).toHaveBeenNthCalledWith(1, { ending: false });
+    });
+  });
+
   it("keeps closing or delivering until the follow-ups settle, so publication never finds one open", async () => {
     const { ports } = harness([response("A")], { closes: [false, false, false, true] });
     await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 1 });

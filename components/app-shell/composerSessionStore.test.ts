@@ -185,6 +185,41 @@ describe("composer session store", () => {
     store.finishSend(another, "succeeded", null, true, "run2");
     expect(session(saved).artifactCreate).not.toBeNull();
   });
+  it("sends Deep research with one message: kept through a refusal, dropped once that send is admitted", () => {
+    const store = useComposerSessionStore.getState();
+    const blank = composerSessionKey(null);
+    const saved = composerSessionKey("research-chat");
+    store.activateSession(blank);
+    store.updateSession(blank, { deepResearch: true, draft: "Compare quiet kettles" });
+    const refused = store.beginSend(blank)!;
+    expect(refused.deepResearch).toBe(true);
+    store.finishSend(refused, "failed", "Turn on Search to use Deep research", true, null, "deep_research_needs_search");
+    expect(session(blank)).toMatchObject({ deepResearch: true, draft: "Compare quiet kettles" });
+    const send = store.beginSend(blank)!;
+    expect(store.transferSession(blank, saved)).toBe(true);
+    expect(store.acceptArtifactIntent(send)).toBe(true);
+    expect(session(saved).deepResearch).toBe(false);
+    store.finishSend(send, "succeeded", null, true, "run");
+    store.setDraft("A follow-up question");
+    expect(store.beginSend(saved)!.deepResearch).toBe(false);
+  });
+
+  it("opens an edit of a message sent with Deep research with it on, and forgets it when the edit ends", () => {
+    const store = useComposerSessionStore.getState();
+    const key = composerSessionKey("research-edit");
+    store.activateSession(key);
+    store.startEdit("question", "Compare quiet kettles", true);
+    expect(session(key)).toMatchObject({ editingDeepResearch: true, editingMessageId: "question" });
+    store.updateSession(key, { editingDeepResearch: false });
+    expect(session(key).editingDeepResearch).toBe(false);
+    store.cancelEdit(key);
+    store.startEdit("question", "Compare quiet kettles", true);
+    store.cancelEdit(key);
+    expect(session(key)).toMatchObject({ editingDeepResearch: false, editingMessageId: null });
+    store.startEdit("other", "An ordinary question");
+    expect(session(key).editingDeepResearch).toBe(false);
+  });
+
   it("keeps an artifact edit in its chat through rejection and clears it only on admission", () => {
     const store = useComposerSessionStore.getState();
     const source = composerSessionKey("artifact-chat");
@@ -465,9 +500,11 @@ describe("composer session store", () => {
       artifactCreate: null,
       artifactEdit: null,
       attachments: [],
+      deepResearch: false,
       draft: "",
       editGeneration: 0,
       editRevision: 0,
+      editingDeepResearch: false,
       editingDraft: "",
       editingError: null,
       editingMessageId: null,

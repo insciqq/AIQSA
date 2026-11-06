@@ -50,7 +50,8 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(22);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(23);
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("U");
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
   });
@@ -71,6 +72,11 @@ describe("sub-agent scenario selection and options", () => {
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("L");
     expect(selectedSubagentScenarios("l")).toEqual(["L"]);
     expect(subagentHarnessOptions({}, ["L"], "m")).toMatchObject({ restart: null, secondModel: null, textModel: null });
+  });
+
+  it("asks for the DeepSeek key for a searching scenario only off production Search, which names its own sources", () => {
+    expect(() => subagentHarnessOptions({}, ["T"], "gpt-6-astra")).toThrow("deepseek_key_required");
+    expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_T_SEARCH: "production" }, ["T"], "gpt-6-astra")).not.toThrow();
   });
 
   it("refuses a selected scenario whose second model or restart hook is missing before any setup", () => {
@@ -908,14 +914,14 @@ describe("scenarios Q and R", () => {
     expect(oracleQ({ ...good, searches: null }).failed).toEqual([]);
   });
 
-  it("R compares each phrase with its direction, by index only, and answers no question", () => {
-    expect(SCENARIO_R_PHRASES.filter((phrase) => phrase.start)).toHaveLength(5);
-    expect(SCENARIO_R_PHRASES.every((phrase) => !("reply" in phrase))).toBe(true);
+  it("R refuses research to every phrase, by index only, whatever the words ask for", () => {
+    expect(SCENARIO_R_PHRASES.every((phrase) => Object.keys(phrase).join() === "text")).toBe(true);
     expect(SCENARIO_R_PHRASES).toHaveLength(10);
-    const verdict = oracleR([{ expected: true, index: 0, started: false, status: "complete" }, { expected: false, index: 5, started: true, status: "cancelled" },
-      { expected: true, index: 1, started: true, status: "cancelled" }]);
-    expect(verdict.failed).toEqual(["phrase_0_not_started", "phrase_5_started"]);
-    expect(verdict.counts).toEqual({ asked: 3, correct: 1, started: 2 });
+    const verdict = oracleR([{ index: 0, offered: false, started: false, status: "complete" }, { index: 5, offered: false, started: true, status: "cancelled" },
+      { index: 1, offered: true, started: false, status: "complete" }]);
+    expect(verdict.failed).toEqual(["phrase_5_started", "phrase_1_offered"]);
+    expect(verdict.counts).toEqual({ asked: 3, correct: 1, offered: 1, started: 1 });
+    expect(oracleR([{ index: 2, offered: false, started: false, status: "complete" }]).failed).toEqual([]);
   });
 });
 

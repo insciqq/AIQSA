@@ -13,8 +13,8 @@ import { activeChatId, lastAnswer, lastActivity, selectFakeModel } from "./suppo
  * The research plan's card on a real server and the fake provider: `[AIQSA_RESEARCH_PLAN_E2E:<ms>]` makes the model call
  * `start_research`, stay `<ms>` in scoping, then call `propose_research_plan` (`lib/server/providers/fakeProvider.ts`). The window, its
  * lease and its row are the product's; the fake waits for Stop once the plan stands, because no researcher or report is under test.
- * Research is offered only with Search, so the Fake QSA run carries a catalog-only source it never searches. The oracle is the row the
- * server wrote, never wording. States the server takes minutes to reach are covered in `features/answer-outputs-v2/ResearchPlanCardV2.test.tsx`.
+ * The user chooses Deep research in the `+` menu, and research runs only with Search, so the Fake QSA run carries a catalog-only source
+ * it never searches. The oracle is the row the server wrote, never wording. States the server takes minutes to reach are covered in `features/answer-outputs-v2/ResearchPlanCardV2.test.tsx`.
  *
  * Screenshots go to the test's output directory, one viewport shot per state and size, named `<state>-<theme>-<width>x<height>.png`:
  * desktop 1440x900, tablet 1024x768 and 768x1024, phone 390x844 and 844x390. Never element shots: one taller than the viewport drops touch emulation.
@@ -52,6 +52,10 @@ async function withResearch(browser: Browser, options: Readonly<{ context?: Brow
     signedIn = page;
     await selectFakeModel(page);
     await chooseSearchStrategy(page, escapeRegExp(source.displayName));
+    // Only the `+` menu's Deep research starts research: the marker alone makes an ordinary turn.
+    await page.getByRole("button", { exact: true, name: "Add" }).click();
+    await page.getByRole("menuitem", { name: /^Deep research/u }).click();
+    await expect(page.getByRole("button", { exact: true, name: "Turn off Deep research" })).toBeVisible();
     const message = page.getByRole("textbox", { exact: true, name: "Message" });
     await message.fill(`Find me the quietest kettle [AIQSA_RESEARCH_PLAN_E2E:${options.scopingMs}]`);
     await message.press("Enter");

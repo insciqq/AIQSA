@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { createArtifactService } from "../artifacts/service";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { MCP_APPROVAL_TTL_MS } from "../mcp/writeApproval";
 import { prisma } from "../prisma";
@@ -16,9 +17,11 @@ import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } fr
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createPrismaRunProxies } from "../proxies/store";
 import { createResearchClock } from "../research/clock";
+import { createResearchEarlier, createResearchEarlierStore } from "../research/earlier";
 import { createResearchEvidenceRepository } from "../research/evidenceRepository";
 import { createResearchEvidenceStore } from "../research/evidenceStore";
 import { createResearchCoverage, createResearchFrameStore } from "../research/matrix";
+import { createResearchPageCheck } from "../research/pageCheck";
 import { createResearchPlanStore, createResearchPlanWindow, researchPlanWindows } from "../research/planWindow";
 import { createResearchReport } from "../research/reportAssembly";
 import { createResearchResume, createResearchResumeStore } from "../research/resume";
@@ -65,8 +68,10 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
     // The research method (`lib/server/research/run.ts`): its ports, and the researcher and checks roles as a run freezes them.
     research: { ports: {
       coverage: createResearchCoverage({ store: createResearchFrameStore(client) }),
+      earlier: createResearchEarlier({ store: createResearchEarlierStore(client) }),
       evidence: createResearchEvidenceStore({ repository: createResearchEvidenceRepository(client), savedResults: createSavedToolResultReader({ prisma: client, storage }),
         threads: createSubagentThreadStore(client) }),
+      page: createResearchPageCheck(createArtifactService(client, storage)),
       planWindow: (run) => createResearchPlanWindow(run, { store: createResearchPlanStore(client), windows: researchPlanWindows() }),
       report: createResearchReport,
       resume: createResearchResume({ store: createResearchResumeStore(client, createResearchEvidenceRepository(client)) }),

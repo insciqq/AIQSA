@@ -143,11 +143,16 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
       if (!run) return false;
       const first = run.followups[0];
       if (first) {
-        await tx.runFollowup.update({ where: { id: first.id }, data: {
-          deliveredAt: new Date(), ...(input.precedingText ? { precedingText: input.precedingText } : {})
-        } });
+        // Only the user's own follow-up starts the answer over: the text before it goes with the first of theirs, the row
+        // every projection reads, and the message is emptied for the new answer. Agents' messages alone leave both as they
+        // are (operator decision 2026-11-05).
+        const startsOver = input.precedingText !== null;
+        const own = startsOver ? run.followups.find(entry => entry.origin === "user" && entry.subagentTurnId === null) : undefined;
+        if (own && input.precedingText) {
+          await tx.runFollowup.update({ where: { id: own.id }, data: { deliveredAt: new Date(), precedingText: input.precedingText } });
+        }
         await tx.runFollowup.updateMany({ where: { modelRunId: input.runId, deliveredAt: null, ordinal: { lte: input.revision } }, data: { deliveredAt: new Date() } });
-        if (run.assistantMessageId) await tx.message.update({ where: { id: run.assistantMessageId },
+        if (startsOver && run.assistantMessageId) await tx.message.update({ where: { id: run.assistantMessageId },
           data: { content: json(textMessageContent("")), status: "streaming" } });
       }
       await tx.modelRun.update({ where: { id: input.runId }, data: {

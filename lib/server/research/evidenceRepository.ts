@@ -4,6 +4,7 @@ import {
   decodeResearchRecord,
   RESEARCH_EVIDENCE_LIMITS,
   RESEARCH_PAGE_LIMITS,
+  researchRatingDocument,
   type ResearchAgentRef,
   type ResearchDataset,
   type ResearchEvidenceRecord,
@@ -82,7 +83,8 @@ function recordColumns(record: ResearchRecordInput) {
   const base = { criterionKey: record.criterionKey, kind: record.kind, rowKey: record.rowKey, supersedesId: record.supersedes };
   switch (record.kind) {
     case "finding":
-      return { ...base, claim: record.claim, quote: record.quote, sourceClass: record.sourceClass, standing: record.standing, url: record.url };
+      return { ...base, claim: record.claim, quote: record.quote, ...record.rating ? { rating: json(researchRatingDocument(record.rating)) } : {}, sourceClass: record.sourceClass,
+        standing: record.standing, url: record.url };
     case "not_found":
       return { ...base, reason: record.reason, sourceClass: record.sourceClass };
     case "dataset":
@@ -93,8 +95,8 @@ function recordColumns(record: ResearchRecordInput) {
 }
 
 function recordOf(row: ResearchEvidence): ResearchEvidenceRecord {
-  const decoded = decodeResearchRecord({ claim: row.claim, criterion_key: row.criterionKey, dataset: row.dataset, kind: row.kind, quote: row.quote, reason: row.reason,
-    row_key: row.rowKey, source_class: row.sourceClass, standing: row.standing, supersedes: row.supersedesId, target: row.target, url: row.url });
+  const decoded = decodeResearchRecord({ claim: row.claim, criterion_key: row.criterionKey, dataset: row.dataset, kind: row.kind, quote: row.quote, rating: row.rating,
+    reason: row.reason, row_key: row.rowKey, source_class: row.sourceClass, standing: row.standing, supersedes: row.supersedesId, target: row.target, url: row.url });
   if (!decoded.ok) throw new ResearchEvidenceRowError();
   return { ...decoded.value, author: { name: row.authorName, threadId: row.authorThreadId }, createdAt: row.createdAt.toISOString(), id: row.id, pageId: row.pageId,
     publishedOn: row.publishedOn, quoteCheck: row.quoteCheck ? { reason: row.quoteCheckReason, status: row.quoteCheck as ResearchQuoteCheckStatus } : null,
@@ -216,6 +218,11 @@ export function createResearchEvidenceRepository(client: EvidenceClient) {
         state: "complete" as const, subagentThreadId: agent.threadId });
       const newest: Prisma.ModelRunToolCallOrderByWithRelationInput[] = [{ createdAt: "desc" }, { id: "desc" }];
       return {
+        async attempts(agent, { limit, toolNames }) {
+          const rows = await client.modelRunToolCall.findMany({ orderBy: newest, select: CALL_SELECT, take: limit,
+            where: { ...own(agent), state: { in: ["complete", "error"] }, toolName: { in: [...toolNames] } } });
+          return rows.map(callOf);
+        },
         async calls(agent, ids) {
           const rows = await client.modelRunToolCall.findMany({ select: CALL_SELECT, where: { ...own(agent), id: { in: [...ids] } } });
           return rows.sort((one, other) => ids.indexOf(one.id) - ids.indexOf(other.id)).map(callOf);

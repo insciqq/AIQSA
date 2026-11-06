@@ -57,6 +57,7 @@ function storeOf(overrides: Partial<ResearchResumeStore> = {}) {
     interrupted: vi.fn(async () => true),
     link: vi.fn(async () => undefined),
     recorded: vi.fn(async () => true),
+    sentWithDeepResearch: vi.fn(async (_key: { runId: string }, runIds: readonly string[]) => runIds.includes("run-a")),
     source: vi.fn(async () => SOURCE as ResearchResumeSource | null),
     ...overrides
   } satisfies ResearchResumeStore;
@@ -82,6 +83,32 @@ describe("what the store gives a Continue", () => {
     await createResearchResume({ store })(scopeOf({ branchRunIds: ["run-a", "run-a2"] })).load("run-a", running);
     expect(store.interrupted).toHaveBeenCalledExactlyOnceWith(keyOf("run-a2"));
     expect(store.source).toHaveBeenCalledExactlyOnceWith(keyOf("run-a"));
+  });
+
+  it("says whether one of the branch's runs was sent with Deep research, by the store's frozen field, and no run off the branch counts", async () => {
+    const store = storeOf();
+    const port = createResearchResume({ store })(scopeOf({ branchRunIds: ["run-a", "run-a2"] }));
+    await expect(port.sentWithDeepResearch(["run-a2", "run-a"], running)).resolves.toBe(true);
+    expect(store.sentWithDeepResearch).toHaveBeenLastCalledWith(keyOf("run-b"), ["run-a2", "run-a"]);
+    await expect(port.sentWithDeepResearch(["run-a2"], running)).resolves.toBe(false);
+    vi.mocked(store.sentWithDeepResearch).mockClear();
+    await expect(port.sentWithDeepResearch(["run-of-another-branch"], running)).resolves.toBe(false);
+    expect(store.sentWithDeepResearch).not.toHaveBeenCalled();
+  });
+
+  it("says whether a run of the branch ended interrupted, the fact that makes a Continue of it a research's Continue, an approval's chain included", async () => {
+    const store = storeOf();
+    const port = createResearchResume({ store })(scopeOf({ branchRunIds: ["run-a", "run-a2"] }));
+    await expect(port.endedInterrupted("run-a", running)).resolves.toBe(true);
+    expect(store.interrupted).toHaveBeenCalledExactlyOnceWith(keyOf("run-a"));
+    expect(store.source).not.toHaveBeenCalled();
+    await expect(createResearchResume({ store: storeOf({ interrupted: async () => false }) })(scopeOf()).endedInterrupted("run-a", running)).resolves.toBe(false);
+    // An approval continuation asks it of each Continue its turn went on from.
+    await expect(createResearchResume({ store })(scopeOf({ researchRunId: "run-a" })).endedInterrupted("run-a", running)).resolves.toBe(true);
+    const quiet = storeOf();
+    await expect(createResearchResume({ store: quiet })(scopeOf()).endedInterrupted("run-of-another-branch", running)).resolves.toBe(false);
+    await expect(createResearchResume({ store: quiet })(scopeOf({ branchRunIds: [] })).endedInterrupted("run-a", running)).resolves.toBe(false);
+    expect(quiet.interrupted).not.toHaveBeenCalled();
   });
 
   it.each<[string, Partial<ResearchResumeStore>]>([
@@ -196,7 +223,7 @@ function portsOf(load: () => Promise<ResearchResumeState | null> = async () => S
       return { ...NOOP_RESEARCH_PORTS.evidence, records: async () => records };
     },
     planWindow: () => ({ open }),
-    resume: () => ({ link, load: resume }),
+    resume: () => ({ endedInterrupted: async () => true, link, load: resume, sentWithDeepResearch: async (runIds) => runIds.includes("run-a") }),
     time: () => ({ ...NOOP_RESEARCH_PORTS.time, planReleased })
   };
   return { link, open, planReleased, ports, resume, scope: () => scope! };
@@ -436,6 +463,39 @@ describe("a plan the user changed", () => {
 });
 
 describe("what is no Continue, or has nothing to pick up", () => {
+  it("lets a Continue research only on the server's word: the turn before was interrupted and a turn it goes on from was sent with Deep research", async () => {
+    const parts = portsOf();
+    const authorized = (ports: ResearchPortFactories, extra: Partial<RunResearchInput> = {}) =>
+      runOn(turn(), ports, { authority: [{ answered: "message", runId: "run-a" }], request: "continue", ...extra }).research.authorized();
+    await expect(authorized(parts.ports)).resolves.toBe(true);
+    // A start call in the items is no authority: a run admitted without Deep research authorizes nothing, and neither does none at all.
+    await expect(authorized(parts.ports, { authority: [{ answered: "message", runId: "run-other" }] })).resolves.toBe(false);
+    await expect(authorized(parts.ports, { authority: [] })).resolves.toBe(false);
+    await expect(authorized(parts.ports, { authority: [{ answered: "message", runId: null }] })).resolves.toBe(false);
+    // Each Continue the chain passes must have gone on from an interrupted run, by the store's word; past one that did not, nothing counts.
+    const ended = (runIds: readonly string[]) => ({ ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, endedInterrupted: async (runId: string) => runIds.includes(runId),
+      sentWithDeepResearch: async (runIds: readonly string[]) => runIds.includes("run-a") }) });
+    const chain = [{ answered: "continue" as const, runId: "run-c" }, { answered: "message" as const, runId: "run-a" }];
+    await expect(authorized(ended(["run-c", "run-a"]), { authority: chain })).resolves.toBe(true);
+    await expect(authorized(ended(["run-c"]), { authority: chain })).resolves.toBe(false);
+    await expect(authorized(ended(["run-a"]), { authority: chain })).resolves.toBe(false);
+    // An approval of that Continue's run: the approval needs no interruption, the Continue behind it does.
+    await expect(authorized(ended(["run-a"]), { authority: chain, request: "approval" })).resolves.toBe(true);
+    await expect(authorized(ended([]), { authority: chain, request: "approval" })).resolves.toBe(false);
+    await expect(authorized(ended(["run-a"]), { authority: [{ answered: "approval", runId: "run-c" }, { answered: "message", runId: "run-a" }], request: "approval" }))
+      .resolves.toBe(true);
+    await expect(authorized({ ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, sentWithDeepResearch: async () => true }) })).resolves.toBe(false);
+    // An approval continuation needs the choice alone; the user's own choice needs nothing more.
+    await expect(authorized({ ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, sentWithDeepResearch: async (runIds) => runIds.includes("run-a") }) },
+      { request: "approval" })).resolves.toBe(true);
+    await expect(authorized({}, { request: "chosen" })).resolves.toBe(true);
+    const log = vi.spyOn(observability, "logEvent").mockImplementation(() => undefined);
+    const failing = { ...parts.ports, resume: () => ({ ...NOOP_RESEARCH_PORTS.resume, endedInterrupted: async () => { throw new Error("database down"); } }) };
+    await expect(authorized(failing)).resolves.toBe(false);
+    expect(log).toHaveBeenCalledWith("service_operation", expect.objectContaining({ code: "research_resume_failed" }));
+    log.mockRestore();
+  });
+
   it("leaves any other message an ordinary start, and asks no store", async () => {
     const parts = portsOf();
     const items = [...turn().slice(0, -1), { id: "msg-other", kind: "user" as const, text: "Продолжай, но про подушки." }];

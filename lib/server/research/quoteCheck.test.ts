@@ -3,7 +3,7 @@ import { CHANGE_RESEARCH_FRAME_TOOL_NAME, PROPOSE_RESEARCH_PLAN_TOOL_NAME, RECOR
 import type { TranscriptItem } from "../engine/transcript";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import type { ResearchOpenedSource } from "./gates";
-import { checkQuotes, claimFigures, figuresNotIn, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn } from "./quoteCheck";
+import { checkQuotes, claimFigures, claimPrices, figuresNotIn, normalizeQuotedText, QUOTE_EXCERPT_LIMITS, quoteIsIn, ratingNumbersNotIn } from "./quoteCheck";
 import { createResearchSources, researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
 
 const LINK = "https://lab.example/x1";
@@ -209,6 +209,43 @@ describe("what the sources read of a run", () => {
   });
 });
 
+describe("a claim's prices", () => {
+  const prices = (claim: string) => claimPrices(claim).map(({ currency, text, value }) => ({ currency, text, value }));
+
+  it("reads one number in one currency, the sign before it or the currency after it, a count between taken in", () => {
+    expect(prices("Lonax Memory 160×200 в shop.example: 59 732 ₽, продавец ИП Иванов, 2026-11-01.")).toEqual([{ currency: "RUB", text: "59 732 ₽", value: 59_732 }]);
+    expect(prices("Optima 160×200 — 25 000 руб.")).toEqual([{ currency: "RUB", text: "25 000 руб", value: 25_000 }]);
+    expect(prices("Цена 30 000 р. за штуку")).toEqual([{ currency: "RUB", text: "30 000 р", value: 30_000 }]);
+    expect(prices("От 25 тыс. руб.")).toEqual([{ currency: "RUB", text: "25 тыс. руб", value: 25_000 }]);
+    expect(prices("Now $1,299 at the shop")).toEqual([{ currency: "$", text: "$1,299", value: 1_299 }]);
+    expect(prices("Around $25k")).toEqual([{ currency: "$", text: "$25k", value: 25_000 }]);
+    expect(prices("Precio 1.500 € con envío")).toEqual([{ currency: "EUR", text: "1.500 €", value: 1_500 }]);
+    expect(prices("Precio 1.299,90 EUR")).toEqual([{ currency: "EUR", text: "1.299,90 EUR", value: 1_299.9 }]);
+    expect(prices("Costs 120 USD")).toEqual([{ currency: "USD", text: "120 USD", value: 120 }]);
+  });
+
+  it("reads no price from a size, a share, a rating, a range or a range's upper end, and two from a claim of two prices", () => {
+    expect(prices("Матрас 160×200 см, скидка 10%, 4,8 из 5")).toEqual([]);
+    expect(prices("25 000–28 000 ₽")).toEqual([]);
+    expect(prices("25 000 — 28 000 ₽")).toEqual([]);
+    expect(prices("от 25 000 до 32 000 ₽")).toEqual([]);
+    expect(prices("up to $300")).toEqual([]);
+    expect(prices("от 25 000 ₽ до 32 000 ₽")).toEqual([{ currency: "RUB", text: "25 000 ₽", value: 25_000 }]);
+    expect(prices("25 000 ₽, a 32 000 ₽ in another shop")).toHaveLength(2);
+  });
+
+  it("reads no price from a claim of an instalment, a monthly payment or an earlier price, which would pass for the cheapest offer", () => {
+    for (const claim of ["Рассрочка 2 500 ₽ в месяц на 24 месяца", "От 2 500 ₽/мес на 24 месяца", "Цена: 29 990 (было 49 990 ₽)", "30 000 ₽ вместо 45 000 ₽",
+      "Старая цена 45 000 ₽, сейчас 30 000 ₽", "Зачёркнутая цена 45 000 ₽", "Платёж 2 500 ₽ × 24", "2 500 ₽ × 24", "60 000 ₽ на 24 месяца", "Was $450, now $300", "$99/mo",
+      "Instalments of €50 per month", "12 cuotas de $1.000", "Кредит от 3 000 руб. в мес."]) {
+      expect(prices(claim)).toEqual([]);
+    }
+    // Months alone are a warranty's too, and a place is no month.
+    expect(prices("Гарантия 12 мес., цена 30 000 ₽")).toEqual([{ currency: "RUB", text: "30 000 ₽", value: 30_000 }]);
+    expect(prices("30 000 ₽, самовывоз в месте выдачи")).toEqual([{ currency: "RUB", text: "30 000 ₽", value: 30_000 }]);
+  });
+});
+
 describe("a claim's figures", () => {
   const figures = (claim: string) => claimFigures(claim).map(({ text }) => text);
   /** The figures of the claim this text does not write. */
@@ -261,5 +298,56 @@ describe("a claim's figures", () => {
 
   it("read a JSON-escaped page as the quote check does", () => {
     expect(missing("Латекс 3 см.", JSON.stringify(JSON.stringify("латекс 3 см")))).toEqual([]);
+  });
+});
+
+describe("a rating's numbers", () => {
+  const rating = (score: number, count: number) => ({ count, score });
+
+  it("are in a text that writes the score and the number of ratings, however the page groups or shortens them", () => {
+    expect(ratingNumbersNotIn(rating(4.7, 12_345), "4,7 ★ 12 345 оценок")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(4.7, 12_345), "4.7 out of 5 stars, 12,345 global ratings")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(4.8, 12_300), "Рейтинг 4.8 (12,3 тыс. оценок)")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(5, 1_200), "5.0 · 1.2K reviews")).toEqual([]);
+    expect(ratingNumbersNotIn(rating(9.2, 318), JSON.stringify("Puntuación 9,2 — 318 valoraciones"))).toEqual([]);
+  });
+
+  it("name each number the text does not write: a shortened count is the number it writes, never a closer guess", () => {
+    expect(ratingNumbersNotIn(rating(4.7, 12_354), "4,7 ★ 12 345 оценок")).toEqual(["count"]);
+    expect(ratingNumbersNotIn(rating(4.8, 12_345), "Рейтинг 4.8 (12,3 тыс. оценок)")).toEqual(["count"]);
+    expect(ratingNumbersNotIn(rating(4.6, 12_345), "4,7 ★ 12 345 оценок")).toEqual(["score"]);
+    expect(ratingNumbersNotIn(rating(4.7, 12_345), "Отличный врач, рекомендую")).toEqual(["score", "count"]);
+  });
+
+  // The figure reader joined numbers across a line break and read a thousands group or a mantissa as a number of its own (review of 2026-11-06).
+  it.each([
+    ["4.7\n318 reviews", 4.7, 318],
+    [JSON.stringify("4.7\n318 reviews"), 4.7, 318],
+    ["4,7 ★ 12 345 оценок", 4.7, 12_345],
+    ["4,7 ★ 12\u202F345 оценок", 4.7, 12_345],
+    ["4.8 (12K ratings)", 4.8, 12_000],
+    ["Рейтинг 4,9 из 5 · 1 024 отзыва", 4.9, 1_024],
+    ["4.6/5 based on 2,310 reviews", 4.6, 2_310],
+    ["4.5 of 5 · 12.345 valoraciones", 4.5, 12_345],
+    ["4,8 · 12,3 тыс. оценок", 4.8, 12_300],
+    ["4,8 | 1,2 млн оценок", 4.8, 1_200_000]
+  ] as const)("read %j as score %s from %s ratings", (text, score, count) => {
+    expect(ratingNumbersNotIn(rating(score, count), text)).toEqual([]);
+  });
+
+  it.each([
+    ["12 345 оценок", 12, ["count"]],
+    ["12K ratings", 12, ["count"]],
+    ["12,3 тыс. оценок", 12, ["count"]],
+    ["3180 reviews", 318, ["count"]],
+    ["4.7 318 reviews", 7_318, ["count"]]
+  ] as const)("refuse in %j a count of %s that is only part of what it writes", (text, count, missing) => {
+    expect(ratingNumbersNotIn(rating(4.7, count), `4.7 · ${text}`)).toEqual(missing);
+  });
+
+  it("refuse a score the text writes more exactly, and a count of what is no count", () => {
+    expect(ratingNumbersNotIn(rating(4.7, 318), "4.75 · 318 reviews")).toEqual(["score"]);
+    expect(ratingNumbersNotIn(rating(4.7, 47), "4.7 · no reviews yet")).toEqual(["count"]);
+    expect(ratingNumbersNotIn(rating(4.7, 24), "Galaxy S24 · 4.7")).toEqual(["count"]);
   });
 });

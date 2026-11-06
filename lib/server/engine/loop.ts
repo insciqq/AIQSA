@@ -19,8 +19,11 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * malformed arguments) keeps tools for a few rounds, since its results say
  * how (issue #54). A tool-free round that still answered only with calls is
  * asked once more for the answer, and an answer that stays empty fails
- * visibly instead of completing (issue #55). A run's one reserved report (a
- * monitoring check's verdict) is offered alone once more when its call
+ * visibly instead of completing (issue #55). The user's own follow-up starts
+ * the answer over, and an answer that stays empty after it fails the same way;
+ * what an agent sends (a sub-agent's callback or message) adds to the answer
+ * and never empties it (operator decision 2026-11-05). A run's one reserved
+ * report (a monitoring check's verdict) is offered alone once more when its call
  * budget, tool rounds or tool time ran out before it was made; past tool time
  * that round runs inside the answer reserve, and the turn's deadline still
  * ends it. A run that researches (`draft`, `lib/server/research/run.ts`) may
@@ -46,7 +49,11 @@ export type AgentLoopPorts = Readonly<{
   callModel(request: ProviderRunRequest, round: number): Promise<ProviderRunResult>;
   /** False when a follow-up arrived after the last delivery: the turn goes on. */
   closeFollowups(): Promise<boolean>;
-  deliverFollowups(): Promise<readonly TranscriptUserItem[]>;
+  /**
+   * The follow-ups that arrived, now delivered. `ending`: the turn would end here (an answer, or an approval point), so
+   * what they bring may follow an answer already written. An item without `callback` is the user's own follow-up.
+   */
+  deliverFollowups(input: Readonly<{ ending: boolean }>): Promise<readonly TranscriptUserItem[]>;
   /** A run's held draft: the turn's answer may already be taken, and a response without calls may go back to the model. */
   draft?: Readonly<{
     /** Asked before each round: the answer is taken, so no model round follows. A delivered follow-up gives it back. */
@@ -88,7 +95,10 @@ export type AgentLoopPorts = Readonly<{
 export type AgentLoopOutcome =
   | Readonly<{ kind: "answered"; rounds: number }>
   | Readonly<{ approvals: readonly string[]; kind: "approval"; rounds: number }>
-  /** The tool-free rounds answered only with calls and the turn has no answer text: a failure, never a completion. */
+  /**
+   * The turn has no answer text, because the tool-free rounds answered only with calls or nothing followed the user's
+   * follow-up that started the answer over: a failure, never a completion.
+   */
   | Readonly<{ kind: "empty"; rounds: number }>;
 
 export const NO_MORE_TOOLS_OUTPUT = "Not run: this answer may call no more tools. Answer with what you have.";
@@ -126,7 +136,7 @@ async function settleFollowups(ports: AgentLoopPorts): Promise<readonly Transcri
   for (let attempt = 0; attempt < FOLLOWUP_SETTLE_ATTEMPTS; attempt += 1) {
     ports.signal.throwIfAborted();
     if (await ports.closeFollowups()) return [];
-    const delivered = await ports.deliverFollowups();
+    const delivered = await ports.deliverFollowups({ ending: true });
     if (delivered.length > 0) return delivered;
   }
   // Publication rechecks the follow-ups; an empty delivery never buys another paid round.
@@ -139,16 +149,25 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
   let budgetSpent = false;
   let reservedOffered = false;
   let corrections = 0;
-  /** The answer's text so far; a delivered follow-up starts the answer over. */
+  /** The answer's text so far: the user's own follow-up starts it over, what an agent sends adds to it. */
   let answerText = "";
+  /** The user's follow-up started the answer over: an answer that stays empty after it fails rather than completing. */
+  let restarted = false;
   /** The one more tool-free round that asks for the answer: due next, or already taken. */
   let answerNow: "due" | "taken" | null = null;
   const approvals: string[] = [];
   const ended = (round: number): AgentLoopOutcome =>
     approvals.length > 0 ? { approvals, kind: "approval", rounds: round } : { kind: "answered", rounds: round };
-  /** Delivered follow-ups start the answer over. A held draft owes the model one more offer of its reserved call to act on them. */
-  const startOver = () => {
-    answerText = "";
+  /**
+   * Delivered follow-ups give the turn new input and open its tools again. Only the user's own follow-up starts the
+   * answer over; with what agents send alone, the answer written stands and the next text follows it. A held draft owes
+   * the model one more offer of its reserved call to act on them.
+   */
+  const goOn = (followups: readonly TranscriptUserItem[]) => {
+    if (followups.some((item) => !item.callback)) {
+      answerText = "";
+      restarted = true;
+    }
     answerNow = null;
     toolsAllowed = true;
     if (ports.draft) reservedOffered = false;
@@ -168,7 +187,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       const followups = await settleFollowups(ports);
       if (followups.length === 0) return ended(round - 1);
       await ports.append(followups);
-      startOver();
+      goOn(followups);
       continue;
     }
     const asking = answerNow === "due" && toolChoice === "none";
@@ -211,10 +230,11 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       // The answer is final unless a follow-up arrived: then the turn goes on with it.
       const followups = await settleFollowups(ports);
       if (followups.length === 0) {
-        return callsOnly && approvals.length === 0 && !answerText.trim() && !ports.draft?.answerTaken({ toolChoice }) ? { kind: "empty", rounds: round } : ended(round);
+        return (callsOnly || restarted) && approvals.length === 0 && !answerText.trim() && !ports.draft?.answerTaken({ toolChoice })
+          ? { kind: "empty", rounds: round } : ended(round);
       }
       await ports.append(followups);
-      startOver();
+      goOn(followups);
       continue;
     }
     // A reserved round whose response made only other calls answers without tools next.
@@ -227,7 +247,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       const followups = await settleFollowups(ports);
       if (followups.length === 0) return ended(round);
       await ports.append(followups);
-      startOver();
+      goOn(followups);
       continue;
     }
     // A spent budget, or a batch of which nothing ran, is answered without tools; a batch of only correctable
@@ -237,10 +257,10 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       corrections < MAX_CORRECTION_ROUNDS;
     if (correcting) corrections += 1;
     if (batch.budgetExhausted || batch.executed === 0 && !correcting) toolsAllowed = false;
-    const followups = await ports.deliverFollowups();
+    const followups = await ports.deliverFollowups({ ending: false });
     if (followups.length > 0) {
       await ports.append(followups);
-      startOver();
+      goOn(followups);
     }
   }
 }

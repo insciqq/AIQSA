@@ -69,6 +69,7 @@ import {
 import type { AssistantIdentity, AssistantRowKey } from "@/lib/contracts/assistants";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
 import { CONTINUE_TURN_TEXT } from "@/lib/contracts/runs";
+import { DEEP_RESEARCH_SEND_FIELD } from "@/lib/contracts/research";
 import {
   MCP_APPROVAL_CONTINUATION_KIND,
   MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
@@ -587,6 +588,8 @@ export function useMessageRunActions({
     if (assistantBlocksRun(runControlSnapshot)) {
       return;
     }
+    // Read before the edit settles, which ends the inline edit and its Deep research choice.
+    const deepResearch = selectComposerSession(useComposerSessionStore.getState(), sourceSessionKey).editingDeepResearch;
 
     const committed = await editMessageBranchAction({
       activeChatIdRef,
@@ -600,16 +603,25 @@ export function useMessageRunActions({
       return;
     }
 
-    await startEditedBranchRun(sourceChatId, committed.id, runControlSnapshot);
+    await startEditedBranchRun(sourceChatId, committed.id, runControlSnapshot, deepResearch);
   }
 
+  /**
+   * The edited message's first run. An ordinary regenerate never names Deep research, since the server keeps the
+   * message's own choice; the edited message is new, so its run carries the choice the edit kept.
+   */
   async function startEditedBranchRun(
     chatId: string,
     editedUserMessageId: string,
-    runControlSnapshot: MessageRunControlSnapshot
+    runControlSnapshot: MessageRunControlSnapshot,
+    deepResearch: boolean
   ) {
     if (useRunLifecycleStore.getState().activeStreams[chatId]) {
       return;
+    }
+    if (deepResearch) {
+      updateStreamChatMessages(chatId, (current) => current.map((message) =>
+        message.id === editedUserMessageId ? { ...message, deepResearch: true as const } : message));
     }
 
     const assistantId = `assistant-${Date.now()}`;
@@ -667,6 +679,7 @@ export function useMessageRunActions({
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
             admissionId,
+            ...(deepResearch ? { [DEEP_RESEARCH_SEND_FIELD]: true } : {}),
             ...runControlPayload(runControlSnapshot)
           }),
           headers: {
@@ -1121,7 +1134,8 @@ export function useMessageRunActions({
         parentMessageId: parentLeafForSend,
         provider: runControlSnapshot.provider,
         role: "user",
-        status: "complete"
+        status: "complete",
+        ...(sendToken.deepResearch ? { deepResearch: true as const } : {})
       };
       const assistantId = `assistant-${Date.now()}`;
       const assistantMessage: ThreadMessage = {
@@ -1208,6 +1222,7 @@ export function useMessageRunActions({
               },
               expectedActiveLeafId: parentLeafForSend,
               ...(sendToken.artifactCreate ? { artifactIntent: "create" } : {}),
+              ...(sendToken.deepResearch ? { [DEEP_RESEARCH_SEND_FIELD]: true } : {}),
               ...(sendToken.artifactEdit ? { artifactEdit: {
                 artifactId: sendToken.artifactEdit.artifactId,
                 versionId: sendToken.artifactEdit.versionId

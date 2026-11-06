@@ -246,6 +246,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     : null;
 
   return {
+    ...(message.role === "user" && message.deepResearch ? { deepResearch: true as const } : {}),
     artifactSummary,
     assistantIdentity: message.assistantIdentity ?? null,
     citationMessageId: message.citationMessageId ?? null,

@@ -7,13 +7,16 @@ import {
   RESEARCH_PAGE_LIMITS,
   type ResearchAgentRef,
   type ResearchEvidenceRecord,
+  type ResearchFrame,
   type ResearchRecordInput
 } from "../../contracts/research";
 import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../engine/toolResults";
 import * as observability from "../observability";
 import { createResearchEvidenceRepository } from "./evidenceRepository";
 import { createResearchEvidenceStore, storedPageText } from "./evidenceStore";
+import { researchMatrixCoverage } from "./matrix";
 import type { ResearchEvidencePort, ResearchEvidenceWritten, ResearchRunScope } from "./ports";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { RESEARCH_WRITE_SOURCE_LIMITS } from "./sources";
 
 /**
@@ -60,8 +63,8 @@ function tables() {
       }),
       create: vi.fn(async ({ data }: { data: Row }) => {
         const row = { claim: null, createdAt: new Date(), criterionKey: null, dataset: null, id: randomUUID(), pageId: null, publishedOn: null, quote: null, quoteCheck: null,
-          quoteCheckReason: null, reason: null, registrableDomain: null, rowKey: null, sourceClass: null, standing: null, supersedesId: null, target: null, textGroupKey: null,
-          url: null, ...data };
+          quoteCheckReason: null, rating: null, reason: null, registrableDomain: null, rowKey: null, sourceClass: null, standing: null, supersedesId: null, target: null,
+          textGroupKey: null, url: null, ...data };
         evidence.push(row);
         return row;
       }),
@@ -240,7 +243,7 @@ describe("writing a record", () => {
     const memory = tables();
     addCall(memory, [{ text: excerpt.output, type: "text" }], { args: { command: "aiqsa-browser text" }, observationId: "a".repeat(32), tool: SHELL });
     const saved = storeOf(memory, { read: async () => whole });
-    await expect(recorded(saved.port, finding())).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+    await expect(recorded(saved.port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "unaddressed_page", status: "found" } });
     expect(saved.savedRead).toHaveBeenCalledWith(expect.objectContaining({ chatId: "chat", handle: `tor1_${"a".repeat(32)}`, userId: "user" }));
     expect(memory.pages[0]).toMatchObject({ obtainedBy: "browser", truncated: false });
     await expect(recorded(storeOf(memory, { read: async () => null }).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "partial_source", status: "not_checked" } });
@@ -264,7 +267,7 @@ describe("writing a record", () => {
     expect(memory.pages[0]!.text).toBe(`${start}ж`);
     const short = tables();
     printed(short, `${QUOTE} ${"x".repeat(RESEARCH_PAGE_LIMITS.bytesPerPage)}`);
-    await expect(recorded(storeOf(short).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+    await expect(recorded(storeOf(short).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "unaddressed_page", status: "found" } });
     expect(short.pages[0]).toMatchObject({ truncated: true });
   });
 
@@ -312,6 +315,79 @@ describe("writing a record", () => {
     if (!dataset.ok) throw new Error(dataset.message);
     await expect(recorded(port, dataset.value)).resolves.toMatchObject({ quoteCheck: { reason: null, status: "not_verbatim" } });
     expect(memory.pages).toHaveLength(1);
+  });
+
+  describe("a rating (operator decision 2026-11-05)", () => {
+    const CARD = "https://clinic.example/doctors/ivanova";
+    const CARD_PAGE = "Иванова Анна, дерматолог. Рейтинг 4,9 · 1 284 отзыва пациентов. Записаться.";
+    const rating = { count: 1_284, counted: "reviews" as const, scaleMax: 5, score: 4.9, variantsMerged: false };
+    const rated = (quote: string, change: Partial<typeof rating> = {}) => finding(quote, CARD, { claim: "Пациенты оценивают Иванову на 4,9 из 5 по 1 284 отзывам.",
+      criterionKey: "ratings", rating: { ...rating, ...change }, rowKey: "ivanova", sourceClass: "owner_reviews" });
+
+    it("passes when its score and number of ratings stand in a quote the page holds, and is read back with its rating", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const record = await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов"));
+      expect(record).toMatchObject({ kind: "finding", quoteCheck: { reason: null, status: "found" }, rating, rowKey: "ivanova" });
+      expect(record.pageId).toBe(memory.pages[0]!.id);
+      // Its row keeps the rating in the tool's form, in a column of its own.
+      expect(memory.evidence[0]).toMatchObject({ dataset: null, rating: { count: 1_284, counted: "reviews", scale_max: 5, score: 4.9, variants_merged: false } });
+      await expect(port.records(signal)).resolves.toEqual([expect.objectContaining({ id: record.id, rating })]);
+    });
+
+    it("is marked as a wrong quote, kept with its page, when the page does not write its count, and counts as no evidence until corrected", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const wrong = await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов", { count: 1_824 }));
+      expect(wrong).toMatchObject({ kind: "finding", quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" }, rating: { ...rating, count: 1_824 } });
+      expect(wrong.pageId).toBe(memory.pages[0]!.id);
+      // A quote that leaves the count out shows nothing of it either.
+      await expect(recorded(port, rated("Рейтинг 4,9"))).resolves.toMatchObject({ quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" } });
+      // A quote not on the page keeps its own word: that is what to correct first.
+      await expect(recorded(port, rated("Рейтинг 4,9 · 1 824 отзыва"))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "not_verbatim" } });
+      await expect(port.records(signal)).resolves.toHaveLength(3);
+    });
+
+    it("reads its numbers as the page writes them: a line break parts them, and a count is never one group or mantissa of a larger one", async () => {
+      const memory = tables();
+      const LINES = "Dr. Ivanova\n4.7\n318 reviews\nBook a visit";
+      const GROUPED = "Рейтинг 4,7 ★ 12 345 оценок · 4.8 (12K ratings)";
+      fetched(memory, CARD, LINES);
+      fetched(memory, OTHER_LINK, GROUPED);
+      const { port } = storeOf(memory);
+      const record = (quote: string, url: string, score: number, count: number) => finding(quote, url, { criterionKey: "ratings",
+        rating: { ...rating, count, counted: "ratings", score }, rowKey: "ivanova", sourceClass: "owner_reviews" });
+      await expect(recorded(port, record("4.7\n318 reviews", CARD, 4.7, 318))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+      await expect(recorded(port, record("4,7 ★ 12 345 оценок", OTHER_LINK, 4.7, 12_345))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+      await expect(recorded(port, record("4.8 (12K ratings)", OTHER_LINK, 4.8, 12_000))).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+      for (const [quote, score, count] of [["4,7 ★ 12 345 оценок", 4.7, 12], ["4.8 (12K ratings)", 4.8, 12]] as const) {
+        await expect(recorded(port, record(quote, OTHER_LINK, score, count))).resolves.toMatchObject({ quoteCheck: { reason: "rating_not_in_quote", status: "not_verbatim" } });
+      }
+    });
+
+    it("fills its cell of the matrix only when its numbers stand in its quote", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const frame: ResearchFrame = { branches: [], changes: [], criteria: [{ criterion: "Рейтинг и отзывы", key: "ratings", ratings: true, why: "W." }],
+        rows: [{ key: "ivanova", label: "Иванова" }, { key: "petrov", label: "Петров" }] };
+      await recorded(port, rated("Рейтинг 4,9 · 1 284 отзыва пациентов"));
+      await recorded(port, { ...rated("Рейтинг 4,9 · 1 284 отзыва пациентов", { count: 12 }), rowKey: "petrov" });
+      const coverage = researchMatrixCoverage(frame, await port.records(signal));
+      expect(coverage.cells.map(({ rowKey, state }) => [rowKey, state])).toEqual([["ivanova", "filled"], ["petrov", "empty"]]);
+    });
+
+    it("leaves a finding that is no rating as its quote's check has it", async () => {
+      const memory = tables();
+      fetched(memory, CARD, CARD_PAGE);
+      const { port } = storeOf(memory);
+      const plain = await recorded(port, finding("Записаться", CARD));
+      expect(plain.quoteCheck).toEqual({ reason: null, status: "found" });
+      expect(plain).not.toHaveProperty("rating");
+      expect(memory.evidence[0]).toMatchObject({ rating: null });
+    });
   });
 
   it("stands when its writer's results cannot be read, marked so, and gives a stopped run's abort back", async () => {
@@ -575,5 +651,32 @@ describe("reading", () => {
     const { port } = storeOf(tables());
     await expect(port.records(stop.signal)).rejects.toThrow("stopped");
     await expect(port.page("page", stop.signal)).rejects.toThrow("stopped");
+  });
+});
+
+describe("what a closed site needs (operator decision 2026-11-05)", () => {
+  const EXEC = namespacedWorkspaceToolName("sandbox_exec");
+  const command = (memory: Tables, args: Row, stdout: string, thread: string | null = "thread-lab") =>
+    addCall(memory, [{ text: JSON.stringify({ data: { exitCode: 0, stderr: "", stdout, success: true }, ok: true }), type: "text" }], { args, thread, tool: EXEC });
+
+  it("keeps a quote found in browser output an address only where a step line shows the cited host", async () => {
+    const shown = tables();
+    printed(shown, `[browser #2 · lab] text @ lab.example/x1\n${PAGE}`);
+    await expect(recorded(storeOf(shown).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: null, status: "found" } });
+    const bare = tables();
+    printed(bare, PAGE);
+    await expect(recorded(storeOf(bare).port, finding())).resolves.toMatchObject({ quoteCheck: { reason: "unaddressed_page", status: "found" } });
+  });
+
+  it("knows the hosts an agent's own browser navigations tried, from its call rows alone", async () => {
+    const memory = tables();
+    command(memory, { args: ["open", "https://www.shop.example/card"], command: "aiqsa-browser" }, "");
+    command(memory, { args: ["proxied", "curl", "https://proxied.example/"], command: "aiqsa-browser" }, "HTTP/2 403");
+    command(memory, { args: ["open", "https://main.example/"], command: "aiqsa-browser" }, "", null);
+    const { port } = storeOf(memory);
+    await expect(port.browsed!(RESEARCHER, "shop.example", signal)).resolves.toBe(true);
+    await expect(port.browsed!(RESEARCHER, "proxied.example", signal)).resolves.toBe(false);
+    await expect(port.browsed!(RESEARCHER, "main.example", signal)).resolves.toBe(false);
+    await expect(port.browsed!(MAIN, "main.example", signal)).resolves.toBe(true);
   });
 });

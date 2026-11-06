@@ -717,7 +717,7 @@ describe("a native answer that took follow-ups", () => {
     repository: asRepository(nativeRunRepository()), services: {}, userId: "owner" }));
     const sent = JSON.stringify(requests[0]!.history);
     expect(sent.split("Make it rhyme")).toHaveLength(2);
-    expect(sent).not.toContain("Partial answer before follow-up");
+    expect(sent).not.toContain("Answer before follow-up");
     expect(sent).toContain("Follow-up not delivered to the previous answer:\\nAdd a title");
   });
 });

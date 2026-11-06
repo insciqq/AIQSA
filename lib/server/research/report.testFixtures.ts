@@ -1,4 +1,6 @@
-import type { ResearchDataset, ResearchDraft, ResearchDraftSummary, ResearchEvidenceRecord, ResearchFrame, ResearchSourceClass, ResearchStanding } from "../../contracts/research";
+import type {
+  ResearchDataset, ResearchDraft, ResearchDraftSummary, ResearchEvidenceRecord, ResearchFrame, ResearchRating, ResearchSourceClass, ResearchStanding
+} from "../../contracts/research";
 import { researchMatrixCoverage, type ResearchMatrix } from "./matrix";
 
 /**
@@ -10,10 +12,19 @@ const base = (number: number, rowKey: string | null, criterionKey: string | null
   pageId: null, publishedOn: null, registrableDomain: null, rowKey, runId: "run-1", sequence: number, supersedes: null, textGroupKey: null });
 
 export function finding(number: number, rowKey: string | null, criterionKey: string | null, overrides: Partial<Readonly<{ claim: string; quote: string;
-  quoteCheck: ResearchEvidenceRecord["quoteCheck"]; registrableDomain: string; publishedOn: string; sourceClass: ResearchSourceClass; standing: ResearchStanding; supersedes: string; url: string }>> = {}): ResearchEvidenceRecord {
+  quoteCheck: ResearchEvidenceRecord["quoteCheck"]; rating: ResearchRating; registrableDomain: string; publishedOn: string; sourceClass: ResearchSourceClass; standing: ResearchStanding;
+  supersedes: string; url: string }>> = {}): ResearchEvidenceRecord {
   return { ...base(number, rowKey, criterionKey), claim: `Claim ${number}.`, kind: "finding", quote: `Quote ${number}.`, quoteCheck: { reason: null, status: "found" }, sourceClass: "primary_official", standing: "confirmed",
     url: `https://source.example/${number}`, ...overrides };
 }
+
+/**
+ * A public rating of an option as a researcher records it, under the ratings criterion of `RATED`, its quote writing the score and the count as the page does. Its platform is
+ * the site of its link. Synthetic, as every fixture here.
+ */
+export const rating = (number: number, rowKey: string, score: number, count: number, site: string, overrides: Partial<ResearchRating> = {}): ResearchEvidenceRecord =>
+  finding(number, rowKey, "ratings", { claim: `Rated ${score} of 5 by ${count} people on ${site}.`, quote: `${score} ★ ${count} оценок`,
+    rating: { count, counted: "ratings", scaleMax: 5, score, variantsMerged: false, ...overrides }, sourceClass: "owner_reviews", url: `https://${site}/${rowKey}` });
 
 export const DATASET: ResearchDataset = { counts: [{ count: 3, label: "sagging" }], examples: [{ quote: "Просел за год.", url: "https://shop.example/x1/reviews" }], leftOut: "Dropped 40 reviews of other sizes.",
   method: "Read the card's reviews to the end and kept those naming 160x200.", sampleSize: 11 };
@@ -36,6 +47,9 @@ export const FRAME: ResearchFrame = {
     { criterion: "Жёсткость", key: "firmness", why: "От неё зависит спина." }],
   rows: [{ key: "x1", label: "Lonax Memory" }, { key: "x2", label: "Optima Classic" }]
 };
+
+/** The purchase of `FRAME` with the column of ratings a choice among options holds, as the server adds it. */
+export const RATED: ResearchFrame = { ...FRAME, criteria: [...FRAME.criteria, { criterion: "Рейтинг и отзывы", key: "ratings", ratings: true, why: "Оценка многих говорит больше нескольких отзывов." }] };
 
 /** Row x1 holds a specification and, like the real pick, its price and its reviews. */
 export const RECORDS: readonly ResearchEvidenceRecord[] = [

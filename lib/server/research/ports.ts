@@ -1,6 +1,7 @@
 import type {
   DecodedResearch,
   ResearchAgentRef,
+  ResearchCandidate,
   ResearchEvidenceRecord,
   ResearchFrame,
   ResearchFrameChangeRequest,
@@ -65,6 +66,11 @@ export type ResearchEvidenceWritten =
  * the store drops them.
  */
 export type ResearchEvidencePort = Readonly<{
+  /**
+   * Whether this agent's own browser commands in this research opened or tried `host` (`researchSiteHost`), read from its call rows:
+   * `record_evidence` refuses an unreachable site the agent's browser has not tried. A store without it takes every host as tried.
+   */
+  browsed?(author: ResearchAgentRef, host: string, signal: AbortSignal): Promise<boolean>;
   /** A stored page under `researchRunId` or a run it continues; null for any other id, the same as for one that does not exist. */
   page(pageId: string, signal: AbortSignal): Promise<ResearchStoredPage | null>;
   record(write: ResearchEvidenceWrite, signal: AbortSignal): Promise<ResearchEvidenceWritten>;
@@ -91,7 +97,32 @@ export type ResearchPlanWindowPort = Readonly<{
    * `signal`; a closed tab changes nothing. On a window already answered no
    * window opens: the proposal is the plan rebuilt from what the person changed, and it replaces the answer's plan at once.
    */
-  open(input: Readonly<{ goal: string; proposal: ResearchPlanProposal; signal: AbortSignal }>): Promise<ResearchPlanAnswer>;
+  open(input: Readonly<{
+    /** The options earlier research on the branch recommended, which every frame the plan writes holds first among its candidates (`earlier.ts`). */
+    earlier?: readonly ResearchCandidate[];
+    goal: string;
+    proposal: ResearchPlanProposal;
+    signal: AbortSignal;
+  }>): Promise<ResearchPlanAnswer>;
+}>;
+
+/** A record of earlier research as the start reads it: only what tells an option's page and date. */
+export type ResearchEarlierRecord = Readonly<{ createdAt: string; id: string; kind: ResearchEvidenceRecord["kind"]; rowKey: string | null; runId: string; url: string | null }>;
+
+/** What a new research reads of the researches earlier turns of its branch finished. */
+export type ResearchEarlierRead = Readonly<{
+  /** The released frames of those research runs, by run. */
+  frames: ReadonlyMap<string, ResearchFrame>;
+  records: readonly ResearchEarlierRecord[];
+}>;
+
+/**
+ * What a new research starts with of earlier research on its branch (`earlier.ts`), filled by `research-carries-earlier-options`. It only reads, and only
+ * this user's rows of this chat: the run ids and record ids come from the branch's own items, stored values that count only when they are runs of the
+ * branch (`branchRunIds`), never a sibling branch's or another chat's.
+ */
+export type ResearchEarlierPort = Readonly<{
+  read(input: Readonly<{ recordIds: readonly string[]; researchRunIds: readonly string[] }>, signal: AbortSignal): Promise<ResearchEarlierRead>;
 }>;
 
 /**
@@ -159,6 +190,16 @@ export type ResearchResumeState = Readonly<{
  */
 export type ResearchResumePort = Readonly<{
   /**
+   * Whether this run of the branch stopped with its work kept and offered Continue: what makes a Continue of it a research's Continue, the run's own
+   * and each one its authority passes (operator decision 2026-11-05). It only reads, before the run's tools are chosen; a run off the branch never was.
+   */
+  endedInterrupted(runId: string, signal: AbortSignal): Promise<boolean>;
+  /**
+   * Whether one of these runs of the branch was sent with Deep research, by its frozen binding (`NormalizedRunRequest.deepResearch`): the only authority
+   * an approval continuation or a Continue has to research (operator decision 2026-11-05). It only reads; a run off the branch counts for nothing.
+   */
+  sentWithDeepResearch(runIds: readonly string[], signal: AbortSignal): Promise<boolean>;
+  /**
    * Whether research can be picked up. It only reads, since a run asks this before any `start_research` and a model may never call one, and such a run
    * ran no research and keeps no row.
    */
@@ -170,9 +211,25 @@ export type ResearchResumePort = Readonly<{
   link(state: ResearchResumeState, signal: AbortSignal): Promise<void>;
 }>;
 
+/** The page a finished research wrote (`page.ts`): the version its `create_artifact` call made, of the run's user. */
+export type ResearchPageArtifact = Readonly<{ artifactId: string; entrypoint: string | null; title: string; versionId: string }>;
+
+/** What the page's check found: it passes, or it goes back once with `message`, which names what does not match and nothing else. */
+export type ResearchPageVerdict = Readonly<{ kind: "pass" }> | Readonly<{ kind: "mismatch"; message: string }>;
+
+/**
+ * The mechanical check (`pageCheck.ts`) reads the version `page` names and compares its figures and links with the report, caveats and cited records.
+ * A second mismatch, or a check that throws, keeps the page out of the answer, which keeps its full text either way.
+ */
+export type ResearchPagePort = Readonly<{
+  check(input: Readonly<{ caveats: readonly string[]; page: ResearchPageArtifact; recordIds?: readonly string[]; report: string; signal: AbortSignal }>): Promise<ResearchPageVerdict>;
+}>;
+
 export type ResearchPorts = Readonly<{
   coverage: ResearchCoveragePort;
+  earlier: ResearchEarlierPort;
   evidence: ResearchEvidencePort;
+  page: ResearchPagePort;
   planWindow: ResearchPlanWindowPort;
   report: ResearchReportPort;
   resume: ResearchResumePort;
@@ -182,7 +239,9 @@ export type ResearchPorts = Readonly<{
 /** How the engine supplies the ports: one factory per port, called once per run and handed the ports it reads, so no part reaches into another's store. */
 export type ResearchPortFactories = Readonly<{
   coverage?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchCoveragePort;
+  earlier?: (run: ResearchRunScope) => ResearchEarlierPort;
   evidence?: (run: ResearchRunScope) => ResearchEvidencePort;
+  page?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "evidence">) => ResearchPagePort;
   planWindow?: (run: ResearchRunScope) => ResearchPlanWindowPort;
   report?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchReportPort;
   resume?: (run: ResearchRunScope, parts: Pick<ResearchPorts, "coverage" | "evidence">) => ResearchResumePort;
@@ -197,10 +256,16 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     coverage: async () => null,
     frame: async () => null
   },
+  earlier: {
+    read: async () => ({ frames: new Map(), records: [] })
+  },
   evidence: {
     page: async () => null,
     record: async () => ({ code: "research_evidence_unavailable", kind: "refused", message: "This run keeps no evidence records." }),
     records: async () => []
+  },
+  page: {
+    check: async () => ({ kind: "pass" })
   },
   planWindow: {
     open: async ({ proposal }) => ({ changed: false, plan: proposal, releasedBy: "timer" })
@@ -210,8 +275,10 @@ export const NOOP_RESEARCH_PORTS: ResearchPorts = {
     gates: []
   },
   resume: {
+    endedInterrupted: async () => false,
     link: async () => undefined,
-    load: async () => null
+    load: async () => null,
+    sentWithDeepResearch: async () => false
   },
   time: {
     gatesEndAt: (turnGatesEndAt) => turnGatesEndAt,
@@ -228,7 +295,9 @@ export function researchPorts(factories: ResearchPortFactories | undefined, run:
   const coverage = factories?.coverage?.(run, { evidence }) ?? NOOP_RESEARCH_PORTS.coverage;
   return {
     coverage,
+    earlier: factories?.earlier?.(run) ?? NOOP_RESEARCH_PORTS.earlier,
     evidence,
+    page: factories?.page?.(run, { evidence }) ?? NOOP_RESEARCH_PORTS.page,
     planWindow: factories?.planWindow?.(run) ?? NOOP_RESEARCH_PORTS.planWindow,
     report: factories?.report?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.report,
     resume: factories?.resume?.(run, { coverage, evidence }) ?? NOOP_RESEARCH_PORTS.resume,

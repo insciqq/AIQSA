@@ -1,18 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RESEARCH_FRAME_LIMITS, type DecodedResearch, type ResearchAgentRef, type ResearchFrame } from "../../contracts/research";
+import { CHANGE_RESEARCH_FRAME_TOOL_NAME, decodeResearchFrame, RESEARCH_FRAME_LIMITS, type DecodedResearch, type ResearchAgentRef, type ResearchFrame } from "../../contracts/research";
 import {
   researchCandidateKey,
   researchCandidateRow,
   researchCandidatesLine,
   researchCandidateSpread,
+  researchEarlierCandidates,
   researchFrameEntries,
+  researchFrameWithEarlier,
   researchFrameWithNote,
   researchFrameWithSetAside,
   researchFrequentCandidate,
+  researchNamedIn,
   researchNotedCandidate,
   researchOpenCandidates,
+  researchOwedCandidate,
   researchPooledCandidate,
-  researchSameOption
+  researchSameOption,
+  type ResearchEarlierOption
 } from "./candidates";
 import { changedResearchFrame } from "./matrix";
 
@@ -319,5 +324,75 @@ describe("the line the main agent reads", () => {
     // Short reasons stay whole.
     const short = noted({ ...FRAME, rows: [] }, ["a", "Lonax X1"]);
     expect(researchCandidatesLine(short)).toContain('"reason":"Seen by a."');
+  });
+});
+
+describe("the options earlier research recommended", () => {
+  // A real chat (2026-11-05): the first research's best option fitted the second's budget, yet the second never named it, and the user was not told.
+  const AT = "2026-11-05T10:00:00.000Z";
+  const option = (label: string, extra: Partial<ResearchEarlierOption> = {}): ResearchEarlierOption => ({ label, on: "2026-11-04", pick: false, url: null, ...extra });
+  const seeded = (options: readonly ResearchEarlierOption[], frame: ResearchFrame = { ...FRAME, rows: [] }) =>
+    researchFrameWithEarlier(frame, researchEarlierCandidates(options, AT));
+
+  it("seeds each once, the pick marked, with its page and a note that earlier research recommended it on that date", () => {
+    const candidates = researchEarlierCandidates([option("Askona Balance Forma", { pick: true, url: "https://shop.example/forma" }), option("Askona Balance Forma 160x200"),
+      option("Lonax Memory")], AT);
+    expect(candidates).toEqual([
+      { earlier: { on: "2026-11-04", pick: true }, key: "askona-balance-forma", label: "Askona Balance Forma",
+        notes: [{ at: AT, by: LEAD, reason: "Earlier research in this chat recommended it on 2026-11-04 as its pick.", url: "https://shop.example/forma" }] },
+      { earlier: { on: "2026-11-04" }, key: "lonax-memory", label: "Lonax Memory", notes: [{ at: AT, by: LEAD, reason: "Earlier research in this chat recommended it on 2026-11-04." }] }
+    ]);
+    const many = Array.from({ length: RESEARCH_FRAME_LIMITS.earlierOptions + 3 }, (_entry, index) => option(`Model ${index}`));
+    expect(researchEarlierCandidates(many, AT)).toHaveLength(RESEARCH_FRAME_LIMITS.earlierOptions);
+  });
+
+  it("comes before other candidates and stays open, owed a decision whatever its count, until it is a row or set aside", () => {
+    const frame = noted(seeded([option("Lonax Memory")]), ["a", "Optima Classic"], ["b", "Optima Classic"]);
+    const open = researchOpenCandidates(frame);
+    expect(open.map(({ key }) => key)).toEqual(["lonax-memory", "optima-classic"]);
+    // The server's note is no agent's and no site's.
+    expect(open[0]).toMatchObject({ agents: 0, sites: [] });
+    expect(researchOwedCandidate(open[0]!)).toBe(true);
+    expect(researchFrequentCandidate(open[0]!)).toBe(false);
+    expect(researchOpenCandidates({ ...frame, rows: [{ key: "lonax", label: "Lonax Memory 160x200" }] }).map(({ key }) => key)).toEqual(["optima-classic"]);
+    const aside = value(researchFrameWithSetAside(frame, { key: "lonax-memory", reason: "Over the new budget." }, stamp(LEAD)));
+    expect(researchOpenCandidates(aside).map(({ key }) => key)).toEqual(["optima-classic"]);
+  });
+
+  it("costs the pool nothing: a full pool still takes them, and their own notes and set-asides stand outside the frame's entries", () => {
+    const full = Array.from({ length: RESEARCH_FRAME_LIMITS.candidates }, (_entry, index) => index).reduce((grown, index) =>
+      value(researchFrameWithNote(grown, { label: `Model ${index}`, reason: "Seen." }, stamp(agent(`agent-${index}`)))), seeded([option("Lonax Memory")]));
+    expect(full.candidates).toHaveLength(RESEARCH_FRAME_LIMITS.candidates + 1);
+    expect(refusal(researchFrameWithNote(full, { label: "One more", reason: "Seen." }, stamp()))).toContain("as many candidates as it may");
+    // An agent may still note the earlier option, which is no new candidate.
+    expect(value(researchFrameWithNote(full, { label: "Lonax Memory", reason: "Seen.", url: "https://shop.example/lonax" }, stamp())).candidates![0]!.notes).toHaveLength(2);
+    const before = researchFrameEntries(full);
+    expect(before).toBe(RESEARCH_FRAME_LIMITS.candidates);
+    expect(researchFrameEntries(value(researchFrameWithSetAside(full, { key: "lonax-memory", reason: "Over the new budget." }, stamp(LEAD))))).toBe(before);
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(full)) as unknown))).toEqual(full);
+  });
+
+  it("is read back as it was stored, and a mark no writer made is refused", () => {
+    const frame = seeded([option("Lonax Memory", { pick: true, url: "https://shop.example/lonax" })]);
+    expect(value(decodeResearchFrame(JSON.parse(JSON.stringify(frame)) as unknown))).toEqual(frame);
+    for (const earlier of [{ on: "4 November" }, { on: "2026-11-04", pick: false }, "2026-11-04"]) {
+      expect(refusal(decodeResearchFrame({ ...frame, candidates: [{ ...frame.candidates![0]!, earlier }] }))).toContain("earlier must hold on");
+    }
+    const tooMany = { ...frame, candidates: Array.from({ length: RESEARCH_FRAME_LIMITS.earlierOptions + 1 }, (_entry, index) => ({ ...frame.candidates![0]!, key: `model-${index}` })) };
+    expect(refusal(decodeResearchFrame(tooMany))).toContain(`at most ${RESEARCH_FRAME_LIMITS.earlierOptions} options of earlier research`);
+  });
+
+  it("leads the main agent's line with the date and the page, and asks for a decision on each", () => {
+    const frame = noted(seeded([option("Lonax Memory", { pick: true, url: "https://shop.example/lonax" })]), ["a", "Optima Classic"]);
+    const line = researchCandidatesLine(frame)!;
+    expect(line).toContain("Those earlier research recommended come first, then those named on the most sites");
+    expect(line.split("\n")[1]).toBe('recommended by earlier research in this chat on 2026-11-04 as its pick: {"key":"lonax-memory","name":"Lonax Memory","page":"https://shop.example/lonax"}');
+    expect(line).toContain("and each one earlier research recommended that you do not take");
+  });
+
+  it("reads a name in the answer however it is split or written", () => {
+    expect(researchNamedIn("Мы бы взяли Аскона Balance Forma за 30 000 ₽.", "Askona Balance Forma 160x200")).toBe(true);
+    expect(researchNamedIn("Askona BalanceForma went.", "Askona Balance Forma")).toBe(true);
+    expect(researchNamedIn("Askona Balance went.", "Askona Balance Forma")).toBe(false);
   });
 });

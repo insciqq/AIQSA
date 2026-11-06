@@ -7,9 +7,9 @@ import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchEvidenceRepository, ResearchPageWrite, ResearchRecordedCheck } from "./evidenceRepository";
 import type { ResearchOpenedSource } from "./gates";
 import type { ResearchEvidencePort, ResearchEvidenceWrite, ResearchRunScope } from "./ports";
-import { checkQuotes, quoteIsIn, type QuoteCheck, type QuoteSource } from "./quoteCheck";
+import { browserHosts, checkQuotes, quoteIsIn, ratingNumbersNotIn, type QuoteCheck, type QuoteSource } from "./quoteCheck";
 import { createResearchAgentSources, researchEvidenceKind, researchRunsOnBranch, type ResearchAgentScope } from "./sources";
-import { prepareResearchSourceQuality } from "./sourceQuality";
+import { prepareResearchSourceQuality, researchSiteHost } from "./sourceQuality";
 
 /**
  * The evidence store (`ResearchEvidencePort`): a finding is a durable record the moment it is made, under the research run whichever
@@ -26,8 +26,13 @@ export type ResearchEvidenceStoreDeps = Readonly<{
   threads: Pick<SubagentThreadStore, "backgroundRunIds">;
 }>;
 
-/** What a check adds to the quote check's reasons: the quote is on a page other than the one cited, or the store could not keep it. */
-export const RESEARCH_CHECK_REASONS = Object.freeze({ otherPage: "other_page", pageNotStored: "page_not_stored", pageTruncated: "page_truncated" });
+/**
+ * What a check adds to the quote check's reasons: the quote is on a page other than the one cited, or the store could not keep it.
+ * `unaddressedPage`: a quote found in browser output that shows no address of its own, no step line naming the cited host, so its
+ * link is only the model's word: it stands as found, and opens no closed site (`researchReadHost`).
+ */
+export const RESEARCH_CHECK_REASONS = Object.freeze({ otherPage: "other_page", pageNotStored: "page_not_stored", pageTruncated: "page_truncated",
+  ratingNotInQuote: "rating_not_in_quote", unaddressedPage: "unaddressed_page" });
 
 type Quoted = Readonly<{ quote: string; url: string }>;
 
@@ -72,12 +77,25 @@ function keptWithRecord(quotes: readonly Quoted[], checks: readonly QuoteCheck[]
   const at = checks.findIndex((entry) => entry.status === "found");
   const found = checks[at];
   if (found?.status === "found") {
-    const page = pageWrite(opened[found.opened]!, pageAddress(found.excerpt.source, quotes[at]!.url));
+    const source = opened[found.opened]!;
+    const page = pageWrite(source, pageAddress(found.excerpt.source, quotes[at]!.url));
     const lost = page?.truncated === true && !quoteIsIn(quotes[at]!.quote, page.text);
-    return { check: lost && check.status === "found" ? { reason: RESEARCH_CHECK_REASONS.pageTruncated, status: "not_checked" } : check, page };
+    if (lost && check.status === "found") return { check: { reason: RESEARCH_CHECK_REASONS.pageTruncated, status: "not_checked" }, page };
+    const unaddressed = found.excerpt.source.kind === "unknown" && !browserHosts(source.text).includes(researchSiteHost(quotes[at]!.url) ?? "");
+    return { check: unaddressed && check.status === "found" && check.reason === null ? { reason: RESEARCH_CHECK_REASONS.unaddressedPage, status: "found" } : check, page };
   }
   const cited = opened.find((source) => source.url !== null && links.has(source.url) && researchEvidenceKind(source) === "page");
   return { check, page: cited ? pageWrite(cited, cited.url!) : null };
+}
+
+/**
+ * A rating's word over its quote's (operator decision 2026-11-05): its score and its number of ratings stand in its quote as the page writes them, so they stand
+ * on the page the quote is checked on, and a rating whose numbers its quote does not write is marked as a wrong quote is, kept with that word. Its quote holds them
+ * or not whatever page was read, so that word comes before any word of a page the check could not read; a quote already unsupported or not verbatim keeps its own.
+ */
+function withRatingCheck(record: ResearchRecordInput, check: ResearchRecordedCheck | null): ResearchRecordedCheck | null {
+  if (record.kind !== "finding" || !record.rating || check === null || check.status === "unsupported" || check.status === "not_verbatim") return check;
+  return ratingNumbersNotIn(record.rating, record.quote).length === 0 ? check : { reason: RESEARCH_CHECK_REASONS.ratingNotInQuote, status: "not_verbatim" };
 }
 
 /** One port per run (`ResearchPortFactories.evidence`). */
@@ -106,6 +124,12 @@ export function createResearchEvidenceStore(deps: ResearchEvidenceStoreDeps) {
     }
 
     return {
+      async browsed(author, host, signal) {
+        signal.throwIfAborted();
+        const agent = await agentScope(author.threadId, await deps.repository.chain(scope));
+        return (await sources.browsedHosts(agent, signal))?.has(host) ?? true;
+      },
+
       async page(pageId, signal) {
         signal.throwIfAborted();
         return deps.repository.page(scope, await deps.repository.chain(scope), pageId);
@@ -115,12 +139,13 @@ export function createResearchEvidenceStore(deps: ResearchEvidenceStoreDeps) {
         signal.throwIfAborted();
         const chain = await deps.repository.chain(scope);
         const quotes = quotesOf(write.record);
-        const held = quotes.length === 0 ? { check: null, page: null } : await checked(write, chain, quotes, signal).catch((error: unknown) => {
+        const quoted = quotes.length === 0 ? { check: null, page: null } : await checked(write, chain, quotes, signal).catch((error: unknown) => {
           if (signal.aborted) throw error;
           // Its own results could not be read: the finding still stands, marked so.
           logEvent("service_operation", { action: "degrade", code: "research_sources_unreadable", error, outcome: "degraded", run_id: run.runId, stage: "read", subsystem: "database" });
           return { check: { reason: "sources_unreadable", status: "not_checked" as const }, page: null };
         });
+        const held = { ...quoted, check: withRatingCheck(write.record, quoted.check) };
         signal.throwIfAborted();
         // Read only when a page was to be kept and found no room: a wrong quote keeps its word, which the agent must hear, and any other word rested on that page.
         const notKept = held.check?.status === "not_verbatim" ? held.check : { reason: RESEARCH_CHECK_REASONS.pageNotStored, status: "not_checked" as const };

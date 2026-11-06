@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  DEEP_RESEARCH_REFUSALS,
   decodeResearchDraft,
   decodeResearchDraftReferences,
   decodeResearchPlan,
@@ -15,6 +16,7 @@ import {
   START_RESEARCH_TOOL_NAME,
   SUBMIT_RESEARCH_DRAFT_TOOL_NAME,
   type DecodedResearch,
+  type ResearchCandidate,
   type ResearchDraft,
   type ResearchEvidenceRecord,
   type ResearchPlan,
@@ -26,27 +28,33 @@ import {
 import { CONTINUE_TURN_TEXT } from "../../contracts/runs";
 import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, STOP_SUBAGENT_TOOL_NAME, SUBAGENT_END_REASONS } from "../../contracts/subagents";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { LoopToolChoice } from "../engine/loop";
 import type { PrepareRunSubagentsInput } from "../engine/subagents/runSubagents";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "../engine/toolRegistry";
 import type { SavedToolResultReader } from "../engine/toolResults";
 import type { TranscriptItem, TranscriptUserItem } from "../engine/transcript";
 import { logEvent } from "../observability";
+import type { ProviderConversationMessage } from "../providers/types";
 import type { SubagentStopReason } from "../subagents/ports";
+import { isBotCheckPage } from "../tools/botCheckPage";
 import { planActivityEntry } from "../tools/harnessActivity";
 import { harnessToolError } from "../tools/harnessTool";
 import { proposeResearchPlanTool, researchDraftReservedInstruction, researchScopingInstructions, researchScopingOverMessage, startResearchTool, submitResearchDraftTool } from "../tools/research";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { PlanUpdate } from "../tools/updatePlan";
-import { researchCandidatesLine } from "./candidates";
+import { researchCandidatesLine, researchEarlierCandidates, researchEarlierCandidatesOf } from "./candidates";
+import { researchEarlierOptions, type ResearchEarlierDraft } from "./earlier";
 import { RESEARCH_GATES, researchCarriedNotes, runResearchGates, untilAborted, type ResearchAttempt, type ResearchGate } from "./gates";
 import { createResearchRounds, researchFilledCells, researchKeySpecs, researchLeadingRows, researchMatrix, researchProgressCells, researchUnconfirmedKeyCells } from "./matrix";
-import { researchCoverageLine, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate, researchUnreachableSites } from "./method";
-import { researchAnswerText, researchNote } from "./notes";
+import { researchCoverageLine, researchEarlierMethodText, researcherBrief, researcherMatrixBrief, researchMethodText, researchNoNewCellMessage, researchPlanUpdate,
+  researchReadHost, researchUnreachableSites } from "./method";
+import { researchAnswerText, researchContentNotes, researchNote } from "./notes";
 import { researchPorts, type ResearchPortFactories, type ResearchReportEnding, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { PICKED_UP_RECORD_LIST_CHARACTERS, researchDraftWithRecords, researchRecordList } from "./reportAssembly";
 import { researchDraftWithLinkedRecords } from "./reportCheck";
 import { createResearchSources } from "./sources";
+import { researchSiteHost } from "./sourceQuality";
 import { createResearchTurns } from "./turns";
 import type { ResearchVerifierRole } from "./verifierRole";
 
@@ -62,10 +70,21 @@ import type { ResearchVerifierRole } from "./verifierRole";
  * after a restart. The start's result names the research run, since an approval continuation is a new run that must work on the rows
  * of the run that started the research (`researchRunOf`).
  *
+ * Only the user starts research, by choosing Deep research for a message (operator decision 2026-11-05), and no words in a chat do: a run
+ * offers research only on that message's request (`researchRequestOf`), and only the server's bindings authorize it (`authorized`): the
+ * choice frozen with the message, or for an approval continuation and a Continue the frozen choice of a turn they go on from. A start call in a
+ * turn's items is evidence that research started, never authority: a model may write one where research was not offered, and an interruption
+ * may leave it without the result that refused it. Such a run's first step is certain. Until `start_research` passed, every other tool reads as
+ * one the run has not got, as past scoping's limit below, calls beside the start included, and its text is held back; a response without the
+ * start is sent back once, and a turn that ends without it fails visibly (`startMissed`), never with an ordinary answer passing for research.
+ * Only the plan's call may go beside the start, since it refuses on its own unless the start's check passes and does nothing outside research.
+ *
  * The one later turn that may pick research up is the user's Continue on an interrupted run, and it comes through the same door: the model
  * calls `start_research` again and the start asks the store (`resume.ts`). What the store gives back stands at once, with no scoping and no
  * window, under this run's own row and bindings and a fresh clock, and the result says what is filled. With nothing given back it is a start like
  * any other. A researcher's call or a message before that door is sent to it, and its result is what a later approval or Continue finds.
+ * Typing the word after a research that ended is no Continue of it: the run offers research only once the store says that turn was
+ * interrupted.
  *
  * Scoping ends by the server's clock, not by a prompt. Past `RESEARCH_TIME_MS.scoping` only `propose_research_plan` still runs:
  * every other new call is refused as one the run has not got, with what to do instead, so a call already running finishes and a model
@@ -114,10 +133,75 @@ export type ResearchEngineDeps = Readonly<{
   verifier?: ResearchVerifierRole;
 }>;
 
-/** Research is offered only with Search, in an interactive web run that has sub-agents. Telegram and scheduled runs are out. */
-export function researchOffered(input: Readonly<{ monitoring: boolean; scheduled: boolean; searchOptions: number; subagents: boolean;
-  telegram: boolean }>): boolean {
-  return input.searchOptions > 0 && input.subagents && !input.scheduled && !input.telegram && !input.monitoring;
+/**
+ * Why a run may research (operator decision 2026-11-05): the user chose Deep research for its message, or it goes on with a research that
+ * such a message started, as an approval continuation of that turn or the user's Continue of it.
+ */
+export type ResearchRequest = "approval" | "chosen" | "continue";
+
+/** What decides whether a run can research at all: Search, sub-agents, and an interactive web run. */
+export type ResearchAvailability = Readonly<{ monitoring: boolean; scheduled: boolean; searchOptions: number; subagents: boolean; telegram: boolean }>;
+
+/**
+ * Why a run cannot research, or null when it can: Telegram turns, scheduled occurrences, monitoring checks and a run without sub-agents never
+ * research, and with them out what is missing is Search, which the user can turn on. Admission refuses a message sent with Deep research on it.
+ */
+export function deepResearchRefusal(input: ResearchAvailability): (typeof DEEP_RESEARCH_REFUSALS)["needsSearch" | "unavailable"] | null {
+  if (input.monitoring || input.scheduled || input.telegram || !input.subagents) return DEEP_RESEARCH_REFUSALS.unavailable;
+  return input.searchOptions > 0 ? null : DEEP_RESEARCH_REFUSALS.needsSearch;
+}
+
+/** Research rides on a run only on a request, and only where it can run. */
+export function researchOffered(input: ResearchAvailability & Readonly<{ request: ResearchRequest | null }>): boolean {
+  return input.request !== null && deepResearchRefusal(input) === null;
+}
+
+/**
+ * What a run's own facts ask of research: Deep research frozen with its message's bindings, an approval continuation of a turn whose items hold a
+ * research start, or the user's Continue right after such a turn. A start's call is on record before it is sent, so the items show every research
+ * that started, but they also show a call a model made where research was not offered: they are evidence, and an approval continuation or a Continue
+ * researches only once the server's bindings authorize it (`RunResearch.authorized`). Null for every other run, whatever its message says.
+ */
+export function researchRequestOf(input: Readonly<{ approval: boolean; chosen: boolean; items: readonly TranscriptItem[] }>): ResearchRequest | null {
+  // An approval continuation is the server's turn of an earlier one, never a message of its own the user chose anything for.
+  if (input.approval) return researchOfTurn(input.items).goal === undefined ? null : "approval";
+  if (input.chosen) return "chosen";
+  return continuedTurn(input.items)?.goal === undefined ? null : "continue";
+}
+
+/** How many turns back a continuation's authority is looked for: far past the approvals and Continues one research takes. */
+const AUTHORITY_TURNS = 32;
+
+/**
+ * One answer a continuation may take its authority from: its run, null for one with no native run, and the message it answered, an approval's
+ * server turn, a message whose words are the Continue button's, or any other.
+ */
+export type ResearchAuthorityStep = Readonly<{ answered: "approval" | "continue" | "message"; runId: string | null }>;
+
+/**
+ * The answers whose runs' frozen bindings may authorize an approval continuation or a Continue, newest first: the answer before the run's own
+ * message, which is last in `messages`, and on back through every turn that only went on with the one before it (an approval's server turn, a
+ * Continue) to the answer of the first that did not. The words alone prove no Continue: the user may type them after an answer that finished, so
+ * `RunResearch.authorized` holds each step that answered one to the store's word that the run before it was interrupted.
+ */
+export function researchAuthorityChain(input: Readonly<{ continuationTurns: ReadonlySet<string>; messages: readonly ProviderConversationMessage[];
+  runsByAnswer: ReadonlyMap<string, string> }>): readonly ResearchAuthorityStep[] {
+  const turns = input.messages.filter((message) => message.purpose === undefined && message.followupOf === undefined);
+  const steps: ResearchAuthorityStep[] = [];
+  for (let at = turns.length - 1; steps.length < AUTHORITY_TURNS;) {
+    let answer = at - 1;
+    while (answer >= 0 && turns[answer]!.role !== "assistant") answer -= 1;
+    if (answer < 0) break;
+    let asked = answer - 1;
+    while (asked >= 0 && turns[asked]!.role !== "user") asked -= 1;
+    const message = asked < 0 ? null : turns[asked]!;
+    const answered = message === null ? "message" : input.continuationTurns.has(message.id) ? "approval"
+      : textFromContentBlocks(message.content).trim() === CONTINUE_TURN_TEXT ? "continue" : "message";
+    steps.push({ answered, runId: input.runsByAnswer.get(turns[answer]!.id) ?? null });
+    if (answered === "message") break;
+    at = asked;
+  }
+  return steps;
 }
 
 const researchActivity = (toolName: string) => () => ({ origin: "tool" as const, serverName: "Research", toolName });
@@ -150,6 +234,14 @@ const UNREACHABLE_SITES_FRESH_MS = 5_000;
 
 const PICK_UP_FIRST = `The research of the interrupted answer can be picked up from what it recorded. Call ${START_RESEARCH_TOOL_NAME} with its goal now: ` +
   "its plan and records come back with it, and nothing else carries on that research.";
+
+/** What a call before the start of a run whose message the user sent with Deep research returns instead of running. */
+const START_FIRST = `Nothing was run: the user chose Deep research for this message, so ${START_RESEARCH_TOOL_NAME} comes first. Call it now with the goal.`;
+/** What a response of such a run that did not start research is sent back with, once. */
+const START_NOW = `Your message was not shown to the user: they chose Deep research for this message, and only research answers it. ` +
+  `Call ${START_RESEARCH_TOOL_NAME} with its goal now.`;
+/** How such a run ends when it never started research. */
+const NOT_STARTED = Object.freeze({ code: "deep_research_not_started", message: "Deep research did not start for this message. Try again." });
 const PICKED_UP = "Research picked up from what was recorded: the plan stands as it was, with no scoping and no window, its time starts afresh, and the records stay. " +
   "Do not research a filled cell again.";
 /** What the model reads of the report it handed in before the interruption, by what the checks came to. */
@@ -213,6 +305,10 @@ export type RunResearchInput = Readonly<{
   onPlan(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   /** Gives the reserved call back after a draft was not accepted (`ToolBatchState.reservedCalled`). */
   rearmReservedCall(): void;
+  /** Why this run may research (`researchRequestOf`); absent, as a run of research's own tests, nothing makes the start certain. */
+  request?: ResearchRequest;
+  /** For an approval continuation or a Continue, the answers whose runs' frozen choice may authorize it (`researchAuthorityChain`). */
+  authority?: readonly ResearchAuthorityStep[];
   /** The run this one works on (`researchRunOf`), fixed before the ports are made; absent, its own. */
   researchRunId?: string;
   runId: string;
@@ -269,6 +365,8 @@ export function createRunResearch(input: RunResearchInput) {
   const briefed = new Set<string>();
   /** The unreachable sites `fetch_url` last read, so a run's hundreds of page reads do not each read every record. */
   let unreachable: Readonly<{ at: number; sites: ReadonlyMap<string, string> }> | null = null;
+  /** Whether each stored page that would open a closed host is a bot check or cannot be found, read once: a stored page never changes. */
+  const blockPages = new Map<string, boolean>();
   /**
    * The researcher calls running now, by the name their thread has, which is what the store lists and stops, one entry each: a
    * second call of a name in one batch is refused, and must not take the first off.
@@ -288,6 +386,8 @@ export function createRunResearch(input: RunResearchInput) {
   let pickUp: Promise<ResearchResumeState | null> | null = null;
   /** Whether this run's row was written for it, once: only a start writes it, as a run that never starts ran no research. */
   let linking: Promise<boolean> | null = null;
+  /** What earlier research on the branch recommended, read once (`earlierSeeds`). */
+  let seeding: Promise<readonly ResearchCandidate[]> | null = null;
   let askedToPickUp = false;
   /** Where what agents opened starts: at this research's first run, which a Continue moves back past its own. */
   let openedFrom = researchRunId;
@@ -364,7 +464,43 @@ export function createRunResearch(input: RunResearchInput) {
     });
     return linking;
   }
+  /**
+   * The options earlier research on the branch recommended, as this research's first candidates (`earlier.ts`): read once, from the turns of this
+   * run's own items and the store, at a start that picks nothing up; a Continue's frame already holds its research's. A store that fails costs the
+   * seeds, never the run; only Stop goes on as what it is.
+   */
+  function earlierSeeds(): Promise<readonly ResearchCandidate[]> {
+    const { signal } = input.subagentInput;
+    seeding ??= (async () => {
+      const researches = researchEarlierDrafts(input.items(), input.subagentInput.branchRunIds);
+      if (researches.length === 0) return [];
+      const read = await ports.earlier.read({ recordIds: researches.flatMap(({ draft }) => draft.recordIds ?? []),
+        researchRunIds: researches.map(({ researchRunId: run }) => run) }, signal);
+      return researchEarlierCandidates(researchEarlierOptions(researches, read), new Date(input.now()).toISOString());
+    })().catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      logEvent("service_operation", { action: "degrade", code: "research_earlier_failed", error, outcome: "degraded", run_id: input.runId, stage: "read", subsystem: "database" });
+      return [];
+    });
+    return seeding;
+  }
+  /** The method, and what to do with the options earlier research recommended where the frame holds any. */
+  const methodText = (stands: ResearchPlan, earlier: readonly ResearchCandidate[]) => {
+    const carried = researchEarlierMethodText(earlier, "plan");
+    return carried ? `${researchMethodText(stands)}\n\n${carried}` : researchMethodText(stands);
+  };
   const researching = () => goal !== null;
+  /**
+   * A `start_research` call passed its checks. Research counts as started from the response that holds the call (`goal`), which holds its text
+   * back; only this lets a chosen run's other tools run, so a call beside a start that is then refused never runs.
+   */
+  let startPassed = false;
+  /** The user chose Deep research for this message and no start has passed: nothing else runs, and nothing written shows. */
+  const startOwed = () => input.request === "chosen" && !startPassed;
+  /** The run was sent back once for the start. */
+  let askedToStart = false;
+  /** The code of the role that refused the last start, until a start passes. */
+  let startRefused: string | null = null;
   const startResearching = (started: string) => {
     goal = started;
     scopingEndsAt = input.now() + RESEARCH_TIME_MS.scoping;
@@ -552,7 +688,8 @@ export function createRunResearch(input: RunResearchInput) {
       instructions: [PICKED_UP, ...records ? [`${records.length} records stand.${list ? " The ids a draft cites them by end this result." : ""}`] : [],
         ...matrix ? [researchCoverageLine(matrix, null, researchUnconfirmedKeyCells(matrix, records ?? [], attempts.at(-1)?.draft)), ...candidates ? [candidates] : []] : [],
         ...turn.draft ? [DRAFT_LEFT[turn.draftChecked ?? "unfinished"]] : [], ...rebuildOwed ? [REBUILD_FIRST] : []].join("\n"),
-      ...rebuildOwed ? {} : { method: researchMethodText(stands) } });
+      // The frame it picked up holds the options earlier research recommended, as its first start seeded them.
+      ...rebuildOwed ? {} : { method: methodText(stands, matrix ? researchEarlierCandidatesOf(matrix.frame) : []) } });
     return list ? { ...result, content: [...result.content, { text: list, type: "text" }] } : result;
   }
 
@@ -564,9 +701,11 @@ export function createRunResearch(input: RunResearchInput) {
     execute: async ({ call, persistedToolCallId, signal }) => {
       const decoded = decodeResearchStart(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_goal_invalid", decoded.message);
-      // Before `unconfirmedStart` clears: a role nobody can use gives the start back, so the run stays an ordinary one.
+      // Before `unconfirmedStart` clears: a role nobody can use gives the start back, so the run stays an ordinary one, or one the user's choice fails.
       const refused = await turns.startRefusal();
+      startRefused = refused?.code ?? null;
       if (refused) return harnessToolError(call, refused.code, refused.message);
+      startPassed = true;
       if (!researching()) startResearching(decoded.value.goal);
       unconfirmedStart = null;
       const state = await pickedUp();
@@ -574,15 +713,18 @@ export function createRunResearch(input: RunResearchInput) {
       if (plan) return harnessToolError(call, "research_plan_stands", "Research already runs and its plan stands: go on with it.");
       if (continued && state && written) return pickUpResearch(call, { persistedToolCallId, signal }, continued, state);
       await showPlan(persistedToolCallId, "scoping", { plan: [{ status: "in_progress", step: PLANNING_LINE }] });
+      // What earlier research on the branch recommended, so the plan's rows can take those that fit.
+      const earlier = researchEarlierMethodText(await earlierSeeds(), "start");
       // The server's fields, first so an excerpt would keep them: an approval continuation reads them back (`researchRunOf`).
       return resultOf(call, { research_run: researchRunId, status: "scoping",
-        instructions: [...continued?.goal === undefined ? [] : [NOTHING_PICKED_UP], researchScopingInstructions()].join("\n") });
+        instructions: [...continued?.goal === undefined ? [] : [NOTHING_PICKED_UP], researchScopingInstructions(), ...earlier ? [earlier] : []].join("\n") });
     }
   };
 
   /** Why a plan call cannot run now, or null when it can. */
   function planRefusal(call: ModelToolCall): ToolExecutionResult | null {
-    if (!researching()) return harnessToolError(call, "research_not_started", `Nothing was shown: call ${START_RESEARCH_TOOL_NAME} first, or answer the user directly if this needs no research.`);
+    if (!researching()) return harnessToolError(call, "research_not_started", startOwed() ? START_FIRST
+      : `Nothing was shown: call ${START_RESEARCH_TOOL_NAME} first, or answer the user directly if this needs no research.`);
     if (windowOpen) return harnessToolError(call, "research_plan_window_open", "Your plan is with the user; wait for its result.");
     if (plan && !standing) return harnessToolError(call, "research_plan_stands", "The plan stands, so nothing was changed.");
     return null;
@@ -595,20 +737,22 @@ export function createRunResearch(input: RunResearchInput) {
   }
 
   /** What the model reads when a plan stands. The fields keep this order: `researchOfTurn` reads them back from a stored result, excerpted or not. */
-  function planResult(call: ModelToolCall, answer: ResearchPlanAnswer, status: "rebuilt" | "released", instructions: string, method: ResearchPlan | null) {
+  function planResult(call: ModelToolCall, answer: ResearchPlanAnswer, status: "rebuilt" | "released", instructions: string, method: ResearchPlan | null,
+    earlier: readonly ResearchCandidate[]) {
     return resultOf(call, { status, changed: answer.changed, released_by: answer.releasedBy, user_plan: wordsOf(answer.plan), instructions,
-      ...method ? { method: researchMethodText(method) } : {} });
+      ...method ? { method: methodText(method, earlier) } : {} });
   }
 
   async function rebuildPlan(call: ModelToolCall, on: StandingPlan, execution: EngineToolExecution, researched: string): Promise<ToolExecutionResult> {
     const decoded = rebuiltProposal(call, on);
     if (!decoded.ok) return harnessToolError(call, "research_plan_invalid", decoded.message);
-    await ports.planWindow.open({ goal: researched, proposal: decoded.value, signal: execution.signal });
+    const earlier = await earlierSeeds();
+    await ports.planWindow.open({ earlier, goal: researched, proposal: decoded.value, signal: execution.signal });
     const rebuilt = researchPlanFromProposal(researched, decoded.value);
     rebuildOwed = false;
     planStands(rebuilt);
     await showPlan(execution.persistedToolCallId, "stands", researchPlanUpdate(rebuilt));
-    return planResult(call, { changed: on.changed, plan: decoded.value, releasedBy: on.releasedBy }, "rebuilt", "The plan stands with your rebuilt questions.", rebuilt);
+    return planResult(call, { changed: on.changed, plan: decoded.value, releasedBy: on.releasedBy }, "rebuilt", "The plan stands with your rebuilt questions.", rebuilt, earlier);
   }
 
   const proposeTool: EngineTool = {
@@ -627,11 +771,12 @@ export function createRunResearch(input: RunResearchInput) {
       if (standing) return rebuildPlan(call, standing, execution, researched);
       const decoded = decodeResearchPlanProposal(call.arguments);
       if (!decoded.ok) return harnessToolError(call, "research_plan_invalid", decoded.message);
+      const earlier = await earlierSeeds();
       windowOpen = true;
       let answer: ResearchPlanAnswer;
       try {
         // Opened first, so the route finds the window as soon as the card shows it, and Stop may reject it while the card is written.
-        const closing = ports.planWindow.open({ goal: researched, proposal: decoded.value, signal });
+        const closing = ports.planWindow.open({ earlier, goal: researched, proposal: decoded.value, signal });
         closing.catch(() => undefined);
         await showPlan(persistedToolCallId, "window", stepsUpdate(decoded.value));
         answer = await closing;
@@ -648,13 +793,13 @@ export function createRunResearch(input: RunResearchInput) {
       if (answer.changed) {
         await showPlan(persistedToolCallId, "words", stepsUpdate(answer.plan));
         return planResult(call, answer, "released", `The user changed your plan. user_plan holds the user's own words, and they outrank yours. Call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} ` +
-          "again now with your questions, criteria and rows rebuilt from them; no window opens, and no researcher can start until you do.", null);
+          "again now with your questions, criteria and rows rebuilt from them; no window opens, and no researcher can start until you do.", null, earlier);
       }
       await showPlan(persistedToolCallId, "stands", researchPlanUpdate(stands));
       return planResult(call, answer, "released", fromChat
         ? `The user wrote to you while the plan was on the screen. Their message comes right after this result and counts as their edit of the plan: if it changes the plan, call ${PROPOSE_RESEARCH_PLAN_TOOL_NAME} ` +
           "again with your questions rebuilt from it before you start researchers."
-        : "The plan stands as you proposed it.", stands);
+        : "The plan stands as you proposed it.", stands, earlier);
     }
   };
 
@@ -702,8 +847,44 @@ export function createRunResearch(input: RunResearchInput) {
 
     /** Once the plan stands the reserved draft is owed; an accepted one, or one being checked, is not. */
     outstanding: () => plan !== null && accepted === null && !checking,
-    /** From `start_research` on, the round's text stays out of the answer. */
-    holding: researching,
+    /** From `start_research` on, the round's text stays out of the answer, and so does all of it before a start the user's choice owes. */
+    holding: () => researching() || startOwed(),
+
+    /**
+     * Whether the server's bindings let this run research (operator decision 2026-11-05), never a call a model made: the user's choice frozen with
+     * this message does; an approval continuation or a Continue goes on with research only when a turn it continues was sent with Deep research
+     * (`authority`, `ResearchResumePort.sentWithDeepResearch`). A Continue counts only where the run before it was interrupted, by the store's word:
+     * this run's own message and every Continue the chain passes alike, since the user may type the word after an answer that finished, and that
+     * turn was an ordinary one whose run may hold a start call no one authorized. The chain stops at the first that does not count, and what lies
+     * behind it authorizes nothing. A store that fails authorizes nothing and costs the run nothing; only Stop goes on as what it is.
+     */
+    async authorized(): Promise<boolean> {
+      if (input.request === "chosen") return true;
+      if (input.request === undefined) return false;
+      const { signal } = input.subagentInput;
+      try {
+        const runs: string[] = [];
+        let continuing = input.request === "continue";
+        for (const step of input.authority ?? []) {
+          if (continuing && (step.runId === null || !await ports.resume.endedInterrupted(step.runId, signal))) break;
+          if (step.runId !== null) runs.push(step.runId);
+          if (step.answered === "message") break;
+          continuing = step.answered === "continue";
+        }
+        return runs.length > 0 && await ports.resume.sentWithDeepResearch(runs, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        logEvent("service_operation", { action: "degrade", code: "research_resume_failed", error, outcome: "degraded", run_id: input.runId, stage: "read", subsystem: "database" });
+        return false;
+      }
+    },
+
+    /**
+     * How the turn fails when the user chose Deep research and it ended without starting it, null for every other turn: under the code of the role that refused
+     * its last start (Research, Roles), since a start a store's hiccup refused may succeed when the model calls it again, or as never started.
+     */
+    startMissed: (): Readonly<{ code: string; message: string }> | null => !startOwed() ? null : startRefused ? { code: startRefused,
+      message: "Deep research could not start: a model assigned to research is unavailable. An administrator must check it in Defaults & roles." } : NOT_STARTED,
     /** The matrix may grow: the plan stands and can no longer be rebuilt, which replaces only a frame nobody changed. */
     frameOpen: () => plan !== null && standing === null,
     heldToken(delta: string): void {
@@ -753,12 +934,16 @@ export function createRunResearch(input: RunResearchInput) {
     /**
      * What the batch dispatches through: past scoping's limit, between `start_research` and the plan standing, every tool but the plan
      * reads as one the run has not got, so a refusal comes before anything runs, a call already running finishes, and the loop's corrections
-     * bound a model that ignores it. Any other run, or one past its plan, gets the registry's own answers.
+     * bound a model that ignores it. So does every tool but the start and the plan while a start the user's choice owes has not passed, a call
+     * beside the start in its own response included. Any other run, or one past its plan, gets the registry's own answers.
      */
     withScopingLimit<T extends Pick<ToolRegistry, "replacement" | "resolve">>(registry: T): T {
+      // The plan's call refuses on its own unless research started and the start's own check passes (`proposeTool`).
+      const first = (name: string) => name !== START_RESEARCH_TOOL_NAME && name !== PROPOSE_RESEARCH_PLAN_TOOL_NAME && startOwed();
       const over = (name: string) => name !== PROPOSE_RESEARCH_PLAN_TOOL_NAME && researching() && plan === null && input.now() >= scopingEndsAt;
-      return { ...registry, replacement: (name: string) => over(name) ? researchScopingOverMessage() : registry.replacement?.(name),
-        resolve: (name: string) => over(name) ? undefined : registry.resolve(name) };
+      return { ...registry,
+        replacement: (name: string) => first(name) ? START_FIRST : over(name) ? researchScopingOverMessage() : registry.replacement?.(name),
+        resolve: (name: string) => first(name) || over(name) ? undefined : registry.resolve(name) };
     },
 
     /**
@@ -803,14 +988,23 @@ export function createRunResearch(input: RunResearchInput) {
     },
 
     /**
-     * The sites this research recorded unreachable, for `fetch_url` (`researchUnreachableSites`): read again after a few seconds, and a
-     * failed read keeps the last list, so a store's hiccup never fails a page read.
+     * The hosts this research closed, for `fetch_url` (`researchUnreachableSites`): read again after a few seconds, and a failed read
+     * keeps the last list, so a store's hiccup never fails a page read. A read that would open a closed host counts once its stored
+     * page is read and is no bot check (`isBotCheckPage`, on the text alone); a page that cannot be found opens nothing.
      */
     async unreachableSites(signal: AbortSignal): Promise<ReadonlyMap<string, string>> {
       const now = input.now();
       if (unreachable && now - unreachable.at < UNREACHABLE_SITES_FRESH_MS) return unreachable.sites;
       try {
-        const sites = researchUnreachableSites(await ports.evidence.records(signal));
+        const records = await ports.evidence.records(signal);
+        const closed = new Set(records.flatMap((record) => record.kind === "unreachable" ? researchSiteHost(record.target) ?? [] : []));
+        for (const record of records) {
+          const host = researchReadHost(record);
+          if (!host || !closed.has(host) || blockPages.has(record.pageId!)) continue;
+          const page = await ports.evidence.page(record.pageId!, signal);
+          blockPages.set(record.pageId!, page === null || isBotCheckPage({ kind: "text", text: page.text, title: null, truncated: page.truncated }, new Uint8Array()));
+        }
+        const sites = researchUnreachableSites(records, (pageId) => blockPages.get(pageId) ?? true);
         unreachable = { at: now, sites };
         return sites;
       } catch (error) {
@@ -838,6 +1032,12 @@ export function createRunResearch(input: RunResearchInput) {
       Promise<TranscriptUserItem | null> {
       const server = (text: string): TranscriptUserItem => ({ id: randomUUID(), kind: "user", text });
       const toolsOpen = !ended.toolsClosed && input.toolTimeLeft();
+      // The user chose Deep research and the model answered without starting it: sent back once, and after that the turn fails (`startMissed`).
+      if (startOwed()) {
+        if (!toolsOpen || askedToStart) return null;
+        askedToStart = true;
+        return server(START_NOW);
+      }
       // Text answering a Continue with research to pick up: it is asked once for the start, and after that its text is the ordinary answer it is.
       if (!researching() && ended.text.trim() && toolsOpen && !askedToPickUp && await pickedUp()) {
         askedToPickUp = true;
@@ -895,6 +1095,17 @@ export function createRunResearch(input: RunResearchInput) {
       return null;
     },
 
+    /**
+     * What a finished research's page is written from (`page.ts`): the draft whose text `finish` gives the answer (its summary, `researchSummaryText`, above its
+     * report), and as `caveats` the notes of that answer about its content, such as a fact the checks rejected, which the page must not show as plain fact. None
+     * before the plan stood, or for an answer the server built from the records or the model's last words. The engine asks only at research's real end, never
+     * at an approval's pause, so one research writes one page.
+     */
+    pageSource(): Readonly<{ caveats: readonly string[]; draft: ResearchDraft; goal: string; report: string }> | null {
+      const final = plan ? accepted ?? (researching() ? held ?? superseded : null) : null;
+      return final && plan ? { caveats: researchContentNotes(final.notes), draft: final.draft, goal: plan.goal, report: researchDraftText(final.draft) } : null;
+    },
+
     /** What the answer keeps when the run stops or fails with a report in hand; a stopped run shows only a report, never narration. */
     afterEnding(reason: "failed" | "stopped" | "timed_out"): string | null {
       if (accepted) return researchAnswerText(researchDraftText(accepted.draft), accepted.notes);
@@ -903,7 +1114,8 @@ export function createRunResearch(input: RunResearchInput) {
         return researchAnswerText(researchDraftText(report.draft), [...endedWith(report.notes, reason === "stopped" ? "stopped" : reason === "timed_out" ? "time_out" : "run_failed"),
           ...held ? [] : [researchNote("followup_not_applied")]]);
       }
-      if (reason === "stopped") return null;
+      // What a run wrote before a start the user's choice owed is no research and no answer.
+      if (reason === "stopped" || startOwed()) return null;
       return plan ? null : lastWords();
     },
 
@@ -1129,4 +1341,26 @@ function continuedTurn(items: readonly TranscriptItem[]): ContinuedTurn | null {
 export function researchRunOf(items: readonly TranscriptItem[], run: Readonly<{ branchRunIds: readonly string[]; runId: string }>): string {
   const { researchRun } = researchOfTurn(items);
   return researchRun !== undefined && run.branchRunIds.includes(researchRun) ? researchRun : run.runId;
+}
+
+/**
+ * The researches earlier turns of the branch finished, newest first, each once: a turn's draft the gates accepted, which is the report its answer showed,
+ * and the research run its start's stored result names, read as an approval continuation and a Continue read their turn (`researchOfTurn`). The items are
+ * the branch's own, its ancestors only, so a sibling branch's research is never among them; the run they name is a stored value, which counts only when it
+ * is an earlier run of the branch, and the store reads it as this user's in this chat (`earlier.ts`). A research the user stopped, one that timed out
+ * with a draft the gates had not accepted, and an interrupted one are left out: no report of theirs was accepted.
+ */
+export function researchEarlierDrafts(items: readonly TranscriptItem[], branchRunIds: readonly string[]): readonly ResearchEarlierDraft[] {
+  const found: ResearchEarlierDraft[] = [];
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const item = items[index]!;
+    // Where a turn starts, as `researchOfTurn` reads it: the turn before ends right here.
+    if (item.kind !== "user" || !item.id.startsWith("msg-")) continue;
+    const turn = researchOfTurn(items.slice(0, index));
+    const run = turn.researchRun;
+    if (turn.goal === undefined || turn.draftChecked !== "accepted" || !turn.draft || run === undefined || !branchRunIds.includes(run)) continue;
+    if (found.some(({ researchRunId }) => researchRunId === run)) continue;
+    found.push({ draft: turn.draft, researchRunId: run });
+  }
+  return found;
 }

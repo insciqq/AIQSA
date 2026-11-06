@@ -213,6 +213,8 @@ import { decodeThreadSearchEngineActivity, type ThreadSearchEngineActivity } fro
 export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
+  /** See `ChatMessageWire.deepResearch`; the send path also sets it on its optimistic message. */
+  deepResearch?: true;
   followups?: RunFollowupState;
   /** Client only, from the run outcome: what a reader without the live stream shows while the provider is silent. */
   providerWait?: RunProviderWait;
@@ -285,10 +287,38 @@ export type ThreadGeneratedArtifact = Readonly<{
   artifactId: string;
   entrypoint: string | null;
   kind: "chart" | "game" | "html" | "image" | "slides" | "svg";
+  /** Present only on the page a finished research wrote beside this answer; see `ThreadResearchPage`. */
+  researchPage?: ThreadResearchPage;
   title: string;
   versionId: string;
   versionNumber: number;
 }>;
+
+/**
+ * Marks the page a finished research wrote beside its answer, with where that answer's summary ends and its notes start, as offsets into the
+ * answer's saved text. The server takes them from the draft the text was made of, never from the text (`researchAnswerLayout`), so the chat can
+ * show the summary and the notes while the message keeps the whole report. Null where there is no summary, or no notes.
+ */
+export type ThreadResearchPage = Readonly<{ notesStart: number | null; summaryEnd: number | null }>;
+
+/** An answer's text is far shorter; a larger offset is no offset. */
+const RESEARCH_PAGE_OFFSET_MAX = 10_000_000;
+
+function decodeResearchPageOffset(value: unknown): number | null | undefined {
+  if (value === null || value === undefined) return null;
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= RESEARCH_PAGE_OFFSET_MAX ? value as number : undefined;
+}
+
+/** Reads the marker in its saved shape or the card's own (`research_page`). One that cannot be read is no marker. */
+export function decodeThreadResearchPage(value: unknown): ThreadResearchPage | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const summaryEnd = decodeResearchPageOffset("summaryEnd" in record ? record.summaryEnd : record.summary_end);
+  const notesStart = decodeResearchPageOffset("notesStart" in record ? record.notesStart : record.notes_start);
+  if (summaryEnd === undefined || notesStart === undefined) return null;
+  if (summaryEnd !== null && notesStart !== null && notesStart < summaryEnd) return null;
+  return { notesStart, summaryEnd };
+}
 
 export type ThreadToolActivity = {
   calls: ThreadToolActivityCall[];
@@ -443,6 +473,11 @@ export type ChatDetail = WorkspaceChatSummary & {
 };
 
 export type ChatMessageWire = {
+  /**
+   * Only on a user message the user sent with Deep research (`DEEP_RESEARCH_SEND_FIELD`): one of its runs was admitted with the
+   * choice. Absent for every other message, and on a message whose run has not been admitted yet.
+   */
+  deepResearch?: true;
   followups?: RunFollowupState;
   providerWait?: RunProviderWait;
   workspacePreparation?: true;
@@ -1083,6 +1118,7 @@ export function decodeThreadGeneratedArtifact(value: unknown): ThreadGeneratedAr
         artifactId: value.artifact_id,
         entrypoint: value.entrypoint,
         kind: value.kind,
+        researchPage: value.research_page,
         title: value.title,
         versionId: value.version_id,
         versionNumber: value.version_number
@@ -1093,11 +1129,13 @@ export function decodeThreadGeneratedArtifact(value: unknown): ThreadGeneratedAr
     (candidate.versionNumber as number) < 1 ||
     !["chart", "game", "html", "image", "slides", "svg"].includes(String(candidate.kind)) ||
     candidate.entrypoint !== null && candidate.entrypoint !== undefined && !requiredString(candidate.entrypoint)) return null;
+  const researchPage = candidate.researchPage === undefined ? null : decodeThreadResearchPage(candidate.researchPage);
   return {
     ...(candidate.byteSize !== undefined ? { byteSize: Number(candidate.byteSize) } : {}),
     artifactId: candidate.artifactId as string,
     entrypoint: candidate.entrypoint === undefined ? null : candidate.entrypoint as string | null,
     kind: candidate.kind as ThreadGeneratedArtifact["kind"],
+    ...(researchPage ? { researchPage } : {}),
     title: candidate.title as string,
     versionId: candidate.versionId as string,
     versionNumber: candidate.versionNumber as number
@@ -1362,6 +1400,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   const subagentCallback = value.subagentCallback === undefined ? undefined
     : decodeChatMessageSubagentCallback(value.subagentCallback);
   if (subagentCallback === null || (subagentCallback && value.systemTurnKind !== SUBAGENT_CALLBACK_TURN_KIND)) return null;
+  if (value.deepResearch !== undefined && (value.deepResearch !== true || role !== "user")) return null;
   if (
     !id ||
     citationMessageId === undefined ||
@@ -1378,6 +1417,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     return null;
   }
   return {
+    ...(value.deepResearch === true ? { deepResearch: true as const } : {}),
     ...(pdfPreparation ? { pdfPreparation } : {}),
     ...(followups ? { followups } : {}),
     // A wait this client does not know reads as no wait: it only changes a status line.

@@ -56,6 +56,7 @@ import {
   type ReactNode
 } from "react";
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
+import type { ResearchReportDownloadV2 } from "./researchAnswerView";
 import { ScheduledTaskCardsV2 } from "./ScheduledTaskCardV2";
 import { SkillSaveCardsV2 } from "./SkillSaveCardV2";
 import { ResourceChangeCardsV2 } from "./ResourceChangeCardV2";
@@ -473,6 +474,7 @@ export function AnswerOutputsV2({
   onOpenLibrary,
   onStartAssistantChat,
   onUseImageInArtifact,
+  researchReport = null,
   runId = null,
   workspaceOutputStatus = null
 }: Readonly<{
@@ -493,6 +495,8 @@ export function AnswerOutputsV2({
   /** Starts a new chat with an Assistant an answer created, as `/assistant/<id>` does. */
   onStartAssistantChat?(assistantId: string): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
+  /** The whole report of a research that wrote a page (`researchAnswerViewV2`), offered as a `.md` file under the page's card. */
+  researchReport?: ResearchReportDownloadV2 | null;
   /** The answer's run: its approval cards decide through it. */
   runId?: string | null;
   /** Export state of the run's Workspace outputs; shown above the generated files. */
@@ -528,7 +532,7 @@ export function AnswerOutputsV2({
   );
 
   if ((!artifact || (
-    !hasSuggestions && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts &&
+    !hasSuggestions && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts && !researchReport &&
     scheduledTasks.length === 0 && skillSaves.length === 0 && resourceChanges.length === 0 && mcpApprovals.length === 0
   )) && !outputStatusCopy) {
     return null;
@@ -548,6 +552,7 @@ export function AnswerOutputsV2({
       ) : null}
       {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} onUseInArtifact={onUseImageInArtifact ? () => onUseImageInArtifact(image.attachmentId) : undefined} />)}
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
+      {researchReport ? <ResearchReportDownloadRowV2 report={researchReport} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
       <SkillSaveCardsV2 cards={skillSaves} onOpenLibrary={onOpenLibrary} />
       <ResourceChangeCardsV2 cards={resourceChanges} navigation={cardNavigation} />
@@ -637,6 +642,52 @@ function GeneratedArtifactCardV2({ artifact, editing, onOpen, onEdit, onShare }:
       <a className="v2-menu-item v2-focusable" role="menuitem" href={`/artifacts/${encodeURIComponent(artifact.artifactId)}/versions/${encodeURIComponent(artifact.versionId)}`} target="_blank" rel="noreferrer" onClick={closeForAction}>Open in new tab</a>
     </UiV2ResponsiveMenu> : null}
   </li>;
+}
+
+/** How long the report's object address outlives the click: long enough for a slow browser to start the download. */
+const REPORT_URL_LIFETIME_MS = 30_000;
+
+/** Saves the report made in this tab from the answer's text: no request, no stored copy. */
+export function downloadResearchReportV2(report: ResearchReportDownloadV2): void {
+  const url = URL.createObjectURL(new Blob([report.text], { type: "text/markdown;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = report.fileName;
+  link.rel = "noopener";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), REPORT_URL_LIFETIME_MS);
+}
+
+/** The research's whole report as a file card beside its page, made in the browser from the answer's own text. */
+function ResearchReportDownloadRowV2({ report }: Readonly<{ report: ResearchReportDownloadV2 }>) {
+  const byteSize = useMemo(() => new TextEncoder().encode(report.text).length, [report.text]);
+  return (
+    <section className="v2-generated-files" aria-label="Report">
+      <ul>
+        <li>
+          <span className="v2-generated-file-tile" aria-hidden="true"><UiV2Icon name="file-text" /></span>
+          <span className="v2-generated-file-copy">
+            <strong title={report.fileName}>{report.fileName}</strong>
+            <small>Report · MD · {formatAttachmentBytes(byteSize)}</small>
+          </span>
+          <span className="v2-generated-file-actions">
+            <button
+              aria-label="Download report (.md)"
+              className="v2-generated-file-download v2-focusable"
+              data-testid="research-report-download"
+              data-tooltip="Download report (.md)"
+              onClick={() => downloadResearchReportV2(report)}
+              type="button"
+            >
+              <UiV2Icon name="download" />
+            </button>
+          </span>
+        </li>
+      </ul>
+    </section>
+  );
 }
 
 function generatedFileType(file: ThreadGeneratedFile): string {

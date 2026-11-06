@@ -1,5 +1,6 @@
 import { registerMcpGuardUsage } from "../mcp/guardUsage";
 import { randomUUID } from "node:crypto";
+import { DEEP_RESEARCH_REFUSALS } from "../../contracts/research";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTasks";
 import { estimateApproxTokens } from "../../domain/contextBudget";
@@ -84,7 +85,11 @@ import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../tools/aiqsaGuide";
 import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
 import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/recordEvidence";
-import { createRunResearch, researchOffered, researchRunOf, type ResearchEngineDeps, type RunResearch } from "../research/run";
+import { createRunResearch, deepResearchRefusal, researchAuthorityChain, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
+  type RunResearch } from "../research/run";
+import { researchAnswerLayout } from "../research/notes";
+import { researchPageCard, researchPageRequest, writeResearchPage } from "../research/page";
+import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
 
 /**
  * The native engine's execution of one accepted run: the run's SSE response
@@ -108,6 +113,14 @@ export class EngineFailure extends Error {
 
 export const CONTEXT_TOO_LARGE_MESSAGE =
   "This conversation no longer fits the model's context window. Start a new chat, or continue in a new chat from this answer.";
+
+/**
+ * The note an agent's message carries when it arrives as a written answer ends, on its delivered item and never in the
+ * system prompt: the answer stays as written, so the model adds only what is new (operator decision 2026-11-05).
+ */
+export const ANSWER_STANDS_INSTRUCTION = "[Server note, not from the user] Your answer above stands and the user already has it. " +
+  "Do not repeat or rewrite it: write only what this adds or changes, which will appear below it. If there is nothing new, write nothing. " +
+  "You may still call tools, for example to answer an agent or to make a call it handed back.";
 
 export type NativeEngineDeps = SubagentEngineDeps & Readonly<{
   /** The approved call an approval continuation sends, while its approval may still continue. */
@@ -428,6 +441,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       let research: RunResearch | null = null;
       /** Puts what research held into the answer, as what the user reads. */
       let showResearchAnswer: ((text: string) => Promise<void>) | null = null;
+      /** The answer held while its research's page is written: what Stop or a failure then keeps, exactly as it would have gone out. */
+      let pageHeld: string | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
@@ -678,23 +693,39 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         };
         const subagents = await prepareRunSubagents(subagentInput);
         runSubagents = subagents;
-        // Research is the main agent's (`research/run.ts`): its tools ride beside the sub-agent tools, which its researchers run on.
-        const runResearch = subagents && engine.research && engine.subagentThreads && researchOffered({ monitoring: normalizedRequest.monitoringVerdictTool === true,
-          scheduled: input.scheduled === true, searchOptions: normalizedRequest.searchPlan.options.length, subagents: true, telegram: input.telegram === true })
-          ? createRunResearch({ chatId: scope.chatId, deps: engine.research, extendTurn, gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
-            items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; },
+        // Research is the main agent's (`research/run.ts`): its tools ride beside the sub-agent tools, which its researchers run on, and
+        // only on the run of a message the user sent with Deep research, an approval continuation of its research or a Continue of it
+        // (operator decision 2026-11-05). No words in a chat offer it, and a start call in the items authorizes nothing: the turns a
+        // continuation goes on from must have been sent with it.
+        const researchAvailability: ResearchAvailability = { monitoring: normalizedRequest.monitoringVerdictTool === true, scheduled: input.scheduled === true,
+          searchOptions: normalizedRequest.searchPlan.options.length, subagents: Boolean(subagents && engine.research && engine.subagentThreads), telegram: input.telegram === true };
+        const researchRequest = researchRequestOf({ approval: Boolean(input.approvalContinuation), chosen: normalizedRequest.deepResearch === true, items: conversation.items });
+        const offeredResearch = subagents && engine.research && engine.subagentThreads && researchRequest && researchOffered({ ...researchAvailability, request: researchRequest })
+          ? createRunResearch({ authority: researchRequest === "chosen" ? [] : researchAuthorityChain({ continuationTurns, messages: conversationMessages,
+            runsByAnswer: nativeRuns }), chatId: scope.chatId, deps: engine.research, extendTurn,
+            gatesEndAt: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)),
+            items: () => items, now, onPlan: onWorkspaceActivity, rearmReservedCall: () => { toolState.reservedCalled = false; }, request: researchRequest,
             // An approval continuation is a new run of the research its turn started, and works on that run's rows.
             researchRunId: input.approvalContinuation ? researchRunOf(conversation.items, { branchRunIds, runId }) : runId, runId,
             savedResults: engine.savedResults, subagentInput, threads: engine.subagentThreads, toolTimeLeft, userId: input.userId,
             userMessage: subagentInput.userMessage }) : null;
+        const runResearch = offeredResearch && await offeredResearch.authorized() ? offeredResearch : null;
         research = runResearch;
+        // Admission refused a message sent with Deep research that cannot research (`deepResearchRefusal`); one that still cannot is refused here,
+        // before any model call, never answered another way.
+        if (normalizedRequest.deepResearch === true && !runResearch) {
+          throw new EngineFailure(DEEP_RESEARCH_REFUSALS.unavailable, "Deep research is unavailable for this message.");
+        }
         if (input.approvalContinuation) runResearch?.resume(conversation.items);
         const registry = subagents ? withSubagentTools(mainRegistry, [...(runResearch?.withResearcherBriefs(subagents.tools) ?? subagents.tools),
-          ...(runResearch?.tools ?? []), ...(runResearch ? [recordEvidenceEngineTool(researchEvidenceTarget(runResearch), { kind: "main" }),
+          ...(runResearch?.tools ?? []), ...(runResearch ? [recordEvidenceEngineTool(researchEvidenceTarget(runResearch), { kind: "main" },
+            { browser: () => mainRegistry.browser === true }),
             changeResearchFrameEngineTool(researchFrameTarget(runResearch), { kind: "main" })] : [])]) : mainRegistry;
         // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
         // only for this run rides in with its input (`systemPrompt.ts`).
+        // A run that could research but was not asked to names the control once, the same line on every ordinary turn.
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
+          ...(!runResearch && deepResearchRefusal(researchAvailability) === null ? { researchControl: true } : {}),
           secrets: input.services.secrets, snapshot, ...(subagents ? { subagents: subagents.prompt } : {}), tools: registry.definitions() });
         base = native.request;
         // The user's custom sub-agents and default ride in run context like the Skills index, never in the system prompt.
@@ -885,26 +916,35 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             if (batch.entries.some((entry) => entry.delivery === "accepted")) return false;
             return followupOps.close({ revision: batch.revision, runId, userId: input.userId });
           },
-          deliverFollowups: async (): Promise<readonly TranscriptUserItem[]> => {
+          deliverFollowups: async ({ ending }): Promise<readonly TranscriptUserItem[]> => {
             if (!followupOps) return [];
             const batch = await followupOps.load({ runId, userId: input.userId });
             const accepted = batch?.entries.filter((entry) => entry.delivery === "accepted") ?? [];
             if (!batch || accepted.length === 0) return [];
             // Only the user's own follow-ups are their speech and link authority; what a sub-agent sends is untrusted data.
-            const fromUser = accepted.filter((entry) => entry.origin === undefined || entry.origin === "user");
+            const fromUser = accepted.filter(userAuthoredFollowup);
+            // Only the user's own follow-up starts the answer over. What agents send alone adds to the answer the user
+            // already has and never rewrites or empties it (operator decision 2026-11-05).
+            const startsOver = fromUser.length > 0;
             await answer.flush();
-            if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: answer.text, revision: batch.revision, runId,
-              userId: input.userId })) return [];
+            if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: startsOver ? answer.text : null,
+              revision: batch.revision, runId, userId: input.userId })) return [];
             followupRevision = batch.revision;
             delivered.push(...fromUser.map((entry) => entry.text));
-            if (fromUser.length > 0) unknownEffects.userSpoke();
+            if (startsOver) unknownEffects.userSpoke();
             runResearch?.followupDelivered();
-            // The answer starts over after the user's follow-up, as the delivered record shows.
-            answer.restart();
-            sink.send({ data: { round: batch.revision }, type: "message_reset" });
+            if (startsOver) {
+              // The answer starts over after the user's follow-up, as the delivered record shows.
+              answer.restart();
+              sink.send({ data: { round: batch.revision }, type: "message_reset" });
+            }
+            // Delivered as a written answer ends, agents' messages are told that the answer stands. Between tool rounds the
+            // turn is not done, and a held research answer is not yet the user's.
+            const note = !startsOver && ending && answer.text.trim() && !runResearch?.holding() ? ANSWER_STANDS_INSTRUCTION : null;
             await chatUpdate();
-            return accepted.map((entry) => ({ ...(fromUser.includes(entry) ? {} : { callback: true as const }),
-              followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
+            return accepted.map((entry, index) => ({ ...(fromUser.includes(entry) ? {} : { callback: true as const }),
+              followup: true as const, id: randomUUID(), kind: "user" as const,
+              text: note && index === accepted.length - 1 ? `${entry.text}\n\n${note}` : entry.text }));
           },
           ...(runResearch ? { draft: {
             answerTaken: (taken: Readonly<{ toolChoice: LoopToolChoice }>) => runResearch.answerTaken(taken),
@@ -969,8 +1009,55 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
+        // The user chose Deep research and the turn never started it: a visible failure, never an ordinary answer passing for research.
+        const missed = runResearch?.startMissed();
+        if (missed) throw new EngineFailure(missed.code, missed.message);
         let researched = runResearch?.finish(outcome.kind === "approval") ?? null;
         if (researched === null && runResearch && outcome.kind !== "approval") researched = await runResearch.composed("no_report", stop.signal);
+        // A finished research's page (`research/page.ts`), from the final report while the answer waits: one step offering `create_artifact` alone,
+        // its own conversation and its own bound, never at an approval's pause. Its card joins the answer only once the page passed its check.
+        const pageSource = researched !== null && outcome.kind !== "approval" ? runResearch?.pageSource() ?? null : null;
+        const pageTool = pageSource && registry.resolve(ARTIFACT_TOOL_NAME);
+        if (pageSource && pageTool && runResearch && researched !== null) {
+          const held = researched;
+          pageHeld = held;
+          const artifacts = input.services.artifacts;
+          // A page the answer does not show leaves the chat's artifacts, archived as its owner would, so no later turn reads it.
+          const discard = artifacts?.archive ? async (artifactId: string) => { await artifacts?.archive?.({ artifactId, ownerUserId: input.userId }); } : null;
+          const page = await writeResearchPage({ caveats: pageSource.caveats, check: runResearch.ports.page.check, ...(discard ? { discard } : {}),
+            goal: pageSource.goal, latestEnd: startedAt + turnMs - Math.min(TURN_HANDOFF_RESERVE_MS, Math.floor(turnMs / 2)), now,
+            recordIds: pageSource.draft.recordIds, report: pageSource.report, runId,
+            // Answer first: what the answer will say is on its message before the step, so a restart during it leaves recovery this text.
+            save: async () => {
+              await answer.flush();
+              await input.repository.appendAssistantText(scope.assistantMessageId, held, { runId });
+            },
+            signal,
+            respond: async (history, pageSignal) => {
+              sink.send(liveRunPhaseStatus({ phase: "model" }));
+              const result = await callModel({ adapter: input.adapter, deadlineAt: startedAt + turnMs, faults, now, onDiscard: async () => undefined,
+                // Nothing of the step streams: the answer is the report, and the page reaches it as its card.
+                onEvent: async () => undefined,
+                onProviderWait: (wait) => {
+                  setRunProviderWait(runId, wait);
+                  sink.send(liveRunPhaseStatus({ phase: "model", ...(wait ? { wait } : {}) }));
+                }, onUsage: recordModelUsage, routing: loopRouting, signal: pageSignal, timeoutMs },
+              researchPageRequest(base, { history: projectTranscript(history, target, {}), params, tool: pageTool.definition }));
+              // No request anchor: the step's request is not the transcript's, so the next run measures from the loop's last one.
+              return { calls: result.toolCalls ?? [], items: modelResponseItems({ estimate: estimateApproxTokens, history: result.history ?? fallbackHistory(result),
+                nextId: randomUUID, origin: target, usage: result.usage }) };
+            },
+            // The run's ordinary tool path, outside the call budget as the reserved draft is, after the loop's last round.
+            runCall: async (call, attempt, pageSignal) => {
+              const cards: ModelRunSseEvent[] = [];
+              const batch = await runToolBatch({ ...batchDeps, maxToolCalls: null, onEvent: async (event) => { cards.push(event); }, signal: pageSignal,
+                toolTimeLeft: () => !pageSignal.aborted }, { calls: 0 }, { calls: [call], round: outcome.rounds + attempt });
+              return { cards, result: batch.results[0]! };
+            } });
+          pageHeld = null;
+          // The card says it is this answer's page, and where the answer's summary ends, from the draft its text was made of.
+          if (page) await sink.publish(researchPageCard(page.card, researchAnswerLayout(answer.shown(held), pageSource.draft, answer.shown)));
+        }
         if (researched !== null) await showResearchAnswer(researched);
         // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
         if (researched === null && (outcome.kind === "empty" || outcome.kind === "answered" && runResearch?.holding() === true && !answer.text.trim())) {
@@ -1031,7 +1118,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...failureCauseFields({ cancelled, failure, stopped: stop.signal.aborted, timedOut: deadline.signal.aborted, turnMs,
             workspaceRun: Boolean(workspace) }) });
         // Answer first: a report research held reaches the answer whatever ended the run, with a note saying so.
-        let heldReport = answerPublished ? null : research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
+        let heldReport = answerPublished ? null : pageHeld ?? research?.afterEnding(cancelled ? "stopped" : deadline.signal.aborted ? "timed_out" : "failed") ?? null;
         if (heldReport === null && research && !answerPublished && !cancelled) heldReport = await research.composed(deadline.signal.aborted ? "timed_out" : "failed", stop.signal);
         if (heldReport !== null) await showResearchAnswer?.(heldReport);
         answer.stop();
