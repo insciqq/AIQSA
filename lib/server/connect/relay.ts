@@ -79,25 +79,47 @@ export const CONNECT_OP_REPLY_GRACE_MS = 2_000;
  * command beyond this is refused before it would stall the device's stream.
  */
 export const CONNECT_MAX_OP_COMMAND_BYTES = 8_388_608;
+/**
+ * `run_ended` commands kept per device while it has no stream to take them
+ * (offline, or its stream was gone), sent right after its next `hello`. A
+ * background job of a run whose `run_ended` is lost anyway (a server restart)
+ * ends by the device's own lease.
+ */
+export const CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS = 256;
+/** How long an undelivered `run_ended` is kept. */
+export const CONNECT_RELAY_UNDELIVERED_RUN_END_TTL_MS = 24 * 60 * 60 * 1000;
+/** Devices with undelivered `run_ended` commands; the one waiting longest is dropped beyond it. */
+export const CONNECT_RELAY_MAX_UNDELIVERED_DEVICES = 4_096;
 
 type PendingOp = Readonly<{
   op: ConnectOp;
   settle: (outcome: ComputerOpOutcome) => void;
 }>;
 
+/**
+ * The operations waiting on one device. They outlive its streams: the device
+ * keeps running an operation across a reconnect and posts the reply on its
+ * next stream, so only the deadline, an abort, revocation or the switch-off
+ * fail them.
+ */
+type DevicePending = Readonly<{ ops: Map<string, PendingOp>; userId: string }>;
+
+/** A `run_ended` that found no stream; `userId` is the caller's, checked against the device's owner on delivery. */
+type UndeliveredRunEnd = Readonly<{ at: number; runId: string; userId: string }>;
+
 type OnlineDevice = {
   /** `device_info` of this stream; null until the device reports it. */
   info: ConnectComputerInfoWire | null;
-  readonly pending: Map<string, PendingOp>;
   record: ConnectDeviceRecord;
   readonly streamId: string;
   readonly tokenHash: string;
   readonly writer: ConnectStreamWriter;
 };
 
+/** How a stream ends; `failPending` fails the device's waiting operations (revocation, switch-off). */
 type DeviceEnd = Readonly<{
+  failPending?: ComputerFailureCode;
   final?: Readonly<{ data: unknown; event: string }>;
-  pendingCode: ComputerFailureCode;
 }>;
 
 export type ConnectRelay = ReturnType<typeof createConnectRelay>;
@@ -125,14 +147,17 @@ function failure(code: ComputerFailureCode, sent: boolean): ComputerOpOutcome {
 
 /**
  * The in-memory relay between paired devices and the server: online device
- * streams, the operations waiting for their replies and what each device
- * reported about itself. Nothing it holds is persisted or logged: operation
- * arguments and results pass through bounded queues only. It assumes the
- * single application process (D-01).
+ * streams, the operations waiting for their replies, the `run_ended`
+ * commands a device has yet to receive and what each device reported about
+ * itself. Nothing it holds is persisted or logged: operation arguments and
+ * results pass through bounded queues only. It assumes the single
+ * application process (D-01).
  */
 export function createConnectRelay(options: Readonly<{ now?: () => number }> = {}) {
   const now = options.now ?? Date.now;
   const devices = new Map<string, OnlineDevice>();
+  const pendingByDevice = new Map<string, DevicePending>();
+  const undeliveredRunEnds = new Map<string, UndeliveredRunEnd[]>();
   const deviceIdsByToken = new Map<string, string>();
   const listeners = new Set<ConnectRelayListener>();
   const eventsStreams = new Map<string, number>();
@@ -166,25 +191,67 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     if (!current(device)) return false;
     if (device.writer.send("command", command)) return true;
     logConnect({ action: "retry", code: "connect_device_queue_full", outcome: "failed", stage: "dispatch" });
-    endDevice(device, { pendingCode: "connect_device_disconnected" });
+    endDevice(device, {});
     return false;
   }
 
-  /** Every operation still waiting on the stream: the device may have started it. */
-  function failPending(device: OnlineDevice, code: ComputerFailureCode): void {
-    const pending = [...device.pending.values()];
-    device.pending.clear();
-    for (const entry of pending) entry.settle(failure(code, true));
+  /** Every operation still waiting on the device: it may have started them. */
+  function failPending(deviceId: string, code: ComputerFailureCode): void {
+    const entry = pendingByDevice.get(deviceId);
+    if (!entry) return;
+    pendingByDevice.delete(deviceId);
+    for (const pending of [...entry.ops.values()]) pending.settle(failure(code, true));
   }
 
-  /** Ends a device stream that is still current: its operations fail and its owner sees it offline. */
+  /** The device's waiting operations, only while they are its owner's. */
+  function devicePending(device: OnlineDevice): Map<string, PendingOp> | null {
+    const entry = pendingByDevice.get(device.record.id);
+    return entry && entry.userId === device.record.userId ? entry.ops : null;
+  }
+
+  /** Ends a device stream that is still current; its owner sees it offline. */
   function endDevice(device: OnlineDevice, end: DeviceEnd): void {
     if (!current(device)) return;
     devices.delete(device.record.id);
     if (deviceIdsByToken.get(device.tokenHash) === device.record.id) deviceIdsByToken.delete(device.tokenHash);
     device.writer.close(end.final);
-    failPending(device, end.pendingCode);
+    if (end.failPending) failPending(device.record.id, end.failPending);
     emitDevice(device, false);
+  }
+
+  function freshRunEnds(entries: readonly UndeliveredRunEnd[]): UndeliveredRunEnd[] {
+    const oldest = now() - CONNECT_RELAY_UNDELIVERED_RUN_END_TTL_MS;
+    return entries.filter((entry) => entry.at > oldest);
+  }
+
+  /** Keeps a `run_ended` the device could not take, bounded per device and in devices. */
+  function rememberRunEnd(deviceId: string, runId: string, userId: string): void {
+    const entries = freshRunEnds(undeliveredRunEnds.get(deviceId) ?? []);
+    if (!entries.some((entry) => entry.runId === runId && entry.userId === userId)) entries.push({ at: now(), runId, userId });
+    // Reinserted, so the map's first key is the device waiting longest.
+    undeliveredRunEnds.delete(deviceId);
+    undeliveredRunEnds.set(deviceId, entries.slice(-CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS));
+    while (undeliveredRunEnds.size > CONNECT_RELAY_MAX_UNDELIVERED_DEVICES) {
+      undeliveredRunEnds.delete(undeliveredRunEnds.keys().next().value!);
+    }
+  }
+
+  /**
+   * Sends the device's undelivered `run_ended` commands on its new stream.
+   * Only those its owner's runs asked for go; the others are dropped. What a
+   * full queue refuses waits for the next stream.
+   */
+  function deliverRunEnds(device: OnlineDevice): void {
+    const entries = undeliveredRunEnds.get(device.record.id);
+    if (!entries) return;
+    undeliveredRunEnds.delete(device.record.id);
+    const owned = freshRunEnds(entries).filter((entry) => entry.userId === device.record.userId);
+    for (const [index, entry] of owned.entries()) {
+      if (!sendCommand(device, { runId: entry.runId, type: "run_ended" })) {
+        undeliveredRunEnds.set(device.record.id, owned.slice(index));
+        return;
+      }
+    }
   }
 
   function applyEvent(device: OnlineDevice, event: ConnectDeviceEventV2): void {
@@ -196,7 +263,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       }
       case "reply": {
         // A reply to an operation that already settled (timeout, cancel) or was never sent is ignored.
-        const pending = device.pending.get(event.requestId);
+        const pending = devicePending(device)?.get(event.requestId);
         if (!pending) return;
         if (connectUtf8ByteLength(JSON.stringify(event)) > CONNECT_MAX_REPLY_BYTES) {
           logConnect({ action: "fail", code: "connect_reply_invalid", outcome: "failed", stage: "validate" });
@@ -241,9 +308,10 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     },
 
     /**
-     * Makes a stream the device's current one and sends `hello` first. A
-     * previous stream gets `replaced` and its waiting operations fail as
-     * `connect_device_disconnected`.
+     * Makes a stream the device's current one and sends `hello` first, then
+     * the `run_ended` commands the device has yet to receive. A previous
+     * stream gets `replaced`; the device's waiting operations keep waiting
+     * for their replies on the new stream.
      */
     attachDevice(input: Readonly<{
       epoch: number;
@@ -256,7 +324,6 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       const previous = devices.get(input.record.id);
       const device: OnlineDevice = {
         info: null,
-        pending: new Map(),
         record: input.record,
         streamId: randomUUID(),
         tokenHash: input.tokenHash,
@@ -270,16 +337,23 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
           deviceIdsByToken.delete(previous.tokenHash);
         }
         previous.writer.close({ data: {}, event: "replaced" });
-        failPending(previous, "connect_device_disconnected");
       }
+      // Operations of another owner never wait on this device's streams.
+      const waiting = pendingByDevice.get(device.record.id);
+      if (waiting && waiting.userId !== device.record.userId) failPending(device.record.id, "connect_device_disconnected");
       emitDevice(device, true);
+      deliverRunEnds(device);
       return { kind: "attached", streamId: device.streamId };
     },
 
-    /** The device's stream ended (client, network or server close). */
+    /**
+     * The device's stream ended (client, network or server close). Its
+     * waiting operations keep waiting: the device posts their replies on its
+     * next stream, or their deadline fails them.
+     */
     detachDevice(deviceId: string, streamId: string): void {
       const device = devices.get(deviceId);
-      if (device && device.streamId === streamId) endDevice(device, { pendingCode: "connect_device_disconnected" });
+      if (device && device.streamId === streamId) endDevice(device, {});
     },
 
     /** Keeps the online record current after the stream refreshed `lastSeenAt`. */
@@ -294,8 +368,8 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       if (!device || device.streamId !== streamId) return;
       epoch += 1;
       endDevice(device, {
-        final: { data: { code }, event: "closed" },
-        pendingCode: code === "connect_disabled" ? "connect_disabled" : "connect_device_disconnected"
+        failPending: code === "connect_disabled" ? "connect_disabled" : "connect_device_disconnected",
+        final: { data: { code }, event: "closed" }
       });
     },
 
@@ -328,7 +402,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       const device = tokenDevice(tokenHash);
       if (!device) return;
       for (const requestId of requestIds) {
-        const pending = device.pending.get(requestId);
+        const pending = devicePending(device)?.get(requestId);
         if (!pending) continue;
         logConnect({ action: "fail", code: "connect_reply_invalid", outcome: "failed", stage: "validate" });
         pending.settle(failure("connect_device_error", true));
@@ -349,10 +423,11 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
 
     /**
      * Sends one operation to the user's own online device and waits for its
-     * reply, at most its deadline and a short grace. Null when the device has
-     * no open stream of this user (offline, missing or someone else's: the
-     * caller tells them apart). An abort or the deadline sends `cancel` and
-     * settles at once; a reply that arrives later is ignored.
+     * reply, at most its deadline and a short grace, also across a reconnect
+     * of the device. Null when the device has no open stream of this user
+     * (offline, missing or someone else's: the caller tells them apart). An
+     * abort or the deadline sends `cancel` to the device's current stream
+     * and settles at once; a reply that arrives later is ignored.
      */
     callOp(input: ConnectRelayOpCall): Promise<ComputerOpOutcome> | null {
       const owned = ownedDevice(input.userId, input.deviceId);
@@ -360,7 +435,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       // Narrowed once for the closures below, which TypeScript does not narrow.
       const device: OnlineDevice = owned;
       if (input.signal.aborted) return Promise.resolve(failure("computer_cancelled", false));
-      if (device.pending.size >= CONNECT_MAX_CONCURRENT_OPS) {
+      if ((devicePending(device)?.size ?? 0) >= CONNECT_MAX_CONCURRENT_OPS) {
         logConnect({ action: "skip", code: "computer_limit", outcome: "blocked", stage: "dispatch" });
         return Promise.resolve(failure("computer_limit", false));
       }
@@ -384,7 +459,8 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       return new Promise<ComputerOpOutcome>((resolve) => {
         let settled = false;
         const cancel = () => {
-          if (current(device)) sendCommand(device, { requestId, type: "cancel" });
+          const online = ownedDevice(input.userId, input.deviceId);
+          if (online) sendCommand(online, { requestId, type: "cancel" });
         };
         const timer = setTimeout(() => {
           logConnect({ action: "stop", code: "computer_timeout", durationMs: now() - startedAt, outcome: "failed", stage: "dispatch" });
@@ -402,29 +478,48 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
           settled = true;
           clearTimeout(timer);
           input.signal.removeEventListener("abort", onAbort);
-          if (device.pending.get(requestId) === entry) device.pending.delete(requestId);
+          const waiting = pendingByDevice.get(input.deviceId);
+          if (waiting?.ops.get(requestId) === entry) {
+            waiting.ops.delete(requestId);
+            if (waiting.ops.size === 0) pendingByDevice.delete(input.deviceId);
+          }
           resolve(outcome);
         }
-        device.pending.set(requestId, entry);
+        let waiting = pendingByDevice.get(input.deviceId);
+        if (!waiting) {
+          waiting = { ops: new Map(), userId: input.userId };
+          pendingByDevice.set(input.deviceId, waiting);
+        }
+        waiting.ops.set(requestId, entry);
         input.signal.addEventListener("abort", onAbort, { once: true });
       });
     },
 
-    /** Tells the user's own online device that a run is over; nothing when it is offline or someone else's. */
+    /**
+     * Tells the user's own device that a run is over. While it has no stream
+     * to take the command, it waits for the device's next `hello`, sent then
+     * only when the device is still this user's; nothing when the online
+     * device is someone else's.
+     */
     runEnded(input: Readonly<{ deviceId: string; runId: string; userId: string }>): void {
-      const device = ownedDevice(input.userId, input.deviceId);
-      if (device) sendCommand(device, { runId: input.runId, type: "run_ended" });
+      const device = devices.get(input.deviceId);
+      if (device && device.record.userId !== input.userId) return;
+      if (device && sendCommand(device, { runId: input.runId, type: "run_ended" })) return;
+      rememberRunEnd(input.deviceId, input.runId, input.userId);
     },
 
-    /** The device was revoked: its stream gets `closed {code}` and ends at once. */
+    /**
+     * The device was revoked: its stream gets `closed {code}` and ends at
+     * once, and its waiting operations fail.
+     */
     disconnectDevice(deviceId: string, code: ConnectDeviceStreamClosedCode): void {
       epoch += 1;
+      const pendingCode: ComputerFailureCode = code === "connect_disabled" ? "connect_disabled" : "connect_device_disconnected";
+      // A revoked device never connects again; an offline one stops everything when it is refused.
+      if (code === "connect_unauthorized") undeliveredRunEnds.delete(deviceId);
       const device = devices.get(deviceId);
-      if (!device) return;
-      endDevice(device, {
-        final: { data: { code }, event: "closed" },
-        pendingCode: code === "connect_disabled" ? "connect_disabled" : "connect_device_disconnected"
-      });
+      if (device) endDevice(device, { failPending: pendingCode, final: { data: { code }, event: "closed" } });
+      failPending(deviceId, pendingCode);
     },
 
     /**
@@ -437,10 +532,18 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       for (const device of [...devices.values()]) {
         if (device.record.userId === userId) {
           endDevice(device, {
-            final: { data: { code: "connect_unauthorized" }, event: "closed" },
-            pendingCode: "connect_device_disconnected"
+            failPending: "connect_device_disconnected",
+            final: { data: { code: "connect_unauthorized" }, event: "closed" }
           });
         }
+      }
+      for (const [deviceId, entry] of [...pendingByDevice]) {
+        if (entry.userId === userId) failPending(deviceId, "connect_device_disconnected");
+      }
+      for (const [deviceId, entries] of [...undeliveredRunEnds]) {
+        const kept = entries.filter((entry) => entry.userId !== userId);
+        if (kept.length > 0) undeliveredRunEnds.set(deviceId, kept);
+        else undeliveredRunEnds.delete(deviceId);
       }
       emit({ type: "devices_changed", userId });
     },
@@ -448,14 +551,16 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     /** Every session of the installation was revoked: all device streams and device lists end as unauthorized. */
     disconnectAll(): void {
       epoch += 1;
-      endAll({ final: { data: { code: "connect_unauthorized" }, event: "closed" }, pendingCode: "connect_device_disconnected" });
+      endAll({ failPending: "connect_device_disconnected", final: { data: { code: "connect_unauthorized" }, event: "closed" } });
+      for (const deviceId of [...pendingByDevice.keys()]) failPending(deviceId, "connect_device_disconnected");
       emit({ code: "connect_unauthorized", type: "closed" });
     },
 
     /** The administrator turned AIQSA Connect off: everything ends with `connect_disabled`. */
     disable(): void {
       epoch += 1;
-      endAll({ final: { data: { code: "connect_disabled" }, event: "closed" }, pendingCode: "connect_disabled" });
+      endAll({ failPending: "connect_disabled", final: { data: { code: "connect_disabled" }, event: "closed" } });
+      for (const deviceId of [...pendingByDevice.keys()]) failPending(deviceId, "connect_disabled");
       emit({ code: "connect_disabled", type: "closed" });
     },
 
@@ -489,8 +594,15 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     /** Counts for tests and bounded diagnostics; never identifiers or content. */
     size(): Readonly<{ devices: number; listeners: number; pendingOps: number }> {
       let pendingOps = 0;
-      for (const device of devices.values()) pendingOps += device.pending.size;
+      for (const entry of pendingByDevice.values()) pendingOps += entry.ops.size;
       return { devices: devices.size, listeners: listeners.size, pendingOps };
+    },
+
+    /** Undelivered `run_ended` commands, for tests; a count, never identifiers. */
+    undeliveredRunEndCount(): number {
+      let count = 0;
+      for (const entries of undeliveredRunEnds.values()) count += entries.length;
+      return count;
     }
   };
 }

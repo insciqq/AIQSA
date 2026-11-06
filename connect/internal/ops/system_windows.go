@@ -274,3 +274,23 @@ func isNotDirError(err error) bool {
 }
 
 func isIsDirError(err error) bool { return errors.Is(err, syscall.EISDIR) }
+
+// matchFile gives a replacement file the hidden, system, archive and
+// not-indexed attributes of the file it replaces. Read-only is not copied:
+// a read-only file cannot be replaced, and the rename refuses it.
+func matchFile(tmp *os.File, info fs.FileInfo) error {
+	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	if !ok {
+		return nil
+	}
+	const kept = windows.FILE_ATTRIBUTE_HIDDEN | windows.FILE_ATTRIBUTE_SYSTEM | windows.FILE_ATTRIBUTE_ARCHIVE | windows.FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
+	attributes := data.FileAttributes & kept
+	if attributes == 0 {
+		return nil
+	}
+	name, err := windows.UTF16PtrFromString(tmp.Name())
+	if err != nil {
+		return err
+	}
+	return windows.SetFileAttributes(name, attributes)
+}

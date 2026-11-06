@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,4 +115,43 @@ func TestCancelAndRunEndedStopTheCommandAndItsChild(t *testing.T) {
 	// Stopping the client ends the other run's job before Run returns.
 	h.stop(t)
 	waitGone(t, time.Second, otherParent, otherChild)
+}
+
+// When the administrator turns AIQSA Connect off or revokes the device, no
+// run_ended can come any more: every op and background job ends at once,
+// before the client waits or exits.
+func TestDisabledAndRevokedStopEveryJob(t *testing.T) {
+	cases := []struct {
+		code    protocol.ReasonCode
+		revoked bool
+	}{
+		{protocol.CodeDisabled, false},
+		{protocol.CodeUnauthorized, true},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.code), func(t *testing.T) {
+			server := newFakeServer(t)
+			h := newShHarness(t, server)
+			// A long wait while off: the jobs must end before it, not after.
+			h.daemon.timing.DisabledRetry = time.Minute
+			h.start()
+			stream := server.nextStream(t)
+			jobDir := t.TempDir()
+			stream.command(opCommand(requestN(1), runID, protocol.OpShell, map[string]any{
+				"command": sleepersCommand, "cwd": jobDir, "timeoutSeconds": 120, "background": true,
+			}))
+			decodeReply(t, server, requestN(1), protocol.OpShell)
+			jobParent, jobChild := sleeperPids(t, jobDir)
+			opParent, opChild := startSleepers(t, stream, t.TempDir(), requestN(2), otherRun, false)
+			stream.send(protocol.StreamEventClosed, map[string]string{"code": string(tc.code)})
+			waitGone(t, 5*time.Second, jobParent, jobChild, opParent, opChild)
+			if tc.revoked {
+				if err := h.wait(t); !errors.Is(err, ErrRevoked) {
+					t.Fatalf("got %v", err)
+				}
+				return
+			}
+			h.stop(t)
+		})
+	}
 }
