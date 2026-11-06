@@ -1,0 +1,9 @@
+{
+  "events": [
+    {
+      "type": "view_closed",
+      "viewId": "e4da3b7f-bbce-4345-9777-2b0670b8a1c4",
+      "reason": "detached"
+    }
+  ]
+}

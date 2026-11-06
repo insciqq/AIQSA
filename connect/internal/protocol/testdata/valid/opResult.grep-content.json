@@ -1,0 +1,26 @@
+{
+  "op": "grep",
+  "result": {
+    "mode": "content",
+    "matches": [
+      {
+        "path": "C:\\Users\\ivan\\a.txt",
+        "line": 4,
+        "text": "контекст",
+        "context": true
+      },
+      {
+        "path": "C:\\Users\\ivan\\a.txt",
+        "line": 5,
+        "text": "Договор №12\tот 01.10"
+      },
+      {
+        "path": "C:\\Users\\ivan\\a.txt",
+        "line": 6,
+        "text": "",
+        "context": true
+      }
+    ],
+    "truncated": false
+  }
+}

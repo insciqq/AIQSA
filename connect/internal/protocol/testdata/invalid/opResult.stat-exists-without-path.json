@@ -1,0 +1,9 @@
+{
+  "op": "stat",
+  "result": {
+    "exists": true,
+    "kind": "dir",
+    "size": 0,
+    "mtime": "2026-11-06T10:15:30.123Z"
+  }
+}

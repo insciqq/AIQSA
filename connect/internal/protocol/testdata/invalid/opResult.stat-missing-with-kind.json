@@ -1,0 +1,7 @@
+{
+  "op": "stat",
+  "result": {
+    "exists": false,
+    "kind": "dir"
+  }
+}

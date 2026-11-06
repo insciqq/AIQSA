@@ -1,0 +1,12 @@
+{
+  "op": "shell",
+  "result": {
+    "exitCode": 0,
+    "stdout": "a.docx\r\nb.docx\r\nготово\r\n",
+    "stderr": "",
+    "truncated": false,
+    "stdoutBytes": -1,
+    "stderrBytes": 0,
+    "durationMs": 812
+  }
+}

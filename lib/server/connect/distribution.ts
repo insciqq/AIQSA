@@ -3,11 +3,10 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import {
-  CONNECT_ARCH_VALUES,
   CONNECT_CLIENT_CHECKSUMS_PATH,
   CONNECT_CLIENT_DOWNLOAD_PREFIX,
+  CONNECT_LEGACY_CLIENT_TARGETS,
   CONNECT_MAX_CLIENT_BINARY_BYTES,
-  CONNECT_OS_VALUES,
   connectClientBinaryName,
   connectClientManifestSchema,
   type ConnectArch,
@@ -21,9 +20,8 @@ import type { ConnectPolicyGate } from "./policy";
 export const CONNECT_CLIENT_SUMS_FILE = "SHA256SUMS";
 const SUMS_MAX_BYTES = 4_096;
 
-export const CONNECT_CLIENT_TARGETS: readonly Readonly<{ arch: ConnectArch; os: ConnectOs }>[] = Object.freeze(
-  CONNECT_OS_VALUES.flatMap((os) => CONNECT_ARCH_VALUES.map((arch) => Object.freeze({ arch, os })))
-);
+/** The four darwin and linux targets the build makes so far; Windows targets join with the Windows client. */
+export const CONNECT_CLIENT_TARGETS: readonly Readonly<{ arch: ConnectArch; os: ConnectOs }>[] = CONNECT_LEGACY_CLIENT_TARGETS;
 const BINARY_NAMES: ReadonlySet<string> = new Set(
   CONNECT_CLIENT_TARGETS.map((target) => connectClientBinaryName(target.os, target.arch))
 );

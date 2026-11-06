@@ -219,7 +219,7 @@ func (m *HelloLimits) Validate() error {
 	)
 }
 
-// Hello is the first event of the device stream.
+// Hello is the first event of a protocol 1 (terminal) device stream; protocol 2 sends HelloV2.
 type Hello struct {
 	Protocol         int         `json:"protocol"`
 	DeviceID         string      `json:"deviceId"`
@@ -234,8 +234,8 @@ func (m *Hello) UnmarshalJSON(data []byte) error {
 }
 
 func (m *Hello) Validate() error {
-	if m.Protocol != ProtocolVersion {
-		return fmt.Errorf("protocol: must be %d", ProtocolVersion)
+	if m.Protocol != LegacyProtocolVersion {
+		return fmt.Errorf("protocol: must be %d", LegacyProtocolVersion)
 	}
 	if err := m.Limits.Validate(); err != nil {
 		return fmt.Errorf("limits.%w", err)

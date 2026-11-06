@@ -1,0 +1,11 @@
+{
+  "op": "recent_dirs",
+  "result": {
+    "home": "C:\\Users\\ivan",
+    "dirs": [
+      "C:\\Users\\ivan\\Documents\\Отчёты",
+      "\\\\server\\share\\team",
+      "/mnt/c/Users/ivan"
+    ]
+  }
+}

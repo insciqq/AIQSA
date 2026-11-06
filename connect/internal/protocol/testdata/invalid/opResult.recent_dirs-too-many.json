@@ -1,0 +1,29 @@
+{
+  "op": "recent_dirs",
+  "result": {
+    "home": "/home/ivan",
+    "dirs": [
+      "/home/ivan/0",
+      "/home/ivan/1",
+      "/home/ivan/2",
+      "/home/ivan/3",
+      "/home/ivan/4",
+      "/home/ivan/5",
+      "/home/ivan/6",
+      "/home/ivan/7",
+      "/home/ivan/8",
+      "/home/ivan/9",
+      "/home/ivan/10",
+      "/home/ivan/11",
+      "/home/ivan/12",
+      "/home/ivan/13",
+      "/home/ivan/14",
+      "/home/ivan/15",
+      "/home/ivan/16",
+      "/home/ivan/17",
+      "/home/ivan/18",
+      "/home/ivan/19",
+      "/home/ivan/20"
+    ]
+  }
+}

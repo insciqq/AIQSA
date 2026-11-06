@@ -1,0 +1,9 @@
+{
+  "op": "glob",
+  "result": {
+    "paths": [
+      "docs/a.pdf"
+    ],
+    "truncated": false
+  }
+}
