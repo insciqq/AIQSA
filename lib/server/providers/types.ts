@@ -207,6 +207,10 @@ export type NormalizedRunRequest = {
   /** The user chose Deep research for this message (`DEEP_RESEARCH_SEND_FIELD`), frozen at admission and kept by a
    * regenerate of it: the run offers research, and its first step is `start_research` (`lib/server/research/run.ts`). */
   deepResearch?: true;
+  /** The user's computer admission accepted for this message's send field (AIQSA Connect), frozen with what the device
+   * reported then; a regenerate keeps it. The run offers the `computer_*` tools with it, online or not, and its turn context
+   * names it (`lib/server/tools/computerBinding.ts`). Absent: no computer. */
+  computer?: import("../tools/computerBinding").FrozenComputerBinding;
   modelId: string;
   personalContext?: Readonly<{
     approxTokens: number;

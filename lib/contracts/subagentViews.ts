@@ -1,4 +1,5 @@
 import { decodeThreadToolActivity, isThreadToolActivityOrigin, type ThreadToolActivity, type ThreadToolActivityOrigin } from "./chats";
+import { isComputerActivitySummary } from "./computer";
 import { decodeFetchUrlTarget, decodeFetchUrlProxyName, isFetchUrlProxyCode, type FetchUrlProxyCode } from "./fetchUrlActivity";
 import {
   MAIN_AGENT_NAME,
@@ -100,6 +101,8 @@ export type SubagentCurrentStep = Readonly<{
   skillName?: string;
   /** `skill` only. */
   skillPath?: string;
+  /** `computer` only: the command's first line, the path or the pattern the step works on (`ThreadToolActivityCall.summary`). */
+  summary?: string;
   toolName: string;
 }>;
 
@@ -212,7 +215,7 @@ const text = (value: unknown, max: number, allowEmpty = false): value is string 
   typeof value === "string" && value.length <= max && (allowEmpty || value.trim().length > 0) && !value.includes("\0");
 const nullableCode = (value: unknown): value is string | null => value === null || isSubagentCode(value);
 
-const STEP_KEYS = ["fetchProxyName", "fetchProxyCode", "fetchTarget", "origin", "serverName", "skillName", "skillPath", "toolName"];
+const STEP_KEYS = ["fetchProxyName", "fetchProxyCode", "fetchTarget", "origin", "serverName", "skillName", "skillPath", "summary", "toolName"];
 
 const optionalText = (value: unknown, max: number) => value === undefined || text(value, max);
 
@@ -223,6 +226,7 @@ export function decodeSubagentCurrentStep(value: unknown): SubagentCurrentStep |
   if (value.fetchTarget !== undefined && (value.origin !== "web_fetch" || !decodeFetchUrlTarget(value.fetchTarget))) return null;
   if (value.fetchProxyName !== undefined && (value.origin !== "web_fetch" || !decodeFetchUrlProxyName(value.fetchProxyName))) return null;
   if (value.fetchProxyCode !== undefined && (value.origin !== "web_fetch" || !isFetchUrlProxyCode(value.fetchProxyCode))) return null;
+  if (value.summary !== undefined && (value.origin !== "computer" || !isComputerActivitySummary(value.summary))) return null;
   return {
     ...(value.fetchTarget !== undefined ? { fetchTarget: value.fetchTarget as string } : {}),
     ...(decodeFetchUrlProxyName(value.fetchProxyName) ? { fetchProxyName: decodeFetchUrlProxyName(value.fetchProxyName)! } : {}),
@@ -231,6 +235,7 @@ export function decodeSubagentCurrentStep(value: unknown): SubagentCurrentStep |
     ...(value.serverName !== undefined ? { serverName: value.serverName as string } : {}),
     ...(value.skillName !== undefined ? { skillName: value.skillName as string } : {}),
     ...(value.skillPath !== undefined ? { skillPath: value.skillPath as string } : {}),
+    ...(value.summary !== undefined ? { summary: value.summary as string } : {}),
     toolName: value.toolName
   };
 }

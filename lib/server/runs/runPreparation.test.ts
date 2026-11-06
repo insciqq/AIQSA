@@ -2519,6 +2519,45 @@ describe("run preparation", () => {
     expect(serverTurn.normalizedRequest.deepResearch).toBeUndefined();
   });
 
+  it("freezes the message's computer, stores the choice, and keeps the regenerated run's own", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const device = "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11";
+    const describe = vi.fn(async (userId: string, deviceId: string) => userId === "user-1" && deviceId === device
+      ? { arch: "amd64" as const, name: "DESKTOP-7Q2", online: true, os: "windows" as const } : null);
+    const deps = { ...harness.deps, computerAdmission: { describe, enabled: async () => true } };
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
+    const chosen = { cwd: "C:\\Users\\ivan", deviceId: device };
+    const sent = preparedFrom(await prepareRun(deps, sendInput({ ...body, computer: chosen })));
+    expect(sent.normalizedRequest.computer).toMatchObject({ ...chosen, name: "DESKTOP-7Q2", online: true, os: "windows" });
+    expect(sent.chatComputer).toEqual(chosen);
+    expect(sent.providerRequest.tools).toContainEqual(expect.objectContaining({ name: "computer_shell" }));
+    // The computer's line is the turn's own: the native engine sends it with the input, never in the system prompt.
+    const line = sent.normalizedRequest.prompt.turnGuidance?.find((part) => part.startsWith("The user's computer \"DESKTOP-7Q2\""));
+    expect(line).toBeDefined();
+    expect(splitTurnGuidance(admittedRunGuidance(sent.normalizedRequest.prompt), sent.normalizedRequest.prompt.turnGuidance).chat)
+      .not.toContain("DESKTOP-7Q2");
+    // Absent: no computer and the stored choice stays; null clears it.
+    const absent = preparedFrom(await prepareRun(deps, sendInput(body, { computer: chosen })));
+    expect(absent.normalizedRequest.computer).toBeUndefined();
+    expect(absent.chatComputer).toBeUndefined();
+    expect(preparedFrom(await prepareRun(deps, sendInput({ ...body, computer: null }))).chatComputer).toBeNull();
+    await expect(prepareRun(deps, sendInput({ ...body, computer: { cwd: "~", deviceId: "9e8d7c6b-5a49-4382-a1b2-c3d4e5f60718" } })))
+      .resolves.toMatchObject({ code: "connect_device_unavailable", ok: false, status: 409 });
+    // A regenerate repeats its run's computer, whatever the composer sends now, and changes no choice.
+    const regenerated = preparedFrom(await prepareRun(deps, regenerateInput({ ...body, computer: null },
+      { computer: sent.normalizedRequest.computer! })));
+    expect(regenerated.normalizedRequest.computer).toMatchObject(chosen);
+    expect(regenerated.chatComputer).toBeUndefined();
+    expect(preparedFrom(await prepareRun(deps, regenerateInput({ ...body, computer: chosen }, { computer: null }))).normalizedRequest.computer)
+      .toBeUndefined();
+    // A Telegram turn takes none and is told so when the chat has one chosen.
+    await expect(prepareRun(deps, { ...sendInput({ ...body, computer: chosen }), origin: "telegram" }))
+      .resolves.toMatchObject({ code: "computer_unavailable_here", ok: false, status: 409 });
+    const telegram = preparedFrom(await prepareRun(deps, { ...sendInput(body, { computer: chosen }), origin: "telegram" }));
+    expect(telegram.normalizedRequest.computer).toBeUndefined();
+    expect(telegram.normalizedRequest.prompt.turnGuidance).toContainEqual(expect.stringContaining("not available from Telegram"));
+  });
+
   it("freezes an exact artifact edit target and revalidates it for regeneration", async () => {
     const artifactEdit = { artifactId: "artifact-one", versionId: "version-one" };
     const validateEditTarget = vi.fn(async () => ({ ok: true as const, ...artifactEdit }));

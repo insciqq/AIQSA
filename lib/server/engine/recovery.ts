@@ -6,6 +6,8 @@ import type { NormalizedRunWorkspace } from "../providers/types";
 import { activeModelRunStatuses } from "../runs/prismaRepositoryShared";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { getComputerOps, type ComputerOps } from "../connect/computerPort";
+import { decodeFrozenComputerBinding } from "../tools/computerBinding";
 import type { NativeRunStore } from "./runStore";
 
 /**
@@ -39,6 +41,8 @@ export type NativeOrphanRun = Readonly<{
 export type NativeRecoveryDeps = Readonly<{
   /** When this process started; runs created before it have no execution here. */
   bootedAt: Date;
+  /** Test seam of the computer port; absent, the process's (`getComputerOps`). */
+  computer?: Pick<ComputerOps, "runEnded">;
   findOrphans(input: Readonly<{ bootedBefore: Date; chatId?: string; limit: number; liveRunIds: readonly string[];
     staleBefore: Date; userId?: string }>): Promise<readonly NativeOrphanRun[]>;
   liveRunIds(): readonly string[];
@@ -59,6 +63,11 @@ function runWorkspace(normalizedRequest: unknown): NormalizedRunWorkspace | unde
   const workspace = (normalizedRequest as Record<string, unknown>).workspace;
   return typeof workspace === "object" && workspace !== null && (workspace as Record<string, unknown>).enabled === true
     ? workspace as NormalizedRunWorkspace : undefined;
+}
+
+function runComputer(normalizedRequest: unknown) {
+  return typeof normalizedRequest === "object" && normalizedRequest !== null && !Array.isArray(normalizedRequest)
+    ? decodeFrozenComputerBinding((normalizedRequest as Record<string, unknown>).computer) : null;
 }
 
 /** Settles native runs no execution owns; returns how many it settled. */
@@ -84,6 +93,9 @@ export async function reconcileNativeRuns(deps: NativeRecoveryDeps, input: Reado
       if (workspace && deps.workspace) {
         await deps.workspace.settle({ outcome: "failed", runId: run.id, userId: run.userId, workspace }).catch(() => undefined);
       }
+      // So is the computer's: a device connected again stops what the cut-off run left running there. It never throws or waits.
+      const computer = runComputer(run.normalizedRequest);
+      if (computer) (deps.computer ?? getComputerOps()).runEnded({ deviceId: computer.deviceId, runId: run.id, userId: run.userId });
       const scope = { assistantMessageId: run.assistantMessageId, chatId: run.chatId, runId: run.id, userId: run.userId };
       // Recovery's own terminal write has its record: Admin Health counts the runs recovery failed from it.
       const stage = run.answerCompletedAt ? "complete" : "fail";

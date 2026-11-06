@@ -9,7 +9,7 @@ import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 
 /** The family of each tool capability; `session` tools are named one by one or are `other`. */
 const CAPABILITY_KINDS: Readonly<Record<RunToolCapability, ToolCallKind>> = {
-  artifact: "artifact", image: "image_generation", mcp: "mcp", memory: "memory", session: "other", skill: "skill",
+  artifact: "artifact", computer: "computer", image: "image_generation", mcp: "mcp", memory: "memory", session: "other", skill: "skill",
   vision: "vision", web_fetch: "fetch_url", web_search: "search", workspace: "workspace"
 };
 

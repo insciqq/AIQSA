@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { createFakeComputerOps } from "../connect/computerPort";
+import { freezeComputerBinding } from "../tools/computerBinding";
 import { NATIVE_RUN_INTERRUPTED, reconcileNativeRuns, type NativeOrphanRun, type NativeRecoveryDeps } from "./recovery";
 
 const workspace = { enabled: true, sessionId: "session-1" };
@@ -40,6 +42,15 @@ describe("native run recovery", () => {
       { recoveryTerminal: true });
     expect(recovery.workspace.settle).not.toHaveBeenCalled();
     expect(recovery.runs.complete).not.toHaveBeenCalled();
+  });
+
+  it("ends a cut-off run on the user's computer too, so what it left running there stops", async () => {
+    const computer = freezeComputerBinding({ cwd: "~", deviceId: "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11" },
+      { arch: "amd64", name: "Laptop", online: true, os: "linux" });
+    const ops = createFakeComputerOps();
+    const recovery = { ...deps([orphan("run-computer", { normalizedRequest: { computer } }), orphan("run-plain")]), computer: ops };
+    await expect(reconcileNativeRuns(recovery)).resolves.toBe(2);
+    expect(ops.endedRuns).toEqual([{ deviceId: "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11", runId: "run-computer", userId: "user" }]);
   });
 
   it("completes a run whose answer was published before the process stopped", async () => {
