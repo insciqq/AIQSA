@@ -94,7 +94,9 @@ test("a user who never touched Skills has the shipped Skill built in and on, and
     for (const name of ["Edit", "Delete…", "Export"]) await expect(detail.getByRole("button", { name, exact: true })).toHaveCount(0);
     await capture(page, detail, testInfo, "library-detail");
 
-    await signInWithLocalToken(admin, "/admin?section=skills");
+    await signInWithLocalToken(admin);
+    await admin.goto("/admin?section=skills");
+    await expect(admin.getByTestId("admin-skills-section")).toBeVisible();
     const block = admin.getByRole("region", { name: "Built-in Skills" });
     const toggle = block.getByRole("switch", { name: `Available to everyone: ${KEY}` });
     await expect(toggle).toHaveAttribute("aria-checked", "true");
