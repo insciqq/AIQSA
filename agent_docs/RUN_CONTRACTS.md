@@ -145,6 +145,11 @@ The research system rests on one contract (`lib/contracts/research.ts`, which ho
 - Results too large for the context arrive as an excerpt with a reference the agent can read later, never silently truncated. Every result longer than a short excerpt is saved with that reference, so a compaction can leave it out and name where it lives (decision 2026-10-23). A long search result of several sources gives each source a share of its excerpt (2026-11-03): cut as one text's head and tail, three selected sources showed the model one and a half.
 - Reading a tool result by reference checks only that the reader may read its chat, and never reruns the call.
 
+## Your computer
+
+- A chat may bind one of its owner's AIQSA Connect computers and a starting folder (operator decisions 2026-11-06). The composer sends the choice with every message; admission checks it, freezes it with the run and stores it as the chat's choice, and a message without the field runs without one. Regenerate and an Allow continuation keep the run's frozen computer. Only interactive personal and temporary chats get one: Assistant chats, Telegram, scheduled tasks, webhooks and wake-up turns never do, and the model is told so where the chat has one (`lib/server/runs/computerAdmission.ts`). The tool list never depends on whether the computer is online; its facts ride in the turn context.
+- Commands, writes, edits and job stops are external effects: an unknown outcome stays unknown and is never re-sent, while reads retry. Background jobs end with their run (`run_ended`), which waits for an offline computer, and the device ends a job whose run has gone silent past a lease (`lib/server/connect/relay.ts`, `connect/internal/ops/executor.go`).
+
 ## Workspace
 
 - Workspace is available in every chat whenever the installation offers it, so its tools ride on every request (accepted cost, operator decision 2026-10-20). The VM is not started per chat: it boots at the first call that needs code execution, may be prewarmed when that is cheap, and keeps the chat's files. A capability that needs no code execution, such as secrets, Skill instructions, MCP, Memory, search or images, never requires the VM (operator decision 2026-10-22).

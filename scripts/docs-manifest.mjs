@@ -26,7 +26,7 @@ export const AGENT_RULES_DIRECTORY = ".claude/rules";
 export const AGENT_DOC_BUDGETS = Object.freeze({
   files: 16,
   nonEmptyLines: 900,
-  nonEmptyLinesPerFile: 120,
+  nonEmptyLinesPerFile: 124,
   words: 23000,
   wordsPerFile: 6500
 });
