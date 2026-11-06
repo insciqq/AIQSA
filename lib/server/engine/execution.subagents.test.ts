@@ -325,7 +325,7 @@ describe("native run with sub-agents", () => {
     const line = computerTurnGuidance(computer);
     const base = prepared();
     const request = { ...base.normalizedRequest, computer,
-      prompt: { ...base.normalizedRequest.prompt, system: `Be brief.\n\n${line}`, turnGuidance: [line] } } as ProviderRunRequest;
+      prompt: { ...base.normalizedRequest.prompt, system: `Be brief.\n\n${line}`, turnGuidance: [line] } } as unknown as ProviderRunRequest;
     const ops = createFakeComputerOps();
     const background = new FakeSubagentBackgroundControl();
     await createNativeRunExecutionResponse({ adapter, created, engine: engine().deps, prepared: { ...base, normalizedRequest: request,
