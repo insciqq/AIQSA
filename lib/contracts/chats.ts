@@ -77,7 +77,7 @@ import {
   type ThreadWorkspaceActivity
 } from "./workspace";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "./contextCompaction";
-import { isComputerActivitySummary, isComputerExitCode, type ChatComputerBinding } from "./computer";
+import { decodeChatComputerBinding, isComputerActivitySummary, isComputerExitCode, type ChatComputerBinding } from "./computer";
 import {
   SCHEDULED_TASK_CARDS_LIMIT,
   decodeScheduledTaskCard,
@@ -1517,6 +1517,11 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
 
   const activeLeafMessageId = nullableId(value.activeLeafMessageId);
   const assistantId = value.assistantId === undefined ? undefined : nullableId(value.assistantId);
+  // Absent (older servers, other owners' projections) reads as none; anything else must be a binding or null.
+  const rawComputer = value.computer;
+  const computer = rawComputer === undefined ? undefined
+    : rawComputer === null ? null
+      : decodeChatComputerBinding(rawComputer) ?? "invalid";
   const id = requiredString(value.id);
   const createdAt = requiredString(value.createdAt);
   const defaultSelection = decodeChatDefaultSelection(
@@ -1535,6 +1540,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   if (
     activeLeafMessageId === undefined ||
     (value.assistantId !== undefined && assistantId === undefined) ||
+    computer === "invalid" ||
     !id ||
     !createdAt ||
     !defaultSelection ||
@@ -1551,6 +1557,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   return {
     activeLeafMessageId,
     ...(assistantId !== undefined ? { assistantId } : {}),
+    ...(computer !== undefined ? { computer } : {}),
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     ...importMarker,

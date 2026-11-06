@@ -2,20 +2,23 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import type { PowerAppShellV2Props } from "@/components/app-shell/powerAppShellV2Contracts";
-import type { ComposerOperationRecovery } from "@/components/app-shell/composerSessionStore";
+import { useComposerSessionStore, type ComposerOperationRecovery } from "@/components/app-shell/composerSessionStore";
 import { defaultParameterControls } from "@/components/app-shell/controlDefaults";
 import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
 import {
   resetComposerControlStoreForTest,
+  resetComposerSessionStoreForTest,
   resetMcpSettingsStoreForTest,
   resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
+import * as computerPickerRequest from "@/features/composer-v2/computerPickerRequest";
 import { PowerAppShellV2View } from "./PowerAppShellV2View";
 
 afterEach(() => {
   cleanup();
   deactivatePersonalMcp();
   resetComposerControlStoreForTest();
+  resetComposerSessionStoreForTest();
   resetMcpSettingsStoreForTest();
   resetWorkspaceStoreForTest();
   vi.unstubAllGlobals();
@@ -23,13 +26,17 @@ afterEach(() => {
 
 // Only the view-consumed state of a blank personal chat whose send was refused.
 function shellProps(input: Readonly<{
+  connect?: boolean;
   recoveries: readonly ComposerOperationRecovery[];
   reset?(): Promise<boolean>;
   sendWithoutWorkspace?(): void;
 }>): PowerAppShellV2Props {
   return {
     branches: { open: false },
-    session: { accountId: "owner", accountDisplayName: "Owner", accountEmail: null, activeChatId: null, notice: null },
+    session: {
+      accountId: "owner", accountDisplayName: "Owner", accountEmail: null, activeChatId: null,
+      connectEntryVisible: input.connect ?? false, notice: null
+    },
     composer: {
       attachments: [], catalog: composerGalleryConfig.catalog, draft: "Use the files", currentParameterControls: defaultParameterControls(),
       assistant: { current: null, pickerItems: [], recentIds: [], openPicker: false, stripItems: [] },
@@ -92,5 +99,27 @@ describe("Workspace refusal recovery", () => {
     const notice = await screen.findByRole("alert");
     expect(within(notice).queryByRole("button", { name: "Send without Workspace" })).toBeNull();
     expect(within(notice).queryByRole("button", { name: "Reset workspace…" })).toBeNull();
+  });
+});
+
+describe("computer refusal recovery", () => {
+  it("opens the computer picker or stops using the computer from the refusal", async () => {
+    stubFetch();
+    const request = vi.spyOn(computerPickerRequest, "requestComposerComputerPicker");
+    const store = useComposerSessionStore.getState();
+    store.activateSession(store.activeSessionKey);
+    store.updateSession(store.activeSessionKey, { computerChoice: { binding: { cwd: "~", deviceId: "4d3c2b1a-0f9e-4d8c-9b7a-6f5e4d3c2b1a" } } });
+    render(<PowerAppShellV2View {...shellProps({ connect: true, recoveries: ["choose_computer", "stop_using_computer"] })} />);
+
+    const notice = await screen.findByRole("alert");
+    fireEvent.click(within(notice).getByRole("button", { name: "Choose another computer" }));
+    expect(request).toHaveBeenCalledOnce();
+    // The composer's picker answers the request.
+    const picker = await screen.findByTestId("computer-picker");
+    fireEvent.click(within(picker).getAllByRole("button", { name: "Close" })[0]!);
+    await waitFor(() => expect(screen.queryByTestId("computer-picker")).toBeNull());
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Stop using computer" }));
+    const session = useComposerSessionStore.getState();
+    expect(session.sessionsByKey[session.activeSessionKey]?.computerChoice).toEqual({ binding: null });
   });
 });

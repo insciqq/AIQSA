@@ -2,6 +2,7 @@ import type { ComposerAttachment } from "@/components/app-shell/attachmentContra
 import { create } from "zustand";
 import { randomUUID } from "@/lib/browser/randomUUID";
 import { isUsageLimitRefusalCode } from "@/lib/contracts/usageLimits";
+import type { ChatComputerBinding } from "@/lib/contracts/computer";
 import { MAX_PENDING_COMMENTS, type ComposerCommentRefusal, type PendingCommentAnchor, type PendingComposerComment } from "./composerComments";
 import { composerInputFitsStoredRecord } from "./composerDraftStorage";
 
@@ -41,10 +42,33 @@ export type ComposerArtifactEdit = Readonly<{
 
 /**
  * A recovery a refused send offers next to its reason: sending that message
- * once without Workspace, or resetting the chat's failed Workspace. Never
- * persisted; any later send, upload or new error replaces it.
+ * once without Workspace, resetting the chat's failed Workspace, or, for a
+ * refused computer, choosing another one or sending without it. Never
+ * persisted; any later send, upload, computer choice or new error replaces it.
  */
-export type ComposerOperationRecovery = "reset_workspace" | "send_without_workspace";
+export type ComposerOperationRecovery =
+  | "choose_computer"
+  | "reset_workspace"
+  | "send_without_workspace"
+  | "stop_using_computer";
+
+const COMPUTER_RECOVERIES: readonly ComposerOperationRecovery[] = ["choose_computer", "stop_using_computer"];
+
+/**
+ * The computer this browser chose for the chat's next messages, or null when
+ * nothing was chosen here: then the chat's stored choice (its wire
+ * `computer`) applies. `binding: null` is an explicit "no computer". Never
+ * persisted: a reload reads the chat's stored choice again.
+ */
+export type ComposerComputerChoice = Readonly<{ binding: ChatComputerBinding | null }> | null;
+
+/** The computer the next message uses: the choice made here, else the chat's stored one. */
+export function effectiveComposerComputer(
+  choice: ComposerComputerChoice,
+  stored: ChatComputerBinding | null | undefined
+): ChatComputerBinding | null {
+  return choice ? choice.binding : stored ?? null;
+}
 
 export type ComposerSessionSnapshot = {
   followupSubmission?: Readonly<{
@@ -59,6 +83,7 @@ export type ComposerSessionSnapshot = {
   artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
   comments: PendingComposerComment[];
+  computerChoice: ComposerComputerChoice;
   /**
    * Deep research for the next message only (the `+` menu's chip): the send carries it once, and the
    * session drops it when that run is admitted. Never persisted, like the other controls.
@@ -105,6 +130,7 @@ export type ComposerSendToken = {
   artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
   comments: PendingComposerComment[];
+  computerChoice: ComposerComputerChoice;
   deepResearch: boolean;
   draft: string;
   generation: number;
@@ -131,6 +157,7 @@ export type ComposerSessionPatch = Partial<
     | "workspaceEnabled"
     | "artifactEdit"
     | "artifactCreate"
+    | "computerChoice"
     | "deepResearch"
     | "editingDeepResearch"
     | "followupSubmission"
@@ -204,6 +231,7 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   artifactEdit: null,
   attachments: emptyAttachments,
   comments: Object.freeze([]) as unknown as PendingComposerComment[],
+  computerChoice: null,
   deepResearch: false,
   draft: "",
   editGeneration: 0,
@@ -310,8 +338,13 @@ function patchedSession(
     hasOwn(patch, "editingError") && patch.editingError !== current.editingError;
   const editingMessageChanged =
     hasOwn(patch, "editingMessageId") && patch.editingMessageId !== current.editingMessageId;
-  const errorPatched = hasOwn(patch, "operationError");
-  const errorChanged = errorPatched && patch.operationError !== current.operationError;
+  const computerChanged = hasOwn(patch, "computerChoice") && !sameComputerChoice(patch.computerChoice ?? null, current.computerChoice);
+  // Another computer or none answers a refusal for the computer: its message and actions go.
+  const computerRefusalAnswered = computerChanged &&
+    current.operationErrorRecoveries.some((recovery) => COMPUTER_RECOVERIES.includes(recovery));
+  const errorPatched = hasOwn(patch, "operationError") || computerRefusalAnswered;
+  const nextError = hasOwn(patch, "operationError") ? patch.operationError ?? null : null;
+  const errorChanged = errorPatched && nextError !== current.operationError;
   const retryabilityChanged = errorPatched && current.operationErrorRetryable;
   // A new error drops every recovery; changed attachments drop the send
   // without Workspace, which was judged for the refused files only.
@@ -339,7 +372,7 @@ function patchedSession(
     !retryabilityChanged &&
     !recoveriesChanged &&
     !workspaceChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged &&
-    !deepResearchChanged && !editingDeepResearchChanged
+    !deepResearchChanged && !editingDeepResearchChanged && !computerChanged
   ) {
     return current;
   }
@@ -352,6 +385,7 @@ function patchedSession(
     ...(artifactEditChanged ? { artifactEdit: patch.artifactEdit ?? null } : {}),
     ...(artifactCreateChanged ? { artifactCreate: patch.artifactCreate ?? null } : {}),
     ...(deepResearchChanged ? { deepResearch: Boolean(patch.deepResearch) } : {}),
+    ...(computerChanged ? { computerChoice: patch.computerChoice ?? null } : {}),
     ...(editingDeepResearchChanged ? { editingDeepResearch: Boolean(patch.editingDeepResearch) } : {}),
     ...(attachmentsChanged ? { attachments: [...(patch.attachments ?? [])] } : {}),
     ...(draftChanged ? { draft: patch.draft ?? "" } : {}),
@@ -359,7 +393,7 @@ function patchedSession(
     ...(editingDraftChanged ? { editingDraft: patch.editingDraft ?? "" } : {}),
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
-    ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
+    ...(errorChanged ? { operationError: nextError } : {}),
     ...(attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged || artifactCreateChanged ||
       deepResearchChanged || errorPatched
       ? { contextRejectionGeneration: null } : {}),
@@ -371,6 +405,12 @@ function patchedSession(
     revision: current.revision + (attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged ||
       artifactCreateChanged || deepResearchChanged ? 1 : 0)
   };
+}
+
+function sameComputerChoice(left: ComposerComputerChoice, right: ComposerComputerChoice): boolean {
+  if (!left || !right) return left === right;
+  if (!left.binding || !right.binding) return left.binding === right.binding;
+  return left.binding.deviceId === right.binding.deviceId && left.binding.cwd === right.binding.cwd;
 }
 
 function editOperationIsCurrent(
@@ -536,6 +576,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       artifactEdit: session.artifactEdit,
       attachments: [...session.attachments],
       comments: [...session.comments],
+      computerChoice: session.computerChoice,
       deepResearch: session.deepResearch,
       draft: session.draft,
       generation,
