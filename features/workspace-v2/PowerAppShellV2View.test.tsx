@@ -472,6 +472,16 @@ describe("Run announcer wiring v2", () => {
     expect(presentAnswerV2({ ...owner, id: "message-old", runId: null, status: "complete" },
       thread({ currentRunId: "run-live", events })).presentation).toEqual({ kind: "complete", runId: null });
   });
+
+  it("presents a research answer by the server's mark alone, its saved failure picked up by Continue", () => {
+    const failed = answer({ content: "Work so far", errorMessage: "The provider's response failed.", id: "message-research", runId: "run-research", status: "error" });
+    expect(presentAnswerV2({ ...failed, researchAnswer: true }, thread()).presentation).toMatchObject({ failure: { message: "The provider's response failed.",
+      recovery: "continue" }, kind: "terminal_error", research: true });
+    // Its question's text decides nothing: without the mark the answer is an ordinary one.
+    expect(presentAnswerV2(failed, thread()).presentation).not.toHaveProperty("research");
+    expect(presentAnswerV2(failed, thread()).presentation.failure?.recovery).not.toBe("continue");
+    expect(presentAnswerV2({ ...failed, researchAnswer: true, status: "complete" }, thread()).presentation).toEqual({ kind: "complete", research: true, runId: "run-research" });
+  });
 });
 
 describe("Temporary chat indicator v2", () => {

@@ -27,7 +27,10 @@ export type ResearchResumeSource = Readonly<{ answer: unknown; frame: unknown; g
 export type ResearchResumeStore = Readonly<{
   /** The runs of this research, earliest first (`ResearchEvidenceRepository.chain`). */
   chain(key: ResearchResumeKey): Promise<readonly string[]>;
-  /** The run stopped with its work kept and offered Continue, and its answer was never published. */
+  /**
+   * The run stopped with its work kept and offered Continue, and its answer was never published: an interruption or the turn's time
+   * limit, or any failure of a research run (operator decision 2026-11-06), never the user's Stop.
+   */
   interrupted(key: ResearchResumeKey): Promise<boolean>;
   /** Creates this run's row, which `continuedFromRunId` is written with once. */
   link(key: ResearchResumeKey, write: Readonly<{ answer: unknown; frame: unknown; fromRunId: string; goal: string; proposal: unknown; releasedAt: Date; version: number; windowEndsAt: Date }>): Promise<void>;
@@ -47,11 +50,17 @@ export function createResearchResumeStore(client: Pick<PrismaClient, "modelRun" 
   return {
     chain: ({ chatId, runId, userId }) => evidence.chain({ chatId, researchRunId: runId, userId }),
     async interrupted({ chatId, runId, userId }) {
-      const run = await client.modelRun.findFirst({ select: { errorPayload: true }, where: { answerCompletedAt: null, chatId, engine: "native", id: runId, status: "error", userId } });
-      const failure: unknown = run?.errorPayload;
-      if (!isFailure(failure)) return false;
-      const { code, message } = failure;
-      return continuableRunFailure(typeof code === "string" ? code : null, typeof message === "string" ? message : null) !== null;
+      const failed = { answerCompletedAt: null, chatId, engine: "native" as const, id: runId, status: "error" as const, userId };
+      const run = await client.modelRun.findFirst({ select: { errorPayload: true }, where: failed });
+      if (!run) return false;
+      const failure: unknown = run.errorPayload;
+      if (isFailure(failure) && continuableRunFailure(typeof failure.code === "string" ? failure.code : null,
+        typeof failure.message === "string" ? failure.message : null) !== null) return true;
+      // A research answer offers Continue whatever failed it, since Regenerate would run the whole research again (operator decision
+      // 2026-11-06): the run was sent with Deep research, or it researched, which its frame row shows (a plan opened, or a Continue picked
+      // research up). Any other failed run stays one that offers no Continue. Read in the database, as `sentWithDeepResearch`.
+      return await client.modelRun.findFirst({ select: { id: true }, where: { ...failed,
+        OR: [{ normalizedRequest: { equals: true, path: ["deepResearch"] } }, { researchFrame: { isNot: null } }] } }) !== null;
     },
     async link({ chatId, runId, userId }, { answer, fromRunId, frame, goal, proposal, releasedAt, version, windowEndsAt }) {
       await client.researchFrame.create({ data: { answer: json(answer), chatId, continuedFromRunId: fromRunId, frame: json(frame), goal, modelRunId: runId, proposal: json(proposal),

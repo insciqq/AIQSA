@@ -158,15 +158,17 @@ export function researchOffered(input: ResearchAvailability & Readonly<{ request
 
 /**
  * What a run's own facts ask of research: Deep research frozen with its message's bindings, an approval continuation of a turn whose items hold a
- * research start, or the user's Continue right after such a turn. A start's call is on record before it is sent, so the items show every research
- * that started, but they also show a call a model made where research was not offered: they are evidence, and an approval continuation or a Continue
- * researches only once the server's bindings authorize it (`RunResearch.authorized`). Null for every other run, whatever its message says.
+ * research start, or the user's Continue. A start's call is on record before it is sent, so the items show every research that started, but they
+ * also show a call a model made where research was not offered: they are evidence, and an approval continuation or a Continue researches only once
+ * the server's bindings authorize it (`RunResearch.authorized`). A Continue asks whatever the turn before held, since a research that failed before
+ * its start left no call to find while its message's choice still stands (operator decision 2026-11-06: a failed research answer offers Continue,
+ * never Regenerate); after any other answer the store authorizes nothing. Null for every other run, whatever its message says.
  */
 export function researchRequestOf(input: Readonly<{ approval: boolean; chosen: boolean; items: readonly TranscriptItem[] }>): ResearchRequest | null {
   // An approval continuation is the server's turn of an earlier one, never a message of its own the user chose anything for.
   if (input.approval) return researchOfTurn(input.items).goal === undefined ? null : "approval";
   if (input.chosen) return "chosen";
-  return continuedTurn(input.items)?.goal === undefined ? null : "continue";
+  return continuedTurn(input.items) === null ? null : "continue";
 }
 
 /** How many turns back a continuation's authority is looked for: far past the approvals and Continues one research takes. */
@@ -495,8 +497,11 @@ export function createRunResearch(input: RunResearchInput) {
    * back; only this lets a chosen run's other tools run, so a call beside a start that is then refused never runs.
    */
   let startPassed = false;
-  /** The user chose Deep research for this message and no start has passed: nothing else runs, and nothing written shows. */
-  const startOwed = () => input.request === "chosen" && !startPassed;
+  /**
+   * The user chose Deep research for this message, or this Continue goes on with a message that chose it whose research never started (no start
+   * in the turns it continues), and no start has passed: nothing else runs, and nothing written shows. A Continue researches only once authorized.
+   */
+  const startOwed = () => (input.request === "chosen" || input.request === "continue" && continued?.goal === undefined) && !startPassed;
   /** The run was sent back once for the start. */
   let askedToStart = false;
   /** The code of the role that refused the last start, until a start passes. */
@@ -1323,14 +1328,28 @@ export function researchOfTurn(items: readonly TranscriptItem[]): Readonly<{ att
 
 type ContinuedTurn = ReturnType<typeof researchOfTurn>;
 
+/** The user's Continue: the button's exact word, as the user's own message. */
+const isContinueItem = (item: TranscriptItem | undefined) => item?.kind === "user" && item.id.startsWith("msg-") && item.text.trim() === CONTINUE_TURN_TEXT;
+
 /**
- * What the turn before this run's message held, when that message is the user's Continue: the button's exact word, as the user's own message, last in
- * a run that just started. Null otherwise, so any other message, a server's turn and an approval continuation are what they are. It says nothing of
- * whether that turn was interrupted: the store knows, and nothing stored here grants anything (`resume.ts`).
+ * What the turn before this run's message held, when that message is the user's Continue, last in a run that just started. Null otherwise, so any
+ * other message, a server's turn and an approval continuation are what they are. A Continue whose own turn holds no start continued nothing of its
+ * own, such as one a restart cut off before its first call, so it reads the turn before it as far back as Continues go: a research it went on with
+ * is picked up from what that research recorded, never started over. It says nothing of whether those turns were interrupted: the store knows, and
+ * nothing stored here grants anything (`resume.ts`, `RunResearch.authorized`).
  */
 function continuedTurn(items: readonly TranscriptItem[]): ContinuedTurn | null {
-  const last = items.at(-1);
-  return last?.kind === "user" && last.id.startsWith("msg-") && last.text.trim() === CONTINUE_TURN_TEXT ? researchOfTurn(items.slice(0, -1)) : null;
+  if (!isContinueItem(items.at(-1))) return null;
+  let before = items.slice(0, -1);
+  let turn = researchOfTurn(before);
+  for (let hops = 0; turn.goal === undefined && hops < AUTHORITY_TURNS; hops += 1) {
+    let start = before.length - 1;
+    while (start >= 0 && !(before[start]!.kind === "user" && before[start]!.id.startsWith("msg-"))) start -= 1;
+    if (start < 0 || !isContinueItem(before[start])) break;
+    before = before.slice(0, start);
+    turn = researchOfTurn(before);
+  }
+  return turn;
 }
 
 /**

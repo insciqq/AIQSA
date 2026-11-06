@@ -40,6 +40,7 @@ import {
 import type { MemoryExecutionAuthorityDependencies } from "../memory/execution";
 import { defaultMemoryExecutionAuthority } from "../memory/execution/defaultAuthority";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
+import { loadDeepResearchMarks } from "../chats/deepResearchProjection";
 import { loadMemoryRunSources } from "../memory/sources/runProjection";
 import { loadMemoryRunPresentationStatuses } from "../memory/retrieval/runProjection";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
@@ -138,7 +139,7 @@ function contentHasImage(value: unknown): boolean {
   return isRecord(value) && Array.isArray(value.blocks) && value.blocks.some((block) => isRecord(block) && block.type === "image" && typeof block.attachmentId === "string");
 }
 
-/** The message's run was sent with Deep research, which a regenerate of it keeps (`NormalizedRunRequest.deepResearch`). */
+/** The message's run was sent with Deep research, which refuses a regenerate of it (`NormalizedRunRequest.deepResearch`). */
 const sentWithDeepResearch = (normalizedRequest: unknown) => isRecord(normalizedRequest) && normalizedRequest.deepResearch === true;
 
 export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
@@ -1160,7 +1161,8 @@ export function createPrismaRunRepository(
           { contextStats, usageStats },
           memoryActionsByRun,
           memorySourcesByRun,
-          memoryStatusesByRun
+          memoryStatusesByRun,
+          research
         ] = await Promise.all([
           loadChatBranchSnapshotStats(tx, {
             activeLeafMessageId: chat.activeLeafMessageId,
@@ -1168,7 +1170,9 @@ export function createPrismaRunRepository(
           }),
           loadMemoryRunActions(tx, { runIds, userId }),
           loadMemoryRunSources(tx, { runIds, userId }),
-          loadMemoryRunPresentationStatuses(tx, { runIds, userId })
+          loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
+          // The page's marks, so a live answer's update never drops what a reload shows.
+          loadDeepResearchMarks(tx, { chatId, userId }, chat.messages)
         ]);
 
         return {
@@ -1197,6 +1201,8 @@ export function createPrismaRunRepository(
             const modelRun = message.assistantModelRuns[0];
 
             return {
+              ...(message.role === "user" && research.sentWithDeepResearch.has(message.id) ? { deepResearch: true as const } : {}),
+              ...(message.role === "assistant" && research.researchAnswers.has(message.id) ? { researchAnswer: true as const } : {}),
               ...(modelRun?.followupMode || modelRun?.followups?.length ? { followups: projectRunFollowups(modelRun) } : {}),
               artifactSummary: modelRun
                 ? summarizeMessageRunArtifacts(

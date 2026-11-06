@@ -127,6 +127,9 @@ export type RunChatUpdateRecord = {
     workspace?: ChatWorkspaceState;
   };
   messages: {
+    /** `ChatMessageWire.deepResearch` and `ChatMessageWire.researchAnswer`, as the page marks them (`loadDeepResearchMarks`). */
+    deepResearch?: true;
+    researchAnswer?: true;
     followups?: ChatMessageWire["followups"];
     pdfPreparation?: readonly ChatPdfPreparationWire[];
     artifactSummary?: ThreadArtifactSummary | null;
@@ -736,7 +739,7 @@ export type RunRepository = {
     followups?: import("./runFollowups").RegenerationFollowups;
     artifactEdit?: unknown;
     artifactIntent?: unknown;
-    /** `true` when the message's run was sent with Deep research (`NormalizedRunRequest.deepResearch`). */
+    /** `true` when the message's run was sent with Deep research (`NormalizedRunRequest.deepResearch`), which refuses the regenerate. */
     deepResearch?: true;
     assistantMessage: {
       id: string;
