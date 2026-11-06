@@ -4,6 +4,7 @@ import { continuableRunFailure } from "../../contracts/runs";
 import { logEvent } from "../observability";
 import type { ResearchEvidenceRepository } from "./evidenceRepository";
 import type { ResearchResumePort, ResearchResumeState, ResearchRunScope } from "./ports";
+import { prismaResearchedRunsReader, researchedRuns } from "./researchedRuns";
 
 /**
  * Picking research up on the user's Continue (`ResearchResumePort`, operator decision 2026-11-01: nothing restarts by itself).
@@ -45,7 +46,7 @@ const json = (value: unknown) => value as Prisma.InputJsonValue;
 
 const isFailure = (value: unknown): value is Readonly<{ code?: unknown; message?: unknown }> => typeof value === "object" && value !== null;
 
-export function createResearchResumeStore(client: Pick<PrismaClient, "modelRun" | "researchEvidence" | "researchFrame">,
+export function createResearchResumeStore(client: Pick<PrismaClient, "message" | "modelRun" | "researchEvidence" | "researchFrame">,
   evidence: Pick<ResearchEvidenceRepository, "chain">): ResearchResumeStore {
   return {
     chain: ({ chatId, runId, userId }) => evidence.chain({ chatId, researchRunId: runId, userId }),
@@ -57,10 +58,9 @@ export function createResearchResumeStore(client: Pick<PrismaClient, "modelRun" 
       if (isFailure(failure) && continuableRunFailure(typeof failure.code === "string" ? failure.code : null,
         typeof failure.message === "string" ? failure.message : null) !== null) return true;
       // A research answer offers Continue whatever failed it, since Regenerate would run the whole research again (operator decision
-      // 2026-11-06): the run was sent with Deep research, or it researched, which its frame row shows (a plan opened, or a Continue picked
-      // research up). Any other failed run stays one that offers no Continue. Read in the database, as `sentWithDeepResearch`.
-      return await client.modelRun.findFirst({ select: { id: true }, where: { ...failed,
-        OR: [{ normalizedRequest: { equals: true, path: ["deepResearch"] } }, { researchFrame: { isNot: null } }] } }) !== null;
+      // 2026-11-06): the run researched, by the stored rows alone (`researchedRuns`), the server's turn after an Allow and a Continue that
+      // failed before its own start included. Any other failed run stays one that offers no Continue.
+      return (await researchedRuns(prismaResearchedRunsReader(client, { chatId, userId }), [runId])).has(runId);
     },
     async link({ chatId, runId, userId }, { answer, fromRunId, frame, goal, proposal, releasedAt, version, windowEndsAt }) {
       await client.researchFrame.create({ data: { answer: json(answer), chatId, continuedFromRunId: fromRunId, frame: json(frame), goal, modelRunId: runId, proposal: json(proposal),
