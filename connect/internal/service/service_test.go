@@ -12,7 +12,7 @@ import (
 
 const exe = "/home/ann/.local/bin/aiqsa-connect"
 
-func TestSystemdUnitRunsServiceModeAndKeepsSessions(t *testing.T) {
+func TestSystemdUnitRunsServiceModeAndStopsOnlyTheClient(t *testing.T) {
 	unit, err := SystemdUnit(Spec{Executable: exe, Path: "/home/ann/.nvm/bin:/usr/bin"})
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ Restart=on-failure
 RestartSec=5
 # A client that a restart cannot fix (logged out, revoked) exits 0 and stays stopped.
 RestartPreventExitStatus=3
-# Stop or restart only the client: the tmux server with the sessions keeps running.
+# Stop or restart only the client: it ends the agent's commands itself, and a tmux server left by an older client keeps its sessions.
 KillMode=process
 Environment="PATH=/home/ann/.nvm/bin:/usr/bin"
 

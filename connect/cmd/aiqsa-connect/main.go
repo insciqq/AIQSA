@@ -1,8 +1,12 @@
 // Command aiqsa-connect connects this computer to an AIQSA installation so
-// its owner can open terminal sessions here from AIQSA.
+// the AIQSA agent can work on it for its owner.
 //
 // Each subcommand lives in its own cmd_<name>.go file and registers itself
-// from init(); main only dispatches.
+// from init(); main only dispatches. On Windows the program is also its own
+// installer and tray application (cmd_install_windows.go,
+// cmd_tray_windows.go): it is built with -H windowsgui, so a start without
+// arguments shows windows instead of a console, and a start from a console
+// attaches to it so the commands print.
 package main
 
 import (
@@ -37,6 +41,22 @@ type command struct {
 
 var commands = map[string]command{}
 
+// Platform hooks, set from init() by the Windows files; nil elsewhere.
+var (
+	// platformInit runs first, before the process streams are used.
+	platformInit func(args []string)
+	// launchWithoutArguments handles a start without arguments (a
+	// double-click) instead of printing the usage.
+	launchWithoutArguments func(inv *invocation) int
+	// trayCommand runs `up --tray`, the program started at sign-in.
+	trayCommand func(inv *invocation) int
+)
+
+// isTrayArgs reports the arguments of the tray: `up --tray`.
+func isTrayArgs(args []string) bool {
+	return len(args) == 2 && args[0] == "up" && args[1] == "--tray"
+}
+
 func register(c command) {
 	if _, exists := commands[c.name]; exists {
 		panic("aiqsa-connect: command registered twice: " + c.name)
@@ -45,6 +65,9 @@ func register(c command) {
 }
 
 func main() {
+	if platformInit != nil {
+		platformInit(os.Args[1:])
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(&invocation{ctx: ctx, args: os.Args[1:], stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr})
 	stop()
@@ -53,8 +76,14 @@ func main() {
 
 func run(inv *invocation) int {
 	if len(inv.args) == 0 {
+		if launchWithoutArguments != nil {
+			return launchWithoutArguments(inv)
+		}
 		printUsage(inv.stderr)
 		return 2
+	}
+	if trayCommand != nil && isTrayArgs(inv.args) {
+		return trayCommand(inv)
 	}
 	switch inv.args[0] {
 	case "help", "-h", "--help":

@@ -107,7 +107,7 @@ func TestLoginPairsAndStoresPrivateCredentials(t *testing.T) {
 	}
 
 	code, stdout, _ = runArgs("logout")
-	if code != 0 || !strings.Contains(stdout, "revoke this computer in AIQSA → AIQSA Connect") {
+	if code != 0 || !strings.Contains(stdout, "Disconnected this computer from "+srv.URL) {
 		t.Fatalf("logout: %d %q", code, stdout)
 	}
 	if _, err := paths.LoadCredentials(); err != config.ErrNotLoggedIn {
