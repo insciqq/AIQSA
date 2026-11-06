@@ -1960,7 +1960,11 @@ model AssistantPin {
 
 model SkillDefinition {
   id                     String                   @id @default(uuid())
-  ownerUserId            String
+  /// Null exactly for a Skill the release ships (`shippedKey`); a SQL check keeps one of the two.
+  ownerUserId            String?
+  /// The shipped list's key (`lib/server/skills/shippedSkills.ts`); such a Skill reaches every
+  /// active user while not archived, which is the administrator's installation-wide Off.
+  shippedKey             String?                  @unique
   currentRevisionId      String?                  @unique
   sharedRevisionId       String?                  @unique
   importSourceJson       Json?
@@ -1972,7 +1976,7 @@ model SkillDefinition {
   /// The composite relation proves the current pointer targets a revision of this definition.
   currentRevision        SkillRevision?           @relation("SkillCurrentRevision", fields: [id, currentRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_currentRevision_fkey")
   sharedRevision         SkillRevision?           @relation("SkillSharedRevision", fields: [id, sharedRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_sharedRevision_fkey")
-  owner                  User                     @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  owner                  User?                    @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   assistantLinks         AssistantSkill[]
   publications           SkillPublication[]
   revisions              SkillRevision[]          @relation("SkillRevisions")

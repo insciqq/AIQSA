@@ -69,7 +69,9 @@ export type SkillDraft = {
 export type SkillScope =
   | { kind: "owner" }
   | { kind: "workspace"; workspaceNames: string[] }
-  | { kind: "installation" };
+  | { kind: "installation" }
+  /** Shipped with the release for every user; nobody owns, edits or shares it. */
+  | { kind: "built_in" };
 
 export type SkillSummary = {
   archived: boolean;

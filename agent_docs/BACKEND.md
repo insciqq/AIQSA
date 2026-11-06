@@ -37,6 +37,7 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 
 - A write grant to the Skill store permits changes only, never sharing or execution. A package missing from a client's listing does not mean it was deleted.
 - Every Skill write goes through `lib/server/skills/revisionWriteCore.ts`. Revisions are append-only: restoring makes an earlier revision current as a new revision, and the published revision never changes.
+- A release ships Skills to every user (operator decisions 2026-11-06, `lib/server/skills/shippedSkills.ts`). The list is explicit, because `skills/` also holds Skills for coding agents. A shipped Skill has no owner, so no owner path edits, deletes or shares it, and it is on for each user until that user turns it off. Its access comes from `shippedKey`, never a publication, so the previous release, still serving during the upgrade, never sees an ownerless row; every copy of the audience rule (`skillAccessWhere`, the Assistant checks, the run binding SQL, the Automation pins) carries that branch. An administrator's installation-wide Off archives it, and upgrades never change that.
 - Skill saves by the agent (`manage_skill`, operator decision 2026-10-07) follow the agent-initiated change rules in `agent_docs/RUN_CONTRACTS.md`, with the mitigations in `agent_docs/SECURITY.md`. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. Code: `lib/server/tools/manageSkill.ts`, `lib/server/skills/agentSkills.ts`.
 
 ## Files, jobs and shares

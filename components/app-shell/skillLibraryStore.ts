@@ -80,7 +80,7 @@ function parseSkill(value: unknown): SkillSummary | null {
     typeof value.ownerDisplayName !== "string" || !Number.isSafeInteger(value.version) ||
     typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt)) ||
     !isRecord(value.scope) ||
-    !["owner", "workspace", "installation"].includes(String(value.scope.kind))) {
+    !["owner", "workspace", "installation", "built_in"].includes(String(value.scope.kind))) {
     return null;
   }
   const scope = value.scope.kind === "workspace"
@@ -93,7 +93,9 @@ function parseSkill(value: unknown): SkillSummary | null {
       : null
     : value.scope.kind === "owner"
       ? { kind: "owner" as const }
-      : { kind: "installation" as const };
+      : value.scope.kind === "built_in"
+        ? { kind: "built_in" as const }
+        : { kind: "installation" as const };
   if (!scope) return null;
   if ([value.instructionApproxTokens, value.fileCount].some((item) => item !== undefined && (!Number.isSafeInteger(item) || Number(item) < 0)) ||
     (value.hasExecutables !== undefined && typeof value.hasExecutables !== "boolean") ||
