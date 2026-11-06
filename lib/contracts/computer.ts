@@ -30,8 +30,12 @@ import {
 
 /**
  * The send-body field that chooses the chat's computer for this and later
- * messages: absent keeps the chat's binding, `null` stops using a computer,
- * `{deviceId, cwd}` chooses one ({@link decodeComputerSendField}).
+ * messages: `{deviceId, cwd}` chooses one, `null` stops using a computer,
+ * and absent means this message runs without a computer while the chat's
+ * stored choice stays as it was ({@link decodeComputerSendField}). The
+ * composer always sends the field, so absent comes only from older clients
+ * and paths that never offer a computer; the server never runs a message on
+ * a stored choice the sender did not send.
  */
 export const COMPUTER_SEND_FIELD = "computer";
 
@@ -70,8 +74,9 @@ export function decodeChatComputerBinding(value: unknown): ChatComputerBinding |
 }
 
 /**
- * The send field's value: `undefined` when absent (the chat keeps its
- * binding), `null` for an explicit "no computer", the binding, or "invalid"
+ * The send field's value: `undefined` when absent (no computer for this
+ * message; the chat's stored choice is left alone), `null` for an explicit
+ * "no computer" that also clears the stored choice, the binding, or "invalid"
  * for anything else ({@link COMPUTER_REFUSALS}`.invalid`). Whether the device
  * is the user's and usable is the server's check at admission.
  */
