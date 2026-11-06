@@ -2034,10 +2034,10 @@ describe("model run route handlers", () => {
     const plain = nativeEngineFake().deps;
     const researching = { ...plain, engine: { ...plain.engine, research: {}, subagentThreads: {} as never } };
     const sourceOf = repository.findRegenerationSource.bind(repository);
-    const regenerate = (sentWith: boolean, nativeEngine: typeof plain, extra: Record<string, unknown> = {}) => {
+    const regenerate = (sentWith: boolean | "approval", nativeEngine: typeof plain, extra: Record<string, unknown> = {}) => {
       repository.findRegenerationSource = async (id, userId) => {
         const source = await sourceOf(id, userId);
-        return source && { ...source, ...sentWith ? { deepResearch: true as const } : {} };
+        return source && { ...source, ...sentWith === "approval" ? { researchApproval: true as const } : sentWith ? { deepResearch: true as const } : {} };
       };
       return createRegenerateModelRunHandler({ ...authDeps, nativeEngine, providers, repository })(
         new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
@@ -2051,6 +2051,9 @@ describe("model run route handlers", () => {
       const refused = await regenerate(true, researching, extra);
       expect([refused.status, await refused.json()]).toEqual([409, { error: DEEP_RESEARCH_REGENERATE_REFUSAL.code, message: DEEP_RESEARCH_REGENERATE_REFUSAL.message }]);
     }
+    // So is the answer to the server's turn after an Allow in a research: answering it again would run that turn as an ordinary message.
+    const approval = await regenerate("approval", researching);
+    expect([approval.status, await approval.json()]).toEqual([409, { error: DEEP_RESEARCH_REGENERATE_REFUSAL.code, message: DEEP_RESEARCH_REGENERATE_REFUSAL.message }]);
     expect(state.regenerated).toBeNull();
     // An edited message has no run yet, so its first run carries the edit's choice, which this harness's missing Search refuses as a send's would.
     const edited = await regenerate(false, researching, { deepResearch: true });
