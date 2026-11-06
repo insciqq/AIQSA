@@ -41,6 +41,7 @@ import type { MemoryExecutionAuthorityDependencies } from "../memory/execution";
 import { defaultMemoryExecutionAuthority } from "../memory/execution/defaultAuthority";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import { loadDeepResearchMarks } from "../chats/deepResearchProjection";
+import { prismaResearchedRunsReader, researchedRuns } from "../research/researchedRuns";
 import { loadMemoryRunSources } from "../memory/sources/runProjection";
 import { loadMemoryRunPresentationStatuses } from "../memory/retrieval/runProjection";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
@@ -113,7 +114,7 @@ import { measureTransaction } from "../observability/transactionTiming";
 import { createPrismaRunFollowupOperations, runFollowupSelect } from "./prismaRepositoryFollowups";
 import { projectRunFollowups } from "./runFollowups";
 import { decodeRunFollowupState } from "../../contracts/runFollowups";
-import { isMessageSystemTurnKind } from "../../contracts/mcpApprovals";
+import { isMessageSystemTurnKind, MCP_APPROVAL_CONTINUATION_KIND } from "../../contracts/mcpApprovals";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -867,12 +868,18 @@ export function createPrismaRunRepository(
         workspaceEnabled: sourceMessage.chat.workspaceEnabled
       };
 
+      // The server's turn after an Allow in a research is no question of its own: answering it again would run that research's turn
+      // as an ordinary message, so the handler refuses it as it refuses a message sent with Deep research (operator decision 2026-11-06).
+      const researchApproval = async (turnKind: string | null, runId: string | undefined) => turnKind === MCP_APPROVAL_CONTINUATION_KIND &&
+        runId !== undefined && (await researchedRuns(prismaResearchedRunsReader(prismaClient, { chatId: sourceMessage.chat.id, userId }), [runId])
+          .catch(retainRunPrismaCode)).has(runId);
+
       if (sourceMessage.role === "user") {
         const sourceRun = await prismaClient.modelRun.findFirst({
           // A background sub-agent run shares its parent's user message; the message's own answer runs are the main agent's.
           where: { subagentTurnId: null, userMessageId: sourceMessage.id, userId },
           orderBy: { createdAt: "desc" },
-          select: { normalizedRequest: true }
+          select: { id: true, normalizedRequest: true }
         }).catch(retainRunPrismaCode);
         const normalizedRequest = sourceRun?.normalizedRequest;
         const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
@@ -882,6 +889,7 @@ export function createPrismaRunRepository(
           ...(artifactEdit !== undefined ? { artifactEdit } : {}),
           ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
           ...(sentWithDeepResearch(normalizedRequest) ? { deepResearch: true as const } : {}),
+          ...(await researchApproval(sourceMessage.systemTurnKind, sourceRun?.id) ? { researchApproval: true as const } : {}),
           assistantMessage: null,
           chat,
           userMessage: {
@@ -941,6 +949,7 @@ export function createPrismaRunRepository(
         ...(artifactEdit !== undefined ? { artifactEdit } : {}),
         ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
         ...(sentWithDeepResearch(normalizedRequest) ? { deepResearch: true as const } : {}),
+        ...(await researchApproval(question.systemTurnKind, sourceRun?.id) ? { researchApproval: true as const } : {}),
         assistantMessage: {
           id: sourceMessage.id,
           modelId: answerBinding?.providerModelId ?? null,
@@ -1172,7 +1181,8 @@ export function createPrismaRunRepository(
           loadMemoryRunSources(tx, { runIds, userId }),
           loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
           // The page's marks, so a live answer's update never drops what a reload shows.
-          loadDeepResearchMarks(tx, { chatId, userId }, chat.messages)
+          loadDeepResearchMarks(tx, { chatId, userId }, chat.messages.map((message) => ({ content: message.content, id: message.id, role: message.role,
+            runId: message.assistantModelRuns[0]?.id ?? null, systemTurnKind: message.systemTurnKind })))
         ]);
 
         return {

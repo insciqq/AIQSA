@@ -658,7 +658,8 @@ async function hydrateMessagePath(
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
       (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
     loadSubagentCallbackNames(tx, chatId, ordered),
-    loadDeepResearchMarks(tx, { chatId, userId }, ordered)
+    loadDeepResearchMarks(tx, { chatId, userId }, ordered.map((message) => ({ content: message.content, id: message.id, role: message.role,
+      runId: message.assistantModelRuns[0]?.id ?? null, systemTurnKind: message.systemTurnKind })))
   ]);
   return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, parents, scheduledTasks,
     messages: ordered.map((message) => {
