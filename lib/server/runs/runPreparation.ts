@@ -12,7 +12,7 @@ import { DEEP_RESEARCH_CHOSEN_GUIDANCE } from "../tools/research";
 import { COMPUTER_SEND_FIELD, type ChatComputerBinding } from "../../contracts/computer";
 import type { FrozenComputerBinding } from "../tools/computerBinding";
 import { computerToolDefinitions } from "../tools/computerTools";
-import { admitComputer, type ComputerAdmissionDeps } from "./computerAdmission";
+import { admitComputer, type ComputerAdmission, type ComputerAdmissionDeps } from "./computerAdmission";
 import { freezeSubagentModels, type FrozenSubagentModels, type SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
 import { freezeSubagentDefault } from "../subagents/typeCatalog";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
@@ -311,6 +311,11 @@ export type SendRunPreparationSource = Readonly<{
     projectMemory: string | null;
     workspaceEnabled?: boolean;
   }>;
+  /**
+   * Server-only: the turn after an MCP Allow, which continues the run the approval gated: `computer` is that run's
+   * frozen computer, null for none, which this turn keeps whatever its request says (`computerAdmission.ts`).
+   */
+  approvalContinuation?: Readonly<{ computer: FrozenComputerBinding | null }>;
   draftPersonalChat?: boolean;
   kind: "send";
   /** Server-only: the scheduled task occurrence this send admits. */
@@ -1136,12 +1141,17 @@ export async function prepareRun(
     assistantRun = admitted.assistant;
   }
 
-  // The message's computer (`computerAdmission.ts`): checked before anything heavier, frozen with the run below.
-  const computer = await admitComputer(deps.computerAdmission, {
+  const toolsOff = !workspaceEnabled && body?.tools === "none";
+  // The message's computer (`computerAdmission.ts`): checked before anything heavier, frozen with the run below. A run
+  // without tools is offered no `computer_*` tools, so it takes no computer and no line about one; the chat's choice stays.
+  const computer: ComputerAdmission = toolsOff ? { binding: null, guidance: null, ok: true } : await admitComputer(deps.computerAdmission, {
     assistantChat: Boolean(assistantSource.assistantId),
     field: body && Object.hasOwn(body, COMPUTER_SEND_FIELD) ? body[COMPUTER_SEND_FIELD] : undefined,
+    // A regenerate repeats an admitted run and the turn after an Allow continues one: each keeps that run's computer.
     ...(input.source.kind === "regenerate" && input.source.source.computer !== undefined
-      ? { frozen: input.source.source.computer } : {}),
+      ? { frozen: input.source.source.computer }
+      : input.source.kind === "send" && input.source.approvalContinuation
+        ? { frozen: input.source.approvalContinuation.computer } : {}),
     origin: scheduledOccurrence ? "scheduled" : input.origin ?? "interactive",
     stored: input.source.kind === "send" ? input.source.chat.computer : undefined,
     userId: input.userId
@@ -2055,7 +2065,7 @@ export async function prepareRun(
         ? workspaceToolLimit(toolBudgets.maxToolRounds, workspaceAdmissionPlan?.normalized.maxToolRounds)
         : toolBudgets.maxToolRounds
     },
-    toolMode: workspaceEnabled || body?.tools !== "none" ? "auto" : "none",
+    toolMode: toolsOff ? "none" : "auto",
     ...(workspaceAdmissionPlan ? { workspace: workspaceAdmissionPlan.normalized } : {})
   };
   const plannedSearchTools = createSearchPlanToolRouter({

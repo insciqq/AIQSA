@@ -2,8 +2,10 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { InstructionPresetError } from "../instructions/store";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
+import { COMPUTER_SEND_FIELD } from "../../contracts/computer";
 import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { deepResearchRefusal } from "../research/run";
+import type { FrozenComputerBinding } from "../tools/computerBinding";
 import {
   MCP_APPROVAL_CONTINUATION_KIND,
   MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
@@ -217,14 +219,16 @@ async function readJson(
 /**
  * A continuation turn after an MCP approval (`systemTurn`). The turn's text
  * is the server's, written from the user's own Allow in this chat; the body's
- * text and attachments are ignored. Null for an ordinary send.
+ * text, attachments and computer are ignored, since the turn continues the
+ * gated run with that run's computer (`computer`, null for none). Null for an
+ * ordinary send.
  */
 async function approvalContinuationBody(
   deps: RunHandlerDeps,
   body: Record<string, unknown> | null,
   chatId: string,
   userId: string
-): Promise<Record<string, unknown> | "invalid" | "unavailable" | null> {
+): Promise<Readonly<{ body: Record<string, unknown>; computer: FrozenComputerBinding | null }> | "invalid" | "unavailable" | null> {
   if (!body || !Object.hasOwn(body, "systemTurn")) return null;
   const turn = body.systemTurn;
   if (!turn || typeof turn !== "object" || Array.isArray(turn)) return "invalid";
@@ -237,13 +241,15 @@ async function approvalContinuationBody(
     artifactEdit: _artifactEdit,
     artifactIntent: _artifactIntent,
     attachmentIds: _attachmentIds,
+    [COMPUTER_SEND_FIELD]: _computer,
     content: _content,
     deepResearch: _deepResearch,
     systemTurn: _systemTurn,
     text: _text,
     ...rest
   } = body;
-  return { ...rest, content: { blocks: [{ type: "text", text: mcpApprovalContinuationText(approval) }] } };
+  return { body: { ...rest, content: { blocks: [{ type: "text", text: mcpApprovalContinuationText(approval) }] } },
+    computer: approval.computer ?? null };
 }
 
 function runPreparationFailureResponse(failure: RunPreparationFailure): Response {
@@ -630,7 +636,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     if (continuationBody === "unavailable") {
       return Response.json({ error: MCP_APPROVAL_CONTINUATION_UNAVAILABLE }, { status: 409 });
     }
-    const sendBody = wakeUp ? { ...body, content: { blocks: [{ text: wakeUp.text, type: "text" }] } } : continuationBody ?? body;
+    const sendBody = wakeUp ? { ...body, content: { blocks: [{ text: wakeUp.text, type: "text" }] } } : continuationBody?.body ?? body;
 
     // One active run per thread of the chat: background sub-agents run beside the main agent's answer and never hold
     // off the user's next message (`findRecentActiveRunForChat` reads only the main agent's runs).
@@ -687,6 +693,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ...chat,
           activeLeafMessageId: expectedActiveLeafId
         },
+        ...(continuationBody ? { approvalContinuation: { computer: continuationBody.computer } } : {}),
         ...(personalChat ? { draftPersonalChat: true } : {}),
         kind: "send",
         ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {})
