@@ -2028,6 +2028,36 @@ describe("model run route handlers", () => {
     expect(state.created?.normalizedRequest.deepResearch).toBeUndefined();
   });
 
+  it("admits the user's own computer with the message and stores the choice, and refuses it where it is never available", async () => {
+    const { repository, state } = createMemoryRepository();
+    const providers = { fake: createFakeProviderAdapter() };
+    const device = "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11";
+    const computerAdmission = { describe: async (_userId: string, deviceId: string) => deviceId === device
+      ? { arch: "amd64" as const, name: "DESKTOP-7Q2", online: false, os: "windows" as const } : null, enabled: async () => true };
+    const send = (deps: Partial<TestRunHandlerDeps>, computer: unknown) => createSendMessageHandler({ ...authDeps, computerAdmission,
+      nativeEngine: nativeEngineFake().deps, providers, repository, ...deps })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ computer, content: { blocks: [{ text: "List my reports.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    const refusal = async (response: Response) => [response.status, await response.json()];
+
+    expect(await refusal(await send({}, { cwd: "~", deviceId: "not-a-device" }))).toEqual([400, { error: "computer_binding_invalid" }]);
+    expect(await refusal(await send({ telegramTurn: true }, { cwd: "~", deviceId: device }))).toEqual([409, { error: "computer_unavailable_here" }]);
+    expect(await refusal(await send({}, { cwd: "~", deviceId: "9e8d7c6b-5a49-4382-a1b2-c3d4e5f60718" })))
+      .toEqual([409, { error: "connect_device_unavailable" }]);
+    expect(await refusal(await send({ computerAdmission: { ...computerAdmission, enabled: async () => false } }, { cwd: "~", deviceId: device })))
+      .toEqual([409, { error: "connect_disabled" }]);
+    expect(state.created).toBeNull();
+    // An offline computer is admitted: its calls answer that it is offline.
+    const accepted = await send({}, { cwd: "C:\\Reports", deviceId: device });
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(state.created).toMatchObject({ chatComputer: { cwd: "C:\\Reports", deviceId: device },
+      normalizedRequest: { computer: { cwd: "C:\\Reports", deviceId: device, name: "DESKTOP-7Q2", online: false } } });
+  });
+
   it("refuses a regenerate of the message sent with Deep research, runs an edit's own choice, and never carries it on a turn the server writes", async () => {
     const { repository, state } = createMemoryRepository();
     const providers = { fake: createFakeProviderAdapter() };

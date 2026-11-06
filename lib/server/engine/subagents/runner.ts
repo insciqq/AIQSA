@@ -47,6 +47,7 @@ import type {
 } from "../../subagents/ports";
 import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
+import { COMPUTER_TURN_GUIDANCE_PREFIX } from "../../tools/computerBinding";
 import type { ModelToolCall, RunTool } from "../../tools/types";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
 import { engineItemRules, type ToolResultClearingPolicy } from "../compaction";
@@ -306,7 +307,7 @@ function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
  * user's own conversation (personal instructions, Memory context, the
  * current message's attachments); the Workspace contract, the tool index and
  * the run's other admitted guidance stay. Of the turn's own guidance only its
- * Workspace paths stay: the attachment, image and artifact facts describe what
+ * Workspace paths and its computer's line stay: the attachment, image and artifact facts describe what
  * the sub-agent was not given. Direct image view is the route's: the parent's
  * flag was decided from the parent's model, while `analyze_image` stays for
  * every model. `withoutWorkspace` is a turn the Workspace refused: it runs as in
@@ -319,7 +320,9 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
   void _parentView;
   const recorded = request.prompt.turnGuidance ?? [];
   const split = splitTurnGuidance(request.prompt.system ?? "", recorded);
-  const kept = options.withoutWorkspace ? [] : split.turn.filter((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
+  // The computer's line stays even without the Workspace: its tools are no Workspace tools.
+  const kept = split.turn.filter((part) => part.startsWith(COMPUTER_TURN_GUIDANCE_PREFIX) ||
+    !options.withoutWorkspace && part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
   const system = [split.chat, ...kept].filter((part) => part.trim()).join("\n\n");
   return {
     ...rest,

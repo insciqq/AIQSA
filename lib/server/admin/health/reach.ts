@@ -6,7 +6,7 @@ import type { AdminHealthQueueClient } from "./queuesRepository";
 
 const DAY = 86_400_000;
 const KINDS: readonly ToolCallKind[] = ["search", "mcp", "workspace", "vision", "fetch_url", "artifact", "image_generation",
-  "skill", "scheduled_task", "session_status", "workspace_image", "memory", "monitoring", "other"];
+  "skill", "scheduled_task", "session_status", "workspace_image", "memory", "monitoring", "computer", "other"];
 const names = Object.fromEntries(KINDS.map((kind) => [kind,
   Object.entries(toolNames).filter(([, family]) => family === kind).map(([name]) => name)]));
 const MAX_TOOLS = 200;

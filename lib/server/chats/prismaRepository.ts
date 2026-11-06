@@ -7,6 +7,7 @@ import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
+import { decodeChatComputerBinding } from "../../contracts/computer";
 import {
   decodeScheduledTaskCard,
   foldScheduledTaskCards,
@@ -137,6 +138,7 @@ import type {
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { activityName, mcpDiscoveryActivityFacts, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
+import { computerActivityFacts } from "../tools/computerTools";
 import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
@@ -300,6 +302,8 @@ const chatSummarySelect = {
   },
   activeLeafMessageId: true,
   assistantId: true,
+  computerCwd: true,
+  computerDeviceId: true,
   createdAt: true,
   defaultSearchPlan: true,
   defaultProviderModel: {
@@ -1101,6 +1105,8 @@ function serializeChatSummary(
     ...importProjection(chat),
     activeLeafMessageId: chat.activeLeafMessageId,
     assistantId: chat.assistantId,
+    // The owner's computer choice; a stored pair the contract no longer accepts reads as none.
+    computer: decodeChatComputerBinding({ cwd: chat.computerCwd, deviceId: chat.computerDeviceId }),
     createdAt: chat.createdAt,
     defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
@@ -1303,6 +1309,7 @@ export function summarizeMessageRunToolActivity(
       ...discoveryFacts,
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
+      ...(descriptor.origin === "computer" ? computerActivityFacts(call.toolName, call.arguments, call.result) : {}),
       ...memorySearch,
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
       origin: descriptor.origin,
