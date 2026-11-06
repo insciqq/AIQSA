@@ -1,8 +1,10 @@
+import { COMPUTER_ERROR_HTTP_STATUS, type ComputerErrorCode } from "@/lib/contracts/computer";
 import {
   CONNECT_CLIENT_VERSION_HEADER,
   CONNECT_DEVICE_TOKEN_PATTERN,
   CONNECT_ID_PATTERN,
-  CONNECT_MAX_INPUT_BYTES,
+  CONNECT_PROTOCOL_HEADER,
+  CONNECT_PROTOCOL_VERSION,
   CONNECT_REASON_HTTP_STATUS,
   CONNECT_VERSION_PATTERN,
   type ConnectReasonCode
@@ -12,14 +14,8 @@ import { readBoundedRequestBody, RequestBodyTooLargeError } from "../http/reques
 export const CONNECT_BROWSER_HEADERS = Object.freeze({ "cache-control": "private, no-store" });
 export const CONNECT_DEVICE_HEADERS = Object.freeze({ "cache-control": "no-store" });
 
-/** Small JSON bodies: pairing, session, view, resize and visibility requests. */
+/** Small JSON bodies: pairing requests and decisions. */
 export const CONNECT_SMALL_BODY_BYTES = 16_384;
-/**
- * A view input body: 64 KiB of text may need six JSON bytes per byte of
- * input (`\u001b`), so the envelope is bounded here and the text by its own
- * byte limit afterwards.
- */
-export const CONNECT_INPUT_BODY_BYTES = 6 * CONNECT_MAX_INPUT_BYTES + 1_024;
 const AUTHORIZATION_MAX_LENGTH = 256;
 const BEARER = /^Bearer\s+(\S+)\s*$/iu;
 
@@ -28,6 +24,11 @@ type HeaderMap = Readonly<Record<string, string>>;
 /** A refusal: `{code}` with its contract status. */
 export function connectRefusal(code: ConnectReasonCode, headers: HeaderMap, extra: HeaderMap = {}): Response {
   return Response.json({ code }, { headers: { ...headers, ...extra }, status: CONNECT_REASON_HTTP_STATUS[code] });
+}
+
+/** A refusal of the computer routes: `{code}` with the status `lib/contracts/computer.ts` gives it. */
+export function computerRefusal(code: ComputerErrorCode, headers: HeaderMap): Response {
+  return Response.json({ code }, { headers, status: COMPUTER_ERROR_HTTP_STATUS[code] });
 }
 
 /** A server-side failure (the store is unreachable): no code, the client retries. */
@@ -73,6 +74,11 @@ export function connectDeviceToken(request: Request): string | null {
   if (!header || header.length > AUTHORIZATION_MAX_LENGTH) return null;
   const token = BEARER.exec(header)?.[1];
   return token && CONNECT_DEVICE_TOKEN_PATTERN.test(token) ? token : null;
+}
+
+/** Whether a device API request comes from a protocol 2 client; terminal clients never send the header (D-03). */
+export function isConnectProtocol2(request: Request): boolean {
+  return request.headers.get(CONNECT_PROTOCOL_HEADER)?.trim() === String(CONNECT_PROTOCOL_VERSION);
 }
 
 /** The client version the request names, or null when it is absent or malformed. */
