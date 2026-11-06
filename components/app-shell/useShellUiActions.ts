@@ -28,7 +28,7 @@ export function useShellUiActions({
   const handleEditMessage = useEventCallback((selectedMessage: ThreadMessage) => {
     useComposerSessionStore
       .getState()
-      .startEdit(selectedMessage.id, textFromThreadContent(selectedMessage.content));
+      .startEdit(selectedMessage.id, textFromThreadContent(selectedMessage.content), selectedMessage.deepResearch === true);
   });
   const handleRegenerateMessage = useEventCallback((messageId: string) => {
     void regenerateMessage(messageId);

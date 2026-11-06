@@ -142,6 +142,7 @@ import {
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import { openScheduledTaskEditorV2 } from "@/features/answer-outputs-v2/ScheduledTaskCardV2";
 import { MemoryCommandStatusV2, memoryCommandIsVisible } from "@/features/answer-outputs-v2/MemoryCommandStatusV2";
+import { researchAnswerViewV2 } from "@/features/answer-outputs-v2/researchAnswerView";
 import { useMemoryCommands } from "@/components/app-shell/useMemoryCommands";
 import {
   ReadingRoomShellV2,
@@ -558,6 +559,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const artifactPanel = useArtifactPanelStore(state => state.open);
   const composerArtifactEdit = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactEdit ?? null);
   const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
+  const composerDeepResearch = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.deepResearch ?? false);
+  const editingDeepResearch = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.editingDeepResearch ?? false);
   const followupSubmission = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.followupSubmission ?? null);
   const uploadSourceKey = useComposerSessionStore(state => state.activeSessionKey);
   const composerComments = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.comments);
@@ -1001,6 +1004,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   ]);
   const canSubmitFollowup = Boolean(latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
     composer.submitFollowup);
+  const setComposerDeepResearch = useCallback((on: boolean) => {
+    const store = useComposerSessionStore.getState();
+    store.updateSession(store.activeSessionKey, { deepResearch: on });
+  }, []);
   const composerSurface = (
     <ComposerV2
       sessionKey={skillScopeKey}
@@ -1019,6 +1026,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         const store = useComposerSessionStore.getState();
         store.updateSession(store.activeSessionKey, { artifactCreate: null });
       }}
+      deepResearch={composerDeepResearch}
+      onDeepResearchChange={setComposerDeepResearch}
       onRemoveArtifactEdit={() => {
         const store = useComposerSessionStore.getState();
         store.updateSession(store.activeSessionKey, { artifactEdit: null });
@@ -1299,10 +1308,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       // Owner-only files sent with this exact message, above its bubble,
       // rendered from the labels the thread snapshot already exposes.
       const sentAttachments = attachmentBlocksFromThreadContent(source.content);
+      // A message sent with Deep research says so above its bubble (`ChatMessageWire.deepResearch`).
+      const researchLabel = source.deepResearch ? <p className="v2-followup-label">Deep research</p> : null;
       return (
         <ConversationTurnV2
-          aboveContent={sentAttachments.length > 0
-            ? <SentAttachmentsV2 blocks={sentAttachments} canSave={!temporarySession} /> : undefined}
+          aboveContent={sentAttachments.length > 0 || researchLabel ? <>
+            {researchLabel}
+            {sentAttachments.length > 0 ? <SentAttachmentsV2 blocks={sentAttachments} canSave={!temporarySession} /> : null}
+          </> : undefined}
           actions={actions}
           afterContent={pagerSlot}
           anchorId={source.id}
@@ -1316,6 +1329,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           quoteEligible={source.status === "complete"}
           edit={thread.editingMessageId === source.id ? {
             attachmentSlot: <SentAttachmentsV2 blocks={sentAttachments} />,
+            deepResearch: editingDeepResearch ? { onTurnOff: () => {
+              const store = useComposerSessionStore.getState();
+              store.updateSession(store.activeSessionKey, { editingDeepResearch: false });
+            } } : null,
             draft: thread.editingMessageDraft,
             error: thread.editingMessageError,
             onCancel: () => thread.cancelMessageEdit(source.id),
@@ -1384,6 +1401,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       (ownsLiveRun ? thread.liveWorkDurationMs : null);
     const copiedAttachments = attachmentBlocksFromThreadContent(source.content)
       .filter((block) => !artifact?.generatedImages?.some((image) => image.attachmentId === block.attachmentId));
+    // A research that wrote a page shows its summary, the page and the report's file; the message keeps the whole text for Copy and the rest.
+    const researchView = researchAnswerViewV2(messageText(source), artifact?.generatedArtifacts);
+    const answerActions: ConversationMessageActionsV2 = readAloud && actions.onReadAloud && researchView.spoken.trim()
+      ? { ...actions, onReadAloud: () => readAloud.toggle(source.id, researchView.spoken) } : actions;
     return (
       <>
       <RunFollowupHistoryV2 entries={source.followups?.entries ?? []}
@@ -1391,7 +1412,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           workspaceActivity?.entries.some(entry => entry.phase === "requested" || entry.phase === "running")} />
       <RunAnswerV2
         processDisclosureId={source.runId ?? source.id}
-        actions={settled ? actions : undefined}
+        actions={settled ? answerActions : undefined}
         actionsSlot={<>
               {settled ? <SentAttachmentsV2 blocks={copiedAttachments} canSave={!temporarySession} /> : null}
               <SubagentAnswerRowsV2 chatId={session.activeChatId} live={!settled} messageId={source.id} toolActivity={toolActivity} onOpen={openSubagent} />
@@ -1418,6 +1439,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                     }));
                   }
                 }}
+                researchReport={researchView.download}
                 workspaceOutputStatus={workspaceActivity?.outputStatus ?? null}
               />
               {source.id === thread.artifactDraftMessageId && thread.artifactDrafts?.length ? <ArtifactGenerationCardsV2
@@ -1432,7 +1454,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         browserLiveWaitingKey={source.id === latestMessage?.id ? subagentWaitingKey : null}
         onPinSkill={pinLoadedSkill}
         pinnedSkillIds={pinnedSkillIds}
-        content={messageText(source)}
+        content={researchView.content}
         leadingSlot={leadingSlot}
         noticeSlot={noticeSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   decodeResearchRecord,
   RECORD_EVIDENCE_TOOL_NAME,
+  RESEARCH_RATING_COUNTS,
   RESEARCH_RECORD_KINDS,
   RESEARCH_SOURCE_CLASSES,
   RESEARCH_STANDINGS,
@@ -16,6 +17,7 @@ import type { ResearchEvidenceAppend, ResearchEvidenceRepository } from "../rese
 import { createResearchEvidenceStore } from "../research/evidenceStore";
 import type { ResearchRunScope } from "../research/ports";
 import type { ResearchAgentCall } from "../research/sources";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { recordEvidenceEngineTool, recordEvidenceTool, type RecordEvidenceTarget } from "./recordEvidence";
 import type { ToolExecutionResult } from "./types";
 
@@ -59,10 +61,25 @@ describe("the record_evidence schema", () => {
     expect(decodeResearchRecord({ ...NONE, kind: "unreachable", reason: "It asks to sign in.", target: "shop.example" })).toMatchObject({ ok: true, value: { kind: "unreachable" } });
     expect(decodeResearchRecord({ ...FINDING, dataset: { counts: [{ count: 3, label: "sagging" }], examples: [{ quote: "It sagged.", url: "https://shop.example/x1" }], left_out: "Other sizes.",
       method: "Read every review.", sample_size: 120 }, kind: "dataset", quote: null, row_key: "x1" })).toMatchObject({ ok: true, value: { kind: "dataset" } });
-    for (const field of Object.keys(properties)) {
+    // Every field but rating: a finding that leaves out what it has no use for is no rating, and is never refused over one.
+    for (const field of Object.keys(properties).filter((key) => key !== "rating")) {
       const rest = Object.fromEntries(Object.entries(FINDING).filter(([key]) => key !== field));
       expect(decodeResearchRecord(rest)).toMatchObject({ message: expect.stringContaining(field), ok: false });
     }
+    expect(decodeResearchRecord(FINDING)).toMatchObject({ ok: true, value: expect.not.objectContaining({ rating: expect.anything() }) });
+  });
+
+  it("takes a public rating on a finding, the score, the top of its scale, the number of ratings and what they count, as the decoder reads them", () => {
+    const rating = properties.rating!.anyOf as Record<string, unknown>[];
+    expect(rating).toEqual([expect.objectContaining({ type: "object" }), { type: "null" }]);
+    const shape = rating[0] as { properties: Record<string, Record<string, unknown>>; required: string[] };
+    expect([...shape.required].sort()).toEqual(Object.keys(shape.properties).sort());
+    expect(shape.properties.counted!.enum).toEqual([...RESEARCH_RATING_COUNTS]);
+    expect(decodeResearchRecord({ ...FINDING, rating: { count: 1_284, counted: "reviews", scale_max: 5, score: 4.9, variants_merged: false }, row_key: "ivanova" }))
+      .toMatchObject({ ok: true, value: { rating: { count: 1_284, counted: "reviews", scaleMax: 5, score: 4.9, variantsMerged: false } } });
+    // Products and services alike, and no site named.
+    expect(String(rating[0]!.description)).toMatch(/a product's, a doctor's, a clinic's or a hotel's/u);
+    expect(JSON.stringify(recordEvidenceTool)).not.toMatch(/ozon|wildberries|yandex|amazon|prodoctorov|booking|tripadvisor|otzovik/iu);
   });
 
   it("offers exactly the contract's lists, and writes a nullable object as anyOf", () => {
@@ -136,6 +153,28 @@ describe("a record_evidence call", () => {
     const record = dataset(11, "27% report sagging.");
     const result = await recordEvidenceEngineTool(targetOf({ kind: "recorded", record }).target, { kind: "main" }).execute(call(FINDING));
     expect(value(result).message).toMatch(/This claim gives a percentage: call record_evidence again with supersedes set to this record's id and the claim in counts\.$/u);
+  });
+
+  describe("of a rating", () => {
+    const RATED = { ...FINDING, criterion_key: "ratings", rating: { count: 12, counted: "ratings", scale_max: 5, score: 5, variants_merged: false }, row_key: "x1" };
+    const rated = (quote: string, quoteCheck: ResearchEvidenceRecord["quoteCheck"], count = 1_284) => ({ ...stored(quoteCheck), claim: "Rated 4.9 of 5.", kind: "finding", quote,
+      rating: { count, counted: "ratings", scaleMax: 5, score: 4.9, variantsMerged: false } }) as ResearchEvidenceRecord;
+    const run = async (record: ResearchEvidenceRecord) => value(await recordEvidenceEngineTool(targetOf({ kind: "recorded", record }).target, { kind: "main" }).execute(call(RATED)));
+
+    it("says which of its numbers its quote does not write, that it counts for nothing until corrected, and how to correct it", async () => {
+      const result = await run(rated("4,9 · 1 248 ratings", { reason: "rating_not_in_quote", status: "not_verbatim" }));
+      expect(result).toMatchObject({ quote_check: "not_verbatim", record_id: RECORD_ID });
+      expect(result.message).toMatch(/^Recorded, but the rating's number of ratings is not in the quote as the page writes it, so the rating counts for nothing\. .*supersedes.*while you still have the page\.$/u);
+      expect((await run(rated("Excellent doctor", { reason: "rating_not_in_quote", status: "not_verbatim" }))).message)
+        .toMatch(/^Recorded, but the rating's score and number of ratings are not in the quote as the page writes them/u);
+    });
+
+    it("says when it rests on few ratings, by the small sample's bound, to look for the place that rates this exact option by more people", async () => {
+      const few = await run(rated("4,9 · 12 ratings", { reason: null, status: "found" }, 12));
+      expect(few).toMatchObject({ sample: "small" });
+      expect(few.message).toBe("Recorded. The quote is on the page. Few ratings: 12, below 30. If another place rates this exact option by more people, record that one too.");
+      expect(await run(rated("4,9 · 1 284 ratings", { reason: null, status: "found" }))).toEqual({ message: "Recorded. The quote is on the page.", quote_check: "found", record_id: RECORD_ID });
+    });
   });
 
   it("says at once that a wrong quote is not on the page, and how to correct it", async () => {
@@ -299,11 +338,13 @@ describe("a record_evidence call", () => {
     const shell = (id: string, command: string, text: string): ResearchAgentCall =>
       ({ arguments: { command }, id, observationId: null, providerCallId: id, result: { callId: id, content: [{ text, type: "text" }], name: SHELL, status: "complete" }, toolName: SHELL });
 
-    /** One agent's calls, with the rows the store writes kept in memory and its page read back by id. */
-    function toolOf(calls: readonly ResearchAgentCall[]) {
+    /** One agent's calls, with the rows the store writes kept in memory and its page read back by id. `browser`: the agent drives the Workspace browser. */
+    function toolOf(calls: readonly ResearchAgentCall[], browser = false) {
       const appended: ResearchEvidenceAppend[] = [];
       const repository = {
-        agentCalls: () => ({ calls: async (_agent: unknown, ids: readonly string[]) => calls.filter((one) => ids.includes(one.id)), fetchCalls: async () => [],
+        agentCalls: () => ({
+          attempts: async (_agent: unknown, { toolNames }: Readonly<{ toolNames: readonly string[] }>) => [...calls].reverse().filter((one) => toolNames.includes(one.toolName)),
+          calls: async (_agent: unknown, ids: readonly string[]) => calls.filter((one) => ids.includes(one.id)), fetchCalls: async () => [],
           recentCalls: async () => [...calls].reverse() }),
         append: async (_scope: unknown, write: ResearchEvidenceAppend) => {
           appended.push(write);
@@ -314,7 +355,9 @@ describe("a record_evidence call", () => {
       } as unknown as ResearchEvidenceRepository;
       const run = { branchRunIds: [], chatId: "chat", researchRunId: "run-1", runId: "run-1", userId: "user" } as unknown as ResearchRunScope;
       const evidence = createResearchEvidenceStore({ repository, savedResults: { read: vi.fn(async () => null) }, threads: { backgroundRunIds: vi.fn(async () => []) } as never })(run);
-      return recordEvidenceEngineTool({ coverage: { frame: async () => null }, evidence, researching: () => true }, { kind: "subagent", name: "shops", threadId: "thread-1" });
+      const tool = recordEvidenceEngineTool({ coverage: { frame: async () => null }, evidence, researching: () => true }, { kind: "subagent", name: "shops", threadId: "thread-1" },
+        { browser: () => browser });
+      return Object.assign(tool, { appended });
     }
 
     const price = { ...FINDING, claim: "Lumo Flex 20 стоит 59 732 ₽.", quote: "Матрас Lumo Flex 20", source_class: "action_channel", url: CARD };
@@ -323,6 +366,14 @@ describe("a record_evidence call", () => {
       const tool = toolOf([shell("c1", "aiqsa-browser text", "[browser #2 · shops] open @ shop.example/lumo-flex-20\nМатрас Lumo Flex 20\nЦена: 59732 руб.")]);
       const answer = value(await tool.execute(call(price)));
       expect(answer).toMatchObject({ figures: { not_in_quote: ["59 732 ₽"], on_page: ["59 732 ₽"] }, quote_check: "found", record_id: RECORD_ID });
+      expect(tool.appended[0]!.quoteCheck.kept).toEqual({ reason: null, status: "found" });
+    });
+
+    it("marks a quote found in browser output with no address of its own, which opens no closed site", async () => {
+      const tool = toolOf([shell("c1", "aiqsa-browser text", "Матрас Lumo Flex 20\nЦена: 59732 руб.")]);
+      expect(value(await tool.execute(call(price)))).toMatchObject({ quote_check: "found", record_id: RECORD_ID });
+      expect(tool.appended[0]!.quoteCheck.kept).toEqual({ reason: "unaddressed_page", status: "found" });
+      expect(tool.appended[0]!.page).toMatchObject({ obtainedBy: "browser", url: CARD });
     });
 
     it("asks for the page itself when the text came from a shell download through a third-party reader", async () => {
@@ -330,6 +381,87 @@ describe("a record_evidence call", () => {
       const answer = value(await tool.execute(call(price))) as { message: string };
       expect(answer).toMatchObject({ figures: { not_in_quote: ["59 732 ₽"], on_page: [] }, quote_check: "not_checked", record_id: RECORD_ID });
       expect(answer.message).toContain("open this page with fetch_url or the browser so the check can read it; text from shell downloads or third-party readers cannot be checked");
+    });
+
+    describe("and an unreachable site (operator decision 2026-11-05: the browser comes first)", () => {
+      const EXEC = namespacedWorkspaceToolName("sandbox_exec");
+      /** A command's call row as the Workspace keeps it: JSON whose `stdout` holds what the command printed. */
+      const exec = (id: string, args: Record<string, unknown>, stdout: string): ResearchAgentCall => ({ arguments: args, id, observationId: null, providerCallId: id,
+        result: { callId: id, content: [{ text: JSON.stringify({ data: { exitCode: 0, stderr: "", stdout, success: true }, ok: true }), type: "text" }], name: EXEC,
+          status: "complete" }, toolName: EXEC });
+      const unreachable = (target: string) => ({ ...NONE, kind: "unreachable", reason: "Проверка браузера не проходит.", target });
+
+      it("is refused, with nothing written and its next step, before the agent's browser tried the site", async () => {
+        const tool = toolOf([exec("c1", { args: ["open", "https://other.example/"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ other.example/")], true);
+        const result = await tool.execute(call(unreachable("https://www.shop.example/card")));
+        expect(result.status).toBe("error");
+        expect(value(result)).toMatchObject({ code: "research_unreachable_browser_first" });
+        const { message } = value(result) as { message: string };
+        expect(message).toContain("your Workspace browser has not opened shop.example in this research");
+        expect(message).toContain("/workspace/guides/browser.md");
+        expect(message).toContain("wait about 15 seconds and read it once more");
+        expect(message).toContain("never solve or click a check");
+        expect(tool.appended).toEqual([]);
+      });
+
+      it("is recorded at once for an agent without the browser", async () => {
+        const tool = toolOf([], false);
+        expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ record_id: RECORD_ID });
+        expect(tool.appended).toHaveLength(1);
+      });
+
+      it("is recorded once the agent's browser opened the host or was refused on it, www. or not", async () => {
+        const refused = toolOf([exec("c1", { args: ["open", "https://www.shop.example/card?id=1"], command: "aiqsa-browser" }, "error[navigation_failed]: The page refused.")], true);
+        expect(value(await refused.execute(call(unreachable("shop.example"))))).toMatchObject({ record_id: RECORD_ID });
+        const script = toolOf([exec("c1", { args: ["-c", "from aiqsa import browser as b; b.open(link); print(b.page_info())"], command: "python3" },
+          "Opening the card.\n[browser #4 · shops] open @ www.shop.example/card\nChecking your browser.")], true);
+        expect(value(await script.execute(call(unreachable("https://shop.example/"))))).toMatchObject({ record_id: RECORD_ID });
+      });
+
+      it("counts a host, not its domain", async () => {
+        const subdomain = toolOf([exec("c1", { args: ["open", "https://market.portal.example/item"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ market.portal.example/item")], true);
+        expect((await subdomain.execute(call(unreachable("portal.example")))).status).toBe("error");
+        expect(value(await subdomain.execute(call(unreachable("market.portal.example"))))).toMatchObject({ record_id: RECORD_ID });
+      });
+
+      it("counts any browser step line in a command's output and any navigation a command names, never a proxied command or a proxy listing", async () => {
+        const SHELL = namespacedWorkspaceToolName("sandbox_shell");
+        const shellLine = (command: string, stdout: string): ResearchAgentCall => ({ ...exec("s1", { command }, stdout), toolName: SHELL });
+        for (const notOpened of [
+          exec("c1", { args: ["proxied", "curl", "-I", "https://shop.example/"], command: "aiqsa-browser" }, "HTTP/2 403"),
+          exec("c1", { args: ["proxies"], command: "aiqsa-browser" }, "KZ1, http, country KZ, hints shop.example, personal"),
+          exec("c1", { args: ["proxies", "shop.example"], command: "aiqsa-browser" }, "shop.example opens directly."),
+          exec("c1", { args: ["-sS", "https://shop.example/"], command: "curl" }, "<html>Checking your browser</html>"),
+          exec("c1", { args: ["text"], command: "aiqsa-browser" }, "Checking your browser."),
+          shellLine("aiqsa-browser proxied curl -sS https://shop.example/ | head", "<html>")
+        ]) {
+          const tool = toolOf([notOpened], true);
+          expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ code: "research_unreachable_browser_first" });
+        }
+        for (const opened of [
+          exec("c1", { args: ["/workspace/project/read_site.py"], command: "python3" }, "Reading.\n[browser #1 · shops] open @ shop.example/card\nChecking your browser."),
+          exec("c1", { args: ["-lc", "aiqsa-browser open https://shop.example/"], command: "bash" }, ""),
+          exec("c1", { args: ["text"], command: "aiqsa-browser" }, "[browser #2 · shops] text @ shop.example/card\nA card."),
+          shellLine("cd /workspace/project && aiqsa-browser open --proxy KZ1 'https://www.shop.example/card'", ""),
+          shellLine("python3 - <<'EOF'\nfrom aiqsa import browser as b\nb.open(\"https://shop.example/card\")\nEOF", ""),
+          exec("c1", { args: ["new-tab", "--quiet", "https://shop.example/card"], command: "/usr/local/bin/aiqsa-browser" }, ""),
+          exec("c1", { args: ["open", "https://short.example/r"], command: "aiqsa-browser" }, "[browser #1 · shops] open @ www.shop.example/card"),
+          // Accepted risk: text that only prints a step line or a navigation counts too, which is how closing worked before 2026-11-05.
+          exec("c1", { args: ["[browser #1] open @ shop.example/"], command: "echo" }, "[browser #1] open @ shop.example/")
+        ]) {
+          const tool = toolOf([opened], true);
+          expect(value(await tool.execute(call(unreachable("shop.example"))))).toMatchObject({ record_id: RECORD_ID });
+        }
+      });
+
+      it("is not held back when the agent's calls cannot be read, or by a store that cannot say", async () => {
+        const { record, target } = targetOf();
+        const browsed = vi.fn(async () => { throw new Error("database down"); });
+        await recordEvidenceEngineTool({ ...target, evidence: { ...target.evidence, browsed } }, { kind: "main" }, { browser: () => true }).execute(call(unreachable("shop.example")));
+        await recordEvidenceEngineTool(target, { kind: "main" }, { browser: () => true }).execute(call(unreachable("shop.example")));
+        expect(browsed).toHaveBeenCalledWith({ name: null, threadId: null }, "shop.example", signal);
+        expect(record).toHaveBeenCalledTimes(2);
+      });
     });
   });
 

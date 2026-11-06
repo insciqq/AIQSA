@@ -55,6 +55,11 @@ export type ComposerGalleryState =
   | "reasoning-hidden"
   | "reasoning-locked"
   | "reasoning-running"
+  | "research-disabled"
+  | "research-edit"
+  | "research-menu"
+  | "research-on"
+  | "research-sent"
   | "zero";
 
 const avatar = {
@@ -416,7 +421,7 @@ function galleryAssistantSetup(state: ComposerGalleryState): GalleryAssistantSet
 
 function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
   if (state === "model" || state === "assistant-fallback" || state === "assistant-fixed-model") return "model";
-  if (state === "add") return "add";
+  if (state === "add" || state === "research-menu" || state === "research-disabled") return "add";
   if (state === "assistant") return "skills";
   if (state === "assistant-fixed" || state === "mcp-personal") return "tools";
   if (state === "assistant-changed") return "search";
@@ -486,12 +491,18 @@ const GALLERY_PALETTE_SKILLS = [
 ] as const;
 
 export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalleryState }) {
-  const wideChips = state === "chips-wide" || state === "chips-wide-comments";
+  // Deep research states sit on the widest chip row, where the chip must fit beside every tool.
+  const researchState = state.startsWith("research-");
+  const wideChips = state === "chips-wide" || state === "chips-wide-comments" || (researchState && state !== "research-disabled");
+  const [deepResearch, setDeepResearch] = useState(state === "research-on");
+  const [sentWithResearch, setSentWithResearch] = useState(state === "research-sent" || state === "research-edit");
+  const [editingResearch, setEditingResearch] = useState(state === "research-edit");
+  const [editDraft, setEditDraft] = useState("Собери квартальный отчёт и отметь источники.");
   const reasoningFixture = wideChips || state.startsWith("reasoning");
   const reasoningRunning = state === "reasoning-running";
   const [comments, setComments] = useState(() => state === "chips-wide-comments"
     ? [1, 2, 3].map(index => ({ id: String(index), quote: `Selected fragment ${index}`, text: `Pending comment ${index}` })) : []);
-  const offChips = state === "chips-off" || state === "chips-off-pinned";
+  const offChips = state === "chips-off" || state === "chips-off-pinned" || state === "research-disabled";
   const chipFixture = wideChips || offChips;
   const [config, setConfig] = useState<ComposerConfig>(() => state === "zero"
     ? {
@@ -646,6 +657,15 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
             />
           </header>
           <ConversationV2
+            getMessagePresentation={(message) => message.role !== "user" || !sentWithResearch ? undefined
+              : state === "research-edit" ? { edit: {
+                  deepResearch: editingResearch ? { onTurnOff: () => setEditingResearch(false) } : null,
+                  draft: editDraft,
+                  onCancel: () => undefined,
+                  onChange: setEditDraft,
+                  onSubmit: () => undefined
+                } }
+                : { aboveContent: <p className="v2-followup-label">Deep research</p> }}
             messages={[{
               content: "Собери квартальный отчёт и отметь источники.",
               id: "composer-question",
@@ -725,7 +745,12 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 return null;
               }}
               onRemoveComment={id => setComments(current => current.filter(comment => comment.id !== id))}
-              onSend={() => { setDraft(""); setComments([]); }}
+              onSend={() => {
+                setDraft(""); setComments([]);
+                if (deepResearch) { setSentWithResearch(true); setDeepResearch(false); }
+              }}
+              deepResearch={deepResearch}
+              onDeepResearchChange={setDeepResearch}
               onToggleMcpServer={(serverId, enabled) => setConfig((current) => ({
                 ...current,
                 mcpServers: current.mcpServers.map((server) =>

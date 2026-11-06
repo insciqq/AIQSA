@@ -138,6 +138,9 @@ function contentHasImage(value: unknown): boolean {
   return isRecord(value) && Array.isArray(value.blocks) && value.blocks.some((block) => isRecord(block) && block.type === "image" && typeof block.attachmentId === "string");
 }
 
+/** The message's run was sent with Deep research, which a regenerate of it keeps (`NormalizedRunRequest.deepResearch`). */
+const sentWithDeepResearch = (normalizedRequest: unknown) => isRecord(normalizedRequest) && normalizedRequest.deepResearch === true;
+
 export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
   return rows.flatMap((row) => {
     const followups = row.followups?.length ? row.followups
@@ -150,7 +153,7 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
           const marker = row.messageId ? { followupOf: { answerId: row.messageId, delivered: entry.delivered } } : {};
           return [
             ...(entry.precedingText ? [{ id: `${entry.id}-partial`, ...marker, role: "assistant" as const,
-              content: textMessageContent(`Partial answer before follow-up:\n${entry.precedingText}`) }] : []),
+              content: textMessageContent(`Answer before follow-up:\n${entry.precedingText}`) }] : []),
             { id: entry.id, contextTurnId: row.messageParentId!, ...marker, role: "user" as const,
               content: textMessageContent(`${entry.delivered ? "Follow-up" : "Follow-up not delivered to the previous answer"}:\n${entry.text}`) }
           ];
@@ -877,6 +880,7 @@ export function createPrismaRunRepository(
         return {
           ...(artifactEdit !== undefined ? { artifactEdit } : {}),
           ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
+          ...(sentWithDeepResearch(normalizedRequest) ? { deepResearch: true as const } : {}),
           assistantMessage: null,
           chat,
           userMessage: {
@@ -935,6 +939,7 @@ export function createPrismaRunRepository(
           revision: regenerationFollowups.entries.length, entries: regenerationFollowups.entries } } : {}),
         ...(artifactEdit !== undefined ? { artifactEdit } : {}),
         ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
+        ...(sentWithDeepResearch(normalizedRequest) ? { deepResearch: true as const } : {}),
         assistantMessage: {
           id: sourceMessage.id,
           modelId: answerBinding?.providerModelId ?? null,

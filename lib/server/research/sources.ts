@@ -17,7 +17,9 @@ import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import type { ToolExecutionResult } from "../tools/types";
 import { UPDATE_PLAN_TOOL_NAME } from "../tools/updatePlan";
 import { normalizeFetchUrl, withoutFetchUrlAttribution } from "../webFetch/urls";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import type { ResearchOpenedSource } from "./gates";
+import { researchSiteHost } from "./sourceQuality";
 
 /**
  * The text agents of a research really got from outside, across its runs: the
@@ -37,7 +39,50 @@ export const RESEARCH_SOURCE_LIMITS = Object.freeze({ results: 2_000, totalChara
  * `fetchCalls` are the calls a cited link is looked for among and `citedResults` what is read of it per link; `recentResults` and
  * `characters` are what a quote with no page of its own is looked for in, newest first. An agent records as it goes, so its page is there.
  */
-export const RESEARCH_WRITE_SOURCE_LIMITS = Object.freeze({ characters: 3_000_000, citedResults: 4, fetchCalls: 500, recentResults: 48 });
+export const RESEARCH_WRITE_SOURCE_LIMITS = Object.freeze({ browserCalls: 200, characters: 3_000_000, citedResults: 4, fetchCalls: 500, recentResults: 48 });
+
+/** The Workspace tools that run a command or read its output, and so may show the browser at work. */
+const COMMAND_TOOLS: readonly string[] = (["sandbox_exec", "sandbox_exec_poll", "sandbox_exec_start", "sandbox_shell"] as const).map(namespacedWorkspaceToolName);
+
+/** A managed-browser step line at a line's start, any action (`ops/workspace-guest/python/aiqsa/browser/_format.py`): `[browser #3] click: … @ shop.example/cart`. */
+const BROWSER_STEP_HOST = /^\[browser #\d+[^\]\n]*\][^\n]* @ ([^\s/"]+)/gmu;
+
+/**
+ * A navigation a command names with its link (`ops/workspace-guest/python/aiqsa/browser/cli.py`): `aiqsa-browser open` or `new-tab`
+ * and a link after it on that line, past any flags, or the Python helper's `.open("…")` or `.new_tab("…")`. `proxied` and `proxies`
+ * open no page, so they never match.
+ */
+const COMMAND_NAVIGATION = /aiqsa-browser\s+(?:open|new-tab)\b[^\n]*?(https?:\/\/[^\s'"\\;&|)]+)|\.(?:open|new_tab)\(\s*(?:url\s*=\s*)?['"](https?:\/\/[^'"\s\\]+)/gu;
+
+const stringsOf = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(stringsOf)
+  : isObject(value) ? Object.values(value).flatMap(stringsOf) : [];
+
+/** What a command printed: a Workspace result is JSON whose `stdout` holds the step lines, so each of its strings is read on its own lines. */
+function printedText(text: string): string {
+  try {
+    return stringsOf(JSON.parse(text)).join("\n");
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * The hosts one command call shows the browser tried: the step lines its output carries, whatever ran them (a CLI call, a script
+ * file, `bash -lc`, a redirect), and the links its own navigation names, which a refused open leaves as its only trace. Its
+ * arguments are read as one text, so a shell line, a program's argument list and inline code all count alike.
+ *
+ * Accepted risk (integrator decision 2026-11-05): text that only prints a step line or a navigation command (`echo`, a heredoc, a quoted
+ * string) counts too. The agent is cooperative, and the worst a wrong match does is let a site close without a real attempt, which is
+ * how closing worked before 2026-11-05; reading too little would refuse a researcher's record for good.
+ */
+function attemptedHosts(call: ResearchAgentCall): readonly string[] {
+  // The program first and its arguments after it, as they run: `{ args, command }` would read backwards.
+  const asRun = isObject(call.arguments) ? { command: call.arguments.command, args: call.arguments.args, ...call.arguments } : call.arguments;
+  const named = [...stringsOf(asRun).join(" ").matchAll(COMMAND_NAVIGATION)].map((match) => match[1] ?? match[2]!);
+  const result = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result as ToolLoopJsonValue);
+  const shown = result ? [...printedText(toolResultOutputText(result)).matchAll(BROWSER_STEP_HOST)].map((match) => match[1]!) : [];
+  return [...named, ...shown].flatMap((site) => researchSiteHost(site) ?? []);
+}
 
 /** A command that drives the Workspace browser: the same reading as `drivesBrowser` in `lib/server/engine/toolRegistry.ts`. Reads such as its `text` print no step line. */
 const BROWSER_COMMAND = /aiqsa-browser|from\s+aiqsa\s+import\s+browser|aiqsa\.browser/u;
@@ -162,6 +207,11 @@ export type ResearchAgentCall = Readonly<{ arguments: unknown; id: string; obser
 
 /** An agent's call rows, newest first. */
 export type ResearchAgentCalls = Readonly<{
+  /**
+   * Its newest calls of these tools, finished or failed: a browser refusing a site is an attempt on it too. A reader without it cannot
+   * say what the agent's browser tried, so it holds no record back.
+   */
+  attempts?(agent: ResearchAgentScope, input: Readonly<{ limit: number; toolNames: readonly string[] }>): Promise<readonly ResearchAgentCall[]>;
   /** These calls whole, in the order asked for. */
   calls(agent: ResearchAgentScope, ids: readonly string[]): Promise<readonly ResearchAgentCall[]>;
   /** Its `fetch_url` calls without their results: what finds a link costs no page. */
@@ -242,6 +292,21 @@ export function createResearchAgentSources(input: Readonly<{
       });
       const found = ids.length > 0 ? await read(await input.calls.calls(agent, ids), links, signal) : { callIds: [], moreUnread: false, sources: [] };
       return { ...found, moreUnread: found.moreUnread || listed.length >= limits.fetchCalls };
+    },
+
+    /**
+     * The hosts the agent's own command calls show the browser tried (`attemptedHosts`), from its call rows and never from its word.
+     * Bounded to its newest command calls; null when the calls cannot be listed.
+     */
+    async browsedHosts(agent: ResearchAgentScope, signal: AbortSignal): Promise<ReadonlySet<string> | null> {
+      if (!input.calls.attempts) return null;
+      const calls = await input.calls.attempts(agent, { limit: limits.browserCalls, toolNames: COMMAND_TOOLS });
+      const hosts = new Set<string>();
+      for (const call of calls) {
+        signal.throwIfAborted();
+        for (const host of attemptedHosts(call)) hosts.add(host);
+      }
+      return hosts;
     },
 
     /** The agent's latest results, those a first read took left out. */

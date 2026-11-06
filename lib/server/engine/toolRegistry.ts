@@ -163,6 +163,11 @@ export type EngineTool = Readonly<{
 }>;
 
 export type ToolRegistry = Readonly<{
+  /**
+   * This agent drives the Workspace browser: the run has one, its tools run commands, and the guest gives this agent a tab. The main
+   * agent's `record_evidence` reads it (`lib/server/tools/recordEvidence.ts`).
+   */
+  browser?: true;
   definitions(): readonly RunTool[];
   /**
    * The Workspace previews this run viewed itself (`view_workspace_image`),
@@ -210,7 +215,8 @@ export type EngineMcpBindingRow = Readonly<{ id: string; runtimeGenerationFinger
 
 export type ToolRegistryServices = Readonly<{
   mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "check">;
-  artifacts?: Pick<ArtifactService, "execute">;
+  /** `archive` takes back a research page that the answer does not show (`lib/server/research/page.ts`). */
+  artifacts?: Pick<ArtifactService, "execute"> & Partial<Pick<ArtifactService, "archive">>;
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
   extractPage?: FetchUrlSessionDeps["extractPage"];
   fetchPage?: FetchUrlSessionDeps["fetchPage"];
@@ -484,7 +490,9 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
         return result;
       } });
   }
-  if (clientTools && input.researchEvidence) add(recordEvidenceEngineTool(input.researchEvidence, input.agent));
+  /** Set once the Workspace tools below are known, which `record_evidence` reads only when a record is made. */
+  let browser = false;
+  if (clientTools && input.researchEvidence) add(recordEvidenceEngineTool(input.researchEvidence, input.agent, { browser: () => browser }));
   if (clientTools && input.researchFrame) add(changeResearchFrameEngineTool(input.researchFrame, input.agent));
   const secrets = input.services.secrets;
   if (clientTools && secrets) {
@@ -644,6 +652,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const handoffMode = input.browserHandoff;
     if (handoffMode && offered.has(namespacedWorkspaceToolName("sandbox_exec"))) {
       browserStep = handoffMode.kind === "interactive" ? "user" : "nobody";
+      browser = !browserRefused;
       add({ activity: () => ({ origin: "workspace", serverName: "Workspace", toolName: BROWSER_HANDOFF_TOOL_NAME }),
         definition: browserHandoffTool, effects: "external", observationSource: "workspace",
         execute: (execution) => browserRefused ? Promise.resolve(oldImageBrowserRefusal(execution.call))
@@ -652,6 +661,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
 
   return {
+    ...(browser ? { browser: true as const } : {}),
     definitions: () => [...tools.values()].map((tool) => tool.definition),
     ...(fetchUrlSession ? { fetchUrlSession } : {}),
     ...(images ? { images } : {}),

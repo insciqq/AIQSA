@@ -1,4 +1,4 @@
-import type { ResearchFinding } from "../../contracts/research";
+import type { ResearchFinding, ResearchRating } from "../../contracts/research";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchOpenedSource } from "./gates";
 import { researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
@@ -161,7 +161,7 @@ function hostOf(link: string): string | null {
  */
 const BROWSER_STEP = /(?:^|")\[browser #\d+[^\]\n]*\][^\n]* @ ([^\s/"]+)/gmu;
 
-function browserHosts(text: string): readonly string[] {
+export function browserHosts(text: string): readonly string[] {
   if (!text.includes("[browser #")) return [];
   return [...unescaped(text).matchAll(BROWSER_STEP)].map((match) => match[1]!.replace(/:\d+$/u, "").replace(/^www\./u, "").toLowerCase());
 }
@@ -377,6 +377,80 @@ export function claimFigures(claim: string): readonly ClaimFigure[] {
   return figures;
 }
 
+/** A price a claim gives: one number in one currency, as the claim writes it (`59 732 ₽`, `$1,299`, `25 тыс. руб.`). */
+export type ClaimPrice = Readonly<{ currency: string; text: string; value: number }>;
+
+/**
+ * Currencies as claims write them. A sign several currencies share keeps a code of its own (`$` is the dollar and many pesos, `¥` the yen and the yuan), so
+ * only prices written alike compare; `₽`, `р.` and `руб.` are all the ruble.
+ */
+const CURRENCIES: readonly Readonly<{ code: string; unit: RegExp }>[] = [
+  { code: "RUB", unit: /^(?:₽|руб\p{L}*|р|rub|rubles?|roubles?)$/iu },
+  { code: "EUR", unit: /^(?:€|eur|euros?|евро)$/iu },
+  { code: "GBP", unit: /^(?:£|gbp)$/iu },
+  { code: "USD", unit: /^(?:usd|dollars?|долл\p{L}*)$/iu },
+  { code: "$", unit: /^\$$/u },
+  { code: "¥", unit: /^¥$/u },
+  { code: "MXN", unit: /^mxn$/iu },
+  { code: "ARS", unit: /^ars$/iu },
+  { code: "CLP", unit: /^clp$/iu },
+  { code: "COP", unit: /^cop$/iu },
+  { code: "peso", unit: /^pesos?$/iu }
+];
+
+const currencyOf = (unit: string) => CURRENCIES.find(({ unit: pattern }) => pattern.test(unit.trim().replace(/\.$/u, "")))?.code ?? null;
+
+/** Words that make a price a range's upper end, which is no price: `от 25 000 до 32 000 ₽` gives none, `от 25 000 ₽ до 32 000 ₽` its lower end. */
+const UPPER_BOUND_BEFORE = /(?:^|[\s(])(?:до|to|under|below|hasta|fins a)\s$/iu;
+/** A size before a price, as in `160×200 — 25 000 ₽`: a spaced dash after a dimension is no range, and the price is what follows it. */
+const SIZE_THEN_PRICE = /^.*\d ?[x×хX] ?\d[^-]* - (\d[^x×хX-]*)$/u;
+
+/** Not a letter on either side, which `\b` cannot say of Cyrillic. */
+const word = (words: string) => `(?<!\\p{L})(?:${words})(?!\\p{L})`;
+
+/**
+ * What makes a claim's amounts no full price today: an instalment, a credit or a periodic payment (`2 500 ₽/мес`, `× 24`), and an earlier or crossed-out price
+ * (`было 49 990 ₽`). On review a claim of an instalment read as the cheapest offer of its option. Months alone are no sign, since a warranty gives them too.
+ */
+const NOT_A_PRICE_NOW = new RegExp([
+  "рассрочк", "кредит", "платеж", "платёж", "ежемесячн", `в ${word("мес|мес\\.|месяц")}`, "/ ?мес", "instal{1,2}ment", "financ", "monthly", "per month", word("a month"),
+  "/ ?mo(?!\\p{L})", "/ ?month", "cuota", "a plazos", word("al mes"), "/ ?mes(?!\\p{L})", "mensual", "[$€£¥₽] ?[x×хX] ?\\d", "руб\\.? ?[x×хX] ?\\d",
+  "(?:[$€£¥₽]|руб\\.?) ?(?:на|за) \\d+ ?мес",
+  word("было"), "стар(?:ая|ой) цен", "зач[её]ркн", word("вместо"), "без скидки", "до скидки", "old price", "regular price", "before discount", word("was"),
+  "precio anterior", word("antes")
+].join("|"), "iu");
+
+/**
+ * The prices a claim gives, found as `claimFigures` finds figures, with a currency sign before the number or a currency after it, a count such as `тыс.` or `k`
+ * in between taken in. A range or a dimension is no one price, nor is a range's upper end. A lone point or comma before three digits groups thousands, since no
+ * price has three decimals. A claim of an instalment or of an earlier price gives none at all (`NOT_A_PRICE_NOW`): which of its amounts is the full price now is
+ * not something its words show reliably, so it stays the model's word.
+ */
+export function claimPrices(claim: string): readonly ClaimPrice[] {
+  const text = normalizeQuotedText(claim);
+  if (NOT_A_PRICE_NOW.test(text)) return [];
+  const prices: ClaimPrice[] = [];
+  for (const match of text.matchAll(CLAIM_NUMBERS)) {
+    const token = SIZE_THEN_PRICE.exec(match[0])?.[1] ?? match[0];
+    const start = match.index + match[0].length - token.length;
+    const sign = CURRENCY_BEFORE.exec(text.slice(Math.max(0, start - 2), start));
+    const from = sign ? start - sign[0].length : start;
+    const unit = unitAt(text, start + token.length, NAME_BEFORE.test(text.slice(Math.max(0, from - 40), from)));
+    const count = unit ? scaleOf(unit.unit) : null;
+    const factor = count?.dimension === "number" ? count.factor : 1;
+    const after = unit && factor !== 1 ? unitAt(text, unit.end, false) : unit;
+    const currency = sign ? currencyOf(sign[0]) : after ? currencyOf(after.unit) : null;
+    const parts = token.split(JOINER).map(valuesOf);
+    if (currency === null || parts.length !== 1 || parts[0]!.length === 0 || UPPER_BOUND_BEFORE.test(text.slice(Math.max(0, from - 12), from))) continue;
+    const end = (sign ? factor !== 1 ? unit : null : after)?.end ?? start + token.length;
+    const shown = text.slice(from, end).replace(/\.$/u, "");
+    if (prices.some((price) => price.text === shown)) continue;
+    prices.push({ currency, text: shown, value: canonical(Math.max(...parts[0]!) * factor) });
+    if (prices.length >= CLAIM_FIGURE_LIMIT) break;
+  }
+  return prices;
+}
+
 /**
  * Every value a text writes a number for, read leniently, so that a figure there is rarely called missing: each meaning of an
  * ambiguous number, each group of a spaced one as well as the whole, small numbers in words, and a scaled unit's value in its
@@ -413,4 +487,50 @@ export function figuresNotIn(figures: readonly ClaimFigure[], text: string): rea
   if (figures.length === 0) return [];
   const keys = textValues(text);
   return figures.filter((figure) => !figureIn(figure, keys));
+}
+
+/**
+ * A number as a rating's text writes it: digits, thousands groups split by a space of any width or an apostrophe before exactly three digits, then points or commas.
+ * A line break never groups, nor does a space after a decimal part, so `4.7\n318` and `4,7 318` are two numbers; a symbol or a letter between two numbers parts them, and
+ * a number glued to a letter on its left is a name's (`S24`).
+ */
+const RATING_NUMBER = /(?<![\p{L}\p{N}])(?:\d{1,3}(?:[ \u00A0\u2009\u202F'\u2019]\d{3}(?!\d))+|\d+)(?:[.,]\d+)*/gu;
+
+/** What shortens a count right after its number: the count is the number it scales to (`12K` is 12 000), never the bare mantissa. */
+const RATING_COUNT_SCALE = /[ \u00A0\u2009\u202F]?(K|k|M|[Тт]ыс\p{L}*|млн|миллион\p{L}*|thousands?|millions?|mil)(?!\p{L})/uy;
+const MILLIONS = /^(?:M|млн|миллион|million)/u;
+
+/**
+ * The scores and the counts a rating's text writes. A score is any number not shortened, its decimal mark a point or a comma; a count is a whole number, a grouped one
+ * read whole (`12 345`, `12,345`, and `12.345`, which may be either), or a shortened one scaled. Unlike `textValues`, which reads a page's figures leniently, no group
+ * or mantissa stands for a number of its own, so a wrong count is not found in a right one.
+ */
+function ratingNumbers(text: string): Readonly<{ counts: ReadonlySet<number>; scores: ReadonlySet<number> }> {
+  const written = unescaped(text).normalize("NFC").replace(INVISIBLE, "");
+  const counts = new Set<number>();
+  const scores = new Set<number>();
+  for (const match of written.matchAll(RATING_NUMBER)) {
+    const values = valuesOf(match[0]);
+    RATING_COUNT_SCALE.lastIndex = match.index + match[0].length;
+    const scale = RATING_COUNT_SCALE.exec(written);
+    if (scale) {
+      const factor = MILLIONS.test(scale[1]!) ? 1_000_000 : 1000;
+      for (const value of values) counts.add(canonical(value * factor));
+      continue;
+    }
+    for (const value of values) {
+      scores.add(value);
+      if (Number.isInteger(value)) counts.add(value);
+    }
+  }
+  return { counts, scores };
+}
+
+/**
+ * Which of a rating's numbers a text does not write: its score (`4,7` is 4.7, and `4.6/5`, `4,9 из 5` or `4.7 of 5` hold theirs) and its number of ratings as the page
+ * writes it (`12 345`, `2,310`, `12,3 тыс.` is 12 300, `12K` is 12 000). The top of the scale is not asked for, since a card often shows its stars and no "of 5".
+ */
+export function ratingNumbersNotIn(rating: Pick<ResearchRating, "count" | "score">, text: string): readonly ("count" | "score")[] {
+  const { counts, scores } = ratingNumbers(text);
+  return [...scores.has(canonical(rating.score)) ? [] : ["score" as const], ...counts.has(rating.count) ? [] : ["count" as const]];
 }

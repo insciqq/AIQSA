@@ -175,6 +175,15 @@
   background: var(--v2-color-hover);
 }
 
+/* A research report is made in the tab, so its Download is a button. */
+button.v2-generated-file-download {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
 @media (hover: none), (pointer: coarse) {
   .v2-generated-file-download {
     width: 2.5rem;

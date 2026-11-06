@@ -132,6 +132,8 @@ function repository() {
 function prepared(): MaterializedPreparedRunData {
   const text = "Проведи исследование матрасов.";
   const request = {
+    // The user chose Deep research for the message (operator decision 2026-11-05).
+    deepResearch: true,
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text, type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text, type: "text" }] }, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -232,7 +234,9 @@ describe("no gate passes its send backs, whatever a model does", () => {
 
     const seen: string[] = [];
     const { adapter, requests } = scripted([{ calls: [submit("three")] }, { calls: [submit("four")] }]);
-    const after = engineOf({ gates: [sendingBack("loop", seen)] });
+    // Run-0 was sent with Deep research, which is what lets its approval go on with the research.
+    const after = engineOf({ gates: [sendingBack("loop", seen)], ports: { resume: () => ({ ...NOOP_RESEARCH_PORTS.resume,
+      sentWithDeepResearch: async (runIds) => runIds.includes("run-0") }) } });
     vi.mocked(after.deps.approvedCall).mockResolvedValue({ providerCallId: "call-held", toolName: "mcp_shop_buy" });
     vi.mocked(after.deps.transcripts.nativeRunsForAnswers).mockResolvedValue(new Map([["answer-0", "run-0"]]));
     vi.mocked(after.deps.transcripts.loadRuns).mockResolvedValue(new Map([["run-0", stored]]));
@@ -240,7 +244,10 @@ describe("no gate passes its send backs, whatever a model does", () => {
     const messages = [{ content: content("Проведи исследование."), id: "question", role: "user" as const }, { content: content(""), id: "answer-0", role: "assistant" as const },
       { content: content("The user approved it."), id: "current-user-message", role: "user" as const }];
     const base = prepared();
-    const request = { ...base.normalizedRequest, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
+    // A server's turn never carries the choice of its own.
+    const { deepResearch: _chosen, ...continued } = base.normalizedRequest;
+    void _chosen;
+    const request = { ...continued, context: { messages, mode: "branch_path" as const } } as ProviderRunRequest;
     await run(adapter, after, { approvalContinuation: { approvalId: "approval-1" }, created: { assistantMessageId: "answer-c", runId: "run-c", userMessageId: "current-user-message" },
       prepared: { ...base, normalizedRequest: request, providerRequest: request } });
     expect(seen).toEqual(["# Report three\n\nIt holds up."]);
