@@ -1,6 +1,7 @@
 import { modelWithConnectionLabel } from "../../contracts/providerConnectionLabels";
 import { RESEARCH_TASK_LIMITS, RESEARCHER_CONTEXT_CLEARING } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME, normalizeSubagentName, SUBAGENT_BUILT_IN_TYPE, SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, SUBAGENT_NAME_PATTERN } from "../../contracts/subagents";
+import { MODEL_CALL_RESEARCH_RETRY } from "../engine/modelCall";
 import type { SubagentRouteResult } from "../engine/subagents/modelRoutes";
 import { withoutResearchBookkeeping } from "../engine/subagents/registry";
 import type { HostedSubagentRunner } from "../engine/subagents/runner";
@@ -112,6 +113,8 @@ export function createResearchTurns(input: ResearchTurnsInput) {
           ...independent ? { prompt: { ...admittedRequest.prompt.baseline ? { baseline: admittedRequest.prompt.baseline } : {}, developer: null, system: null } } : {} },
         ...independent ? { userFollowups: async () => [] } : {},
         backgroundAllowed: false,
+        // A research run's turns, researchers and gates alike, keep sending a failed request again as its main agent does.
+        modelRetry: MODEL_CALL_RESEARCH_RETRY,
         // No turn the server routes starts children: a researcher's ran for minutes, recorded nothing and its parent redid the work.
         childrenAllowed: false,
         engine: { ...base.engine, ...(researcherStore ? { subagentThreads: researcherStore } : {}),

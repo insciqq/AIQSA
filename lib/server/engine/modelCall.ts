@@ -17,6 +17,15 @@ import { ProviderStreamIdleTimeoutError } from "../providers/streamSafety";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { NO_ENGINE_TEST_FAULTS, syntheticProviderBadGateway, syntheticStreamDrop, type EngineTestFaults } from "./faults";
 
+/** How long a model request that keeps failing in transport is sent again. */
+export type ModelCallRetryPolicy = Readonly<{
+  backoff: ProviderRetryBackoff;
+  /** No attempt after this one; a safety net where `windowMs` decides. */
+  maxAttempts: number;
+  /** No new attempt starts once this long has passed since the request's first attempt started. */
+  windowMs?: number;
+}>;
+
 /**
  * One model request of a native run, sent again transparently when it fails
  * in transport (answer first, PROVIDERS.md): a network error, a rate limit
@@ -28,9 +37,24 @@ import { NO_ENGINE_TEST_FAULTS, syntheticProviderBadGateway, syntheticStreamDrop
  * has no effect beyond the answer: its tool calls run only after it
  * completed, so a retry repeats no tool.
  */
-export const MODEL_CALL_RETRY = Object.freeze({
-  backoff: { baseDelayMs: 2_000, maxBackoffMs: 30_000 } satisfies ProviderRetryBackoff,
+export const MODEL_CALL_RETRY: ModelCallRetryPolicy = Object.freeze({
+  backoff: { baseDelayMs: 2_000, maxBackoffMs: 30_000 },
   maxAttempts: 6
+});
+
+/**
+ * A Deep research run's model requests (its main agent, researchers, gate
+ * turns and their compactions): nobody waits on a research answer as on a
+ * chat's, and a run that took half an hour is lost when one request gives up
+ * on a provider failing in bursts (a 2026-11-06 run lost its last request to
+ * six stream drops in about two minutes). The same backoff for ten minutes
+ * from the first attempt; Stop, the turn's deadline and deterministic
+ * failures end it as for any request.
+ */
+export const MODEL_CALL_RESEARCH_RETRY: ModelCallRetryPolicy = Object.freeze({
+  backoff: MODEL_CALL_RETRY.backoff,
+  maxAttempts: 50,
+  windowMs: 600_000
 });
 
 /** Silence before a provider's first response counts as slow: about one healthy request in a hundred waits this long. */
@@ -78,6 +102,8 @@ export type ModelCallPorts = Readonly<{
   /** One physical request's provider-reported usage and cost. */
   onUsage(usage: ModelRunUsage, costUsd: number | undefined): void;
   random?: () => number;
+  /** How long a failed request keeps being sent again; absent, `MODEL_CALL_RETRY` (a chat's user waits on it). */
+  retry?: ModelCallRetryPolicy;
   /**
    * The gateway routing lane of the request (`gatewayRouting.ts`): each attempt
    * carries the lane's key, and a failed one moves the lane, so the attempt
@@ -108,6 +134,8 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
   const faults = ports.faults ?? NO_ENGINE_TEST_FAULTS;
   const now = ports.now ?? Date.now;
   const stage = ports.stage ?? "answer";
+  const policy = ports.retry ?? MODEL_CALL_RETRY;
+  const firstStartedAt = now();
   let waiting: RunProviderWait | null = null;
   const wait = (next: RunProviderWait | null) => {
     if (next === waiting) return;
@@ -149,10 +177,12 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
       // A request that reported usage before it failed may be billed: keep it.
       if (usage) ports.onUsage(normalizeTokenUsage({ ...usage, completeness: "partial" }), undefined);
       const decision = modelCallRetryDecision(error, ports.signal);
-      const delayMs = decision && attempt < MODEL_CALL_RETRY.maxAttempts
-        ? providerRetryDelayMs(attempt, decision.retryAfterMs, ports.random, MODEL_CALL_RETRY.backoff) : null;
+      const delayMs = decision && attempt < policy.maxAttempts
+        ? providerRetryDelayMs(attempt, decision.retryAfterMs, ports.random, policy.backoff) : null;
       const failure = observedFailure(error);
-      if (delayMs === null || now() + delayMs >= ports.deadlineAt) {
+      const nextAt = delayMs === null ? null : now() + delayMs;
+      if (nextAt === null || nextAt >= ports.deadlineAt ||
+        (policy.windowMs !== undefined && nextAt - firstStartedAt > policy.windowMs)) {
         if (decision) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage,
           ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
         throw error;
