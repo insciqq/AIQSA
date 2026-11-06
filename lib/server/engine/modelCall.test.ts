@@ -6,7 +6,7 @@ import { providerResponseFailure } from "../providers/responseFailure";
 import { markProviderStreamDrop } from "../providers/streamDrop";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { engineTestFaults } from "./faults";
-import { callModel, modelCallRetryDecision, type ModelCallPorts } from "./modelCall";
+import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_RETRY, modelCallRetryDecision, type ModelCallPorts } from "./modelCall";
 
 type Script = readonly (Readonly<{ events?: readonly ModelRunSseEvent[]; fail?: unknown; text?: string }>)[];
 
@@ -161,6 +161,76 @@ describe("native model call", () => {
     const late = adapter([{ fail: http(503) }]);
     await expect(callModel(ports(late, { deadlineAt: Date.now() + 1_000 }), request)).rejects.toThrow("HTTP 503");
     expect(late.calls).toBe(1);
+  });
+
+  describe("a research run's retry window", () => {
+    // A fake clock: each attempt runs `attemptMs` before it fails, and each wait moves the clock by its delay.
+    const clocked = (script: Script, attemptMs = 5_000) => {
+      let clock = 1_000_000;
+      const starts: number[] = [];
+      const provider = adapter(script);
+      const stream = provider.stream.bind(provider);
+      provider.stream = (value, options) => {
+        starts.push(clock);
+        clock += attemptMs;
+        return stream(value, options);
+      };
+      const now = () => clock;
+      const sleep = vi.fn(async (delayMs: number) => { clock += delayMs; });
+      return { now, provider, sleep, starts, start: clock };
+    };
+    const drop = () => markProviderStreamDrop(new Error("stream_incomplete"), "reset");
+
+    it("keeps sending a dropped stream again past a chat's attempts and returns the answer", async () => {
+      const failures = Array.from({ length: 9 }, () => ({ fail: drop() }));
+      const clock = clocked([...failures, { events: [token("Report")], text: "Report" }]);
+      const waits: unknown[] = [];
+      const result = await callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now,
+        onProviderWait: (wait) => waits.push(wait), retry: MODEL_CALL_RESEARCH_RETRY, slowAfterMs: 1_000, sleep: clock.sleep }), request);
+      expect(result.finalText).toBe("Report");
+      expect(clock.provider.calls).toBe(10);
+      expect(waits).toEqual(["retrying", null]);
+    });
+
+    it("starts no attempt once ten minutes passed since the first one started", async () => {
+      const clock = clocked([{ fail: drop() }]);
+      const waits: unknown[] = [];
+      await expect(callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now,
+        onProviderWait: (wait) => waits.push(wait), retry: MODEL_CALL_RESEARCH_RETRY, slowAfterMs: 1_000, sleep: clock.sleep }), request))
+        .rejects.toThrow("stream_incomplete");
+      expect(clock.provider.calls).toBeGreaterThan(MODEL_CALL_RETRY.maxAttempts);
+      // The window decided, not the safety bound on attempts.
+      expect(clock.provider.calls).toBeLessThan(MODEL_CALL_RESEARCH_RETRY.maxAttempts);
+      expect(clock.starts.at(-1)! - clock.starts[0]!).toBeLessThanOrEqual(600_000);
+      // The next wait would have started an attempt past the window: at most one capped backoff remained.
+      expect(clock.starts.at(-1)! - clock.starts[0]!).toBeGreaterThan(600_000 - 5_000 - MODEL_CALL_RETRY.backoff.maxBackoffMs);
+      expect(waits).toEqual(["retrying"]);
+    });
+
+    it("still waits past no turn's deadline, sends no deterministic rejection again and stops at Stop", async () => {
+      const late = clocked([{ fail: drop() }]);
+      await expect(callModel(ports(late.provider, { deadlineAt: late.start + 60_000, now: late.now, retry: MODEL_CALL_RESEARCH_RETRY,
+        sleep: late.sleep }), request)).rejects.toThrow("stream_incomplete");
+      expect(late.provider.calls).toBeLessThan(MODEL_CALL_RETRY.maxAttempts);
+      expect(late.now()).toBeLessThan(late.start + 60_000);
+      const rejected = clocked([{ fail: http(400) }]);
+      await expect(callModel(ports(rejected.provider, { now: rejected.now, retry: MODEL_CALL_RESEARCH_RETRY, sleep: rejected.sleep }), request))
+        .rejects.toThrow("HTTP 400");
+      expect(rejected.provider.calls).toBe(1);
+      const stop = new AbortController();
+      stop.abort();
+      const stopped = clocked([{ fail: http(502) }]);
+      await expect(callModel(ports(stopped.provider, { now: stopped.now, retry: MODEL_CALL_RESEARCH_RETRY, signal: stop.signal,
+        sleep: stopped.sleep }), request)).rejects.toThrow();
+      expect(stopped.provider.calls).toBe(1);
+    });
+
+    it("leaves a chat's request at its six attempts with time to spare", async () => {
+      const clock = clocked([{ fail: drop() }]);
+      await expect(callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now, sleep: clock.sleep }), request))
+        .rejects.toThrow("stream_incomplete");
+      expect(clock.provider.calls).toBe(6);
+    });
   });
 
   it("stops at Stop", async () => {
