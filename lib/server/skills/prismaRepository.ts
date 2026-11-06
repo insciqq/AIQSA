@@ -177,6 +177,8 @@ function searchWhere(userId: string, query: string): Prisma.SkillDefinitionWhere
   const text = { contains: query, mode: Prisma.QueryMode.insensitive };
   return {
     OR: [
+      // The UI names a shipped Skill's owner as the product.
+      ...(BUILT_IN_SKILL_OWNER_NAME.toLowerCase().includes(query.toLowerCase()) ? [{ shippedKey: { not: null } }] : []),
       { ownerUserId: userId, OR: [{ currentRevision: { description: text } }, { currentRevision: { name: text } }] },
       // A shipped Skill has no owner, and SQL never matches NULL with `<>`.
       { AND: [{ OR: [{ ownerUserId: null }, { ownerUserId: { not: userId } }] },

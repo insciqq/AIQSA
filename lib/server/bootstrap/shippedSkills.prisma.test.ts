@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
 import { prisma } from "@/lib/server/prisma";
 import { assertCurrentSkillRunBindings, insertAcceptedSkillRunBindings } from "@/lib/server/runs/prismaRepositoryBindings";
+import { loadScheduledTaskPinnedSkillMap } from "@/lib/server/scheduledTasks/pinnedSkills";
 import { createSkillBundle } from "@/lib/server/skills/bundle";
 import { createBuiltInSkillAdminService } from "@/lib/server/skills/builtInSkillsAdmin";
 import { createSkillCatalogRepository } from "@/lib/server/skills/catalogRepository";
@@ -45,8 +46,12 @@ describe("shipped Skills", () => {
         .toMatchObject({ builtIn: true, enabled: true });
       expect((await skills.listForUser(existing, { limit: 100, query: `Shipped ${key.slice(0, 8)}` })).entries.map((entry) => entry.id))
         .toContain(skillId);
+      expect((await skills.listForUser(existing, { limit: 100, query: "aiqsa" })).entries.map((entry) => entry.id)).toContain(skillId);
       expect(await preferences.set(off, skillId, false)).toEqual({ skillId, enabled: false });
       expect(await enabled(off)).toEqual([]);
+      // An Automation may pin it exactly while Auto would offer it.
+      expect((await loadScheduledTaskPinnedSkillMap(prisma, existing, [skillId])).get(skillId)).toMatchObject({ available: true });
+      expect((await loadScheduledTaskPinnedSkillMap(prisma, off, [skillId])).get(skillId)).toMatchObject({ available: false });
 
       // Nobody owns it, so no owner-scoped write reaches it.
       const draft = { name: "Hijacked", description: "Changed", instructions: "Changed." };
