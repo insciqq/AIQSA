@@ -1,4 +1,4 @@
-import type { AdminSkillShareDecision, AdminSkillShareRequestDetail, AdminSkillShareRequestListResponse } from "@/lib/contracts/adminSkills";
+import type { AdminBuiltInSkill, AdminBuiltInSkillUpdate, AdminSkillShareDecision, AdminSkillShareRequestDetail, AdminSkillShareRequestListResponse } from "@/lib/contracts/adminSkills";
 import { SKILL_SHARE_REQUEST_STATES, type SkillShareRequestState } from "@/lib/contracts/skills";
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -63,4 +63,25 @@ export async function loadAdminSkillFile(id: string, path: string, signal?: Abor
   const value = await request(`/${encodeURIComponent(id)}/files?${new URLSearchParams({ path })}`, { signal });
   if (!record(value) || value.path !== path || typeof value.content !== "string") throw new Error("admin_skills_response_invalid");
   return value.content;
+}
+function builtInSkill(value: unknown): value is AdminBuiltInSkill {
+  return record(value) && ["id", "name"].every(key => typeof value[key] === "string") &&
+    typeof value.enabled === "boolean" && Number.isSafeInteger(value.version) && Number(value.version) > 0 &&
+    Number.isSafeInteger(value.assistantUsageCount) && Number(value.assistantUsageCount) >= 0;
+}
+async function builtInRequest(path: string, init?: RequestInit): Promise<unknown> {
+  const response = await fetch(`/api/admin/skills/built-in${path}`, init);
+  const value: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(record(value) && typeof value.error === "string" ? value.error : "built_in_skill_update_failed");
+  return value;
+}
+export async function loadAdminBuiltInSkills(signal?: AbortSignal): Promise<AdminBuiltInSkill[]> {
+  const value = await builtInRequest("", { signal });
+  if (!record(value) || !Array.isArray(value.skills) || !value.skills.every(builtInSkill)) throw new Error("admin_skills_response_invalid");
+  return value.skills;
+}
+export async function setAdminBuiltInSkillEnabled(id: string, update: AdminBuiltInSkillUpdate): Promise<AdminBuiltInSkill> {
+  const value = await builtInRequest(`/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(update) });
+  if (!record(value) || !builtInSkill(value.skill)) throw new Error("admin_skills_response_invalid");
+  return value.skill;
 }

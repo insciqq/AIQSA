@@ -215,7 +215,7 @@ export async function commitSkillSaveInTransaction(tx: Prisma.TransactionClient,
   let copy: { skillId: string; revisionId: string; name: string } | null = null;
   if (input.target.kind !== "new") {
     const skillId = input.target.skillId;
-    const [definition] = await tx.$queryRaw<Array<{ ownerUserId: string; deletedAt: Date | null }>>`
+    const [definition] = await tx.$queryRaw<Array<{ ownerUserId: string | null; deletedAt: Date | null }>>`
       SELECT "ownerUserId", "deletedAt" FROM "SkillDefinition" WHERE "id" = ${skillId}`;
     if (!definition || definition.deletedAt) return { kind: "refused", code: "skill_not_available" };
     if (definition.ownerUserId === userId) {
@@ -299,7 +299,7 @@ async function commitSkillRestore(tx: Prisma.TransactionClient, input: Readonly<
   changeNote: string | null;
 }>): Promise<SkillSaveOutcome> {
   const { userId, target } = input;
-  const [definition] = await tx.$queryRaw<Array<{ ownerUserId: string; deletedAt: Date | null }>>`
+  const [definition] = await tx.$queryRaw<Array<{ ownerUserId: string | null; deletedAt: Date | null }>>`
     SELECT "ownerUserId", "deletedAt" FROM "SkillDefinition" WHERE "id" = ${target.skillId}`;
   if (!definition || definition.deletedAt) return { kind: "refused", code: "skill_not_available" };
   if (definition.ownerUserId !== userId) {

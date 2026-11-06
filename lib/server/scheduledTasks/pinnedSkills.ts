@@ -24,7 +24,7 @@ const revision = { select: { hasExecutables: true, name: true } } as const;
  * is never projected. One the owner sees is `available` exactly when a run's
  * Auto catalog would offer it (`createSkillCatalogRepository.listEnabledForRun`):
  * not archived, with a version the owner may load, and enabled for the owner
- * (an own Skill without a preference is enabled; a shared one needs one).
+ * (an own or shipped Skill without a preference is enabled; a shared one needs one).
  */
 export async function loadScheduledTaskPinnedSkillMap(
   client: Client,
@@ -35,7 +35,7 @@ export async function loadScheduledTaskPinnedSkillMap(
   if (ids.length === 0) return new Map();
   const rows = await client.skillDefinition.findMany({
     select: {
-      archivedAt: true, currentRevision: revision, id: true, ownerUserId: true,
+      archivedAt: true, currentRevision: revision, id: true, ownerUserId: true, shippedKey: true,
       preferences: { select: { enabled: true }, where: { userId } }, sharedRevision: revision
     },
     where: { AND: [{ currentRevisionId: { not: null }, deletedAt: null, id: { in: ids } }, skillAccessWhere(userId)] }
@@ -45,7 +45,7 @@ export async function loadScheduledTaskPinnedSkillMap(
     const current = owned ? row.currentRevision : row.sharedRevision;
     const name = current ? scheduledTaskSkillNameProjection(current.name) : null;
     if (!current || name === null) return [];
-    const enabled = row.preferences[0]?.enabled ?? owned;
+    const enabled = row.preferences[0]?.enabled ?? (owned || row.shippedKey !== null);
     return [[row.id, {
       available: row.archivedAt === null && enabled, hasExecutables: current.hasExecutables, id: row.id, name
     }] as const];

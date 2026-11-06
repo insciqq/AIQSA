@@ -21,8 +21,10 @@ export function createSkillCatalogRepository(db: PrismaClient | Prisma.Transacti
       const rows = await db.skillDefinition.findMany({
         where: { AND: [
           { archivedAt: null, deletedAt: null, currentRevisionId: { not: null } }, skillAccessWhere(userId),
+          // With no preference of the user's, their own Skills and shipped ones are on.
           { OR: [{ preferences: { some: { userId, enabled: true } } },
-            { ownerUserId: userId, preferences: { none: { userId } } }] }
+            { ownerUserId: userId, preferences: { none: { userId } } },
+            { shippedKey: { not: null }, preferences: { none: { userId } } }] }
         ] },
         select: { id: true, ownerUserId: true, currentRevision: { select: metadata }, sharedRevision: { select: metadata } },
         orderBy: { id: "asc" }
