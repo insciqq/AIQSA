@@ -40,15 +40,17 @@ describe("ConnectPairView", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(pairing)).mockResolvedValueOnce(jsonResponse({ status: "approved" }));
     renderPair("bcdf 2345");
     expect(await screen.findByText("Connect this computer to your AIQSA?")).toBeVisible();
+    expect(screen.getByTestId("connect-pair")).toHaveTextContent("work with files and run commands");
+    expect(screen.getByTestId("connect-pair")).not.toHaveTextContent(/terminal/iu);
     expect(fetchMock.mock.calls[0]![0]).toBe("/api/connect/pairings/by-code/BCDF-2345");
     const facts = screen.getByTestId("connect-pair-facts");
     expect(facts).toHaveTextContent("MacBook Pro");
     expect(facts).toHaveTextContent("mbp.local");
-    expect(facts).toHaveTextContent("macOS · arm64");
+    expect(facts).toHaveTextContent("macOS · ARM64");
     expect(facts).toHaveTextContent("0.3.20");
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
-    expect(await screen.findByTestId("connect-pair-approved")).toHaveTextContent("Return to the terminal");
+    expect(await screen.findByTestId("connect-pair-approved")).toHaveTextContent("Use a computer");
     const [url, init] = fetchMock.mock.calls[1]!;
     expect(url).toBe("/api/connect/pairings/by-code/BCDF-2345");
     expect(init?.method).toBe("POST");
@@ -67,7 +69,7 @@ describe("ConnectPairView", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ code }, 404));
     renderPair("BCDF-2345");
     expect(await screen.findByRole("alert")).toHaveTextContent("This code is not valid or has expired.");
-    expect(screen.getByLabelText("Code from the terminal")).toBeVisible();
+    expect(screen.getByLabelText("Code shown on the computer")).toBeVisible();
   });
 
   it("turns a code used meanwhile into the same neutral answer", async () => {
@@ -91,7 +93,7 @@ describe("ConnectPairView", () => {
     renderPair("not-a-code");
     expect(screen.getByText(/This code is not valid or has expired/u)).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText("Code from the terminal"), { target: { value: "hjkm7892" } });
+    fireEvent.change(screen.getByLabelText("Code shown on the computer"), { target: { value: "hjkm7892" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(navigation.push).toHaveBeenCalledWith("/connect/pair?code=HJKM-7892");
   });

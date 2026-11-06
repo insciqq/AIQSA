@@ -17,7 +17,9 @@ import { ArtifactPanelV2 } from "@/components/artifacts/ArtifactPanelV2";
 import { closeArtifactPanel, openArtifactPanel, useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore";
 import { activateArtifactLibraryAccount } from "@/components/app-shell/artifactLibraryStore";
 import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
-import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
+import { composerSessionKey, effectiveComposerComputer, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
+import { requestComposerComputerPicker } from "@/features/composer-v2/computerPickerRequest";
+import type { ChatComputerBinding } from "@/lib/contracts/computer";
 import { quoteSelectionInComposer } from "@/components/app-shell/composerQuoteSelection";
 import { composerCommentRefusalMessage } from "@/components/app-shell/composerComments";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
@@ -562,6 +564,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerArtifactEdit = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactEdit ?? null);
   const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
   const composerDeepResearch = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.deepResearch ?? false);
+  const composerComputerChoice = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.computerChoice ?? null);
   const editingDeepResearch = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.editingDeepResearch ?? false);
   const followupSubmission = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.followupSubmission ?? null);
   const uploadSourceKey = useComposerSessionStore(state => state.activeSessionKey);
@@ -712,6 +715,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     window.requestAnimationFrame(() => archivedManageRef.current?.focus());
   };
   const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+  // The chat's computer: chosen here for the next messages, else the one the chat last ran with.
+  const activeChatComputer = useWorkspaceStore(state => session.activeChatId
+    ? state.chats.find((chat) => chat.id === session.activeChatId)?.computer : undefined);
+  const composerComputerBinding = effectiveComposerComputer(composerComputerChoice, activeChatComputer);
   // A sub-agent's read-only thread view takes the conversation's place in its chat.
   const subagentThread = useOpenSubagentThread(session.activeChatId);
   const openSubagent = (target: SubagentThreadTarget) => {
@@ -1010,6 +1017,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const store = useComposerSessionStore.getState();
     store.updateSession(store.activeSessionKey, { deepResearch: on });
   }, []);
+  const setComposerComputer = useCallback((binding: ChatComputerBinding | null) => {
+    const store = useComposerSessionStore.getState();
+    store.updateSession(store.activeSessionKey, { computerChoice: { binding } });
+  }, []);
   const composerSurface = (
     <ComposerV2
       sessionKey={skillScopeKey}
@@ -1030,6 +1041,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       }}
       deepResearch={composerDeepResearch}
       onDeepResearchChange={setComposerDeepResearch}
+      computer={session.connectEntryVisible ? { binding: composerComputerBinding, onChange: setComposerComputer } : null}
       onRemoveArtifactEdit={() => {
         const store = useComposerSessionStore.getState();
         store.updateSession(store.activeSessionKey, { artifactEdit: null });
@@ -1111,6 +1123,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerRecoveryActions = followupSubmission ? [] : (composer.operationErrorRecoveries ?? []).flatMap((recovery) =>
     recovery === "reset_workspace"
       ? [{ label: "Reset workspace…", onClick: () => setWorkspaceResetOpen(true) }]
+      // A refused computer: choose another, or remove it and send again.
+      : recovery === "choose_computer"
+        ? [{ label: "Choose another computer", onClick: requestComposerComputerPicker }]
+      : recovery === "stop_using_computer"
+        ? [{ label: "Stop using computer", onClick: () => setComposerComputer(null) }]
       : composer.submitComposerWithoutWorkspace
         ? [{ label: "Send without Workspace", onClick: () => void composer.submitComposerWithoutWorkspace?.() }]
         : []

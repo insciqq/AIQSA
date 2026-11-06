@@ -31,8 +31,9 @@ describe("AdminConnectSection", () => {
     expect(toggle).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText(ADMIN_CONNECT_WARNING)).toBeVisible();
     expect(ADMIN_CONNECT_WARNING).toBe(
-      "Lets users open terminals on their own computers from AIQSA. The server relays their terminal traffic."
+      "Lets users connect their own computers so the AIQSA agent can work with files and run commands there, with their permissions and without asking first. The server relays the agent's commands and their results."
     );
+    expect(screen.getByRole("region", { name: "AIQSA Connect policy" })).not.toHaveTextContent(/terminal|Claude Code|Codex/u);
     expect(fetchMock.mock.calls[0]![0]).toBe("/api/admin/connect");
   });
 

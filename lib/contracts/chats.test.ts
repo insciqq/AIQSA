@@ -497,6 +497,19 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("carries the chat's computer on summaries and rejects a malformed one", () => {
+    const binding = { cwd: "C:\\Users\\ivan\\Documents", deviceId: "0b6f2c1e-5a7d-4c3e-9f10-2a4b6c8d0e1f" };
+    for (const computer of [binding, null]) {
+      const bound = { ...summary, computer };
+      expect(decodeChatSummaryResponse({ chat: bound })).toEqual(bound);
+      expect(decodeWorkspaceChatsResponse({ chats: [bound], folders: [] })?.chats).toEqual([bound]);
+    }
+    expect(decodeChatSummaryResponse({ chat: summary })).not.toHaveProperty("computer");
+    for (const computer of [{ deviceId: binding.deviceId }, { ...binding, extra: 1 }, { ...binding, cwd: "a\u0000b" }, "~"]) {
+      expect(decodeChatSummaryResponse({ chat: { ...summary, computer } })).toBeNull();
+    }
+  });
+
   it("gives an imported chat a non-empty bounded title that every chat decoder accepts", () => {
     for (const blank of ["", "   ", "\t\n", " ".repeat(300)]) expect(importedChatTitle(blank)).toBe(DEFAULT_CHAT_TITLE);
     expect(importedChatTitle("  Release plan  ")).toBe("Release plan");

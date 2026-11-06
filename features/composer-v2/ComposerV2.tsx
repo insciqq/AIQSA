@@ -6,6 +6,11 @@ import type { ComposerArtifactEdit } from "@/components/app-shell/composerSessio
 import { buildComposerMessage, type PendingComposerComment } from "@/components/app-shell/composerComments";
 import { ComposerCommentsV2 } from "./ComposerCommentsV2";
 import {
+  ComposerComputerV2,
+  type ComposerComputerControlV2,
+  type ComposerComputerPickerRequestV2
+} from "./ComposerComputerV2";
+import {
   AssistantRowNoticeV2,
   assistantRowDescription,
   assistantRowNoticeText,
@@ -323,6 +328,12 @@ export type ComposerV2Props = Readonly<{
   deepResearch?: boolean;
   onDeepResearchChange?(on: boolean): void;
   /**
+   * The chat's computer (AIQSA Connect): the `+` menu's "Use a computer…" and
+   * the chip. Absent while Connect is off; never offered in an Assistant chat
+   * or to a sub-agent thread.
+   */
+  computer?: ComposerComputerControlV2 | null;
+  /**
    * The chat's Assistant: each control shows the Assistant's part in its row
    * and resets it. Without one the composer behaves as an ordinary chat.
    */
@@ -535,6 +546,7 @@ export function ComposerV2({
   onRemoveArtifactCreate,
   deepResearch = false,
   onDeepResearchChange,
+  computer = null,
   assistant = null,
   attachmentItems = [],
   attachmentLimitUsage = null,
@@ -601,6 +613,7 @@ export function ComposerV2({
   const [layerPlacement, setLayerPlacement] = useState<ComposerLayerPlacement>(INITIAL_LAYER_PLACEMENT);
   const [modelQuery, setModelQuery] = useState("");
   const [dragActive, setDragActive] = useState(false);
+  const [computerPicker, setComputerPicker] = useState<ComposerComputerPickerRequestV2 | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -635,6 +648,8 @@ export function ComposerV2({
     ? boundAssistant.rows.tools.value
     : mcpSelection;
   const includedSkills = boundAssistant?.includedSkills ?? [];
+  // A computer is the user's own: never in an Assistant chat (D-07) or a sub-agent's thread.
+  const computerControl = computer && !assistant?.current && !messageOnly ? computer : null;
   const artifactBlockReason = artifactCreate || artifactEdit ? artifactUnavailableReason : null;
   const followupMode = messageOnly || activeRun && Boolean(onFollowup) && Boolean(runId);
   const bootstrapReason = followupMode ? disabledReason : configError
@@ -1524,6 +1539,15 @@ export function ComposerV2({
                   </span>
                 </span>
               ) : null}
+              {/* Where the agent works: after the next message's own mode, before the tools. */}
+              {computerControl ? (
+                <ComposerComputerV2
+                  control={computerControl}
+                  onPickerChange={setComputerPicker}
+                  picker={computerPicker}
+                  restoreFocus={() => (touchInputPrimaryV2() ? plusTriggerRef.current : textareaRef.current)?.focus({ preventScroll: true })}
+                />
+              ) : null}
               <button ref={mcpTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
                 data-quiet={effectiveMcpSelection.mode === "load_all" || effectiveMcpSelection.mode === "exact" ? undefined : ""} data-glyph="tool"
                 data-off={effectiveMcpSelection.mode === "off" || undefined} data-mcp-mode={effectiveMcpSelection.mode}
@@ -1923,6 +1947,16 @@ export function ComposerV2({
                       reason={deepResearchMenuReason ?? "Checked report, 30 to 60 minutes"}
                       onClick={() => { onDeepResearchChange?.(true); closeLayer(); textareaRef.current?.focus({ preventScroll: true }); }}>
                       Deep research
+                    </CapabilityRow>
+                  ) : null}
+                  {computerControl ? (
+                    <CapabilityRow icon="monitor" selectionRole="item"
+                      reason={computerControl.binding ? "Change the computer or folder" : "Let the agent work on your computer"}
+                      onClick={() => {
+                        closeLayer();
+                        setComputerPicker({ computerId: null, step: "computer" });
+                      }}>
+                      Use a computer…
                     </CapabilityRow>
                   ) : null}
                   <CapabilityRow
