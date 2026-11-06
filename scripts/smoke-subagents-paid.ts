@@ -116,7 +116,9 @@
  *   `DEEP_RESEARCH_SEND_FIELD`), as the `+` menu's item sends it; a Continue names nothing and goes on from its run's binding.
  *   AIQSA_SUBAGENTS_T_ACTS gives a kind what a person does on its run, as
  *   technical=edit,medical=start,market=restart: `edit` and `start` drive the plan card in a browser, `handoff` asks a question behind a
- *   sign-in and leaves the handoff unanswered, and `restart` runs AIQSA_SUBAGENTS_RESTART_COMMAND mid-research and presses Continue.
+ *   sign-in and leaves the handoff unanswered, `restart` runs AIQSA_SUBAGENTS_RESTART_COMMAND mid-research and presses Continue, and
+ *   `outage` runs that command once the research handed in a draft, waits for the run to end without its provider, runs
+ *   AIQSA_SUBAGENTS_OUTAGE_END_COMMAND and presses Continue.
  *   AIQSA_SUBAGENTS_T_KINDS selects questions; AIQSA_SUBAGENTS_T_REPEATS is
  *   1 by default, an integer (1..20), or purchase=5,medical=3,technical=3,market=3 (omitted kinds keep 1). AIQSA_SUBAGENTS_T_CONCURRENCY
  *   is 3 by default (1..8). Each question has at least 110 minutes, including scoping, the plan window and the harness margin.
@@ -250,6 +252,7 @@
  * - AIQSA_SUBAGENTS_FIXTURE_HOST (O: the MCP fixture's listen address, default 127.0.0.1) and AIQSA_SUBAGENTS_FIXTURE_PUBLIC_HOST
  *   (the host the stand's app container reaches it by, default the listen address). An app that cannot reach it fails O's
  *   last step as `approval_step_unavailable`, with the code in the line, and the other steps still count.
+ * - AIQSA_SUBAGENTS_OUTAGE_END_COMMAND (T's `outage` act, with AIQSA_SUBAGENTS_RESTART_COMMAND as its start): run as the restart hook is.
  * - AIQSA_SUBAGENTS_RESTART_COMMAND (G), AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS (30..900, default 300):
  *   one shell line run on the harness host with /bin/sh -c, output discarded and only its exit code kept,
  *   that restarts the stand's app container on the server through the SSH connection that forwards the
@@ -1867,6 +1870,35 @@ async function restartAndContinue(ctx: Context, run: Run, chatId: string, send: 
   return { continued: await send(CONTINUE_TURN_TEXT), facts: { interrupted, recordsBefore, restartExit: restart.exitCode } };
 }
 
+/**
+ * T's `outage` act, as on 2026-11-06, when a provider's dropped streams failed a production research at its last step: once the research handed in a
+ * draft the provider goes away (AIQSA_SUBAGENTS_RESTART_COMMAND) until every main run ended, comes back (AIQSA_SUBAGENTS_OUTAGE_END_COMMAND, run whatever
+ * happened) and the user presses Continue. The Continue's run, and how the failed run ended, in counts.
+ */
+async function outageAndContinue(ctx: Context, run: Run, chatId: string, send: (text: string) => Promise<string>) {
+  const start = ctx.options.restart ?? fail("restart_command_required");
+  const end = ctx.options.outageEnd ?? fail("outage_end_command_required");
+  const count = async (sql: string) => (await ctx.db.query<{ count: number }>(sql, [chatId])).rows[0]?.count ?? 0;
+  const drafts = () => count(`SELECT count(*)::int AS "count" FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
+    WHERE r."chatId" = $1 AND c."toolName" = 'submit_research_draft'`);
+  await poll(60 * 60_000, async () => await drafts() > 0 ? true : null, "research_outage_precondition_timeout", 5_000);
+  const recordsBefore = await count(`SELECT count(*)::int AS "count" FROM "ResearchEvidence" WHERE "chatId" = $1 AND "kind" <> 'not_found'`);
+  const began = Date.now();
+  const outage = await runRestartHook(start);
+  let ended: Awaited<ReturnType<typeof runRestartHook>> | null = null;
+  try {
+    await poll(45 * 60_000, async () => (await mainRuns(ctx.db, chatId)).every((entry) => TERMINAL_RUN_STATES.has(entry.status)) ? true : null,
+      "research_outage_run_timeout", 5_000);
+  } finally {
+    ended = await runRestartHook(end);
+  }
+  const failed = (await mainRuns(ctx.db, chatId)).at(-1);
+  const facts = { endExit: ended.exitCode, failedCode: failed?.errorCode ?? null, failedStatus: failed?.status ?? null, outageSeconds: seconds(began),
+    recordsBefore, startExit: outage.exitCode };
+  run.line.outage = facts;
+  return { continued: await send(CONTINUE_TURN_TEXT), facts };
+}
+
 /** What a Continue came to, in counts. */
 async function continuedFacts(db: Context["db"], chatId: string, runId: string) {
   const link = (await db.query<{ linked: boolean }>(`SELECT "continuedFromRunId" IS NOT NULL AS "linked" FROM "ResearchFrame" WHERE "chatId" = $1 AND "modelRunId" = $2`, [chatId, runId])).rows[0];
@@ -2180,6 +2212,11 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           runId = continued;
           facts.restart = restarted;
         }
+        if (act === "outage") {
+          const { continued, facts: outage } = await outageAndContinue(ctx, run, chat.id, (text) => sendWords(text, false));
+          runId = continued;
+          facts.outage = outage;
+        }
         let quiet = 0;
         const terminal = await poll(Math.max(1, deadline - Date.now()), async () => {
           await capture!();
@@ -2235,7 +2272,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
           roles: usage.roles, tokensByModel: usage.byModel, store: await researchStore(ctx.db, chat.id, runId), planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
           searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
         questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && !options.acts.purchase && metrics.independentOpened === 0);
-        if (act === "restart") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
+        if (act === "restart" || act === "outage") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
         // A push follows the run's end by its grace and the push service's own time.
         if (act === "push" && acted) await Promise.race([acted, new Promise((resolve) => { setTimeout(resolve, T_PUSH_WAIT_MS); })]);
         browserAct?.abort();

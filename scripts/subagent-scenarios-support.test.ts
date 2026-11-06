@@ -86,10 +86,13 @@ describe("sub-agent scenario selection and options", () => {
       .toThrow("second_model_is_parent");
     expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_SECOND_MODEL: "bad model" }, ["A"], "gpt-6-astra")).toThrow("second_model_invalid");
     expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_RESTART_COMMAND: "a\nb" }, ["A"], "m")).toThrow("restart_command_invalid");
+    expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_OUTAGE_END_COMMAND: "a\nb" }, ["A"], "m")).toThrow("outage_end_command_invalid");
+    expect(subagentHarnessOptions({ AIQSA_SUBAGENTS_OUTAGE_END_COMMAND: " ssh stand back ", AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS: "120" }, ["A"], "m"))
+      .toMatchObject({ outageEnd: { command: "ssh stand back", timeoutMs: 120_000 } });
     expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_RUNS: "4" }, ["A"], "m")).toThrow("runs_invalid");
     expect(subagentHarnessOptions({ AIQSA_SUBAGENTS_RESTART_COMMAND: " ssh stand restart ", AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS: "60",
       AIQSA_SUBAGENTS_SECOND_MODEL: "gpt-6-luna" }, ["C2", "G"], "gpt-6-astra")).toEqual({
-      restart: { command: "ssh stand restart", timeoutMs: 60_000 }, runs: 1, secondModel: "gpt-6-luna", textModel: null });
+      outageEnd: null, restart: { command: "ssh stand restart", timeoutMs: 60_000 }, runs: 1, secondModel: "gpt-6-luna", textModel: null });
   });
 
   it("takes K's text-only model only with its key, and runs K only when named", () => {
