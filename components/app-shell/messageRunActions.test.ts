@@ -509,6 +509,32 @@ describe("message run actions", () => {
       expect(requestBody(fetchMock, 1)).not.toHaveProperty("computer");
     });
 
+    it("sends no computer field on the turn after an Allow, which continues the gated run's computer, and the chosen one on a Continue", async () => {
+      vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const chosen = { cwd: "~/Reports", deviceId: WINDOWS_ID };
+      const useChosenComputer = () => {
+        const actions = useMessageRunActionsForTest({
+          activeChat: { ...chat(), computer: { cwd: "~", deviceId: WINDOWS_ID } },
+          attachments: [],
+          draft: "",
+          resolveComputerOffered: () => true
+        });
+        useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { computerChoice: { binding: chosen } });
+        prepareRegenerationThread();
+        return actions;
+      };
+
+      expect(await useChosenComputer().sendMcpApprovalContinuation({ approvalId: "approval-1", serverName: "Records",
+        toolName: "delete_record" })).toBe("started");
+      expect(requestBody(fetchMock)).toMatchObject({ systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } });
+      expect(requestBody(fetchMock)).not.toHaveProperty("computer");
+
+      expect(await useChosenComputer().sendContinueTurn()).toBe("started");
+      expect(requestBody(fetchMock, 1)).toMatchObject({ computer: chosen });
+    });
+
     it.each([
       ["connect_device_unavailable", "no longer connected to your account", ["choose_computer", "stop_using_computer"]],
       ["connect_disabled", "AIQSA Connect is turned off", ["stop_using_computer"]],

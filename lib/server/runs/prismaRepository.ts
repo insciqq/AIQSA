@@ -429,7 +429,16 @@ export function createPrismaRunRepository(
     loadScheduledPromptMessageIds: (input) =>
       fetchUrlOperations.loadScheduledPromptMessageIds(input).catch(retainRunPrismaCode),
     loadMcpToolConsentServerIds: (input) => loadMcpToolConsentServerIds(prismaClient, input).catch(retainRunPrismaCode),
-    loadMcpApprovalContinuation: (input) => loadMcpApprovalContinuation(prismaClient, input).catch(retainRunPrismaCode),
+    loadMcpApprovalContinuation: async (input) => {
+      const approval = await loadMcpApprovalContinuation(prismaClient, input).catch(retainRunPrismaCode);
+      if (!approval) return null;
+      // The turn continues the run the approval gated, so it keeps the computer that run was admitted with.
+      const gated = await prismaClient.mcpToolApproval.findFirst({
+        select: { modelRun: { select: { normalizedRequest: true } } },
+        where: { chatId: input.chatId, id: input.approvalId, userId: input.userId }
+      }).catch(retainRunPrismaCode);
+      return { ...approval, computer: frozenComputerOf(gated?.modelRun.normalizedRequest) };
+    },
     loadRunMcpApprovalCards: (input) => loadRunMcpApprovalCards(prismaClient, input).catch(retainRunPrismaCode),
     loadScheduledTaskManagement: (input) => loadScheduledTaskManagementAdmission(prismaClient, input).catch(retainRunPrismaCode),
     manageScheduledTaskForCall: (input) => manageScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)

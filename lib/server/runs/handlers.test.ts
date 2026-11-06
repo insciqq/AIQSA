@@ -2058,6 +2058,55 @@ describe("model run route handlers", () => {
       normalizedRequest: { computer: { cwd: "C:\\Reports", deviceId: device, name: "DESKTOP-7Q2", online: false } } });
   });
 
+  it("continues the gated run's computer on the turn after an Allow, whatever its body says, and leaves the chat's choice alone", async () => {
+    const { repository, state } = createMemoryRepository();
+    const providers = { fake: createFakeProviderAdapter() };
+    const device = "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11";
+    const other = "9e8d7c6b-5a49-4382-a1b2-c3d4e5f60718";
+    const describe = vi.fn(async (_userId: string, deviceId: string) => deviceId === device || deviceId === other
+      ? { arch: "amd64" as const, name: deviceId === device ? "DESKTOP-7Q2" : "LAPTOP-3", online: false, os: "windows" as const } : null);
+    let enabled = true;
+    const computerAdmission = { describe, enabled: async () => enabled };
+    const gated = { arch: "amd64" as const, cwd: "C:\\Reports", deviceId: device, name: "DESKTOP-7Q2", online: true, os: "windows" as const };
+    let gatedComputer: typeof gated | null = gated;
+    repository.loadMcpApprovalContinuation = async () => ({ computer: gatedComputer, serverName: "Records", toolName: "delete_record" });
+    const send = (extra: Record<string, unknown>) => createSendMessageHandler({ ...authDeps, computerAdmission,
+      nativeEngine: nativeEngineFake().deps, providers, repository })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
+        systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" }, ...extra }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    for (const extra of [{ computer: { cwd: "~", deviceId: other } }, { computer: null }, {}]) {
+      state.created = null;
+      const continued = await send(extra);
+      expect(continued.status).toBe(200);
+      await continued.text();
+      expect(state.created).toMatchObject({ normalizedRequest: { computer: { cwd: "C:\\Reports", deviceId: device, name: "DESKTOP-7Q2" } },
+        systemTurnKind: "mcp_approval_continuation" });
+      expect(state.created).not.toHaveProperty("chatComputer");
+    }
+    expect(describe.mock.calls.every(([, deviceId]) => deviceId === device)).toBe(true);
+
+    // A gated run without a computer continues without one, a computer in the body included.
+    gatedComputer = null;
+    state.created = null;
+    const plain = await send({ computer: { cwd: "~", deviceId: other } });
+    expect(plain.status).toBe(200);
+    await plain.text();
+    expect(state.created?.normalizedRequest.computer).toBeUndefined();
+    expect(state.created).not.toHaveProperty("chatComputer");
+
+    // The gated run's computer is rechecked as a regenerate's is: Connect turned off since refuses the turn visibly.
+    gatedComputer = gated;
+    enabled = false;
+    state.created = null;
+    const refused = await send({});
+    expect([refused.status, await refused.json()]).toEqual([409, { error: "connect_disabled" }]);
+    expect(state.created).toBeNull();
+  });
+
   it("refuses a regenerate of the message sent with Deep research, runs an edit's own choice, and never carries it on a turn the server writes", async () => {
     const { repository, state } = createMemoryRepository();
     const providers = { fake: createFakeProviderAdapter() };
