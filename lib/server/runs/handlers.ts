@@ -117,6 +117,8 @@ export type RunHandlerDeps = {
     }> | null>;
   }>;
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
+  /** AIQSA Connect's switch and the user's computers, for a message's computer (`computerAdmission.ts`). */
+  computerAdmission?: RunPreparationDeps["computerAdmission"];
   getConfig?: () => AuthConfig;
   mcp?: RunPreparationDeps["mcp"];
   /**
@@ -658,6 +660,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
       body: sendBody,
+      // Neither a Telegram turn nor a wake-up turn is the owner's own web message, so neither takes a computer (D-07).
+      ...(deps.telegramTurn ? { origin: "telegram" as const } : wakeUp ? { origin: "wake_up" as const } : {}),
       serverAuthoredInput: Boolean(continuationBody) || Boolean(wakeUp),
       ...(continuationBody && body?.systemTurn && typeof body.systemTurn === "object" &&
         typeof (body.systemTurn as Record<string, unknown>).approvalId === "string"
@@ -714,6 +718,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...deferredPdfInput(preparedData, admissionKey, undefined, nativeEntry),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(preparedData.chatAssistant ? { chatAssistant: preparedData.chatAssistant } : {}),
+        ...(preparedData.chatComputer !== undefined ? { chatComputer: preparedData.chatComputer } : {}),
         chatId: preparedData.normalizedRequest.chatId,
         content: preparedData.normalizedRequest.content,
         ...(preparedData.defaults
@@ -932,6 +937,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           }
         }
       },
+      ...(deps.telegramTurn ? { origin: "telegram" as const } : {}),
       signal: request.signal,
       source: {
         kind: "regenerate",
@@ -960,6 +966,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id, deps.telegramTurn ? { telegram: true } : undefined),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(chatAssistant ? { chatAssistant } : {}),
+        // A document retry reuses its frozen preparation and changes no choice again.
+        ...(preparedData.chatComputer !== undefined && !retry ? { chatComputer: preparedData.chatComputer } : {}),
         chatId: preparedData.normalizedRequest.chatId,
         ...(preparedData.defaults
           ? {

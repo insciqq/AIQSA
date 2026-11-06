@@ -22,6 +22,7 @@ import {
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
+import { ComputerOpError, computerActivityFacts, computerUnknownOutcomeText } from "../tools/computerTools";
 import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "../tools/types";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -236,6 +237,8 @@ function jsonError(call: Pick<ModelToolCall, "id" | "name">, value: Record<strin
 }
 
 function transientToolFailure(error: unknown): boolean {
+  // A computer operation says itself whether it never ended on its own terms (`computerTools.ts`).
+  if (error instanceof ComputerOpError) return error.transient;
   const failure = observedFailure(error);
   return isRetryableProviderNetworkError(error) || failure.reason === "network" || failure.stream_drop !== undefined ||
     failure.httpStatus !== undefined && isRetryableProviderHttpStatus(failure.httpStatus);
@@ -336,9 +339,13 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       : null;
     const excerpt = tool.runScopedResult ? { handle: null, output: text } : toolOutputExcerpt(text, saved);
     const modelOutput = toolModelOutput(result, text, excerpt);
+    // A result too large for its row keeps the excerpt the model read, and its small facts (a command's exit code) where they fit.
+    const excerptRow: ToolExecutionResult = { callId: result.callId, content: [{ text: excerpt.output, type: "text" }], name: result.name,
+      status: result.status };
     const rowResult = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) ??
-      snapshotToolExecutionResult({ callId: result.callId, content: [{ text: excerpt.output, type: "text" }], name: result.name,
-        status: result.status }, toolLoopPersistenceLimits.resultBytes)!;
+      (result.rawPreview ? snapshotToolExecutionResult({ ...excerptRow, rawPreview: result.rawPreview }, toolLoopPersistenceLimits.resultBytes)
+        : null) ??
+      snapshotToolExecutionResult(excerptRow, toolLoopPersistenceLimits.resultBytes)!;
     await settleRecord(deps, { callId: row.id, result: rowResult, runId: deps.runId, state: result.status });
     deps.history.record({ ...row, result: rowResult, state: result.status });
     const identical = deps.history.identicalRound({ ...row, result: rowResult, state: result.status });
@@ -522,7 +529,8 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     let result: ToolExecutionResult;
     // A call that ran ends its result with what its turn has left; a refusal keeps its exact words, which other code reads.
     const finished = (item: TranscriptToolResultItem, status: "complete" | "error"): TranscriptToolResultItem => {
-      const facts = activity.origin === "web_fetch" ? fetchUrlActivityFacts(call.name, call.arguments, result) : {};
+      const facts = activity.origin === "web_fetch" ? fetchUrlActivityFacts(call.name, call.arguments, result)
+        : activity.origin === "computer" ? computerActivityFacts(call.name, call.arguments, result) : {};
       deps.onLiveEvent(liveToolCallStatus(call, { ...activity, ...facts }, { ordinal, settled: { durationMs, status } }));
       return left === null ? item : { ...item, output: `${item.output}\n\n${turnCallsLeftLine(left)}` };
     };
@@ -539,13 +547,15 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       }
       const code = safeCode(error);
       if (tool.effects === "external") {
-        // It may have taken effect: never sent again, and the model is told so. A Workspace operation that reached its
-        // time limit is an expected outcome of the command the model chose, not a failure of AIQSA, but the command may
-        // still have changed files, so its effect stays unknown too.
-        const timedOut = error instanceof WorkspaceRuntimeError && error.code === "workspace_tool_timeout";
-        const message = timedOut ? workspaceOperationFailureMessage("workspace_tool_timeout")
-          : "The call failed after it may have been sent; its effect is unknown and it was not repeated. " +
-            "Check its effect before trying again.";
+        // It may have taken effect: never sent again, and the model is told so. A Workspace operation or a command on the
+        // user's computer that reached its time limit is an expected outcome of the command the model chose, not a failure
+        // of AIQSA, but the command may still have changed files, so its effect stays unknown too.
+        const timedOut = error instanceof WorkspaceRuntimeError && error.code === "workspace_tool_timeout" ||
+          error instanceof ComputerOpError && error.timedOut;
+        const message = error instanceof ComputerOpError ? computerUnknownOutcomeText(error.code)
+          : timedOut ? workspaceOperationFailureMessage("workspace_tool_timeout")
+            : "The call failed after it may have been sent; its effect is unknown and it was not repeated. " +
+              "Check its effect before trying again.";
         result = { callId: call.id, content: [{ type: "json", value: { error: code, message, outcome: "unknown" } }], name: call.name,
           status: "error" };
         deps.unknownEffects.record(call, "unknown");

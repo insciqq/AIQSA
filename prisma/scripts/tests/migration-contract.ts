@@ -296,6 +296,44 @@ DO $$ BEGIN
     RAISE EXCEPTION 'aiqsa connect: a device or an approval outlived its account';
   END IF;
 END $$;`;
+const CHAT_COMPUTER_MIGRATION = "20261107120000_chat_computer";
+// Expand only: a chat of the previous release, and one its writer creates during the upgrade, keep no computer. A choice
+// is both columns or neither, names a device by its UUID without a foreign key (a removed device stays named), and its
+// folder is a bounded line without control characters.
+const chatComputerFixtureSql = `INSERT INTO "User" (id, "displayName", status, "updatedAt")
+  VALUES ('chat-computer-owner', 'Synthetic owner', 'active', now());
+INSERT INTO "Chat" (id, "userId", title, "updatedAt") VALUES ('chat-computer-before', 'chat-computer-owner', 'Synthetic chat', now());`;
+const chatComputerProofSql = `DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM "Chat" WHERE id = 'chat-computer-before' AND "computerDeviceId" IS NULL AND "computerCwd" IS NULL) THEN
+    RAISE EXCEPTION 'chat computer: a previous-release chat gained a choice';
+  END IF;
+  INSERT INTO "Chat" (id, "userId", title, "updatedAt") VALUES ('chat-computer-writer', 'chat-computer-owner', 'Synthetic chat', now());
+  UPDATE "Chat" SET "computerDeviceId" = '0b6f4a2e-7d1c-4c3b-9a55-1f2e3d4c5b6a', "computerCwd" = 'C:\\Users\\synthetic\\Reports'
+    WHERE id = 'chat-computer-writer';
+  UPDATE "Chat" SET "computerDeviceId" = NULL, "computerCwd" = NULL WHERE id = 'chat-computer-writer';
+  BEGIN
+    UPDATE "Chat" SET "computerDeviceId" = '0b6f4a2e-7d1c-4c3b-9a55-1f2e3d4c5b6a' WHERE id = 'chat-computer-writer';
+    RAISE EXCEPTION 'chat computer: a device without a folder was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE "Chat" SET "computerDeviceId" = 'not-a-device', "computerCwd" = '~' WHERE id = 'chat-computer-writer';
+    RAISE EXCEPTION 'chat computer: a malformed device id was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE "Chat" SET "computerDeviceId" = '0b6f4a2e-7d1c-4c3b-9a55-1f2e3d4c5b6a', "computerCwd" = repeat('a', 1025)
+      WHERE id = 'chat-computer-writer';
+    RAISE EXCEPTION 'chat computer: an oversize folder was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE "Chat" SET "computerDeviceId" = '0b6f4a2e-7d1c-4c3b-9a55-1f2e3d4c5b6a', "computerCwd" = E'~/a\\nb'
+      WHERE id = 'chat-computer-writer';
+    RAISE EXCEPTION 'chat computer: a folder with a control character was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;`;
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
@@ -7939,6 +7977,8 @@ function main(
   // Widen only: rows at the old follow-up bound stay, the widened bound holds, and the completion guard still refuses.
   runForwardAdoptionProof(shadowDatabase, migrations, SUBAGENT_FOLLOWUP_BOUNDS_MIGRATION,
     subagentFollowupBoundsFixtureSql, subagentFollowupBoundsProofSql, subagentFollowupBoundsProofSql);
+  // Expand only: chats keep no computer until their owner chooses one; a choice is both columns or neither.
+  runForwardAdoptionProof(shadowDatabase, migrations, CHAT_COMPUTER_MIGRATION, chatComputerFixtureSql, chatComputerProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

@@ -12,7 +12,9 @@ export function hasInvalidProviderToolArguments(value: unknown): boolean {
     (value as Record<string, unknown>)[invalidProviderToolArgumentsKey] === true;
 }
 
-export type RunToolCapability = "artifact" | "image" | "mcp" | "memory" | "session" | "skill" | "vision" | "web_fetch" | "web_search" | "workspace";
+/** `computer`: the user's own computer through AIQSA Connect (`computerTools.ts`). */
+export type RunToolCapability = "artifact" | "computer" | "image" | "mcp" | "memory" | "session" | "skill" | "vision" | "web_fetch" | "web_search" |
+  "workspace";
 
 export type RunTool = {
   capability: RunToolCapability;
