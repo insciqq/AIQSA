@@ -77,7 +77,10 @@ export async function synchronizeShippedSkills(
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 60_000
       });
     } catch (error) {
-      if (attempt >= ATTEMPTS || !(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2034") throw error;
+      // A serialization failure arrives as P2034, or as P2010 when a raw statement met it.
+      const retryable = error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2034" ||
+        (error.code === "P2010" && (error.meta?.code === "40001" || error.meta?.code === "40P01")));
+      if (attempt >= ATTEMPTS || !retryable) throw error;
     }
   }
 }
