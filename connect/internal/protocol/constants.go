@@ -113,6 +113,9 @@ const (
 	CodeComputerJobNotFound      ReasonCode = "computer_job_not_found"
 	CodeComputerLimit            ReasonCode = "computer_limit"
 	CodeComputerPatternInvalid   ReasonCode = "computer_pattern_invalid"
+	// CodeComputerTextUnencodable: write or edit text that the file's
+	// encoding (its ANSI code page) cannot hold; nothing was written.
+	CodeComputerTextUnencodable ReasonCode = "computer_text_unencodable"
 )
 
 // OpErrorCodes are the codes a protocol 2 device may put in a failed `op` reply.
@@ -120,7 +123,7 @@ var OpErrorCodes = []ReasonCode{
 	CodeComputerTimeout, CodeComputerCancelled, CodeComputerPathNotFound, CodeComputerNotADirectory,
 	CodeComputerIsADirectory, CodeComputerPermissionDenied, CodeComputerFileBinary, CodeComputerFileTooLarge,
 	CodeComputerEditNoMatch, CodeComputerEditAmbiguous, CodeComputerJobNotFound, CodeComputerLimit,
-	CodeComputerPatternInvalid, CodeUnsupported, CodeDeviceError,
+	CodeComputerPatternInvalid, CodeComputerTextUnencodable, CodeUnsupported, CodeDeviceError,
 }
 
 // DeviceStreamClosedCodes are the codes of `closed` on the device stream.

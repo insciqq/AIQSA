@@ -2,7 +2,9 @@
 // and background jobs, reading, writing, editing and searching files, and
 // the folder picker's stat, list_dirs and recent_dirs. Each op runs with its
 // own deadline, at most MaxConcurrentOps at once, and stops on cancel or
-// when its run ends; every process it starts is ended with its tree.
+// when its run ends; every process it starts is ended with its tree. A
+// background job lives until job_stop, its run's end or Close, and at most
+// runLease after the server last sent a command for its run.
 //
 // Nothing an op handles (commands, paths, content, output) reaches the log:
 // only the op kind, the reply code, the duration and byte counts.
@@ -36,11 +38,19 @@ var (
 	errCancelled = errors.New("cancelled by the server")
 	errRunEnded  = errors.New("run ended")
 	errClosed    = errors.New("client stopping")
+	errStopped   = errors.New("stopped by the client")
 	errDeadline  = errors.New("deadline")
 )
 
+// runLease is how long a background job outlives the last command (op,
+// job_output, job_stop) the server sent for its run. run_ended normally ends
+// it long before; the lease covers a run_ended that never arrives (the
+// server restarted while this computer was offline).
+const runLease = 2 * time.Hour
+
 // Executor runs ops. It outlives device streams: background jobs keep
-// running across a reconnect and end with their run or with Close.
+// running across a reconnect and end with their run, their run's lease,
+// StopAll or Close.
 type Executor struct {
 	sys    System
 	goos   string
@@ -55,9 +65,14 @@ type Executor struct {
 	limits  protocol.HelloV2Limits
 	running map[string]*runningOp
 	jobs    map[string]*job
-	// startingJobs counts background jobs being started, against MaxJobs.
-	startingJobs int
-	closed       bool
+	// starting holds the background jobs whose process is being started.
+	// EndRun, StopAll and Close mark them aborted under mu, and the starter
+	// ends the process instead of registering it; they count against MaxJobs.
+	starting map[*job]struct{}
+	closed   bool
+	// lease is runLease; tests shorten it before the first job starts.
+	lease        time.Duration
+	leaseStarted bool
 	wg           sync.WaitGroup
 
 	// finishing counts what exited commands left running while it is
@@ -83,15 +98,17 @@ func New(opts Options) *Executor {
 		log = logx.Discard()
 	}
 	return &Executor{
-		sys:     sys,
-		goos:    sys.GOOS(),
-		home:    validHome(sys.GOOS(), opts.Home),
-		log:     log,
-		recent:  newRecentDirs(opts.RecentFile),
-		limits:  protocol.DefaultHelloV2Limits,
-		running: map[string]*runningOp{},
-		jobs:    map[string]*job{},
-		closing: make(chan struct{}),
+		sys:      sys,
+		goos:     sys.GOOS(),
+		home:     validHome(sys.GOOS(), opts.Home),
+		log:      log,
+		recent:   newRecentDirs(opts.RecentFile),
+		limits:   protocol.DefaultHelloV2Limits,
+		running:  map[string]*runningOp{},
+		jobs:     map[string]*job{},
+		starting: map[*job]struct{}{},
+		lease:    runLease,
+		closing:  make(chan struct{}),
 	}
 }
 
@@ -122,6 +139,13 @@ func (e *Executor) Start(op *protocol.OpCommand, reply func(*protocol.OpReplyEve
 		e.mu.Unlock()
 		return
 	}
+	// Any command of a run renews the lease of its background jobs.
+	now := time.Now()
+	for _, j := range e.jobs {
+		if j.runID == op.RunID {
+			j.lastCommand = now
+		}
+	}
 	if _, dup := e.running[op.RequestID]; dup {
 		e.mu.Unlock()
 		e.log.Event("op_duplicate", "op", op.Op)
@@ -145,13 +169,26 @@ func (e *Executor) Start(op *protocol.OpCommand, reply func(*protocol.OpReplyEve
 		deadline := time.Duration(op.DeadlineMs) * time.Millisecond
 		opCtx, stop := context.WithTimeoutCause(ctx, deadline, errDeadline)
 		result, code := e.execute(opCtx, op, limits)
-		stop()
+		// Cancel, EndRun, StopAll and Close cancel under mu, so the cause
+		// read here is final for this op: a job it started whose reply will
+		// not carry the job id is ended now, as the server never learns it.
 		e.mu.Lock()
 		delete(e.running, op.RequestID)
+		cause := context.Cause(opCtx)
+		var orphan *job
+		if started, ok := result.(*protocol.ShellJobResult); ok && cause != nil {
+			if orphan = e.jobs[started.JobID]; orphan != nil {
+				delete(e.jobs, started.JobID)
+			}
+		}
 		e.mu.Unlock()
-		if cause := context.Cause(opCtx); cause != nil {
+		stop()
+		if orphan != nil {
+			orphan.stop()
+		}
+		if cause != nil {
 			switch cause {
-			case errCancelled, errClosed:
+			case errCancelled, errClosed, errStopped:
 				e.log.Event("op", "op", op.Op, "code", "dropped", "ms", time.Since(started).Milliseconds())
 				return
 			case errRunEnded:
@@ -180,38 +217,35 @@ func (e *Executor) Start(op *protocol.OpCommand, reply func(*protocol.OpReplyEve
 // Cancel stops the op the server stopped waiting for.
 func (e *Executor) Cancel(requestID string) {
 	e.mu.Lock()
-	op := e.running[requestID]
-	e.mu.Unlock()
-	if op != nil {
+	defer e.mu.Unlock()
+	if op := e.running[requestID]; op != nil {
 		op.cancel(errCancelled)
 	}
 }
 
-// EndRun stops every op and background job of a run.
+// EndRun stops every op and background job of a run, jobs still being
+// started included.
 func (e *Executor) EndRun(runID string) {
 	e.mu.Lock()
-	var ops []*runningOp
-	for _, op := range e.running {
-		if op.runID == runID {
-			ops = append(ops, op)
-		}
-	}
-	var jobs []*job
-	for id, j := range e.jobs {
-		if j.runID == runID {
-			jobs = append(jobs, j)
-			delete(e.jobs, id)
-		}
-	}
+	ops, jobs := e.cancelLocked(func(r string) bool { return r == runID }, errRunEnded)
 	e.mu.Unlock()
-	for _, op := range ops {
-		op.cancel(errRunEnded)
+	stopJobs(jobs)
+	if ops+len(jobs) > 0 {
+		e.log.Event("run_ended", "ops", ops, "jobs", len(jobs))
 	}
-	for _, j := range jobs {
-		j.stop()
-	}
-	if len(ops)+len(jobs) > 0 {
-		e.log.Event("run_ended", "ops", len(ops), "jobs", len(jobs))
+}
+
+// StopAll stops every op and background job and waits for the jobs'
+// processes to end; new ops still run. The client calls it when the server
+// can no longer end their runs (AIQSA Connect was turned off). Stopped ops
+// are not answered.
+func (e *Executor) StopAll() {
+	e.mu.Lock()
+	ops, jobs := e.cancelLocked(func(string) bool { return true }, errStopped)
+	e.mu.Unlock()
+	stopJobs(jobs)
+	if ops+len(jobs) > 0 {
+		e.log.Event("ops_stopped", "ops", ops, "jobs", len(jobs))
 	}
 }
 
@@ -220,27 +254,93 @@ func (e *Executor) EndRun(runID string) {
 func (e *Executor) Close() {
 	e.mu.Lock()
 	e.closed = true
-	ops := make([]*runningOp, 0, len(e.running))
-	for _, op := range e.running {
-		ops = append(ops, op)
-	}
-	jobs := make([]*job, 0, len(e.jobs))
-	for id, j := range e.jobs {
-		jobs = append(jobs, j)
-		delete(e.jobs, id)
-	}
+	_, jobs := e.cancelLocked(func(string) bool { return true }, errClosed)
 	e.mu.Unlock()
 	e.closeOnce.Do(func() { close(e.closing) })
-	for _, op := range ops {
-		op.cancel(errClosed)
+	stopJobs(jobs)
+	e.wg.Wait()
+	e.finishing.Wait()
+}
+
+// cancelLocked cancels the ops of the runs match selects, marks their job
+// starts aborted and takes their jobs out of e.jobs for the caller to
+// stop. e.mu is held: a starting job registers under it, so none slips
+// past, and an op's cause is final once it left e.running.
+func (e *Executor) cancelLocked(match func(runID string) bool, cause error) (ops int, jobs []*job) {
+	for _, op := range e.running {
+		if match(op.runID) {
+			op.cancel(cause)
+			ops++
+		}
 	}
+	for j := range e.starting {
+		if match(j.runID) {
+			j.aborted = true
+		}
+	}
+	for id, j := range e.jobs {
+		if match(j.runID) {
+			jobs = append(jobs, j)
+			delete(e.jobs, id)
+		}
+	}
+	return ops, jobs
+}
+
+// stopJobs ends the jobs' process trees and waits for them.
+func stopJobs(jobs []*job) {
 	var stopped sync.WaitGroup
 	for _, j := range jobs {
 		stopped.Go(j.stop)
 	}
 	stopped.Wait()
-	e.wg.Wait()
-	e.finishing.Wait()
+}
+
+// startLeaseLocked starts the lease watchdog with the first job; it runs
+// until Close, which waits for it. e.mu is held.
+func (e *Executor) startLeaseLocked() {
+	if e.leaseStarted || e.closed {
+		return
+	}
+	e.leaseStarted = true
+	interval := max(min(e.lease/4, time.Minute), time.Millisecond)
+	e.wg.Go(func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.closing:
+				return
+			case <-ticker.C:
+				e.expireLeases(time.Now())
+			}
+		}
+	})
+}
+
+// expireLeases ends the jobs of every run that has no op running and whose
+// last command is at least the lease old.
+func (e *Executor) expireLeases(now time.Time) {
+	e.mu.Lock()
+	busy := map[string]bool{}
+	for _, op := range e.running {
+		busy[op.runID] = true
+	}
+	expired := map[string]bool{}
+	for _, j := range e.jobs {
+		if !busy[j.runID] && now.Sub(j.lastCommand) >= e.lease {
+			expired[j.runID] = true
+		}
+	}
+	var jobs []*job
+	if len(expired) > 0 {
+		_, jobs = e.cancelLocked(func(r string) bool { return expired[r] }, errRunEnded)
+	}
+	e.mu.Unlock()
+	if len(jobs) > 0 {
+		stopJobs(jobs)
+		e.log.Event("run_lease_expired", "runs", len(expired), "jobs", len(jobs))
+	}
 }
 
 // execute runs one op; a non-empty code is its failure.

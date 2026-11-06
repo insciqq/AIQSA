@@ -1,7 +1,6 @@
 package ops
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"io/fs"
@@ -88,9 +87,12 @@ func (e *Executor) read(args *protocol.ReadArgs) (protocol.Validator, protocol.R
 	return result, ""
 }
 
-// write creates or replaces a file with UTF-8 text, creating its parent
-// folders. Replacing a file with CRLF line endings keeps them, and a UTF-8
-// file with a BOM keeps its BOM.
+// write creates or replaces a file, creating its parent folders. A new file
+// is UTF-8 without a BOM. A replaced text file keeps its encoding as edit
+// does: UTF-16 or UTF-8 with its BOM, the ANSI code page, CRLF line
+// endings; text that code page cannot hold answers
+// computer_text_unencodable and writes nothing. A file that is not text
+// becomes UTF-8. The replacement is atomic (replaceFile).
 func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol.ReasonCode) {
 	e.useCwd(args.Cwd)
 	target := e.resolve(args.Cwd, args.Path)
@@ -102,28 +104,79 @@ func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol
 		if err := os.MkdirAll(filepath.Dir(target), 0o777); err != nil {
 			return nil, codeOf(err)
 		}
+		if err := os.WriteFile(target, content, 0o666); err != nil {
+			return nil, codeOf(err)
+		}
+		return &protocol.WriteResult{Bytes: int64(len(content)), Created: true}, ""
 	case err != nil:
 		return nil, codeOf(err)
 	case info.IsDir():
 		return nil, protocol.CodeComputerIsADirectory
 	case !info.Mode().IsRegular():
 		return nil, protocol.CodeComputerFileBinary
-	default:
-		if existing, _, code := loadFile(target); code == "" {
-			if file, err := decodeText(existing, nil); err == nil {
-				if lineEnding(file.text) == protocol.LineEndingCRLF {
-					content = []byte(toCRLF(args.Content))
-				}
-				if bytes.Equal(file.bom, bomUTF8) && !bytes.HasPrefix(content, bomUTF8) {
-					content = append(append([]byte{}, bomUTF8...), content...)
-				}
+	}
+	if existing, _, code := loadFile(target); code == "" {
+		if file, err := decodeText(existing, e.sys.TextCodePage()); err == nil {
+			text := args.Content
+			if lineEnding(file.text) == protocol.LineEndingCRLF {
+				text = toCRLF(text)
+			}
+			if file.bom != nil {
+				// The file's BOM is written once.
+				text = strings.TrimPrefix(text, string(rune(0xFEFF)))
+			}
+			if content, err = file.encode(text); err != nil {
+				return nil, protocol.CodeComputerTextUnencodable
 			}
 		}
 	}
-	if err := os.WriteFile(target, content, 0o666); err != nil {
+	if err := replaceFile(target, content, info); err != nil {
 		return nil, codeOf(err)
 	}
-	return &protocol.WriteResult{Bytes: int64(len(content)), Created: created}, ""
+	return &protocol.WriteResult{Bytes: int64(len(content)), Created: false}, ""
+}
+
+// replaceFile replaces the file at path, described by info, with data
+// atomically: the data goes to a temporary file in the same folder, which
+// takes the file's mode (its attributes on Windows) and is renamed over it,
+// so a full disk or a crash leaves the old file whole. A symbolic link is
+// followed, so the file it points to is replaced, not the link. In a folder
+// the user cannot create files in, the file is written in place.
+func replaceFile(path string, data []byte, info fs.FileInfo) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".aiqsa-*")
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return os.WriteFile(path, data, info.Mode().Perm())
+		}
+		return err
+	}
+	tmpName := tmp.Name()
+	fail := func(err error) error {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := matchFile(tmp, info); err != nil {
+		return fail(err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // edit replaces oldString with newString, once unless replaceAll, keeping
@@ -149,14 +202,14 @@ func (e *Executor) edit(args *protocol.EditArgs) (protocol.Validator, protocol.R
 		text, count, code = replaceText(file.text, args)
 		if code == "" {
 			if out, err = file.encode(text); err != nil {
-				return nil, protocol.CodeDeviceError
+				return nil, protocol.CodeComputerTextUnencodable
 			}
 		}
 	}
 	if code != "" {
 		return nil, code
 	}
-	if err := os.WriteFile(target, out, info.Mode().Perm()); err != nil {
+	if err := replaceFile(target, out, info); err != nil {
 		return nil, codeOf(err)
 	}
 	return &protocol.EditResult{Replacements: int64(count)}, ""

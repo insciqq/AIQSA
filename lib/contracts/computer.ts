@@ -270,7 +270,8 @@ export const COMPUTER_ERROR_HTTP_STATUS = Object.freeze({
   computer_edit_ambiguous: 422,
   computer_job_not_found: 404,
   computer_limit: 429,
-  computer_pattern_invalid: 422
+  computer_pattern_invalid: 422,
+  computer_text_unencodable: 422
 } satisfies Record<ComputerErrorCode, number>);
 
 /** `GET` the owner's computers; also the path of each one's own routes below. */

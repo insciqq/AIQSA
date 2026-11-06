@@ -14,6 +14,8 @@ import {
   CONNECT_MAX_OP_COMMAND_BYTES,
   CONNECT_OP_REPLY_GRACE_MS,
   CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER,
+  CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS,
+  CONNECT_RELAY_UNDELIVERED_RUN_END_TTL_MS,
   createConnectRelay,
   type ConnectDeviceRecord,
   type ConnectRelay,
@@ -267,35 +269,83 @@ describe("AIQSA Connect relay: operations", () => {
     expect(stream.commands()).toHaveLength(sentBefore);
   });
 
-  it("settles waiting ops as disconnected, sent, when the stream ends, is replaced or is revoked", async () => {
+  it("keeps waiting ops across a reconnect of the device and settles them with the reply from its new stream", async () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+
+    const ended = attach(relay, device);
+    const first = call(relay, device)!;
+    const firstId = lastOp(ended).requestId;
+    relay.detachDevice(device.id, ended.streamId);
+    expect(relay.size().pendingOps).toBe(1);
+    const reconnected = attach(relay, device, ended.tokenHash);
+    relay.acceptEvents(reconnected.tokenHash, [reply(firstId)]);
+    await expect(first).resolves.toEqual({ ok: true, result: readResult });
+
+    // A newer stream replacing the current one answers the older stream's request.
+    const second = call(relay, device)!;
+    const secondId = lastOp(reconnected).requestId;
+    const next = attach(relay, device, reconnected.tokenHash);
+    expect(reconnected.state.final).toEqual({ data: {}, event: "replaced" });
+    relay.acceptEvents(next.tokenHash, [reply(secondId)]);
+    await expect(second).resolves.toEqual({ ok: true, result: readResult });
+
+    // Cancel goes to the stream the device has when the op is aborted.
+    const controller = new AbortController();
+    const third = call(relay, device, { signal: controller.signal })!;
+    const thirdId = lastOp(next).requestId;
+    const latest = attach(relay, device, next.tokenHash);
+    controller.abort();
+    await expect(third).resolves.toEqual({ code: "computer_cancelled", ok: false, sent: true });
+    expect(latest.commands().at(-1)).toEqual({ requestId: thirdId, type: "cancel" });
+    expect(relay.size().pendingOps).toBe(0);
+  });
+
+  it("fails waiting ops of a device that does not come back at their deadline, and at once on revocation or switch-off", async () => {
     const relay = createConnectRelay();
     const device = record("user-alice");
     const disconnected = { code: "connect_device_disconnected", ok: false, sent: true };
 
     const ended = attach(relay, device);
-    const first = call(relay, device)!;
+    const timed = call(relay, device, { timeoutMs: 5_000 })!;
     relay.detachDevice(device.id, ended.streamId);
-    await expect(first).resolves.toEqual(disconnected);
+    let settled = false;
+    void timed.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(5_000 + CONNECT_OP_REPLY_GRACE_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(timed).resolves.toEqual({ code: "computer_timeout", ok: false, sent: true });
 
-    const replaced = attach(relay, device);
-    const second = call(relay, device)!;
-    const { requestId } = lastOp(replaced);
-    const next = attach(relay, device);
-    await expect(second).resolves.toEqual(disconnected);
-    // The new stream cannot answer the old stream's request.
-    relay.acceptEvents(next.tokenHash, [reply(requestId)]);
-    expect(relay.size().pendingOps).toBe(0);
-
-    const third = call(relay, device)!;
+    // Revoked while offline or online: its waiting ops fail now.
+    const offline = attach(relay, device);
+    const whileOffline = call(relay, device)!;
+    relay.detachDevice(device.id, offline.streamId);
     relay.disconnectDevice(device.id, "connect_unauthorized");
-    await expect(third).resolves.toEqual(disconnected);
-    expect(next.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
+    await expect(whileOffline).resolves.toEqual(disconnected);
+
+    const online = attach(relay, device);
+    const whileOnline = call(relay, device)!;
+    relay.disconnectDevice(device.id, "connect_unauthorized");
+    await expect(whileOnline).resolves.toEqual(disconnected);
+    expect(online.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
+
+    const account = attach(relay, device);
+    const beforeAccountRevoked = call(relay, device)!;
+    relay.detachDevice(device.id, account.streamId);
+    relay.disconnectUser(device.userId);
+    await expect(beforeAccountRevoked).resolves.toEqual(disconnected);
 
     const again = attach(relay, device);
-    const fourth = call(relay, device)!;
+    const beforeDisabled = call(relay, device)!;
     relay.disable();
-    await expect(fourth).resolves.toEqual({ code: "connect_disabled", ok: false, sent: true });
+    await expect(beforeDisabled).resolves.toEqual({ code: "connect_disabled", ok: false, sent: true });
     expect(again.state.final).toEqual({ data: { code: "connect_disabled" }, event: "closed" });
+
+    const closed = attach(relay, device);
+    const beforeClosed = call(relay, device)!;
+    relay.closeDeviceStream(device.id, closed.streamId, "connect_disabled");
+    await expect(beforeClosed).resolves.toEqual({ code: "connect_disabled", ok: false, sent: true });
+    expect(relay.size().pendingOps).toBe(0);
   });
 
   it("answers null for an offline, missing or foreign device and sends nothing to it", () => {
@@ -333,11 +383,13 @@ describe("AIQSA Connect relay: operations", () => {
     const device = record("user-alice");
     // Room for hello and one command.
     const stream = attach(relay, device, randomUUID(), 2);
-    const first = call(relay, device)!;
+    const first = call(relay, device, { timeoutMs: 1_000 })!;
     await expect(call(relay, device)).resolves.toEqual({ code: "connect_device_disconnected", ok: false, sent: false });
-    await expect(first).resolves.toEqual({ code: "connect_device_disconnected", ok: false, sent: true });
     expect(stream.state.closed).toBe(true);
     expect(relay.projectComputer(device).online).toBe(false);
+    // The op that was sent waits for the device's next stream until its deadline.
+    await vi.advanceTimersByTimeAsync(1_000 + CONNECT_OP_REPLY_GRACE_MS);
+    await expect(first).resolves.toEqual({ code: "computer_timeout", ok: false, sent: true });
   });
 
   it("sends run_ended without waiting for anything", () => {
@@ -348,6 +400,86 @@ describe("AIQSA Connect relay: operations", () => {
     expect(connectServerCommandV2Schema.parse(stream.commands().at(-1))).toEqual({ runId: RUN_ID, type: "run_ended" });
     relay.runEnded({ deviceId: randomUUID(), runId: RUN_ID, userId: device.userId });
     expect(stream.commands()).toHaveLength(1);
+  });
+});
+
+describe("AIQSA Connect relay: run_ended for a device without a stream", () => {
+  const OTHER_RUN = "8f14e45f-ceea-467a-9575-cb5bc5b0d5e1";
+  const runEnds = (stream: ReturnType<typeof attach>) => stream.commands().filter((command) => command.type === "run_ended");
+
+  it("sends a run_ended the offline device missed right after its next hello", () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    const first = attach(relay, device);
+    relay.detachDevice(device.id, first.streamId);
+    relay.runEnded({ deviceId: device.id, runId: RUN_ID, userId: device.userId });
+    relay.runEnded({ deviceId: device.id, runId: RUN_ID, userId: device.userId });
+    relay.runEnded({ deviceId: device.id, runId: OTHER_RUN, userId: device.userId });
+    expect(relay.undeliveredRunEndCount()).toBe(2);
+
+    const next = attach(relay, device, first.tokenHash);
+    expect(next.state.frames[0]!.event).toBe("hello");
+    expect(next.state.frames.slice(1)).toEqual([
+      { data: { runId: RUN_ID, type: "run_ended" }, event: "command" },
+      { data: { runId: OTHER_RUN, type: "run_ended" }, event: "command" }
+    ]);
+    expect(relay.undeliveredRunEndCount()).toBe(0);
+    // Delivered once.
+    const later = attach(relay, device, first.tokenHash);
+    expect(runEnds(later)).toEqual([]);
+  });
+
+  it("keeps a run_ended whose stream was gone, and one the next stream had no room for", () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    // Room for hello only: the send fails and ends the stream.
+    attach(relay, device, randomUUID(), 1);
+    relay.runEnded({ deviceId: device.id, runId: RUN_ID, userId: device.userId });
+    expect(relay.projectComputer(device).online).toBe(false);
+    relay.runEnded({ deviceId: device.id, runId: OTHER_RUN, userId: device.userId });
+
+    // Room for hello and one command: the second waits again.
+    const cramped = attach(relay, device, randomUUID(), 2);
+    expect(runEnds(cramped)).toEqual([{ runId: RUN_ID, type: "run_ended" }]);
+    expect(cramped.state.closed).toBe(true);
+    const roomy = attach(relay, device);
+    expect(runEnds(roomy)).toEqual([{ runId: OTHER_RUN, type: "run_ended" }]);
+  });
+
+  it("never sends another user's run ids, bounds what it keeps and forgets it after a day", async () => {
+    const relay = createConnectRelay();
+    const alice = record("user-alice");
+    // A run of another user naming Alice's device, offline or online, reaches nothing.
+    relay.runEnded({ deviceId: alice.id, runId: OTHER_RUN, userId: "user-bob" });
+    const online = attach(relay, alice);
+    relay.runEnded({ deviceId: alice.id, runId: OTHER_RUN, userId: "user-bob" });
+    expect(runEnds(online)).toEqual([]);
+    relay.detachDevice(alice.id, online.streamId);
+
+    const runIds = Array.from({ length: CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS + 10 }, () => randomUUID());
+    for (const runId of runIds) relay.runEnded({ deviceId: alice.id, runId, userId: alice.userId });
+    const bounded = attach(relay, alice);
+    expect(runEnds(bounded).map((command) => command.runId)).toEqual(runIds.slice(-CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS));
+    relay.detachDevice(alice.id, bounded.streamId);
+
+    relay.runEnded({ deviceId: alice.id, runId: RUN_ID, userId: alice.userId });
+    await vi.advanceTimersByTimeAsync(CONNECT_RELAY_UNDELIVERED_RUN_END_TTL_MS);
+    expect(runEnds(attach(relay, alice))).toEqual([]);
+  });
+
+  it("forgets a revoked device's and a revoked account's run_ended", () => {
+    const relay = createConnectRelay();
+    const alice = record("user-alice");
+    const laptop = record("user-alice");
+    const bob = record("user-bob");
+    relay.runEnded({ deviceId: alice.id, runId: RUN_ID, userId: alice.userId });
+    relay.runEnded({ deviceId: laptop.id, runId: RUN_ID, userId: laptop.userId });
+    relay.runEnded({ deviceId: bob.id, runId: RUN_ID, userId: bob.userId });
+    relay.disconnectDevice(alice.id, "connect_unauthorized");
+    expect(relay.undeliveredRunEndCount()).toBe(2);
+    relay.disconnectUser("user-alice");
+    expect(relay.undeliveredRunEndCount()).toBe(1);
+    expect(runEnds(attach(relay, bob))).toEqual([{ runId: RUN_ID, type: "run_ended" }]);
   });
 });
 
