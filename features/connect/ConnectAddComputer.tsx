@@ -2,7 +2,6 @@
 
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import {
-  CONNECT_CLIENT_DOWNLOAD_PREFIX,
   CONNECT_INSTALL_SCRIPT_PATH,
   connectClientBinaryName,
   connectClientDownloadPath,
@@ -14,9 +13,12 @@ type AddComputerOs = "posix" | "windows";
 
 const ARCH_LABELS: Readonly<Record<ConnectArch, string>> = { amd64: "x64", arm64: "ARM64" };
 
-/** `/connect/download/windows-<arch>`: the installer named after this installation (D-13). */
+/**
+ * The Windows program's download: the server answers it with the file named
+ * after this installation, which the program reads its address from (D-13).
+ */
 export function connectWindowsDownloadPath(arch: ConnectArch): string {
-  return `${CONNECT_CLIENT_DOWNLOAD_PREFIX}/windows-${arch}`;
+  return connectClientDownloadPath("windows", arch);
 }
 
 /** An address the Windows file name cannot carry: the host is an IPv6 literal. */
