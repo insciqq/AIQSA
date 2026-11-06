@@ -1,7 +1,8 @@
-// Package logx is the client's content-free log: event names, codes and
-// counts only. Terminal bytes, input, commands, titles, paths and tokens
-// never belong in it, and the logger enforces that for string values: any
-// string that is not a short code is written as "?".
+// Package logx is the client's content-free log: event names, op kinds,
+// codes, durations and byte counts only. Commands, paths, file content,
+// command output and tokens never belong in it, and the logger enforces
+// that for string values: any string that is not a short code is written
+// as "?".
 package logx
 
 import (
@@ -13,6 +14,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,7 +182,11 @@ func (r *rotatingFile) open() error {
 		f.Close()
 		return err
 	}
-	f.Chmod(0o600)
+	if runtime.GOOS != "windows" {
+		// Windows keeps no mode bits: the file inherits the private access
+		// list of the state directory.
+		f.Chmod(0o600)
+	}
 	r.f, r.size = f, info.Size()
 	return nil
 }

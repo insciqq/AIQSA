@@ -11,7 +11,6 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/api"
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
-	"github.com/insciqq/AIQSA/connect/internal/tmux"
 )
 
 func init() {
@@ -57,23 +56,23 @@ func parseLoginArgs(args []string) (origin, name string, err error) {
 // platform maps this build's target to the contract's values.
 func platform() (protocol.OS, protocol.Arch, error) {
 	os, arch := protocol.OS(runtime.GOOS), protocol.Arch(runtime.GOARCH)
-	if (os != protocol.OSDarwin && os != protocol.OSLinux) || (arch != protocol.ArchAMD64 && arch != protocol.ArchARM64) {
-		return "", "", fmt.Errorf("aiqsa-connect supports macOS and Linux (including WSL) on amd64 and arm64; this computer is %s/%s", runtime.GOOS, runtime.GOARCH)
+	if (os != protocol.OSDarwin && os != protocol.OSLinux && os != protocol.OSWindows) || (arch != protocol.ArchAMD64 && arch != protocol.ArchARM64) {
+		return "", "", fmt.Errorf("aiqsa-connect supports Windows, macOS and Linux (including WSL) on amd64 and arm64; this computer is %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	return os, arch, nil
 }
 
 func deviceNames(requested string) (name, hostname string, err error) {
 	raw, _ := os.Hostname()
-	hostname = tmux.SanitizeText(raw, protocol.MaxHostnameLength)
+	hostname = config.SanitizeText(raw, protocol.MaxHostnameLength)
 	if hostname == "" {
 		hostname = "computer"
 	}
 	if requested == "" {
-		return tmux.SanitizeText(hostname, protocol.MaxDeviceNameLength), hostname, nil
+		return config.SanitizeText(hostname, protocol.MaxDeviceNameLength), hostname, nil
 	}
 	name = strings.TrimSpace(requested)
-	if name == "" || tmux.SanitizeText(name, protocol.MaxDeviceNameLength+1) != name {
+	if name == "" || config.SanitizeText(name, protocol.MaxDeviceNameLength+1) != name {
 		return "", "", errors.New("the computer name must be plain text without control characters")
 	}
 	if utf8.RuneCountInString(name) > protocol.MaxDeviceNameLength {
@@ -117,7 +116,7 @@ func runLogin(inv *invocation) int {
 		return 1
 	}
 	if config.IsUnencryptedOrigin(origin) {
-		fmt.Fprintln(inv.stderr, "aiqsa-connect login: warning: http:// sends this computer's token and the terminal unencrypted; use it only on a network you trust. Browsers also turn off notifications and dictation without https://.")
+		fmt.Fprintln(inv.stderr, "aiqsa-connect login: warning: http:// sends this computer's token, its files and the output of its commands unencrypted; use it only on a network you trust.")
 	}
 	fmt.Fprintf(inv.stdout, "Open %s and approve this computer. Code: %s\n", pairing.VerificationURI, pairing.UserCode)
 	fmt.Fprintln(inv.stdout, "Waiting for approval…")

@@ -170,26 +170,6 @@ func encodeString(s string) []byte {
 	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
-// rawJSON encodes v compactly without HTML escaping.
-func rawJSON(v any) json.RawMessage {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		panic(err)
-	}
-	return json.RawMessage(bytes.TrimSuffix(b.Bytes(), []byte("\n")))
-}
-
-// sameJSON compares two values ignoring insignificant whitespace.
-func sameJSON(a, b json.RawMessage) bool {
-	var ca, cb bytes.Buffer
-	if json.Compact(&ca, a) != nil || json.Compact(&cb, b) != nil {
-		return false
-	}
-	return bytes.Equal(ca.Bytes(), cb.Bytes())
-}
-
 // detectIndent returns the indentation of the file's first indented line,
 // or two spaces.
 func detectIndent(data []byte) string {
@@ -201,14 +181,4 @@ func detectIndent(data []byte) string {
 		return string(line[:len(line)-len(trimmed)])
 	}
 	return "  "
-}
-
-type compactBuffer struct{ bytes.Buffer }
-
-func (b *compactBuffer) compact() json.RawMessage {
-	var out bytes.Buffer
-	if err := json.Compact(&out, b.Bytes()); err != nil {
-		panic(err)
-	}
-	return json.RawMessage(out.Bytes())
 }

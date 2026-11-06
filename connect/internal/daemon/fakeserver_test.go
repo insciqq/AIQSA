@@ -8,8 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +18,7 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/logx"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
-	"github.com/insciqq/AIQSA/connect/internal/tmux"
+	"github.com/insciqq/AIQSA/connect/internal/state"
 )
 
 const (
@@ -29,8 +28,8 @@ const (
 
 var testToken = "aiqsa_connect_" + strings.Repeat("T", 43)
 
-// fakeServer is the device API of an AIQSA installation, in memory. Every
-// batch the client posts is decoded strictly and validated.
+// fakeServer is the device API of an AIQSA installation speaking protocol
+// 2, in memory. Every batch the client posts is decoded strictly and validated.
 type fakeServer struct {
 	t   *testing.T
 	srv *httptest.Server
@@ -42,11 +41,12 @@ type fakeServer struct {
 	streamRefusal *refusal
 	eventsReplies []refusal // consumed one per POST before succeeding
 	eventsDelay   time.Duration
-	limits        protocol.HelloLimits
+	limits        protocol.HelloV2Limits
 	batchSizes    []int
 	batchBytes    []int
 	recorded      []protocol.DeviceEvent
 
+	requests    atomic.Int32
 	inFlight    atomic.Int32
 	maxInFlight atomic.Int32
 	streamOpens atomic.Int32
@@ -80,7 +80,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 		t:       t,
 		streams: make(chan *fakeStream, 16),
 		events:  make(chan protocol.DeviceEvent, 4096),
-		limits:  protocol.DefaultHelloLimits,
+		limits:  protocol.DefaultHelloV2Limits,
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
@@ -88,11 +88,15 @@ func newFakeServer(t *testing.T) *fakeServer {
 }
 
 func (f *fakeServer) checkHeaders(r *http.Request) {
+	f.requests.Add(1)
 	if r.Header.Get("Authorization") != "Bearer "+testToken {
 		f.t.Errorf("authorization header: %q", r.Header.Get("Authorization"))
 	}
 	if r.Header.Get(protocol.ClientVersionHeader) != testVersion {
 		f.t.Errorf("version header: %q", r.Header.Get(protocol.ClientVersionHeader))
+	}
+	if r.Header.Get(protocol.ProtocolHeader) != strconv.Itoa(protocol.ProtocolVersion) {
+		f.t.Errorf("protocol header: %q", r.Header.Get(protocol.ProtocolHeader))
 	}
 	if r.Header.Get("Origin") != "" || r.Header.Get("Cookie") != "" {
 		f.t.Errorf("origin or cookie sent: %v", r.Header)
@@ -117,10 +121,10 @@ func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeServer) hello() protocol.Hello {
+func (f *fakeServer) hello() protocol.HelloV2 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return protocol.Hello{Protocol: 1, DeviceID: testDeviceID, ServerVersion: "1.2.4", MinClientVersion: "1.0.0", Limits: f.limits}
+	return protocol.HelloV2{Protocol: 2, DeviceID: testDeviceID, ServerVersion: "1.2.4", MinClientVersion: "1.0.0", Limits: f.limits}
 }
 
 func (f *fakeServer) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -179,9 +183,9 @@ func (f *fakeServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, reply.status, reply.code)
 		return
 	}
-	var batch protocol.EventBatch
+	var batch protocol.EventBatchV2
 	if err := protocol.Decode(body, &batch); err != nil {
-		f.t.Errorf("invalid batch: %v: %.300s", err, body)
+		f.t.Errorf("invalid batch: %v (%d bytes)", err, len(body))
 		writeCode(w, http.StatusBadRequest, protocol.CodeRequestInvalid)
 		return
 	}
@@ -189,8 +193,11 @@ func (f *fakeServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("batch over limits: %d events, %d bytes", len(batch.Events), len(body))
 	}
 	for _, event := range batch.Events {
-		if output, ok := event.(*protocol.OutputEvent); ok && len(output.Data) > limits.MaxOutputChunkBytes {
-			f.t.Errorf("output chunk %d over %d", len(output.Data), limits.MaxOutputChunkBytes)
+		if reply, ok := event.(*protocol.OpReplyEvent); ok {
+			encoded, _ := json.Marshal(reply)
+			if len(encoded) > limits.MaxReplyBytes {
+				f.t.Errorf("reply of %d bytes over %d", len(encoded), limits.MaxReplyBytes)
+			}
 		}
 	}
 	f.mu.Lock()
@@ -232,56 +239,15 @@ func (f *fakeServer) waitEvent(t *testing.T, match func(protocol.DeviceEvent) bo
 	}
 }
 
-// waitUntil polls every posted event so far until done accepts them.
-func (f *fakeServer) waitUntil(t *testing.T, what string, done func([]protocol.DeviceEvent) bool) []protocol.DeviceEvent {
-	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		f.mu.Lock()
-		events := append([]protocol.DeviceEvent(nil), f.recorded...)
-		f.mu.Unlock()
-		if done(events) {
-			return events
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-	return nil
-}
-
 func isType(eventType string) func(protocol.DeviceEvent) bool {
 	return func(e protocol.DeviceEvent) bool { return e.EventType() == eventType }
 }
 
 func replyFor(requestID string) func(protocol.DeviceEvent) bool {
 	return func(e protocol.DeviceEvent) bool {
-		reply, ok := e.(*protocol.ReplyEvent)
+		reply, ok := e.(*protocol.OpReplyEvent)
 		return ok && reply.RequestID == requestID
 	}
-}
-
-func viewClosed(viewID string) func(protocol.DeviceEvent) bool {
-	return func(e protocol.DeviceEvent) bool {
-		closed, ok := e.(*protocol.ViewClosedEvent)
-		return ok && closed.ViewID == viewID
-	}
-}
-
-// fakeTmux is a tmux stand-in for tests that need no sessions: it reports
-// version 3.4 and "no server running" for everything else.
-func fakeTmux(t *testing.T) *tmux.Manager {
-	t.Helper()
-	dir := t.TempDir()
-	script := filepath.Join(dir, "tmux")
-	body := "#!/bin/sh\nif [ \"$1\" = -V ]; then echo 'tmux 3.4'; exit 0; fi\necho 'no server running on /tmp/fake' >&2\nexit 1\n"
-	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	m, err := tmux.New(tmux.Options{Binary: script, Socket: "aiqsa-connect-test-fake", ConfigPath: filepath.Join(dir, "tmux.conf")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return m
 }
 
 type recordingUpdater struct {
@@ -319,12 +285,36 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// stateRecorder keeps every reported state.
+type stateRecorder struct {
+	mu     sync.Mutex
+	states []state.State
+}
+
+func (r *stateRecorder) sink(s state.State) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.states = append(r.states, s)
+}
+
+func (r *stateRecorder) kinds() []state.Kind {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kinds := make([]state.Kind, len(r.states))
+	for i, s := range r.states {
+		kinds[i] = s.Kind
+	}
+	return kinds
+}
+
 type harness struct {
 	server   *fakeServer
 	daemon   *Daemon
 	log      *syncBuffer
 	notices  *syncBuffer
 	updater  *recordingUpdater
+	states   *stateRecorder
+	home     string
 	stateDir string
 	cancel   context.CancelFunc
 	done     chan error
@@ -336,25 +326,27 @@ func fastTiming() Timing {
 		BackoffMin:    10 * time.Millisecond,
 		BackoffMax:    50 * time.Millisecond,
 		DisabledRetry: 50 * time.Millisecond,
-		PollInterval:  100 * time.Millisecond,
 		RetryMin:      10 * time.Millisecond,
 		RetryMax:      50 * time.Millisecond,
 	}
 }
 
-func newHarness(t *testing.T, server *fakeServer, manager *tmux.Manager, timing Timing) *harness {
+func newHarness(t *testing.T, server *fakeServer, timing Timing) *harness {
 	t.Helper()
-	h := &harness{server: server, log: &syncBuffer{}, notices: &syncBuffer{}, updater: &recordingUpdater{}, stateDir: t.TempDir()}
+	h := &harness{
+		server: server, log: &syncBuffer{}, notices: &syncBuffer{}, updater: &recordingUpdater{},
+		states: &stateRecorder{}, home: t.TempDir(), stateDir: t.TempDir(),
+	}
 	d, err := New(Options{
 		Credentials: config.Credentials{Origin: server.srv.URL, DeviceID: testDeviceID, DeviceToken: testToken},
 		Paths:       config.Paths{StateDir: h.stateDir, ConfigDir: t.TempDir()},
 		Version:     testVersion,
-		Tmux:        manager,
 		Log:         logx.New(h.log),
 		Updater:     h.updater,
 		Notices:     h.notices,
-		Home:        t.TempDir(),
+		Home:        h.home,
 		Timing:      timing,
+		OnState:     h.states.sink,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -61,7 +61,6 @@ func TestResolvePaths(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(EnvConfigDir, "")
 	t.Setenv(EnvStateDir, "")
-	t.Setenv(EnvTmuxSocket, "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_STATE_HOME", "relative/ignored")
 	paths, err := ResolvePaths()
@@ -69,8 +68,7 @@ func TestResolvePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	if paths.ConfigDir != filepath.Join(home, ".config", "aiqsa-connect") ||
-		paths.StateDir != filepath.Join(home, ".local", "state", "aiqsa-connect") ||
-		paths.TmuxSocket != DefaultTmuxSocket {
+		paths.StateDir != filepath.Join(home, ".local", "state", "aiqsa-connect") {
 		t.Fatalf("defaults: %+v", paths)
 	}
 	t.Setenv("XDG_CONFIG_HOME", "/xdg/config")
@@ -81,19 +79,85 @@ func TestResolvePaths(t *testing.T) {
 	}
 	t.Setenv(EnvConfigDir, "/override/config")
 	t.Setenv(EnvStateDir, "/override/state")
-	t.Setenv(EnvTmuxSocket, "aiqsa-connect-test-1")
 	paths, _ = ResolvePaths()
-	if paths.ConfigDir != "/override/config" || paths.StateDir != "/override/state" || paths.TmuxSocket != "aiqsa-connect-test-1" {
+	if paths.ConfigDir != "/override/config" || paths.StateDir != "/override/state" {
 		t.Fatalf("overrides: %+v", paths)
 	}
-	t.Setenv(EnvTmuxSocket, "bad/name")
-	if _, err := ResolvePaths(); err == nil {
-		t.Fatal("bad socket name accepted")
-	}
-	t.Setenv(EnvTmuxSocket, "")
 	t.Setenv(EnvStateDir, "relative")
 	if _, err := ResolvePaths(); err == nil {
 		t.Fatal("relative override accepted")
+	}
+}
+
+func TestResolvePathsOnWindows(t *testing.T) {
+	env := map[string]string{`APPDATA`: `C:\Users\ivan\AppData\Roaming`, `LOCALAPPDATA`: `C:\Users\ivan\AppData\Local`}
+	getenv := func(key string) string { return env[key] }
+	paths, err := resolvePaths("windows", getenv, `C:\Users\ivan`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.ConfigDir != `C:\Users\ivan\AppData\Roaming\AIQSA Connect` || paths.StateDir != `C:\Users\ivan\AppData\Local\AIQSA Connect` {
+		t.Fatalf("windows: %+v", paths)
+	}
+	env[EnvStateDir] = `D:\state`
+	if paths, _ = resolvePaths("windows", getenv, ""); paths.StateDir != `D:\state` {
+		t.Fatalf("override: %+v", paths)
+	}
+	env[EnvStateDir] = `state`
+	if _, err := resolvePaths("windows", getenv, ""); err == nil {
+		t.Fatal("relative override accepted")
+	}
+	delete(env, EnvStateDir)
+	delete(env, "LOCALAPPDATA")
+	if _, err := resolvePaths("windows", getenv, `C:\Users\ivan`); err == nil {
+		t.Fatal("missing LOCALAPPDATA accepted")
+	}
+}
+
+func TestIsAbsPath(t *testing.T) {
+	for _, tc := range []struct {
+		goos, path string
+		want       bool
+	}{
+		{"linux", "/home/ann", true}, {"linux", "home", false}, {"darwin", `C:\x`, false},
+		{"windows", `C:\Users`, true}, {"windows", `c:/Users`, true}, {"windows", `\\server\share`, true},
+		{"windows", `C:Users`, false}, {"windows", `\Users`, false}, {"windows", `/Users`, false}, {"windows", `\\`, false},
+	} {
+		if got := IsAbsPath(tc.goos, tc.path); got != tc.want {
+			t.Errorf("IsAbsPath(%s, %q) = %v", tc.goos, tc.path, got)
+		}
+	}
+}
+
+func TestPrivateACLCheck(t *testing.T) {
+	const path = `C:\Users\ivan\AppData\Roaming\AIQSA Connect\credentials.json`
+	private := fileACL{OwnerIsUser: true, Allowed: []aclEntry{{trusteeOther, 0x1f01ff}, {trusteeOther, 0x1f01ff}}}
+	if err := checkPrivateACL(private, path); err != nil {
+		t.Fatalf("private: %v", err)
+	}
+	var insecure *InsecureCredentialsError
+	for name, acl := range map[string]fileACL{
+		"everyone": {OwnerIsUser: true, Allowed: []aclEntry{{trusteeOther, 0x1f01ff}, {trusteeBroad, 0x120089}}},
+		"null":     {OwnerIsUser: true, NullDACL: true},
+	} {
+		if err := checkPrivateACL(acl, path); !errors.As(err, &insecure) || !strings.Contains(err.Error(), "login again") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := checkPrivateACL(fileACL{OwnerIsUser: true, Allowed: []aclEntry{{trusteeBroad, 0}}}, path); err != nil {
+		t.Errorf("an entry granting nothing: %v", err)
+	}
+	if err := checkPrivateACL(fileACL{Allowed: private.Allowed}, path); err == nil || !strings.Contains(err.Error(), "another user") {
+		t.Errorf("other owner: %v", err)
+	}
+}
+
+func TestSanitizeText(t *testing.T) {
+	if got := SanitizeText("  Work\x1b[31m laptop\u0085\xff  ", 64); got != "Work[31m laptop" {
+		t.Fatalf("got %q", got)
+	}
+	if got := SanitizeText("абвгд", 3); got != "абв" {
+		t.Fatalf("got %q", got)
 	}
 }
 

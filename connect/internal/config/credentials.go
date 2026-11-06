@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"syscall"
 
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
@@ -16,14 +15,23 @@ import (
 var ErrNotLoggedIn = errors.New("this computer is not connected to AIQSA; run aiqsa-connect login <AIQSA address>")
 
 // InsecureCredentialsError refuses a credentials file other users can read.
+// Mode is set on macOS and Linux; on Windows the file's access list let
+// other users in.
 type InsecureCredentialsError struct {
 	Path string
 	Mode os.FileMode
+	ACL  bool
 }
 
 func (e *InsecureCredentialsError) Error() string {
+	if e.ACL {
+		return fmt.Sprintf("%s is readable by other users; delete it and run aiqsa-connect login again", e.Path)
+	}
 	return fmt.Sprintf("%s is readable by other users (mode %04o); fix it with: chmod 600 %s", e.Path, e.Mode.Perm(), e.Path)
 }
+
+// errOtherOwner refuses a credentials file of another user.
+func errOtherOwner(path string) error { return fmt.Errorf("%s belongs to another user", path) }
 
 // Credentials identify this computer to one AIQSA installation.
 type Credentials struct {
@@ -52,11 +60,12 @@ func (c Credentials) Validate() error {
 
 const maxCredentialsBytes = 16 << 10
 
-// LoadCredentials reads the credentials file. It refuses a file that is not
-// a regular file of the current user or that group or others can access.
+// LoadCredentials reads the credentials file. It refuses a link, a file
+// that is not a regular file of the current user, and a file other users
+// can read (by mode on macOS and Linux, by access list on Windows).
 func (p Paths) LoadCredentials() (Credentials, error) {
 	path := p.CredentialsFile()
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openNoFollow(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Credentials{}, ErrNotLoggedIn
 	}
@@ -71,11 +80,8 @@ func (p Paths) LoadCredentials() (Credentials, error) {
 	if !info.Mode().IsRegular() {
 		return Credentials{}, fmt.Errorf("%s is not a regular file", path)
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
-		return Credentials{}, fmt.Errorf("%s belongs to another user", path)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return Credentials{}, &InsecureCredentialsError{Path: path, Mode: info.Mode()}
+	if err := checkPrivateFile(f, info, path); err != nil {
+		return Credentials{}, err
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxCredentialsBytes+1))
 	if err != nil {
@@ -96,7 +102,7 @@ func (p Paths) LoadCredentials() (Credentials, error) {
 	return creds, nil
 }
 
-// SaveCredentials writes the credentials file atomically with mode 0600.
+// SaveCredentials writes the credentials file atomically, private to the user.
 func (p Paths) SaveCredentials(creds Credentials) error {
 	if err := creds.Validate(); err != nil {
 		return err
