@@ -31,7 +31,7 @@ type startedCommand struct {
 	done    chan struct{}
 	err     error
 	once    sync.Once
-	exec *Executor
+	exec    *Executor
 }
 
 // startCommand starts command in cwd with stdin closed and the streams
