@@ -10,7 +10,7 @@ import {
   type ResearchAgentRef,
   type ResearchRecordInput
 } from "../../contracts/research";
-import { RUN_INTERRUPTED_FAILURE, RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
+import { CONTINUE_TURN_TEXT, RUN_INTERRUPTED_FAILURE, RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createSubagentThreadStore } from "../engine/subagents/threadStore";
@@ -199,6 +199,60 @@ describe("a Continue on an interrupted run", () => {
     await interrupted(first, RUN_TIME_LIMIT_FAILURE);
     const second = await runOf(userId, chatId, first.answerId);
     await expect(pickUp(portsOf(second, [first.runId]), first.runId)).resolves.toMatchObject({ fromRunId: first.runId });
+  });
+
+  it("is open to a research run whatever failed it, as its answer offers Continue, and to no ordinary run that failed", async () => {
+    const providerFailure = { code: "provider_response_failed", message: "The provider's response failed." };
+    const { chatId, first, userId } = await interruptedWithRecords();
+    await interrupted(first, providerFailure);
+    const second = await runOf(userId, chatId, first.answerId);
+    await expect(pickUp(portsOf(second, [first.runId]), first.runId)).resolves.toMatchObject({ fromRunId: first.runId });
+    await expect(filled(portsOf(second, [first.runId]))).resolves.toEqual(["x1/durability", "x1/firmness"]);
+    // A run sent with Deep research that failed before its plan counts by its frozen choice; an ordinary one by nothing.
+    const chosen = await runOf(userId, chatId);
+    await prisma.modelRun.update({ data: { normalizedRequest: json({ deepResearch: true }) }, where: { id: chosen.runId } });
+    await interrupted(chosen, providerFailure);
+    const ordinary = await runOf(userId, chatId, chosen.answerId);
+    await interrupted(ordinary, providerFailure);
+    const later = await runOf(userId, chatId, ordinary.answerId);
+    const ports = portsOf(later, [chosen.runId, ordinary.runId]);
+    await expect(ports.resume.endedInterrupted(chosen.runId, signal)).resolves.toBe(true);
+    await expect(ports.resume.endedInterrupted(ordinary.runId, signal)).resolves.toBe(false);
+    // Stopped, it is no Continue's.
+    await prisma.modelRun.update({ data: { status: "cancelled" }, where: { id: chosen.runId } });
+    await expect(ports.resume.endedInterrupted(chosen.runId, signal)).resolves.toBe(false);
+  });
+
+  it("is open to the research's turns that hold no research of their own: a failed turn after an Allow and a Continue that failed before its start", async () => {
+    const providerFailure = { code: "provider_response_failed", message: "The provider's response failed." };
+    const questionOf = async (run: Run) => (await prisma.modelRun.findUniqueOrThrow({ select: { userMessageId: true }, where: { id: run.runId } })).userMessageId;
+    const userId = await owner();
+    const chatId = await chatOf(userId);
+    // The research paused for an Allow, its run complete; the turn the Allow started failed on its provider.
+    const first = await runOf(userId, chatId);
+    await released(first);
+    await recorded(portsOf(first), notFound("x1", "durability"));
+    const approved = await runOf(userId, chatId, first.answerId);
+    await prisma.message.update({ data: { systemTurnKind: "mcp_approval_continuation" }, where: { id: await questionOf(approved) } });
+    await interrupted(approved, providerFailure);
+    // The user's Continue of it failed before its own start.
+    const continued = await runOf(userId, chatId, approved.answerId);
+    await prisma.message.update({ data: { content: textMessageContent(CONTINUE_TURN_TEXT) }, where: { id: await questionOf(continued) } });
+    await interrupted(continued, providerFailure);
+    const later = await runOf(userId, chatId, continued.answerId);
+    const ports = portsOf(later, [first.runId, approved.runId, continued.runId]);
+    await expect(ports.resume.endedInterrupted(approved.runId, signal)).resolves.toBe(true);
+    await expect(ports.resume.endedInterrupted(continued.runId, signal)).resolves.toBe(true);
+    await expect(pickUp(ports, first.runId)).resolves.toMatchObject({ fromRunId: first.runId });
+    await expect(filled(ports)).resolves.toEqual(["x1/durability"]);
+    // Other words after the failed turn are no Continue, and the same turns in an ordinary chat count for nothing.
+    await prisma.message.update({ data: { content: textMessageContent("Synthetic question") }, where: { id: await questionOf(continued) } });
+    await expect(ports.resume.endedInterrupted(continued.runId, signal)).resolves.toBe(false);
+    const ordinary = await runOf(userId, chatId);
+    const ordinaryApproval = await runOf(userId, chatId, ordinary.answerId);
+    await prisma.message.update({ data: { systemTurnKind: "mcp_approval_continuation" }, where: { id: await questionOf(ordinaryApproval) } });
+    await interrupted(ordinaryApproval, providerFailure);
+    await expect(portsOf(later, [ordinary.runId, ordinaryApproval.runId]).resume.endedInterrupted(ordinaryApproval.runId, signal)).resolves.toBe(false);
   });
 
   it("reaches the research through an approval: the run that started it, with the last run the interrupted one", async () => {

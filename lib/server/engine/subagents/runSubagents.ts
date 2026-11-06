@@ -23,6 +23,7 @@ import type { RunTool } from "../../tools/types";
 import type { BrowserLiveRunHandle } from "../../workspace/browserLive";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
 import type { EngineTestFaults } from "../faults";
+import type { ModelCallRetryPolicy } from "../modelCall";
 import type { SubagentPromptFacts } from "../prompts";
 import { windowOutputParams } from "../runContext";
 import type { NativeRunStore } from "../runStore";
@@ -159,6 +160,8 @@ export type PrepareRunSubagentsInput = Readonly<{
   faults?: EngineTestFaults;
   followupTexts(): readonly string[];
   modelConfiguration: RunModelConfiguration;
+  /** How long its sub-agents' failed model requests keep being sent again (a research run's turns); absent, a chat's. */
+  modelRetry?: ModelCallRetryPolicy;
   now(): number;
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   /** Background turns may start (web chats); never from a Telegram turn or a scheduled occurrence, which still reach them. */
@@ -268,6 +271,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     ...(messaging ? { mailbox: { unread: (thread) => store.unreadMessages({ ...scopeOf, ...thread }) }, messaging } : {}),
     maxToolCalls: input.budgets.maxToolCalls,
     maxToolRounds: input.budgets.maxToolRounds,
+    ...(input.modelRetry ? { modelRetry: input.modelRetry } : {}),
     now: input.now,
     onWorkspaceLifecycle: input.onWorkspaceLifecycle,
     userFollowups: input.userFollowups,

@@ -103,6 +103,8 @@ export type SubagentHarnessOptions = Readonly<{
   /** The second chat model's upstream id for C2 (added beside the parent on the same codex-lb route). */
   secondModel: string | null;
   restart: RestartHook | null;
+  /** T's `outage` act: the line that brings the provider back after AIQSA_SUBAGENTS_RESTART_COMMAND took it away. */
+  outageEnd: RestartHook | null;
   runs: number;
   /** A text-only OpenRouter chat model for K's sub-agent without vision (`ensureTextModel`). */
   textModel: string | null;
@@ -123,6 +125,7 @@ function boundedInteger(raw: string | undefined, fallback: number, min: number, 
  * - AIQSA_SUBAGENTS_SECOND_MODEL: the upstream id of a second codex-lb chat model (C2), not the parent's.
  * - AIQSA_SUBAGENTS_RESTART_COMMAND: one shell line the harness host runs to restart the stand's app container (G).
  * - AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS (30..900, default 300).
+ * - AIQSA_SUBAGENTS_OUTAGE_END_COMMAND: one shell line that ends the provider outage T's `outage` act started with the restart command.
  * - AIQSA_SUBAGENTS_RUNS (1..3, default 1).
  * - AIQSA_SUBAGENTS_TEXT_MODEL with OPENROUTER_API_KEY: a text-only OpenRouter model for K's last step.
  */
@@ -137,6 +140,8 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   if (command !== null && (command.length > 2_000 || /[\r\n\0]/u.test(command))) fail("restart_command_invalid");
   if (needs.some((need) => need.restartHook) && command === null) fail("restart_command_required");
   const timeoutSeconds = boundedInteger(env.AIQSA_SUBAGENTS_RESTART_TIMEOUT_SECONDS, 300, 30, 900, "restart_timeout_invalid");
+  const outageEnd = env.AIQSA_SUBAGENTS_OUTAGE_END_COMMAND?.trim() || null;
+  if (outageEnd !== null && (outageEnd.length > 2_000 || /[\r\n\0]/u.test(outageEnd))) fail("outage_end_command_invalid");
   const text = env.AIQSA_SUBAGENTS_TEXT_MODEL?.trim() || null;
   if (text !== null && !OPENROUTER_MODEL_PATTERN.test(text)) fail("text_model_invalid");
   if (text !== null && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
@@ -147,6 +152,7 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   if (needs.some((need) => need.testProxy) && parseTestProxy(env.AIQSA_SUBAGENTS_TEST_PROXY) === null) fail("test_proxy_required");
   return {
     restart: command === null ? null : { command, timeoutMs: timeoutSeconds * 1_000 },
+    outageEnd: outageEnd === null ? null : { command: outageEnd, timeoutMs: timeoutSeconds * 1_000 },
     runs: boundedInteger(env.AIQSA_SUBAGENTS_RUNS, 1, 1, 3, "runs_invalid"),
     secondModel: second,
     textModel: text

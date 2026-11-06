@@ -358,7 +358,9 @@ export async function executeMessageRunLifecycle({
       await fetchRun(runId, chatId, { producer });
     }
 
-    if (!receivedChatUpdate && ownsStream()) {
+    // A failed run ends with no update of its own, and one sent while it ran predates what the run became: a Continue that researched
+    // shows as a research answer only from the chat's saved projection (`ChatMessageWire.researchAnswer`).
+    if ((!receivedChatUpdate || failed) && ownsStream()) {
       const refreshed = await refreshActiveChat(chatId, {
         forceDetail: true,
         preserveControls: true

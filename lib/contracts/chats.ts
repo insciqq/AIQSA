@@ -215,6 +215,8 @@ export type { ThreadWorkspaceActivity } from "./workspace";
 export type ThreadMessage = {
   /** See `ChatMessageWire.deepResearch`; the send path also sets it on its optimistic message. */
   deepResearch?: true;
+  /** See `ChatMessageWire.researchAnswer`. */
+  researchAnswer?: true;
   followups?: RunFollowupState;
   /** Client only, from the run outcome: what a reader without the live stream shows while the provider is silent. */
   providerWait?: RunProviderWait;
@@ -478,6 +480,12 @@ export type ChatMessageWire = {
    * choice. Absent for every other message, and on a message whose run has not been admitted yet.
    */
   deepResearch?: true;
+  /**
+   * Only on an answer whose run researched (operator decision 2026-11-06): it was admitted with Deep research, has a research frame, or
+   * answered the server's turn after an Allow, or the user's Continue of an unfinished research, in a research (`researchedRuns` on the
+   * server). Such an answer never offers Regenerate, and one that failed offers Continue, whatever failed it. Absent for every other message.
+   */
+  researchAnswer?: true;
   followups?: RunFollowupState;
   providerWait?: RunProviderWait;
   workspacePreparation?: true;
@@ -1401,6 +1409,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     : decodeChatMessageSubagentCallback(value.subagentCallback);
   if (subagentCallback === null || (subagentCallback && value.systemTurnKind !== SUBAGENT_CALLBACK_TURN_KIND)) return null;
   if (value.deepResearch !== undefined && (value.deepResearch !== true || role !== "user")) return null;
+  if (value.researchAnswer !== undefined && (value.researchAnswer !== true || role !== "assistant")) return null;
   if (
     !id ||
     citationMessageId === undefined ||
@@ -1418,6 +1427,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   }
   return {
     ...(value.deepResearch === true ? { deepResearch: true as const } : {}),
+    ...(value.researchAnswer === true ? { researchAnswer: true as const } : {}),
     ...(pdfPreparation ? { pdfPreparation } : {}),
     ...(followups ? { followups } : {}),
     // A wait this client does not know reads as no wait: it only changes a status line.

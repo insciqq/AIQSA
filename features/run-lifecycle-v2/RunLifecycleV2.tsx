@@ -303,7 +303,16 @@ export type RunAnswerV2Props = Readonly<{
   workspaceActivity?: ThreadWorkspaceActivity | null;
 }>;
 
-export function RunAnswerV2({
+export function RunAnswerV2(props: RunAnswerV2Props) {
+  // A research answer is never answered again from scratch (operator decision 2026-11-06): Regenerate, a retry and a model change would each
+  // run the whole research again. Its failure offers Continue instead, and its question's edit stays the way to start a new research.
+  if (!props.presentation.research) return <RunAnswerBodyV2 {...props} />;
+  const { actions, onRegenerate: _regenerate, onRetry: _retry, onSelectModel: _selectModel, onUseLoadAll: _useLoadAll, ...rest } = props;
+  const { onRegenerate: _regenerateAction, regenerateDisabled: _regenerateDisabled, ...kept }: ConversationMessageActionsV2 = actions ?? {};
+  return <RunAnswerBodyV2 {...rest} actions={actions ? kept : undefined} />;
+}
+
+function RunAnswerBodyV2({
   actions,
   actionsSlot,
   anchorId,

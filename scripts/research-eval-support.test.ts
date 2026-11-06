@@ -342,6 +342,7 @@ describe("content-free stdout, role accounting and plan window", () => {
     const base = { AIQSA_SUBAGENTS_ANSWERS_DIR: "/tmp/a" };
     expect(researchEvalOptions(base).acts).toEqual({});
     expect(researchEvalOptions({ ...base, AIQSA_SUBAGENTS_T_ACTS: "technical=edit, medical=start,market=restart" }).acts).toEqual({ market: "restart", medical: "start", technical: "edit" });
+    expect(researchEvalOptions({ ...base, AIQSA_SUBAGENTS_T_ACTS: "purchase=outage" }).acts).toEqual({ purchase: "outage" });
     for (const bad of ["technical", "technical=dance", "nothing=edit", "technical=edit,technical=start", "technical=edit=start"]) {
       expect(() => researchEvalOptions({ ...base, AIQSA_SUBAGENTS_T_ACTS: bad })).toThrow("research_acts_invalid");
     }

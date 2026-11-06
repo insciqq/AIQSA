@@ -56,7 +56,7 @@ import { detachedCompactions } from "../detachedCompactions";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "../faults";
 import { createHostedSearchEvidence, type HostedSearchEvidenceRow } from "./hostedSearchEvidence";
 import { ANSWER_NOW_INSTRUCTION, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type LoopToolChoice } from "../loop";
-import { callModel } from "../modelCall";
+import { callModel, type ModelCallRetryPolicy } from "../modelCall";
 import {
   SUBAGENT_CHILD_ROLE_SECTION,
   SUBAGENT_ROLE_SECTION,
@@ -179,6 +179,8 @@ export type SubagentHost = Readonly<{
   }>;
   maxToolCalls: number | null;
   maxToolRounds: number | null;
+  /** How long a turn's failed model requests keep being sent again: a research run's turns (`MODEL_CALL_RESEARCH_RETRY`); absent, a chat's. */
+  modelRetry?: ModelCallRetryPolicy;
   /** Writes what a turn's hosted Search found as link evidence for its run. */
   recordSearchEvidence(row: HostedSearchEvidenceRow): Promise<void>;
   /** How the turn's agent sees and reaches the others (`messageTools.ts`); absent, it has no such tools. */
@@ -891,7 +893,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         // Its stubs go on record with the thread through `append`, so a later turn of it reads the same context.
         ...(host.resultClearing ? { clearing: host.resultClearing } : {}),
         compactionCall: (latest) => compactionModelCall({ adapter: route.adapter, deadlineAt: host.deadlineAt, now: host.now,
-          onUsage: recordUsage, routing: compactionRouting, timeoutMs: route.timeoutMs }, latest),
+          onUsage: recordUsage, ...(host.modelRetry ? { retry: host.modelRetry } : {}), routing: compactionRouting,
+          timeoutMs: route.timeoutMs }, latest),
         // A compaction still running when the turn ends goes on detached under the thread's own key, and the thread's
         // next turn joins it.
         detached: { chatId: `${host.chatId}:subagent:${input.threadId}`, live: () => host.transcripts.runLive(scope),
@@ -961,7 +964,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
             onEvent: async (event) => {
               if (event.type === "token") streamed += event.data.delta;
               evidence.add(event);
-            }, onUsage: recordUsage, routing: loopRouting, signal, timeoutMs: route.timeoutMs }, sent);
+            }, onUsage: recordUsage, ...(host.modelRetry ? { retry: host.modelRetry } : {}), routing: loopRouting, signal,
+            timeoutMs: route.timeoutMs }, sent);
           await evidence.save();
           return result;
         }),
