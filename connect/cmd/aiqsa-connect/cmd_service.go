@@ -60,6 +60,10 @@ func runService(inv *invocation) int {
 		fmt.Fprintln(inv.stderr, serviceUsage)
 		return 2
 	}
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(inv.stderr, "aiqsa-connect service: on Windows there is no service to install. Open the AIQSA Connect file you downloaded from your AIQSA page: it installs itself, starts at sign-in and stays in the notification area.")
+		return 1
+	}
 	manager, err := newServiceManager()
 	if err != nil {
 		fmt.Fprintf(inv.stderr, "aiqsa-connect service: %v\n", err)
@@ -83,7 +87,7 @@ func noUserSystemd(inv *invocation, err error) bool {
 	}
 	fmt.Fprintln(inv.stderr, "aiqsa-connect service: systemd user services are not available on this computer.")
 	fmt.Fprintln(inv.stderr, "On WSL, turn systemd on: add \"[boot]\" and \"systemd=true\" to /etc/wsl.conf, then run wsl --shutdown in Windows.")
-	fmt.Fprintln(inv.stderr, "Without a service, keep aiqsa-connect up running in a terminal (for example in your own tmux or screen).")
+	fmt.Fprintln(inv.stderr, "Without a service, keep aiqsa-connect up running in a terminal.")
 	return true
 }
 
@@ -130,7 +134,7 @@ func serviceInstall(inv *invocation, manager service.Manager) int {
 		return 1
 	}
 	fmt.Fprintf(inv.stdout, "Installed and started the aiqsa-connect service (%s): %s.\n", manager.File(), status.Detail)
-	fmt.Fprintln(inv.stdout, "It runs aiqsa-connect up --service whenever you are logged in to this computer; your sessions survive its restarts and updates.")
+	fmt.Fprintln(inv.stdout, "It runs aiqsa-connect up --service whenever you are logged in to this computer and updates itself to the version your AIQSA offers.")
 	if version == "dev" {
 		fmt.Fprintf(inv.stdout, "Note: this is a development build at %s; the service keeps using that file.\n", executable)
 	}
@@ -153,7 +157,7 @@ func serviceUninstall(inv *invocation, manager service.Manager) int {
 		fmt.Fprintln(inv.stdout, "The aiqsa-connect service is not installed.")
 		return 0
 	}
-	fmt.Fprintln(inv.stdout, "Stopped and removed the aiqsa-connect service. Your tmux sessions keep running; aiqsa-connect sessions lists them.")
+	fmt.Fprintln(inv.stdout, "Stopped and removed the aiqsa-connect service. Run aiqsa-connect up to connect this computer without it.")
 	return 0
 }
 

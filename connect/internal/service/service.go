@@ -1,11 +1,20 @@
 // Package service installs `aiqsa-connect up --service` as a per-user background
 // service: a systemd user unit on Linux (and WSL with systemd), a launchd
-// LaunchAgent on macOS. Restarting or updating the client must never stop
-// the tmux server that holds the sessions, so systemd kills only the main
-// process (KillMode=process) and launchd leaves the process group alone
-// (AbandonProcessGroup). In service mode `up` exits 0 for every stop that a
-// restart cannot fix (logged out, revoked, damaged credentials, another `up`
-// already running), so neither manager restarts it in a loop.
+// LaunchAgent on macOS. Windows has no such service: the installed program
+// starts at sign-in from the HKCU Run key (internal/winapp).
+//
+// systemd stops only the main process (KillMode=process) and launchd leaves
+// the process group alone (AbandonProcessGroup). The client ends the agent's
+// commands and background jobs itself when it stops (spec D-10), so they do
+// not need the service manager. Both settings stay because a computer that
+// ran the terminal client may still have its tmux server, with the user's
+// sessions, in the service's control group: the client no longer touches it
+// (spec D-03), and the default KillMode=control-group would kill it on the
+// next service stop or restart.
+//
+// In service mode `up` exits 0 for every stop that a restart cannot fix
+// (logged out, revoked, damaged credentials, another `up` already running),
+// so neither manager restarts it in a loop.
 package service
 
 import (
@@ -39,8 +48,8 @@ var ErrNoUserSystemd = errors.New("systemd user services are not available on th
 type Spec struct {
 	// Executable is the absolute path of aiqsa-connect.
 	Executable string
-	// Path is the PATH the service runs with: the installing shell's, so
-	// sessions find the same tools (nvm, Homebrew) as the user's terminal.
+	// Path is the PATH the service runs with: the installing shell's, so the
+	// agent's commands find the same tools (nvm, Homebrew) as the user's terminal.
 	Path string
 }
 
@@ -85,7 +94,7 @@ func SystemdUnit(spec Spec) (string, error) {
 	fmt.Fprintf(&b, "RestartSec=%d\n", RestartDelaySeconds)
 	b.WriteString("# A client that a restart cannot fix (logged out, revoked) exits 0 and stays stopped.\n")
 	fmt.Fprintf(&b, "RestartPreventExitStatus=%d\n", NoRestartExitStatus)
-	b.WriteString("# Stop or restart only the client: the tmux server with the sessions keeps running.\n")
+	b.WriteString("# Stop or restart only the client: it ends the agent's commands itself, and a tmux server left by an older client keeps its sessions.\n")
 	b.WriteString("KillMode=process\n")
 	fmt.Fprintf(&b, "Environment=%s\n\n", systemdQuote("PATH="+spec.Path, false))
 	b.WriteString("[Install]\n")
@@ -117,9 +126,10 @@ func LaunchAgentPlist(spec Spec) (string, error) {
 	// exclude a status, so `up --service` exits 0 when a restart cannot help.
 	b.WriteString("\t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n")
 	fmt.Fprintf(&b, "\t<key>ThrottleInterval</key>\n\t<integer>%d</integer>\n", 10)
-	// The tmux server started by the client keeps running when launchd stops it.
+	// The client ends the agent's commands itself; a tmux server left by an
+	// older client keeps running when launchd stops it.
 	b.WriteString("\t<key>AbandonProcessGroup</key>\n\t<true/>\n")
-	// Sessions are interactive work, not background jobs to be throttled.
+	// The agent's commands are interactive work, not background jobs to be throttled.
 	b.WriteString("\t<key>ProcessType</key>\n\t<string>Interactive</string>\n")
 	fmt.Fprintf(&b, "\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t%s\n\t</dict>\n", str(spec.Path))
 	// The client keeps its own size-bounded log in ~/.local/state/aiqsa-connect;
@@ -248,8 +258,8 @@ func (m Manager) Install(ctx context.Context, spec Spec) error {
 	return fmt.Errorf("background services are supported on Linux and macOS, not on %s", m.GOOS)
 }
 
-// Uninstall stops the client and removes the service definition; the tmux
-// sessions keep running. removed is false when no service was installed.
+// Uninstall stops the client and removes the service definition. removed is
+// false when no service was installed.
 func (m Manager) Uninstall(ctx context.Context) (removed bool, err error) {
 	if _, err := os.Stat(m.File()); errors.Is(err, os.ErrNotExist) {
 		return false, nil

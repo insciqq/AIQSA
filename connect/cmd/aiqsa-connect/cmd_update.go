@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/insciqq/AIQSA/connect/internal/api"
@@ -27,8 +27,11 @@ func init() {
 	updater = &autoUpdater{}
 }
 
-// updateExec replaces the process with the updated binary; tests replace it.
-var updateExec = syscall.Exec
+// updateExec starts the updated binary with this process's arguments. On
+// macOS and Linux it replaces the process (syscall.Exec) and returns only
+// on failure; on Windows it starts a new process and returns nil, and this
+// one exits (spec D-14). Tests replace it.
+var updateExec = restartProcess
 
 // newUpdateClient is the update source for an origin; tests replace it.
 var newUpdateClient = func(origin string) updateSource {
@@ -80,12 +83,19 @@ func runUpdate(inv *invocation) int {
 		return 1
 	}
 	fmt.Fprintf(inv.stdout, "Updated aiqsa-connect from %s to %s (%s).\n", version, result.Version, result.Path)
-	fmt.Fprintln(inv.stdout, "A running aiqsa-connect up keeps the old version until it restarts; aiqsa-connect service install restarts the service.")
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(inv.stdout, "AIQSA Connect in the notification area keeps the old version until it restarts: choose Quit there, then start AIQSA Connect again.")
+	} else {
+		fmt.Fprintln(inv.stdout, "A running aiqsa-connect up keeps the old version until it restarts; aiqsa-connect service install restarts the service.")
+	}
 	return 0
 }
 
 func updateFailure(err error) string {
 	if errors.Is(err, update.ErrNotWritable) {
+		if runtime.GOOS == "windows" {
+			return fmt.Sprintf("%v; download AIQSA Connect again from your AIQSA page and open it to reinstall", err)
+		}
 		return fmt.Sprintf("%v; reinstall aiqsa-connect into a directory you own with the install command shown in AIQSA → AIQSA Connect", err)
 	}
 	return err.Error()
@@ -101,9 +111,9 @@ type upBinder interface {
 
 // autoUpdater makes the client follow its server's version, older or newer:
 // after a hello announcing another version it installs that version in the
-// background, stops the daemon and re-executes itself with the same
-// arguments. tmux sessions keep running; browser views reconnect. A
-// development build never updates itself or installs a development build.
+// background, stops the daemon and restarts itself with the same
+// arguments. A development build never updates itself or installs a
+// development build.
 type autoUpdater struct {
 	mu        sync.Mutex
 	ctx       context.Context
@@ -217,9 +227,10 @@ func (u *autoUpdater) notice(format string, args ...any) {
 	}
 }
 
-// restartUpdated re-executes the installed update with this process's
-// arguments and environment; it returns only when there is none or exec
-// failed (then a service manager starts the new file).
+// restartUpdated starts the installed update with this process's
+// arguments and environment. On macOS and Linux it returns only when there
+// is none or exec failed (then a service manager starts the new file). On
+// Windows it returns 0 once the new process started; the caller exits.
 func (u *autoUpdater) restartUpdated(stderr io.Writer) (int, bool) {
 	u.mu.Lock()
 	path := u.installed
@@ -228,6 +239,9 @@ func (u *autoUpdater) restartUpdated(stderr io.Writer) (int, bool) {
 		return 0, false
 	}
 	err := updateExec(path, append([]string{path}, os.Args[1:]...), os.Environ())
+	if err == nil {
+		return 0, true
+	}
 	fmt.Fprintf(stderr, "aiqsa-connect: cannot restart the updated client: %v\n", err)
 	return 1, true
 }

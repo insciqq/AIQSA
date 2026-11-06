@@ -153,6 +153,27 @@ func TestAutoUpdateFollowsTheServerOncePerVersionAndReExecs(t *testing.T) {
 	}
 }
 
+// On Windows the restart starts a new process and returns; this one exits 0.
+func TestAutoUpdateRestartThatReturnsLetsTheProcessExit(t *testing.T) {
+	withClientVersion(t, "1.0.0")
+	source := &fakeUpdateSource{manifest: protocol.ClientManifest{Version: "1.1.0"}, done: make(chan struct{}, 2)}
+	u, _, _ := boundUpdater(t, source)
+	u.OnServerVersion("1.1.0", "0.3.20")
+	waitInstall(t, u, source)
+	var started string
+	previous := updateExec
+	updateExec = func(path string, argv, env []string) error {
+		started = path
+		return nil
+	}
+	t.Cleanup(func() { updateExec = previous })
+	var stderr bytes.Buffer
+	code, restarted := u.restartUpdated(&stderr)
+	if !restarted || code != 0 || stderr.Len() != 0 || started != selfExecutable() {
+		t.Fatalf("restart: %d %v %q %q", code, restarted, stderr.String(), started)
+	}
+}
+
 func TestAutoUpdateFailureKeepsRunning(t *testing.T) {
 	withClientVersion(t, "1.0.0")
 	source := &fakeUpdateSource{
