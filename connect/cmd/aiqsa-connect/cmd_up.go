@@ -13,7 +13,7 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/logx"
-	"github.com/insciqq/AIQSA/connect/internal/tmux"
+	"github.com/insciqq/AIQSA/connect/internal/state"
 )
 
 func init() {
@@ -64,15 +64,18 @@ func upStop(inv *invocation, serviceMode bool, paths *config.Paths, log *logx.Lo
 
 // upHooks run after the daemon is created and before it connects, with a
 // context that ends when `up` exits. Other commands register them from
-// init() (for example the local socket that agent hooks report to). A
-// failing hook is reported and `up` continues.
+// init(). A failing hook is reported and `up` continues.
 var upHooks []func(ctx context.Context, d *daemon.Daemon) error
+
+// upStateSink receives the daemon's connection state (daemon.Options.OnState);
+// a tray sets it before running `up`. Nil discards the state.
+var upStateSink state.Sink
 
 // updater is told the server's version after every hello; cmd_update.go
 // may replace it from init().
 var updater daemon.Updater = daemon.NoopUpdater{}
 
-// selfExecutable is the absolute path the tmux bell hook runs.
+// selfExecutable is the absolute path of this executable.
 func selfExecutable() string {
 	path, err := os.Executable()
 	if err != nil {
@@ -134,25 +137,14 @@ func runUp(inv *invocation) int {
 		return 1
 	}
 	defer log.Close()
-	manager, err := tmux.New(tmux.Options{Socket: paths.TmuxSocket, ConfigPath: paths.TmuxConfigFile()})
-	if err != nil {
-		fmt.Fprintf(inv.stderr, "aiqsa-connect up: %v\n", err)
-		return 1
-	}
-	if err := manager.WriteConfig(inv.ctx, tmux.ConfigOptions{
-		Shell: tmux.LoginShell(), DefaultTerminal: tmux.DetectTerminal(), Executable: selfExecutable(),
-	}); err != nil {
-		fmt.Fprintf(inv.stderr, "aiqsa-connect up: cannot write the tmux config: %v\n", err)
-		return 1
-	}
 	d, err := daemon.New(daemon.Options{
 		Credentials: creds,
 		Paths:       paths,
 		Version:     version,
-		Tmux:        manager,
 		Log:         log,
 		Updater:     updater,
 		Notices:     inv.stderr,
+		OnState:     upStateSink,
 	})
 	if err != nil {
 		fmt.Fprintf(inv.stderr, "aiqsa-connect up: %v\n", err)

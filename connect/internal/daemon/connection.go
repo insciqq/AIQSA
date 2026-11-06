@@ -1,108 +1,90 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/insciqq/AIQSA/connect/internal/api"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
 
 // connection is the state of one open device stream: the limits from its
-// hello, its event queue and sender, and its views. Views never outlive the
-// stream.
+// hello, its event queue and its sender. Ops outlive it: a reply finished
+// after the stream closed goes to the next stream, whose server ignores a
+// request it no longer waits for.
 type connection struct {
 	d      *Daemon
 	ctx    context.Context
 	cancel context.CancelCauseFunc
-	limits protocol.HelloLimits
+	limits protocol.HelloV2Limits
 	out    *outbox
 	wg     sync.WaitGroup
-
-	viewsMu sync.Mutex
-	views   map[string]*view
-
-	snapKick     chan struct{}
-	snapMu       sync.Mutex
-	lastSnapshot []byte
 }
 
-func newConnection(d *Daemon, ctx context.Context, cancel context.CancelCauseFunc, limits protocol.HelloLimits) *connection {
-	return &connection{
-		d:        d,
-		ctx:      ctx,
-		cancel:   cancel,
-		limits:   limits,
-		out:      newOutbox(d.timing.MaxPendingViewBytes),
-		views:    map[string]*view{},
-		snapKick: make(chan struct{}, 1),
-	}
+func newConnection(d *Daemon, ctx context.Context, cancel context.CancelCauseFunc, limits protocol.HelloV2Limits) *connection {
+	return &connection{d: d, ctx: ctx, cancel: cancel, limits: limits, out: newOutbox()}
 }
 
-// start sends the first snapshot and starts the sender and the poll.
+// start sends device_info and starts the sender.
 func (c *connection) start() {
-	c.sendSnapshot(true)
 	c.wg.Go(c.sendLoop)
-	c.wg.Go(c.snapshotLoop)
+	c.wg.Go(func() {
+		info := c.d.exec.DeviceInfo()
+		if c.ctx.Err() == nil {
+			c.push(info)
+		}
+	})
 }
 
-// stop ends the connection: its views are closed (their attach clients are
-// killed; the sessions keep running) and its goroutines finish.
+// stop ends the connection and its goroutines.
 func (c *connection) stop() {
 	c.cancel(nil)
-	c.closeAllViews()
 	c.wg.Wait()
 }
 
-// push validates and enqueues one event.
+// maxEventBytes is the largest one encoded event may be: a batch of it alone fits.
+func (c *connection) maxEventBytes() int {
+	return c.limits.MaxEventsBodyBytes - api.BatchOverhead
+}
+
+// push validates and enqueues one event. A reply too large for a batch is
+// replaced by a connect_device_error reply.
 func (c *connection) push(event protocol.DeviceEvent) {
 	if err := event.Validate(); err != nil {
 		c.d.log.Event("event_invalid", "type", event.EventType())
 		return
 	}
 	data, err := api.Marshal(event)
+	if err == nil && len(data) > c.maxEventBytes() {
+		if reply, ok := event.(*protocol.OpReplyEvent); ok {
+			c.d.log.Event("reply_too_large", "bytes", len(data))
+			data, err = api.Marshal(protocol.NewOpReplyError(reply.RequestID, protocol.CodeDeviceError))
+		}
+	}
 	if err != nil {
 		c.d.log.Event("event_invalid", "type", event.EventType())
 		return
 	}
-	c.out.push(&outItem{data: data})
+	c.out.push(data)
 }
-
-func (c *connection) pushViewClosed(viewID string, reason protocol.ViewClosedReason) {
-	c.push(&protocol.ViewClosedEvent{Type: protocol.EventViewClosed, ViewID: viewID, Reason: reason})
-}
-
-func (c *connection) maxBatchBytes() int { return c.limits.MaxEventsBodyBytes }
 
 // sendLoop is the single sender: one POST at a time, in queue order.
 func (c *connection) sendLoop() {
 	retry := c.d.timing.RetryMin
 	for {
-		batch := c.out.take(c.ctx, c.limits.MaxEventsPerPost, c.maxBatchBytes())
+		batch := c.out.take(c.ctx, c.limits.MaxEventsPerPost, c.limits.MaxEventsBodyBytes)
 		if batch == nil {
 			return
 		}
+		body := api.BatchBody(batch)
+		if len(body) > c.limits.MaxEventsBodyBytes {
+			c.d.log.Event("event_dropped", "reason", "too_large", "bytes", len(body))
+			continue
+		}
 		for {
-			batch = c.out.live(batch)
-			if len(batch) == 0 {
-				break
-			}
-			encoded := make([][]byte, len(batch))
-			for i, item := range batch {
-				encoded[i] = item.data
-			}
-			body := api.BatchBody(encoded)
-			if len(body) > c.maxBatchBytes() {
-				c.d.log.Event("event_dropped", "reason", "too_large", "bytes", len(body))
-				c.out.release(batch)
-				break
-			}
 			err := c.d.api.PostEvents(c.ctx, body)
 			if err == nil {
-				c.out.release(batch)
 				retry = c.d.timing.RetryMin
 				break
 			}
@@ -129,14 +111,13 @@ func (c *connection) sendLoop() {
 					wait = max(wait, apiErr.RetryAfter)
 				default:
 					// The server refused this batch; resending it cannot help.
-					c.out.release(batch)
-					batch = nil
-				}
-				if batch == nil {
-					break
+					wait = -1
 				}
 			} else {
 				c.d.log.Event("events_failed", "err", err, "events", len(batch))
+			}
+			if wait < 0 {
+				break
 			}
 			if api.Sleep(c.ctx, wait) != nil {
 				return
@@ -144,66 +125,4 @@ func (c *connection) sendLoop() {
 			retry = min(retry*2, c.d.timing.RetryMax)
 		}
 	}
-}
-
-// kickSnapshot asks the poll loop for a snapshot now.
-func (c *connection) kickSnapshot() {
-	select {
-	case c.snapKick <- struct{}{}:
-	default:
-	}
-}
-
-func (c *connection) snapshotLoop() {
-	ticker := time.NewTicker(c.d.timing.PollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-		case <-c.snapKick:
-		}
-		c.sendSnapshot(false)
-	}
-}
-
-// sendSnapshot lists the sessions and enqueues a snapshot when it changed
-// (always when force).
-func (c *connection) sendSnapshot(force bool) {
-	c.snapMu.Lock()
-	defer c.snapMu.Unlock()
-	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
-	defer cancel()
-	list, err := c.d.tmux.List(ctx)
-	if err != nil {
-		if c.ctx.Err() == nil {
-			c.d.log.Event("snapshot_failed", "err", err)
-		}
-		return
-	}
-	c.d.seedStatus(list)
-	sessions := SnapshotSessions(list, c.d.home, c.limits.MaxSnapshotSessions)
-	var data []byte
-	for {
-		event := &protocol.SessionsEvent{Type: protocol.EventSessions, Sessions: sessions}
-		if err := event.Validate(); err != nil {
-			c.d.log.Event("snapshot_invalid")
-			return
-		}
-		data, err = api.Marshal(event)
-		if err != nil {
-			return
-		}
-		if len(data)+api.BatchOverhead <= c.maxBatchBytes() || len(sessions) == 0 {
-			break
-		}
-		sessions = sessions[1:]
-	}
-	if !force && bytes.Equal(data, c.lastSnapshot) {
-		return
-	}
-	c.lastSnapshot = data
-	c.out.push(&outItem{data: data, sessions: true})
-	c.d.log.Event("snapshot", "sessions", len(sessions))
 }

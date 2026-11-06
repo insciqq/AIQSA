@@ -12,26 +12,14 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/hooks"
-	"github.com/insciqq/AIQSA/connect/internal/tmux"
 )
 
-const setupTestExe = "/opt/aiqsa/aiqsa-connect"
-
-// fakeSetup gives setup a temporary home, a tmux check, the agents found
-// and its own executable path; nothing reaches the real agents.
-func fakeSetup(t *testing.T, tmuxErr error, agents map[string]string) string {
+// fakeHome gives setup a temporary home; nothing reaches the real agents.
+func fakeHome(t *testing.T) string {
 	t.Helper()
 	isolate(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	check, find, exe := setupCheckTmux, setupFindAgent, setupExecutable
-	t.Cleanup(func() { setupCheckTmux, setupFindAgent, setupExecutable = check, find, exe })
-	setupCheckTmux = func() error { return tmuxErr }
-	setupFindAgent = func(_ context.Context, name string) (string, bool) {
-		path, ok := agents[name]
-		return path, ok
-	}
-	setupExecutable = func() string { return setupTestExe }
 	return home
 }
 
@@ -41,84 +29,104 @@ func runSetupArgs(stdin string, args ...string) (int, string, string) {
 	return code, stdout.String(), stderr.String()
 }
 
-func TestSetupAsksThenAddsHooksForTheAgentsFound(t *testing.T) {
-	home := fakeSetup(t, nil, map[string]string{"claude": "/home/u/.local/bin/claude", "codex": ""})
-	claudeFile := filepath.Join(home, ".claude", "settings.json")
-	codexFile := filepath.Join(home, ".codex", "hooks.json")
-	os.MkdirAll(filepath.Dir(claudeFile), 0o700)
-	original := "{\n  \"model\": \"opus\"\n}\n"
-	os.WriteFile(claudeFile, []byte(original), 0o600)
+// The hooks an earlier, terminal version added.
+const (
+	oldClaudeSettings = `{
+  "model": "opus",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/aiqsa/aiqsa-connect hook claude",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+	oldCodexHooks = `{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/aiqsa/aiqsa-connect hook codex",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+)
 
-	code, stdout, _ := runSetupArgs("n\n")
-	if code != 1 || !strings.Contains(stdout, "Nothing was changed.") || !strings.Contains(stdout, claudeFile+" (a copy is kept at "+claudeFile+hooks.BackupSuffix+")") ||
-		!strings.Contains(stdout, codexFile+" (new file)") || !strings.Contains(stdout, "[y/N]") {
-		t.Fatalf("declined: %d %q", code, stdout)
-	}
-	if data, _ := os.ReadFile(claudeFile); string(data) != original {
-		t.Fatal("declined setup wrote the file")
-	}
-	if _, err := os.Stat(codexFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("declined setup created the Codex file")
-	}
-
-	code, stdout, stderr := runSetupArgs("y\n")
-	if code != 0 || !strings.Contains(stdout, "Hooks added.") {
-		t.Fatalf("accepted: %d %q %q", code, stdout, stderr)
-	}
-	for _, want := range []string{
-		"tmux: ok", "Claude Code: /home/u/.local/bin/claude", "Codex: found",
-		"Sign in to Claude Code and Codex here, at this computer",
-		"trust the AIQSA Connect hook in /hooks",
-		"AIQSA Settings → Connected apps and sign in to MCP there",
-		"aiqsa-connect service install (or run aiqsa-connect up)",
-	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("output lacks %q:\n%s", want, stdout)
+func writeHookFiles(t *testing.T, home string) (claudeFile, codexFile string) {
+	t.Helper()
+	claudeFile = hooks.DefaultFile(home, hooks.AgentClaude)
+	codexFile = hooks.DefaultFile(home, hooks.AgentCodex)
+	for path, content := range map[string]string{claudeFile: oldClaudeSettings, codexFile: oldCodexHooks} {
+		os.MkdirAll(filepath.Dir(path), 0o700)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
-	claude, _ := os.ReadFile(claudeFile)
-	codex, _ := os.ReadFile(codexFile)
-	if !strings.Contains(string(claude), setupTestExe+" hook claude") || !strings.Contains(string(codex), setupTestExe+" hook codex") {
-		t.Fatalf("hooks missing:\n%s\n%s", claude, codex)
+	return claudeFile, codexFile
+}
+
+func TestSetupWithoutRemoveHasNothingToDo(t *testing.T) {
+	home := fakeHome(t)
+	claudeFile, _ := writeHookFiles(t, home)
+	code, stdout, _ := runSetupArgs("")
+	if code != 0 || !strings.Contains(stdout, "nothing to set up") || !strings.Contains(stdout, "setup --remove") {
+		t.Fatalf("setup: %d %q", code, stdout)
+	}
+	if data, _ := os.ReadFile(claudeFile); string(data) != oldClaudeSettings {
+		t.Fatal("plain setup changed a hook file")
+	}
+	if code, _, _ := runSetupArgs("", "extra"); code != 2 {
+		t.Fatalf("extra argument: %d", code)
+	}
+}
+
+func TestSetupRemoveAsksThenRemovesTheOldHooks(t *testing.T) {
+	home := fakeHome(t)
+	claudeFile, codexFile := writeHookFiles(t, home)
+
+	code, stdout, _ := runSetupArgs("n\n", "--remove")
+	if code != 1 || !strings.Contains(stdout, "Nothing was changed.") || !strings.Contains(stdout, "[y/N]") ||
+		!strings.Contains(stdout, claudeFile+" (a copy is kept at "+claudeFile+hooks.BackupSuffix+")") ||
+		!strings.Contains(stdout, codexFile+" (it holds only these hooks, so it is deleted)") {
+		t.Fatalf("declined: %d %q", code, stdout)
+	}
+	if data, _ := os.ReadFile(claudeFile); string(data) != oldClaudeSettings {
+		t.Fatal("declined removal wrote the file")
 	}
 
-	// Again: nothing to do, no question asked.
-	if code, stdout, _ := runSetupArgs(""); code != 0 || !strings.Contains(stdout, "already set up") || strings.Contains(stdout, "[y/N]") {
-		t.Fatalf("repeat: %d %q", code, stdout)
+	code, stdout, stderr := runSetupArgs("y\n", "--remove")
+	if code != 0 || !strings.Contains(stdout, "Hooks removed.") {
+		t.Fatalf("accepted: %d %q %q", code, stdout, stderr)
 	}
-
-	if code, stdout, _ := runSetupArgs("", "--remove", "--yes"); code != 0 || !strings.Contains(stdout, "Hooks removed.") {
-		t.Fatalf("remove: %d %q", code, stdout)
-	}
-	if data, _ := os.ReadFile(claudeFile); string(data) != original {
-		t.Fatalf("remove left %q", data)
+	if data, _ := os.ReadFile(claudeFile); string(data) != "{\n  \"model\": \"opus\"\n}\n" {
+		t.Fatalf("claude file: %q", data)
 	}
 	if _, err := os.Stat(codexFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("remove left the file setup created")
+		t.Fatal("the file holding only the old hooks stayed")
 	}
 	if code, stdout, _ := runSetupArgs("", "--remove"); code != 0 || !strings.Contains(stdout, "No AIQSA Connect hooks") {
 		t.Fatalf("repeat remove: %d %q", code, stdout)
 	}
 }
 
-func TestSetupNamesTheOriginAndSkipsMissingAgents(t *testing.T) {
-	home := fakeSetup(t, nil, map[string]string{"claude": "/usr/bin/claude"})
-	paths := isolate(t)
-	t.Setenv("HOME", home)
-	writeCredentials(t, paths, "https://ai.example.com")
-	code, stdout, _ := runSetupArgs("", "--yes")
-	if code != 0 || !strings.Contains(stdout, "Codex: not found") || strings.Contains(stdout, "/hooks") ||
-		!strings.Contains(stdout, "https://ai.example.com/?settings=connected_apps") || !strings.Contains(stdout, "Sign in to Claude Code here") {
-		t.Fatalf("got %d %q", code, stdout)
-	}
-	if _, err := os.Stat(filepath.Join(home, ".codex")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("setup touched the Codex directory without Codex")
-	}
-}
-
 // A second setup while the first waits for its answer changes nothing.
 func TestSetupRunsOneAtATime(t *testing.T) {
-	home := fakeSetup(t, nil, map[string]string{"claude": "/usr/bin/claude"})
+	home := fakeHome(t)
+	claudeFile, _ := writeHookFiles(t, home)
 	paths, err := config.ResolvePaths()
 	if err != nil {
 		t.Fatal(err)
@@ -128,41 +136,30 @@ func TestSetupRunsOneAtATime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, _, stderr := runSetupArgs("", "--yes")
+	code, _, stderr := runSetupArgs("", "--remove", "--yes")
 	if code != 1 || !strings.Contains(stderr, "another aiqsa-connect setup is running") {
 		t.Fatalf("got %d %q", code, stderr)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".claude")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a second setup wrote the hooks")
+	if data, _ := os.ReadFile(claudeFile); string(data) != oldClaudeSettings {
+		t.Fatal("a second setup changed the hooks")
 	}
 	release()
-	if code, stdout, stderr := runSetupArgs("", "--yes"); code != 0 || !strings.Contains(stdout, "Hooks added.") {
+	if code, stdout, stderr := runSetupArgs("", "--remove", "--yes"); code != 0 || !strings.Contains(stdout, "Hooks removed.") {
 		t.Fatalf("after the first: %d %q %q", code, stdout, stderr)
 	}
 }
 
-func TestSetupRefusesWithoutTmuxOrWithAnUnreadableFile(t *testing.T) {
-	fakeSetup(t, tmux.ErrNotInstalled, map[string]string{"claude": "/usr/bin/claude"})
-	if code, _, stderr := runSetupArgs("", "--yes"); code != 1 || !strings.Contains(stderr, "brew install tmux") || !strings.Contains(stderr, "sudo apt install tmux") {
-		t.Fatalf("no tmux: %d %q", code, stderr)
-	}
-
-	home := fakeSetup(t, nil, map[string]string{"claude": "/usr/bin/claude", "codex": "/usr/bin/codex"})
-	claudeFile := filepath.Join(home, ".claude", "settings.json")
-	os.MkdirAll(filepath.Dir(claudeFile), 0o700)
+func TestSetupRemoveRefusesAnUnreadableFile(t *testing.T) {
+	home := fakeHome(t)
+	_, codexFile := writeHookFiles(t, home)
+	claudeFile := hooks.DefaultFile(home, hooks.AgentClaude)
 	os.WriteFile(claudeFile, []byte(`{"model": `), 0o600)
-	code, _, stderr := runSetupArgs("", "--yes")
+	code, _, stderr := runSetupArgs("", "--remove", "--yes")
 	if code != 1 || !strings.Contains(stderr, "is not a valid JSON object; nothing was changed") {
 		t.Fatalf("broken file: %d %q", code, stderr)
 	}
 	// Nothing at all was written, not even the other agent's file.
-	if _, err := os.Stat(filepath.Join(home, ".codex")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("Codex file written although setup refused")
-	}
-	if code, _, stderr := runSetupArgs("", "--remove", "--yes"); code != 1 || !strings.Contains(stderr, "not a valid JSON object") {
-		t.Fatalf("broken file remove: %d %q", code, stderr)
-	}
-	if code, _, _ := runSetupArgs("", "extra"); code != 2 {
-		t.Fatalf("extra argument: %d", code)
+	if data, _ := os.ReadFile(codexFile); string(data) != oldCodexHooks {
+		t.Fatal("Codex file changed although setup refused")
 	}
 }
