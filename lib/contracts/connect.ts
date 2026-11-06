@@ -177,6 +177,7 @@ export const CONNECT_OP_ERROR_CODES = [
   "computer_job_not_found",
   "computer_limit",
   "computer_pattern_invalid",
+  "computer_text_unencodable",
   "connect_unsupported",
   "connect_device_error"
 ] as const;

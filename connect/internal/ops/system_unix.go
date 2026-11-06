@@ -64,6 +64,11 @@ func (g groupTree) Terminate() { syscall.Kill(-int(g), syscall.SIGTERM) }
 func (g groupTree) Kill()      { syscall.Kill(-int(g), syscall.SIGKILL) }
 func (g groupTree) Release()   {}
 
+// matchFile gives a replacement file the mode bits of the file it replaces.
+func matchFile(tmp *os.File, info fs.FileInfo) error {
+	return tmp.Chmod(info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky))
+}
+
 func isNotDirError(err error) bool { return errors.Is(err, syscall.ENOTDIR) }
 func isIsDirError(err error) bool  { return errors.Is(err, syscall.EISDIR) }
 

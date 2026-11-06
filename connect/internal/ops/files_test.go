@@ -2,6 +2,7 @@ package ops
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,91 @@ func TestWriteCreatesFoldersAndKeepsCRLFAndBOM(t *testing.T) {
 	wantCode(t, e, &protocol.WriteArgs{Path: "a", Cwd: home, Content: "x"}, protocol.CodeComputerIsADirectory)
 }
 
+func utf16Bytes(bom []byte, bigEndian bool, text string) []byte {
+	out := append([]byte{}, bom...)
+	for _, r := range text {
+		if bigEndian {
+			out = append(out, byte(r>>8), byte(r))
+		} else {
+			out = append(out, byte(r), byte(r>>8))
+		}
+	}
+	return out
+}
+
+// Replacing a file keeps its encoding as edit does; text its code page
+// cannot hold writes nothing.
+func TestWriteKeepsTheFilesEncoding(t *testing.T) {
+	e, home := newTestExecutor(t, testSystem{codePage: cp1251{}})
+	ansiOld, _ := cp1251{}.Encode("Договор\r\nсумма\r\n")
+	ansiNew, _ := cp1251{}.Encode("Итог\r\nвсего\r\n")
+	for name, tc := range map[string]struct {
+		old, want []byte
+		content   string
+	}{
+		"utf-16le": {utf16Bytes(bomUTF16LE, false, "Привет\r\n"), utf16Bytes(bomUTF16LE, false, "Пока\r\nвсем\r\n"), "Пока\nвсем\n"},
+		"utf-16be": {utf16Bytes(bomUTF16BE, true, "Hi\n"), utf16Bytes(bomUTF16BE, true, "Bye ∑\n"), "Bye ∑\n"},
+		// A leading BOM in the content is not written twice.
+		"utf-8 bom": {append([]byte{0xEF, 0xBB, 0xBF}, "a\n"...), append([]byte{0xEF, 0xBB, 0xBF}, "b\n"...), "\ufeffb\n"},
+		"ansi":      {ansiOld, ansiNew, "Итог\nвсего\n"},
+		"utf-8":     {[]byte("old\n"), []byte("новое\n"), "новое\n"},
+		// A file that is not text becomes UTF-8.
+		"binary": {[]byte("ELF\x00\x01"), []byte("text\n"), "text\n"},
+	} {
+		path := filepath.Join(home, name)
+		writeTestFile(t, path, tc.old)
+		w := mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: tc.content})
+		if got := readTestFile(t, path); !bytes.Equal(got, tc.want) || w.Created || w.Bytes != int64(len(tc.want)) {
+			t.Errorf("%s: % x (%+v)", name, got, w)
+		}
+	}
+	ansi := filepath.Join(home, "ansi")
+	wantCode(t, e, &protocol.WriteArgs{Path: ansi, Cwd: home, Content: "Договор №1\n"}, protocol.CodeComputerTextUnencodable)
+	if got := readTestFile(t, ansi); !bytes.Equal(got, ansiNew) {
+		t.Fatal("a refused write wrote the file")
+	}
+}
+
+// write and edit replace a file through a rename: its mode stays, a link
+// still points at it, and nothing is left beside it.
+func TestWriteAndEditReplaceAtomically(t *testing.T) {
+	e, home := newTestExecutor(t, testSystem{})
+	dir := filepath.Join(home, "dir")
+	path := filepath.Join(dir, "script.sh")
+	writeTestFile(t, path, []byte("echo old\n"))
+	if err := os.Chmod(path, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "link.sh")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	// A process holding the old file keeps reading the old content.
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: link, Cwd: home, Content: "echo new\n"})
+	mustRun[*protocol.EditResult](t, e, &protocol.EditArgs{Path: link, Cwd: home, OldString: "new", NewString: "newer"})
+	if got := readTestFile(t, path); string(got) != "echo newer\n" {
+		t.Fatalf("content: %q", got)
+	}
+	if old, _ := io.ReadAll(held); string(old) != "echo old\n" {
+		t.Fatalf("the old file was written in place: %q", old)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced: %v %v", info.Mode(), err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o750 {
+		t.Fatalf("mode: %v", info.Mode())
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("left files behind: %v", entries)
+	}
+}
+
 func TestEditKeepsEncodingBOMAndLineEndings(t *testing.T) {
 	e, home := newTestExecutor(t, testSystem{codePage: cp1251{}})
 	crlf := filepath.Join(home, "crlf.txt")
@@ -146,7 +232,7 @@ func TestEditKeepsEncodingBOMAndLineEndings(t *testing.T) {
 	if got := readTestFile(t, ansi); !bytes.Equal(got, wantBytes) {
 		t.Fatalf("ansi: % x", got)
 	}
-	wantCode(t, e, &protocol.EditArgs{Path: ansi, Cwd: home, OldString: "итог", NewString: "∑"}, protocol.CodeDeviceError)
+	wantCode(t, e, &protocol.EditArgs{Path: ansi, Cwd: home, OldString: "итог", NewString: "∑"}, protocol.CodeComputerTextUnencodable)
 	if got := readTestFile(t, ansi); !bytes.Equal(got, wantBytes) {
 		t.Fatal("a refused edit wrote the file")
 	}

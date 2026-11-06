@@ -96,6 +96,10 @@ func Target() (protocol.OS, protocol.Arch, error) {
 	return targetFor(runtime.GOOS, runtime.GOARCH)
 }
 
+// currentTarget is the target Install looks for; tests switch it to
+// another system's.
+var currentTarget = Target
+
 func targetFor(goosName, goarch string) (protocol.OS, protocol.Arch, error) {
 	goos, arch := protocol.OS(goosName), protocol.Arch(goarch)
 	for _, known := range protocol.OSValues {
@@ -116,6 +120,9 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set(protocol.ClientVersionHeader, c.Version)
+	// Without it the server answers as to a protocol 1 client, whose
+	// manifest lists no Windows binary.
+	req.Header.Set(protocol.ProtocolHeader, strconv.Itoa(protocol.ProtocolVersion))
 	req.Header.Set("User-Agent", "aiqsa-connect/"+c.Version)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -197,7 +204,7 @@ type Result struct {
 func (c *Client) Install(ctx context.Context, executable, want string) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, DownloadTimeout)
 	defer cancel()
-	osName, arch, err := Target()
+	osName, arch, err := currentTarget()
 	if err != nil {
 		return Result{}, err
 	}
