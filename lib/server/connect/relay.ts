@@ -355,8 +355,10 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
      * settles at once; a reply that arrives later is ignored.
      */
     callOp(input: ConnectRelayOpCall): Promise<ComputerOpOutcome> | null {
-      const device = ownedDevice(input.userId, input.deviceId);
-      if (!device) return null;
+      const owned = ownedDevice(input.userId, input.deviceId);
+      if (!owned) return null;
+      // Narrowed once for the closures below, which TypeScript does not narrow.
+      const device: OnlineDevice = owned;
       if (input.signal.aborted) return Promise.resolve(failure("computer_cancelled", false));
       if (device.pending.size >= CONNECT_MAX_CONCURRENT_OPS) {
         logConnect({ action: "skip", code: "computer_limit", outcome: "blocked", stage: "dispatch" });

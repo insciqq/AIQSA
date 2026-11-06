@@ -547,7 +547,8 @@ describe("AIQSA Connect device API", () => {
     const context = setup();
     const { token } = context.store.seedDevice("alice");
     const lookup = vi.spyOn(context.store.repository, "findStreamDevice");
-    for (const headers of [{}, { [CONNECT_PROTOCOL_HEADER]: "1" }, { [CONNECT_PROTOCOL_HEADER]: "two" }]) {
+    const headerSets: Record<string, string>[] = [{}, { [CONNECT_PROTOCOL_HEADER]: "1" }, { [CONNECT_PROTOCOL_HEADER]: "two" }];
+    for (const headers of headerSets) {
       const response = await context.device.stream(deviceRequest("/connect-api/v1/stream", { headers, legacy: true, token }));
       await expect(json(response)).resolves.toEqual({ body: { code: "connect_client_outdated" }, status: 426 });
     }
