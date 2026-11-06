@@ -21,13 +21,16 @@ import {
  * without a computer and leaves the chat's stored choice alone, `null` runs
  * it without one and clears that choice, and a binding is checked here and
  * frozen with the run, which then offers the `computer_*` tools whether the
- * computer is online or not. A regenerate repeats the run it replaces with
- * the binding that run was admitted with, whatever its request says, since
- * accepted runs keep their bindings. Only the owner's own interactive web
- * messages in personal and temporary chats take one: Assistant chats,
- * Telegram, scheduled tasks (schedules, webhooks and monitoring checks) and
- * sub-agent wake-up turns refuse a binding with one stable code, and a chat
- * whose stored choice they cannot use tells the model so.
+ * computer is online or not. A regenerate repeats the run it replaces, and
+ * the turn after an MCP Allow continues the run the approval gated, each
+ * with the binding that run was admitted with, whatever its request says,
+ * since accepted runs keep their bindings; neither changes the chat's
+ * choice. A run without tools takes no computer (`runPreparation.ts`). Only
+ * the owner's own interactive web messages in personal and temporary chats
+ * take one: Assistant chats, Telegram, scheduled tasks (schedules, webhooks
+ * and monitoring checks) and sub-agent wake-up turns refuse a binding with
+ * one stable code, and a chat whose stored choice they cannot use tells the
+ * model so.
  */
 
 export type ComputerAdmissionDeps = Readonly<{
@@ -45,7 +48,7 @@ export type ComputerAdmissionInput = Readonly<{
   assistantChat: boolean;
   /** The request's `COMPUTER_SEND_FIELD`, raw; ignored where `frozen` decides. */
   field: unknown;
-  /** A regenerate of an admitted run: that run's binding, null for none. Undefined for a new message. */
+  /** A regenerate or the turn after an Allow: the binding of the run it repeats or continues, null for none. Undefined for a new message. */
   frozen?: FrozenComputerBinding | null;
   origin: ComputerRunOrigin;
   /** The chat's stored choice, which a message that cannot use it names in its turn note. */
@@ -78,7 +81,7 @@ export async function admitComputer(deps: ComputerAdmissionDeps | undefined, inp
   const interactive = input.origin === "interactive";
   if (!choice) {
     return { binding: null,
-      // Only the user's own message changes the chat's choice; a regenerate repeats a run and changes nothing.
+      // Only the user's own message changes the chat's choice; a regenerate or an Allow's turn keeps a run's and changes nothing.
       ...(choice === null && interactive && !repeat ? { chatChoice: null } : {}),
       guidance: input.origin !== "interactive" && input.stored ? computerUnavailableNote(input.origin) : null,
       ok: true };

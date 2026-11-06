@@ -2556,6 +2556,38 @@ describe("run preparation", () => {
     const telegram = preparedFrom(await prepareRun(deps, { ...sendInput(body, { computer: chosen }), origin: "telegram" }));
     expect(telegram.normalizedRequest.computer).toBeUndefined();
     expect(telegram.normalizedRequest.prompt.turnGuidance).toContainEqual(expect.stringContaining("not available from Telegram"));
+    // The turn after an Allow continues the gated run's computer, whatever the body says, and changes no choice.
+    const approvalTurn = (request: Record<string, unknown>, computer: typeof sent.normalizedRequest.computer | null): RunPreparationInput => {
+      const input = sendInput(request);
+      return { ...input, serverAuthoredInput: true,
+        source: { ...input.source as SendRunPreparationSource, approvalContinuation: { computer: computer ?? null } } };
+    };
+    for (const request of [{ ...body, computer: null }, body, { ...body, computer: { cwd: "~", deviceId: "9e8d7c6b-5a49-4382-a1b2-c3d4e5f60718" } }]) {
+      const continued = preparedFrom(await prepareRun(deps, approvalTurn(request, sent.normalizedRequest.computer)));
+      expect(continued.normalizedRequest.computer).toMatchObject(chosen);
+      expect(continued.chatComputer).toBeUndefined();
+    }
+    const continuedWithout = preparedFrom(await prepareRun(deps, approvalTurn({ ...body, computer: chosen }, null)));
+    expect(continuedWithout.normalizedRequest.computer).toBeUndefined();
+    expect(continuedWithout.chatComputer).toBeUndefined();
+    expect(continuedWithout.providerRequest.tools ?? []).not.toContainEqual(expect.objectContaining({ name: "computer_shell" }));
+  });
+
+  it("takes no computer and no line about one in a run without tools, and leaves the chat's choice alone", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const device = "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11";
+    const describe = vi.fn(async () => ({ arch: "amd64" as const, name: "DESKTOP-7Q2", online: true, os: "windows" as const }));
+    const deps = { ...harness.deps, computerAdmission: { describe, enabled: async () => false } };
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai", tools: "none" });
+    const chosen = { cwd: "C:\\Users\\ivan", deviceId: device };
+    // Not refused either, though AIQSA Connect is off here: the run never offers the computer.
+    const prepared = preparedFrom(await prepareRun(deps, sendInput({ ...body, computer: chosen }, { computer: chosen })));
+    expect(prepared.normalizedRequest.toolMode).toBe("none");
+    expect(prepared.normalizedRequest.computer).toBeUndefined();
+    expect(prepared.chatComputer).toBeUndefined();
+    expect(prepared.normalizedRequest.prompt.turnGuidance ?? []).not.toContainEqual(expect.stringContaining("DESKTOP-7Q2"));
+    expect(prepared.providerRequest.tools ?? []).not.toContainEqual(expect.objectContaining({ name: "computer_shell" }));
+    expect(describe).not.toHaveBeenCalled();
   });
 
   it("freezes an exact artifact edit target and revalidates it for regeneration", async () => {

@@ -11,6 +11,7 @@ import {
   computerEngineTools,
   computerToolCallMs,
   computerToolDefinitions,
+  COMPUTER_NO_TOOL_TIME,
   executeComputerTool,
   prepareComputerCall
 } from "./computerTools";
@@ -49,6 +50,9 @@ describe("computer tool definitions", () => {
     expect(shell("windows")).toContain("PowerShell");
     expect(shell("darwin")).toContain("login shell on their macOS computer");
     expect(shell("linux")).toContain("login shell on their Linux computer");
+    // A login shell reads no interactive rc file, so the description never promises the terminal's PATH.
+    expect(shell("darwin")).toContain("not interactive files such as ~/.zshrc");
+    expect(shell("linux")).not.toContain("as in their terminal");
     expect(JSON.stringify(computerToolDefinitions("windows"))).toBe(JSON.stringify(computerToolDefinitions("windows")));
     const edit = computerToolDefinitions("linux").find((tool) => tool.name === "computer_edit")!.description;
     expect(edit).toContain("Read the file with computer_read in this conversation first");
@@ -86,6 +90,18 @@ describe("computer call preparation", () => {
     expect(wait).toMatchObject({ args: { waitSeconds: 7 }, timeoutMs: 12_000 });
     expect(prepareComputerCall("computer_read", { limit: null, offset: null, path: "a" }, "~", -5)).toMatchObject({
       timeoutMs: COMPUTER_TOOL_LIMITS.minCallMs });
+  });
+
+  it("sends no command the turn's tool time would stop at once", () => {
+    const command = { background: false, command: "build", timeoutSeconds: 600 };
+    const floorMs = COMPUTER_TOOL_LIMITS.shellReplyMs + COMPUTER_TOOL_LIMITS.minShellSeconds * 1_000;
+    expect(prepareComputerCall("computer_shell", command, "~", floorMs)).toMatchObject({
+      args: { timeoutSeconds: COMPUTER_TOOL_LIMITS.minShellSeconds }, timeoutMs: floorMs });
+    expect(prepareComputerCall("computer_shell", command, "~", floorMs - 1)).toBe(COMPUTER_NO_TOOL_TIME);
+    expect(prepareComputerCall("computer_shell", command, "~", 0)).toBe(COMPUTER_NO_TOOL_TIME);
+    // A short command that fits as asked runs as asked.
+    expect(prepareComputerCall("computer_shell", { ...command, timeoutSeconds: 2 }, "~", floorMs - 1)).toMatchObject({
+      args: { timeoutSeconds: 2 } });
   });
 });
 
@@ -126,6 +142,20 @@ describe("a computer call", () => {
     const invalid = await executeComputerTool(context(ops), call("computer_write", { path: "x.txt" }), signal());
     expect(invalid).toMatchObject({ status: "error", content: [{ value: { error: "tool_arguments_invalid" } }] });
     expect(ops.calls).toHaveLength(2);
+    // The device refused text the file's encoding cannot hold: nothing was written, so the outcome is known.
+    ops.enqueue({ code: "computer_text_unencodable" as never, ok: false, sent: true }, "write");
+    const unencodable = await executeComputerTool(context(ops), call("computer_write", { content: "€", path: "legacy.txt" }), signal());
+    expect(unencodable).toMatchObject({ status: "error", content: [{ value: { error: "computer_text_unencodable",
+      message: expect.stringContaining("cannot be written in this file's encoding") } }] });
+  });
+
+  it("refuses a command with too little tool time left before sending it, as an ordinary error", async () => {
+    const ops = createFakeComputerOps();
+    const result = await executeComputerTool(context(ops, () => 12_000), call("computer_shell",
+      { background: null, command: "npm test", timeoutSeconds: null }), signal());
+    expect(result).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "tool_time_exhausted",
+      message: expect.stringContaining("nothing was sent") } }] });
+    expect(ops.calls).toEqual([]);
   });
 
   it("leaves a call with effects that may have run to the batch as an unknown outcome, and a read to its retries", async () => {
@@ -148,12 +178,12 @@ describe("a computer call", () => {
     vi.useFakeTimers();
     const ops = createFakeComputerOps();
     ops.enqueue(() => new Promise(() => undefined), "shell");
-    const pending = executeComputerTool(context(ops, () => 2_000), call("computer_shell",
+    const pending = executeComputerTool(context(ops, () => 21_000), call("computer_shell",
       { background: null, command: "sleep 100", timeoutSeconds: null }), signal());
     const settled = expect(pending).rejects.toMatchObject({ code: "computer_timeout", timedOut: true });
-    await vi.advanceTimersByTimeAsync(2_000 + COMPUTER_TOOL_LIMITS.graceMs);
+    await vi.advanceTimersByTimeAsync(21_000 + COMPUTER_TOOL_LIMITS.graceMs);
     await settled;
-    expect(ops.calls[0]).toMatchObject({ aborted: true, timeoutMs: 2_000 });
+    expect(ops.calls[0]).toMatchObject({ aborted: true, args: { timeoutSeconds: 6 }, timeoutMs: 21_000 });
   });
 
   it("ends with the run's own abort when Stop or the turn's deadline stops it", async () => {

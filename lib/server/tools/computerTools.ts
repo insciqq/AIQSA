@@ -60,6 +60,11 @@ export const COMPUTER_TOOL_LIMITS = Object.freeze({
   graceMs: 5_000,
   /** The least time a call that may still start is given. */
   minCallMs: 1_000,
+  /**
+   * The least a command shortened to the turn's tool time may run: below it the call is refused before anything is sent,
+   * since a command stopped at once would only leave an unknown effect.
+   */
+  minShellSeconds: 5,
   /** Room `computer_job_output` leaves after its wait for the reply. */
   jobReplyMs: 5_000
 });
@@ -100,7 +105,9 @@ function shellDescription(os: ConnectOs): string {
       "when it is installed, otherwise Windows PowerShell 5.1. Write PowerShell, not cmd or bash (Get-ChildItem, Get-Content, " +
       "Select-String, Copy-Item, $env:NAME); quote paths with spaces; \\ and / both work in paths."
     : `Runs a command in the user's login shell on their ${computerOsLabel(os)} computer, with the user's own permissions ` +
-      "($SHELL -l -c, so PATH is as in their terminal).";
+      "($SHELL -l -c). A login shell reads the login profile but not interactive files such as ~/.zshrc or ~/.bashrc, where " +
+      "nvm, pyenv or conda are often set up: when a tool the user has is not found, use its absolute path or source that file " +
+      "in the same command.";
   return `${shell}
 Every command starts in the chat's working folder (named in the turn context); cd does not carry over to the next call, so chain commands in one call or use absolute paths. stdin is closed and nothing can answer a prompt: pass non-interactive flags (for example -y) and never open an editor or a pager (PAGER=cat, GIT_PAGER=cat, NO_COLOR=1 and TERM=dumb are set).
 timeoutSeconds: how long the command may run, 1-${CONNECT_MAX_SHELL_TIMEOUT_SECONDS} (null: ${CONNECT_DEFAULT_SHELL_TIMEOUT_SECONDS}); then it is stopped with its child processes. background: true starts it as a background job and returns its jobId at once; use it for servers, watchers and work longer than ${CONNECT_MAX_SHELL_TIMEOUT_SECONDS / 60} minutes, read the job with computer_job_output and stop it with computer_job_stop. Every job is stopped when this answer ends.
@@ -178,6 +185,9 @@ export function computerToolDefinitions(os: ConnectOs): readonly RunTool[] {
 
 type PreparedCall = Readonly<{ op: ConnectOp; args: ConnectOpArgs; timeoutMs: number }>;
 
+/** What `prepareComputerCall` answers for a command the turn's tool time leaves too little room to run. */
+export const COMPUTER_NO_TOOL_TIME = Object.freeze({ noToolTime: true as const });
+
 const absent = (value: unknown) => value === undefined || value === null;
 const text = (value: unknown) => typeof value === "string";
 const integer = (value: unknown) => Number.isSafeInteger(value);
@@ -216,10 +226,11 @@ function modelArgs(name: ComputerToolName, args: Record<string, unknown>, cwd: s
 
 /**
  * The call as the device protocol takes it, with its timeout: a command's own and its reply's, otherwise a minute, never
- * past the turn's tool time; a command and a wait shorten to fit. A string names the argument that is missing or invalid.
+ * past the turn's tool time; a command and a wait shorten to fit, and a command left less than `minShellSeconds` is not
+ * sent (`COMPUTER_NO_TOOL_TIME`). A string names the argument that is missing or invalid.
  */
 export function prepareComputerCall(name: ComputerToolName, args: Record<string, unknown>, cwd: string,
-  timeLeftMs?: number): PreparedCall | string {
+  timeLeftMs?: number): PreparedCall | string | typeof COMPUTER_NO_TOOL_TIME {
   const values = modelArgs(name, args, cwd);
   if (typeof values === "string") return values;
   const op = COMPUTER_TOOL_OPS[name];
@@ -229,7 +240,9 @@ export function prepareComputerCall(name: ComputerToolName, args: Record<string,
   const left = timeLeftMs !== undefined && Number.isFinite(timeLeftMs) ? timeLeftMs : Infinity;
   const timeoutMs = Math.max(COMPUTER_TOOL_LIMITS.minCallMs, Math.min(own, left, CONNECT_MAX_OP_DEADLINE_MS));
   if (name === "computer_shell" && timeoutMs < own) {
-    values.timeoutSeconds = Math.max(1, Math.floor((timeoutMs - COMPUTER_TOOL_LIMITS.shellReplyMs) / 1_000));
+    const usableSeconds = Math.floor((timeoutMs - COMPUTER_TOOL_LIMITS.shellReplyMs) / 1_000);
+    if (usableSeconds < COMPUTER_TOOL_LIMITS.minShellSeconds) return COMPUTER_NO_TOOL_TIME;
+    values.timeoutSeconds = usableSeconds;
   }
   if (name === "computer_job_output") {
     values.waitSeconds = Math.min(Number(values.waitSeconds),
@@ -259,6 +272,8 @@ const FAILURE_TEXT: Readonly<Record<ComputerFailureCode, string>> = {
   computer_path_not_found: "The path does not exist.",
   computer_pattern_invalid: "The pattern is not a valid RE2 regular expression or glob.",
   computer_permission_denied: "The user's account on the computer has no permission for this path.",
+  computer_text_unencodable: "The text cannot be written in this file's encoding: keep to characters the encoding has, or ask " +
+    "the user before converting the file to UTF-8.",
   computer_timeout: "The operation reached its time limit and was stopped.",
   connect_device_disconnected: "The computer disconnected before it answered.",
   connect_device_error: "The computer could not complete the operation.",
@@ -288,7 +303,7 @@ export function computerUnknownOutcomeText(code: ComputerFailureCode): string {
 const DEFINITE_CODES: ReadonlySet<ComputerFailureCode> = new Set<ComputerFailureCode>([
   "computer_edit_ambiguous", "computer_edit_no_match", "computer_file_binary", "computer_file_too_large", "computer_is_a_directory",
   "computer_job_not_found", "computer_limit", "computer_not_a_directory", "computer_path_not_found", "computer_pattern_invalid",
-  "computer_permission_denied", "connect_unsupported"
+  "computer_permission_denied", "computer_text_unencodable", "connect_unsupported"
 ]);
 
 /** Codes after which a reading call that may have reached the device is tried again: the operation never ended on its own terms. */
@@ -431,6 +446,10 @@ export async function executeComputerTool(context: ComputerToolContext, call: Mo
   if (typeof prepared === "string") {
     return errorResult(call, "tool_arguments_invalid", `The argument ${JSON.stringify(prepared)} is missing or invalid, so nothing ` +
       "was sent. Check it against the tool's description and call again.");
+  }
+  if ("noToolTime" in prepared) {
+    return errorResult(call, "tool_time_exhausted", "Not run: too little of this answer's time for tools is left to run a command " +
+      "on the computer, so nothing was sent to it. Answer with what you have and say what you could not check.");
   }
   signal.throwIfAborted();
   // The port answers by itself at `timeoutMs`; this is the engine's backstop, after which the call counts as timed out.

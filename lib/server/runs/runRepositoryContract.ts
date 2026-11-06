@@ -907,8 +907,11 @@ export type RunRepository = {
   /**
    * The approval a continuation turn names, while it may continue: the
    * user's own Allow in this chat within the approval window; null otherwise.
+   * `computer` is the gated run's frozen computer (`NormalizedRunRequest.computer`), null for none: the turn continues
+   * that run, so it keeps that binding whatever its body says (`computerAdmission.ts`); absent reads as none.
    */
   loadMcpApprovalContinuation?(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
+    computer?: import("../tools/computerBinding").FrozenComputerBinding | null;
     serverName: string; toolName: string;
   }> | null>;
   /** The approval cards of a run, as its initiator's live stream shows them. */
