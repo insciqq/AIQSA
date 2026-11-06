@@ -9,6 +9,10 @@ import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { DEEP_RESEARCH_CHOSEN_GUIDANCE } from "../tools/research";
+import { COMPUTER_SEND_FIELD, type ChatComputerBinding } from "../../contracts/computer";
+import type { FrozenComputerBinding } from "../tools/computerBinding";
+import { computerToolDefinitions } from "../tools/computerTools";
+import { admitComputer, type ComputerAdmissionDeps } from "./computerAdmission";
 import { freezeSubagentModels, type FrozenSubagentModels, type SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
 import { freezeSubagentDefault } from "../subagents/typeCatalog";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
@@ -287,6 +291,8 @@ export type RunPreparationDeps = Readonly<{
   subagentDefault?(userId: string): Promise<Readonly<{ definitionId: string; name: string }> | null>;
   /** The proxies the user may use now (`createProxyRunPlanner`); null without any, so such a run has no field. */
   proxies?: Readonly<{ planForRun(userId: string): Promise<import("../../contracts/proxies").ProxyRunPlan | null> }>;
+  /** AIQSA Connect's switch and the user's own computers (`computerAdmission.ts`); absent, a message that names one is refused. */
+  computerAdmission?: ComputerAdmissionDeps;
   workspace?: WorkspaceAdmissionService;
 }>;
 
@@ -295,6 +301,8 @@ export type SendRunPreparationSource = Readonly<{
     activeLeafMessageId: string | null;
     assistantId?: string | null;
     assistantOverrides?: unknown;
+    /** The owner's stored computer choice, which a message that cannot use it names in its turn note. */
+    computer?: ChatComputerBinding | null;
     defaultModelId: string;
     defaultProvider: string;
     id: string;
@@ -337,10 +345,17 @@ export type RegenerateRunPreparationSource = Readonly<{
       /** Server-only: the prompt's task still exists with Memory on (never for a branch copy). */
       scheduledTaskMemory?: true;
     }>;
+    /** Server-only: the computer the repeated run was admitted with, null for none; absent for a message with no run yet. */
+    computer?: FrozenComputerBinding | null;
   }>;
 }>;
 
 export type RunPreparationInput = Readonly<{
+  /**
+   * Server-only: a message that is not the owner's own from the web app (a Telegram turn, a sub-agent wake-up turn); a
+   * scheduled occurrence is known from its source. Such a message never takes a computer (D-07).
+   */
+  origin?: "telegram" | "wake_up";
   serverAuthoredInput?: boolean;
   mcpApprovalId?: string;
   body: Readonly<Record<string, unknown>> | null;
@@ -376,6 +391,11 @@ export type MaterializedPreparedRunData = {
   assistant?: AcceptedAssistantRun;
   /** Assistant runs: the chat binding to recheck and the override change to store at admission. */
   chatAssistant?: AcceptedChatAssistant;
+  /**
+   * The chat's computer choice to store with the run (`Chat.computerDeviceId`, `Chat.computerCwd`): the message's binding,
+   * or null to clear it. Absent leaves the stored choice as it is (`computerAdmission.ts`).
+   */
+  chatComputer?: ChatComputerBinding | null;
   chatPdfAdmissions?: ChatPdfAttachmentAdmission[];
   contextTruncation: ContextTruncationSummary | null;
   defaults: PreparedRunDefaultsData | null;
@@ -606,6 +626,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
       : {}),
     ...(prepared.chatAssistant
       ? { chatAssistant: mutablePreparedData<AcceptedChatAssistant>(prepared.chatAssistant) }
+      : {}),
+    ...(prepared.chatComputer !== undefined
+      ? { chatComputer: prepared.chatComputer ? { cwd: prepared.chatComputer.cwd, deviceId: prepared.chatComputer.deviceId } : null }
       : {}),
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
     defaults: mutablePreparedData<PreparedRunDefaultsData | null>(prepared.defaults),
@@ -1112,6 +1135,18 @@ export async function prepareRun(
     chatAssistant = admitted;
     assistantRun = admitted.assistant;
   }
+
+  // The message's computer (`computerAdmission.ts`): checked before anything heavier, frozen with the run below.
+  const computer = await admitComputer(deps.computerAdmission, {
+    assistantChat: Boolean(assistantSource.assistantId),
+    field: body && Object.hasOwn(body, COMPUTER_SEND_FIELD) ? body[COMPUTER_SEND_FIELD] : undefined,
+    ...(input.source.kind === "regenerate" && input.source.source.computer !== undefined
+      ? { frozen: input.source.source.computer } : {}),
+    origin: scheduledOccurrence ? "scheduled" : input.origin ?? "interactive",
+    stored: input.source.kind === "send" ? input.source.chat.computer : undefined,
+    userId: input.userId
+  });
+  if (!computer.ok) return failure(computer.code, computer.status);
 
   let manualSkillIds: string[] = [];
   if (body && Object.prototype.hasOwnProperty.call(body, "skillIds")) {
@@ -1773,6 +1808,8 @@ export async function prepareRun(
   appendTurnGuidance(scheduledUnavailableSourcesNotice(scheduledMissingSources));
   if (artifactIntent) appendTurnGuidance("The user explicitly asked for an artifact: call create_artifact for this message.");
   if (deepResearch === true) appendTurnGuidance(DEEP_RESEARCH_CHOSEN_GUIDANCE);
+  // The computer's facts, or why the chat's chosen computer is not available here: turn context, never the system prompt.
+  appendTurnGuidance(computer.guidance);
   // The check's server-owned instruction, frozen with the accepted prompt: it
   // compares with the previous shown result only while the context holds it.
   if (monitoringCheck) {
@@ -1959,6 +1996,7 @@ export async function prepareRun(
     }) === true ? { sessionStatusTool: true as const } : {}),
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
     ...(deepResearch === true ? { deepResearch: true as const } : {}),
+    ...(computer.binding ? { computer: computer.binding } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
     ...(scheduledTaskManagementTool ? { scheduledTaskManagementTool } : {}),
     ...(skillSaveTool ? { skillSaveTool: true as const } : {}),
@@ -2043,7 +2081,8 @@ export async function prepareRun(
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
         ...mcpRunTools(baseNormalizedRequest.mcp),
-        ...workspaceTools
+        ...workspaceTools,
+        ...(computer.binding ? computerToolDefinitions(computer.binding.os) : [])
       ])
   ];
 
@@ -2116,6 +2155,7 @@ export async function prepareRun(
           chatAssistant: chatAssistantWithPatch(chatAssistant.chatAssistant, rowResolution.overridesPatch)
         }
       : {}),
+    ...(computer.chatChoice !== undefined ? { chatComputer: computer.chatChoice } : {}),
     contextTruncation: providerBudget.contextTruncation,
     defaults,
     expectedActiveLeafId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : null,

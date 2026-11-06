@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { VISIBLE_ANSWER_CONTRACT, resolveAssistantChatBaseline, resolveStandardChatBaseline } from "@/lib/domain/promptTemplates";
 import type { ProviderRunRequest } from "../providers/types";
+import { computerTurnGuidance, freezeComputerBinding } from "../tools/computerBinding";
+import { computerToolDefinitions } from "../tools/computerTools";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { GPT_FAMILY_PROMPT } from "./prompts/gpt";
 import { environmentPromptSection } from "./prompts/harness";
@@ -116,6 +118,27 @@ describe("native system prompt", () => {
     // A new day changes only the date.
     const tomorrow = await turn("2026-10-24T06:05:00Z", ["This turn's output directory: /workspace/outputs/run-3."]);
     expect(tomorrow.request.prompt.system).toBe(morning.request.prompt.system!.replace("October 23, 2026", "October 24, 2026"));
+  });
+
+  it("keeps the system prompt and tools the same across turns on one computer, online or not; its line goes with the turn", async () => {
+    const choice = { cwd: "C:\\Users\\ivan\\Reports", deviceId: "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11" };
+    const description = { arch: "amd64", name: "DESKTOP-7Q2", os: "windows" } as const;
+    const offered = tools("read_tool_result", "update_plan", ...computerToolDefinitions("windows").map((tool) => tool.name));
+    const turn = async (online: boolean) => {
+      const computer = freezeComputerBinding(choice, { ...description, online, ...(online ? { info: { home: "C:\\Users\\ivan",
+        osVersion: "Windows 11 Pro", shell: { kind: "pwsh" as const, name: "PowerShell", version: "7.4" } } } : {}) })!;
+      const line = computerTurnGuidance(computer);
+      const admitted = request(`${standard.renderedSystemPrompt}\n\n${guidance}\n\n${line}`, { computer,
+        prompt: { ...request(null).prompt, system: `${standard.renderedSystemPrompt}\n\n${guidance}\n\n${line}`, turnGuidance: [line] } });
+      return { line, native: await withNativeSystemPrompt({ now, request: admitted, scope, snapshot: gpt, tools: offered }) };
+    };
+    const connected = await turn(true);
+    const away = await turn(false);
+    expect(away.native.request.prompt.system).toBe(connected.native.request.prompt.system);
+    expect(connected.native.request.prompt.system).not.toContain("DESKTOP-7Q2");
+    expect(connected.native.turnContext).toContain(connected.line);
+    expect(away.native.turnContext).toContain(away.line);
+    expect(JSON.stringify(computerToolDefinitions("windows"))).toBe(JSON.stringify(computerToolDefinitions("windows")));
   });
 
   it("keeps a request admitted before turn guidance was recorded as it was", async () => {

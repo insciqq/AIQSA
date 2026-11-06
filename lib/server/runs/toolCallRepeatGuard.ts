@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ComputerToolName } from "../../contracts/computer";
 import { decodeToolObservationDescriptor } from "../toolObservations/contract";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { mcpApprovalGated } from "./mcpApprovalGate";
@@ -39,6 +40,7 @@ function contextDigest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(canonicalJson(value)) ?? "null").digest("hex");
 }
 const WORKSPACE_EXEC_POLL = namespacedWorkspaceToolName("sandbox_exec_poll");
+const COMPUTER_JOB_OUTPUT: ComputerToolName = "computer_job_output";
 
 export type ToolCallRepeatRow = Pick<PersistedToolLoopCall,
   "arguments" | "id" | "ordinal" | "providerCallId" | "result" | "roundIndex" | "startedAt" | "state" | "toolName">;
@@ -107,8 +109,9 @@ export function repeatBlockedRounds(row: Pick<ToolCallRepeatRow,
 export function toolCallOutcomeFingerprint(row: ToolCallRepeatRow): string | null {
   // A process progresses independently of tool calls. Repeated polls do not
   // prove it stalled; a stored observation may contain only a reference, so
-  // exclude this polling tool regardless of its result representation.
-  if (row.toolName === WORKSPACE_EXEC_POLL) return null;
+  // exclude these polling tools (a Workspace process, a background job on the
+  // user's computer) regardless of their result representation.
+  if (row.toolName === WORKSPACE_EXEC_POLL || row.toolName === COMPUTER_JOB_OUTPUT) return null;
   const result = row.result;
   if (row.state !== "complete" || !isRecord(result) || result.status !== "complete") return null;
   if (result.observation !== undefined) {

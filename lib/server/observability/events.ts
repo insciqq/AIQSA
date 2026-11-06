@@ -38,7 +38,7 @@ export type ToolKind = "search" | "mcp" | "workspace" | "vision";
 /** The family of one model tool call (`tool_call` only); the families with
  * their own executor records keep the narrower `ToolKind`. */
 export type ToolCallKind = ToolKind | "fetch_url" | "artifact" | "image_generation" | "skill" | "scheduled_task" |
-  "session_status" | "workspace_image" | "memory" | "monitoring" | "other";
+  "session_status" | "workspace_image" | "memory" | "monitoring" | "computer" | "other";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
   engine_index?: number; operation_index?: number;

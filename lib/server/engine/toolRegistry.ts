@@ -34,6 +34,9 @@ import {
 import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
+import { decodeFrozenComputerBinding } from "../tools/computerBinding";
+import { computerEngineTools } from "../tools/computerTools";
+import type { ComputerOps } from "../connect/computerPort";
 import { createFetchUrlSession, type FetchUrlBrowserStep, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
 import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
@@ -95,6 +98,10 @@ import { IMAGE_ANALYZE_NOTE, IMAGE_REFERENCE_NOTE, IMAGE_VIEW_NOTE, type Transcr
  * self-service tools (`SELF_SERVICE_TOOLS`) on those of interactive personal
  * and temporary chats, whose handler gives their owners. A monitoring
  * check's verdict is the run's reserved report (`toolBatch.ts`, `loop.ts`).
+ * The `computer_*` tools ride on a run admission bound to the user's computer
+ * (`NormalizedRunRequest.computer`), whether or not it is online, and never on
+ * a Telegram, scheduled, monitoring or Assistant run, which admission already
+ * refuses and the registry checks again (`computerTools.ts`).
  */
 export type EngineToolEffects = HarnessToolEffects;
 
@@ -224,6 +231,8 @@ export type ToolRegistryServices = Readonly<{
   runProxies?: FetchUrlSessionDeps["runProxies"];
   images?: Pick<ImageGenerationService, "execute" | "withConversationPixels"> & Partial<Pick<ImageGenerationService, "readConversationImage">>;
   chatFiles?: ChatFileReader;
+  /** Test seam of the computer port; absent, the process's (`getComputerOps`), read at each call. */
+  computer?: ComputerOps;
   mcp?: Readonly<{
     filterTools: McpToolAccessFilter;
     materialize?(userId: string, tools: readonly Readonly<{ namespacedName: string; revisionId: string; serverId: string }>[]):
@@ -292,9 +301,13 @@ export type ToolRegistryInput = Readonly<{
   /** Where `change_research_frame` writes, bound as `researchEvidence` is. Absent, the tool is not offered. */
   researchFrame?: ChangeResearchFrameTarget;
   runId: string;
+  /** A scheduled task's occurrence (a schedule, a webhook or a monitoring check): it never works on the user's computer. */
+  scheduled?: true;
   services: ToolRegistryServices;
   /** A Telegram turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
   telegram?: true;
+  /** How long this agent's tool time still lasts; a call on the user's computer never waits past it. Absent: its own bound. */
+  toolTimeLeftMs?(): number;
   userId: string;
 }>;
 
@@ -658,6 +671,16 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
         execute: (execution) => browserRefused ? Promise.resolve(oldImageBrowserRefusal(execution.call))
           : executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
     }
+  }
+
+  // The user's computer, as admission froze it: only an interactive web run of a personal or temporary chat has one, and
+  // the registry checks again that this is none of the runs that never do (D-07). Online or not, the tools are the same.
+  const computer = clientTools && !input.telegram && !input.scheduled && request.monitoringVerdictTool !== true &&
+    request.prompt.baseline?.source !== "assistant_chat" ? decodeFrozenComputerBinding(request.computer) : null;
+  if (computer) {
+    for (const tool of computerEngineTools({ binding: computer, ...(input.services.computer ? { ops: input.services.computer } : {}),
+      runId: input.runId, serverName: descriptors.get("computer_shell")?.serverName,
+      ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId })) add(tool);
   }
 
   return {
