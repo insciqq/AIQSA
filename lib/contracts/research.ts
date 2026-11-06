@@ -29,7 +29,7 @@ export const CHANGE_RESEARCH_FRAME_TOOL_NAME = "change_research_frame";
  * The send field that asks for Deep research on one message (operator decision 2026-11-05): the `+` menu's Deep research item, and
  * nothing written in a chat, starts research. It goes at the top level of a send's JSON body (`POST /api/chats/:chatId/messages`) and
  * of the regenerate that runs an edited message (`POST /api/messages/:messageId/regenerate`), as `true` only; leave it out otherwise.
- * Admission freezes it with the run's bindings, and a regenerate without it keeps what the message was sent with.
+ * Admission freezes it with the run's bindings. A message sent with it is never regenerated (`DEEP_RESEARCH_REGENERATE_REFUSAL`).
  */
 export const DEEP_RESEARCH_SEND_FIELD = "deepResearch";
 
@@ -42,6 +42,17 @@ export const DEEP_RESEARCH_REFUSALS = Object.freeze({
   invalid: "deep_research_invalid",
   needsSearch: "deep_research_needs_search",
   unavailable: "deep_research_unavailable"
+} as const);
+
+/**
+ * Why a regenerate of a message sent with Deep research was refused (409, operator decision 2026-11-06): it would run the whole
+ * research again, half an hour or more, which nobody expects of one click. A research answer that failed offers Continue, which
+ * picks it up from what it recorded, and an edit of the message starts a new research on purpose.
+ */
+export const DEEP_RESEARCH_REGENERATE_REFUSAL = Object.freeze({
+  code: "deep_research_regenerate_unavailable",
+  message: "A Deep research answer is not regenerated, since that would run the whole research again. Use Continue on an unfinished answer to pick it up, " +
+    "or edit the message to start the research again."
 } as const);
 
 /** The send field's value: true when Deep research was asked for, null when it was not, and "invalid" for anything but `true`. */

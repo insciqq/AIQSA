@@ -1058,3 +1058,62 @@ describe("Run lifecycle v2 Workspace timeline", () => {
     expect(screen.getByText("Workspace ready")).not.toBeVisible();
   });
 });
+
+describe("a Deep research answer (operator decision 2026-11-06)", () => {
+  const PROVIDER_FAILURE = { code: "provider_response_failed", message: "The provider's response failed. Its work so far is kept." };
+  /** An answer as the thread presents it: the server's research mark, and how its run ended. */
+  const answer = (research: boolean, status: "cancelled" | "complete" | "error", content = "Work so far") => presentRunLifecycleV2({ content,
+    events: status === "error" ? [{ type: "error", data: { ...PROVIDER_FAILURE, recovery: "retry" } }] : [], ...research ? { research: true as const } : {},
+    runId: "run-research", status });
+  const handlers = () => ({ onContinue: vi.fn(), onRegenerate: vi.fn(), onRetry: vi.fn(), onSelectModel: vi.fn(), onUseLoadAll: vi.fn() });
+  const actionsOf = (onRegenerate: () => void) => ({ onCopy: vi.fn(), onRegenerate });
+
+  it("offers no Regenerate in its action row once it has answered", () => {
+    const onRegenerate = vi.fn();
+    const { rerender } = render(<RunAnswerV2 actions={actionsOf(onRegenerate)} content="Report." presentation={answer(true, "complete", "Report.")} />);
+    expect(screen.getByRole("button", { name: "Copy answer" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^Regenerate/u })).toBeNull();
+    // An ordinary answer keeps it.
+    rerender(<RunAnswerV2 actions={actionsOf(onRegenerate)} content="Report." presentation={answer(false, "complete", "Report.")} />);
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate answer" }));
+    expect(onRegenerate).toHaveBeenCalledOnce();
+  });
+
+  it("offers Continue on its failure, with the failure's own text, and nothing that would run the research again", () => {
+    const actions = handlers();
+    render(<RunAnswerV2 {...actions} actions={actionsOf(actions.onRegenerate)} content="Work so far" presentation={answer(true, "error")} />);
+    const card = screen.getByRole("region", { name: "Answer interrupted" });
+    expect(card).toHaveTextContent(PROVIDER_FAILURE.message);
+    expect(card).toHaveTextContent(`Code ${PROVIDER_FAILURE.code}`);
+    for (const name of [/^Regenerate/u, "Retry", "Choose model…", "Use Load all"]) expect(screen.queryByRole("button", { name })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(actions.onContinue).toHaveBeenCalledOnce();
+    expect(actions.onRegenerate).not.toHaveBeenCalled();
+  });
+
+  it("leaves an ordinary answer's failure as it was: Retry with its partial answer, Regenerate and Choose model without", () => {
+    const actions = handlers();
+    const { rerender } = render(<RunAnswerV2 {...actions} content="Work so far" presentation={answer(false, "error")} />);
+    expect(screen.getByRole("region", { name: "Answer interrupted by an error" })).toHaveTextContent(PROVIDER_FAILURE.message);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(actions.onRetry).toHaveBeenCalledOnce();
+    rerender(<RunAnswerV2 {...actions} content="" presentation={answer(false, "error", "")} />);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
+    expect(actions.onRegenerate).toHaveBeenCalledOnce();
+    expect(actions.onSelectModel).toHaveBeenCalledOnce();
+  });
+
+  it("offers neither Continue nor Regenerate once the user stopped it", () => {
+    const actions = handlers();
+    const { rerender } = render(<RunAnswerV2 {...actions} actions={actionsOf(actions.onRegenerate)} content="Work so far" presentation={answer(true, "cancelled")} />);
+    expect(screen.getByText("Stopped")).toBeVisible();
+    for (const name of [/^Regenerate/u, "Continue"]) expect(screen.queryByRole("button", { name })).toBeNull();
+    // An ordinary stopped answer keeps its Regenerate.
+    rerender(<RunAnswerV2 {...actions} content="Work so far" presentation={answer(false, "cancelled")} />);
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    expect(actions.onRegenerate).toHaveBeenCalledOnce();
+  });
+});

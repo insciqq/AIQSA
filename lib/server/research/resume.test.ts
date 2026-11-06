@@ -163,26 +163,44 @@ describe("what the store gives a Continue", () => {
 });
 
 describe("which runs count as interrupted", () => {
-  const storeWith = (errorPayload: unknown) => {
-    const findFirst = vi.fn(async () => errorPayload === undefined ? null : { errorPayload });
+  const FAILED = { answerCompletedAt: null, chatId: "chat", engine: "native", id: "run-a", status: "error", userId: "user" };
+  const RESEARCHED = [{ normalizedRequest: { equals: true, path: ["deepResearch"] } }, { researchFrame: { isNot: null } }];
+  /**
+   * The run as the database answers the two reads: none at all for a run that did not fail with its answer unpublished (a Stop, a finished
+   * answer, another user's or chat's), and for the second read whether it researched, which the database decides from its frozen choice or frame.
+   */
+  const storeWith = (errorPayload: unknown, researched = false) => {
+    const findFirst = vi.fn(async (args: { where: Readonly<{ OR?: unknown }> }) => errorPayload === undefined ? null
+      : args.where.OR === undefined ? { errorPayload } : researched ? { id: "run-a" } : null);
     return { findFirst, store: createResearchResumeStore({ modelRun: { findFirst } } as never, { chain: async () => [] }) };
   };
+  const PROVIDER_FAILURE = { code: "provider_response_failed", message: "The provider's response failed." };
 
-  it.each([
-    ["a restart", RUN_INTERRUPTED_FAILURE, true],
-    ["the turn's time limit", RUN_TIME_LIMIT_FAILURE, true],
-    ["a saved answer's message alone", { message: RUN_INTERRUPTED_FAILURE.message }, true],
-    ["a provider's failure", { code: "provider_response_not_retryable", message: "No." }, false],
-    ["a run with no failure", undefined, false],
-    ["a payload that is no object", "run_interrupted", false]
-  ])("%s", async (_name, payload, expected) => {
-    await expect(storeWith(payload).store.interrupted(keyOf("run-a"))).resolves.toBe(expected);
+  it.each<[string, unknown, boolean, boolean]>([
+    ["a restart", RUN_INTERRUPTED_FAILURE, false, true],
+    ["the turn's time limit", RUN_TIME_LIMIT_FAILURE, false, true],
+    ["a saved answer's message alone", { message: RUN_INTERRUPTED_FAILURE.message }, false, true],
+    ["an ordinary run's provider failure", PROVIDER_FAILURE, false, false],
+    ["a research run's provider failure, sent with Deep research or a Continue that picked research up", PROVIDER_FAILURE, true, true],
+    ["a research run's failure of any other code", { code: "deep_research_not_started", message: "Deep research did not start." }, true, true],
+    ["a research run whose payload is no object", "run_interrupted", true, true],
+    ["a run with no failure, which a Stop or a finished research is", undefined, true, false],
+    ["an ordinary payload that is no object", "run_interrupted", false, false]
+  ])("%s", async (_name, payload, researched, expected) => {
+    await expect(storeWith(payload, researched).store.interrupted(keyOf("run-a"))).resolves.toBe(expected);
   });
 
-  it("asks only of the user's own failed native run in this chat whose answer was never published", async () => {
-    const { findFirst, store } = storeWith(RUN_INTERRUPTED_FAILURE);
-    await store.interrupted(keyOf("run-a"));
-    expect(findFirst).toHaveBeenCalledExactlyOnceWith({ select: { errorPayload: true }, where: { answerCompletedAt: null, chatId: "chat", engine: "native", id: "run-a", status: "error", userId: "user" } });
+  it("asks only of the user's own failed native run in this chat whose answer was never published, and of research only past a continuable failure", async () => {
+    const continuable = storeWith(RUN_INTERRUPTED_FAILURE);
+    await continuable.store.interrupted(keyOf("run-a"));
+    expect(continuable.findFirst).toHaveBeenCalledExactlyOnceWith({ select: { errorPayload: true }, where: FAILED });
+    const failed = storeWith(PROVIDER_FAILURE, true);
+    await failed.store.interrupted(keyOf("run-a"));
+    expect(failed.findFirst.mock.calls).toEqual([[{ select: { errorPayload: true }, where: FAILED }], [{ select: { id: true }, where: { ...FAILED, OR: RESEARCHED } }]]);
+    // A run that did not fail is asked nothing more: a stopped research gets no Continue.
+    const stopped = storeWith(undefined, true);
+    await expect(stopped.store.interrupted(keyOf("run-a"))).resolves.toBe(false);
+    expect(stopped.findFirst).toHaveBeenCalledOnce();
   });
 });
 
@@ -229,12 +247,12 @@ function portsOf(load: () => Promise<ResearchResumeState | null> = async () => S
   return { link, open, planReleased, ports, resume, scope: () => scope! };
 }
 
-function runOn(items: readonly TranscriptItem[], ports: ResearchPortFactories, extra: Partial<RunResearchInput> = {}) {
+function runOn(items: readonly TranscriptItem[], ports: ResearchPortFactories, extra: Partial<RunResearchInput> = {}, branchRunIds: readonly string[] = ["run-a"]) {
   const shown: unknown[] = [];
   const threads = { backgroundRunIds: vi.fn(async () => []), threadEffectItems: vi.fn(async (_input: { runIds: readonly string[] }) => []) };
   const research = createRunResearch({ chatId: "chat", deps: { gates: [], ports }, gatesEndAt: 2_000_000, items: () => items, now: () => NOW,
     onPlan: async (entry) => { shown.push(entry); }, rearmReservedCall: () => undefined, runId: "run-b", savedResults: { read: async () => null },
-    subagentInput: { admittedRequest: { modelId: "main-model" }, branchRunIds: ["run-a"], engine: {}, signal: running, snapshot: {}, userFollowups: async () => [] } as never,
+    subagentInput: { admittedRequest: { modelId: "main-model" }, branchRunIds, engine: {}, signal: running, snapshot: {}, userFollowups: async () => [] } as never,
     threads: threads as never, toolTimeLeft: () => true, userId: "user", userMessage: CONTINUE_TURN_TEXT, ...extra });
   return { research, shown, threads };
 }
@@ -553,6 +571,81 @@ describe("what is no Continue, or has nothing to pick up", () => {
     expect(run.research.outstanding()).toBe(false);
     expect(log).toHaveBeenCalledWith("service_operation", expect.objectContaining({ code: "research_resume_failed", stage: "write" }));
     log.mockRestore();
+  });
+});
+
+describe("a Continue of a research that failed", () => {
+  type StoredRun = Readonly<{ deepResearch?: true; errorPayload?: unknown; frame?: true; status: "cancelled" | "complete" | "error" }>;
+  const PROVIDER_FAILURE = { code: "provider_response_failed", message: "The provider's response failed." };
+  const FAILED_RESEARCH: StoredRun = { deepResearch: true, errorPayload: PROVIDER_FAILURE, frame: true, status: "error" };
+
+  /** The real store over a database of these runs, each read answered by the filters it sends: its status, its frozen choice, its frame. */
+  function storeOver(runs: Readonly<Record<string, StoredRun>>) {
+    const matches = (id: string, where: Readonly<Record<string, unknown>>) => {
+      const run = runs[id];
+      if (!run || where.chatId !== "chat" || where.userId !== "user" || where.status !== undefined && where.status !== run.status) return null;
+      if (Array.isArray(where.OR) && !run.deepResearch && !run.frame) return null;
+      return where.normalizedRequest !== undefined && !run.deepResearch ? null : run;
+    };
+    const modelRun = { findFirst: async ({ where }: { where: Readonly<Record<string, unknown>> }) => {
+      const ids = typeof where.id === "string" ? [where.id] : (where.id as { in: readonly string[] }).in;
+      const id = ids.find((candidate) => matches(candidate, where) !== null);
+      return id === undefined ? null : { errorPayload: runs[id]!.errorPayload ?? null, id };
+    } };
+    const researchFrame = { create: vi.fn(async () => ({})), findFirst: async ({ where }: { where: { modelRunId: string } }) => runs[where.modelRunId]?.frame ? SOURCE : null };
+    const researchEvidence = { findFirst: async () => ({ id: "record-1" }) };
+    return createResearchResumeStore({ modelRun, researchEvidence, researchFrame } as never, { chain: async ({ researchRunId }) => [researchRunId] });
+  }
+
+  const continueOn = (runs: Readonly<Record<string, StoredRun>>, authority: RunResearchInput["authority"] = [{ answered: "message", runId: "run-a" }]) =>
+    runOn(turn(), { ...portsOf().ports, resume: createResearchResume({ store: storeOver(runs) }) }, { authority, request: "continue" }, Object.keys(runs));
+
+  it("is authorized by the failed research's own binding, whatever failed it, and picks it up from its frame and records", async () => {
+    const run = continueOn({ "run-a": FAILED_RESEARCH });
+    await expect(run.research.authorized()).resolves.toBe(true);
+    const { text } = await startOn(run);
+    expect(text).toMatch(/"status":"resumed"/u);
+    expect(text).toContain("1 records stand.");
+    expect(run.shown[0]).toMatchObject({ items: [{ completed: true, text: "Continuing from what was recorded: 1 of 2 cells filled" }, { active: true, text: PLAN.questions[0]!.question }] });
+  });
+
+  it("goes on past a Continue that researched and failed in turn, the research's first run holding the choice", async () => {
+    const runs = { "run-a": FAILED_RESEARCH, "run-c": { errorPayload: PROVIDER_FAILURE, frame: true, status: "error" } as const };
+    await expect(continueOn(runs, [{ answered: "continue", runId: "run-c" }, { answered: "message", runId: "run-a" }]).research.authorized()).resolves.toBe(true);
+    // A Continue whose run never researched counts for nothing past its own failure.
+    const unstarted = { ...runs, "run-c": { errorPayload: PROVIDER_FAILURE, status: "error" } as const };
+    await expect(continueOn(unstarted, [{ answered: "continue", runId: "run-c" }, { answered: "message", runId: "run-a" }]).research.authorized()).resolves.toBe(false);
+  });
+
+  it("is no Continue of an ordinary failed run, of a research the user stopped, or of one that finished", async () => {
+    await expect(continueOn({ "run-a": { errorPayload: PROVIDER_FAILURE, status: "error" } }).research.authorized()).resolves.toBe(false);
+    await expect(continueOn({ "run-a": { ...FAILED_RESEARCH, status: "cancelled" } }).research.authorized()).resolves.toBe(false);
+    await expect(continueOn({ "run-a": { ...FAILED_RESEARCH, status: "complete" } }).research.authorized()).resolves.toBe(false);
+  });
+
+  it("owes the start where the research it goes on with failed before starting, which then picks nothing up", async () => {
+    const parts = portsOf(async () => null);
+    const run = runOn([QUESTION, CONTINUE], parts.ports, { authority: [{ answered: "message", runId: "run-a" }], request: "continue" });
+    expect(run.research.holding()).toBe(true);
+    expect(run.research.startMissed()).toMatchObject({ code: "deep_research_not_started" });
+    const { text } = await startOn(run);
+    expect(text).toMatch(/"status":"scoping"/u);
+    expect(text).not.toContain("research starts over with the plan");
+    expect(parts.resume).toHaveBeenCalledExactlyOnceWith("run-a", running);
+    expect(run.research.startMissed()).toBeNull();
+    // A Continue of a research that did start owes nothing before its start: the model is told the door, as before.
+    expect(runOn(turn(), parts.ports, { authority: [{ answered: "message", runId: "run-a" }], request: "continue" }).research.holding()).toBe(false);
+  });
+
+  it("reads past a Continue whose run ended before its start, so a restart there never starts the research over", async () => {
+    const parts = portsOf();
+    const again: TranscriptItem = { id: "msg-continue-again", kind: "user", text: CONTINUE_TURN_TEXT };
+    const run = runOn([...turn(), again], parts.ports, { authority: [{ answered: "continue", runId: "run-c" }, { answered: "message", runId: "run-a" }],
+      request: "continue" }, ["run-a", "run-c"]);
+    expect(run.research.holding()).toBe(false);
+    const { text } = await startOn(run);
+    expect(parts.resume).toHaveBeenCalledExactlyOnceWith("run-a", running);
+    expect(text).toMatch(/"status":"resumed"/u);
   });
 });
 

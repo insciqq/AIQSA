@@ -505,6 +505,22 @@ describe("a draft reaches the user", () => {
     expect(next.published()).toBe("Continuing as an ordinary answer.");
   });
 
+  it("researches on the Continue of a chosen research that failed before its start, which owes the start as the choice did", async () => {
+    // Its run left no start to find. The model answers in words first, and is sent back once for the start.
+    const main = scripted([{ text: "Here is what I know." }, { calls: [start()] }, { calls: [propose()] }, { calls: [submit()] }]);
+    const memory = engineOf({ gates: [], ports: { resume: storeSays({ chosen: ["run-0"], interrupted: ["run-0"] }) } });
+    await run(main.adapter, memory, { prepared: continueOfResearch(memory, []) }).text();
+    expect(main.requests[0]!.tools?.map((tool) => tool.name)).toContain(START_RESEARCH_TOOL_NAME);
+    expect(JSON.stringify(main.requests[1]!.history)).toContain("only research answers it");
+    expect(memory.published()).toBe(REPORT);
+    // Without the store's word that the run before failed with its research unfinished, the same Continue is an ordinary turn.
+    const plain = scripted([{ text: "An ordinary answer." }]);
+    const ordinary = engineOf({ gates: [], ports: { resume: storeSays({ chosen: ["run-0"], interrupted: [] }) } });
+    await run(plain.adapter, ordinary, { prepared: continueOfResearch(ordinary, []) }).text();
+    expect(plain.requests[0]!.tools?.map((tool) => tool.name)).not.toContain(START_RESEARCH_TOOL_NAME);
+    expect(ordinary.published()).toBe("An ordinary answer.");
+  });
+
   it("keeps research going through every Continue of an interrupted research, and stops at one that went on from a finished run", async () => {
     const started = (callId: string): TranscriptItem[] => [{ arguments: JSON.stringify({ goal: PLAN.goal }), callId, id: `${callId}-item`, kind: "tool_call", name: START_RESEARCH_TOOL_NAME }];
     const turns = [{ items: started("first"), message: "Choose a mattress.", runId: "run-0" }, { items: started("again"), message: CONTINUE_TURN_TEXT, runId: "run-1" }];
