@@ -88,7 +88,9 @@ export const CONNECT_PUBLIC_DISTRIBUTION_PATHS: readonly string[] = Object.freez
   "/connect/download/aiqsa-connect-darwin-amd64",
   "/connect/download/aiqsa-connect-darwin-arm64",
   "/connect/download/aiqsa-connect-linux-amd64",
-  "/connect/download/aiqsa-connect-linux-arm64"
+  "/connect/download/aiqsa-connect-linux-arm64",
+  "/connect/download/aiqsa-connect-windows-amd64.exe",
+  "/connect/download/aiqsa-connect-windows-arm64.exe"
 ]);
 
 function isPublicPath(

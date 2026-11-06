@@ -49,11 +49,16 @@ export async function register(): Promise<void> {
     try {
       const { startDefaultBrowserPush } = await import("./lib/server/push/defaultBrowserPush");
       startDefaultBrowserPush();
-      const { startConnectPush } = await import("./lib/server/connect/push");
-      startConnectPush();
     } catch (error) {
       // Browser push is best effort; runs and scheduled tasks settle without it.
       reportSubsystemFailure({ error, subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" });
+    }
+    try {
+      // The engine reaches the user's computers through this port; until it is installed every call is offline.
+      const { installConnectComputerOps } = await import("./lib/server/connect/defaults");
+      installConnectComputerOps();
+    } catch (error) {
+      reportSubsystemFailure({ error, subsystem: "connect", stage: "startup", code: "connect_startup_failed", action: "degrade" });
     }
     try {
       const { startDefaultTelegram } = await import("./lib/server/telegram/defaultTelegram");
