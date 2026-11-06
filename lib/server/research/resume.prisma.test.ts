@@ -201,6 +201,28 @@ describe("a Continue on an interrupted run", () => {
     await expect(pickUp(portsOf(second, [first.runId]), first.runId)).resolves.toMatchObject({ fromRunId: first.runId });
   });
 
+  it("is open to a research run whatever failed it, as its answer offers Continue, and to no ordinary run that failed", async () => {
+    const providerFailure = { code: "provider_response_failed", message: "The provider's response failed." };
+    const { chatId, first, userId } = await interruptedWithRecords();
+    await interrupted(first, providerFailure);
+    const second = await runOf(userId, chatId, first.answerId);
+    await expect(pickUp(portsOf(second, [first.runId]), first.runId)).resolves.toMatchObject({ fromRunId: first.runId });
+    await expect(filled(portsOf(second, [first.runId]))).resolves.toEqual(["x1/durability", "x1/firmness"]);
+    // A run sent with Deep research that failed before its plan counts by its frozen choice; an ordinary one by nothing.
+    const chosen = await runOf(userId, chatId);
+    await prisma.modelRun.update({ data: { normalizedRequest: json({ deepResearch: true }) }, where: { id: chosen.runId } });
+    await interrupted(chosen, providerFailure);
+    const ordinary = await runOf(userId, chatId, chosen.answerId);
+    await interrupted(ordinary, providerFailure);
+    const later = await runOf(userId, chatId, ordinary.answerId);
+    const ports = portsOf(later, [chosen.runId, ordinary.runId]);
+    await expect(ports.resume.endedInterrupted(chosen.runId, signal)).resolves.toBe(true);
+    await expect(ports.resume.endedInterrupted(ordinary.runId, signal)).resolves.toBe(false);
+    // Stopped, it is no Continue's.
+    await prisma.modelRun.update({ data: { status: "cancelled" }, where: { id: chosen.runId } });
+    await expect(ports.resume.endedInterrupted(chosen.runId, signal)).resolves.toBe(false);
+  });
+
   it("reaches the research through an approval: the run that started it, with the last run the interrupted one", async () => {
     const userId = await owner();
     const chatId = await chatOf(userId);

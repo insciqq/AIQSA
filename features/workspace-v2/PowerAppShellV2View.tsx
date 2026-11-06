@@ -371,6 +371,8 @@ export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentatio
     content: messageText(source),
     contextCompaction: live.artifact?.contextCompaction,
     events: live.events,
+    // The server's mark (`ChatMessageWire.researchAnswer`): such an answer offers Continue, never Regenerate.
+    ...(source.researchAnswer ? { research: true as const } : {}),
     runId: source.runId ?? null
   });
   return { ...live, presentation, transportLost };

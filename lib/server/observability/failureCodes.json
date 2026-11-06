@@ -129,6 +129,7 @@
   "deep_research_invalid",
   "deep_research_needs_search",
   "deep_research_not_started",
+  "deep_research_regenerate_unavailable",
   "deep_research_unavailable",
   "discovery_unavailable",
   "display_name_invalid",

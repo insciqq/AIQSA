@@ -44,6 +44,8 @@ export type RunLifecycleStateV2 = Readonly<{
   content: string;
   events: readonly RunEventView[];
   failure?: RunFailureV2 | null;
+  /** The answer's run researched (`ThreadMessage.researchAnswer`). */
+  research?: true;
   runId: string | null;
   status?: RunLifecycleStatusV2 | null;
 }>;
@@ -101,6 +103,11 @@ export type RunPresentationV2 = Readonly<{
   /** This run streamed reasoning headings: its process line keeps its slot
    * while the answer text streams. */
   reasoningObserved?: true;
+  /**
+   * A research answer (operator decision 2026-11-06): nothing on it answers the question again, since that would run the whole research
+   * again, and a failure offers Continue whatever its cause. Stop stays the end it is.
+   */
+  research?: true;
   runId: string | null;
 }>;
 
@@ -1221,7 +1228,8 @@ export function presentRunLifecycleV2(
   const present = (value: RunPresentationV2): RunPresentationV2 => ({
     ...value,
     ...(compaction ? { compaction } : {}),
-    ...(compactionFailures.length > 0 ? { compactionFailures } : {})
+    ...(compactionFailures.length > 0 ? { compactionFailures } : {}),
+    ...(state.research ? { research: true as const } : {})
   });
 
   if (terminal === "complete") {
@@ -1232,7 +1240,7 @@ export function presentRunLifecycleV2(
   }
   if (terminal === "error") {
     const pdfFailed = state.pdfPreparation?.some((item) => item.phase === "failed");
-    const failure = pdfFailed && isChatPdfReaderOutputLimitFailure(eventFailure?.code ?? state.failure?.code,
+    const failed = pdfFailed && isChatPdfReaderOutputLimitFailure(eventFailure?.code ?? state.failure?.code,
       state.failure?.message ?? eventFailure?.message) ? {
       code: CHAT_PDF_READER_OUTPUT_LIMIT.code, message: CHAT_PDF_READER_OUTPUT_LIMIT.message, recovery: "change_parameters" as const
     } : pdfFailed ? {
@@ -1241,6 +1249,8 @@ export function presentRunLifecycleV2(
         ? "This PDF could not be read. Try a different file." : "Document preparation could not finish.",
       recovery: state.pdfPreparation!.some((item) => item.retryable) ? "retry" as const : "change_parameters" as const
     } : failureFromState(state, eventFailure);
+    // A research answer keeps its own failure text and picks the research up from what it recorded.
+    const failure = state.research ? { ...failed, recovery: "continue" as const } : failed;
     const recoverable = (pdfFailed || state.content.trim().length > 0) && failure.recovery === "retry";
     return present({
       failure,

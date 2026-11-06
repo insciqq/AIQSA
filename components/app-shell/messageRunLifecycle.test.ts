@@ -367,6 +367,7 @@ describe("message run lifecycle", () => {
     prepareThread();
     const fetchRun = vi.fn(async () => null);
     const notifyAnswerReady = vi.fn(async () => undefined);
+    const refreshActiveChat = vi.fn(async () => null);
 
     const result = await executeMessageRunLifecycle({
       activeChatIdRef: { current: "chat-1" },
@@ -388,7 +389,7 @@ describe("message run lifecycle", () => {
       optimisticAssistantMessageId: "assistant-optimistic",
       primeAnswerSound: vi.fn(async () => undefined),
       reconcileMessageIds: vi.fn(),
-      refreshActiveChat: vi.fn(async () => null),
+      refreshActiveChat,
       request: async () => new Response("", { status: 200 })
     });
 
@@ -402,6 +403,8 @@ describe("message run lifecycle", () => {
       status: "error"
     });
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
+    // A failed run sends no update with its end, so the chat's saved projection is read even after an earlier update (a research answer's mark).
+    expect(refreshActiveChat).toHaveBeenCalledExactlyOnceWith("chat-1", { forceDetail: true, preserveControls: true });
   });
 
   it("keeps the stream's failure text when the settled answer could not be read", async () => {
