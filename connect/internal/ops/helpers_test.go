@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,6 +89,15 @@ type testSystem struct {
 	codePage CodePage
 	fallback func([]byte) string
 	hidden   func(fs.FileInfo) bool
+	// start, when set, starts commands in place of the real Start.
+	start func(sys System, cmd *exec.Cmd) (ProcessTree, error)
+}
+
+func (s testSystem) Start(cmd *exec.Cmd) (ProcessTree, error) {
+	if s.start != nil {
+		return s.start(s.System, cmd)
+	}
+	return s.System.Start(cmd)
 }
 
 func (s testSystem) DetectShell() Shell {

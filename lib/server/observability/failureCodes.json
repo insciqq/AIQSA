@@ -1364,6 +1364,7 @@
   "computer_job_not_found",
   "computer_limit",
   "computer_pattern_invalid",
+  "computer_text_unencodable",
   "self_service_change_failed",
   "retired_engine_run_failed",
   "retired_engine_runs_ended",

@@ -196,7 +196,8 @@ func (d *Daemon) current() *connection {
 
 // Run keeps the device stream connected until ctx ends (nil), the device is
 // revoked (ErrRevoked) or another process takes over (ErrReplaced). Before
-// it returns, every process and background job the ops started has ended.
+// it returns, every process and background job the ops started has ended;
+// when the server reports AIQSA Connect off, they end before the wait.
 func (d *Daemon) Run(ctx context.Context) (err error) {
 	d.log.Event("up_start")
 	defer func() {
@@ -236,6 +237,10 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 			d.log.Event("up_stop", "reason", "replaced")
 			return ErrReplaced
 		case outcomeDisabled:
+			// While Connect is off the server can end no run here, so
+			// nothing the agent started keeps running (revocation and
+			// replacement end Run, whose Close does the same).
+			d.exec.StopAll()
 			d.report(state.Disabled)
 			if !disabledNoticed {
 				every := d.timing.DisabledRetry.String()

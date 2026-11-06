@@ -132,7 +132,7 @@ func (e *Executor) runShell(ctx context.Context, runID string, args *protocol.Sh
 	e.useCwd(args.Cwd)
 	cwd := e.resolveCwd(args.Cwd)
 	if args.Background {
-		return e.startJob(runID, args.Command, cwd, limits)
+		return e.startJob(ctx, runID, args.Command, cwd, limits)
 	}
 	stdout := newHeadTail(protocol.OutputHeadBytes, protocol.OutputTailBytes)
 	stderr := newHeadTail(protocol.OutputHeadBytes, protocol.OutputTailBytes)
@@ -167,11 +167,18 @@ func (e *Executor) runShell(ctx context.Context, runID string, args *protocol.Sh
 	}, ""
 }
 
-// job is a background command, kept until job_stop, its run's end or Close.
+// job is a background command, kept until job_stop, its run's end, its
+// run's lease, StopAll or Close.
 type job struct {
 	id    string
 	runID string
 	cmd   *startedCommand
+
+	// Guarded by Executor.mu: aborted ends a job whose start lost to its
+	// run's end, StopAll or Close; lastCommand is when the server last sent
+	// a command for its run.
+	aborted     bool
+	lastCommand time.Time
 
 	mu      sync.Mutex
 	stdout  *ring
@@ -213,10 +220,13 @@ func newJobID() string {
 	return "job-" + string(b)
 }
 
-// startJob starts a background command; at most MaxJobs run at once.
-func (e *Executor) startJob(runID, command, cwd string, limits protocol.HelloV2Limits) (protocol.Validator, protocol.ReasonCode) {
+// startJob starts a background command; at most MaxJobs run at once. The
+// job registers atomically with cancellation: when its op is cancelled or
+// times out, or its run's end, StopAll or Close come while the process
+// starts, the process tree is ended and no job remains.
+func (e *Executor) startJob(ctx context.Context, runID, command, cwd string, limits protocol.HelloV2Limits) (protocol.Validator, protocol.ReasonCode) {
 	e.mu.Lock()
-	running := e.startingJobs
+	running := len(e.starting)
 	for _, j := range e.jobs {
 		j.mu.Lock()
 		if !j.ended {
@@ -228,27 +238,34 @@ func (e *Executor) startJob(runID, command, cwd string, limits protocol.HelloV2L
 		e.mu.Unlock()
 		return nil, protocol.CodeComputerLimit
 	}
-	e.startingJobs++
-	e.mu.Unlock()
 	j := &job{id: newJobID(), runID: runID, changed: make(chan struct{})}
 	j.stdout = newRing(protocol.MaxJobBufferBytes / 2)
 	j.stderr = newRing(protocol.MaxJobBufferBytes / 2)
-	started, code := e.startCommand(command, cwd,
-		jobWriter{j, func(j *job) *ring { return j.stdout }},
-		jobWriter{j, func(j *job) *ring { return j.stderr }})
+	e.starting[j] = struct{}{}
+	e.mu.Unlock()
+	var started *startedCommand
+	code := protocol.CodeComputerCancelled
+	if ctx.Err() == nil {
+		started, code = e.startCommand(command, cwd,
+			jobWriter{j, func(j *job) *ring { return j.stdout }},
+			jobWriter{j, func(j *job) *ring { return j.stderr }})
+	}
 	e.mu.Lock()
-	e.startingJobs--
-	closed := e.closed
-	if code == "" && !closed {
+	delete(e.starting, j)
+	abort := j.aborted || ctx.Err() != nil || e.closed
+	if code == "" && !abort {
 		j.cmd = started
+		j.lastCommand = time.Now()
 		e.jobs[j.id] = j
+		e.startLeaseLocked()
 	}
 	e.mu.Unlock()
 	if code != "" {
 		return nil, code
 	}
-	if closed {
+	if abort {
 		started.stop()
+		e.log.Event("job_aborted")
 		return nil, protocol.CodeComputerCancelled
 	}
 	go func() {
