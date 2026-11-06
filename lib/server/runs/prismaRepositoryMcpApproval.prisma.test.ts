@@ -77,7 +77,7 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
         // Admission requires the normalized request to carry the turn's own content.
         const content = overrides.content ?? input.content;
         const run = await repository.createRun({ ...input, ...overrides, content,
-          normalizedRequest: { ...input.normalizedRequest, content } });
+          normalizedRequest: { ...input.normalizedRequest, ...overrides.normalizedRequest, content } });
         await prisma.mcpRunBinding.create({ data: { modelRunId: run.runId, runtimeGenerationId: generationId,
           runtimeGenerationFingerprint: fingerprint } });
         return run;
@@ -188,6 +188,24 @@ describe("MCP write approval storage", () => {
       expect(mcpApprovalGated(call!)).toBe(true);
       expect(await prisma.mcpToolApproval.count({ where: { modelRunId: second.runId, toolCallId: call!.id } })).toBe(1);
     }
+  }));
+
+  it("hands the turn after an Allow the computer of the run it gated, none for a run without one", async () => fixture(async f => {
+    const computer = { arch: "amd64", cwd: "C:\\Reports", deviceId: randomUUID(), name: "DESKTOP-7Q2", online: true, os: "windows" };
+    const load = (approvalId: string, userId = f.userId) =>
+      repository.loadMcpApprovalContinuation!({ approvalId, chatId: f.chatId, userId });
+    const { card, first } = await askedFirst(f);
+    await decide(f, first.runId, card.id, "allow_once", "nonce-0001");
+    expect(await load(card.id)).toEqual({ computer: null, serverName: "Synthetic Records", toolName: "delete_record" });
+    expect(await load(card.id, f.otherId)).toBeNull();
+
+    const withComputer = await f.create({ expectedActiveLeafId: first.assistantMessageId,
+      normalizedRequest: { computer } as unknown as CreateRunInput["normalizedRequest"] });
+    await f.persist(withComputer.runId, [{ id: "r-2" }]);
+    const gatedCard = await prisma.mcpToolApproval.findFirstOrThrow({ where: { modelRunId: withComputer.runId } });
+    await repository.cancelRun({ runId: withComputer.runId, userId: f.userId, payload: cancelPayload });
+    await decide(f, withComputer.runId, gatedCard.id, "allow_once", "nonce-0002");
+    expect(await load(gatedCard.id)).toEqual({ computer, serverName: "Synthetic Records", toolName: "delete_record" });
   }));
 
   it("never serves an expired Allow once or one of another chat", async () => fixture(async f => {

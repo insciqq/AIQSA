@@ -546,7 +546,7 @@ export function useMessageRunActions({
   function runControlPayload(
     snapshot: MessageRunControlSnapshot,
     newChat = false,
-    /** A regenerate keeps the computer of the run it repeats, which the server holds. */
+    /** A regenerate and the turn after an Allow keep the computer of the run they repeat or continue, which the server holds. */
     options: Readonly<{ computer?: boolean }> = {}
   ) {
     const computerField = options.computer !== false && snapshot.computer !== undefined
@@ -1688,7 +1688,9 @@ export function useMessageRunActions({
     updateStreamChatActiveLeaf(chatId, assistantId);
     if (activeChatIdRef.current === chatId) resetThreadToLatest();
     const admissionId = randomUUID();
-    const controls = runControlPayload(runControlSnapshot);
+    // The turn after an Allow continues the gated run with that run's computer, which the server holds; a Continue is an ordinary send.
+    const controls = runControlPayload(runControlSnapshot, false,
+      { computer: turn.systemTurnKind !== MCP_APPROVAL_CONTINUATION_KIND });
     const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,
