@@ -4,6 +4,7 @@ import { continuableRunFailure } from "../../contracts/runs";
 import { logEvent } from "../observability";
 import type { ResearchEvidenceRepository } from "./evidenceRepository";
 import type { ResearchResumePort, ResearchResumeState, ResearchRunScope } from "./ports";
+import { prismaResearchedRunsReader, researchedRuns } from "./researchedRuns";
 
 /**
  * Picking research up on the user's Continue (`ResearchResumePort`, operator decision 2026-11-01: nothing restarts by itself).
@@ -27,7 +28,10 @@ export type ResearchResumeSource = Readonly<{ answer: unknown; frame: unknown; g
 export type ResearchResumeStore = Readonly<{
   /** The runs of this research, earliest first (`ResearchEvidenceRepository.chain`). */
   chain(key: ResearchResumeKey): Promise<readonly string[]>;
-  /** The run stopped with its work kept and offered Continue, and its answer was never published. */
+  /**
+   * The run stopped with its work kept and offered Continue, and its answer was never published: an interruption or the turn's time
+   * limit, or any failure of a research run (operator decision 2026-11-06), never the user's Stop.
+   */
   interrupted(key: ResearchResumeKey): Promise<boolean>;
   /** Creates this run's row, which `continuedFromRunId` is written with once. */
   link(key: ResearchResumeKey, write: Readonly<{ answer: unknown; frame: unknown; fromRunId: string; goal: string; proposal: unknown; releasedAt: Date; version: number; windowEndsAt: Date }>): Promise<void>;
@@ -42,16 +46,21 @@ const json = (value: unknown) => value as Prisma.InputJsonValue;
 
 const isFailure = (value: unknown): value is Readonly<{ code?: unknown; message?: unknown }> => typeof value === "object" && value !== null;
 
-export function createResearchResumeStore(client: Pick<PrismaClient, "modelRun" | "researchEvidence" | "researchFrame">,
+export function createResearchResumeStore(client: Pick<PrismaClient, "message" | "modelRun" | "researchEvidence" | "researchFrame">,
   evidence: Pick<ResearchEvidenceRepository, "chain">): ResearchResumeStore {
   return {
     chain: ({ chatId, runId, userId }) => evidence.chain({ chatId, researchRunId: runId, userId }),
     async interrupted({ chatId, runId, userId }) {
-      const run = await client.modelRun.findFirst({ select: { errorPayload: true }, where: { answerCompletedAt: null, chatId, engine: "native", id: runId, status: "error", userId } });
-      const failure: unknown = run?.errorPayload;
-      if (!isFailure(failure)) return false;
-      const { code, message } = failure;
-      return continuableRunFailure(typeof code === "string" ? code : null, typeof message === "string" ? message : null) !== null;
+      const failed = { answerCompletedAt: null, chatId, engine: "native" as const, id: runId, status: "error" as const, userId };
+      const run = await client.modelRun.findFirst({ select: { errorPayload: true }, where: failed });
+      if (!run) return false;
+      const failure: unknown = run.errorPayload;
+      if (isFailure(failure) && continuableRunFailure(typeof failure.code === "string" ? failure.code : null,
+        typeof failure.message === "string" ? failure.message : null) !== null) return true;
+      // A research answer offers Continue whatever failed it, since Regenerate would run the whole research again (operator decision
+      // 2026-11-06): the run researched, by the stored rows alone (`researchedRuns`), the server's turn after an Allow and a Continue that
+      // failed before its own start included. Any other failed run stays one that offers no Continue.
+      return (await researchedRuns(prismaResearchedRunsReader(client, { chatId, userId }), [runId])).has(runId);
     },
     async link({ chatId, runId, userId }, { answer, fromRunId, frame, goal, proposal, releasedAt, version, windowEndsAt }) {
       await client.researchFrame.create({ data: { answer: json(answer), chatId, continuedFromRunId: fromRunId, frame: json(frame), goal, modelRunId: runId, proposal: json(proposal),

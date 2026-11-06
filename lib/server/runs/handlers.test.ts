@@ -9,7 +9,7 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import { createTestAuth } from "@/tests/support/auth";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
-import { DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
+import { DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import {
   ProviderAdmissionError,
@@ -2028,27 +2028,36 @@ describe("model run route handlers", () => {
     expect(state.created?.normalizedRequest.deepResearch).toBeUndefined();
   });
 
-  it("keeps Deep research on a regenerate of the message sent with it, and of no other, and never on a turn the server writes", async () => {
+  it("refuses a regenerate of the message sent with Deep research, runs an edit's own choice, and never carries it on a turn the server writes", async () => {
     const { repository, state } = createMemoryRepository();
     const providers = { fake: createFakeProviderAdapter() };
     const plain = nativeEngineFake().deps;
     const researching = { ...plain, engine: { ...plain.engine, research: {}, subagentThreads: {} as never } };
     const sourceOf = repository.findRegenerationSource.bind(repository);
-    const regenerate = (sentWith: boolean, nativeEngine: typeof plain) => {
+    const regenerate = (sentWith: boolean | "approval", nativeEngine: typeof plain, extra: Record<string, unknown> = {}) => {
       repository.findRegenerationSource = async (id, userId) => {
         const source = await sourceOf(id, userId);
-        return source && { ...source, ...sentWith ? { deepResearch: true as const } : {} };
+        return source && { ...source, ...sentWith === "approval" ? { researchApproval: true as const } : sentWith ? { deepResearch: true as const } : {} };
       };
       return createRegenerateModelRunHandler({ ...authDeps, nativeEngine, providers, repository })(
         new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-          body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] } }),
+          body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] }, ...extra }),
           headers: { cookie: authCookie() },
           method: "POST"
         }), { params: { messageId: "assistant-message-1" } });
     };
-    // The body names nothing: the message's own choice is what the admission checks, so this harness's missing Search refuses it.
-    const kept = await regenerate(true, researching);
-    expect([kept.status, await kept.json()]).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.needsSearch }]);
+    // It would run the whole research again (operator decision 2026-11-06): refused before anything is checked or accepted, a field in the body included.
+    for (const extra of [{}, { deepResearch: true }]) {
+      const refused = await regenerate(true, researching, extra);
+      expect([refused.status, await refused.json()]).toEqual([409, { error: DEEP_RESEARCH_REGENERATE_REFUSAL.code, message: DEEP_RESEARCH_REGENERATE_REFUSAL.message }]);
+    }
+    // So is the answer to the server's turn after an Allow in a research: answering it again would run that turn as an ordinary message.
+    const approval = await regenerate("approval", researching);
+    expect([approval.status, await approval.json()]).toEqual([409, { error: DEEP_RESEARCH_REGENERATE_REFUSAL.code, message: DEEP_RESEARCH_REGENERATE_REFUSAL.message }]);
+    expect(state.regenerated).toBeNull();
+    // An edited message has no run yet, so its first run carries the edit's choice, which this harness's missing Search refuses as a send's would.
+    const edited = await regenerate(false, researching, { deepResearch: true });
+    expect([edited.status, await edited.json()]).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.needsSearch }]);
     expect(state.regenerated).toBeNull();
     const other = await regenerate(false, plain);
     expect(other.status).toBe(200);

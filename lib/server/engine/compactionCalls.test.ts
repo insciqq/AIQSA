@@ -140,4 +140,22 @@ describe("compaction calls", () => {
     expect(onUsage).toHaveBeenCalledTimes(1);
     expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ inputTokens: 900, outputTokens: 40 }), undefined);
   });
+
+  it("are sent again under the run's retry policy, a research run's past a chat's six attempts", async () => {
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        calls += 1;
+        if (calls < 8) throw Object.assign(new Error("bad gateway"), { status: 502 });
+        return { finalProviderResponsePreview: {}, finalText: "## Goal", usage: { inputTokens: 900, outputTokens: 40 } };
+      }
+    };
+    // A short backoff for real timers; the default policy would have given up after six attempts.
+    const retry = { backoff: { baseDelayMs: 1, maxBackoffMs: 1 }, maxAttempts: 8 };
+    const call = compactionModelCall({ adapter, deadlineAt: Date.now() + 600_000, onUsage: vi.fn(), retry }, () => runRequest);
+    await expect(call({ history: span, idleTimeoutMs: 1, instructions: SUMMARIZER_INSTRUCTIONS, kind: "summary", maxOutputTokens: 4_096,
+      signal: new AbortController().signal })).resolves.toMatchObject({ text: "## Goal" });
+    expect(calls).toBe(8);
+  });
 });

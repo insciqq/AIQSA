@@ -89,7 +89,7 @@ function researchPromptSection(): string {
     "# Research",
     `\`${START_RESEARCH_TOOL_NAME}\` starts the research method the user chose with Deep research for their message: parallel researchers, source classes assigned up front and a report the server checks before the user sees it. It takes much longer than an ordinary answer, and the user sees a plan first.`,
     "- Never ask the user a clarifying question before research, however much is missing: they may have left. A missing fact (country, budget) becomes a named assumption in your plan, or a branch of the report when it changes the result.",
-    `- When the user's message is exactly "${CONTINUE_TURN_TEXT}" and research was running in the answer before it, which stopped unfinished, call \`${START_RESEARCH_TOOL_NAME}\` with the same goal as your first step: the server picks it up from what was recorded, or tells you it starts over.`,
+    `- When the user's message is exactly "${CONTINUE_TURN_TEXT}" and the answer before it was research that ended unfinished, even before it started, call \`${START_RESEARCH_TOOL_NAME}\` with the same goal as your first step: the server picks it up from what was recorded, or tells you it starts over.`,
     `- Once it started, follow what it returns: scope, show your plan with \`${PROPOSE_RESEARCH_PLAN_TOOL_NAME}\`, and finish with \`${SUBMIT_RESEARCH_DRAFT_TOOL_NAME}\`. Nothing else you write reaches the user.`
   ].join("\n");
 }

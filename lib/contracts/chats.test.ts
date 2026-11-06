@@ -155,6 +155,19 @@ describe("chat wire contracts", () => {
     expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...answer, deepResearch: true }], usageStats }) })).toBeNull();
   });
 
+  it("carries the research answer mark only as true on an answer, through a run's chat update as through the page", () => {
+    const question = { ...message, id: "question", role: "user", modelRunId: null };
+    const answer = { ...message, parentMessageId: "question" };
+    const decode = (value: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({ messages: [question, value], usageStats }) });
+    expect(decode({ ...answer, researchAnswer: true })?.messages[1]?.researchAnswer).toBe(true);
+    expect(decode(answer)?.messages[1]).not.toHaveProperty("researchAnswer");
+    for (const invalid of [{ ...answer, researchAnswer: false }, { ...answer, researchAnswer: "true" }]) expect(decode(invalid)).toBeNull();
+    expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...question, researchAnswer: true }], usageStats }) })).toBeNull();
+    const update = decodeChatUpdateData({ chat: { ...summary, contextStats, usageStats },
+      messages: [{ ...question, deepResearch: true }, { ...answer, researchAnswer: true }] });
+    expect(update?.messages.map((entry) => [entry.deepResearch ?? null, entry.researchAnswer ?? null])).toEqual([[true, null], [null, true]]);
+  });
+
   it("carries the sub-agents a wake-up turn reports on only on that turn, with valid distinct names", () => {
     const turn = { ...message, id: "wake", role: "user", modelRunId: null, systemTurnKind: "subagent_callback",
       content: { blocks: [{ text: "Sub-agent results.", type: "text" }] } };

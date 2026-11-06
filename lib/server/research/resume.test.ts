@@ -27,6 +27,7 @@ import { finding, id } from "./report.testFixtures";
 import { NOOP_RESEARCH_PORTS, type ResearchPortFactories, type ResearchResumeState, type ResearchRunScope } from "./ports";
 import { reportCheckGate } from "./reportCheck";
 import { createResearchResume, createResearchResumeStore, type ResearchResumeSource, type ResearchResumeStore } from "./resume";
+import { researchDatabase, type StoredTurn } from "./researchedRuns.testFixtures";
 import { createRunResearch, researchOfTurn, researchRunOf, type RunResearchInput } from "./run";
 
 /**
@@ -163,26 +164,54 @@ describe("what the store gives a Continue", () => {
 });
 
 describe("which runs count as interrupted", () => {
-  const storeWith = (errorPayload: unknown) => {
-    const findFirst = vi.fn(async () => errorPayload === undefined ? null : { errorPayload });
-    return { findFirst, store: createResearchResumeStore({ modelRun: { findFirst } } as never, { chain: async () => [] }) };
-  };
+  const PROVIDER_FAILURE = { code: "provider_response_failed", message: "The provider's response failed." };
+  /** The store over a database of these turns, asked of `run`. */
+  const interruptedOf = (turns: Readonly<Record<string, StoredTurn>>, run = "run-a") =>
+    createResearchResumeStore(researchDatabase(turns).client as never, { chain: async () => [] }).interrupted(keyOf(run));
 
-  it.each([
-    ["a restart", RUN_INTERRUPTED_FAILURE, true],
-    ["the turn's time limit", RUN_TIME_LIMIT_FAILURE, true],
-    ["a saved answer's message alone", { message: RUN_INTERRUPTED_FAILURE.message }, true],
-    ["a provider's failure", { code: "provider_response_not_retryable", message: "No." }, false],
-    ["a run with no failure", undefined, false],
-    ["a payload that is no object", "run_interrupted", false]
-  ])("%s", async (_name, payload, expected) => {
-    await expect(storeWith(payload).store.interrupted(keyOf("run-a"))).resolves.toBe(expected);
+  it.each<[string, unknown, Partial<StoredTurn>, boolean]>([
+    ["a restart", RUN_INTERRUPTED_FAILURE, {}, true],
+    ["the turn's time limit", RUN_TIME_LIMIT_FAILURE, {}, true],
+    ["a saved answer's message alone", { message: RUN_INTERRUPTED_FAILURE.message }, {}, true],
+    ["an ordinary run's provider failure", PROVIDER_FAILURE, {}, false],
+    ["a provider failure of a run sent with Deep research", PROVIDER_FAILURE, { chosen: true }, true],
+    ["a provider failure of a Continue that picked research up, by its frame", PROVIDER_FAILURE, { frame: true }, true],
+    ["a research run's failure of any other code", { code: "deep_research_not_started", message: "Deep research did not start." }, { chosen: true }, true],
+    ["a research run whose payload is no object", "run_interrupted", { chosen: true }, true],
+    ["an ordinary payload that is no object", "run_interrupted", {}, false]
+  ])("%s", async (_name, errorPayload, facts, expected) => {
+    await expect(interruptedOf({ "run-a": { errorPayload, status: "error", ...facts } })).resolves.toBe(expected);
   });
 
-  it("asks only of the user's own failed native run in this chat whose answer was never published", async () => {
-    const { findFirst, store } = storeWith(RUN_INTERRUPTED_FAILURE);
-    await store.interrupted(keyOf("run-a"));
-    expect(findFirst).toHaveBeenCalledExactlyOnceWith({ select: { errorPayload: true }, where: { answerCompletedAt: null, chatId: "chat", engine: "native", id: "run-a", status: "error", userId: "user" } });
+  it("counts the research's turns that hold no research of their own: the turn after an Allow, and a Continue that failed before its start", async () => {
+    const research = { chosen: true, status: "complete" } as const;
+    await expect(interruptedOf({ "run-a": research, "run-c": { errorPayload: PROVIDER_FAILURE, message: "approval", previous: "run-a", status: "error" } }, "run-c"))
+      .resolves.toBe(true);
+    await expect(interruptedOf({ "run-a": { ...research, status: "error" }, "run-c": { errorPayload: PROVIDER_FAILURE, message: "continue", previous: "run-a", status: "error" } },
+      "run-c")).resolves.toBe(true);
+    // In an ordinary chat they stay ordinary failures.
+    await expect(interruptedOf({ "run-a": { status: "complete" }, "run-c": { errorPayload: PROVIDER_FAILURE, message: "approval", previous: "run-a", status: "error" } }, "run-c"))
+      .resolves.toBe(false);
+    await expect(interruptedOf({ "run-a": { status: "error" }, "run-c": { errorPayload: PROVIDER_FAILURE, message: "continue", previous: "run-a", status: "error" } }, "run-c"))
+      .resolves.toBe(false);
+  });
+
+  it("never counts a run the user stopped, one that finished or one whose answer was published, research or not", async () => {
+    for (const ended of [{ status: "cancelled" }, { status: "complete" }, { published: true, status: "error" }] as const) {
+      await expect(interruptedOf({ "run-a": { chosen: true, errorPayload: RUN_INTERRUPTED_FAILURE, frame: true, ...ended } })).resolves.toBe(false);
+    }
+  });
+
+  it("asks only of the user's own failed native run in this chat whose answer was never published, and of research only past a continuable failure", async () => {
+    const { client } = researchDatabase({ "run-a": { chosen: true, errorPayload: RUN_INTERRUPTED_FAILURE, status: "error" } });
+    const findFirst = vi.spyOn(client.modelRun, "findFirst");
+    const findMany = vi.spyOn(client.modelRun, "findMany");
+    const store = createResearchResumeStore(client as never, { chain: async () => [] });
+    await expect(store.interrupted(keyOf("run-a"))).resolves.toBe(true);
+    expect(findFirst).toHaveBeenCalledExactlyOnceWith({ select: { errorPayload: true },
+      where: { answerCompletedAt: null, chatId: "chat", engine: "native", id: "run-a", status: "error", userId: "user" } });
+    expect(findMany).not.toHaveBeenCalled();
+    await expect(createResearchResumeStore(client as never, { chain: async () => [] }).interrupted({ ...keyOf("run-a"), userId: "stranger" })).resolves.toBe(false);
   });
 });
 
@@ -229,12 +258,12 @@ function portsOf(load: () => Promise<ResearchResumeState | null> = async () => S
   return { link, open, planReleased, ports, resume, scope: () => scope! };
 }
 
-function runOn(items: readonly TranscriptItem[], ports: ResearchPortFactories, extra: Partial<RunResearchInput> = {}) {
+function runOn(items: readonly TranscriptItem[], ports: ResearchPortFactories, extra: Partial<RunResearchInput> = {}, branchRunIds: readonly string[] = ["run-a"]) {
   const shown: unknown[] = [];
   const threads = { backgroundRunIds: vi.fn(async () => []), threadEffectItems: vi.fn(async (_input: { runIds: readonly string[] }) => []) };
   const research = createRunResearch({ chatId: "chat", deps: { gates: [], ports }, gatesEndAt: 2_000_000, items: () => items, now: () => NOW,
     onPlan: async (entry) => { shown.push(entry); }, rearmReservedCall: () => undefined, runId: "run-b", savedResults: { read: async () => null },
-    subagentInput: { admittedRequest: { modelId: "main-model" }, branchRunIds: ["run-a"], engine: {}, signal: running, snapshot: {}, userFollowups: async () => [] } as never,
+    subagentInput: { admittedRequest: { modelId: "main-model" }, branchRunIds, engine: {}, signal: running, snapshot: {}, userFollowups: async () => [] } as never,
     threads: threads as never, toolTimeLeft: () => true, userId: "user", userMessage: CONTINUE_TURN_TEXT, ...extra });
   return { research, shown, threads };
 }
@@ -553,6 +582,84 @@ describe("what is no Continue, or has nothing to pick up", () => {
     expect(run.research.outstanding()).toBe(false);
     expect(log).toHaveBeenCalledWith("service_operation", expect.objectContaining({ code: "research_resume_failed", stage: "write" }));
     log.mockRestore();
+  });
+});
+
+describe("a Continue of a research that failed", () => {
+  const PROVIDER_FAILURE = { code: "provider_response_failed", message: "The provider's response failed." };
+  const FAILED_RESEARCH: StoredTurn = { chosen: true, errorPayload: PROVIDER_FAILURE, frame: true, status: "error" };
+
+  /** A run on the real resume store over a database of these turns, the branch's runs in their order. */
+  const continueOn = (turns: Readonly<Record<string, StoredTurn>>, authority: RunResearchInput["authority"] = [{ answered: "message", runId: "run-a" }],
+    items: readonly TranscriptItem[] = turn()) => {
+    const store = createResearchResumeStore(researchDatabase(turns, { frameRow: SOURCE }).client as never, { chain: async ({ researchRunId }) => [researchRunId] });
+    return runOn(items, { ...portsOf().ports, resume: createResearchResume({ store }) }, { authority, request: "continue" }, Object.keys(turns));
+  };
+
+  it("is authorized by the failed research's own binding, whatever failed it, and picks it up from its frame and records", async () => {
+    const run = continueOn({ "run-a": FAILED_RESEARCH });
+    await expect(run.research.authorized()).resolves.toBe(true);
+    const { text } = await startOn(run);
+    expect(text).toMatch(/"status":"resumed"/u);
+    expect(text).toContain("1 records stand.");
+    expect(run.shown[0]).toMatchObject({ items: [{ completed: true, text: "Continuing from what was recorded: 1 of 2 cells filled" }, { active: true, text: PLAN.questions[0]!.question }] });
+  });
+
+  it("goes on past a Continue that researched and failed in turn, the research's first run holding the choice", async () => {
+    const turns = { "run-a": FAILED_RESEARCH, "run-c": { errorPayload: PROVIDER_FAILURE, frame: true, message: "continue", previous: "run-a", status: "error" } } as const;
+    await expect(continueOn(turns, [{ answered: "continue", runId: "run-c" }, { answered: "message", runId: "run-a" }]).research.authorized()).resolves.toBe(true);
+  });
+
+  it("is authorized after the turn an Allow started failed, the research having paused for it with its run complete", async () => {
+    const turns = { "run-a": { ...FAILED_RESEARCH, status: "complete" }, "run-c": { errorPayload: PROVIDER_FAILURE, message: "approval", previous: "run-a", status: "error" } } as const;
+    await expect(continueOn(turns, [{ answered: "approval", runId: "run-c" }, { answered: "message", runId: "run-a" }]).research.authorized()).resolves.toBe(true);
+    // In an ordinary chat the same failure authorizes nothing.
+    const ordinary = { "run-a": { status: "complete" }, "run-c": { errorPayload: PROVIDER_FAILURE, message: "approval", previous: "run-a", status: "error" } } as const;
+    await expect(continueOn(ordinary, [{ answered: "approval", runId: "run-c" }, { answered: "message", runId: "run-a" }]).research.authorized()).resolves.toBe(false);
+  });
+
+  it("is authorized after a Continue that failed before its own start, and picks up what the research recorded before it", async () => {
+    const turns = { "run-a": FAILED_RESEARCH, "run-c": { errorPayload: PROVIDER_FAILURE, message: "continue", previous: "run-a", status: "error" } } as const;
+    const again: TranscriptItem = { id: "msg-continue-again", kind: "user", text: CONTINUE_TURN_TEXT };
+    const run = continueOn(turns, [{ answered: "continue", runId: "run-c" }, { answered: "message", runId: "run-a" }], [...turn(), again]);
+    await expect(run.research.authorized()).resolves.toBe(true);
+    const { text } = await startOn(run);
+    expect(text).toMatch(/"status":"resumed"/u);
+    // A Continue after an ordinary failed answer authorizes nothing, its words alone counting for nothing.
+    const ordinary = { "run-a": { errorPayload: PROVIDER_FAILURE, status: "error" }, "run-c": { errorPayload: PROVIDER_FAILURE, message: "continue", previous: "run-a", status: "error" } } as const;
+    await expect(continueOn(ordinary, [{ answered: "continue", runId: "run-c" }, { answered: "message", runId: "run-a" }], [...turn(), again]).research.authorized())
+      .resolves.toBe(false);
+  });
+
+  it("is no Continue of an ordinary failed run, of a research the user stopped, or of one that finished", async () => {
+    await expect(continueOn({ "run-a": { errorPayload: PROVIDER_FAILURE, status: "error" } }).research.authorized()).resolves.toBe(false);
+    await expect(continueOn({ "run-a": { ...FAILED_RESEARCH, status: "cancelled" } }).research.authorized()).resolves.toBe(false);
+    await expect(continueOn({ "run-a": { ...FAILED_RESEARCH, status: "complete" } }).research.authorized()).resolves.toBe(false);
+  });
+
+  it("owes the start where the research it goes on with failed before starting, which then picks nothing up", async () => {
+    const parts = portsOf(async () => null);
+    const run = runOn([QUESTION, CONTINUE], parts.ports, { authority: [{ answered: "message", runId: "run-a" }], request: "continue" });
+    expect(run.research.holding()).toBe(true);
+    expect(run.research.startMissed()).toMatchObject({ code: "deep_research_not_started" });
+    const { text } = await startOn(run);
+    expect(text).toMatch(/"status":"scoping"/u);
+    expect(text).not.toContain("research starts over with the plan");
+    expect(parts.resume).toHaveBeenCalledExactlyOnceWith("run-a", running);
+    expect(run.research.startMissed()).toBeNull();
+    // A Continue of a research that did start owes nothing before its start: the model is told the door, as before.
+    expect(runOn(turn(), parts.ports, { authority: [{ answered: "message", runId: "run-a" }], request: "continue" }).research.holding()).toBe(false);
+  });
+
+  it("reads past a Continue whose run ended before its start, so a restart there never starts the research over", async () => {
+    const parts = portsOf();
+    const again: TranscriptItem = { id: "msg-continue-again", kind: "user", text: CONTINUE_TURN_TEXT };
+    const run = runOn([...turn(), again], parts.ports, { authority: [{ answered: "continue", runId: "run-c" }, { answered: "message", runId: "run-a" }],
+      request: "continue" }, ["run-a", "run-c"]);
+    expect(run.research.holding()).toBe(false);
+    const { text } = await startOn(run);
+    expect(parts.resume).toHaveBeenCalledExactlyOnceWith("run-a", running);
+    expect(text).toMatch(/"status":"resumed"/u);
   });
 });
 

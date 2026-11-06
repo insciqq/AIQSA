@@ -2,7 +2,7 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { InstructionPresetError } from "../instructions/store";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
-import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
+import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { deepResearchRefusal } from "../research/run";
 import {
   MCP_APPROVAL_CONTINUATION_KIND,
@@ -873,6 +873,15 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const source = await deps.repository.findRegenerationSource(params.messageId, auth.userId);
     if (!source) {
       return Response.json({ error: "message_not_found_or_not_regeneratable" }, { status: 404 });
+    }
+    // A message sent with Deep research is never answered again from scratch (operator decision 2026-11-06): that is half an hour or
+    // more of research, which nobody expects of one click. Its failed answer offers Continue, and an edit starts a new research on purpose,
+    // so only a view without the answer's research mark (a tab opened before the release) still asks. An edited message's first run comes
+    // through here too, but that message has no run yet. The server's turn after an Allow in a research is refused the same way, since
+    // answering it again would run that turn as an ordinary message. A Continue's message is not refused: its regenerate is a Continue
+    // again, which picks up what the research it continues recorded, under the same authority (`RunResearch.authorized`).
+    if (source.deepResearch === true || source.researchApproval === true) {
+      return Response.json({ error: DEEP_RESEARCH_REGENERATE_REFUSAL.code, message: DEEP_RESEARCH_REGENERATE_REFUSAL.message }, { status: 409 });
     }
 
     const activeRunResponse = await activeRunConflictResponse(source.chat.id, deps.repository, auth.userId);

@@ -29,6 +29,8 @@ export function serializeChatUpdate(
       workspace: update.chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
     },
     messages: update.messages.map((message) => ({
+      ...(message.deepResearch && message.role === "user" ? { deepResearch: true as const } : {}),
+      ...(message.researchAnswer && message.role === "assistant" ? { researchAnswer: true as const } : {}),
       ...(message.followups ? { followups: message.followups } : {}),
       artifactSummary: message.artifactSummary ?? null,
       assistantIdentity: message.assistantIdentity ?? null,

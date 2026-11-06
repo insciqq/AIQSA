@@ -150,6 +150,9 @@ export function humanizeErrorCode(code: string): string {
     deep_research_needs_search: "Turn on Search to use Deep research",
     deep_research_unavailable: "Deep research is not available here. Turn off Deep research to send this message",
     deep_research_invalid: "Deep research could not be requested. Reload the page and send again",
+    // Research answers offer no Regenerate; a view without the answer's mark yet may still ask (`DEEP_RESEARCH_REGENERATE_REFUSAL`).
+    deep_research_regenerate_unavailable: "A Deep research answer is not regenerated, since that would run the whole research again. " +
+      "Use Continue on an unfinished answer, or edit the message to start the research again",
     context_too_large: "This message does not fit the selected model's context window beside its instructions and tools. " +
       "Shorten the message or remove attachments, or choose a model with a larger context window",
     skills_budget_exceeded: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window",

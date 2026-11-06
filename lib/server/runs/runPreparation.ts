@@ -315,8 +315,6 @@ export type RegenerateRunPreparationSource = Readonly<{
     followups?: RegenerationFollowups;
     artifactEdit?: unknown;
     artifactIntent?: unknown;
-    /** What the message's run froze (`NormalizedRunRequest.deepResearch`): a regenerate keeps it. */
-    deepResearch?: unknown;
     assistantMessage: Readonly<{
       modelId: string | null;
       provider: string | null;
@@ -1064,11 +1062,11 @@ export async function prepareRun(
     : input.source.kind === "regenerate" ? input.source.source.artifactEdit : undefined;
   const artifactEdit = artifactEditValue === undefined ? undefined : decodeArtifactEdit(artifactEditValue);
   if (artifactEdit === null) return failure("artifact_edit_invalid", 400);
-  // Deep research belongs to the message (operator decision 2026-11-05): a regenerate without the field keeps what the message
-  // was sent with, and a turn the server wrote never carries it. Whether this run can research is the handler's call.
+  // Deep research belongs to the message (operator decision 2026-11-05): only a send and an edited message's first run carry the field,
+  // since a message sent with it is never regenerated (the handler refuses it, operator decision 2026-11-06), and a turn the server
+  // wrote never carries it. Whether this run can research is the handler's call.
   const deepResearch = decodeDeepResearchRequest(input.serverAuthoredInput ? undefined
-    : body && Object.hasOwn(body, DEEP_RESEARCH_SEND_FIELD) ? body[DEEP_RESEARCH_SEND_FIELD]
-      : input.source.kind === "regenerate" ? input.source.source.deepResearch : undefined);
+    : body && Object.hasOwn(body, DEEP_RESEARCH_SEND_FIELD) ? body[DEEP_RESEARCH_SEND_FIELD] : undefined);
   if (deepResearch === "invalid") return failure(DEEP_RESEARCH_REFUSALS.invalid, 400);
   const toolBudgets = deps.runPolicy
     ? await deps.runPolicy.load()
