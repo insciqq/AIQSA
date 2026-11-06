@@ -59,8 +59,8 @@ describe("ConnectShell", () => {
     renderShell([]);
     const add = screen.getByTestId("connect-add-computer");
     expect(within(add).getByRole("radio", { name: "Windows" })).toHaveAttribute("aria-checked", "true");
-    expect(within(add).getByTestId("connect-download-windows")).toHaveAttribute("href", "/connect/download/windows-amd64");
-    expect(within(add).getByTestId("connect-download-windows-other")).toHaveAttribute("href", "/connect/download/windows-arm64");
+    expect(within(add).getByTestId("connect-download-windows")).toHaveAttribute("href", "/connect/download/aiqsa-connect-windows-amd64.exe");
+    expect(within(add).getByTestId("connect-download-windows-other")).toHaveAttribute("href", "/connect/download/aiqsa-connect-windows-arm64.exe");
     expect(add).toHaveTextContent("AIQSA Connect - ai.example.com.exe");
     expect(add).toHaveTextContent("More info");
     expect(add).toHaveTextContent("Run anyway");
@@ -70,8 +70,8 @@ describe("ConnectShell", () => {
   it("puts ARM64 first on an ARM Windows that says so", async () => {
     setUserAgentData({ getHighEntropyValues: async () => ({ architecture: "arm" }), platform: "Windows" });
     renderShell([]);
-    expect(await screen.findByText("For x64 PCs")).toHaveAttribute("href", "/connect/download/windows-amd64");
-    expect(screen.getByTestId("connect-download-windows")).toHaveAttribute("href", "/connect/download/windows-arm64");
+    expect(await screen.findByText("For x64 PCs")).toHaveAttribute("href", "/connect/download/aiqsa-connect-windows-amd64.exe");
+    expect(screen.getByTestId("connect-download-windows")).toHaveAttribute("href", "/connect/download/aiqsa-connect-windows-arm64.exe");
   });
 
   it("names a port and plain http in the Windows file name as the download does", () => {
