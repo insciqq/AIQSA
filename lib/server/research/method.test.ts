@@ -436,7 +436,7 @@ describe("the method", () => {
     }
   });
 
-  it("asks research of a run only by its request: the choice, a research start in an approval's turn, or a Continue right after one", () => {
+  it("asks research of a run only by its request: the choice, a research start in an approval's turn, or the user's Continue", () => {
     const start: TranscriptItem[] = [{ id: "msg-1", kind: "user", text: "Mattresses." },
       { arguments: JSON.stringify({ goal: "Choose a mattress." }), callId: "start", id: "c", kind: "tool_call", name: "start_research" }];
     const ordinary: TranscriptItem[] = [{ id: "msg-1", kind: "user", text: "проведи глубокое исследование матрасов" }, { id: "a", kind: "assistant_text", text: "Answer." }];
@@ -447,7 +447,11 @@ describe("the method", () => {
     expect(researchRequestOf({ approval: true, chosen: false, items: start })).toBe("approval");
     expect(researchRequestOf({ approval: true, chosen: false, items: ordinary })).toBeNull();
     expect(researchRequestOf({ approval: false, chosen: false, items: [...start, typed(CONTINUE_TURN_TEXT)] })).toBe("continue");
-    expect(researchRequestOf({ approval: false, chosen: false, items: [...ordinary, typed(CONTINUE_TURN_TEXT)] })).toBeNull();
+    // A Continue asks whatever the turn before held, since a research that failed before its start left no call: only the store's word
+    // that the turn was interrupted and sent with Deep research lets it research (`RunResearch.authorized`).
+    expect(researchRequestOf({ approval: false, chosen: false, items: [...ordinary, typed(CONTINUE_TURN_TEXT)] })).toBe("continue");
+    expect(researchRequestOf({ approval: false, chosen: false, items: [typed(CONTINUE_TURN_TEXT)] })).toBe("continue");
+    expect(researchRequestOf({ approval: false, chosen: false, items: [...start, { ...typed(CONTINUE_TURN_TEXT), id: "followup-1" }] })).toBeNull();
     expect(researchRequestOf({ approval: false, chosen: false, items: [...start, typed("How much is it?")] })).toBeNull();
     // An approval continuation is the server's turn, whatever its request says.
     expect(researchRequestOf({ approval: true, chosen: true, items: start })).toBe("approval");

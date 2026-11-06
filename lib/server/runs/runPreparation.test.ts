@@ -2493,7 +2493,7 @@ describe("run preparation", () => {
     await expect(prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, tools: "none" }))).resolves.toMatchObject({ ok: false, code: "artifact_intent_unavailable", status: 409 });
   });
 
-  it("freezes Deep research with the message, keeps it on a regenerate of that message only, and takes no other value", async () => {
+  it("freezes Deep research with the message, carries it on an edited message's first run alone, and takes no other value", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
     const chosen = preparedFrom(await prepareRun(harness.deps, sendInput({ ...body, deepResearch: true })));
@@ -2506,8 +2506,8 @@ describe("run preparation", () => {
     const worded = preparedFrom(await prepareRun(harness.deps, sendInput({ ...body, content: { blocks: [{ text: "Проведи глубокое исследование", type: "text" }] } })));
     expect(worded.normalizedRequest.deepResearch).toBeUndefined();
     expect(worded.normalizedRequest.prompt.turnGuidance ?? []).not.toContain(DEEP_RESEARCH_CHOSEN_GUIDANCE);
-    // A regenerate keeps what the message was sent with; an edited message's regenerate carries the field itself.
-    expect(preparedFrom(await prepareRun(harness.deps, regenerateInput(body, { deepResearch: true }))).normalizedRequest.deepResearch).toBe(true);
+    // A regenerate takes nothing from the message: one sent with Deep research is refused before it gets here (operator decision 2026-11-06),
+    // and an edited message's first run, which comes through the regenerate route, carries the field itself.
     expect(preparedFrom(await prepareRun(harness.deps, regenerateInput(body))).normalizedRequest.deepResearch).toBeUndefined();
     expect(preparedFrom(await prepareRun(harness.deps, regenerateInput({ ...body, deepResearch: true }))).normalizedRequest.deepResearch).toBe(true);
     for (const value of [false, "true", 1, null]) {
