@@ -157,40 +157,13 @@ const fixtureSchemas: Readonly<Record<string, z.ZodType>> = {
   legacyClientManifest: connectLegacyClientManifestSchema
 };
 
-/**
- * Protocol 1 (terminal) fixtures the server no longer speaks. The Go client
- * removes them with its terminal types; until then they are skipped here,
- * and once they are gone this list names nothing that exists.
- */
-const TERMINAL_FIXTURE_SCHEMAS: ReadonlySet<string> = new Set([
-  "deviceEvent",
-  "deviceEventBatch",
-  "deviceStreamEvent",
-  "devicesResponse",
-  "eventsStreamEvent",
-  "recentDirsResult",
-  "serverCommand",
-  "session",
-  "sessionCreateRequest",
-  "sessionCreateResult",
-  "sessionHistoryResult",
-  "sessionKillResult",
-  "sessionOptionsResult",
-  "viewCreateRequest",
-  "viewCreateResponse",
-  "viewInputRequest",
-  "viewResizeRequest",
-  "viewStreamEvent",
-  "viewVisibilityRequest"
-]);
-
 type Fixture = Readonly<{ name: string; schema: string; value: unknown }>;
 
 function fixtures(files: Record<string, string>): Fixture[] {
-  return Object.entries(files).flatMap(([path, raw]) => {
+  return Object.entries(files).map(([path, raw]) => {
     const name = path.slice(path.lastIndexOf("/") + 1);
     const schema = name.slice(0, name.indexOf("."));
-    return TERMINAL_FIXTURE_SCHEMAS.has(schema) ? [] : [{ name, schema, value: JSON.parse(raw) as unknown }];
+    return { name, schema, value: JSON.parse(raw) as unknown };
   });
 }
 
@@ -204,36 +177,6 @@ const invalidFixtures = fixtures(import.meta.glob("../../connect/internal/protoc
   import: "default",
   query: "?raw"
 }));
-
-/**
- * The protocol 1 entries of `contract.json` (terminal limits, codes, events
- * and patterns) that TypeScript no longer defines; the Go client drops them
- * with its terminal types. Absent keys and codes are ignored.
- */
-const TERMINAL_CONTRACT_LIMITS = [
-  "maxSessionsPerDevice", "maxViewsPerDevice", "maxOutputChunkBytes", "maxInputBytes", "maxHistoryBytes",
-  "replyTimeoutSeconds", "viewOrphanTimeoutSeconds", "maxTitleLength", "maxSnapshotSessions", "maxSessionOptions",
-  "maxOptionLabelLength", "maxAttachedClients", "minCols", "maxCols", "minRows", "maxRows"
-];
-const TERMINAL_CONTRACT_KEYS = [
-  "helloLimits", "replyErrorCodes", "viewClosedReasons", "viewStreamClosedReasons", "programs", "sessionStatuses",
-  "statusReasons", "viewStreamEvents", "serverCommandTypes", "requestCommandTypes", "deviceEventTypes"
-];
-const TERMINAL_CONTRACT_PATTERNS = ["sessionId", "optionKey", "base64", "requestedCwd", "absolutePath"];
-const TERMINAL_REASON_CODES: ReadonlySet<string> = new Set([
-  "connect_device_timeout", "connect_session_limit", "connect_view_limit", "connect_session_not_found", "connect_cwd_invalid"
-]);
-
-function withoutTerminalEntries(value: typeof contract): Record<string, unknown> {
-  const omit = (record: object, keys: readonly string[]) =>
-    Object.fromEntries(Object.entries(record).filter(([key]) => !keys.includes(key)));
-  return {
-    ...omit(value, TERMINAL_CONTRACT_KEYS),
-    limits: omit(value.limits, TERMINAL_CONTRACT_LIMITS),
-    patterns: omit(value.patterns, TERMINAL_CONTRACT_PATTERNS),
-    reasonCodes: value.reasonCodes.filter((code) => !TERMINAL_REASON_CODES.has(code))
-  };
-}
 
 describe("connect contract fixtures", () => {
   it("loads fixtures for every schema", () => {
@@ -369,7 +312,7 @@ describe("connect contract constants", () => {
       eventsStreamEvents: CONNECT_EVENTS_STREAM_EVENTS,
       serverCommandV2Types: typeValues(connectServerCommandV2Schema),
       deviceEventV2Types: typeValues(connectDeviceEventV2Schema)
-    }).toEqual(withoutTerminalEntries(contract));
+    }).toEqual(contract);
   });
 
   it("names every SSE event its stream schema accepts", () => {

@@ -11,46 +11,29 @@ import "regexp"
 // ProtocolHeader on every device API request.
 const ProtocolVersion = 2
 
-// LegacyProtocolVersion is the `protocol` of Hello, the terminal protocol,
-// kept until the wave that removes it.
+// LegacyProtocolVersion is the `protocol` of the removed terminal protocol;
+// the shared contract still names it.
 const LegacyProtocolVersion = 1
 
-// Limits. Byte limits count UTF-8 bytes (decoded bytes for base64 output);
-// text limits count Unicode code points.
+// Limits. Byte limits count UTF-8 bytes; text limits count Unicode code points.
 const (
 	MaxDevicesPerUser                    = 10
-	MaxSessionsPerDevice                 = 30
-	MaxViewsPerDevice                    = 8
 	MaxEventsPerPost                     = 64
 	MaxEventsBodyBytes                   = 1_048_576
-	MaxOutputChunkBytes                  = 65_536
-	MaxInputBytes                        = 65_536
-	MaxHistoryBytes                      = 786_432
-	ReplyTimeoutSeconds                  = 10
 	HeartbeatSeconds                     = 15
-	ViewOrphanTimeoutSeconds             = 30
 	PairingTTLSeconds                    = 600
 	PairingPollIntervalSeconds           = 2
 	PairingPollIntervalMaxSeconds        = 60
-	MaxTitleLength                       = 80
 	MaxCwdLength                         = 1_024
 	MaxRecentDirs                        = 20
-	MaxSnapshotSessions                  = 50
 	MaxDeviceNameLength                  = 64
 	MaxHostnameLength                    = 255
 	MaxAccountLabelLength                = 400
-	MaxSessionOptions                    = 9
-	MaxOptionLabelLength                 = 80
-	MaxAttachedClients                   = 1_000
 	MaxURLLength                         = 2_048
 	MaxClientBinaryBytes                 = 134_217_728
 	MaxClientTargets                     = 6
 	LegacyMaxClientTargets               = 4
 	MaxSeq                        uint64 = 1<<53 - 1
-	MinCols                              = 20
-	MaxCols                              = 400
-	MinRows                              = 5
-	MaxRows                              = 200
 )
 
 // Protocol 2 limits: the device's agent operations (`op`).
@@ -94,12 +77,7 @@ const (
 	CodeDisabled          ReasonCode = "connect_disabled"
 	CodeUnauthorized      ReasonCode = "connect_unauthorized"
 	CodeDeviceOffline     ReasonCode = "connect_device_offline"
-	CodeDeviceTimeout     ReasonCode = "connect_device_timeout"
 	CodeDeviceLimit       ReasonCode = "connect_device_limit"
-	CodeSessionLimit      ReasonCode = "connect_session_limit"
-	CodeViewLimit         ReasonCode = "connect_view_limit"
-	CodeSessionNotFound   ReasonCode = "connect_session_not_found"
-	CodeCwdInvalid        ReasonCode = "connect_cwd_invalid"
 	CodeClientOutdated    ReasonCode = "connect_client_outdated"
 	CodePairingExpired    ReasonCode = "connect_pairing_expired"
 	CodeRateLimited       ReasonCode = "connect_rate_limited"
@@ -113,16 +91,10 @@ const (
 )
 
 var ReasonCodes = []ReasonCode{
-	CodeDisabled, CodeUnauthorized, CodeDeviceOffline, CodeDeviceTimeout,
-	CodeDeviceLimit, CodeSessionLimit, CodeViewLimit, CodeSessionNotFound,
-	CodeCwdInvalid, CodeClientOutdated, CodePairingExpired, CodeRateLimited,
-	CodeInputTooLarge, CodeStreamRequired, CodeUnsupported, CodeClientUnavailable,
-	CodeNotFound, CodeRequestInvalid, CodeDeviceError,
-}
-
-// ReplyErrorCodes are the codes a device may put in `reply {ok: false}`.
-var ReplyErrorCodes = []ReasonCode{
-	CodeSessionNotFound, CodeCwdInvalid, CodeSessionLimit, CodeUnsupported, CodeDeviceError,
+	CodeDisabled, CodeUnauthorized, CodeDeviceOffline, CodeDeviceLimit,
+	CodeClientOutdated, CodePairingExpired, CodeRateLimited, CodeInputTooLarge,
+	CodeStreamRequired, CodeUnsupported, CodeClientUnavailable, CodeNotFound,
+	CodeRequestInvalid, CodeDeviceError,
 }
 
 // Codes of a protocol 2 device's failed `op` reply. CodeUnsupported answers
@@ -156,26 +128,6 @@ var DeviceStreamClosedCodes = []ReasonCode{CodeDisabled, CodeUnauthorized, CodeC
 
 // EventsStreamClosedCodes are the codes of `closed` on the browser device-list stream.
 var EventsStreamClosedCodes = []ReasonCode{CodeDisabled, CodeUnauthorized}
-
-// ViewClosedReason is the `reason` of `view_closed` and of a browser view stream's `closed`.
-type ViewClosedReason string
-
-const (
-	ViewClosedSessionEnded ViewClosedReason = "session_ended"
-	ViewClosedDetached     ViewClosedReason = "detached"
-	ViewClosedError        ViewClosedReason = "error"
-	ViewClosedLimit        ViewClosedReason = "limit"
-)
-
-var ViewClosedReasons = []ViewClosedReason{
-	ViewClosedSessionEnded, ViewClosedDetached, ViewClosedError, ViewClosedLimit,
-}
-
-// ViewStreamClosedReasons are the device's reasons plus the server's own codes.
-var ViewStreamClosedReasons = []ViewClosedReason{
-	ViewClosedSessionEnded, ViewClosedDetached, ViewClosedError, ViewClosedLimit,
-	ViewClosedReason(CodeDeviceOffline), ViewClosedReason(CodeDisabled), ViewClosedReason(CodeUnauthorized),
-}
 
 type OS string
 
@@ -272,39 +224,6 @@ const (
 
 var StatKinds = []StatKind{StatFile, StatDir, StatOther}
 
-type Program string
-
-const (
-	ProgramClaude Program = "claude"
-	ProgramCodex  Program = "codex"
-	ProgramShell  Program = "shell"
-)
-
-var Programs = []Program{ProgramClaude, ProgramCodex, ProgramShell}
-
-type SessionStatus string
-
-const (
-	StatusIdle          SessionStatus = "idle"
-	StatusRunning       SessionStatus = "running"
-	StatusNeedsApproval SessionStatus = "needs_approval"
-	StatusWaiting       SessionStatus = "waiting"
-)
-
-var SessionStatuses = []SessionStatus{StatusIdle, StatusRunning, StatusNeedsApproval, StatusWaiting}
-
-type StatusReason string
-
-const (
-	ReasonPermission StatusReason = "permission"
-	ReasonTurnEnd    StatusReason = "turn_end"
-	ReasonIdlePrompt StatusReason = "idle_prompt"
-	ReasonBell       StatusReason = "bell"
-	ReasonInput      StatusReason = "input"
-)
-
-var StatusReasons = []StatusReason{ReasonPermission, ReasonTurnEnd, ReasonIdlePrompt, ReasonBell, ReasonInput}
-
 type PairingDecision string
 
 const (
@@ -329,7 +248,6 @@ const UserCodeAlphabet = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 // Pattern sources are identical to the TypeScript contract's RegExp sources.
 const (
-	SessionIDPattern        = `^ac-[a-z0-9]{6,12}$`
 	UserCodePattern         = `^[` + UserCodeAlphabet + `]{4}-[` + UserCodeAlphabet + `]{4}$`
 	DeviceTokenPattern      = `^aiqsa_connect_[A-Za-z0-9_-]{43}$`
 	PollSecretPattern       = `^[A-Za-z0-9_-]{43}$`
@@ -337,11 +255,7 @@ const (
 	VersionPattern          = `^(?:dev|(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})(?:-[0-9A-Za-z.-]{1,32})?)$`
 	TimestampPattern        = `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$`
 	SHA256Pattern           = `^[0-9a-f]{64}$`
-	OptionKeyPattern        = `^[1-9]$`
-	Base64Pattern           = `^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$`
 	ControlCharacterPattern = `[\x00-\x1f\x7f-\x9f]`
-	RequestedCwdPattern     = `^(?:~|~\/.*|\/.*)$`
-	AbsolutePathPattern     = `^\/.*$`
 	URLPrefixPattern        = `^https?:\/\/`
 	// DevicePathPattern is a protocol 2 client's absolute path: POSIX, a Windows drive (`C:\` or `C:/`) or a UNC share.
 	DevicePathPattern = `^(?:\/|[A-Za-z]:[\\/]|\\\\).*$`
@@ -351,7 +265,6 @@ const (
 )
 
 var (
-	SessionIDRegexp        = regexp.MustCompile(SessionIDPattern)
 	UserCodeRegexp         = regexp.MustCompile(UserCodePattern)
 	DeviceTokenRegexp      = regexp.MustCompile(DeviceTokenPattern)
 	PollSecretRegexp       = regexp.MustCompile(PollSecretPattern)
@@ -359,11 +272,7 @@ var (
 	VersionRegexp          = regexp.MustCompile(VersionPattern)
 	TimestampRegexp        = regexp.MustCompile(TimestampPattern)
 	SHA256Regexp           = regexp.MustCompile(SHA256Pattern)
-	OptionKeyRegexp        = regexp.MustCompile(OptionKeyPattern)
-	Base64Regexp           = regexp.MustCompile(Base64Pattern)
 	ControlCharacterRegexp = regexp.MustCompile(ControlCharacterPattern)
-	RequestedCwdRegexp     = regexp.MustCompile(RequestedCwdPattern)
-	AbsolutePathRegexp     = regexp.MustCompile(AbsolutePathPattern)
 	URLPrefixRegexp        = regexp.MustCompile(URLPrefixPattern)
 	DevicePathRegexp       = regexp.MustCompile(DevicePathPattern)
 	JobIDRegexp            = regexp.MustCompile(JobIDPattern)
@@ -424,24 +333,9 @@ var DeviceStreamEvents = []string{StreamEventHello, StreamEventCommand, StreamEv
 const (
 	StreamEventDevices = "devices"
 	StreamEventDevice  = "device"
-	StreamEventOutput  = "output"
 )
 
 var EventsStreamEvents = []string{StreamEventDevices, StreamEventDevice, StreamEventClosed, StreamEventPing}
-var ViewStreamEvents = []string{StreamEventOutput, StreamEventClosed, StreamEventPing}
-
-// Server command types.
-const (
-	CommandViewOpen       = "view_open"
-	CommandViewInput      = "view_input"
-	CommandViewResize     = "view_resize"
-	CommandViewClose      = "view_close"
-	CommandSessionCreate  = "session_create"
-	CommandSessionKill    = "session_kill"
-	CommandSessionHistory = "session_history"
-	CommandSessionOptions = "session_options"
-	CommandRecentDirs     = "recent_dirs"
-)
 
 // Protocol 2 server command types.
 const (
@@ -452,11 +346,7 @@ const (
 
 // Device event types.
 const (
-	EventSessions   = "sessions"
-	EventStatus     = "status"
-	EventOutput     = "output"
-	EventViewClosed = "view_closed"
-	EventReply      = "reply"
+	EventReply = "reply"
 	// EventDeviceInfo is protocol 2's description of the computer, sent after each hello.
 	EventDeviceInfo = "device_info"
 )
