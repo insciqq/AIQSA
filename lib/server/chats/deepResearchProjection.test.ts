@@ -2,32 +2,59 @@ import { describe, expect, it, vi } from "vitest";
 import { decodeChatUpdateData } from "../../contracts/chats";
 import { serializeChatUpdate } from "../runs/chatUpdateWire";
 import type { RunChatUpdateRecord } from "../runs/runRepositoryContract";
+import { pageOf, researchDatabase, type StoredTurn } from "../research/researchedRuns.testFixtures";
 import { loadDeepResearchMarks } from "./deepResearchProjection";
 
 const SENT_WITH = { equals: true, path: ["deepResearch"] };
 
 describe("the Deep research marks of a page and of a run's chat update", () => {
-  it("marks a question by its runs' frozen choice and an answer by its run's choice or research frame, asking only of the main agent's runs", async () => {
-    const findMany = vi.fn(async (args: { where: Readonly<Record<string, unknown>> }) => "userMessageId" in args.where ? [{ userMessageId: "question" }]
-      : [{ assistantMessageId: "answer" }, { assistantMessageId: "continued" }, { assistantMessageId: null }]);
-    const marks = await loadDeepResearchMarks({ modelRun: { findMany } } as never, { chatId: "chat", userId: "user" }, [{ id: "question", role: "user" },
-      { id: "answer", role: "assistant" }, { id: "continue", role: "user" }, { id: "continued", role: "assistant" }]);
-    expect([...marks.sentWithDeepResearch]).toEqual(["question"]);
-    // A Continue's answer is a research answer by its own run, which a Continue's message never is: it was not sent with Deep research.
-    expect([...marks.researchAnswers]).toEqual(["answer", "continued"]);
-    expect(findMany.mock.calls).toEqual([
-      [{ distinct: ["userMessageId"], select: { userMessageId: true },
-        where: { chatId: "chat", normalizedRequest: SENT_WITH, subagentTurnId: null, userId: "user", userMessageId: { in: ["question", "continue"] } } }],
-      [{ distinct: ["assistantMessageId"], select: { assistantMessageId: true }, where: { assistantMessageId: { in: ["answer", "continued"] }, chatId: "chat",
-        OR: [{ normalizedRequest: SENT_WITH }, { researchFrame: { isNot: null } }], subagentTurnId: null, userId: "user" } }]
-    ]);
+  it("marks a question by its runs' frozen choice, and every answer of a research: its own, the turn after an Allow and a Continue that failed first", async () => {
+    const turns: Readonly<Record<string, StoredTurn>> = {
+      research: { chosen: true, status: "complete" },
+      approved: { message: "approval", previous: "research", status: "error" },
+      continued: { message: "continue", previous: "approved", status: "error" },
+      again: { message: "continue", previous: "continued", status: "error" },
+      ordinary: { previous: "again", status: "error" },
+      ordinaryApproval: { message: "approval", previous: "ordinary", status: "error" },
+      typed: { message: "continue", previous: "ordinaryApproval", status: "complete" }
+    };
+    const { client, reads } = researchDatabase(turns);
+    const marks = await loadDeepResearchMarks(client as never, { chatId: "chat", userId: "user" }, pageOf(turns));
+    expect([...marks.sentWithDeepResearch]).toEqual(["q-research"]);
+    expect([...marks.researchAnswers].sort()).toEqual(["a-again", "a-approved", "a-continued", "a-research"]);
+    // A page holds its questions' words, so it asks the database of none.
+    expect(reads.continues).toBe(0);
+    // An ordinary chat's turn after an Allow and its Continue are no research's.
+    const plain = { ordinary: { status: "error" }, ordinaryApproval: { message: "approval", previous: "ordinary", status: "error" },
+      typed: { message: "continue", previous: "ordinaryApproval", status: "error" } } as const;
+    const ordinary = await loadDeepResearchMarks(researchDatabase(plain).client as never, { chatId: "chat", userId: "user" }, pageOf(plain));
+    expect([ordinary.researchAnswers.size, ordinary.sentWithDeepResearch.size]).toEqual([0, 0]);
   });
 
-  it("asks nothing of a role the messages do not have", async () => {
-    const findMany = vi.fn(async () => []);
-    const marks = await loadDeepResearchMarks({ modelRun: { findMany } } as never, { chatId: "chat", userId: "user" }, []);
+  it("reads past the page for a turn it goes on from, and the words of a question it does not hold", async () => {
+    const turns: Readonly<Record<string, StoredTurn>> = { research: { chosen: true, status: "error" }, continued: { message: "continue", previous: "research", status: "error" } };
+    const { client, reads } = researchDatabase(turns);
+    // A run's chat update holds its own question and answer alone.
+    const marks = await loadDeepResearchMarks(client as never, { chatId: "chat", userId: "user" }, pageOf(turns).slice(2));
+    expect([...marks.researchAnswers]).toEqual(["a-continued"]);
+    expect(reads).toEqual({ continues: 0, rows: 2 });
+    const unheld = await loadDeepResearchMarks(client as never, { chatId: "chat", userId: "user" },
+      pageOf(turns).slice(2).map(({ content: _content, ...message }) => message));
+    expect([...unheld.researchAnswers]).toEqual(["a-continued"]);
+    expect(reads.continues).toBe(1);
+  });
+
+  it("asks only of the main agent's runs of its owner and chat for the question's mark", async () => {
+    const { client } = researchDatabase({ research: { chosen: true, status: "complete" } });
+    const findMany = vi.spyOn(client.modelRun, "findMany");
+    await loadDeepResearchMarks(client as never, { chatId: "chat", userId: "user" }, [{ id: "q-research", role: "user" }, { id: "q-other", role: "user" }]);
+    expect(findMany).toHaveBeenCalledExactlyOnceWith({ distinct: ["userMessageId"], select: { userMessageId: true },
+      where: { chatId: "chat", normalizedRequest: SENT_WITH, subagentTurnId: null, userId: "user", userMessageId: { in: ["q-research", "q-other"] } } });
+    // Nothing to mark asks nothing.
+    findMany.mockClear();
+    const none = await loadDeepResearchMarks(client as never, { chatId: "chat", userId: "user" }, [{ id: "a-research", role: "assistant", runId: null }]);
     expect(findMany).not.toHaveBeenCalled();
-    expect([marks.researchAnswers.size, marks.sentWithDeepResearch.size]).toEqual([0, 0]);
+    expect([none.researchAnswers.size, none.sentWithDeepResearch.size]).toEqual([0, 0]);
   });
 
   it("carries each mark on a run's chat update only on its own role, so a live answer keeps what a reload shows", () => {

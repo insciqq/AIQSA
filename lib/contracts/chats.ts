@@ -481,9 +481,9 @@ export type ChatMessageWire = {
    */
   deepResearch?: true;
   /**
-   * Only on an answer whose run researched (operator decision 2026-11-06): it was admitted with Deep research, or it has a research
-   * frame, as a Continue that picked research up or planned it anew has. Such an answer never offers Regenerate, and one that failed
-   * offers Continue, whatever failed it. Absent for every other message.
+   * Only on an answer whose run researched (operator decision 2026-11-06): it was admitted with Deep research, has a research frame, or
+   * answered the server's turn after an Allow, or the user's Continue of an unfinished research, in a research (`researchedRuns` on the
+   * server). Such an answer never offers Regenerate, and one that failed offers Continue, whatever failed it. Absent for every other message.
    */
   researchAnswer?: true;
   followups?: RunFollowupState;
