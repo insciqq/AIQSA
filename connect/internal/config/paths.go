@@ -7,90 +7,122 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
+	"runtime"
+	"strings"
 )
 
 // Environment overrides, used by tests and isolated runs.
 const (
-	EnvConfigDir  = "AIQSA_CONNECT_CONFIG_DIR"
-	EnvStateDir   = "AIQSA_CONNECT_STATE_DIR"
-	EnvTmuxSocket = "AIQSA_CONNECT_TMUX_SOCKET"
+	EnvConfigDir = "AIQSA_CONNECT_CONFIG_DIR"
+	EnvStateDir  = "AIQSA_CONNECT_STATE_DIR"
 )
 
-// DefaultTmuxSocket is the tmux socket name (`tmux -L <name>`) the client owns.
-const DefaultTmuxSocket = "aiqsa-connect"
+// appDir names the client's directories on macOS and Linux, windowsAppDir
+// on Windows (%APPDATA%\AIQSA Connect and %LOCALAPPDATA%\AIQSA Connect).
+const (
+	appDir        = "aiqsa-connect"
+	windowsAppDir = "AIQSA Connect"
+)
 
-const appDir = "aiqsa-connect"
-
-var socketNameRegexp = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-
-// Paths are the client's directories and its tmux socket name.
+// Paths are the client's directories.
 type Paths struct {
 	// ConfigDir holds credentials.json.
 	ConfigDir string
-	// StateDir holds the log, the lock, the generated tmux config and recent directories.
+	// StateDir holds the log, the lock and the recent working directories.
 	StateDir string
-	// TmuxSocket is the tmux socket name passed with -L.
-	TmuxSocket string
 }
 
-// ResolvePaths applies the overrides, then the XDG base directories, then
-// ~/.config and ~/.local/state.
+// ResolvePaths applies the overrides, then the system's directories: on
+// Windows %APPDATA% and %LOCALAPPDATA%, elsewhere the XDG base directories,
+// then ~/.config and ~/.local/state.
 func ResolvePaths() (Paths, error) {
-	home, homeErr := os.UserHomeDir()
-	resolve := func(override, xdg, fallback string) (string, error) {
-		if dir := os.Getenv(override); dir != "" {
-			if !filepath.IsAbs(dir) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	return resolvePaths(runtime.GOOS, os.Getenv, home)
+}
+
+func resolvePaths(goos string, getenv func(string) string, home string) (Paths, error) {
+	join := func(elem ...string) string {
+		if goos == "windows" {
+			return strings.Join(elem, `\`)
+		}
+		return filepath.Join(elem...)
+	}
+	// resolve takes the override, then base/<name> when base is absolute
+	// (the XDG specification ignores relative values), then home/fallback.
+	resolve := func(override, base, name, fallback string) (string, error) {
+		if dir := getenv(override); dir != "" {
+			if !IsAbsPath(goos, dir) {
 				return "", fmt.Errorf("%s must be an absolute path", override)
+			}
+			if goos == "windows" {
+				return dir, nil
 			}
 			return filepath.Clean(dir), nil
 		}
-		// The XDG specification ignores relative values.
-		if dir := os.Getenv(xdg); dir != "" && filepath.IsAbs(dir) {
-			return filepath.Join(dir, appDir), nil
+		if IsAbsPath(goos, base) {
+			return join(base, name), nil
 		}
-		if homeErr != nil || !filepath.IsAbs(home) {
+		if fallback == "" {
+			return "", fmt.Errorf("cannot determine the %s directory", name)
+		}
+		if home == "" || !IsAbsPath(goos, home) {
 			return "", errors.New("cannot determine the home directory")
 		}
-		return filepath.Join(home, fallback, appDir), nil
+		return join(home, fallback, name), nil
 	}
-	configDir, err := resolve(EnvConfigDir, "XDG_CONFIG_HOME", ".config")
-	if err != nil {
-		return Paths{}, err
-	}
-	stateDir, err := resolve(EnvStateDir, "XDG_STATE_HOME", filepath.Join(".local", "state"))
-	if err != nil {
-		return Paths{}, err
-	}
-	socket := DefaultTmuxSocket
-	if name := os.Getenv(EnvTmuxSocket); name != "" {
-		if !socketNameRegexp.MatchString(name) {
-			return Paths{}, fmt.Errorf("%s must be 1-64 letters, digits, dots, dashes or underscores", EnvTmuxSocket)
+	var configDir, stateDir string
+	var err error
+	if goos == "windows" {
+		if configDir, err = resolve(EnvConfigDir, getenv("APPDATA"), windowsAppDir, ""); err != nil {
+			return Paths{}, err
 		}
-		socket = name
+		if stateDir, err = resolve(EnvStateDir, getenv("LOCALAPPDATA"), windowsAppDir, ""); err != nil {
+			return Paths{}, err
+		}
+		return Paths{ConfigDir: configDir, StateDir: stateDir}, nil
 	}
-	return Paths{ConfigDir: configDir, StateDir: stateDir, TmuxSocket: socket}, nil
+	if configDir, err = resolve(EnvConfigDir, getenv("XDG_CONFIG_HOME"), appDir, ".config"); err != nil {
+		return Paths{}, err
+	}
+	if stateDir, err = resolve(EnvStateDir, getenv("XDG_STATE_HOME"), appDir, filepath.Join(".local", "state")); err != nil {
+		return Paths{}, err
+	}
+	return Paths{ConfigDir: configDir, StateDir: stateDir}, nil
 }
+
+// IsAbsPath is filepath.IsAbs of the system goos: a drive (`C:\`, `C:/`)
+// or UNC (`\\server\share`) path on Windows, a path from / elsewhere.
+func IsAbsPath(goos, path string) bool {
+	if goos != "windows" {
+		return strings.HasPrefix(path, "/")
+	}
+	if strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//") {
+		return len(path) > 2
+	}
+	return len(path) >= 3 && isDriveLetter(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
+}
+
+func isDriveLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
 
 func (p Paths) CredentialsFile() string { return filepath.Join(p.ConfigDir, "credentials.json") }
 func (p Paths) LockFile() string        { return filepath.Join(p.StateDir, "up.lock") }
 func (p Paths) LogFile() string         { return filepath.Join(p.StateDir, "aiqsa-connect.log") }
-func (p Paths) TmuxConfigFile() string  { return filepath.Join(p.StateDir, "tmux.conf") }
 func (p Paths) RecentDirsFile() string  { return filepath.Join(p.StateDir, "recent-dirs.json") }
 
-// EnsureConfigDir creates the config directory with mode 0700.
+// EnsureConfigDir creates the config directory, private to the user.
 func (p Paths) EnsureConfigDir() error { return ensurePrivateDir(p.ConfigDir) }
 
-// EnsureStateDir creates the state directory with mode 0700.
+// EnsureStateDir creates the state directory, private to the user.
 func (p Paths) EnsureStateDir() error { return ensurePrivateDir(p.StateDir) }
 
 func ensurePrivateDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	// The directory belongs to this client alone; tighten one created
-	// earlier under a permissive umask.
-	return os.Chmod(dir, 0o700)
+	return tightenDir(dir)
 }
 
 // WriteFileAtomic replaces path with data: a private temporary file in the
@@ -126,9 +158,6 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpName)
 		return err
 	}
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
-	}
+	syncDir(dir)
 	return nil
 }
