@@ -180,9 +180,8 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
       const delayMs = decision && attempt < policy.maxAttempts
         ? providerRetryDelayMs(attempt, decision.retryAfterMs, ports.random, policy.backoff) : null;
       const failure = observedFailure(error);
-      const nextAt = delayMs === null ? null : now() + delayMs;
-      if (nextAt === null || nextAt >= ports.deadlineAt ||
-        (policy.windowMs !== undefined && nextAt - firstStartedAt > policy.windowMs)) {
+      if (delayMs === null || now() + delayMs >= ports.deadlineAt ||
+        (policy.windowMs !== undefined && now() + delayMs - firstStartedAt > policy.windowMs)) {
         if (decision) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage,
           ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
         throw error;
