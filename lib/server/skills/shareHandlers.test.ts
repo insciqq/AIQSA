@@ -17,7 +17,7 @@ const detail: AdminSkillShareRequestDetail = { ...requestSummary, skillId: "skil
   requestedRevision: { ...revision, description: "Procedure", instructions: "Review carefully", skillMarkdown: "# Procedure",
     files: [], bundle: { fileCount: 0, totalBytes: 16, hasExecutables: false } },
   diff: { skillMarkdownChanged: true, files: [] } };
-const skill: SkillDetailEntry = { archived: false, description: "Procedure", id: "skill-1", installationScope: false,
+const skill: SkillDetailEntry = { archived: false, builtIn: false, description: "Procedure", id: "skill-1", installationScope: false,
   instructionCharacterCount: 16, memberWorkspaceNames: [], name: "Workflow", owned: true, ownerDisplayName: "Owner", updatedAt: timestamp, version: 2,
   assistantUsageCount: 0, audiences: [], workspaceUsageCount: 0,
   revision: { ...revision, createdAt: timestamp, description: "Procedure", instructions: "Review carefully", skillId: "skill-1" },

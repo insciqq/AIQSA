@@ -385,6 +385,25 @@ describe("SkillLibraryDialog", () => {
     expect(onSelectionChange).not.toHaveBeenCalled();
   });
 
+  it("shows a built-in Skill as built in and on, with no owner actions", async () => {
+    const builtIn = { ...sharedSkill, id: "skill-built-in", name: "health-questions", ownerDisplayName: "AIQSA",
+      enabled: true, scope: { kind: "built_in" } };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/skill-built-in")
+        ? Response.json({ skill: { ...sharedSkillDetail, ...builtIn, audiences: [], owner: { displayName: "AIQSA" }, workspaceUsageCount: 0 } })
+        : Response.json({ nextCursor: null, publishableWorkspaces: [], skills: [builtIn], viewer: { canPublishInstallation: true } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SkillLibraryDialog onClose={vi.fn()} onSelectionChange={vi.fn()} selectedIds={[]} />);
+
+    expect(await screen.findByText(/Built in · By AIQSA/u)).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Auto load: health-questions" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Open health-questions" }));
+    expect(await screen.findByText("Comes with AIQSA for everyone. An administrator can turn it off for the whole installation.")).toBeVisible();
+    expect(screen.getByText("By AIQSA")).toBeVisible();
+    for (const name of ["Edit", "Delete…", "Export", "Everyone"]) expect(screen.queryByRole("button", { name })).toBeNull();
+  });
+
   it("creates a plain instruction revision without executable fields", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
       init?.method === "POST"

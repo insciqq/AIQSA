@@ -24,6 +24,7 @@ describe("AdminSkillsSection", () => {
     let attempts = 0;
     const urls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/admin/skills/built-in") return Response.json({ skills: [] });
       urls.push(String(input));
       return ++attempts === 2 ? Response.json({ error: "temporarily_unavailable" }, { status: 503 })
         : Response.json({ requests: [request], nextCursor: "next-page", pendingCount: 2 });
@@ -86,5 +87,43 @@ describe("AdminSkillsSection", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("This request has changed. Refresh it before trying again.");
     expect(note).toHaveValue("Please remove the executable permission.");
     expect(props.onMutationCommitted).not.toHaveBeenCalled();
+  });
+
+  it("switches a built-in Skill off for everyone under its version and recovers from a stale version", async () => {
+    const skill = { id: "skill-built-in", name: "health-questions", enabled: true, version: 2, assistantUsageCount: 1 };
+    const patches: unknown[] = [];
+    let conflict = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/admin/skills/built-in/skill-built-in") {
+        patches.push(JSON.parse(String(init?.body)));
+        return conflict ? Response.json({ error: "skill_version_conflict" }, { status: 409 })
+          : Response.json({ skill: { ...skill, enabled: false, version: 3 } });
+      }
+      if (String(input) === "/api/admin/skills/built-in") return Response.json({ skills: [conflict ? { ...skill, version: 4 } : skill] });
+      return Response.json({ requests: [], nextCursor: null, pendingCount: 0 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminSkillsSection {...props} />);
+    const toggle = await screen.findByRole("switch", { name: "Available to everyone: health-questions" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/Linked by 1 Assistant, which becomes unavailable while it is off\./u)).toBeVisible();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Available to everyone: health-questions" })).toHaveAttribute("aria-checked", "false"));
+    expect(screen.getByText(/Off for everyone\./u)).toBeVisible();
+    expect(patches).toEqual([{ enabled: false, expectedVersion: 2 }]);
+    expect(props.onMutationCommitted).toHaveBeenCalled();
+
+    conflict = true;
+    fireEvent.click(screen.getByRole("switch", { name: "Available to everyone: health-questions" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This Skill changed meanwhile. Refresh and try again.");
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Available to everyone: health-questions" })).toHaveAttribute("aria-checked", "true"));
+  });
+
+  it("shows no built-in block when the release ships none", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/admin/skills/built-in"
+      ? Response.json({ skills: [] }) : Response.json({ requests: [], nextCursor: null, pendingCount: 0 })));
+    render(<AdminSkillsSection {...props} />);
+    expect(await screen.findByText("0 awaiting approval")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Built-in Skills" })).toBeNull();
   });
 });

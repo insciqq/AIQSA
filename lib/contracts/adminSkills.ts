@@ -32,3 +32,16 @@ export type AdminSkillShareRequestDetailResponse = { request: AdminSkillShareReq
 export type AdminSkillShareDecision = { action: "approve" | "reject"; note?: string };
 export type SkillShareRequestCreate = { expectedVersion: number };
 export type SkillShareRequestWithdraw = { requestId: string };
+
+/** A Skill the release ships to everyone; `enabled` is the installation-wide switch. */
+export type AdminBuiltInSkill = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  version: number;
+  /** Assistants linking it, which become unavailable while it is off. */
+  assistantUsageCount: number;
+};
+export type AdminBuiltInSkillListResponse = { skills: AdminBuiltInSkill[] };
+export type AdminBuiltInSkillUpdate = { enabled: boolean; expectedVersion: number };
+export type AdminBuiltInSkillUpdateResponse = { skill: AdminBuiltInSkill };

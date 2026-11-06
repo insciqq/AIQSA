@@ -109,7 +109,9 @@ function summary(entry: SkillListEntry): SkillSummary {
     ownerDisplayName: entry.ownerDisplayName,
     scope: entry.owned
       ? { kind: "owner" }
-      : entry.memberWorkspaceNames.length > 0
+      : entry.builtIn
+        ? { kind: "built_in" }
+        : entry.memberWorkspaceNames.length > 0
         ? { kind: "workspace", workspaceNames: entry.memberWorkspaceNames }
         : { kind: "installation" },
     updatedAt: entry.updatedAt.toISOString(),
@@ -132,7 +134,7 @@ export function skillDetail(entry: SkillDetailEntry, actorIsAdmin: boolean): Ski
     canDelete: entry.owned,
     canEdit: entry.owned && !entry.archived,
     canPublish: entry.owned && !entry.archived,
-    canUnshare: entry.owned || actorIsAdmin,
+    canUnshare: entry.owned || (actorIsAdmin && !entry.builtIn),
     instructions: entry.revision.instructions,
     files: (entry.revision.files ?? []).map(({ path, byteSize, kind, executable }) => ({ path, byteSize, kind, executable })),
     bundle: { fileCount: entry.revision.fileCount ?? 0,

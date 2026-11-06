@@ -81,6 +81,7 @@ function session(role: "admin" | "user" = "user"): AuthenticatedSession {
 function entry(overrides: Partial<SkillListEntry> = {}): SkillListEntry {
   return {
     archived: false,
+    builtIn: false,
     description: "Checks claims",
     id: "skill-1",
     installationScope: false,
@@ -253,6 +254,19 @@ describe("Skill handlers", () => {
         workspaceUsageCount: 1
       }
     });
+  });
+
+  it("shows a shipped Skill as built in and on, with no owner capability even for an administrator", async () => {
+    const response = await createGetSkillHandler(deps(repository({
+      getForUser: vi.fn(async () => detailEntry({ audiences: [], builtIn: true, enabled: true, owned: false,
+        ownerDisplayName: "AIQSA", workspaceUsageCount: 0 }))
+    }), session("admin")))(new Request("http://localhost/api/me/skills/skill-1"), { params: { skillId: "skill-1" } });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ skill: {
+      scope: { kind: "built_in" }, enabled: true, owned: false, owner: { displayName: "AIQSA" },
+      audiences: [], canDelete: false, canEdit: false, canPublish: false
+    } });
   });
 
   it("uses the same unavailable response for unauthorized or missing detail and delete", async () => {

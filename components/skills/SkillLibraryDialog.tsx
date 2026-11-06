@@ -85,6 +85,7 @@ const emptyDraft: SkillDraft = { description: "", instructions: "", name: "" };
 
 function scopeLabel(skill: SkillSummary): string {
   if (skill.owned) return "Yours";
+  if (skill.scope.kind === "built_in") return "Built in";
   if (skill.scope.kind === "workspace") {
     return skill.scope.workspaceNames.join(", ") || "Shared Workspace";
   }
@@ -692,7 +693,9 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
               <div className="v2-skill-detail-section">
                 <h4>Current audiences</h4>
                 {detail.audiences.length === 0 ? (
-                  <p>{detail.owned ? "Only you can use this Skill." : "Available through its owner."}</p>
+                  <p>{detail.owned ? "Only you can use this Skill." : detail.scope.kind === "built_in"
+                    ? "Comes with AIQSA for everyone. An administrator can turn it off for the whole installation."
+                    : "Available through its owner."}</p>
                 ) : (
                   <ul className="v2-skill-audiences">
                     {detail.audiences.map((audience) => (

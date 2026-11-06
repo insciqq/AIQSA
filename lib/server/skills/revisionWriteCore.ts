@@ -114,3 +114,33 @@ export async function commitStagedSkillRevision(tx: Prisma.TransactionClient, in
   }, select: { version: true } });
   return { version: definition.version };
 }
+
+/**
+ * The write path of a Skill the release ships (`lib/server/skills/shippedSkills.ts`):
+ * installation bootstrap appends a settled revision of text files only and makes
+ * it both current and shared, since every user reads the shipped text. Such a
+ * definition has no owner, so no owner-scoped path above ever writes it.
+ */
+export async function appendShippedSkillRevision(tx: Prisma.TransactionClient, input: Readonly<{
+  skillId: string;
+  content: SkillRevisionContent;
+}>): Promise<string> {
+  const { content } = input;
+  if (content.files.some((file) => file.kind !== "text" || file.textContent === null)) {
+    throw new Error("A shipped Skill carries text files only.");
+  }
+  const latest = await tx.skillRevision.aggregate({ where: { skillId: input.skillId }, _max: { revisionNumber: true } });
+  const revision = await tx.skillRevision.create({ data: {
+    skillId: input.skillId, authorUserId: null, revisionNumber: (latest._max.revisionNumber ?? 0) + 1,
+    schemaVersion: 2, name: content.name, description: content.description, instructions: content.instructions,
+    frontmatterJson: content.frontmatterJson === null || content.frontmatterJson === undefined
+      ? Prisma.DbNull : content.frontmatterJson as Prisma.InputJsonValue,
+    bundleDigest: content.bundleDigest, fileCount: content.fileCount, bundleByteSize: content.bundleByteSize,
+    hasExecutables: content.hasExecutables, bundleReady: true
+  }, select: { id: true } });
+  if (content.files.length) await tx.skillRevisionFile.createMany({ data: content.files.map((file) => ({
+    revisionId: revision.id, skillId: input.skillId, path: file.path, byteSize: file.byteSize, checksum: file.checksum,
+    kind: "text", executable: file.executable, textContent: file.textContent, storageKey: null
+  })) });
+  return revision.id;
+}

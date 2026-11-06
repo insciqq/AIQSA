@@ -32,6 +32,8 @@ export type SkillAudienceEntry =
 
 export type SkillListEntry = {
   archived: boolean;
+  /** Shipped with the release (`shippedSkills.ts`): no owner, on unless the user turned it off. */
+  builtIn: boolean;
   enabled?: boolean;
   description: string;
   id: string;
@@ -147,6 +149,16 @@ function accessiblePublicationWhere(userId: string): Prisma.SkillPublicationWher
   };
 }
 
+/** The display name of a shipped Skill, which has no owner. */
+export const BUILT_IN_SKILL_OWNER_NAME = "AIQSA";
+
+/** A shipped Skill reaches every active user while not archived, which is the
+ * administrator's installation-wide Off. Every copy of the audience rule (the
+ * Assistant checks and the run binding SQL) carries this branch too. */
+export const shippedSkillAccessWhere = {
+  shippedKey: { not: null }, archivedAt: null, sharedRevisionId: { not: null }
+} as const satisfies Prisma.SkillDefinitionWhereInput;
+
 export function skillAccessWhere(userId: string): Prisma.SkillDefinitionWhereInput {
   return {
     OR: [
@@ -155,7 +167,8 @@ export function skillAccessWhere(userId: string): Prisma.SkillDefinitionWhereInp
         archivedAt: null,
         sharedRevisionId: { not: null },
         publications: { some: accessiblePublicationWhere(userId) }
-      }
+      },
+      shippedSkillAccessWhere
     ]
   };
 }
@@ -165,7 +178,9 @@ function searchWhere(userId: string, query: string): Prisma.SkillDefinitionWhere
   return {
     OR: [
       { ownerUserId: userId, OR: [{ currentRevision: { description: text } }, { currentRevision: { name: text } }] },
-      { ownerUserId: { not: userId }, OR: [{ sharedRevision: { description: text } }, { sharedRevision: { name: text } }] },
+      // A shipped Skill has no owner, and SQL never matches NULL with `<>`.
+      { AND: [{ OR: [{ ownerUserId: null }, { ownerUserId: { not: userId } }] },
+        { OR: [{ sharedRevision: { description: text } }, { sharedRevision: { name: text } }] }] },
       { owner: { displayName: text } },
       {
         ownerUserId: userId,
@@ -264,9 +279,11 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       const revision = definition.ownerUserId === userId ? definition.currentRevision : definition.sharedRevision;
       if (!revision) return [];
       const owned = definition.ownerUserId === userId;
+      const builtIn = definition.shippedKey !== null;
       return [{
         archived: definition.archivedAt !== null,
-        enabled: definition.preferences[0]?.enabled ?? owned,
+        builtIn,
+        enabled: definition.preferences[0]?.enabled ?? (owned || builtIn),
         description: revision.description,
         id: definition.id,
         installationScope: definition.publications.some((publication) =>
@@ -281,7 +298,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
             : [])),
         name: revision.name,
         owned,
-        ownerDisplayName: definition.owner.displayName,
+        ownerDisplayName: definition.owner?.displayName ?? BUILT_IN_SKILL_OWNER_NAME,
         updatedAt: definition.updatedAt,
         version: definition.version
       }];
@@ -324,7 +341,8 @@ export function createPrismaSkillRepository(client: PrismaClient) {
         publication.group?.archivedAt === null &&
         publication.group.users.length > 0
       ));
-    if (!owned && (!definition.sharedRevision || definition.archivedAt !== null || accessiblePublications.length === 0)) {
+    const builtIn = definition.shippedKey !== null;
+    if (!owned && (!definition.sharedRevision || definition.archivedAt !== null || (accessiblePublications.length === 0 && !builtIn))) {
       return null;
     }
     const visiblePublications = owned ? definition.publications : accessiblePublications;
@@ -351,7 +369,8 @@ export function createPrismaSkillRepository(client: PrismaClient) {
     });
     return {
       archived: definition.archivedAt !== null,
-      enabled: definition.preferences[0]?.enabled ?? owned,
+      builtIn,
+      enabled: definition.preferences[0]?.enabled ?? (owned || builtIn),
       assistantUsageCount,
       audiences,
       description: revision.description,
@@ -368,7 +387,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
           : [])),
       name: revision.name,
       owned,
-      ownerDisplayName: definition.owner.displayName,
+      ownerDisplayName: definition.owner?.displayName ?? BUILT_IN_SKILL_OWNER_NAME,
       revision: revisionRow(revision),
       ...(importSource ? { importSource } : {}),
       ...(owned ? { sharing: {
@@ -570,7 +589,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
         const [locked] = await tx.$queryRaw<Array<{
           archivedAt: Date | null;
           deletedAt: Date | null;
-          ownerUserId: string;
+          ownerUserId: string | null;
           version: number;
         }>>`
           SELECT "archivedAt", "deletedAt", "ownerUserId", "version"
@@ -630,7 +649,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       return client.$transaction(async (tx) => {
         const [skill] = await tx.$queryRaw<Array<{
           deletedAt: Date | null;
-          ownerUserId: string;
+          ownerUserId: string | null;
         }>>`
           SELECT "deletedAt", "ownerUserId"
           FROM "SkillDefinition"
