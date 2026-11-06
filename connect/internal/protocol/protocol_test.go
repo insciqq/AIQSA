@@ -1,8 +1,6 @@
 package protocol
 
 import (
-	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -60,7 +58,6 @@ func mustMarshal(value any) json.RawMessage {
 
 var fixtureSchemas = map[string]decodeFunc{
 	"errorResponse":           decodeInto[ErrorResponse](),
-	"session":                 decodeInto[Session](),
 	"pairingCreateRequest":    decodeInto[PairingCreateRequest](),
 	"pairingCreateResponse":   decodeInto[PairingCreateResponse](),
 	"pairingPollRequest":      decodeInto[PairingPollRequest](),
@@ -68,31 +65,8 @@ var fixtureSchemas = map[string]decodeFunc{
 	"pairingLookupResponse":   decodeInto[PairingLookupResponse](),
 	"pairingDecisionRequest":  decodeInto[PairingDecisionRequest](),
 	"pairingDecisionResponse": decodeInto[PairingDecisionResponse](),
-	"deviceStreamEvent":       decodeStream(DecodeDeviceStreamEvent),
-	"serverCommand": func(data []byte) (any, error) {
-		return DecodeServerCommand(data)
-	},
-	"sessionCreateResult":  decodeInto[SessionCreateResult](),
-	"sessionKillResult":    decodeInto[SessionKillResult](),
-	"sessionHistoryResult": decodeInto[SessionHistoryResult](),
-	"sessionOptionsResult": decodeInto[SessionOptionsResult](),
-	"recentDirsResult":     decodeInto[RecentDirsResult](),
-	"deviceEvent": func(data []byte) (any, error) {
-		return DecodeDeviceEvent(data)
-	},
-	"deviceEventBatch":      decodeInto[EventBatch](),
-	"clientManifest":        decodeInto[ClientManifest](),
-	"devicesResponse":       decodeInto[DevicesResponse](),
-	"sessionCreateRequest":  decodeInto[SessionCreateRequest](),
-	"viewCreateRequest":     decodeInto[ViewCreateRequest](),
-	"viewCreateResponse":    decodeInto[ViewCreateResponse](),
-	"viewInputRequest":      decodeInto[ViewInputRequest](),
-	"viewResizeRequest":     decodeInto[ViewResizeRequest](),
-	"viewVisibilityRequest": decodeInto[ViewVisibilityRequest](),
-	"eventsStreamEvent":     decodeStream(DecodeEventsStreamEvent),
-	"viewStreamEvent":       decodeStream(DecodeViewStreamEvent),
-	// Protocol 2.
-	"deviceStreamEventV2": decodeStream(DecodeDeviceStreamEventV2),
+	"clientManifest":          decodeInto[ClientManifest](),
+	"deviceStreamEventV2":     decodeStream(DecodeDeviceStreamEventV2),
 	"serverCommandV2": func(data []byte) (any, error) {
 		return DecodeServerCommandV2(data)
 	},
@@ -223,37 +197,21 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 		"legacyProtocolVersion": LegacyProtocolVersion,
 		"limits": map[string]any{
 			"maxDevicesPerUser":             MaxDevicesPerUser,
-			"maxSessionsPerDevice":          MaxSessionsPerDevice,
-			"maxViewsPerDevice":             MaxViewsPerDevice,
 			"maxEventsPerPost":              MaxEventsPerPost,
 			"maxEventsBodyBytes":            MaxEventsBodyBytes,
-			"maxOutputChunkBytes":           MaxOutputChunkBytes,
-			"maxInputBytes":                 MaxInputBytes,
-			"maxHistoryBytes":               MaxHistoryBytes,
-			"replyTimeoutSeconds":           ReplyTimeoutSeconds,
 			"heartbeatSeconds":              HeartbeatSeconds,
-			"viewOrphanTimeoutSeconds":      ViewOrphanTimeoutSeconds,
 			"pairingTtlSeconds":             PairingTTLSeconds,
 			"pairingPollIntervalSeconds":    PairingPollIntervalSeconds,
 			"pairingPollIntervalMaxSeconds": PairingPollIntervalMaxSeconds,
-			"maxTitleLength":                MaxTitleLength,
 			"maxCwdLength":                  MaxCwdLength,
 			"maxRecentDirs":                 MaxRecentDirs,
-			"maxSnapshotSessions":           MaxSnapshotSessions,
 			"maxDeviceNameLength":           MaxDeviceNameLength,
 			"maxHostnameLength":             MaxHostnameLength,
 			"maxAccountLabelLength":         MaxAccountLabelLength,
-			"maxSessionOptions":             MaxSessionOptions,
-			"maxOptionLabelLength":          MaxOptionLabelLength,
-			"maxAttachedClients":            MaxAttachedClients,
 			"maxUrlLength":                  MaxURLLength,
 			"maxClientBinaryBytes":          MaxClientBinaryBytes,
 			"maxClientTargets":              MaxClientTargets,
 			"maxSeq":                        MaxSeq,
-			"minCols":                       MinCols,
-			"maxCols":                       MaxCols,
-			"minRows":                       MinRows,
-			"maxRows":                       MaxRows,
 			"legacyMaxClientTargets":        LegacyMaxClientTargets,
 			"maxConcurrentOps":              MaxConcurrentOps,
 			"maxJobs":                       MaxJobs,
@@ -286,15 +244,11 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 			"minExitCode":                   MinExitCode,
 			"maxExitCode":                   MaxExitCode,
 		},
-		"helloLimits":             DefaultHelloLimits,
 		"helloV2Limits":           DefaultHelloV2Limits,
 		"reasonCodes":             ReasonCodes,
-		"replyErrorCodes":         ReplyErrorCodes,
 		"opErrorCodes":            OpErrorCodes,
 		"deviceStreamClosedCodes": DeviceStreamClosedCodes,
 		"eventsStreamClosedCodes": EventsStreamClosedCodes,
-		"viewClosedReasons":       ViewClosedReasons,
-		"viewStreamClosedReasons": ViewStreamClosedReasons,
 		"os":                      OSValues,
 		"legacyOs":                LegacyOSValues,
 		"arch":                    ArchValues,
@@ -304,13 +258,9 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 		"grepModes":               GrepModes,
 		"lineEndings":             LineEndings,
 		"statKinds":               StatKinds,
-		"programs":                Programs,
-		"sessionStatuses":         SessionStatuses,
-		"statusReasons":           StatusReasons,
 		"pairingDecisions":        PairingDecisions,
 		"userCodeAlphabet":        UserCodeAlphabet,
 		"patterns": map[string]string{
-			"sessionId":        SessionIDPattern,
 			"userCode":         UserCodePattern,
 			"deviceToken":      DeviceTokenPattern,
 			"pollSecret":       PollSecretPattern,
@@ -318,11 +268,7 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 			"version":          VersionPattern,
 			"timestamp":        TimestampPattern,
 			"sha256":           SHA256Pattern,
-			"optionKey":        OptionKeyPattern,
-			"base64":           Base64Pattern,
 			"controlCharacter": ControlCharacterPattern,
-			"requestedCwd":     RequestedCwdPattern,
-			"absolutePath":     AbsolutePathPattern,
 			"urlPrefix":        URLPrefixPattern,
 			"devicePath":       DevicePathPattern,
 			"jobId":            JobIDPattern,
@@ -343,119 +289,13 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 			"downloadLinuxArm64":   ClientDownloadPath(OSLinux, ArchARM64),
 			"downloadWindowsAmd64": ClientDownloadPath(OSWindows, ArchAMD64),
 		},
-		"deviceStreamEvents": DeviceStreamEvents,
-		"eventsStreamEvents": EventsStreamEvents,
-		"viewStreamEvents":   ViewStreamEvents,
-		"serverCommandTypes": []string{
-			CommandViewOpen, CommandViewInput, CommandViewResize, CommandViewClose, CommandSessionCreate,
-			CommandSessionKill, CommandSessionHistory, CommandSessionOptions, CommandRecentDirs,
-		},
-		"requestCommandTypes": []string{
-			CommandSessionCreate, CommandSessionKill, CommandSessionHistory, CommandSessionOptions, CommandRecentDirs,
-		},
-		"deviceEventTypes":     []string{EventSessions, EventStatus, EventOutput, EventViewClosed, EventReply},
+		"deviceStreamEvents":   DeviceStreamEvents,
+		"eventsStreamEvents":   EventsStreamEvents,
 		"serverCommandV2Types": []string{CommandOp, CommandCancel, CommandRunEnded},
 		"deviceEventV2Types":   []string{EventReply, EventDeviceInfo},
 	}
 	if !sameJSON(t, data, mustMarshal(actual)) {
 		t.Fatalf("Go constants differ from testdata/contract.json:\n%s", mustMarshal(actual))
-	}
-}
-
-func TestEveryRequestCommandHasAResultType(t *testing.T) {
-	for _, commandType := range []string{CommandSessionCreate, CommandSessionKill, CommandSessionHistory, CommandSessionOptions, CommandRecentDirs} {
-		if _, ok := newCommandResult(commandType); !ok {
-			t.Errorf("%s has no result type", commandType)
-		}
-	}
-	if _, err := DecodeCommandResult(CommandSessionHistory, []byte(`{"sessionId":"ac-k3x9q2"}`)); err == nil {
-		t.Error("a session_create result was accepted for session_history")
-	}
-}
-
-const testViewID = "c4ca4238-a0b9-4382-8dcc-509a6f75849b"
-const testRequestID = "e4da3b7f-bbce-4345-9777-2b0670b8a1c4"
-
-func TestLargeLimits(t *testing.T) {
-	output := func(size int) []byte {
-		return mustMarshal(map[string]any{
-			"type": "output", "viewId": testViewID, "seq": 1,
-			"data": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'x'}, size)),
-		})
-	}
-	if _, err := DecodeDeviceEvent(output(MaxOutputChunkBytes)); err != nil {
-		t.Errorf("full output chunk rejected: %v", err)
-	}
-	if _, err := DecodeDeviceEvent(output(MaxOutputChunkBytes + 1)); err == nil {
-		t.Error("oversize output chunk accepted")
-	}
-
-	input := func(data string) []byte {
-		return mustMarshal(map[string]any{"type": "view_input", "viewId": testViewID, "data": data})
-	}
-	// "ж" is two UTF-8 bytes: the limit counts bytes, not characters.
-	if _, err := DecodeServerCommand(input(strings.Repeat("ж", MaxInputBytes/2))); err != nil {
-		t.Errorf("full input rejected: %v", err)
-	}
-	if _, err := DecodeServerCommand(input(strings.Repeat("ж", MaxInputBytes/2) + "x")); err == nil {
-		t.Error("oversize input accepted")
-	}
-
-	history := func(size int) []byte {
-		return mustMarshal(map[string]any{"text": strings.Repeat("a", size)})
-	}
-	if _, err := DecodeCommandResult(CommandSessionHistory, history(MaxHistoryBytes)); err != nil {
-		t.Errorf("full history rejected: %v", err)
-	}
-	if _, err := DecodeCommandResult(CommandSessionHistory, history(MaxHistoryBytes+1)); err == nil {
-		t.Error("oversize history accepted")
-	}
-
-	// Text limits count code points: 80 astral characters fit a title.
-	title := strings.Repeat("😀", MaxTitleLength)
-	create := func(title string) []byte {
-		return mustMarshal(map[string]any{"type": "session_create", "requestId": testRequestID, "program": "shell", "cwd": "~", "title": title})
-	}
-	if _, err := DecodeServerCommand(create(title)); err != nil {
-		t.Errorf("80-character title rejected: %v", err)
-	}
-	if _, err := DecodeServerCommand(create(title + "😀")); err == nil {
-		t.Error("81-character title accepted")
-	}
-}
-
-func TestUnknownCommandCarriesRequestID(t *testing.T) {
-	_, err := DecodeServerCommand([]byte(`{"type":"file_upload","requestId":"` + testRequestID + `","path":"/x"}`))
-	var unknown *UnknownCommandError
-	if !errors.As(err, &unknown) || unknown.Type != "file_upload" || unknown.RequestID != testRequestID {
-		t.Fatalf("got %v", err)
-	}
-	_, err = DecodeServerCommand([]byte(`{"type":"file_upload","requestId":"not-an-id"}`))
-	if !errors.As(err, &unknown) || unknown.RequestID != "" {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestReplyConstructors(t *testing.T) {
-	reply, err := NewReplyResult(testRequestID, &RecentDirsResult{Home: "/home/user", Dirs: []string{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reply.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := DecodeDeviceEvent(mustMarshal(reply)); err != nil {
-		t.Fatalf("encoded reply rejected: %v", err)
-	}
-	if _, err := NewReplyResult(testRequestID, &RecentDirsResult{Home: "/home/user"}); err == nil {
-		t.Error("a nil dirs list would encode as null and was accepted")
-	}
-	failure := NewReplyError(testRequestID, CodeSessionNotFound)
-	if _, err := DecodeDeviceEvent(mustMarshal(failure)); err != nil {
-		t.Fatalf("encoded failure rejected: %v", err)
-	}
-	if err := NewReplyError(testRequestID, CodeDisabled).Validate(); err == nil {
-		t.Error("a server-only code was accepted in a reply")
 	}
 }
 
@@ -478,6 +318,7 @@ func TestClientDownloadPath(t *testing.T) {
 	}
 }
 
+const testRequestID = "e4da3b7f-bbce-4345-9777-2b0670b8a1c4"
 const testRunID = "1679091c-5a88-4faf-afb5-e6087eb1b2dc"
 
 func TestEveryOpHasArgsAndResults(t *testing.T) {
@@ -502,7 +343,11 @@ func TestUnknownOpCarriesRequestID(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	_, err = DecodeServerCommandV2([]byte(`{"type":"view_open","requestId":"` + testRequestID + `"}`))
-	if !errors.As(err, &unknown) || unknown.Type != CommandViewOpen || unknown.Op != "" {
+	if !errors.As(err, &unknown) || unknown.Type != "view_open" || unknown.Op != "" || unknown.RequestID != testRequestID {
+		t.Fatalf("got %v", err)
+	}
+	_, err = DecodeServerCommandV2([]byte(`{"type":"file_upload","requestId":"not-an-id"}`))
+	if !errors.As(err, &unknown) || unknown.RequestID != "" {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -576,7 +421,7 @@ func TestOpReplyConstructors(t *testing.T) {
 	if _, err := DecodeDeviceEventV2(mustMarshal(failure)); err != nil {
 		t.Fatalf("encoded failure rejected: %v", err)
 	}
-	if err := NewOpReplyError(testRequestID, CodeSessionNotFound).Validate(); err == nil {
-		t.Error("a terminal code was accepted in an op reply")
+	if err := NewOpReplyError(testRequestID, CodeDisabled).Validate(); err == nil {
+		t.Error("a server-only code was accepted in an op reply")
 	}
 }

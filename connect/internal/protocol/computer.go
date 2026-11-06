@@ -8,8 +8,6 @@ import (
 )
 
 // Protocol 2: the agent works on the user's computer through `op` commands.
-// The terminal messages of protocol 1 stay in the other files until the
-// wave that removes them.
 
 func checkArgPath(field, value string) error {
 	return checkText(field, value, MaxCwdLength)
