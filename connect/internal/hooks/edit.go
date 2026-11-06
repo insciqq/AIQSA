@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-
-	"github.com/insciqq/AIQSA/connect/internal/status"
 )
 
 var errEventNotArray = errors.New("hook event is not an array")
@@ -18,34 +16,6 @@ func (o *object) keys() []string {
 		}
 	}
 	return keys
-}
-
-// handlerJSON is the handler the client installs for e.
-func handlerJSON(e entry, executable string, agent status.Agent) *object {
-	h := &object{}
-	h.set("type", rawJSON("command"))
-	h.set("command", rawJSON(Command(executable, agent)))
-	if e.timeout > 0 {
-		h.set("timeout", rawJSON(e.timeout))
-	}
-	if e.async {
-		h.set("async", rawJSON(true))
-	}
-	return h
-}
-
-// groupJSON is the compact matcher group the client installs for e.
-func groupJSON(e entry, executable string, agent status.Agent) json.RawMessage {
-	g := &object{}
-	if e.matcher != "" {
-		g.set("matcher", rawJSON(e.matcher))
-	}
-	g.set("hooks", &array{elems: []any{handlerJSON(e, executable, agent)}})
-	var b compactBuffer
-	if err := encode(&b.Buffer, g, "", 0); err != nil {
-		panic(err)
-	}
-	return b.compact()
 }
 
 // eventArray returns the event's array, or nil when the event is absent.
@@ -147,66 +117,4 @@ func removeOwn(hooks *object, event string) (bool, error) {
 		arr.elems = kept
 	}
 	return true, nil
-}
-
-// install makes every event of the agent hold exactly one handler of the
-// client, as specified, and removes the client's handlers from any other
-// event (left by an earlier version).
-func install(hooks *object, executable string, agent status.Agent) (bool, error) {
-	changed := false
-	wanted := entriesFor(agent)
-	for _, event := range hooks.keys() {
-		if slices.ContainsFunc(wanted, func(e entry) bool { return e.event == event }) {
-			continue
-		}
-		removed, err := removeOwn(hooks, event)
-		if err != nil {
-			return false, err
-		}
-		changed = changed || removed
-	}
-	for _, e := range wanted {
-		group := groupJSON(e, executable, agent)
-		arr, err := eventArray(hooks, e.event)
-		if err != nil {
-			return false, err
-		}
-		if arr != nil && holdsExactly(arr, group) {
-			continue
-		}
-		if _, err := removeOwn(hooks, e.event); err != nil {
-			return false, err
-		}
-		if arr, err = eventArray(hooks, e.event); err != nil {
-			return false, err
-		}
-		if arr == nil {
-			arr = &array{}
-			hooks.set(e.event, arr)
-		}
-		arr.elems = append(arr.elems, group)
-		changed = true
-	}
-	return changed, nil
-}
-
-// holdsExactly reports whether the event's only group with a handler of
-// the client is the wanted group itself.
-func holdsExactly(arr *array, group json.RawMessage) bool {
-	found := false
-	for _, e := range arr.elems {
-		raw, ok := e.(json.RawMessage)
-		if !ok {
-			return false
-		}
-		own, _ := groupOwnHandlers(raw)
-		if own == 0 {
-			continue
-		}
-		if found || !sameJSON(raw, group) {
-			return false
-		}
-		found = true
-	}
-	return found
 }
