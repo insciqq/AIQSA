@@ -1,25 +1,22 @@
 import { randomUUID } from "node:crypto";
+import type { ComputerFailureCode, ConnectComputerInfoWire, ConnectComputerWire } from "@/lib/contracts/computer";
 import {
-  CONNECT_MAX_VIEWS_PER_DEVICE,
-  CONNECT_REPLY_TIMEOUT_SECONDS,
-  CONNECT_VIEW_ORPHAN_TIMEOUT_SECONDS,
-  parseConnectCommandResult,
+  CONNECT_MAX_CONCURRENT_OPS,
+  CONNECT_MAX_OP_DEADLINE_MS,
+  CONNECT_MAX_REPLY_BYTES,
+  connectUtf8ByteLength,
+  parseConnectOpResult,
   type ConnectArch,
-  type ConnectCommandResult,
-  type ConnectDevice,
-  type ConnectDeviceEvent,
+  type ConnectDeviceEventV2,
   type ConnectDeviceStreamClosedCode,
   type ConnectEventsStreamClosedCode,
-  type ConnectHello,
+  type ConnectHelloV2,
+  type ConnectOp,
+  type ConnectOpArgs,
   type ConnectOs,
-  type ConnectReasonCode,
-  type ConnectRequestCommandType,
-  type ConnectServerCommand,
-  type ConnectSession,
-  type ConnectSessionStatus,
-  type ConnectStatusReason,
-  type ConnectViewStreamClosedReason
+  type ConnectServerCommandV2
 } from "@/lib/contracts/connect";
+import type { ComputerOpOutcome } from "./computerPort";
 import { logConnect } from "./observability";
 
 /** A paired device as the database holds it; the relay never stores more than this about a computer. */
@@ -41,105 +38,66 @@ export type ConnectStreamWriter = Readonly<{
   send(event: string, data: unknown): boolean;
 }>;
 
-/** A view belongs to one account and the browser session that opened it. */
-export type ConnectViewOwner = Readonly<{ authSessionId: string; userId: string }>;
-
 /**
- * What the relay tells in-process listeners. Device events carry the full
- * browser projection of the device; `status` also names the session title
- * and its previous status for notification consumers, also for a change that
- * only a snapshot carried (`reason` is null then). `closed` ends every
- * browser device-list stream; `devices_changed` asks one account's lists to
- * reload, after a device was added or removed.
+ * What the relay tells in-process listeners: `device` carries the owner's
+ * browser projection of one computer after it came online, went offline or
+ * reported its `device_info`; `devices_changed` asks one account's lists to
+ * reload after a device was added or removed; `closed` ends every browser
+ * device-list stream.
  */
 export type ConnectRelayEvent =
-  | Readonly<{ device: ConnectDevice; deviceId: string; type: "device_online"; userId: string }>
-  | Readonly<{ device: ConnectDevice; deviceId: string; type: "device_offline"; userId: string }>
-  | Readonly<{
-    device: ConnectDevice;
-    deviceId: string;
-    sessions: readonly ConnectSession[];
-    type: "sessions";
-    userId: string;
-  }>
-  | Readonly<{
-    device: ConnectDevice;
-    deviceId: string;
-    previousStatus: ConnectSessionStatus;
-    reason: ConnectStatusReason | null;
-    sessionId: string;
-    status: ConnectSessionStatus;
-    statusAt: string;
-    title: string;
-    type: "status";
-    userId: string;
-  }>
+  | Readonly<{ computer: ConnectComputerWire; deviceId: string; type: "device"; userId: string }>
   | Readonly<{ type: "devices_changed"; userId: string }>
   | Readonly<{ code: ConnectEventsStreamClosedCode; type: "closed" }>;
 
 export type ConnectRelayListener = (event: ConnectRelayEvent) => void;
 
-type RequestCommand = Extract<ConnectServerCommand, { requestId: string }>;
-export type ConnectRequestCommand<T extends ConnectRequestCommandType> = Omit<Extract<RequestCommand, { type: T }>, "requestId">;
-export type ConnectRequestOutcome<T extends ConnectRequestCommandType> =
-  | Readonly<{ ok: true; result: ConnectCommandResult<T> }>
-  | Readonly<{ code: ConnectReasonCode; ok: false }>;
-
 export type ConnectAttachDeviceResult = Readonly<{ kind: "attached"; streamId: string }> | Readonly<{ kind: "stale" }>;
 
-/** Requests waiting for one device's reply; the browser gets `connect_rate_limited` beyond it. */
-export const CONNECT_RELAY_MAX_PENDING_REPLIES = 32;
+/** One operation for {@link ConnectRelay.callOp}; the caller has checked the switch and bounded `args`. */
+export type ConnectRelayOpCall = Readonly<{
+  args: ConnectOpArgs;
+  deviceId: string;
+  op: ConnectOp;
+  runId: string;
+  signal: AbortSignal;
+  timeoutMs: number;
+  userId: string;
+}>;
+
 /** Open device-list streams per account. */
 export const CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER = 16;
-/** Output kept for a view whose browser stream is not attached yet (or reconnecting). */
-export const CONNECT_RELAY_VIEW_BUFFER_BYTES = 1_048_576;
-/** A view counts as on screen this long after its browser last reported it visible. */
-export const CONNECT_VIEW_VISIBLE_WINDOW_MS = 30_000;
-/** Devices whose last session statuses the process remembers across their offline periods; the oldest are forgotten first. */
-export const CONNECT_RELAY_REMEMBERED_DEVICES = 1_024;
-const REPLY_TIMEOUT_MS = CONNECT_REPLY_TIMEOUT_SECONDS * 1000;
-const VIEW_ORPHAN_TIMEOUT_MS = CONNECT_VIEW_ORPHAN_TIMEOUT_SECONDS * 1000;
+/**
+ * How long the relay waits past an operation's `deadlineMs` before it gives
+ * up: the device answers `computer_timeout` itself at the deadline, and this
+ * leaves its reply time to arrive.
+ */
+export const CONNECT_OP_REPLY_GRACE_MS = 2_000;
+/**
+ * One `op` command as JSON. Contract bounds allow a megabyte of content and
+ * as much of each edit string; escaping can grow that several times, and a
+ * command beyond this is refused before it would stall the device's stream.
+ */
+export const CONNECT_MAX_OP_COMMAND_BYTES = 8_388_608;
 
-type PendingReply = {
-  readonly resolve: (outcome: ConnectRequestOutcome<ConnectRequestCommandType>) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
-  readonly type: ConnectRequestCommandType;
-};
+type PendingOp = Readonly<{
+  op: ConnectOp;
+  settle: (outcome: ComputerOpOutcome) => void;
+}>;
 
 type OnlineDevice = {
-  readonly pending: Map<string, PendingReply>;
+  /** `device_info` of this stream; null until the device reports it. */
+  info: ConnectComputerInfoWire | null;
+  readonly pending: Map<string, PendingOp>;
   record: ConnectDeviceRecord;
-  sessions: readonly ConnectSession[] | null;
   readonly streamId: string;
   readonly tokenHash: string;
-  readonly viewIds: Set<string>;
   readonly writer: ConnectStreamWriter;
-};
-
-type OutputFrame = Readonly<{ data: string; seq: number }>;
-
-/** The last session statuses a device reported: session identifiers and statuses only, never titles or paths. */
-type KnownStatuses = Readonly<{ statuses: ReadonlyMap<string, ConnectSessionStatus>; userId: string }>;
-
-type ViewState = {
-  readonly authSessionId: string;
-  buffer: OutputFrame[];
-  bufferBytes: number;
-  readonly deviceId: string;
-  readonly id: string;
-  lastVisibleAt: number | null;
-  nextSeq: number;
-  orphanTimer: ReturnType<typeof setTimeout> | null;
-  readonly sessionId: string;
-  readonly userId: string;
-  visible: boolean;
-  writer: Readonly<{ id: string; stream: ConnectStreamWriter }> | null;
 };
 
 type DeviceEnd = Readonly<{
   final?: Readonly<{ data: unknown; event: string }>;
-  pendingCode: ConnectReasonCode;
-  viewReason: ConnectViewStreamClosedReason;
+  pendingCode: ComputerFailureCode;
 }>;
 
 export type ConnectRelay = ReturnType<typeof createConnectRelay>;
@@ -148,39 +106,36 @@ function iso(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
-function deviceWire(record: ConnectDeviceRecord, online: boolean, sessions: readonly ConnectSession[] | null): ConnectDevice {
+function computerWire(record: ConnectDeviceRecord, online: boolean, info: ConnectComputerInfoWire | null): ConnectComputerWire {
   return {
     arch: record.arch,
     clientVersion: record.clientVersion,
-    createdAt: record.createdAt.toISOString(),
-    hostname: record.hostname,
     id: record.id,
+    ...(online && info ? { info } : {}),
     lastSeenAt: iso(record.lastSeenAt),
     name: record.name,
     online,
-    os: record.os,
-    sessions: online && sessions ? [...sessions] : []
+    os: record.os
   };
 }
 
-function ownedBy(view: ViewState, owner: ConnectViewOwner): boolean {
-  return view.userId === owner.userId && view.authSessionId === owner.authSessionId;
+function failure(code: ComputerFailureCode, sent: boolean): ComputerOpOutcome {
+  return { code, ok: false, sent };
 }
 
 /**
- * The in-memory relay between paired devices and their owners' browsers. It
- * holds online device streams, request/reply correlation and terminal views,
- * and nothing it holds is persisted or logged: terminal bytes pass through
- * bounded queues only. It assumes the single application process.
+ * The in-memory relay between paired devices and the server: online device
+ * streams, the operations waiting for their replies and what each device
+ * reported about itself. Nothing it holds is persisted or logged: operation
+ * arguments and results pass through bounded queues only. It assumes the
+ * single application process (D-01).
  */
 export function createConnectRelay(options: Readonly<{ now?: () => number }> = {}) {
   const now = options.now ?? Date.now;
   const devices = new Map<string, OnlineDevice>();
   const deviceIdsByToken = new Map<string, string>();
-  const views = new Map<string, ViewState>();
   const listeners = new Set<ConnectRelayListener>();
   const eventsStreams = new Map<string, number>();
-  const knownStatuses = new Map<string, KnownStatuses>();
   let epoch = 0;
 
   function emit(event: ConnectRelayEvent): void {
@@ -193,228 +148,90 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     }
   }
 
-  function wire(device: OnlineDevice): ConnectDevice {
-    return deviceWire(device.record, true, device.sessions);
+  function emitDevice(device: OnlineDevice, online: boolean): void {
+    emit({
+      computer: computerWire(device.record, online, device.info),
+      deviceId: device.record.id,
+      type: "device",
+      userId: device.record.userId
+    });
   }
 
   function current(device: OnlineDevice): boolean {
     return devices.get(device.record.id) === device;
   }
 
-  /** Keeps the device's session statuses for its next snapshot, also after its stream ends. */
-  function rememberStatuses(device: OnlineDevice): void {
-    const deviceId = device.record.id;
-    knownStatuses.delete(deviceId);
-    if (knownStatuses.size >= CONNECT_RELAY_REMEMBERED_DEVICES) knownStatuses.delete(knownStatuses.keys().next().value!);
-    knownStatuses.set(deviceId, {
-      statuses: new Map((device.sessions ?? []).map((session) => [session.id, session.status])),
-      userId: device.record.userId
-    });
-  }
-
-  /**
-   * What a new snapshot is compared with: the current stream's list, or the
-   * statuses the device last reported before it reconnected. Null when the
-   * process never saw the device's sessions (it restarted): nothing to compare.
-   */
-  function previousStatuses(device: OnlineDevice): ReadonlyMap<string, ConnectSessionStatus> | null {
-    if (device.sessions) return new Map(device.sessions.map((session) => [session.id, session.status]));
-    const known = knownStatuses.get(device.record.id);
-    return known && known.userId === device.record.userId ? known.statuses : null;
-  }
-
   /** Enqueues a command; a device that stopped reading loses its stream and reconnects. */
-  function sendCommand(device: OnlineDevice, command: ConnectServerCommand): boolean {
+  function sendCommand(device: OnlineDevice, command: ConnectServerCommandV2): boolean {
     if (!current(device)) return false;
     if (device.writer.send("command", command)) return true;
     logConnect({ action: "retry", code: "connect_device_queue_full", outcome: "failed", stage: "dispatch" });
-    endDevice(device, { pendingCode: "connect_device_offline", viewReason: "connect_device_offline" });
+    endDevice(device, { pendingCode: "connect_device_disconnected" });
     return false;
   }
 
-  function failPending(device: OnlineDevice, code: ConnectReasonCode): void {
+  /** Every operation still waiting on the stream: the device may have started it. */
+  function failPending(device: OnlineDevice, code: ComputerFailureCode): void {
     const pending = [...device.pending.values()];
     device.pending.clear();
-    for (const reply of pending) {
-      clearTimeout(reply.timer);
-      reply.resolve({ code, ok: false });
-    }
+    for (const entry of pending) entry.settle(failure(code, true));
   }
 
-  function startOrphanTimer(view: ViewState): void {
-    if (view.orphanTimer) clearTimeout(view.orphanTimer);
-    const timer = setTimeout(() => {
-      const latest = views.get(view.id);
-      if (latest === view && view.writer === null && view.orphanTimer === timer) closeView(view, "detached", true);
-    }, VIEW_ORPHAN_TIMEOUT_MS);
-    timer.unref?.();
-    view.orphanTimer = timer;
-  }
-
-  /** Removes a view, tells its browser stream why and, unless the device ended it, tells the device. */
-  function closeView(view: ViewState, reason: ConnectViewStreamClosedReason, notifyDevice: boolean): void {
-    if (views.get(view.id) !== view) return;
-    views.delete(view.id);
-    if (view.orphanTimer) clearTimeout(view.orphanTimer);
-    view.orphanTimer = null;
-    view.buffer = [];
-    view.bufferBytes = 0;
-    const device = devices.get(view.deviceId);
-    device?.viewIds.delete(view.id);
-    const writer = view.writer;
-    view.writer = null;
-    writer?.stream.close({ data: { reason }, event: "closed" });
-    if (notifyDevice && device) sendCommand(device, { type: "view_close", viewId: view.id });
-  }
-
-  function closeViews(viewIds: Iterable<string>, reason: ConnectViewStreamClosedReason, notifyDevice: boolean): void {
-    for (const viewId of [...viewIds]) {
-      const view = views.get(viewId);
-      if (view) closeView(view, reason, notifyDevice);
-    }
-  }
-
-  /** Ends a device stream that is still current: its replies fail, its views close and its owner sees it offline. */
+  /** Ends a device stream that is still current: its operations fail and its owner sees it offline. */
   function endDevice(device: OnlineDevice, end: DeviceEnd): void {
     if (!current(device)) return;
     devices.delete(device.record.id);
     if (deviceIdsByToken.get(device.tokenHash) === device.record.id) deviceIdsByToken.delete(device.tokenHash);
     device.writer.close(end.final);
     failPending(device, end.pendingCode);
-    closeViews(device.viewIds, end.viewReason, false);
-    device.viewIds.clear();
-    emit({
-      device: deviceWire(device.record, false, null),
-      deviceId: device.record.id,
-      type: "device_offline",
-      userId: device.record.userId
-    });
+    emitDevice(device, false);
   }
 
-  /**
-   * Forwards one chunk to the view's browser stream, or keeps it while no
-   * stream is attached (a new view's first screen often arrives before the
-   * browser's stream does). A stalled browser ends the view; it reopens.
-   */
-  function deliverOutput(view: ViewState, frame: OutputFrame): void {
-    if (view.writer) {
-      if (view.writer.stream.send("output", frame)) return;
-      logConnect({ action: "retry", code: "connect_view_queue_full", outcome: "failed", stage: "dispatch" });
-      closeView(view, "error", true);
-      return;
-    }
-    if (view.bufferBytes + frame.data.length > CONNECT_RELAY_VIEW_BUFFER_BYTES) {
-      logConnect({ action: "retry", code: "connect_view_queue_full", outcome: "failed", stage: "dispatch" });
-      closeView(view, "error", true);
-      return;
-    }
-    view.buffer.push(frame);
-    view.bufferBytes += frame.data.length;
-  }
-
-  function applyEvent(device: OnlineDevice, event: ConnectDeviceEvent): void {
+  function applyEvent(device: OnlineDevice, event: ConnectDeviceEventV2): void {
     switch (event.type) {
-      case "sessions": {
-        const previous = previousStatuses(device);
-        const sessions = [...event.sessions];
-        device.sessions = sessions;
-        rememberStatuses(device);
-        const projection = wire(device);
-        emit({ device: projection, deviceId: device.record.id, sessions, type: "sessions", userId: device.record.userId });
-        if (!previous) return;
-        // A transition that reached the server only inside a snapshot (the device made it while its
-        // stream was down) is still a transition for notification consumers. A session new to the
-        // list emits nothing; an explicit status for the same transition then compares equal.
-        for (const session of sessions) {
-          const previousStatus = previous.get(session.id);
-          if (previousStatus === undefined || previousStatus === session.status) continue;
-          if (!current(device)) return;
-          emit({
-            device: projection,
-            deviceId: device.record.id,
-            previousStatus,
-            reason: null,
-            sessionId: session.id,
-            status: session.status,
-            statusAt: session.statusAt,
-            title: session.title,
-            type: "status",
-            userId: device.record.userId
-          });
-        }
-        return;
-      }
-      case "status": {
-        const sessions = device.sessions;
-        const index = sessions?.findIndex((session) => session.id === event.sessionId) ?? -1;
-        if (!sessions || index < 0) return;
-        const previous = sessions[index]!;
-        device.sessions = sessions.map((session, position) =>
-          position === index ? { ...session, status: event.status, statusAt: event.statusAt } : session);
-        rememberStatuses(device);
-        emit({
-          device: wire(device),
-          deviceId: device.record.id,
-          previousStatus: previous.status,
-          reason: event.reason ?? null,
-          sessionId: event.sessionId,
-          status: event.status,
-          statusAt: event.statusAt,
-          title: previous.title,
-          type: "status",
-          userId: device.record.userId
-        });
-        return;
-      }
-      case "output": {
-        const view = views.get(event.viewId);
-        // Another device's view is invisible to this one: its token never reaches foreign views.
-        if (!view || view.deviceId !== device.record.id) return;
-        if (event.seq < view.nextSeq) return;
-        if (event.seq > view.nextSeq) {
-          // A lost chunk would corrupt the screen; a new view redraws it.
-          logConnect({ action: "retry", code: "connect_view_seq_gap", outcome: "failed", stage: "validate" });
-          closeView(view, "error", true);
-          return;
-        }
-        view.nextSeq += 1;
-        deliverOutput(view, { data: event.data, seq: event.seq });
-        return;
-      }
-      case "view_closed": {
-        const view = views.get(event.viewId);
-        if (view && view.deviceId === device.record.id) closeView(view, event.reason, false);
+      case "device_info": {
+        device.info = { home: event.home, osVersion: event.osVersion, shell: event.shell };
+        emitDevice(device, true);
         return;
       }
       case "reply": {
+        // A reply to an operation that already settled (timeout, cancel) or was never sent is ignored.
         const pending = device.pending.get(event.requestId);
         if (!pending) return;
-        device.pending.delete(event.requestId);
-        clearTimeout(pending.timer);
+        if (connectUtf8ByteLength(JSON.stringify(event)) > CONNECT_MAX_REPLY_BYTES) {
+          logConnect({ action: "fail", code: "connect_reply_invalid", outcome: "failed", stage: "validate" });
+          pending.settle(failure("connect_device_error", true));
+          return;
+        }
         if (!event.ok) {
-          pending.resolve({ code: event.code, ok: false });
+          pending.settle(failure(event.code, true));
           return;
         }
-        const result = parseConnectCommandResult(pending.type, event.result);
+        const result = parseConnectOpResult(pending.op, event.result);
         if (result === null) {
-          logConnect({ action: "retry", code: "connect_reply_invalid", outcome: "failed", stage: "validate" });
-          pending.resolve({ code: "connect_device_error", ok: false });
+          logConnect({ action: "fail", code: "connect_reply_invalid", outcome: "failed", stage: "validate" });
+          pending.settle(failure("connect_device_error", true));
           return;
         }
-        pending.resolve({ ok: true, result });
+        pending.settle({ ok: true, result });
         return;
       }
     }
   }
 
-  function ownedView(owner: ConnectViewOwner, viewId: string): ViewState | null {
-    const view = views.get(viewId);
-    return view && ownedBy(view, owner) ? view : null;
+  function tokenDevice(tokenHash: string): OnlineDevice | null {
+    const deviceId = deviceIdsByToken.get(tokenHash);
+    const device = deviceId ? devices.get(deviceId) : undefined;
+    return device && device.tokenHash === tokenHash ? device : null;
+  }
+
+  function ownedDevice(userId: string, deviceId: string): OnlineDevice | null {
+    const device = devices.get(deviceId);
+    return device && device.record.userId === userId ? device : null;
   }
 
   function endAll(end: DeviceEnd): void {
     for (const device of [...devices.values()]) endDevice(device, end);
-    closeViews(views.keys(), end.viewReason, false);
   }
 
   return {
@@ -425,12 +242,12 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
 
     /**
      * Makes a stream the device's current one and sends `hello` first. A
-     * previous stream gets `replaced`; its views end (the browser reopens them)
-     * and its unanswered requests fail.
+     * previous stream gets `replaced` and its waiting operations fail as
+     * `connect_device_disconnected`.
      */
     attachDevice(input: Readonly<{
       epoch: number;
-      hello: ConnectHello;
+      hello: ConnectHelloV2;
       record: ConnectDeviceRecord;
       tokenHash: string;
       writer: ConnectStreamWriter;
@@ -438,12 +255,11 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       if (input.epoch !== epoch) return { kind: "stale" };
       const previous = devices.get(input.record.id);
       const device: OnlineDevice = {
+        info: null,
         pending: new Map(),
         record: input.record,
-        sessions: null,
         streamId: randomUUID(),
         tokenHash: input.tokenHash,
-        viewIds: new Set(),
         writer: input.writer
       };
       devices.set(device.record.id, device);
@@ -454,21 +270,16 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
           deviceIdsByToken.delete(previous.tokenHash);
         }
         previous.writer.close({ data: {}, event: "replaced" });
-        failPending(previous, "connect_device_offline");
-        // The new client may not know these views; the browser opens fresh ones.
-        closeViews(previous.viewIds, "error", true);
-        previous.viewIds.clear();
+        failPending(previous, "connect_device_disconnected");
       }
-      emit({ device: wire(device), deviceId: device.record.id, type: "device_online", userId: device.record.userId });
+      emitDevice(device, true);
       return { kind: "attached", streamId: device.streamId };
     },
 
     /** The device's stream ended (client, network or server close). */
     detachDevice(deviceId: string, streamId: string): void {
       const device = devices.get(deviceId);
-      if (device && device.streamId === streamId) {
-        endDevice(device, { pendingCode: "connect_device_offline", viewReason: "connect_device_offline" });
-      }
+      if (device && device.streamId === streamId) endDevice(device, { pendingCode: "connect_device_disconnected" });
     },
 
     /** Keeps the online record current after the stream refreshed `lastSeenAt`. */
@@ -484,8 +295,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       epoch += 1;
       endDevice(device, {
         final: { data: { code }, event: "closed" },
-        pendingCode: code === "connect_disabled" ? "connect_disabled" : "connect_device_offline",
-        viewReason: code === "connect_disabled" ? "connect_disabled" : "connect_device_offline"
+        pendingCode: code === "connect_disabled" ? "connect_disabled" : "connect_device_disconnected"
       });
     },
 
@@ -496,13 +306,12 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
 
     /**
      * Applies a validated batch from the device holding `tokenHash`, in order.
-     * Views and requests of other devices are invisible to it. False without
-     * an open stream.
+     * Operations of other devices are invisible to it. False without an open
+     * stream.
      */
-    acceptEvents(tokenHash: string, events: readonly ConnectDeviceEvent[]): boolean {
-      const deviceId = deviceIdsByToken.get(tokenHash);
-      const device = deviceId ? devices.get(deviceId) : undefined;
-      if (!device || device.tokenHash !== tokenHash) return false;
+    acceptEvents(tokenHash: string, events: readonly ConnectDeviceEventV2[]): boolean {
+      const device = tokenDevice(tokenHash);
+      if (!device) return false;
       for (const event of events) {
         if (!current(device)) break;
         applyEvent(device, event);
@@ -510,252 +319,141 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       return true;
     },
 
-    /** The browser projection of a stored device: online with its sessions while its stream is open. */
-    projectDevice(record: ConnectDeviceRecord): ConnectDevice {
-      const device = devices.get(record.id);
-      return device && device.record.userId === record.userId
-        ? deviceWire(device.record, true, device.sessions)
-        : deviceWire(record, false, null);
+    /**
+     * Settles operations whose reply the device sent in a malformed batch, so
+     * they fail now as `connect_device_error` instead of waiting for their
+     * deadline. Only the token's own device's operations are reachable.
+     */
+    rejectReplies(tokenHash: string, requestIds: readonly string[]): void {
+      const device = tokenDevice(tokenHash);
+      if (!device) return;
+      for (const requestId of requestIds) {
+        const pending = device.pending.get(requestId);
+        if (!pending) continue;
+        logConnect({ action: "fail", code: "connect_reply_invalid", outcome: "failed", stage: "validate" });
+        pending.settle(failure("connect_device_error", true));
+      }
+    },
+
+    /** The owner's browser projection of a stored device: online with what it reported while its stream is open. */
+    projectComputer(record: ConnectDeviceRecord): ConnectComputerWire {
+      const device = ownedDevice(record.userId, record.id);
+      return device ? computerWire(device.record, true, device.info) : computerWire(record, false, null);
+    },
+
+    /** The user's own device while its stream is open; null when it is offline, missing or someone else's. */
+    onlineDevice(userId: string, deviceId: string): Readonly<{ info: ConnectComputerInfoWire | null; record: ConnectDeviceRecord }> | null {
+      const device = ownedDevice(userId, deviceId);
+      return device ? { info: device.info, record: device.record } : null;
     },
 
     /**
-     * Sends a request command and waits up to the reply timeout. An offline
-     * device answers `connect_device_offline` (the caller decides whether it
-     * exists); another account's online device answers `connect_not_found`.
+     * Sends one operation to the user's own online device and waits for its
+     * reply, at most its deadline and a short grace. Null when the device has
+     * no open stream of this user (offline, missing or someone else's: the
+     * caller tells them apart). An abort or the deadline sends `cancel` and
+     * settles at once; a reply that arrives later is ignored.
      */
-    request<T extends ConnectRequestCommandType>(input: Readonly<{
-      command: ConnectRequestCommand<T>;
-      deviceId: string;
-      userId: string;
-    }>): Promise<ConnectRequestOutcome<T>> {
-      const device = devices.get(input.deviceId);
-      if (!device) return Promise.resolve({ code: "connect_device_offline", ok: false });
-      if (device.record.userId !== input.userId) return Promise.resolve({ code: "connect_not_found", ok: false });
-      if (device.pending.size >= CONNECT_RELAY_MAX_PENDING_REPLIES) {
-        return Promise.resolve({ code: "connect_rate_limited", ok: false });
+    callOp(input: ConnectRelayOpCall): Promise<ComputerOpOutcome> | null {
+      const device = ownedDevice(input.userId, input.deviceId);
+      if (!device) return null;
+      if (input.signal.aborted) return Promise.resolve(failure("computer_cancelled", false));
+      if (device.pending.size >= CONNECT_MAX_CONCURRENT_OPS) {
+        logConnect({ action: "skip", code: "computer_limit", outcome: "blocked", stage: "dispatch" });
+        return Promise.resolve(failure("computer_limit", false));
       }
       const requestId = randomUUID();
-      return new Promise<ConnectRequestOutcome<T>>((resolve) => {
+      const deadlineMs = Math.min(CONNECT_MAX_OP_DEADLINE_MS, Math.max(1, Math.ceil(input.timeoutMs)));
+      const command: ConnectServerCommandV2 = {
+        args: input.args,
+        deadlineMs,
+        op: input.op,
+        requestId,
+        runId: input.runId,
+        type: "op"
+      } as ConnectServerCommandV2;
+      if (connectUtf8ByteLength(JSON.stringify(command)) > CONNECT_MAX_OP_COMMAND_BYTES) {
+        logConnect({ action: "skip", code: "computer_file_too_large", outcome: "blocked", stage: "dispatch" });
+        return Promise.resolve(failure("computer_file_too_large", false));
+      }
+      // A failed send ends the stream; the command never reached the device.
+      if (!sendCommand(device, command)) return Promise.resolve(failure("connect_device_disconnected", false));
+      const startedAt = now();
+      return new Promise<ComputerOpOutcome>((resolve) => {
+        let settled = false;
+        const cancel = () => {
+          if (current(device)) sendCommand(device, { requestId, type: "cancel" });
+        };
         const timer = setTimeout(() => {
-          if (device.pending.get(requestId)?.timer !== timer) return;
-          device.pending.delete(requestId);
-          logConnect({ action: "retry", code: "connect_device_timeout", outcome: "failed", stage: "dispatch" });
-          resolve({ code: "connect_device_timeout", ok: false });
-        }, REPLY_TIMEOUT_MS);
+          logConnect({ action: "stop", code: "computer_timeout", durationMs: now() - startedAt, outcome: "failed", stage: "dispatch" });
+          settle(failure("computer_timeout", true));
+          cancel();
+        }, deadlineMs + CONNECT_OP_REPLY_GRACE_MS);
         timer.unref?.();
-        device.pending.set(requestId, {
-          resolve: resolve as PendingReply["resolve"],
-          timer,
-          type: input.command.type
-        });
-        // A failed send ends the device, which fails this request too.
-        sendCommand(device, { ...input.command, requestId } as RequestCommand);
+        const onAbort = () => {
+          settle(failure("computer_cancelled", true));
+          cancel();
+        };
+        const entry: PendingOp = { op: input.op, settle };
+        function settle(outcome: ComputerOpOutcome): void {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          input.signal.removeEventListener("abort", onAbort);
+          if (device.pending.get(requestId) === entry) device.pending.delete(requestId);
+          resolve(outcome);
+        }
+        device.pending.set(requestId, entry);
+        input.signal.addEventListener("abort", onAbort, { once: true });
       });
     },
 
-    /** Opens a terminal view of a session on the owner's online device. */
-    openView(input: Readonly<{
-      cols: number;
-      deviceId: string;
-      owner: ConnectViewOwner;
-      rows: number;
-      sessionId: string;
-    }>): Readonly<{ ok: true; viewId: string }> | Readonly<{ code: ConnectReasonCode; ok: false }> {
-      const device = devices.get(input.deviceId);
-      if (!device) return { code: "connect_device_offline", ok: false };
-      if (device.record.userId !== input.owner.userId) return { code: "connect_not_found", ok: false };
-      if (device.viewIds.size >= CONNECT_MAX_VIEWS_PER_DEVICE) return { code: "connect_view_limit", ok: false };
-      const view: ViewState = {
-        authSessionId: input.owner.authSessionId,
-        buffer: [],
-        bufferBytes: 0,
-        deviceId: device.record.id,
-        id: randomUUID(),
-        // Opening a view is the browser showing it.
-        lastVisibleAt: now(),
-        nextSeq: 0,
-        orphanTimer: null,
-        sessionId: input.sessionId,
-        userId: input.owner.userId,
-        visible: true,
-        writer: null
-      };
-      views.set(view.id, view);
-      device.viewIds.add(view.id);
-      startOrphanTimer(view);
-      const opened = sendCommand(device, {
-        cols: input.cols,
-        rows: input.rows,
-        sessionId: input.sessionId,
-        type: "view_open",
-        viewId: view.id
-      });
-      return opened ? { ok: true, viewId: view.id } : { code: "connect_device_offline", ok: false };
-    },
-
-    /**
-     * Attaches the owner's browser stream to a view: output kept while it was
-     * detached follows first. A newer stream replaces an older one.
-     */
-    attachView(input: Readonly<{ owner: ConnectViewOwner; viewId: string; writer: ConnectStreamWriter }>):
-      Readonly<{ ok: true; writerId: string }> | Readonly<{ ok: false }> {
-      const view = ownedView(input.owner, input.viewId);
-      if (!view) return { ok: false };
-      const previous = view.writer;
-      const writerId = randomUUID();
-      view.writer = { id: writerId, stream: input.writer };
-      if (view.orphanTimer) clearTimeout(view.orphanTimer);
-      view.orphanTimer = null;
-      previous?.stream.close();
-      const buffered = view.buffer;
-      view.buffer = [];
-      view.bufferBytes = 0;
-      for (const frame of buffered) {
-        if (!input.writer.send("output", frame)) {
-          logConnect({ action: "retry", code: "connect_view_queue_full", outcome: "failed", stage: "dispatch" });
-          closeView(view, "error", true);
-          return { ok: true, writerId };
-        }
-      }
-      return { ok: true, writerId };
-    },
-
-    /** The browser stream ended; the view closes unless a stream attaches within the orphan timeout. */
-    detachView(viewId: string, writerId: string): void {
-      const view = views.get(viewId);
-      if (!view || view.writer?.id !== writerId) return;
-      view.writer = null;
-      startOrphanTimer(view);
-    },
-
-    /** A heartbeat on the view's current browser stream; a full queue ends the view. */
-    pingView(viewId: string, writerId: string): boolean {
-      const view = views.get(viewId);
-      if (!view || view.writer?.id !== writerId) return false;
-      if (view.writer.stream.send("ping", {})) return true;
-      logConnect({ action: "retry", code: "connect_view_queue_full", outcome: "failed", stage: "heartbeat" });
-      closeView(view, "error", true);
-      return false;
-    },
-
-    viewInput(owner: ConnectViewOwner, viewId: string, data: string): ConnectReasonCode | null {
-      const view = ownedView(owner, viewId);
-      if (!view) return "connect_not_found";
-      const device = devices.get(view.deviceId);
-      if (!device) return "connect_device_offline";
-      return sendCommand(device, { data, type: "view_input", viewId }) ? null : "connect_device_offline";
-    },
-
-    viewResize(owner: ConnectViewOwner, viewId: string, size: Readonly<{ cols: number; rows: number }>): ConnectReasonCode | null {
-      const view = ownedView(owner, viewId);
-      if (!view) return "connect_not_found";
-      const device = devices.get(view.deviceId);
-      if (!device) return "connect_device_offline";
-      return sendCommand(device, { cols: size.cols, rows: size.rows, type: "view_resize", viewId }) ? null : "connect_device_offline";
-    },
-
-    viewVisibility(owner: ConnectViewOwner, viewId: string, visible: boolean): ConnectReasonCode | null {
-      const view = ownedView(owner, viewId);
-      if (!view) return "connect_not_found";
-      view.visible = visible;
-      if (visible) view.lastVisibleAt = now();
-      return null;
-    },
-
-    /** The owner closed the view, or its stream found the feature switched off. */
-    closeOwnedView(
-      owner: ConnectViewOwner,
-      viewId: string,
-      reason: ConnectViewStreamClosedReason = "detached"
-    ): ConnectReasonCode | null {
-      const view = ownedView(owner, viewId);
-      if (!view) return "connect_not_found";
-      closeView(view, reason, true);
-      return null;
-    },
-
-    /** Whether the owner has this session open on screen: visible reported within the last 30 seconds. */
-    isSessionVisible(userId: string, deviceId: string, sessionId: string, at: number = now()): boolean {
-      for (const view of views.values()) {
-        if (view.userId === userId && view.deviceId === deviceId && view.sessionId === sessionId && view.visible &&
-          view.lastVisibleAt !== null && at - view.lastVisibleAt <= CONNECT_VIEW_VISIBLE_WINDOW_MS) {
-          return true;
-        }
-      }
-      return false;
-    },
-
-    /** The browser session ended: its views close as unauthorized. */
-    closeViewsForAuthSession(authSessionId: string): void {
-      closeViews(
-        [...views.values()].filter((view) => view.authSessionId === authSessionId).map((view) => view.id),
-        "connect_unauthorized",
-        true
-      );
+    /** Tells the user's own online device that a run is over; nothing when it is offline or someone else's. */
+    runEnded(input: Readonly<{ deviceId: string; runId: string; userId: string }>): void {
+      const device = ownedDevice(input.userId, input.deviceId);
+      if (device) sendCommand(device, { runId: input.runId, type: "run_ended" });
     },
 
     /** The device was revoked: its stream gets `closed {code}` and ends at once. */
     disconnectDevice(deviceId: string, code: ConnectDeviceStreamClosedCode): void {
       epoch += 1;
-      knownStatuses.delete(deviceId);
       const device = devices.get(deviceId);
       if (!device) return;
       endDevice(device, {
         final: { data: { code }, event: "closed" },
-        pendingCode: code === "connect_disabled" ? "connect_disabled" : "connect_device_offline",
-        viewReason: code === "connect_disabled" ? "connect_disabled" : "connect_device_offline"
+        pendingCode: code === "connect_disabled" ? "connect_disabled" : "connect_device_disconnected"
       });
     },
 
     /**
      * The account lost its devices: every device stream of theirs gets
      * `closed {connect_unauthorized}` (its token is gone) and their lists
-     * reload. A view whose browser session was revoked with them closes as
-     * unauthorized; a view of a session that stays signed in (a password
-     * change keeps the current one) closes as `connect_device_offline`.
+     * reload.
      */
-    disconnectUser(userId: string, input: Readonly<{ activeAuthSessionIds: Iterable<string> }>): void {
+    disconnectUser(userId: string): void {
       epoch += 1;
-      const active = new Set(input.activeAuthSessionIds);
-      for (const [deviceId, known] of [...knownStatuses]) {
-        if (known.userId === userId) knownStatuses.delete(deviceId);
-      }
-      const userViews = () => [...views.values()].filter((view) => view.userId === userId);
-      // The device streams end below, so the devices are not told about these views.
-      closeViews(userViews().filter((view) => !active.has(view.authSessionId)).map((view) => view.id), "connect_unauthorized", false);
       for (const device of [...devices.values()]) {
         if (device.record.userId === userId) {
           endDevice(device, {
             final: { data: { code: "connect_unauthorized" }, event: "closed" },
-            pendingCode: "connect_device_offline",
-            viewReason: "connect_device_offline"
+            pendingCode: "connect_device_disconnected"
           });
         }
       }
-      closeViews(userViews().map((view) => view.id), "connect_device_offline", false);
       emit({ type: "devices_changed", userId });
     },
 
-    /** Every session of the installation was revoked: all streams, views and device lists end as unauthorized. */
+    /** Every session of the installation was revoked: all device streams and device lists end as unauthorized. */
     disconnectAll(): void {
       epoch += 1;
-      endAll({
-        final: { data: { code: "connect_unauthorized" }, event: "closed" },
-        pendingCode: "connect_device_offline",
-        viewReason: "connect_unauthorized"
-      });
+      endAll({ final: { data: { code: "connect_unauthorized" }, event: "closed" }, pendingCode: "connect_device_disconnected" });
       emit({ code: "connect_unauthorized", type: "closed" });
     },
 
     /** The administrator turned AIQSA Connect off: everything ends with `connect_disabled`. */
     disable(): void {
       epoch += 1;
-      knownStatuses.clear();
-      endAll({
-        final: { data: { code: "connect_disabled" }, event: "closed" },
-        pendingCode: "connect_disabled",
-        viewReason: "connect_disabled"
-      });
+      endAll({ final: { data: { code: "connect_disabled" }, event: "closed" }, pendingCode: "connect_disabled" });
       emit({ code: "connect_disabled", type: "closed" });
     },
 
@@ -787,10 +485,10 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     },
 
     /** Counts for tests and bounded diagnostics; never identifiers or content. */
-    size(): Readonly<{ devices: number; listeners: number; pendingReplies: number; views: number }> {
-      let pendingReplies = 0;
-      for (const device of devices.values()) pendingReplies += device.pending.size;
-      return { devices: devices.size, listeners: listeners.size, pendingReplies, views: views.size };
+    size(): Readonly<{ devices: number; listeners: number; pendingOps: number }> {
+      let pendingOps = 0;
+      for (const device of devices.values()) pendingOps += device.pending.size;
+      return { devices: devices.size, listeners: listeners.size, pendingOps };
     }
   };
 }
