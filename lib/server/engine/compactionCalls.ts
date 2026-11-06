@@ -3,7 +3,7 @@ import { maxOutputTokenParamKeys, maxOutputTokensFromParams } from "../../domain
 import type { GatewayRoutingLane } from "../providers/gatewayRouting";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
 import type { CompactionModelCall, CompactionModelRequest } from "./compaction";
-import { callModel } from "./modelCall";
+import { callModel, type ModelCallRetryPolicy } from "./modelCall";
 
 /**
  * The model calls of a native run's compactions, on the run's own adapter,
@@ -34,6 +34,8 @@ export type CompactionCallPorts = Readonly<{
   now?: () => number;
   /** One physical request's provider-reported usage and cost. */
   onUsage(usage: ModelRunUsage, costUsd: number | undefined): void;
+  /** The retry policy of the run's model requests (a research run's); absent, `callModel`'s default. */
+  retry?: ModelCallRetryPolicy;
   /** The gateway routing lane of the run's compactions, never the loop's: they run beside it (`gatewayRouting.ts`). */
   routing?: GatewayRoutingLane;
   timeoutMs?: number;
@@ -128,6 +130,7 @@ export function compactionModelCall(ports: CompactionCallPorts, request: () => P
       onDiscard: async () => undefined,
       onEvent: async () => undefined,
       onUsage: ports.onUsage,
+      ...(ports.retry ? { retry: ports.retry } : {}),
       ...(ports.routing ? { routing: ports.routing } : {}),
       signal: call.signal,
       stage: "compaction",

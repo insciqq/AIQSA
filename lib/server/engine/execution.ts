@@ -49,7 +49,7 @@ import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { ANSWER_NOW_INSTRUCTION, runAgentLoop, type LoopToolChoice } from "./loop";
-import { callModel } from "./modelCall";
+import { callModel, MODEL_CALL_RESEARCH_RETRY } from "./modelCall";
 import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
 import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
 import { SUBAGENT_RUN_NO_ANSWER, type NativeRunStore } from "./runStore";
@@ -821,11 +821,13 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // compactions, which run beside the loop and may outlive the run, have their own.
         const loopRouting = gatewayRoutingLane({ chatId: scope.chatId, name: "loop" });
         const compactionRouting = gatewayRoutingLane({ chatId: scope.chatId, name: `compaction:${runId}` });
+        // A research run's requests keep being sent again far longer than a chat's (`MODEL_CALL_RESEARCH_RETRY`): nobody waits on them.
+        const modelRetry = runResearch ? { retry: MODEL_CALL_RESEARCH_RETRY } : {};
         // Measurement and compaction before every request (`runContext.ts`); compaction calls are the answer model's.
         const context = createRunContext({
           append,
           compactionCall: (latest) => compactionModelCall({ adapter: input.adapter, deadlineAt: startedAt + turnMs, now,
-            onUsage: recordModelUsage, routing: compactionRouting, timeoutMs }, latest),
+            onUsage: recordModelUsage, ...modelRetry, routing: compactionRouting, timeoutMs }, latest),
           // One still running after the answer finishes detached; the run records its item, marker and usage then,
           // the item at a sequence no record of the run takes.
           detached: { chatId: scope.chatId, live: () => engine.transcripts.runLive(scope),
@@ -904,6 +906,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               sink.send(liveRunPhaseStatus({ phase: "model", ...(wait ? { wait } : {}) }));
             },
             onUsage: recordModelUsage,
+            ...modelRetry,
             routing: loopRouting,
             signal,
             timeoutMs
@@ -1041,7 +1044,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
                 onProviderWait: (wait) => {
                   setRunProviderWait(runId, wait);
                   sink.send(liveRunPhaseStatus({ phase: "model", ...(wait ? { wait } : {}) }));
-                }, onUsage: recordModelUsage, routing: loopRouting, signal: pageSignal, timeoutMs },
+                }, onUsage: recordModelUsage, retry: MODEL_CALL_RESEARCH_RETRY, routing: loopRouting, signal: pageSignal, timeoutMs },
               researchPageRequest(base, { history: projectTranscript(history, target, {}), params, tool: pageTool.definition }));
               // No request anchor: the step's request is not the transcript's, so the next run measures from the loop's last one.
               return { calls: result.toolCalls ?? [], items: modelResponseItems({ estimate: estimateApproxTokens, history: result.history ?? fallbackHistory(result),
