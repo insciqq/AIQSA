@@ -1,6 +1,5 @@
 import { ConnectShell } from "@/features/connect/ConnectShell";
 import { getAuthConfig } from "@/lib/server/auth/config";
-import { prisma } from "@/lib/server/prisma";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
@@ -22,7 +21,7 @@ function installOrigin(): string | null {
 }
 
 /**
- * Every `/connect` page shares this shell, so the live device list survives
+ * Every `/connect` page shares this shell, so the live computer list survives
  * moving between them. Without a viewer only the page renders, and it signs
  * in again with its own address; with the feature off the mode does not exist.
  */
@@ -30,16 +29,11 @@ export default async function ConnectLayout({ children }: Readonly<{ children: R
   const viewer = await loadChatViewer();
   if (!viewer) return children;
   if (!viewer.connectEnabled) notFound();
-  const settings = await prisma.userSettings.findUnique({
-    select: { browserNotificationsEnabled: true },
-    where: { userId: viewer.accountId }
-  });
   return (
     <ConnectShell
       accountId={viewer.accountId}
       accountLabel={viewer.accountDisplayName.trim() || viewer.accountEmail || "Account"}
       adminEntryVisible={viewer.adminEntryVisible}
-      browserNotificationsEnabled={settings?.browserNotificationsEnabled ?? true}
       installOrigin={installOrigin()}
     >
       {children}

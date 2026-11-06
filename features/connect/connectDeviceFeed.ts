@@ -1,13 +1,13 @@
+import { CONNECT_EVENTS_PATH } from "@/lib/contracts/connect";
 import {
-  CONNECT_EVENTS_PATH,
-  CONNECT_EVENTS_STREAM_EVENTS,
-  decodeConnectEventsStreamEvent,
-  type ConnectDevice,
-  type ConnectDevicesResponse
-} from "@/lib/contracts/connect";
-import { listConnectDevices, type ConnectApiResult, type ConnectFailureCode } from "./connectApi";
+  decodeConnectComputerEventsStreamEvent,
+  type ConnectComputerEventsStreamEvent,
+  type ConnectComputerListResponse,
+  type ConnectComputerWire
+} from "@/lib/contracts/computer";
+import { listConnectComputers, type ConnectApiResult, type ConnectFailureCode } from "./connectApi";
 
-/** The part of `EventSource` the Connect streams use; tests inject a fake. */
+/** The part of `EventSource` the Connect stream uses; tests inject a fake. */
 export type ConnectEventSource = {
   addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void;
   close(): void;
@@ -21,22 +21,26 @@ export function openBrowserEventSource(url: string): ConnectEventSource {
   return new EventSource(url) as unknown as ConnectEventSource;
 }
 
-/** Why the shell must leave AIQSA Connect: the feature was turned off, or the sign-in ended. */
+/** Every frame name of `/api/connect/events`. */
+const EVENT_NAMES = ["devices", "device", "closed", "ping"] as const satisfies
+  readonly ConnectComputerEventsStreamEvent["event"][];
+
+/** Why the page must leave AIQSA Connect: the feature was turned off, or the sign-in ended. */
 export type ConnectLeaveReason = "disabled" | "signed_out";
 
-export type ConnectDeviceFeedSnapshot = Readonly<{
+export type ConnectComputerFeedSnapshot = Readonly<{
+  /** Null until the first list arrives. */
+  computers: readonly ConnectComputerWire[] | null;
   connection: "connecting" | "live" | "reconnecting";
-  /** Null until the first snapshot arrives. */
-  devices: readonly ConnectDevice[] | null;
-  /** The last failure while no snapshot could be read; cleared by the next one. */
+  /** The last failure while no list could be read; cleared by the next one. */
   loadError: ConnectFailureCode | null;
 }>;
 
-/** Reconnect delays of the device-list stream; the last one repeats. */
+/** Reconnect delays of the computer-list stream; the last one repeats. */
 export const CONNECT_FEED_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 5_000, 10_000, 30_000];
 
 type Options = Readonly<{
-  listDevices?(): Promise<ConnectApiResult<ConnectDevicesResponse>>;
+  listComputers?(): Promise<ConnectApiResult<ConnectComputerListResponse>>;
   onLeave(reason: ConnectLeaveReason): void;
   openEventSource?: ConnectEventSourceFactory;
 }>;
@@ -47,19 +51,19 @@ type Options = Readonly<{
  * once, which both refreshes it and names the refusal (EventSource itself
  * cannot read a refusal body). Malformed frames count as a failure.
  */
-export class ConnectDeviceFeed {
-  private snapshot: ConnectDeviceFeedSnapshot = { connection: "connecting", devices: null, loadError: null };
+export class ConnectComputerFeed {
+  private snapshot: ConnectComputerFeedSnapshot = { computers: null, connection: "connecting", loadError: null };
   private readonly listeners = new Set<() => void>();
   private source: ConnectEventSource | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
   private generation = 0;
   private stopped = true;
-  private readonly listDevices: () => Promise<ConnectApiResult<ConnectDevicesResponse>>;
+  private readonly listComputers: () => Promise<ConnectApiResult<ConnectComputerListResponse>>;
   private readonly openEventSource: ConnectEventSourceFactory | null;
 
   constructor(private readonly options: Options) {
-    this.listDevices = options.listDevices ?? (() => listConnectDevices());
+    this.listComputers = options.listComputers ?? (() => listConnectComputers());
     this.openEventSource = options.openEventSource ??
       (typeof EventSource === "undefined" ? null : openBrowserEventSource);
   }
@@ -69,7 +73,7 @@ export class ConnectDeviceFeed {
     return () => this.listeners.delete(listener);
   };
 
-  readonly getSnapshot = (): ConnectDeviceFeedSnapshot => this.snapshot;
+  readonly getSnapshot = (): ConnectComputerFeedSnapshot => this.snapshot;
 
   start(): void {
     if (!this.stopped) return;
@@ -85,24 +89,13 @@ export class ConnectDeviceFeed {
     this.timer = null;
   }
 
-  /** Drops a revoked computer at once; the next snapshot confirms it. */
-  removeDevice(deviceId: string): void {
-    const devices = this.snapshot.devices;
-    if (devices) this.update({ devices: devices.filter((device) => device.id !== deviceId) });
+  /** Drops a revoked computer at once; the next list confirms it. */
+  removeComputer(computerId: string): void {
+    const computers = this.snapshot.computers;
+    if (computers) this.update({ computers: computers.filter((computer) => computer.id !== computerId) });
   }
 
-  /** Drops an ended session at once; the computer's next update confirms it. */
-  removeSession(deviceId: string, sessionId: string): void {
-    const devices = this.snapshot.devices;
-    if (!devices) return;
-    this.update({
-      devices: devices.map((device) => device.id === deviceId
-        ? { ...device, sessions: device.sessions.filter((session) => session.id !== sessionId) }
-        : device)
-    });
-  }
-
-  private update(patch: Partial<ConnectDeviceFeedSnapshot>): void {
+  private update(patch: Partial<ConnectComputerFeedSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener();
   }
@@ -131,33 +124,33 @@ export class ConnectDeviceFeed {
     this.source = source;
     const handle = (event: MessageEvent<string>) => {
       if (generation !== this.generation) return;
-      const frame = decodeConnectEventsStreamEvent(event.type, String(event.data));
+      const frame = decodeConnectComputerEventsStreamEvent(event.type, String(event.data));
       if (!frame) {
         this.fail(generation);
         return;
       }
       if (frame.event === "devices") {
         this.attempt = 0;
-        this.update({ connection: "live", devices: frame.data.devices, loadError: null });
+        this.update({ computers: frame.data.computers, connection: "live", loadError: null });
       } else if (frame.event === "device") {
-        const next = frame.data.device;
-        const devices = this.snapshot.devices;
-        // A device the last snapshot does not hold arrives with the next snapshot.
-        if (devices?.some((device) => device.id === next.id)) {
-          this.update({ devices: devices.map((device) => device.id === next.id ? next : device) });
+        const next = frame.data.computer;
+        const computers = this.snapshot.computers;
+        // A computer the last list does not hold arrives with the next list.
+        if (computers?.some((computer) => computer.id === next.id)) {
+          this.update({ computers: computers.map((computer) => computer.id === next.id ? next : computer) });
         }
       } else if (frame.event === "closed") {
         this.leave(frame.data.code === "connect_disabled" ? "disabled" : "signed_out");
       }
     };
-    for (const name of CONNECT_EVENTS_STREAM_EVENTS) source.addEventListener(name, handle);
+    for (const name of EVENT_NAMES) source.addEventListener(name, handle);
     source.onerror = () => this.fail(generation);
   }
 
   private fail(generation: number): void {
     if (generation !== this.generation || this.stopped) return;
     this.closeSource();
-    this.update({ connection: this.snapshot.devices ? "reconnecting" : "connecting" });
+    this.update({ connection: this.snapshot.computers ? "reconnecting" : "connecting" });
     const delays = CONNECT_FEED_RETRY_DELAYS_MS;
     const delay = delays[Math.min(this.attempt, delays.length - 1)]!;
     this.attempt += 1;
@@ -170,10 +163,10 @@ export class ConnectDeviceFeed {
 
   private async probe(generation: number): Promise<void> {
     if (generation !== this.generation || this.stopped) return;
-    const result = await this.listDevices();
+    const result = await this.listComputers();
     if (generation !== this.generation || this.stopped) return;
     if (result.ok) {
-      this.update({ devices: result.data.devices, loadError: null });
+      this.update({ computers: result.data.computers, loadError: null });
       this.open();
       return;
     }

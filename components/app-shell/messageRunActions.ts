@@ -17,6 +17,7 @@ import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachment
 import {
   chatIdFromComposerSessionKey,
   composerSessionModeFromKey,
+  effectiveComposerComputer,
   folderIdFromComposerSessionKey,
   pendingSendHasNewerInput,
   selectComposerSession,
@@ -70,6 +71,7 @@ import type { AssistantIdentity, AssistantRowKey } from "@/lib/contracts/assista
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
 import { CONTINUE_TURN_TEXT } from "@/lib/contracts/runs";
 import { DEEP_RESEARCH_SEND_FIELD } from "@/lib/contracts/research";
+import { COMPUTER_REFUSALS, COMPUTER_SEND_FIELD, type ChatComputerBinding } from "@/lib/contracts/computer";
 import {
   MCP_APPROVAL_CONTINUATION_KIND,
   MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
@@ -91,6 +93,12 @@ type MessageRunControlSnapshot = {
     id: string | null;
     identity: AssistantIdentity | null;
   }> | null;
+  /**
+   * The computer the message uses (`COMPUTER_SEND_FIELD`): a binding or null
+   * wherever the composer offers a computer; undefined in Assistant chats and
+   * while AIQSA Connect is off, where the field is left out.
+   */
+  computer: ChatComputerBinding | null | undefined;
   controlDefaults: SavedControlDraft;
   model: CatalogModel | undefined;
   modelId: string;
@@ -147,6 +155,8 @@ type MessageRunActionsInput = {
   resolveWorkspaceInstallationAvailable?(): boolean;
   /** Re-reads installation availability after a run was refused for Workspace. */
   refreshWorkspaceAvailability?(): void;
+  /** Whether AIQSA Connect is on for the viewer, so the composer offers a computer. Absent means off. */
+  resolveComputerOffered?(): boolean;
   resetThreadToLatest(): void;
   /** Clears a run notice owned by the current chat before a new attempt. */
   clearNoticeForChat?(chatId: string): void;
@@ -269,6 +279,41 @@ const WORKSPACE_ADMISSION_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "workspace_secret_limit",
   "workspace_secret_unavailable"
 ]);
+/**
+ * A refused computer (D-06): its reason in the composer's words and the ways
+ * out next to it. Removing the computer always works; another computer helps
+ * unless AIQSA Connect is off or a computer never applies here.
+ */
+export function computerRefusalRecovery(code: string | undefined): Readonly<{
+  copy: string;
+  recoveries: ComposerOperationRecovery[];
+}> | null {
+  switch (code) {
+    case COMPUTER_REFUSALS.unavailable:
+      return {
+        copy: "This computer is no longer connected to your account. Choose another computer, or send without one.",
+        recoveries: ["choose_computer", "stop_using_computer"]
+      };
+    case COMPUTER_REFUSALS.disabled:
+      return {
+        copy: "AIQSA Connect is turned off for this installation, so the agent cannot use your computer. Send without it.",
+        recoveries: ["stop_using_computer"]
+      };
+    case COMPUTER_REFUSALS.notHere:
+      return {
+        copy: "A computer cannot be used in this chat. Send without it.",
+        recoveries: ["stop_using_computer"]
+      };
+    case COMPUTER_REFUSALS.invalid:
+      return {
+        copy: "The chosen folder cannot be used. Choose the computer and folder again.",
+        recoveries: ["choose_computer", "stop_using_computer"]
+      };
+    default:
+      return null;
+  }
+}
+
 /** A failed session refuses as busy, but waiting never helps: only a reset does. */
 const WORKSPACE_SESSION_FAILED_COPY =
   "Workspace in this chat stopped working. Reset it to continue; messages and exported files stay.";
@@ -311,6 +356,7 @@ export function useMessageRunActions({
   resolveCatalog,
   resolveWorkspaceInstallationAvailable,
   refreshWorkspaceAvailability,
+  resolveComputerOffered,
   resetThreadToLatest,
   clearNoticeForChat,
   setNotice
@@ -391,6 +437,13 @@ export function useMessageRunActions({
         }
       : undefined;
     const searchPreferenceOptionIds = [...selectedSearchOptionIds];
+    // An Assistant chat never offers a computer (D-07), nor does an installation with Connect off.
+    const computer = controls.assistant || resolveComputerOffered?.() !== true
+      ? undefined
+      : effectiveComposerComputer(
+          selectComposerSession(useComposerSessionStore.getState(), sessionKey).computerChoice,
+          chat?.computer
+        );
 
     return {
       contextConfigurationKey: composerContextConfigurationKey(controls, {
@@ -404,6 +457,7 @@ export function useMessageRunActions({
             identity: runAssistantIdentity(boundComposerAssistant(controls))
           }
         : null,
+      computer: computer ? { cwd: computer.cwd, deviceId: computer.deviceId } : computer,
       controlDefaults: { ...buildControlDraft() },
       mcpSelection: { ...mcpSelection },
       skillsMode: controls.skillsMode,
@@ -491,8 +545,13 @@ export function useMessageRunActions({
    */
   function runControlPayload(
     snapshot: MessageRunControlSnapshot,
-    newChat = false
+    newChat = false,
+    /** A regenerate keeps the computer of the run it repeats, which the server holds. */
+    options: Readonly<{ computer?: boolean }> = {}
   ) {
+    const computerField = options.computer !== false && snapshot.computer !== undefined
+      ? { [COMPUTER_SEND_FIELD]: snapshot.computer }
+      : {};
     const effectiveSearchPlan = reconcileModelSearchPlan(
       snapshot.model,
       snapshot.searchPreferencePlan.optionIds,
@@ -516,6 +575,7 @@ export function useMessageRunActions({
         ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
         ...(changed.has("skills") ? { skills: { mode: snapshot.skillsMode } } : {}),
         ...(timeZone ? { timeZone } : {}),
+        ...computerField,
         workspace: { enabled: snapshot.workspaceEnabled }
       };
     }
@@ -539,6 +599,7 @@ export function useMessageRunActions({
       ...(timeZone ? { timeZone } : {}),
       ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
       ...snapshot.toolsOverride,
+      ...computerField,
       workspace: { enabled: snapshot.workspaceEnabled }
     };
   }
@@ -1294,6 +1355,13 @@ export function useMessageRunActions({
             : `${sendRejectionMessage?.replace(/\.$/u, "")}. ${fileRecovery}`;
         }
       }
+      const computerRefusal = result.runId === null && runControlSnapshot.computer !== undefined
+        ? computerRefusalRecovery(result.failureCode)
+        : null;
+      if (computerRefusal) {
+        sendRejectionMessage = computerRefusal.copy;
+        sendRecoveries = computerRefusal.recoveries;
+      }
       if (result.failureCode === "memory_intent_confirmation_required") {
         sendFailureHandled = true;
         await showMemoryTargetSelection();
@@ -1755,7 +1823,7 @@ export function useMessageRunActions({
     }
     const regenerationParentMessageId =
       original.role === "assistant" ? original.parentMessageId : original.id;
-    const regenerateControlPayload = runControlPayload(runControlSnapshot);
+    const regenerateControlPayload = runControlPayload(runControlSnapshot, false, { computer: false });
     const retryPdfPreparation = original.pdfPreparation?.some(({ phase }) => phase === "failed" || phase === "cancelled") === true;
 
     const assistantId = `assistant-regen-${Date.now()}`;

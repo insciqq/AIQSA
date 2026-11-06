@@ -24,6 +24,7 @@ import { mcpApprovalContinuationText, type McpApprovalCard } from "@/lib/contrac
 export type AnswerOutputsGalleryState =
   | "approval"
   | "complete"
+  | "computer"
   | "empty"
   | "memory"
   | "reasoning"
@@ -179,6 +180,19 @@ function ApprovalOutput() {
     />
   );
 }
+
+/** An answer the agent made on the user's Windows computer: commands with exit codes, reads, an edit, a search. */
+const computerToolActivity: ThreadToolActivity = {
+  calls: [
+    { durationMs: 420, exitCode: 0, origin: "computer", round: 1, status: "complete", summary: "Get-ChildItem -Recurse -Filter *.docx | Select-Object FullName", toolName: "computer_shell" },
+    { durationMs: 180, origin: "computer", round: 2, status: "complete", summary: "*октябр*", toolName: "computer_glob" },
+    { durationMs: 95, origin: "computer", round: 2, status: "complete", summary: "C:\\Users\\dana\\Documents\\Contracts\\Договор поставки №14 октябрь.docx", toolName: "computer_read" },
+    { durationMs: 1_850, exitCode: 1, origin: "computer", round: 3, status: "complete", summary: "python summarize.py --month 2026-10", toolName: "computer_shell" },
+    { durationMs: 60, origin: "computer", round: 3, status: "error", summary: "summary_old.md", toolName: "computer_edit" },
+    { durationMs: 70, origin: "computer", round: 4, status: "complete", summary: "summary.md", toolName: "computer_write" },
+    { durationMs: 2_300, origin: "computer", round: 4, status: "complete", toolName: "computer_job_output" }
+  ]
+};
 
 const memoryToolActivity: ThreadToolActivity = {
   calls: [
@@ -342,7 +356,7 @@ export function AnswerOutputsV2Gallery({
                   />
                 ) : null}
                 presentation={{ kind: "complete", runId: "answer-outputs-run" }}
-                toolActivity={state === "memory" ? memoryToolActivity : null}
+                toolActivity={state === "memory" ? memoryToolActivity : state === "computer" ? computerToolActivity : null}
                 workDurationMs={artifact?.workDurationMs ?? null}
               />
             )}
