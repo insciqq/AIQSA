@@ -21,6 +21,7 @@ import { formatMemoryUiCopy, memoryUiCopy } from "@/components/app-shell/memoryU
 import { decodeThreadSearchActivitySnapshot, mergeThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, terminalContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import { decodeReasoningHeading } from "@/lib/domain/reasoningHeading";
+import { isComputerActivitySummary, isComputerExitCode } from "@/lib/contracts/computer";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
@@ -122,6 +123,8 @@ type ActivitySignal = Readonly<{
   fetchProxyCode?: FetchUrlProxyCode;
   origin?: ThreadToolActivityOrigin;
   serverName?: string;
+  /** A computer step's command, path or pattern, for the live line. */
+  summary?: string;
   toolName?: string;
 }>;
 
@@ -172,11 +175,21 @@ function skillActivityMetadata(payload: Record<string, unknown>) {
   return { ...(skillId ? { skillId } : {}), ...(skillName ? { skillName } : {}), ...(skillPath ? { skillPath } : {}) };
 }
 
+/** A computer step's one line and, once a command ended, its exit code; anything malformed is left out. */
+function computerActivityMetadata(payload: Record<string, unknown>) {
+  if (payload.origin !== "computer") return {};
+  return {
+    ...(isComputerActivitySummary(payload.summary) ? { summary: payload.summary } : {}),
+    ...(isComputerExitCode(payload.exitCode) ? { exitCode: payload.exitCode } : {})
+  };
+}
+
 function toolActivityMetadata(payload: Record<string, unknown>) {
   const toolName = safeToolName(payload.name ?? payload.toolName);
   const serverName = safeServerName(payload.serverName);
   return {
     ...skillActivityMetadata(payload),
+    ...computerActivityMetadata(payload),
     ...decodeFetchUrlActivity(payload),
     ...(isThreadToolActivityOrigin(payload.origin) ? { origin: payload.origin } : {}),
     ...(serverName ? { serverName } : {}),
@@ -326,7 +339,51 @@ type ToolActivityIdentity = Readonly<{
   fetchContentKind?: unknown;
   /** A `call_subagent` or `stop_subagent` step: the sub-agent it addressed (`SubagentActivityRef`). */
   subagent?: unknown;
+  /** A computer step: the command's first line, a path or a pattern. */
+  summary?: unknown;
 }>;
+
+type StepPhaseV2 = "cancelled" | "failed" | "held" | "running" | "settled";
+
+/** [running, settled, failed, cancelled] verbs of each computer tool (§7 of the Connect spec). */
+const COMPUTER_STEP_VERBS: Readonly<Record<string, readonly [string, string, string, string]>> = {
+  computer_edit: ["Editing", "Edited", "Could not edit", "Stopped editing"],
+  computer_glob: ["Searching", "Searched", "Could not search", "Stopped searching"],
+  computer_grep: ["Searching", "Searched", "Could not search", "Stopped searching"],
+  computer_read: ["Reading", "Read", "Could not read", "Stopped reading"],
+  computer_shell: ["Running", "Ran", "Could not run", "Stopped"],
+  computer_write: ["Writing", "Wrote", "Could not write", "Stopped writing"]
+};
+
+const COMPUTER_JOB_COPY: Readonly<Record<string, readonly [string, string, string, string]>> = {
+  computer_job_output: ["Checking background job", "Checked background job", "Could not check background job", "Checking background job stopped"],
+  computer_job_stop: ["Stopping background job", "Stopped background job", "Could not stop background job", "Stopping background job stopped"]
+};
+
+function phaseIndex(phase: StepPhaseV2): 0 | 1 | 2 | 3 {
+  return phase === "running" ? 0 : phase === "failed" ? 2 : phase === "cancelled" ? 3 : 1;
+}
+
+/**
+ * A computer step in two parts: the verb, and what it touched (the command's
+ * first line, a path or a pattern), which the answer shows as code. Only the
+ * chat's owner receives these steps.
+ */
+export function describeComputerCallV2(
+  call: ToolActivityIdentity,
+  phase: StepPhaseV2
+): Readonly<{ target: string | null; verb: string }> {
+  const toolName = typeof call.toolName === "string" ? call.toolName : "";
+  const job = Object.hasOwn(COMPUTER_JOB_COPY, toolName) ? COMPUTER_JOB_COPY[toolName] : undefined;
+  if (job) return { target: null, verb: job[phaseIndex(phase)] };
+  const verbs = Object.hasOwn(COMPUTER_STEP_VERBS, toolName) ? COMPUTER_STEP_VERBS[toolName] : undefined;
+  const target = isComputerActivitySummary(call.summary) ? call.summary : null;
+  if (!verbs) {
+    const generic = ["Working on your computer", "Worked on your computer", "Computer step failed", "Computer step stopped"] as const;
+    return { target: null, verb: generic[phaseIndex(phase)] };
+  }
+  return { target, verb: verbs[phaseIndex(phase)] };
+}
 
 /** The sub-agent a step addressed: its settled reference's name, or the live step's server name. */
 function subagentStepName(call: ToolActivityIdentity): string | null {
@@ -550,6 +607,10 @@ export function describeToolCallV2(
     if (phase === "failed") return "Web search failed";
     if (phase === "cancelled") return "Web search stopped";
     return running ? "Searching the web" : "Searched the web";
+  }
+  if (origin === "computer") {
+    const { target, verb } = describeComputerCallV2(call, phase);
+    return target ? `${verb} ${target}` : verb;
   }
   // Workspace steps are owned by the activity timeline; the generic row must
   // never expose a raw sandbox tool identifier.

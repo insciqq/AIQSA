@@ -65,6 +65,15 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "chips-off",
         "chips-off-pinned",
         "commands",
+        "computer-assistant",
+        "computer-empty",
+        "computer-folder",
+        "computer-menu",
+        "computer-offline",
+        "computer-online",
+        "computer-picker",
+        "computer-refused",
+        "computer-removed",
         "default",
         "error",
         "load-all-refused",
@@ -122,6 +131,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
       [
         "approval",
         "complete",
+        "computer",
         "empty",
         "memory",
         "reasoning",
@@ -210,7 +220,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
     return <TelegramAdminV2Gallery state={state} />;
   }
   if (query.fixture === "connect") {
-    const state = fixtureState(query.state, ["empty", "list", "pair", "pair-expired", "session", "session-running"] as const, "list");
+    const state = fixtureState(query.state, ["empty", "empty-ipv6", "list", "pair", "pair-expired"] as const, "list");
     const { ConnectV2Gallery } = await import("./_fixtures/ConnectV2Gallery");
     return <ConnectV2Gallery state={state} />;
   }

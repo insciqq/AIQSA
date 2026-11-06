@@ -16,6 +16,7 @@ import type { ContextCompactionStatus } from "@/lib/contracts/contextCompaction"
 import {
   answerProcessLabelV2,
   contextCompactionCopyV2,
+  describeComputerCallV2,
   describeToolCallV2,
   fetchCallSkippedV2,
   memorySearchCallHiddenV2,
@@ -54,6 +55,8 @@ function toolMeta(call: ToolCallV2): string {
   const parts: string[] = [];
   const duration = toolDuration(call.durationMs);
   if (call.approvalRequired) parts.push("Not sent · needs approval");
+  // A command's exit code, like a Workspace command's.
+  if (call.origin === "computer" && call.exitCode !== undefined) parts.push(`Exit code ${call.exitCode}`);
   if (duration) parts.push(duration);
   return parts.join(" · ");
 }
@@ -81,6 +84,7 @@ type ToolCallGroupV2 = { calls: { call: ToolCallV2; index: number }[]; findings?
 /** A call that carries its own control or notice keeps its own row. */
 function standsAloneV2(call: ToolCallV2): boolean {
   return call.status === "running" || Boolean(call.approvalRequired) || fetchCallSkippedV2(call) || call.subagent !== undefined ||
+    call.origin === "computer" ||
     (call.origin === "skill" && call.toolName === "load_skill") || (call.origin === "discovery" && Boolean(call.mcpUnavailable?.length));
 }
 
@@ -224,6 +228,18 @@ function SkillPinV2({ skillId, pinned, onPin }: Readonly<{ skillId: string; pinn
   </span>;
 }
 
+/** A step on the user's computer: its glyph, the verb, and the command, path or pattern as code. */
+function ComputerStepNameV2({ call }: Readonly<{ call: ToolCallV2 }>) {
+  const { target, verb } = describeComputerCallV2(call, toolCallState(call));
+  return (
+    <span className="v2-answer-process-step-name v2-answer-computer-step" data-testid="computer-step">
+      <UiV2Icon className="v2-answer-computer-glyph" name="monitor" />
+      <span className="v2-sr-only">On your computer: </span>
+      {target ? <>{verb} <code className="v2-answer-computer-target" title={target}>{target}</code></> : verb}
+    </span>
+  );
+}
+
 /** One step: its outcome mark, label and meta, with MCP request and response details for the run's initiator. */
 function ToolCallRowV2({ call, label, onPinSkill, pinnedSkillIds, runId }: Readonly<{
   call: ToolCallV2;
@@ -240,7 +256,7 @@ function ToolCallRowV2({ call, label, onPinSkill, pinnedSkillIds, runId }: Reado
         <McpCallDetailsV2 runId={runId} reference={call.details} status={call.status} label={label} meta={toolMeta(call)} />
       ) : (
         <span className="v2-answer-process-step">
-          <span className="v2-answer-process-step-name">{label}</span>
+          {call.origin === "computer" ? <ComputerStepNameV2 call={call} /> : <span className="v2-answer-process-step-name">{label}</span>}
           <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
           {onPinSkill && call.origin === "skill" && call.toolName === "load_skill" && call.status === "complete" && call.skillId
             ? <SkillPinV2 skillId={call.skillId} pinned={pinnedSkillIds.includes(call.skillId)} onPin={onPinSkill} /> : null}

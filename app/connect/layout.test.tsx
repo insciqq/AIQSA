@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   appBaseUrl: "https://ai.example.com/",
-  findSettings: vi.fn(),
   notFound: vi.fn((): never => {
     throw new Error("NEXT_NOT_FOUND");
   }),
@@ -29,20 +28,13 @@ vi.mock("../(chat)/viewer", () => ({
   loadChatViewer: async () => mocks.viewer
 }));
 vi.mock("@/lib/server/auth/config", () => ({ getAuthConfig: () => ({ appBaseUrl: mocks.appBaseUrl, configured: true }) }));
-vi.mock("@/lib/server/prisma", () => ({ prisma: { userSettings: { findUnique: mocks.findSettings } } }));
 vi.mock("next/navigation", () => ({ notFound: mocks.notFound, redirect: mocks.redirect }));
 vi.mock("@/features/connect/ConnectShell", () => ({ ConnectShell: () => null }));
 vi.mock("@/features/connect/ConnectHomeView", () => ({ ConnectHomeView: () => null }));
 vi.mock("@/features/connect/ConnectPairView", () => ({ ConnectPairView: () => null }));
-vi.mock("@/features/connect/ConnectSessionView", () => ({
-  ConnectSessionNotFound: () => null,
-  ConnectSessionView: () => null
-}));
 
 import { ConnectPairView } from "@/features/connect/ConnectPairView";
-import { ConnectSessionNotFound, ConnectSessionView } from "@/features/connect/ConnectSessionView";
 import { ConnectShell } from "@/features/connect/ConnectShell";
-import ConnectSessionPage from "./[deviceId]/[sessionId]/page";
 import ConnectLayout from "./layout";
 import ConnectPage from "./page";
 import ConnectPairPage from "./pair/page";
@@ -70,22 +62,19 @@ describe("AIQSA Connect routes", () => {
   it("do not exist while the installation has the feature off", async () => {
     mocks.viewer = viewer(false);
     await expect(ConnectLayout({ children: "page" })).rejects.toThrow("NEXT_NOT_FOUND");
-    expect(mocks.findSettings).not.toHaveBeenCalled();
   });
 
-  it("render the shell with the installation origin and the notification setting", async () => {
+  it("render the shell with the installation origin", async () => {
     mocks.viewer = viewer(true);
-    mocks.findSettings.mockResolvedValue({ browserNotificationsEnabled: false });
     const shell = element(await ConnectLayout({ children: "page" }));
     expect(shell.type).toBe(ConnectShell);
     expect(shell.props).toMatchObject({
       accountId: "user-1",
       accountLabel: "Dana",
-      browserNotificationsEnabled: false,
       children: "page",
       installOrigin: "https://ai.example.com"
     });
-    expect(mocks.findSettings).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: "user-1" } }));
+    expect(shell.props).not.toHaveProperty("browserNotificationsEnabled");
   });
 
   it("leave sign-in to the page, which returns to its exact address", async () => {
@@ -104,25 +93,10 @@ describe("AIQSA Connect routes", () => {
     expect(repeated.props.code).toBeNull();
   });
 
-  it("answer malformed ids like unknown sessions without opening a view", async () => {
-    mocks.viewer = viewer(true);
-    const page = (deviceId: string, sessionId: string) => ConnectSessionPage({
-      params: Promise.resolve({ deviceId, sessionId }),
-      searchParams: Promise.resolve({})
-    });
-    const valid = element(await page("0b6f2c1e-5a7d-4c3e-9f10-2a4b6c8d0e1f", "ac-k3m9q2"));
-    expect(valid.type).toBe(ConnectSessionView);
-    expect(valid.props).toMatchObject({ deviceId: "0b6f2c1e-5a7d-4c3e-9f10-2a4b6c8d0e1f", sessionId: "ac-k3m9q2" });
-    expect(element(await page("not-a-device", "ac-k3m9q2")).type).toBe(ConnectSessionNotFound);
-    expect(element(await page("0B6F2C1E-5A7D-4C3E-9F10-2A4B6C8D0E1F", "ac-k3m9q2")).type).toBe(ConnectSessionNotFound);
-    expect(element(await page("0b6f2c1e-5a7d-4c3e-9f10-2a4b6c8d0e1f", "tmux-main")).type).toBe(ConnectSessionNotFound);
-  });
-
   it("offer no install commands for an installation address that is not a plain origin", async () => {
     mocks.viewer = viewer(true);
     mocks.appBaseUrl = "https://user:secret@ai.example.com/";
-    mocks.findSettings.mockResolvedValue(null);
     const shell = element(await ConnectLayout({ children: "page" }));
-    expect(shell.props).toMatchObject({ browserNotificationsEnabled: true, installOrigin: null });
+    expect(shell.props).toMatchObject({ installOrigin: null });
   });
 });
