@@ -105,18 +105,20 @@ export function prismaResearchedRunsReader(client: Pick<Prisma.TransactionClient
     async rows(runIds) {
       if (runIds.length === 0) return [];
       const where = { chatId, id: { in: [...runIds] }, subagentTurnId: null, userId };
-      const [runs, chosen] = await Promise.all([
-        client.modelRun.findMany({ select: { answerCompletedAt: true, engine: true, id: true, researchFrame: { select: { modelRunId: true } }, status: true,
+      const [runs, own] = await Promise.all([
+        client.modelRun.findMany({ select: { answerCompletedAt: true, engine: true, id: true, status: true,
           userMessage: { select: { id: true, parent: { select: { assistantModelRuns: { orderBy: { createdAt: "desc" }, select: { id: true }, take: 1,
             where: { chatId, subagentTurnId: null, userId } }, role: true } }, systemTurnKind: true } } }, where }),
-        // The frozen field alone, read in the database: a request holds the whole branch's context, which this never loads.
-        client.modelRun.findMany({ select: { id: true }, where: { ...where, normalizedRequest: { equals: true, path: ["deepResearch"] } } })
+        // Its own research, read in the database in one statement, which every page open sends: the frozen field alone (a request holds the
+        // whole branch's context, which this never loads) or the frame row.
+        client.modelRun.findMany({ select: { id: true }, where: { ...where, OR: [{ normalizedRequest: { equals: true, path: ["deepResearch"] } },
+          { researchFrame: { isNot: null } }] } })
       ]);
-      const sentWith = new Set(chosen.map((run) => run.id));
+      const ownResearch = new Set(own.map((run) => run.id));
       return runs.map((run): ResearchedRunRow => {
         const kind = run.userMessage.systemTurnKind;
         const parent = run.userMessage.parent;
-        return { id: run.id, ownResearch: sentWith.has(run.id) || run.researchFrame !== null,
+        return { id: run.id, ownResearch: ownResearch.has(run.id),
           previousRunId: parent?.role === "assistant" ? parent.assistantModelRuns[0]?.id ?? null : null,
           turn: kind === MCP_APPROVAL_CONTINUATION_KIND ? "approval" : kind === null ? "user" : "server",
           unfinished: run.engine === "native" && run.status === "error" && run.answerCompletedAt === null, userMessageId: run.userMessage.id };
