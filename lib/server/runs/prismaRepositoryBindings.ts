@@ -347,6 +347,7 @@ export async function insertAcceptedSkillRunBindings(
         AND runner."status" = 'active'
         AND (
           definition."ownerUserId" = ${input.userId}
+          OR definition."shippedKey" IS NOT NULL
           OR EXISTS (
             SELECT 1
             FROM "SkillPublication" AS publication
@@ -378,8 +379,8 @@ async function assertSkillRunProvenance(
   input: AcceptedSkillRun & { userId: string; admission?: boolean }
 ): Promise<void> {
   try {
-    const definitions = await tx.$queryRaw<Array<{ ownerUserId: string }>>`
-      SELECT definition."ownerUserId"
+    const definitions = await tx.$queryRaw<Array<{ ownerUserId: string | null; shippedKey: string | null }>>`
+      SELECT definition."ownerUserId", definition."shippedKey"
       FROM "SkillDefinition" AS definition
       INNER JOIN "SkillRevision" AS revision
         ON revision."skillId" = definition."id"
@@ -396,6 +397,8 @@ async function assertSkillRunProvenance(
     const definition = definitions[0];
     if (!definition) throw new SkillRunConflictError();
     if (definition.ownerUserId === input.userId) return;
+    // A shipped Skill reaches every active user while not archived (`shippedSkillAccessWhere`).
+    if (definition.shippedKey !== null) return;
 
     const installationPublications = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT publication."id"
@@ -467,6 +470,7 @@ export async function assertCurrentSkillRunBindings(
         AND run_skill."revisionId" = ${binding.revisionId}
         AND (
           definition."ownerUserId" = ${input.userId}
+          OR definition."shippedKey" IS NOT NULL
           OR EXISTS (
             SELECT 1
             FROM "SkillPublication" AS publication

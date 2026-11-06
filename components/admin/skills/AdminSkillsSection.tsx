@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAdminSectionTopbar } from "@/components/admin/AdminShell";
-import { UiV2Button, UiV2IconButton } from "@/components/ui-v2";
+import { UiV2Button, UiV2IconButton, UiV2Switch } from "@/components/ui-v2";
 import { skillShareStateLabels, skillSharingErrorMessage } from "@/components/skills/skillSharingPresentation";
-import type { AdminSkillShareRequestDetail, AdminSkillShareRequestListResponse } from "@/lib/contracts/adminSkills";
+import type { AdminBuiltInSkill, AdminSkillShareRequestDetail, AdminSkillShareRequestListResponse } from "@/lib/contracts/adminSkills";
 import { SKILL_REVIEW_NOTE_MAX_LENGTH, SKILL_SHARE_REQUEST_STATES, type SkillShareRequestState } from "@/lib/contracts/skills";
-import { decideAdminSkillRequest, loadAdminSkillFile, loadAdminSkillRequest, loadAdminSkillRequests } from "./adminSkillsApi";
+import { decideAdminSkillRequest, loadAdminBuiltInSkills, loadAdminSkillFile, loadAdminSkillRequest, loadAdminSkillRequests, setAdminBuiltInSkillEnabled } from "./adminSkillsApi";
 
 type Props = {
   resource: string | null;
@@ -17,6 +17,59 @@ type Props = {
 };
 const date = (value: string) => new Date(value).toLocaleDateString(undefined, { dateStyle: "medium" });
 const codeClass = "max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-trace-subtle bg-control-surface p-4 font-mono text-xs leading-6 text-ink-secondary [overflow-wrap:anywhere]";
+
+function builtInErrorMessage(error: unknown): string {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "unauthorized" || code === "forbidden") return "You no longer have access to manage Skills.";
+  if (code === "skill_version_conflict") return "This Skill changed meanwhile. Refresh and try again.";
+  if (code === "skill_not_available") return "This Skill is no longer part of AIQSA.";
+  return "Built-in Skills could not be updated. Try again.";
+}
+
+/** Shipped Skills, on for everyone unless switched off here for the whole installation. */
+function BuiltInSkills({ onMutationCommitted }: { onMutationCommitted: Props["onMutationCommitted"] }) {
+  const [skills, setSkills] = useState<AdminBuiltInSkill[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const active = useRef(true);
+  const pending = useRef<AbortController | null>(null);
+  const load = useCallback(() => {
+    pending.current?.abort(); const controller = new AbortController(); pending.current = controller;
+    return loadAdminBuiltInSkills(controller.signal).then(result => { if (!controller.signal.aborted) setSkills(result); })
+      .catch(failure => { if (!controller.signal.aborted) setError(builtInErrorMessage(failure)); });
+  }, []);
+  useEffect(() => { active.current = true; void load(); return () => { active.current = false; pending.current?.abort(); }; }, [load]);
+  async function change(skill: AdminBuiltInSkill, enabled: boolean) {
+    if (busyId) return;
+    setBusyId(skill.id); setError(null);
+    try {
+      const saved = await setAdminBuiltInSkillEnabled(skill.id, { enabled, expectedVersion: skill.version });
+      if (active.current) setSkills(current => current?.map(item => item.id === saved.id ? saved : item) ?? current);
+      void Promise.resolve().then(onMutationCommitted).catch(() => undefined);
+    } catch (failure) { if (active.current) { setError(builtInErrorMessage(failure)); void load(); } }
+    finally { if (active.current) setBusyId(null); }
+  }
+  if (!error && !skills?.length) return null;
+  return <section aria-labelledby="admin-built-in-skills-heading" className="flex flex-col gap-3">
+    <div><h2 className="text-lg font-semibold text-ink" id="admin-built-in-skills-heading">Built-in Skills</h2>
+      <p className="mt-1 text-sm text-ink-muted">These Skills come with AIQSA and are on for everyone. People can still turn one off for themselves.</p></div>
+    {error ? <div className="flex flex-wrap items-center gap-3 text-sm text-critical" role="alert"><p>{error}</p>
+      <UiV2Button disabled={busyId !== null} onClick={() => { setError(null); void load(); }}>Refresh</UiV2Button></div> : null}
+    {skills?.length ? <ul aria-label="Built-in Skills" className="divide-y divide-trace-subtle border-y border-trace-subtle">
+      {skills.map(skill => <li className="flex min-w-0 items-start justify-between gap-4 px-1 py-4" key={skill.id}>
+        <span className="min-w-0 flex-1">
+          <strong className="block break-words text-sm font-semibold text-ink [overflow-wrap:anywhere]">{skill.name}</strong>
+          <span className="mt-1 block break-words text-xs text-ink-muted [overflow-wrap:anywhere]" id={`built-in-skill-${skill.id}`}>
+            {skill.enabled ? "On for everyone." : "Off for everyone."}
+            {skill.assistantUsageCount > 0 ? ` Linked by ${skill.assistantUsageCount} ${skill.assistantUsageCount === 1 ? "Assistant, which becomes" : "Assistants, which become"} unavailable while it is off.` : ""}
+          </span>
+        </span>
+        <UiV2Switch aria-describedby={`built-in-skill-${skill.id}`} checked={skill.enabled} className="shrink-0"
+          disabled={busyId !== null} label={`Available to everyone: ${skill.name}`} onChange={next => void change(skill, next)} />
+      </li>)}
+    </ul> : null}
+  </section>;
+}
 
 function RequestList({ state, onSelectFilter, onOpen }: {
   state: SkillShareRequestState;
@@ -176,6 +229,7 @@ export function AdminSkillsSection({ resource, filter, onSelectResource, onSelec
   return <div className="flex max-w-[1120px] min-w-0 flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8" data-testid="admin-skills-section">
     {resource ? <><div><UiV2Button icon="arrow-left" tone="ghost" onClick={() => onSelectResource(null)}>Back to requests</UiV2Button></div>
       <RequestDetail id={resource} key={resource} onMutationCommitted={onMutationCommitted} /></>
-      : <RequestList key={state} state={state} onSelectFilter={onSelectFilter} onOpen={onSelectResource} />}
+      : <><BuiltInSkills onMutationCommitted={onMutationCommitted} />
+        <RequestList key={state} state={state} onSelectFilter={onSelectFilter} onOpen={onSelectResource} /></>}
   </div>;
 }

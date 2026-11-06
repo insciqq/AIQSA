@@ -2268,5 +2268,10 @@
   "workspace_upload_config_invalid",
   "zip_entries_exceeded",
   "zip_path_too_long",
-  "zip_size_exceeded"
+  "zip_size_exceeded",
+  "shipped_skills_synchronized",
+  "shipped_skills_failed",
+  "built_in_skill_enabled",
+  "built_in_skill_disabled",
+  "built_in_skill_update_failed"
 ]

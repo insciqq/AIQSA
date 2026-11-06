@@ -16,6 +16,7 @@ import { createSkillSaveUndoService } from "./skillSave";
 import { createSkillSaveHandlers } from "./skillSaveHandlers";
 import { createSkillVersionService } from "./revisionRestore";
 import { createSkillVersionHandlers } from "./skillVersionHandlers";
+import { createBuiltInSkillAdminHandlers, createBuiltInSkillAdminService } from "./builtInSkillsAdmin";
 
 export const defaultSkillRepository = createPrismaSkillRepository(prisma);
 export const defaultSkillCatalogRelevance = createPrismaSkillCatalogRelevanceService(prisma);
@@ -53,4 +54,9 @@ export const defaultSkillSaveHandlers = createSkillSaveHandlers({
 export const defaultSkillVersionHandlers = createSkillVersionHandlers({
   resolveAuth: resolveRequestAuth,
   service: () => createSkillVersionService(prisma)
+});
+
+export const defaultBuiltInSkillAdminHandlers = createBuiltInSkillAdminHandlers({
+  resolveAuth: resolveRequestAuth,
+  service: () => createBuiltInSkillAdminService(prisma)
 });

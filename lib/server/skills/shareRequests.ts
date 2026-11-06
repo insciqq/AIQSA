@@ -83,10 +83,11 @@ type RequestRecord = Prisma.SkillShareRequestGetPayload<{ include: typeof reques
 
 function adminSummary(row: Pick<RequestRecord, "id" | "revisionId" | "state" | "createdAt" | "reviewedAt" | "reviewNote" | "skillId"> & {
   revision: { name: string; revisionNumber: number; bundleReady: boolean };
-  skill: { archivedAt: Date | null; deletedAt: Date | null; owner: { displayName: string } };
+  skill: { archivedAt: Date | null; deletedAt: Date | null; owner: { displayName: string } | null };
 }): AdminSkillShareRequestSummary {
+  // A request's key carries its owner, so the owner is always there.
   return { ...skillShareRequestSummary(row), skillId: row.skillId, name: row.revision.name,
-    ownerDisplayName: row.skill.owner.displayName,
+    ownerDisplayName: row.skill.owner?.displayName ?? "",
     canReview: row.state === "pending" && !row.skill.archivedAt && !row.skill.deletedAt && row.revision.bundleReady };
 }
 function adminDetail(row: RequestRecord): AdminSkillShareRequestDetail {

@@ -25,6 +25,7 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { prisma } from "../prisma";
+import { shippedSkillAccessWhere } from "../skills/prismaRepository";
 import {
   assistantRowsForCopier,
   emptyAssistantCatalogView,
@@ -482,6 +483,7 @@ function usableSkillWhere(userId: string): Prisma.SkillDefinitionWhereInput {
     deletedAt: null,
     OR: [
       { ownerUserId: userId },
+      shippedSkillAccessWhere,
       {
         sharedRevisionId: { not: null },
         publications: {
@@ -541,7 +543,8 @@ async function skillsReachPublicationAudience(
       deletedAt: null,
       id: { in: ids },
       sharedRevisionId: { not: null },
-      publications: {
+      // A shipped Skill reaches every audience while not archived.
+      OR: [shippedSkillAccessWhere, { publications: {
         some: audience.scope === "installation"
           ? { scope: "installation" }
           : {
@@ -550,7 +553,7 @@ async function skillsReachPublicationAudience(
                 { groupId: audience.groupId, scope: "group" }
               ]
             }
-      }
+      } }]
     }
   });
   return available === ids.length;
