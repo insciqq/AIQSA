@@ -6,13 +6,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectClientManifestSchema } from "@/lib/contracts/connect";
+import legacyManifestFixture from "../../../connect/internal/protocol/testdata/valid/legacyClientManifest.four-targets.json";
+import {
+  CONNECT_PROTOCOL_HEADER,
+  connectClientBinaryName,
+  connectClientManifestSchema,
+  connectLegacyClientManifestSchema
+} from "@/lib/contracts/connect";
 import {
   canonicalConnectOrigin,
   CONNECT_CLIENT_SUMS_FILE,
   CONNECT_CLIENT_TARGETS,
   connectClientDistDirectory,
   connectInstallScript,
+  connectWindowsDownloadName,
   createConnectClientDistributionReader,
   createConnectDistributionHandlers
 } from "./distribution";
@@ -23,7 +30,7 @@ vi.mock("../observability", async (importOriginal) => ({
   logEvent: logs.logEvent
 }));
 
-const NAMES = CONNECT_CLIENT_TARGETS.map((target) => `aiqsa-connect-${target.os}-${target.arch}`);
+const NAMES = CONNECT_CLIENT_TARGETS.map((target) => connectClientBinaryName(target.os, target.arch));
 const VERSION = "1.2.3";
 
 let root: string;
@@ -56,6 +63,10 @@ function handlers(overrides: Partial<{ enabled: boolean | Error; origin: string 
 
 const file = (name: string) => ({ params: Promise.resolve({ file: name }) });
 const request = () => new Request("https://untrusted-host.example/connect/install.sh");
+/** A manifest request of a protocol 2 client, or of a terminal client without the header. */
+const manifestRequest = (protocol2 = true) => new Request("https://untrusted-host.example/connect-api/v1/client", {
+  headers: protocol2 ? { [CONNECT_PROTOCOL_HEADER]: "2" } : {}
+});
 
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), "aiqsa-connect-dist-"));
@@ -79,7 +90,7 @@ describe("AIQSA Connect client distribution", () => {
       expect(response.status).toBe(404);
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
-    const manifest = await off.manifest();
+    const manifest = await off.manifest(manifestRequest());
     expect(manifest.status).toBe(403);
     await expect(manifest.json()).resolves.toEqual({ code: "connect_disabled" });
   });
@@ -96,7 +107,7 @@ describe("AIQSA Connect client distribution", () => {
     for (const response of [
       await on.installScript(),
       await on.checksums(),
-      await on.manifest(),
+      await on.manifest(manifestRequest()),
       await on.download(request(), file(NAMES[2]))
     ]) {
       expect(response.status).toBe(503);
@@ -110,7 +121,7 @@ describe("AIQSA Connect client distribution", () => {
     ["a binary does not match its checksum", () => writeFileSync(path.join(dist, NAMES[3]), "tampered")],
     ["SHA256SUMS names an unknown file", () => writeFileSync(
       path.join(dist, CONNECT_CLIENT_SUMS_FILE),
-      `${readFileSync(path.join(dist, CONNECT_CLIENT_SUMS_FILE), "utf8")}${"0".repeat(64)}  aiqsa-connect-windows-amd64\n`
+      `${readFileSync(path.join(dist, CONNECT_CLIENT_SUMS_FILE), "utf8")}${"0".repeat(64)}  aiqsa-connect-freebsd-amd64\n`
     )],
     ["SHA256SUMS lacks a target", () => writeFileSync(
       path.join(dist, CONNECT_CLIENT_SUMS_FILE),
@@ -119,7 +130,7 @@ describe("AIQSA Connect client distribution", () => {
   ])("refuses an incomplete distribution when %s", async (_case, damage) => {
     writeDist();
     damage();
-    const response = await handlers().manifest();
+    const response = await handlers().manifest(manifestRequest());
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({ code: "connect_client_unavailable" });
   });
@@ -127,24 +138,25 @@ describe("AIQSA Connect client distribution", () => {
   it("notices a rebuilt distribution", async () => {
     writeDist();
     const on = handlers();
-    expect((await on.manifest()).status).toBe(200);
+    expect((await on.manifest(manifestRequest())).status).toBe(200);
     writeFileSync(path.join(dist, NAMES[0]), "rebuilt");
     const later = new Date(Date.now() + 5_000);
     utimesSync(path.join(dist, NAMES[0]), later, later);
-    expect((await on.manifest()).status).toBe(503);
+    expect((await on.manifest(manifestRequest())).status).toBe(503);
   });
 
   it("serves the manifest with every target", async () => {
     writeDist();
-    const response = await handlers().manifest();
+    const response = await handlers().manifest(manifestRequest());
     expect(response.status).toBe(200);
     const manifest = connectClientManifestSchema.parse(await response.json());
     expect(manifest.version).toBe(VERSION);
     expect(manifest.targets.map((target) => `${target.os}-${target.arch}`)).toEqual(
       CONNECT_CLIENT_TARGETS.map((target) => `${target.os}-${target.arch}`)
     );
+    expect(manifest.targets).toHaveLength(6);
     for (const target of manifest.targets) {
-      const body = fakeBinary(`aiqsa-connect-${target.os}-${target.arch}`);
+      const body = fakeBinary(connectClientBinaryName(target.os, target.arch));
       expect(target).toEqual({
         arch: target.arch,
         os: target.os,
@@ -154,19 +166,36 @@ describe("AIQSA Connect client distribution", () => {
     }
   });
 
+  it("gives a terminal client the four-target legacy manifest it decodes", async () => {
+    writeDist();
+    const response = await handlers().manifest(manifestRequest(false));
+    expect(response.status).toBe(200);
+    const manifest = connectLegacyClientManifestSchema.parse(await response.json());
+    expect(manifest.targets.map((target) => `${target.os}-${target.arch}`))
+      .toEqual(["darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64"]);
+    // The same shape as the shared fixture the old Go decoder accepts.
+    expect(Object.keys(manifest).sort()).toEqual(Object.keys(legacyManifestFixture).sort());
+    expect(Object.keys(manifest.targets[0]!).sort()).toEqual(Object.keys(legacyManifestFixture.targets[0]!).sort());
+    const wrongProtocol = new Request("https://untrusted-host.example/connect-api/v1/client", { headers: { [CONNECT_PROTOCOL_HEADER]: "1" } });
+    expect(connectLegacyClientManifestSchema.safeParse(await (await handlers().manifest(wrongProtocol)).json()).success).toBe(true);
+  });
+
   it("serves checksums.txt in sha256sum format", async () => {
     writeDist();
     const response = await handlers().checksums();
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(await response.text()).toBe(readFileSync(path.join(dist, CONNECT_CLIENT_SUMS_FILE), "utf8"));
+    const text = await response.text();
+    expect(text).toBe(readFileSync(path.join(dist, CONNECT_CLIENT_SUMS_FILE), "utf8"));
+    expect(text.trimEnd().split("\n").map((line) => line.split("  ")[1])).toEqual(NAMES);
+    expect(NAMES).toHaveLength(6);
   });
 
-  it("serves exactly the four binaries with download headers", async () => {
+  it("serves exactly the six binaries with download headers", async () => {
     writeDist();
     const on = handlers();
-    for (const name of NAMES) {
+    for (const name of NAMES.filter((candidate) => !candidate.endsWith(".exe"))) {
       const response = await on.download(request(), file(name));
       expect(response.status).toBe(200);
       expect(Object.fromEntries(response.headers)).toEqual({
@@ -178,9 +207,43 @@ describe("AIQSA Connect client distribution", () => {
       });
       expect(await response.text()).toBe(fakeBinary(name));
     }
+    for (const name of NAMES.filter((candidate) => candidate.endsWith(".exe"))) {
+      const response = await on.download(request(), file(name));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-disposition")).toBe(
+        "attachment; filename=\"AIQSA Connect - canonical.example.exe\"; filename*=UTF-8''AIQSA%20Connect%20-%20canonical.example.exe"
+      );
+      expect(response.headers.get("content-length")).toBe(String(statSync(path.join(dist, name)).size));
+      expect(await response.text()).toBe(fakeBinary(name));
+    }
     for (const name of [CONNECT_CLIENT_SUMS_FILE, "aiqsa-connect-windows-amd64", "../package.json", "aiqsa-connect"]) {
       expect((await on.download(request(), file(name))).status).toBe(404);
     }
+  });
+
+  it.each([
+    ["https://ai.example.com", "AIQSA Connect - ai.example.com.exe"],
+    ["https://ai.example.com:443", "AIQSA Connect - ai.example.com.exe"],
+    ["https://ai.example.com:8443", "AIQSA Connect - ai.example.com_8443.exe"],
+    ["http://192.168.1.20:3000", "AIQSA Connect - http_192.168.1.20_3000.exe"],
+    ["http://aiqsa.lan", "AIQSA Connect - http_aiqsa.lan.exe"],
+    ["https://пример.рф", "AIQSA Connect - xn--e1afmkfd.xn--p1ai.exe"],
+    ["http://[::1]:3000", null],
+    [null, null]
+  ])("names the Windows download for %s as %s", (origin, name) => {
+    expect(connectWindowsDownloadName(origin)).toBe(name);
+  });
+
+  it("keeps the release name for Windows when the base URL cannot name the file", async () => {
+    writeDist();
+    for (const origin of ["http://[::1]:3000", null]) {
+      const response = await handlers({ origin }).download(request(), file("aiqsa-connect-windows-arm64.exe"));
+      expect(response.headers.get("content-disposition")).toBe('attachment; filename="aiqsa-connect-windows-arm64.exe"');
+    }
+    const port = await handlers({ origin: "http://10.0.0.5:8080" }).download(request(), file("aiqsa-connect-windows-amd64.exe"));
+    expect(port.headers.get("content-disposition")).toBe(
+      "attachment; filename=\"AIQSA Connect - http_10.0.0.5_8080.exe\"; filename*=UTF-8''AIQSA%20Connect%20-%20http_10.0.0.5_8080.exe"
+    );
   });
 
   it("writes the canonical origin into install.sh, never the request's host", async () => {
@@ -195,6 +258,7 @@ describe("AIQSA Connect client distribution", () => {
     expect(script).not.toContain("untrusted-host");
     expect(script).toContain("${AIQSA_CONNECT_INSTALL_DIR:-}");
     expect(script).toContain("login %s");
+    expect(script).not.toContain("tmux");
 
     const misconfigured = await handlers({ origin: null }).installScript();
     expect(misconfigured.status).toBe(503);

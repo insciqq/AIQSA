@@ -17,6 +17,7 @@ describe("AIQSA Connect proxy boundary", () => {
     ["POST", "/connect-api/v1/pairings/poll"],
     ["GET", "/connect-api/v1/stream"],
     ["POST", "/connect-api/v1/events"],
+    ["DELETE", "/connect-api/v1/device"],
     ["GET", "/connect-api"]
   ])("passes %s %s to the route's own Bearer check without a session", (method, path) => {
     const response = proxyWithEnv(new NextRequest(`https://aiqsa.example${path}`, { method }), env);
@@ -35,7 +36,7 @@ describe("AIQSA Connect proxy boundary", () => {
     }
   );
 
-  it("makes exactly the installer, the checksums and the four downloads public", () => {
+  it("makes exactly the installer, the checksums and the six downloads public", () => {
     expect([...CONNECT_PUBLIC_DISTRIBUTION_PATHS].sort()).toEqual([
       CONNECT_INSTALL_SCRIPT_PATH,
       CONNECT_CLIENT_CHECKSUMS_PATH,
@@ -55,6 +56,8 @@ describe("AIQSA Connect proxy boundary", () => {
     "/connect/download",
     "/connect/download/",
     "/connect/download/aiqsa-connect-windows-amd64",
+    "/connect/download/aiqsa-connect-windows-amd64.exe/x",
+    "/connect/download/AIQSA Connect - aiqsa.example.exe",
     "/connect/download/aiqsa-connect-linux-amd64/x",
     "/connect/download/aiqsa-connect-linux-amd64.exe",
     "/connect/download/SHA256SUMS"
@@ -73,9 +76,9 @@ describe("AIQSA Connect proxy boundary", () => {
   });
 
   it("refuses a cross-site browser mutation before it reaches a Connect route", async () => {
-    const response = proxyWithEnv(new NextRequest("https://aiqsa.example/api/connect/views", {
+    const response = proxyWithEnv(new NextRequest("https://aiqsa.example/api/connect/devices/0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11", {
       headers: { cookie: `${SESSION_COOKIE_NAME}=opaque-session`, origin: "https://attacker.example" },
-      method: "POST"
+      method: "DELETE"
     }), env);
 
     expect(response.status).toBe(403);
