@@ -8,6 +8,7 @@ import {
 import type { ModelRunSseEvent } from "../../../domain/modelRunEvents";
 import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
+import { markProviderStreamDrop } from "../../providers/streamDrop";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
 import { FakeSubagentCallbackSink, FakeSubagentRunner } from "@/tests/support/subagentPorts";
@@ -41,7 +42,7 @@ import {
   type SubagentHost
 } from "./runner";
 
-type Step = Readonly<{ calls?: ModelToolCall[]; events?: ModelRunSseEvent[]; hang?: true; text?: string }>;
+type Step = Readonly<{ calls?: ModelToolCall[]; drop?: true; events?: ModelRunSseEvent[]; hang?: true; text?: string }>;
 
 function scriptedAdapter(steps: readonly Step[]) {
   const requests: ProviderRunRequest[] = [];
@@ -51,6 +52,7 @@ function scriptedAdapter(steps: readonly Step[]) {
       requests.push(request);
       const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
       for (const event of step.events ?? []) yield event;
+      if (step.drop) throw markProviderStreamDrop(new Error("stream_incomplete"), "reset");
       if (step.hang) {
         await new Promise<void>((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true }));
       }
@@ -90,6 +92,7 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
 
 function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentChildHost; earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
   followups?: () => { id: string; text: string }[]; handoff?: EngineTool["execute"]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging;
+  modelRetry?: SubagentHost["modelRetry"];
   recordSearchEvidence?: SubagentHost["recordSearchEvidence"]; request?: ProviderRunRequest;
   toolTimeLeft?: () => boolean; tools?: EngineTool[]; turnToolCalls?: number; workspaceImageView?: true }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
@@ -136,6 +139,7 @@ function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentCh
     maxToolCalls: null,
     maxToolRounds: null,
     ...(options.messaging ? { messaging: options.messaging } : {}),
+    ...(options.modelRetry ? { modelRetry: options.modelRetry } : {}),
     now: Date.now,
     onWorkspaceLifecycle: vi.fn(async () => undefined),
     recordDetachedCompaction: vi.fn(async () => true),
@@ -291,6 +295,15 @@ describe("sub-agent runner", () => {
       await ctx.runner.wait(await ctx.runner.start(ctx.input()));
       expect(recordSearchEvidence).not.toHaveBeenCalled();
     });
+  });
+
+  it("sends a turn's failed model request again under its host's retry policy, a research run's past a chat's six attempts", async () => {
+    // A short backoff for real timers; a chat's own policy would have given up after six attempts.
+    const modelRetry = { backoff: { baseDelayMs: 1, maxBackoffMs: 1 }, maxAttempts: 8 };
+    const ctx = setup([...Array.from({ length: 7 }, () => ({ drop: true as const })), { text: "Outcome: done\nDone." }], { modelRetry });
+    const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    expect(result).toMatchObject({ kind: "ended", outcome: "done", state: "done" });
+    expect(ctx.requests).toHaveLength(8);
   });
 
   it("delivers a 30,000-character foreground report through the ordinary tool excerpt and reads all of it later", async () => {

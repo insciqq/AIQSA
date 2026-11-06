@@ -11,6 +11,7 @@ import type { SubagentThreadStore } from "../engine/subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../engine/toolCallStore";
 import type { TranscriptItem } from "../engine/transcript";
 import type { TranscriptRepository } from "../engine/transcriptRepository";
+import { MODEL_CALL_RESEARCH_RETRY } from "../engine/modelCall";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
@@ -33,6 +34,16 @@ import type { ResearchEngineDeps } from "./run";
 vi.mock("../../contracts/research", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../contracts/research")>();
   return { ...actual, RESEARCH_TIME_MS: Object.freeze({ ...actual.RESEARCH_TIME_MS, page: 2_000 }) };
+});
+
+/** The retry policy each model request of a run was sent under: the real `callModel`, watched. */
+const retries = vi.hoisted(() => [] as Array<{ retry: unknown; stage: unknown }>);
+vi.mock("../engine/modelCall", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../engine/modelCall")>();
+  return { ...actual, callModel: (ports: Parameters<typeof actual.callModel>[0], request: Parameters<typeof actual.callModel>[1]) => {
+    retries.push({ retry: ports.retry, stage: ports.stage });
+    return actual.callModel(ports, request);
+  } };
 });
 
 /**
@@ -437,6 +448,25 @@ describe("a page that cannot be written leaves the answer as it would have gone 
     await go(adapter, memory);
     expect(requests.page).toHaveLength(1);
     expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.anything(), `${PURCHASE.summary}\n\n${PURCHASE.report}`);
+  });
+});
+
+describe("a research run's model requests", () => {
+  it("keep being sent again for the research window, its page step's too, while an ordinary run's keep a chat's attempts", async () => {
+    retries.length = 0;
+    const { adapter, requests } = scripted([{ calls: begin() }, { calls: [submit()] }]);
+    await go(adapter, engineOf({}));
+    expect(requests.page).toHaveLength(1);
+    expect(retries).toHaveLength(requests.main.length + requests.page.length);
+    expect(retries.every((sent) => sent.retry === MODEL_CALL_RESEARCH_RETRY)).toBe(true);
+    retries.length = 0;
+    const plain = prepared();
+    const { deepResearch: _chosen, ...ordinary } = plain.normalizedRequest;
+    void _chosen;
+    const chat = scripted([{ text: "A plain answer." }]);
+    await go(chat.adapter, engineOf({}), { prepared: { ...plain, normalizedRequest: ordinary as ProviderRunRequest, providerRequest: ordinary as ProviderRunRequest } });
+    expect(chat.requests.main).toHaveLength(1);
+    expect(retries).toEqual([{ retry: undefined, stage: undefined }]);
   });
 });
 

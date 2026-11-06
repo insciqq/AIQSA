@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RESEARCH_TASK_LIMITS, RESEARCHER_CONTEXT_CLEARING } from "../../contracts/research";
 import { CALL_SUBAGENT_TOOL_NAME } from "../../contracts/subagents";
+import { MODEL_CALL_RESEARCH_RETRY } from "../engine/modelCall";
 import type { PrepareRunSubagentsInput } from "../engine/subagents/runSubagents";
 import type { EngineTool } from "../engine/toolRegistry";
 import { createResearchTurns } from "./turns";
@@ -51,5 +52,7 @@ describe("each kind of research turn's host", () => {
       expect(gate).not.toHaveProperty("turnToolCalls");
       expect(gate).not.toHaveProperty("resultClearing");
     }
+    // Researchers and gates alike keep sending a failed model request again for the research window.
+    for (const host of hosts) expect(host.modelRetry).toBe(MODEL_CALL_RESEARCH_RETRY);
   });
 });
