@@ -2,8 +2,8 @@ import packageMetadata from "@/package.json";
 import {
   CONNECT_DEFAULT_HELLO_LIMITS,
   CONNECT_HEARTBEAT_SECONDS,
+  CONNECT_LEGACY_PROTOCOL_VERSION,
   CONNECT_MAX_EVENTS_BODY_BYTES,
-  CONNECT_PROTOCOL_VERSION,
   CONNECT_VERSION_PATTERN,
   connectDeviceEventBatchSchema,
   connectPairingCreateRequestSchema,
@@ -57,7 +57,7 @@ function hello(deviceId: string): ConnectHello {
     deviceId,
     limits: CONNECT_DEFAULT_HELLO_LIMITS,
     minClientVersion: CONNECT_MIN_CLIENT_VERSION,
-    protocol: CONNECT_PROTOCOL_VERSION,
+    protocol: CONNECT_LEGACY_PROTOCOL_VERSION,
     serverVersion: CONNECT_SERVER_VERSION
   };
 }

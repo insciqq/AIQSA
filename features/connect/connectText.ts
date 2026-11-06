@@ -17,7 +17,7 @@ export const CONNECT_STATUS_LABELS: Readonly<Record<ConnectSessionStatus, string
   waiting: "Your turn"
 };
 
-const OS_LABELS: Readonly<Record<ConnectOs, string>> = { darwin: "macOS", linux: "Linux" };
+const OS_LABELS: Readonly<Record<ConnectOs, string>> = { darwin: "macOS", linux: "Linux", windows: "Windows" };
 
 export function connectPlatformLabel(os: ConnectOs, arch: ConnectArch): string {
   return `${OS_LABELS[os]} · ${arch}`;

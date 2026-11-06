@@ -1,0 +1,14 @@
+{
+  "type": "op",
+  "requestId": "e4da3b7f-bbce-4345-9777-2b0670b8a1c4",
+  "runId": "1679091c-5a88-4faf-afb5-e6087eb1b2dc",
+  "op": "grep",
+  "args": {
+    "pattern": "a",
+    "cwd": "~",
+    "ignoreCase": false,
+    "mode": "content",
+    "context": 6
+  },
+  "deadlineMs": 60000
+}

@@ -1,5 +1,6 @@
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
+  "legacyProtocolVersion": 1,
   "limits": {
     "maxDevicesPerUser": 10,
     "maxSessionsPerDevice": 30,
@@ -27,12 +28,43 @@
     "maxAttachedClients": 1000,
     "maxUrlLength": 2048,
     "maxClientBinaryBytes": 134217728,
-    "maxClientTargets": 4,
+    "maxClientTargets": 6,
     "maxSeq": 9007199254740991,
     "minCols": 20,
     "maxCols": 400,
     "minRows": 5,
-    "maxRows": 200
+    "maxRows": 200,
+    "legacyMaxClientTargets": 4,
+    "maxConcurrentOps": 16,
+    "maxJobs": 8,
+    "maxReplyBytes": 524288,
+    "maxWriteBytes": 1048576,
+    "defaultShellTimeoutSeconds": 120,
+    "maxShellTimeoutSeconds": 600,
+    "maxOpDeadlineMs": 660000,
+    "maxJobWaitSeconds": 30,
+    "maxJobBufferBytes": 1048576,
+    "outputHeadBytes": 32768,
+    "outputTailBytes": 98304,
+    "maxStreamOutputBytes": 131072,
+    "maxCommandBytes": 65536,
+    "defaultReadLines": 2000,
+    "maxReadLines": 2000,
+    "maxReadLineLength": 2000,
+    "maxLineBytes": 8000,
+    "maxReadBytes": 262144,
+    "maxLineNumber": 2147483647,
+    "maxGlobPaths": 1000,
+    "maxGrepMatches": 1000,
+    "maxGrepContext": 5,
+    "maxPatternLength": 1024,
+    "maxListDirs": 500,
+    "maxDirNameLength": 255,
+    "maxOsVersionLength": 128,
+    "maxShellNameLength": 64,
+    "maxShellVersionLength": 64,
+    "minExitCode": -2147483648,
+    "maxExitCode": 4294967295
   },
   "helloLimits": {
     "maxEventsPerPost": 64,
@@ -46,6 +78,18 @@
     "maxRecentDirs": 20,
     "heartbeatSeconds": 15,
     "replyTimeoutSeconds": 10
+  },
+  "helloV2Limits": {
+    "maxEventsPerPost": 64,
+    "maxEventsBodyBytes": 1048576,
+    "maxReplyBytes": 524288,
+    "maxWriteBytes": 1048576,
+    "maxConcurrentOps": 16,
+    "maxJobs": 8,
+    "maxShellTimeoutSeconds": 600,
+    "maxRecentDirs": 20,
+    "maxListDirs": 500,
+    "heartbeatSeconds": 15
   },
   "reasonCodes": [
     "connect_disabled",
@@ -75,6 +119,23 @@
     "connect_unsupported",
     "connect_device_error"
   ],
+  "opErrorCodes": [
+    "computer_timeout",
+    "computer_cancelled",
+    "computer_path_not_found",
+    "computer_not_a_directory",
+    "computer_is_a_directory",
+    "computer_permission_denied",
+    "computer_file_binary",
+    "computer_file_too_large",
+    "computer_edit_no_match",
+    "computer_edit_ambiguous",
+    "computer_job_not_found",
+    "computer_limit",
+    "computer_pattern_invalid",
+    "connect_unsupported",
+    "connect_device_error"
+  ],
   "deviceStreamClosedCodes": ["connect_disabled", "connect_unauthorized", "connect_client_outdated"],
   "eventsStreamClosedCodes": ["connect_disabled", "connect_unauthorized"],
   "viewClosedReasons": ["session_ended", "detached", "error", "limit"],
@@ -87,8 +148,44 @@
     "connect_disabled",
     "connect_unauthorized"
   ],
-  "os": ["darwin", "linux"],
+  "os": ["darwin", "linux", "windows"],
+  "legacyOs": ["darwin", "linux"],
   "arch": ["amd64", "arm64"],
+  "legacyClientTargets": [
+    {
+      "os": "darwin",
+      "arch": "amd64"
+    },
+    {
+      "os": "darwin",
+      "arch": "arm64"
+    },
+    {
+      "os": "linux",
+      "arch": "amd64"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64"
+    }
+  ],
+  "ops": [
+    "shell",
+    "job_output",
+    "job_stop",
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "stat",
+    "list_dirs",
+    "recent_dirs"
+  ],
+  "shellKinds": ["powershell", "pwsh", "posix"],
+  "grepModes": ["files", "content", "count"],
+  "lineEndings": ["lf", "crlf", "mixed", "none"],
+  "statKinds": ["file", "dir", "other"],
   "programs": ["claude", "codex", "shell"],
   "sessionStatuses": ["idle", "running", "needs_approval", "waiting"],
   "statusReasons": ["permission", "turn_end", "idle_prompt", "bell", "input"],
@@ -108,7 +205,10 @@
     "controlCharacter": "[\\x00-\\x1f\\x7f-\\x9f]",
     "requestedCwd": "^(?:~|~\\/.*|\\/.*)$",
     "absolutePath": "^\\/.*$",
-    "urlPrefix": "^https?:\\/\\/"
+    "urlPrefix": "^https?:\\/\\/",
+    "devicePath": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\).*$",
+    "jobId": "^job-[a-z0-9]{6,16}$",
+    "encoding": "^[a-z0-9][a-z0-9-]{0,31}$"
   },
   "devicePaths": {
     "pairings": "/connect-api/v1/pairings",
@@ -118,7 +218,8 @@
     "client": "/connect-api/v1/client",
     "installScript": "/connect/install.sh",
     "checksums": "/connect/checksums.txt",
-    "downloadLinuxArm64": "/connect/download/aiqsa-connect-linux-arm64"
+    "downloadLinuxArm64": "/connect/download/aiqsa-connect-linux-arm64",
+    "downloadWindowsAmd64": "/connect/download/aiqsa-connect-windows-amd64.exe"
   },
   "deviceStreamEvents": ["hello", "command", "ping", "replaced", "closed"],
   "eventsStreamEvents": ["devices", "device", "closed", "ping"],
@@ -135,5 +236,11 @@
     "recent_dirs"
   ],
   "requestCommandTypes": ["session_create", "session_kill", "session_history", "session_options", "recent_dirs"],
-  "deviceEventTypes": ["sessions", "status", "output", "view_closed", "reply"]
+  "deviceEventTypes": ["sessions", "status", "output", "view_closed", "reply"],
+  "headers": {
+    "clientVersion": "X-AIQSA-Connect-Version",
+    "protocol": "X-AIQSA-Connect-Protocol"
+  },
+  "serverCommandV2Types": ["op", "cancel", "run_ended"],
+  "deviceEventV2Types": ["reply", "device_info"]
 }

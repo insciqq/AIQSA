@@ -1,0 +1,9 @@
+{
+  "op": "list_dirs",
+  "result": {
+    "path": "C:\\",
+    "parent": null,
+    "dirs": [],
+    "truncated": false
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "op": "list_dirs",
+  "result": {
+    "path": "/home",
+    "dirs": [],
+    "truncated": false
+  }
+}
