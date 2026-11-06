@@ -87,8 +87,9 @@ export function createBuiltInSkillAdminHandlers(deps: { resolveAuth: RequestAuth
       }
       try {
         const result = await deps.service().setEnabled(skillId, body.enabled, Number(body.expectedVersion));
-        if (result.kind === "not_found") return json({ error: "skill_not_available" }, 404);
-        if (result.kind === "version_conflict") return json({ error: "skill_version_conflict" }, 409);
+        if (result.kind !== "ok") {
+          return result.kind === "not_found" ? json({ error: "skill_not_available" }, 404) : json({ error: "skill_version_conflict" }, 409);
+        }
         logEvent("service_operation", { subsystem: "admin", stage: "write", outcome: "completed",
           code: body.enabled ? "built_in_skill_enabled" : "built_in_skill_disabled" });
         return json({ skill: result.skill });
