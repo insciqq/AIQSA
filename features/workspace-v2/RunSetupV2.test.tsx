@@ -141,5 +141,23 @@ describe("Run setup v2 with an Assistant", () => {
     expect(screen.queryByTestId("assistant-row-provenance")).toBeNull();
     expect(screen.queryByTestId("run-setup-own-defaults")).toBeNull();
     expect(screen.getByRole("combobox", { name: "Reasoning effort" })).toBeEnabled();
+    expect(screen.queryByTestId("run-setup-reasoning-mode-notice")).toBeNull();
+  });
+});
+
+describe("Run setup v2 with a saved reasoning mode the model does not offer", () => {
+  it("names the saved mode beside the reasoning controls and offers no mode the model lacks", () => {
+    const { reasoningMode: _mode, ...controls } = galleryModels[0]!.parameterControls;
+    void _mode;
+    const notice = "Your saved reasoning mode “pro” is not available for this model, so its default is used.";
+    render(<RunSetupV2 composer={runSetupComposer({
+      currentParameterControls: controls,
+      reasoningMode: "standard",
+      reasoningModeNotice: notice
+    })} onClose={vi.fn()} />);
+
+    expect(screen.getByTestId("run-setup-reasoning-mode-notice")).toHaveTextContent(notice);
+    expect(screen.queryByRole("combobox", { name: "Reasoning mode" })).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Reasoning effort" })).toBeEnabled();
   });
 });

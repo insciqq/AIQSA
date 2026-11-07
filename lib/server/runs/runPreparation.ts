@@ -49,6 +49,8 @@ import {
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
   invalidRunParamsError,
+  reasoningModeNotAvailableError,
+  reasoningModeNotAvailableMessage,
   resolveAcceptedRunReasoningEffort,
   validateRunParams
 } from "../../domain/runParams";
@@ -1522,7 +1524,8 @@ export async function prepareRun(
       // ordinary invalid param; an Assistant control that no longer fits
       // fails closed with a stable conflict, never clamped or dropped.
       const rejected = assistantRowFailure(materialized);
-      return failure(rejected.code, rejected.status);
+      return failure(rejected.code, rejected.status,
+        rejected.code === reasoningModeNotAvailableError ? reasoningModeNotAvailableMessage : undefined);
     }
     paramsBody = materialized.params;
     rowResolution = materialized.resolution;
@@ -1535,7 +1538,9 @@ export async function prepareRun(
     provider: parameterProvider
   });
   if (!paramValidation.ok) {
-    return failure(invalidRunParamsError, 400);
+    return paramValidation.code === reasoningModeNotAvailableError
+      ? failure(reasoningModeNotAvailableError, 400, reasoningModeNotAvailableMessage)
+      : failure(invalidRunParamsError, 400);
   }
   const runParams = mergeModelParams(parameterProvider, {
     ...canonicalizeMaxOutputTokenParams(defaultParams),
