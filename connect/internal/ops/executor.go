@@ -61,6 +61,12 @@ type Executor struct {
 	shellOnce sync.Once
 	shell     Shell
 
+	// fileLocks serializes the writes and edits of each file (lockFile).
+	fileLocks fileLocks
+	// inPlace is where a write in place opens files and backups: osFiles,
+	// or a fake in tests.
+	inPlace inPlaceFiles
+
 	mu      sync.Mutex
 	limits  protocol.HelloV2Limits
 	running map[string]*runningOp
@@ -103,6 +109,7 @@ func New(opts Options) *Executor {
 		home:     validHome(sys.GOOS(), opts.Home),
 		log:      log,
 		recent:   newRecentDirs(opts.RecentFile),
+		inPlace:  osFiles{},
 		limits:   protocol.DefaultHelloV2Limits,
 		running:  map[string]*runningOp{},
 		jobs:     map[string]*job{},
@@ -361,12 +368,12 @@ func (e *Executor) execute(ctx context.Context, op *protocol.OpCommand, limits p
 		if len(args.Content) > limits.MaxWriteBytes {
 			return nil, protocol.CodeComputerFileTooLarge
 		}
-		return e.write(args)
+		return e.write(ctx, args)
 	case *protocol.EditArgs:
 		if len(args.NewString) > limits.MaxWriteBytes || len(args.OldString) > limits.MaxWriteBytes {
 			return nil, protocol.CodeComputerFileTooLarge
 		}
-		return e.edit(args)
+		return e.edit(ctx, args)
 	case *protocol.GlobArgs:
 		return e.glob(ctx, args)
 	case *protocol.GrepArgs:
