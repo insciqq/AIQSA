@@ -39,10 +39,11 @@ type System interface {
 	// replacement file could not take them without cgo.
 	WritesInPlace() bool
 	// PrepareReplacement gives tmp, the open replacement for the file at
-	// path described by info, what is attached to that file besides its
-	// data: owner, group, mode bits and extended attributes (POSIX ACLs
-	// included) on Linux, attributes on Windows.
-	// errWriteInPlace when it cannot, so nothing attached is lost.
+	// path described by info, which holds its data already, what is
+	// attached to that file besides its data: owner, group, mode bits and
+	// extended attributes (POSIX ACLs included) on Linux, attributes on
+	// Windows. errWriteInPlace when it cannot, so nothing attached is lost;
+	// errModeNotKept for setuid, setgid or sticky bits neither way keeps.
 	PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error
 	// Replace moves the closed replacement tmp over path: a rename on macOS
 	// and Linux, ReplaceFileW on Windows, which keeps the replaced file's
@@ -77,8 +78,12 @@ type ProcessTree interface {
 type CodePage interface {
 	// Name is the encoding's name, for example "windows-1251".
 	Name() string
-	// Decode returns the text; false when data is not valid in the code page.
+	// Decode returns the text; false when data is not valid in the code
+	// page, a character cut off at its end included.
 	Decode(data []byte) (string, bool)
+	// MaxCharLen is the length in bytes of the code page's longest
+	// character: 1 for a single-byte code page, 2 for a double-byte one.
+	MaxCharLen() int
 	// Encode returns the bytes; false when the text has a character the
 	// code page cannot hold.
 	Encode(text string) ([]byte, bool)

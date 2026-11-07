@@ -243,10 +243,8 @@ func TestWriteOverALargeFileDecidesItsEncodingFromAllOfIt(t *testing.T) {
 			path := filepath.Join(home, "ansi.txt")
 			writeTestFile(t, path, old)
 			mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "Итог\n"})
-			ending := "\n"
-			if lineEnding(string(old[:64])) == protocol.LineEndingCRLF {
-				ending = "\r\n"
-			}
+			// Both files have CRLF line endings, past the start too.
+			ending := "\r\n"
 			want, _ := cp1251{}.Encode("Итог" + ending)
 			if got := readTestFile(t, path); !bytes.Equal(got, want) {
 				t.Fatalf("with the code page: % x", got)
@@ -272,6 +270,64 @@ func TestWriteOverALargeFileDecidesItsEncodingFromAllOfIt(t *testing.T) {
 	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: binary, Cwd: home, Content: "новое\n"})
 	if got := readTestFile(t, binary); string(got) != "новое\n" {
 		t.Fatalf("binary: % x", got)
+	}
+}
+
+// The review's reproduction: a file in a double-byte code page too large
+// to load, with no byte below 0x40 where a chunk ended, was cut inside a
+// character, did not decode in its code page, and a write of text beyond
+// ASCII was refused as of an unknown encoding. The cut character is now
+// carried into the next chunk.
+func TestWriteOverALargeDoubleByteFileKeepsItsCodePage(t *testing.T) {
+	e, home := newTestExecutor(t, testSystem{codePage: cp932{}})
+	previous := maxTextFileBytes
+	// Odd, so the first chunk ends after the lead byte 0x82 of "あ".
+	maxTextFileBytes = 15
+	t.Cleanup(func() { maxTextFileBytes = previous })
+	path := filepath.Join(home, "notes.txt")
+	writeTestFile(t, path, bytes.Repeat([]byte("\x82\xa0"), 20))
+	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "日本語\n"})
+	if got := readTestFile(t, path); !bytes.Equal(got, []byte("\x93\xfa\x96\x7b\x8c\xea\n")) {
+		t.Fatalf("content % x", got)
+	}
+}
+
+// The review's reproduction: a file too large to load whose first chunk
+// ended with the "\r" of a CRLF line break, its "\n" starting the next,
+// was taken to have no CRLF line endings, and the write stored "\n" in
+// it. Line endings are now told from all of the file, across chunks: in
+// UTF-8 and in UTF-16, where the first chunk alone decided before; a file
+// whose CRLF comes only after its first chunk keeps it too, and one with
+// both endings (mixed) is written as given, as a file small enough to
+// load is.
+func TestWriteOverALargeFileKeepsCRLFAcrossChunks(t *testing.T) {
+	previous := maxTextFileBytes
+	maxTextFileBytes = 16
+	t.Cleanup(func() { maxTextFileBytes = previous })
+	utf16 := func(text string) []byte { return utf16Bytes(bomUTF16LE, false, text) }
+	for _, tc := range []struct {
+		name     string
+		old      []byte
+		want     []byte
+		codePage CodePage
+	}{
+		{"UTF-8, the line break cut in two", []byte(strings.Repeat("x", 15) + "\r\n" + strings.Repeat("y", 20)), []byte("new\r\nline\r\n"), nil},
+		{"UTF-8, CRLF after the first chunk", []byte(strings.Repeat("x", 40) + "\r\nmore\r\n"), []byte("new\r\nline\r\n"), nil},
+		// The BOM, six code units and "\r" fill the first chunk.
+		{"UTF-16, the line break cut in two", utf16(strings.Repeat("x", 6) + "\r\n" + strings.Repeat("y", 10)), utf16("new\r\nline\r\n"), nil},
+		{"cp1251, the line break cut in two", append(bytes.Repeat([]byte{0xC4}, 15), "\r\n\xc4\xc4\xc4\xc4\xc4"...),
+			[]byte("new\r\nline\r\n"), cp1251{}},
+		{"mixed", []byte("first\r\n" + strings.Repeat("x", 40) + "\nlast\n"), []byte("new\nline\n"), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, home := newTestExecutor(t, testSystem{codePage: tc.codePage})
+			path := filepath.Join(home, "notes.txt")
+			writeTestFile(t, path, tc.old)
+			mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "new\nline\n"})
+			if got := readTestFile(t, path); !bytes.Equal(got, tc.want) {
+				t.Fatalf("content %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

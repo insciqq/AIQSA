@@ -61,8 +61,8 @@ type Executor struct {
 	shellOnce sync.Once
 	shell     Shell
 
-	// fileLocks serializes the writes and edits of each file (lockFile).
-	fileLocks fileLocks
+	// writing holds a token while a write or edit runs (lockWrites).
+	writing chan struct{}
 	// inPlace is where a write in place opens files and backups: osFiles,
 	// or a fake in tests.
 	inPlace inPlaceFiles
@@ -110,6 +110,7 @@ func New(opts Options) *Executor {
 		log:      log,
 		recent:   newRecentDirs(opts.RecentFile),
 		inPlace:  osFiles{},
+		writing:  make(chan struct{}, 1),
 		limits:   protocol.DefaultHelloV2Limits,
 		running:  map[string]*runningOp{},
 		jobs:     map[string]*job{},
