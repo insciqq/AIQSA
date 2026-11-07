@@ -168,6 +168,7 @@ func (winJobs) Close(job uintptr) error { return windows.CloseHandle(windows.Han
 var (
 	kernel32                = windows.NewLazySystemDLL("kernel32.dll")
 	procGetOEMCP            = kernel32.NewProc("GetOEMCP")
+	procGetCPInfo           = kernel32.NewProc("GetCPInfo")
 	procWideCharToMultiByte = kernel32.NewProc("WideCharToMultiByte")
 	procReplaceFileW        = kernel32.NewProc("ReplaceFileW")
 )
@@ -197,18 +198,41 @@ var (
 func (nativeSystem) TextCodePage() CodePage {
 	ansiOnce.Do(func() {
 		if cp := windows.GetACP(); cp != 65001 {
-			ansi = winCodePage(cp)
+			ansi = winCodePage{cp: cp, maxCharLen: maxCharSize(cp)}
 		}
 	})
 	return ansi
 }
 
-type winCodePage uint32
+// cpInfo is CPINFO.
+type cpInfo struct {
+	maxCharSize uint32
+	defaultChar [2]byte
+	leadByte    [12]byte
+}
 
-func (c winCodePage) Name() string { return codePageName(uint32(c)) }
+// maxCharSize is the length of code page cp's longest character
+// (GetCPInfo); 4, the longest of any code page, when Windows cannot tell,
+// which only lets a file's chunks be decoded a few more times (scanFormat).
+func maxCharSize(cp uint32) int {
+	var info cpInfo
+	if ok, _, _ := procGetCPInfo.Call(uintptr(cp), uintptr(unsafe.Pointer(&info))); ok == 0 || info.maxCharSize == 0 {
+		return 4
+	}
+	return int(info.maxCharSize)
+}
+
+type winCodePage struct {
+	cp         uint32
+	maxCharLen int
+}
+
+func (c winCodePage) Name() string { return codePageName(c.cp) }
+
+func (c winCodePage) MaxCharLen() int { return c.maxCharLen }
 
 func (c winCodePage) Decode(data []byte) (string, bool) {
-	return decodeCodePage(uint32(c), data, mbErrInvalidChars)
+	return decodeCodePage(c.cp, data, mbErrInvalidChars)
 }
 
 func (c winCodePage) Encode(text string) ([]byte, bool) {
@@ -222,7 +246,7 @@ func (c winCodePage) Encode(text string) ([]byte, bool) {
 		if len(out) > 0 {
 			outPtr = uintptr(unsafe.Pointer(&out[0]))
 		}
-		n, _, _ := procWideCharToMultiByte.Call(uintptr(c), wcNoBestFitChars,
+		n, _, _ := procWideCharToMultiByte.Call(uintptr(c.cp), wcNoBestFitChars,
 			uintptr(unsafe.Pointer(&units[0])), uintptr(len(units)), outPtr, uintptr(len(out)), 0,
 			uintptr(unsafe.Pointer(&usedDefault)))
 		return int(n)

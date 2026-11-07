@@ -3,6 +3,7 @@ package ops
 import (
 	"bytes"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/signal"
@@ -71,6 +72,82 @@ func TestWriteInPlaceKeepsSetuidAndSetgid(t *testing.T) {
 	}
 	if got := readTestFile(t, path); string(got) != "echo newer\n" {
 		t.Fatalf("content %q", got)
+	}
+}
+
+// The review's reproduction: a program replaced through a rename lost its
+// setuid and setgid bits (ugrwxr-xr-x became -rwxr-xr-x), as the data
+// went into the replacement after its mode was set and the kernel cleared
+// them. The data now goes in first, and the mode is set and checked last.
+func TestReplaceKeepsSetuidAndSetgid(t *testing.T) {
+	e, home := newTestExecutor(t, testSystem{})
+	path := filepath.Join(home, "tool.sh")
+	setuidFile(t, path, []byte("echo old\n"))
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+
+	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "echo new\n"})
+	if got := modeOf(t, path); got != setuidMode {
+		t.Fatalf("after write: mode %v", got)
+	}
+	mustRun[*protocol.EditResult](t, e, &protocol.EditArgs{Path: path, Cwd: home, OldString: "new", NewString: "newer"})
+	if got := modeOf(t, path); got != setuidMode {
+		t.Fatalf("after edit: mode %v", got)
+	}
+	if got := readTestFile(t, path); string(got) != "echo newer\n" {
+		t.Fatalf("content %q", got)
+	}
+	if old, _ := io.ReadAll(held); string(old) != "echo old\n" {
+		t.Fatalf("the file was written in place, not replaced: %q", old)
+	}
+	if entries, _ := os.ReadDir(home); len(entries) != 1 {
+		t.Fatalf("left files behind: %v", entries)
+	}
+}
+
+// A file whose setuid, setgid or sticky bits the process could not put
+// back on a replacement is refused before anything changes, as a write in
+// place refuses it: computer_permission_denied, and no replacement left.
+func TestReplaceRefusesSpecialBitsItCannotKeep(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root keeps every bit")
+	}
+	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid())
+	foreignGroup := uint32(4_000_000)
+	for groups, _ := os.Getgroups(); slices.Contains(groups, int(foreignGroup)) || foreignGroup == gid; foreignGroup++ {
+	}
+	for _, tc := range []struct {
+		name     string
+		mode     fs.FileMode
+		uid, gid uint32
+	}{
+		{"setgid for another group", 0o755 | fs.ModeSetgid, uid, foreignGroup},
+		{"another user's setuid file", 0o755 | fs.ModeSetuid, uid + 1, gid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("TMPDIR", t.TempDir())
+			path := filepath.Join(dir, "tool")
+			writeTestFile(t, path, []byte("echo old\n"))
+			real, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info := fakeStat{FileInfo: real, mode: tc.mode, st: syscall.Stat_t{Uid: tc.uid, Gid: tc.gid}}
+			err = replaceFile(Native(), osFiles{}, path, []byte("echo new\n"), info)
+			if code := replaceCode(err); code != protocol.CodeComputerPermissionDenied || !errors.Is(err, errModeNotKept) {
+				t.Fatalf("code %q (%v)", code, err)
+			}
+			if got := readTestFile(t, path); string(got) != "echo old\n" {
+				t.Fatalf("content %q", got)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+				t.Fatalf("left files behind: %v", entries)
+			}
+		})
 	}
 }
 
