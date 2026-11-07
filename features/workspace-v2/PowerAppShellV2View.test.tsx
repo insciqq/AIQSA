@@ -1040,6 +1040,15 @@ describe("Provider wait naming v2", () => {
     expect(answerModelNameV2({ provider: "codex-lb" }, models)).toBeNull();
   });
 
+  it("names a configured connection's answer by its provider family and upstream model, only when one model fits", () => {
+    const connection = { displayName: "GPT-6.1 Sol", modelId: "model-row-1", provider: "connection-1",
+      providerFamily: "openai_compatible", upstreamModelId: "gpt-6.1-sol" };
+    expect(answerModelNameV2({ modelId: "gpt-6.1-sol", provider: "openai_compatible" }, [connection])).toBe("GPT-6.1 Sol");
+    expect(answerModelNameV2({ modelId: "gpt-6.1-sol", provider: "anthropic" }, [connection])).toBeNull();
+    expect(answerModelNameV2({ modelId: "gpt-6.1-sol", provider: "openai_compatible" },
+      [connection, { ...connection, displayName: "Sol elsewhere", modelId: "model-row-2", provider: "connection-2" }])).toBeNull();
+  });
+
   it("puts the name in a waiting answer's provider line", () => {
     const waiting: ThreadMessage = { content: "", id: "answer-wait", modelId: "gpt-6-astra", parentMessageId: null, provider: "codex-lb",
       providerWait: "retrying", role: "assistant", runId: "run-wait", status: "streaming" };

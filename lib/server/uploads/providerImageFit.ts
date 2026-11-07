@@ -79,7 +79,7 @@ export async function gifStillFrameForProvider(bytes: Buffer, signal?: AbortSign
     let frame = sharp(bytes, { failOn: "none", limitInputPixels: PROVIDER_IMAGE_MAX_SOURCE_PIXELS, page: 0, pages: 1 })
       .timeout({ seconds: 30 });
     if (target) frame = frame.resize({ fit: "fill", height: target.height, width: target.width });
-    let output: { data: Buffer; info: sharp.OutputInfo };
+    let output: { data: Buffer; info: Readonly<{ height: number; width: number }> };
     try {
       output = await frame.png().toBuffer({ resolveWithObject: true });
     } catch {

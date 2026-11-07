@@ -61,7 +61,9 @@ for (const viewport of viewports) {
     await signInWithLocalToken(page);
     await expect(page.getByTestId("header-model-trigger")).toContainText("GPT-6.1 Sol");
 
-    // The composer's reasoning menu names the unavailable saved mode beside the levels.
+    // The composer's reasoning menu names the unavailable saved mode beside the levels. On a phone the composer rests
+    // as one line until engaged.
+    await page.getByRole("textbox", { name: "Message", exact: true }).click();
     const chip = page.getByTestId("composer-v2").getByRole("button", { name: /^Reasoning effort:/u });
     await expect(chip).toHaveAccessibleName("Reasoning effort: low");
     await chip.click();
