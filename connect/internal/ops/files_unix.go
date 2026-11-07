@@ -31,3 +31,10 @@ func canKeepSpecialBits(info fs.FileInfo) bool {
 	groups, err := os.Getgroups()
 	return err == nil && slices.Contains(groups, int(st.Gid))
 }
+
+// hasFileCapabilities reports whether the file at path carries Linux file
+// capabilities (security.capability), which a write removes.
+func hasFileCapabilities(path string) bool {
+	_, ok, err := unixXattrs{}.Get(path, "security.capability")
+	return err == nil && ok
+}

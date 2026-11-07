@@ -142,6 +142,11 @@ func (e *modeChangedError) Error() string {
 // (canKeepSpecialBits), or that a replacement could not take.
 var errModeNotKept = fmt.Errorf("the file's setuid, setgid or sticky bit could not be kept: %w", fs.ErrPermission)
 
+// errCapabilitiesNotKept refuses to write in place a file that carries Linux
+// file capabilities: the kernel removes them when the file is written, and
+// the replacement that could have copied them was not possible.
+var errCapabilitiesNotKept = fmt.Errorf("the file's capabilities would be lost: %w", fs.ErrPermission)
+
 // specialModeBits are the mode bits a write can clear: the kernel drops
 // setuid and setgid when a file is written, and the process puts them back.
 const specialModeBits = fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
@@ -240,6 +245,9 @@ func writeInPlace(files inPlaceFiles, path string, data []byte) error {
 	mode := info.Mode() & keptModeBits
 	if mode&specialModeBits != 0 && !canKeepSpecialBits(info) {
 		return &unchangedError{err: errModeNotKept}
+	}
+	if hasFileCapabilities(path) {
+		return &unchangedError{err: errCapabilitiesNotKept}
 	}
 	backup, size, err := backUp(files, f)
 	if err != nil {
