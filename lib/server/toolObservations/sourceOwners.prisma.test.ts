@@ -26,9 +26,9 @@ async function fixture() {
     validationEvidence: {}, draftHash: "synthetic-draft", identityHash: "synthetic-identity" } });
   await prisma.mcpServer.update({ where: { id: server.id }, data: { activeRevisionId: revision.id } });
   await prisma.mcpGrant.create({ data: { serverId: server.id, userId: user.id, canUse: true } });
-  await prisma.mcpUserServer.create({ data: { serverId: server.id, userId: user.id, enabled: true } });
+  const userServer = await prisma.mcpUserServer.create({ data: { serverId: server.id, userId: user.id, enabled: true } });
   const fingerprint = createHash("sha256").update(randomUUID()).digest("hex");
-  const generation = await prisma.mcpRuntimeGeneration.create({ data: { revisionId: revision.id, fingerprint } });
+  const generation = await prisma.mcpRuntimeGeneration.create({ data: { revisionId: revision.id, fingerprint, userServerId: userServer.id } });
   cleanups.push(async () => {
     await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
     await prisma.chat.updateMany({ where: { id: chat.id }, data: { activeLeafMessageId: null } });
