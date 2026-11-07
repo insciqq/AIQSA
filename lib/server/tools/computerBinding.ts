@@ -96,6 +96,15 @@ export function computerOsLabel(os: ConnectOs): string {
 export const COMPUTER_TURN_GUIDANCE_PREFIX = "The user's computer \"";
 
 /**
+ * How the agent works on a project on the user's computer, as a coding agent does: the project's own instructions for
+ * agents first, its own checks after a change. The files are only named, never read by the server, so they reach the
+ * model only through the agent's own reads, as untrusted content like any other file there.
+ */
+const COMPUTER_PROJECT_GUIDANCE = "Before you work on a project there, read its instructions for agents (AGENTS.md or " +
+  "CLAUDE.md in the project's root and in the folder you work in) when this conversation has not read them yet, and follow " +
+  "them; after changing a project, run its own checks (tests, linters, build) when it has them.";
+
+/**
  * The run's one line about its computer (D-08), in the turn context and never the system prompt, so the prompt and the
  * tool list stay the same between turns with the same binding whatever the device reports.
  */
@@ -108,7 +117,7 @@ export function computerTurnGuidance(binding: FrozenComputerBinding): string {
   if (binding.online) {
     return `${computer} is connected for this chat (${platform}${shell}). ${folder} ` +
       "Use the computer_* tools for the user's files and commands there; the Workspace is a separate cloud sandbox and cannot see " +
-      "these files.";
+      "these files. " + COMPUTER_PROJECT_GUIDANCE;
   }
   return `${computer} is chosen for this chat but was offline when this message was sent ` +
     `(${platform}). ${folder} Use the computer_* tools for the user's files and commands there. While they answer ` +
