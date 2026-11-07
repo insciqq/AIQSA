@@ -70,13 +70,23 @@ func (g groupTree) Release()   {}
 // extended attributes, so only writing the file itself keeps them.
 func (nativeSystem) WritesInPlace() bool { return runtime.GOOS == "darwin" }
 
-// PrepareReplacement gives tmp the owner and group, extended attributes
-// and mode bits of the file it replaces, and drops an access ACL tmp
-// inherited from its folder that the file lacks (copyXattrs). A user who
-// may not give the file its owner or group, or an attribute, gets the file
-// written in place. The mode comes last: chown clears setuid and setgid,
-// and the ACL's mask is the group bits of the mode.
+// PrepareReplacement gives tmp, which holds its data already, the owner
+// and group, extended attributes and mode bits of the file it replaces,
+// and drops an access ACL tmp inherited from its folder that the file
+// lacks (copyXattrs). A user who may not give the file its owner or group,
+// or an attribute, gets the file written in place. The mode comes last
+// and is checked: chown clears setuid and setgid, chmod drops setgid
+// silently for a group the process is not in, and the ACL's mask is the
+// group bits of the mode. A file whose setuid, setgid or sticky bits the
+// process could not put back (canKeepSpecialBits), or that tmp did not
+// take, is refused before anything changes (errModeNotKept), as a write in
+// place refuses it; other mode bits tmp did not take get the file written
+// in place.
 func (nativeSystem) PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error {
+	mode := info.Mode() & keptModeBits
+	if mode&specialModeBits != 0 && !canKeepSpecialBits(info) {
+		return errModeNotKept
+	}
 	if want, ok := info.Sys().(*syscall.Stat_t); ok {
 		current, err := tmp.Stat()
 		if err != nil {
@@ -98,7 +108,20 @@ func (nativeSystem) PrepareReplacement(tmp *os.File, path string, info fs.FileIn
 	if err := copyXattrs(unixXattrs{}, path, tmp.Name()); err != nil {
 		return err
 	}
-	return tmp.Chmod(info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky))
+	if err := tmp.Chmod(mode); err != nil {
+		return err
+	}
+	current, err := tmp.Stat()
+	if err != nil {
+		return err
+	}
+	switch got := current.Mode() & keptModeBits; {
+	case got == mode:
+		return nil
+	case got&specialModeBits != mode&specialModeBits:
+		return errModeNotKept
+	}
+	return errWriteInPlace
 }
 
 // Replace renames tmp over path.

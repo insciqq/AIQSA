@@ -96,48 +96,79 @@ func TestDecodeTextRefusesBinaryButReadsUTF16(t *testing.T) {
 }
 
 // scanFormat, which reads a file too large to load in chunks, decides as
-// decodeText does from the whole file, wherever the chunks end: in UTF-8
-// characters, in runs without a line break, before or after the bytes that
-// are not UTF-8.
+// decodeText does from the whole file, its line endings included,
+// wherever the chunks end: in UTF-8 characters, in the double-byte
+// characters of a run without a byte below 0x40, between the "\r" and the
+// "\n" of a line break, in UTF-16 code units, before or after the bytes
+// that are not UTF-8.
 func TestScanFormatDecidesAsTheWholeFileDoes(t *testing.T) {
 	previous := maxTextFileBytes
 	t.Cleanup(func() { maxTextFileBytes = previous })
-	pieces := []string{"a", "b", "\n", "\r\n", " ", "Ш", "я", "\xc0", "\xe9", "\x98", "\xd0", "\xa8"}
+	pieces := []string{"a", "b", "\n", "\r\n", "\r", " ", "Ш", "я", "\xc0", "\xe9", "\x98", "\xd0", "\xa8", "\x82\xa0", "\x93\xfa", "\xb1"}
+	// cp932 without a byte below 0x40, so chunkEnd cuts anywhere.
+	dbcsPieces := []string{"a", "\x82\xa0", "\x82\xa2", "\x93\xfa", "\x96\x7b", "\x8c\xea", "\xb1"}
+	utf16Pieces := []string{"a", "\n", "\r\n", "\r", "Ш", "я", "日"}
 	rng := rand.New(rand.NewPCG(3, 4))
 	dir := t.TempDir()
 	type decision struct {
 		binary                 bool
 		encoding               string
 		codePage, raw, withBOM bool
+		ending                 protocol.LineEnding
 	}
 	decide := func(file *textFile, err error) decision {
 		if err != nil || file == nil {
 			return decision{binary: true}
 		}
-		return decision{encoding: file.encoding, codePage: file.codePage != nil, raw: file.raw != nil, withBOM: file.bom != nil}
+		return decision{encoding: file.encoding, codePage: file.codePage != nil, raw: file.raw != nil, withBOM: file.bom != nil,
+			ending: file.lineEnding()}
 	}
-	for i := range 2000 {
+	for i := range 3000 {
 		maxTextFileBytes = int64(4 + rng.IntN(40))
-		var b strings.Builder
-		if rng.IntN(6) == 0 {
-			b.Write(bomUTF8)
-		}
-		// Mostly UTF-8, so the bytes that are not come late.
-		utf8Only := rng.IntN(2) == 0
-		for b.Len() <= int(maxTextFileBytes) || rng.IntN(8) != 0 {
-			piece := pieces[rng.IntN(len(pieces))]
-			if utf8Only && !utf8.ValidString(piece) && rng.IntN(20) != 0 {
-				continue
+		var data []byte
+		switch kind := rng.IntN(6); kind {
+		case 0:
+			var b strings.Builder
+			for b.Len() <= int(maxTextFileBytes) || rng.IntN(8) != 0 {
+				b.WriteString(utf16Pieces[rng.IntN(len(utf16Pieces))])
 			}
-			b.WriteString(piece)
+			bom := bomUTF16LE
+			if rng.IntN(2) == 0 {
+				bom = bomUTF16BE
+			}
+			data = utf16Bytes(bom, bom[0] == 0xFE, b.String())
+			switch rng.IntN(20) {
+			case 0:
+				data = append(data, 'x')
+			case 1:
+				data = append(data, 0, 0, 'x', 0)
+			}
+		default:
+			source := pieces
+			if kind == 1 {
+				source = dbcsPieces
+			}
+			var b strings.Builder
+			if rng.IntN(6) == 0 {
+				b.Write(bomUTF8)
+			}
+			// Mostly UTF-8, so the bytes that are not come late.
+			utf8Only := rng.IntN(2) == 0
+			for b.Len() <= int(maxTextFileBytes) || rng.IntN(8) != 0 {
+				piece := source[rng.IntN(len(source))]
+				if utf8Only && !utf8.ValidString(piece) && rng.IntN(20) != 0 {
+					continue
+				}
+				b.WriteString(piece)
+			}
+			if rng.IntN(30) == 0 {
+				b.WriteByte(0)
+			}
+			data = []byte(b.String())
 		}
-		if rng.IntN(30) == 0 {
-			b.WriteByte(0)
-		}
-		data := []byte(b.String())
 		path := filepath.Join(dir, fmt.Sprintf("f%d", i))
 		writeTestFile(t, path, data)
-		for _, cp := range []CodePage{nil, cp1251{}} {
+		for _, cp := range []CodePage{nil, cp1251{}, cp932{}} {
 			whole, err := decodeText(data, cp)
 			want := decide(&whole, err)
 			scanned, code := scanFormat(context.Background(), path, cp)
@@ -145,9 +176,33 @@ func TestScanFormatDecidesAsTheWholeFileDoes(t *testing.T) {
 				t.Fatalf("%q: %s", data, code)
 			}
 			if got := decide(scanned, nil); got != want {
-				t.Fatalf("%q in chunks of %d, code page %v: %+v, want %+v", data, maxTextFileBytes, cp != nil, got, want)
+				t.Fatalf("% x in chunks of %d, code page %v: %+v, want %+v", data, maxTextFileBytes, cp, got, want)
 			}
 		}
+	}
+}
+
+// A chunk that ends inside a double-byte character is carried into the
+// next one, so a file in cp932 that has no byte below 0x40 decodes in it
+// wherever its chunks end; a lead byte that ends the file does not.
+func TestDecodeChunkCarriesACharacterCutInTwo(t *testing.T) {
+	carry, ok := decodeChunk(cp932{}, []byte("\x82\xa0\x93\xfa\x82"), false)
+	if !ok || !bytes.Equal(carry, []byte{0x82}) {
+		t.Fatalf("cut after a lead byte: % x %v", carry, ok)
+	}
+	if carry, ok = decodeChunk(cp932{}, append(carry, 0xa0), true); !ok || carry != nil {
+		t.Fatalf("the rest: % x %v", carry, ok)
+	}
+	if _, ok = decodeChunk(cp932{}, []byte("\x82\xa0\x82"), true); ok {
+		t.Fatal("a lead byte that ends the file decoded")
+	}
+	// A byte the code page has no character for is no character cut in two.
+	if _, ok = decodeChunk(cp932{}, []byte("\x82\xa0\x80\x82"), false); ok {
+		t.Fatal("an invalid byte was carried past")
+	}
+	// A single-byte code page carries nothing.
+	if _, ok = decodeChunk(cp1251{}, []byte{0xC4, 0x98}, false); ok {
+		t.Fatal("cp1251 carried a byte")
 	}
 }
 

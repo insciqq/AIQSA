@@ -23,13 +23,16 @@ var errWriteInPlace = errors.New("the file is written in place")
 
 // replaceFile replaces the file at path, described by info, with data
 // atomically: the data goes to a temporary file in the same folder, which
-// takes what is attached to the file (System.PrepareReplacement) and is
-// moved over it (System.Replace), so a full disk or a crash leaves the old
-// file whole. A symbolic link is followed, so the file it points to is
-// replaced, not the link. On macOS (System.WritesInPlace), in a folder the
-// user cannot create files in, or when the replacement cannot keep what is
-// attached to the file, the file is written in place (writeInPlace, through
-// files). The caller holds the file's locks (lockFile).
+// then takes what is attached to the file (System.PrepareReplacement) and
+// is moved over it (System.Replace), so a full disk or a crash leaves the
+// old file whole. The data goes in first: the kernel clears setuid, setgid
+// and file capabilities when a file is written, so nothing is written
+// after they were given. A symbolic link is followed, so the file it
+// points to is replaced, not the link. On macOS (System.WritesInPlace), in
+// a folder the user cannot create files in, or when the replacement cannot
+// keep what is attached to the file, the file is written in place
+// (writeInPlace, through files). The caller holds the executor's write
+// lock (lockWrites).
 //
 // Every error is an *unchangedError when the file is as it was, or a
 // *notRestoredError or *modeChangedError when it may not be; replaceCode
@@ -58,10 +61,10 @@ func replaceFile(sys System, files inPlaceFiles, path string, data []byte, info 
 		}
 		return &unchangedError{err: err}
 	}
-	if err := sys.PrepareReplacement(tmp, path, info); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		return fail(err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if err := sys.PrepareReplacement(tmp, path, info); err != nil {
 		return fail(err)
 	}
 	if err := tmp.Sync(); err != nil {
@@ -134,10 +137,17 @@ func (e *modeChangedError) Error() string {
 	return fmt.Sprintf("%v, but its mode could not be put back: %v", e.err, e.modeErr)
 }
 
-// errModeNotKept refuses to write in place a file with setuid, setgid or
-// sticky bits the process could not put back once the write cleared them
-// (canKeepSpecialBits).
+// errModeNotKept refuses to write a file with setuid, setgid or sticky
+// bits the process could not put back once the write cleared them
+// (canKeepSpecialBits), or that a replacement could not take.
 var errModeNotKept = fmt.Errorf("the file's setuid, setgid or sticky bit could not be kept: %w", fs.ErrPermission)
+
+// specialModeBits are the mode bits a write can clear: the kernel drops
+// setuid and setgid when a file is written, and the process puts them back.
+const specialModeBits = fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
+
+// keptModeBits are the mode bits a write keeps.
+const keptModeBits = fs.ModePerm | specialModeBits
 
 // replaceCode is the reply code of a replaceFile error. A failure that
 // left the file as it was is definite, so the server reports it as not

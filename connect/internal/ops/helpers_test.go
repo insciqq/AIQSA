@@ -25,6 +25,8 @@ type cp1251 struct{}
 
 func (cp1251) Name() string { return "windows-1251" }
 
+func (cp1251) MaxCharLen() int { return 1 }
+
 func (cp1251) Decode(data []byte) (string, bool) {
 	var b strings.Builder
 	for _, c := range data {
@@ -59,6 +61,66 @@ func (cp1251) Encode(text string) ([]byte, bool) {
 		default:
 			return nil, false
 		}
+	}
+	return out, true
+}
+
+// cp932 is a strict stand-in for Windows' ANSI code page 932 (Japanese),
+// a double-byte code page: ASCII, the half-width katakana ｱ (0xB1) and
+// the characters of cp932Pairs, a lead byte and a trail byte each, both
+// 0x40 or above, so a run of them has no byte chunkEnd cuts after. Any
+// other byte, and a lead byte that ends the data, is invalid, as
+// MultiByteToWideChar with MB_ERR_INVALID_CHARS answers.
+type cp932 struct{}
+
+var cp932Pairs = map[string]rune{"\x82\xa0": 'あ', "\x82\xa2": 'い', "\x93\xfa": '日', "\x96\x7b": '本', "\x8c\xea": '語'}
+
+func (cp932) Name() string { return "cp932" }
+
+func (cp932) MaxCharLen() int { return 2 }
+
+func (cp932) Decode(data []byte) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(data); i++ {
+		switch c := data[i]; {
+		case c < 0x80:
+			b.WriteByte(c)
+		case c == 0xB1:
+			b.WriteRune('ｱ')
+		default:
+			r, ok := rune(0), false
+			if i+1 < len(data) {
+				r, ok = cp932Pairs[string(data[i:i+2])]
+			}
+			if !ok {
+				return "", false
+			}
+			b.WriteRune(r)
+			i++
+		}
+	}
+	return b.String(), true
+}
+
+func (cp932) Encode(text string) ([]byte, bool) {
+	var out []byte
+next:
+	for _, r := range text {
+		switch {
+		case r < 0x80:
+			out = append(out, byte(r))
+			continue
+		case r == 'ｱ':
+			out = append(out, 0xB1)
+			continue
+		}
+		for pair, pr := range cp932Pairs {
+			if pr == r {
+				out = append(out, pair...)
+				continue next
+			}
+		}
+		return nil, false
 	}
 	return out, true
 }

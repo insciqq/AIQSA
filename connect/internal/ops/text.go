@@ -37,6 +37,17 @@ type textFile struct {
 	// a code page: text holds U+FFFD for its invalid bytes, and an edit
 	// works on the bytes themselves so they stay as they were.
 	raw []byte
+	// ending is set for a file too large to load (scanFormat), whose text
+	// is empty: the line endings of all of it.
+	ending protocol.LineEnding
+}
+
+// lineEnding names the file's line endings.
+func (f textFile) lineEnding() protocol.LineEnding {
+	if f.ending != "" {
+		return f.ending
+	}
+	return lineEnding(f.text)
 }
 
 // decodeText reads a text file: UTF-8 (with or without a BOM), UTF-16 LE or
@@ -81,8 +92,8 @@ func decodeText(data []byte, cp CodePage) (textFile, error) {
 // punctuation), which is a character of its own in UTF-8 and in the
 // double-byte code pages alike, whose second bytes are 0x40 or above.
 // Without such a byte, only an incomplete UTF-8 sequence at its end is
-// left out; a double-byte character may then be cut, and the file reads
-// as one the code page does not decode.
+// left out; a double-byte character may then be cut, which decodeChunk
+// carries into the next chunk.
 func chunkEnd(b []byte) int {
 	for i := len(b) - 1; i >= 0; i-- {
 		if b[i] < 0x40 {
@@ -90,6 +101,29 @@ func chunkEnd(b []byte) int {
 		}
 	}
 	return len(trimUTF8End(b))
+}
+
+// decodeChunk checks that data, the next part of a file after the carry
+// of the part before it, decodes in the code page cp. A part that is not
+// the last may end inside a character: when it does not decode whole, up
+// to cp.MaxCharLen()-1 bytes from its end are tried as such a character,
+// and carry is what the next part goes after. Every byte is decoded in
+// some part, each part starts where a character does, and so the parts
+// decode exactly when the whole file does. ok is false when data does not
+// decode in cp.
+func decodeChunk(cp CodePage, data []byte, last bool) (carry []byte, ok bool) {
+	if _, ok := cp.Decode(data); ok {
+		return nil, true
+	}
+	if last {
+		return nil, false
+	}
+	for cut := 1; cut < cp.MaxCharLen() && cut <= len(data); cut++ {
+		if _, ok := cp.Decode(data[:len(data)-cut]); ok {
+			return bytes.Clone(data[len(data)-cut:]), true
+		}
+	}
+	return nil, false
 }
 
 func decodeUTF16(body []byte, order binary.ByteOrder, name string, bom []byte) (textFile, error) {
@@ -137,7 +171,12 @@ func (f textFile) encode(text string) ([]byte, error) {
 // lineEnding names a text's line endings.
 func lineEnding(text string) protocol.LineEnding {
 	crlf := strings.Count(text, "\r\n")
-	lf := strings.Count(text, "\n") - crlf
+	return endingOf(crlf, strings.Count(text, "\n")-crlf)
+}
+
+// endingOf names the line endings of a text with crlf "\r\n" and lf other
+// "\n".
+func endingOf(crlf, lf int) protocol.LineEnding {
 	switch {
 	case crlf == 0 && lf == 0:
 		return protocol.LineEndingNone

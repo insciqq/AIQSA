@@ -3,6 +3,7 @@ package ops
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"io/fs"
@@ -98,27 +99,24 @@ func (e *Executor) read(args *protocol.ReadArgs) (protocol.Validator, protocol.R
 // computer_text_unencodable and writes nothing; a file that cannot be read
 // answers its code and is not written either. A file that is not text
 // becomes UTF-8. The replacement is atomic, or the file is written in place
-// with a backup (replaceFile). The file's locks are held from the first
-// look at it to the end (lockFile).
+// with a backup (replaceFile). The executor's write lock is held from the
+// first look at the file to the end (lockWrites).
 func (e *Executor) write(ctx context.Context, args *protocol.WriteArgs) (protocol.Validator, protocol.ReasonCode) {
 	e.useCwd(args.Cwd)
-	held, code := e.lockFile(ctx, e.resolve(args.Cwd, args.Path))
+	target := e.resolve(args.Cwd, args.Path)
+	unlock, code := e.lockWrites(ctx)
 	if code != "" {
 		return nil, code
 	}
-	defer held.release()
-	target := held.path
+	defer unlock()
 	content := []byte(args.Content)
 	info, err := os.Stat(target)
 	if errors.Is(err, fs.ErrNotExist) {
-		result, code, exists := create(ctx, held, content)
+		result, code, exists := create(target, content)
 		if !exists {
 			return result, code
 		}
-		// Another name of the file created it since: it is replaced.
-		if err := held.lockExisting(ctx); err != nil {
-			return nil, ctxCode(ctx)
-		}
+		// Another program created the file since: it is replaced.
 		info, err = os.Stat(target)
 	}
 	switch {
@@ -135,7 +133,7 @@ func (e *Executor) write(ctx context.Context, args *protocol.WriteArgs) (protoco
 	}
 	if file != nil {
 		text := args.Content
-		if lineEnding(file.text) == protocol.LineEndingCRLF {
+		if file.lineEnding() == protocol.LineEndingCRLF {
 			text = toCRLF(text)
 		}
 		if file.bom != nil {
@@ -152,35 +150,24 @@ func (e *Executor) write(ctx context.Context, args *protocol.WriteArgs) (protoco
 	return &protocol.WriteResult{Bytes: int64(len(content)), Created: false}, ""
 }
 
-// create writes content to a new file at held.path, creating its folders.
-// The file is created only where none is (O_EXCL), so a file another name
-// of it created since the lock was taken is never cut: exists is then true
-// and nothing was written. The new file's own lock is taken before its
-// content goes in, as another name of it may have reached it already; when
-// ctx ends during that wait, the new file stays empty and the reply is
-// computer_timeout or computer_cancelled, whose outcome the server keeps
-// unknown.
-func create(ctx context.Context, held *heldFile, content []byte) (result protocol.Validator, code protocol.ReasonCode, exists bool) {
-	if err := os.MkdirAll(filepath.Dir(held.path), 0o777); err != nil {
+// create writes content to a new file at path, creating its folders; at
+// the target of a symbolic link that points nowhere yet (realPath). The
+// file is created only where none is (O_EXCL), so a file another program
+// created since the write looked is never cut: exists is then true and
+// nothing was written.
+func create(path string, content []byte) (result protocol.Validator, code protocol.ReasonCode, exists bool) {
+	path = realPath(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
 		return nil, codeOf(err), false
 	}
-	f, err := os.OpenFile(held.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if errors.Is(err, fs.ErrExist) {
 		return nil, "", true
 	}
 	if err != nil {
 		return nil, codeOf(err), false
 	}
-	if err := held.lockCreated(ctx, f); err != nil {
-		f.Close()
-		return nil, ctxCode(ctx), false
-	}
-	// What another name of the file wrote before its lock was taken is
-	// written over whole.
-	_, err = f.WriteAt(content, 0)
-	if err == nil {
-		err = f.Truncate(int64(len(content)))
-	}
+	_, err = f.Write(content)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -188,6 +175,39 @@ func create(ctx context.Context, held *heldFile, content []byte) (result protoco
 		return nil, codeOf(err), false
 	}
 	return &protocol.WriteResult{Bytes: int64(len(content)), Created: true}, "", false
+}
+
+// maxLinkHops bounds how many symbolic links realPath follows.
+const maxLinkHops = 40
+
+// realPath is path with its symbolic links resolved. A file that does not
+// exist yet is where it would be created: the target of a dangling link,
+// in its folder with that folder's links resolved; path as given when not
+// even its folder exists. O_EXCL does not follow a link, so create needs
+// the target itself.
+func realPath(path string) string {
+	path = filepath.Clean(path)
+	for range maxLinkHops {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		link, err := os.Readlink(path)
+		if err != nil {
+			break
+		}
+		if !filepath.IsAbs(link) {
+			link = filepath.Join(realDir(filepath.Dir(path)), link)
+		}
+		path = filepath.Clean(link)
+	}
+	return filepath.Join(realDir(filepath.Dir(path)), filepath.Base(path))
+}
+
+func realDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return dir
 }
 
 // formatChunkBytes is how much of a file too large to load scanFormat
@@ -217,14 +237,15 @@ func textFormat(ctx context.Context, path string, cp CodePage) (*textFile, proto
 // scanFormat tells how a file too large to load stores its text, deciding
 // as decodeText does from the whole file, read in chunks of
 // formatChunkBytes in bounded memory: a start that is ASCII, or that ends
-// inside a character, decides nothing. A UTF-16 BOM makes it UTF-16, read
-// from the first chunk alone (binary when that has a NUL code unit);
-// otherwise NUL bytes make it binary (nil), and it is UTF-8 (with its BOM)
-// when all of it is, else in the code page cp when all of it decodes in
-// it, else of an unknown encoding (raw). Its text is the first chunk's,
-// which gives the line endings. Each chunk ends where a character does
-// (chunkEnd), and an incomplete one is carried into the next. It stops,
-// answering computer_timeout or computer_cancelled, when ctx ends.
+// inside a character or a line break, decides nothing. A UTF-16 BOM makes
+// it UTF-16, binary (nil) with a NUL code unit or an odd length; otherwise
+// NUL bytes make it binary, and it is UTF-8 (with its BOM) when all of it
+// is, else in the code page cp when all of it decodes in it (decodeChunk),
+// else of an unknown encoding (raw, which holds its first chunk). Its line
+// endings are all of its own (ending); its text is empty. UTF-8 is checked
+// in chunks that end where a character does (chunkEnd), and an incomplete
+// one is carried into the next. It stops, answering computer_timeout or
+// computer_cancelled, when ctx ends.
 func scanFormat(ctx context.Context, path string, cp CodePage) (*textFile, protocol.ReasonCode) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -232,78 +253,157 @@ func scanFormat(ctx context.Context, path string, cp CodePage) (*textFile, proto
 	}
 	defer f.Close()
 	read := make([]byte, min(formatChunkBytes, maxTextFileBytes))
-	var buf, head, bom []byte
+	file := textFile{encoding: "utf-8"}
+	var lines lineCounter
+	// odd is the first byte of a UTF-16 code unit a read cut in two. buf is
+	// what followed the last chunk's end; carry is what decodeChunk carried.
+	var odd, buf, carry, head []byte
 	utf8OK, cpOK := true, cp != nil
 	for first := true; ; first = false {
 		if ctx.Err() != nil {
 			return nil, ctxCode(ctx)
 		}
 		n, err := io.ReadFull(f, read)
-		end := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
-		if err != nil && !end {
+		last := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+		if err != nil && !last {
 			return nil, codeOf(err)
 		}
-		buf = append(buf, read[:n]...)
+		data := read[:n]
 		if first {
-			if bytes.HasPrefix(buf, bomUTF16LE) || bytes.HasPrefix(buf, bomUTF16BE) {
-				// A code unit cut in two is left out; a surrogate pair cut in
-				// two reads as U+FFFD.
-				file, err := decodeText(buf[:len(buf)&^1], cp)
-				if err != nil {
-					return nil, ""
-				}
-				return &file, ""
-			}
-			if bytes.HasPrefix(buf, bomUTF8) {
-				bom = bomUTF8
-				buf = append(buf[:0], buf[len(bomUTF8):]...)
+			switch {
+			case bytes.HasPrefix(data, bomUTF8):
+				file.encoding, file.bom = "utf-8-bom", bomUTF8
 				// decodeText reads no code page after a UTF-8 BOM.
 				cpOK = false
+			case bytes.HasPrefix(data, bomUTF16LE):
+				file.encoding, file.bom, file.order = "utf-16le", bomUTF16LE, binary.LittleEndian
+			case bytes.HasPrefix(data, bomUTF16BE):
+				file.encoding, file.bom, file.order = "utf-16be", bomUTF16BE, binary.BigEndian
 			}
-			head = bytes.Clone(buf)
+			data = data[len(file.bom):]
+			head = bytes.Clone(data)
 		}
-		if bytes.IndexByte(buf, 0) >= 0 {
+		if file.order != nil {
+			var ok bool
+			if odd, ok = lines.addUTF16(file.order, odd, data); !ok || last && len(odd) != 0 {
+				return nil, ""
+			}
+			if last {
+				break
+			}
+			continue
+		}
+		if bytes.IndexByte(data, 0) >= 0 {
 			return nil, ""
 		}
+		lines.addBytes(data)
+		buf = append(buf, data...)
 		cut := len(buf)
-		if !end {
+		if !last {
 			cut = chunkEnd(buf)
 		}
 		chunk := buf[:cut]
 		utf8OK = utf8OK && utf8.Valid(chunk)
 		if cpOK {
-			_, cpOK = cp.Decode(chunk)
+			if len(carry) > 0 {
+				chunk = append(carry, chunk...)
+			}
+			carry, cpOK = decodeChunk(cp, chunk, last)
 		}
-		if end {
+		if last {
 			break
 		}
 		buf = append(buf[:0], buf[cut:]...)
 	}
-	file := textFile{text: strings.ToValidUTF8(string(head), "�"), encoding: "utf-8", bom: bom}
-	if bom != nil {
-		file.encoding = "utf-8-bom"
-	}
+	file.ending = lines.ending()
 	switch {
-	case utf8OK:
+	case file.order != nil, utf8OK:
 	case cpOK:
 		file.encoding, file.codePage = cp.Name(), cp
 	default:
-		file.raw = append([]byte{}, head...)
+		file.raw = head
 	}
 	return &file, ""
 }
 
+// lineCounter counts the line endings of a text read in parts, as
+// lineEnding does from all of it: a "\r" that ends one part and the "\n"
+// that starts the next are one "\r\n".
+type lineCounter struct {
+	crlf, lf int
+	// cr is true when the last character was "\r".
+	cr bool
+}
+
+// addBytes counts the next part of a text in UTF-8 or a Windows code page,
+// whose "\r" and "\n" bytes are never part of another character.
+func (c *lineCounter) addBytes(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	crlf := bytes.Count(b, []byte("\r\n"))
+	if c.cr && b[0] == '\n' {
+		crlf++
+	}
+	c.crlf += crlf
+	c.lf += bytes.Count(b, []byte("\n")) - crlf
+	c.cr = b[len(b)-1] == '\r'
+}
+
+// addUTF16 counts the next part of a UTF-16 text in byte order order:
+// data after odd, the first byte of a code unit the part before cut in
+// two. rest is the first byte of a code unit this part cuts in two; ok is
+// false at a NUL code unit, which makes the file binary.
+func (c *lineCounter) addUTF16(order binary.ByteOrder, odd, data []byte) (rest []byte, ok bool) {
+	if len(odd) == 0 && len(data) == 0 {
+		return nil, true
+	}
+	if len(odd) > 0 {
+		if len(data) == 0 {
+			return odd, true
+		}
+		if !c.addUnit(order.Uint16([]byte{odd[0], data[0]})) {
+			return nil, false
+		}
+		data = data[1:]
+	}
+	whole := len(data) &^ 1
+	for i := 0; i < whole; i += 2 {
+		if !c.addUnit(order.Uint16(data[i:])) {
+			return nil, false
+		}
+	}
+	return bytes.Clone(data[whole:]), true
+}
+
+func (c *lineCounter) addUnit(unit uint16) bool {
+	switch unit {
+	case 0:
+		return false
+	case '\n':
+		if c.cr {
+			c.crlf++
+		} else {
+			c.lf++
+		}
+	}
+	c.cr = unit == '\r'
+	return true
+}
+
+func (c *lineCounter) ending() protocol.LineEnding { return endingOf(c.crlf, c.lf) }
+
 // edit replaces oldString with newString, once unless replaceAll, keeping
-// the file's encoding, BOM and line endings. The file's locks are held from
-// its read to the end (lockFile).
+// the file's encoding, BOM and line endings. The executor's write lock is
+// held from its read to the end (lockWrites).
 func (e *Executor) edit(ctx context.Context, args *protocol.EditArgs) (protocol.Validator, protocol.ReasonCode) {
 	e.useCwd(args.Cwd)
-	held, code := e.lockFile(ctx, e.resolve(args.Cwd, args.Path))
+	target := e.resolve(args.Cwd, args.Path)
+	unlock, code := e.lockWrites(ctx)
 	if code != "" {
 		return nil, code
 	}
-	defer held.release()
-	target := held.path
+	defer unlock()
 	data, info, code := loadFile(target)
 	if code != "" {
 		return nil, code
