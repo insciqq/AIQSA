@@ -179,12 +179,28 @@ func (d *fakeDialogs) Warn(title, text string) {
 	d.shown = append(d.shown, text)
 }
 
+// fakeShortcuts writes the link's arguments into the link file, as a
+// stand-in for a .lnk.
+type fakeShortcuts struct {
+	created []string
+	err     error
+}
+
+func (s *fakeShortcuts) Create(link, target, workDir, description string) error {
+	s.created = append(s.created, link)
+	if s.err != nil {
+		return s.err
+	}
+	return os.WriteFile(link, []byte(strings.Join([]string{target, workDir, description}, "|")), 0o644)
+}
+
 type installFixture struct {
 	installer *Installer
 	journal   *journal
 	registry  *fakeRegistry
 	system    *fakeSystem
 	dialogs   *fakeDialogs
+	shortcuts *fakeShortcuts
 	revoked   []config.Credentials
 	revokeErr error
 	home      string
@@ -208,10 +224,15 @@ func newInstallFixture(t *testing.T) *installFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	layout.StartMenuDir = filepath.Join(home, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs")
+	if err := os.MkdirAll(layout.StartMenuDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	j := &journal{}
-	f := &installFixture{journal: j, registry: newFakeRegistry(j), system: &fakeSystem{journal: j}, dialogs: &fakeDialogs{journal: j}, home: home}
+	f := &installFixture{journal: j, registry: newFakeRegistry(j), system: &fakeSystem{journal: j}, dialogs: &fakeDialogs{journal: j},
+		shortcuts: &fakeShortcuts{}, home: home}
 	f.installer = &Installer{
-		Layout: layout, Registry: f.registry, System: f.system, Dialogs: f.dialogs, Version: "1.2.3",
+		Layout: layout, Registry: f.registry, System: f.system, Dialogs: f.dialogs, Shortcuts: f.shortcuts, Version: "1.2.3",
 		Revoke: func(_ context.Context, creds config.Credentials) error {
 			j.add("revoke %s", creds.Origin)
 			f.revoked = append(f.revoked, creds)

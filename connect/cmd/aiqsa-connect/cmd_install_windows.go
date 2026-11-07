@@ -45,7 +45,8 @@ func runLaunch(inv *invocation) int {
 }
 
 // windowsLayout places the program under %LOCALAPPDATA%\Programs beside the
-// client's config and state folders.
+// client's config and state folders, with its shortcut in the user's Start
+// menu Programs folder; without that folder there is no shortcut.
 func windowsLayout(paths config.Paths) (winapp.Layout, error) {
 	localAppData := os.Getenv("LOCALAPPDATA")
 	if !filepath.IsAbs(localAppData) {
@@ -55,7 +56,14 @@ func windowsLayout(paths config.Paths) (winapp.Layout, error) {
 		}
 		localAppData = dir
 	}
-	return winapp.NewLayout(localAppData, os.TempDir(), paths)
+	layout, err := winapp.NewLayout(localAppData, os.TempDir(), paths)
+	if err != nil {
+		return layout, err
+	}
+	if dir, err := windows.KnownFolderPath(windows.FOLDERID_Programs, 0); err == nil && filepath.IsAbs(dir) {
+		layout.StartMenuDir = dir
+	}
+	return layout, nil
 }
 
 func newInstaller() (*winapp.Installer, error) {
@@ -68,12 +76,13 @@ func newInstaller() (*winapp.Installer, error) {
 		return nil, err
 	}
 	return &winapp.Installer{
-		Layout:   layout,
-		Registry: winapp.WindowsRegistry{},
-		System:   winapp.WindowsSystem{},
-		Dialogs:  winapp.WindowsDialogs{},
-		Version:  version,
-		Revoke:   revokeDevice,
+		Layout:    layout,
+		Registry:  winapp.WindowsRegistry{},
+		System:    winapp.WindowsSystem{},
+		Dialogs:   winapp.WindowsDialogs{},
+		Shortcuts: winapp.WindowsShortcuts{},
+		Version:   version,
+		Revoke:    revokeDevice,
 	}, nil
 }
 

@@ -39,6 +39,8 @@ const (
 	// OriginFileName holds the AIQSA origin the program was installed for,
 	// in the config folder, until the computer is paired.
 	OriginFileName = "origin.json"
+	// ShortcutName is the program's shortcut in the Start menu.
+	ShortcutName = AppName + ".lnk"
 )
 
 // TrayArgs are the arguments of the program at sign-in: `up --tray`.
@@ -54,6 +56,10 @@ type Layout struct {
 	// TempDir is the user's temporary folder, on the same volume as
 	// ProgramDir; uninstall moves the running program file there.
 	TempDir string
+	// StartMenuDir is the current user's Start menu Programs folder
+	// (FOLDERID_Programs); empty when it cannot be resolved, and then the
+	// program has no shortcut.
+	StartMenuDir string
 }
 
 // Exe is the installed program.
@@ -71,6 +77,15 @@ func (l Layout) sizeKB() uint32 {
 		return uint32((info.Size() + 1023) / 1024)
 	}
 	return 0
+}
+
+// Shortcut is the program's Start menu shortcut, directly in StartMenuDir;
+// empty when that folder is unknown.
+func (l Layout) Shortcut() string {
+	if !filepath.IsAbs(l.StartMenuDir) {
+		return ""
+	}
+	return filepath.Join(l.StartMenuDir, ShortcutName)
 }
 
 // OriginFile is the installed origin's file.
@@ -168,6 +183,14 @@ type System interface {
 	Start(exe string, args ...string) error
 	// OpenURL opens an http(s) address in the default browser.
 	OpenURL(url string) error
+}
+
+// Shortcuts creates shell links (.lnk files).
+type Shortcuts interface {
+	// Create writes the shortcut link to target, started without arguments
+	// in workDir, with description as its comment and target's first icon
+	// as its icon. An existing link is replaced.
+	Create(link, target, workDir, description string) error
 }
 
 // Dialogs talk to the user in message boxes.
