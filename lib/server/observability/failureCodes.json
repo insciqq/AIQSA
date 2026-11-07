@@ -1366,6 +1366,8 @@
   "computer_limit",
   "computer_pattern_invalid",
   "computer_text_unencodable",
+  "computer_output_unpublished",
+  "computer_output_publication_stale",
   "self_service_change_failed",
   "retired_engine_run_failed",
   "retired_engine_runs_ended",

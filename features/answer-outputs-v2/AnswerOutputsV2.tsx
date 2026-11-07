@@ -510,9 +510,9 @@ export function AnswerOutputsV2({
   if (live) {
     // A created or changed task, a saved Skill or a changed secret or Assistant already is so: its card does not wait for the answer.
     // A refused call's card shows at once; its decision waits for the answer.
-    // Drafts sit where the settled answer lists its files, as the same element
-    // (`key`): their cards and image previews stay in place when it settles.
-    const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
+    // Drafts and files attached from the user's computer sit where the settled answer lists its files, as the same
+    // element (`key`): their cards and image previews stay in place when it settles.
+    const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint || file.source === "computer") ?? [];
     return drafts.length || scheduledTasks.length || skillSaves.length || resourceChanges.length || mcpApprovals.length
       ? <div className="v2-answer-outputs" data-testid="answer-outputs">
         <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
@@ -528,7 +528,7 @@ export function AnswerOutputsV2({
   const hasGeneratedFiles = (artifact?.generatedFiles?.length ?? 0) > 0;
   const outputStatusCopy = workspaceOutputStatusCopyV2(
     workspaceOutputStatus ?? undefined,
-    artifact?.generatedFiles?.filter(file => !file.checkpoint).length ?? 0
+    artifact?.generatedFiles?.filter(file => !file.checkpoint && file.source !== "computer").length ?? 0
   );
 
   if ((!artifact || (

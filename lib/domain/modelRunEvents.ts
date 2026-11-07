@@ -89,6 +89,8 @@ export type ModelRunSseEvent =
       data: {
         artifactType:
           | "workspace_checkpoint"
+          /** A file `computer_attach_file` put on the answer (`ThreadGeneratedFile` of source `computer`). */
+          | "computer_file"
           | "generated_artifact"
           | "image"
           | "citation"
