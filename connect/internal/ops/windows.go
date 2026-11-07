@@ -2,16 +2,19 @@ package ops
 
 import (
 	"encoding/base64"
+	"errors"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"unicode/utf16"
 
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
 
 // The Windows parts the executor decides itself: which PowerShell runs a
-// command and how, how a job object holds a process tree, and how code
-// pages are named. The system calls are in system_windows.go; this file
+// command and how, how a job object holds a process tree, how code pages
+// are named and how a file is replaced. The system calls are in system_windows.go; this file
 // builds everywhere so its logic is tested on Linux.
 
 // selectWindowsShell prefers PowerShell 7+ (pwsh) on PATH, else Windows
@@ -137,4 +140,71 @@ func windowsVersionName(major, minor, build uint32, release string) string {
 	}
 	return name + " (" + strconv.FormatUint(uint64(major), 10) + "." + strconv.FormatUint(uint64(minor), 10) + "." +
 		strconv.FormatUint(uint64(build), 10) + ")"
+}
+
+// Windows error codes that mean a volume cannot replace files with
+// ReplaceFileW (some network shares and file systems answer so).
+var replaceUnsupportedErrors = []syscall.Errno{
+	1,   // ERROR_INVALID_FUNCTION
+	50,  // ERROR_NOT_SUPPORTED
+	87,  // ERROR_INVALID_PARAMETER
+	120, // ERROR_CALL_NOT_IMPLEMENTED
+}
+
+// winFiles is what replaceWindowsFile needs from Windows.
+type winFiles interface {
+	// ReplaceFile is ReplaceFileW: replacement takes the place, name and
+	// ACL, owner, attributes, creation time and streams of replaced, which
+	// is moved to backup.
+	ReplaceFile(replaced, replacement, backup string) error
+	Rename(from, to string) error
+	Remove(path string) error
+	Exists(path string) bool
+}
+
+// replaceWindowsFile moves the replacement tmp over path with ReplaceFileW.
+// The replaced file is moved to a backup beside tmp, not dropped, so a
+// failure in the middle (ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) can put it
+// back; the backup is removed once the replacement is in place. A volume
+// that cannot replace files answers errWriteInPlace, but only while the
+// original is still at path. The caller removes tmp on an error.
+func replaceWindowsFile(files winFiles, tmp, path string) error {
+	backup := tmp + ".old"
+	err := files.ReplaceFile(winLongPath(path), winLongPath(tmp), winLongPath(backup))
+	if err == nil {
+		files.Remove(backup)
+		return nil
+	}
+	if files.Exists(backup) {
+		if files.Exists(path) {
+			// Not a state ReplaceFileW documents; nothing is moved.
+			return err
+		}
+		if files.Rename(backup, path) != nil {
+			// The original stays under the backup name, whole.
+			return err
+		}
+	}
+	for _, unsupported := range replaceUnsupportedErrors {
+		if errors.Is(err, unsupported) && files.Exists(path) {
+			return errWriteInPlace
+		}
+	}
+	return err
+}
+
+// winLongPath gives an absolute path of 248 characters or more the \\?\
+// prefix (\\?\UNC\ for a share), which the os package adds itself but a
+// direct call of a Win32 function needs. Other paths stay as they are.
+func winLongPath(path string) string {
+	if len(path) < 248 || strings.HasPrefix(path, `\\?\`) || strings.Contains(path, "/") {
+		return path
+	}
+	if strings.HasPrefix(path, `\\`) {
+		return `\\?\UNC\` + path[2:]
+	}
+	if len(path) >= 3 && path[1] == ':' && path[2] == '\\' {
+		return `\\?\` + path
+	}
+	return path
 }

@@ -2,6 +2,7 @@ package ops
 
 import (
 	"io/fs"
+	"os"
 	"os/exec"
 
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
@@ -32,6 +33,17 @@ type System interface {
 	Hidden(info fs.FileInfo) bool
 	// OSVersion describes the system for device_info, for example "Ubuntu 24.04.1 LTS".
 	OSVersion() string
+	// PrepareReplacement gives tmp, the open replacement for the file at
+	// path described by info, what is attached to that file besides its
+	// data: owner, group, mode bits and extended attributes (POSIX ACLs
+	// included) on macOS and Linux, attributes on Windows.
+	// errWriteInPlace when it cannot, so nothing attached is lost.
+	PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error
+	// Replace moves the closed replacement tmp over path: a rename on macOS
+	// and Linux, ReplaceFileW on Windows, which keeps the replaced file's
+	// ACL, owner, attributes, creation time and streams.
+	// errWriteInPlace when the volume cannot replace files.
+	Replace(tmp, path string) error
 }
 
 // Shell is the shell the shell op runs.
