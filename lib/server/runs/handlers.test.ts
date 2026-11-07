@@ -2611,6 +2611,47 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
+  it("refuses a reasoning mode the model does not offer by name before creating a run", async () => {
+    const { repository, state } = createMemoryRepository({
+      modelKeys: new Set(["openai:gpt-5.5"]),
+      providerKeys: new Set(),
+      searchStrategies: new Set()
+    });
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      providers: {
+        openai: createFakeProviderAdapter()
+      },
+      repository
+    });
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          modelId: "gpt-5.5",
+          params: { reasoning: { effort: "medium", mode: "pro" } },
+          provider: "openai",
+          text: "Saved Pro mode"
+        }),
+        headers: {
+          cookie: authCookie()
+        },
+        method: "POST"
+      }),
+      {
+        params: {
+          chatId: "chat-1"
+        }
+      }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "reasoning_mode_not_available",
+      message: "The reasoning mode (reasoning.mode) is not available for this model. Send without it or choose a mode the model offers."
+    });
+    expect(state.created).toBeNull();
+  });
+
   it("fails before run creation when irreducible context exceeds the budget", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
       contextWindow: 20,

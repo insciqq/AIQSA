@@ -75,7 +75,29 @@ export function coerceReasoningMode(
       ? modeControls.options
       : [modeControls?.defaultValue ?? "standard"];
 
-  return options.includes(value) ? value : options[0];
+  if (options.includes(value)) return value;
+  return modeControls && options.includes(modeControls.defaultValue) ? modeControls.defaultValue : options[0];
+}
+
+/**
+ * The note for a saved reasoning mode the current model does not offer, such
+ * as Pro on a codex-lb model: the composer then sends the model's default (or
+ * no mode at all), and the saved value stays as it is until the user saves a
+ * new choice. A saved "standard" on a model without modes changes nothing, so
+ * it needs no note.
+ */
+export function savedReasoningModeNotice(
+  saved: unknown,
+  controls: ModelParameterControls
+): string | null {
+  if (typeof saved !== "string" || !saved.trim()) return null;
+  const modeControls = controls.reasoningMode;
+  const unavailable = modeControls?.supported
+    ? !modeControls.options.includes(saved)
+    : saved !== "standard";
+  if (!unavailable) return null;
+  const name = /^[\w.-]{1,32}$/u.test(saved) ? `“${saved}” ` : "";
+  return `Your saved reasoning mode ${name}is not available for this model, so its default is used.`;
 }
 
 export function clampedNumber(

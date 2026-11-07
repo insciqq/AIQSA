@@ -27,6 +27,7 @@ export type RunSetupComposerV2 = Pick<
   | "maxOutputTokens"
   | "reasoningEffort"
   | "reasoningMode"
+  | "reasoningModeNotice"
   | "searchPlanMode"
   | "selectSearchPlan"
   | "selectedSearchOptionIds"
@@ -195,6 +196,11 @@ export function RunSetupV2({ composer, onClose, restoreFocus }: Readonly<{
                 ))}
               </select>
             </label>
+          ) : null}
+          {composer.reasoningModeNotice ? (
+            <p className="v2-run-setup-feedback" data-testid="run-setup-reasoning-mode-notice">
+              {composer.reasoningModeNotice}
+            </p>
           ) : null}
           <div className="v2-run-setup-switches">
             {controls.stream.supported ? (

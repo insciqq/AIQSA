@@ -940,12 +940,12 @@ export function fallbackParameterControls(input: {
       : reasoningEfforts[0] ?? "none";
   const reasoningModeSerializable = input.supportsReasoningMode ??
     input.adapterKind === "openai_responses_compatible";
-  const reasoningModes = reasoningModeSerializable
-    ? input.reasoningModes?.length
-      ? [...input.reasoningModes]
-      : compatibleOpenAI && !input.reasoningEfforts?.length
-        ? ["standard", "pro"]
-        : []
+  // A mode is offered only where the administrator configured this model's
+  // modes: a name proves nothing, and codex-lb rejects or never starts a
+  // `reasoning.mode: "pro"` request for the same upstream model (2026-11-07).
+  // Without a mode control the request carries no `reasoning.mode` at all.
+  const reasoningModes = reasoningModeSerializable && input.reasoningModes?.length
+    ? [...input.reasoningModes]
     : [];
   const defaultReasoningMode = input.defaultReasoningMode &&
     reasoningModes.includes(input.defaultReasoningMode)
