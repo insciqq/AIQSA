@@ -167,7 +167,9 @@ type winFiles interface {
 // failure in the middle (ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) can put it
 // back; the backup is removed once the replacement is in place. A volume
 // that cannot replace files answers errWriteInPlace, but only while the
-// original is still at path. The caller removes tmp on an error.
+// original is still at path. When the original cannot be put back at
+// path, the error is a *notRestoredError naming the backup, which holds
+// it whole. The caller removes tmp on an error.
 func replaceWindowsFile(files winFiles, tmp, path string) error {
 	backup := tmp + ".old"
 	err := files.ReplaceFile(winLongPath(path), winLongPath(tmp), winLongPath(backup))
@@ -178,11 +180,11 @@ func replaceWindowsFile(files winFiles, tmp, path string) error {
 	if files.Exists(backup) {
 		if files.Exists(path) {
 			// Not a state ReplaceFileW documents; nothing is moved.
-			return err
+			return &notRestoredError{err: err, restoreErr: errors.New("another file is at the path"), backup: backup}
 		}
-		if files.Rename(backup, path) != nil {
+		if renameErr := files.Rename(backup, path); renameErr != nil {
 			// The original stays under the backup name, whole.
-			return err
+			return &notRestoredError{err: err, restoreErr: renameErr, backup: backup}
 		}
 	}
 	for _, unsupported := range replaceUnsupportedErrors {

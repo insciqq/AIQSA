@@ -66,11 +66,16 @@ func (g groupTree) Terminate() { syscall.Kill(-int(g), syscall.SIGTERM) }
 func (g groupTree) Kill()      { syscall.Kill(-int(g), syscall.SIGKILL) }
 func (g groupTree) Release()   {}
 
+// WritesInPlace is true on macOS: its extended ACLs (chmod +a) are not
+// extended attributes, so only writing the file itself keeps them.
+func (nativeSystem) WritesInPlace() bool { return runtime.GOOS == "darwin" }
+
 // PrepareReplacement gives tmp the owner and group, extended attributes
-// and mode bits of the file it replaces. A user who may not give the file
-// its owner or group, or an attribute, gets the file written in place.
-// The mode comes last: chown clears setuid and setgid, and the ACL's mask
-// is the group bits of the mode.
+// and mode bits of the file it replaces, and drops an access ACL tmp
+// inherited from its folder that the file lacks (copyXattrs). A user who
+// may not give the file its owner or group, or an attribute, gets the file
+// written in place. The mode comes last: chown clears setuid and setgid,
+// and the ACL's mask is the group bits of the mode.
 func (nativeSystem) PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error {
 	if want, ok := info.Sys().(*syscall.Stat_t); ok {
 		current, err := tmp.Stat()
@@ -132,6 +137,13 @@ func (unixXattrs) Set(path, name string, value []byte) error {
 	return unix.Setxattr(path, name, value, 0)
 }
 
+func (unixXattrs) Remove(path, name string) error {
+	if err := unix.Removexattr(path, name); err != nil && !errors.Is(err, errNoXattr) {
+		return err
+	}
+	return nil
+}
+
 // xattrRead asks read for the size, then for the bytes, again when they
 // grew in between.
 func xattrRead(read func(dest []byte) (int, error)) ([]byte, error) {
@@ -158,6 +170,12 @@ func xattrRead(read func(dest []byte) (int, error)) ([]byte, error) {
 
 func isNotDirError(err error) bool { return errors.Is(err, syscall.ENOTDIR) }
 func isIsDirError(err error) bool  { return errors.Is(err, syscall.EISDIR) }
+
+// isNoSpaceError is a full disk, a disk quota or the file size limit
+// (RLIMIT_FSIZE).
+func isNoSpaceError(err error) bool {
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.EFBIG)
+}
 
 func loginShell() string {
 	if shell := os.Getenv("SHELL"); usableShell(shell) {
