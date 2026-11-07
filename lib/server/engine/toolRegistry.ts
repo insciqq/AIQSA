@@ -35,6 +35,7 @@ import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { decodeFrozenComputerBinding } from "../tools/computerBinding";
+import { createComputerReadFiles } from "../tools/computerReadFiles";
 import { computerEngineTools } from "../tools/computerTools";
 import type { ComputerOps } from "../connect/computerPort";
 import { createFetchUrlSession, type FetchUrlBrowserStep, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
@@ -177,10 +178,10 @@ export type ToolRegistry = Readonly<{
   browser?: true;
   definitions(): readonly RunTool[];
   /**
-   * The Workspace previews this run viewed itself (`view_workspace_image`),
-   * which its requests carry with their results, and how a result image they
-   * do not carry is seen again; absent where the run offers neither direct
-   * view nor System Vision.
+   * The previews this run viewed itself (`view_workspace_image`, `read_chat_file`,
+   * `computer_read`), which its requests carry with their results, and how a
+   * Workspace result image they do not carry is seen again; absent where the
+   * run offers none of them nor System Vision.
    */
   images?: TranscriptImages;
   /**
@@ -678,9 +679,14 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   const computer = clientTools && !input.telegram && !input.scheduled && request.monitoringVerdictTool !== true &&
     request.prompt.baseline?.source !== "assistant_chat" ? decodeFrozenComputerBinding(request.computer) : null;
   if (computer) {
-    for (const tool of computerEngineTools({ binding: computer, ...(input.services.computer ? { ops: input.services.computer } : {}),
+    // Documents and images `computer_read` reads, in this run's memory: its previews ride on its own requests whether or not
+    // the run has a Workspace, gated on the model this request names (a sub-agent's own route).
+    const files = createComputerReadFiles({ request, runId: input.runId });
+    for (const tool of computerEngineTools({ binding: computer, files, ...(input.services.computer ? { ops: input.services.computer } : {}),
       runId: input.runId, serverName: descriptors.get("computer_shell")?.serverName,
       ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId })) add(tool);
+    const previous = images;
+    images = { attached: (item) => files.images.attached(item) ?? previous?.attached(item), note: previous?.note ?? IMAGE_REFERENCE_NOTE };
   }
 
   return {
