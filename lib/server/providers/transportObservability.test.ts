@@ -164,6 +164,50 @@ describe("provider transport observations", () => {
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 
+  it.each([true, false])("says how far a stream kept alive by comments had got when its request timed out: event=%s", async (eventFirst) => {
+    vi.useFakeTimers();
+    const records = capture();
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stream = new ReadableStream<Uint8Array>({ start(controller) {
+      if (eventFirst) controller.enqueue(encoder.encode('data: {"type":"response.created","PRIVATE_EVENT_CANARY":1}\n\n'));
+      // A gateway's keepalive comment every 10 ms: bytes keep arriving, events do not.
+      timer = setInterval(() => controller.enqueue(encoder.encode(": PRIVATE_KEEPALIVE_CANARY\n\n")), 10);
+    }, cancel() { clearInterval(timer); } });
+    const deadline = withTimeoutSignal(undefined, 45);
+    const result = observeProviderOperation(identity, "answer", async () => {
+      for await (const event of parseSseStream(stream, { idleTimeoutMs: 1_000, maxDurationMs: 1_000, signal: deadline.signal })) void event;
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(45);
+    clearInterval(timer);
+    deadline.clear();
+    expect(await result).toBeInstanceOf(ProviderRequestTimeoutError);
+    const ages = eventFirst ? { last_event_ms: 45, response_started: true } : { response_started: false };
+    const streamRecord = records().filter((entry) => entry.event === "transport_stage" && entry.stage === "stream").at(-1);
+    expect(streamRecord).toMatchObject({ outcome: "failed", category: "timeout", last_progress_ms: 5, ...ages });
+    const operation = records().find((entry) => entry.event === "provider_operation" && entry.outcome === "failed");
+    expect(operation).toMatchObject({ code: "provider_request_timed_out", last_byte_ms: 5, ...ages });
+    if (!eventFirst) {
+      expect(streamRecord).not.toHaveProperty("last_event_ms");
+      expect(operation).not.toHaveProperty("last_event_ms");
+    }
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("says how far a stream had got on its idle timeout record", async () => {
+    vi.useFakeTimers();
+    const records = capture();
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode('data: {"type":"x"}\n\n')); } });
+    const result = observeProviderOperation(identity, "answer", async () => {
+      for await (const event of parseSseStream(stream, { idleTimeoutMs: 20, maxDurationMs: 50 })) void event;
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(await result).toMatchObject({ code: "provider_stream_timeout" });
+    expect(records().find((entry) => entry.event === "nested_abort")).toMatchObject({ deadline_kind: "stream_idle",
+      last_byte_ms: 20, last_event_ms: 20, response_started: true });
+    expect(records().find((entry) => entry.event === "provider_operation" && entry.outcome === "failed")).toMatchObject({
+      code: "provider_stream_timeout", last_byte_ms: 20, last_event_ms: 20, response_started: true });
+  });
+
   it("records a real malformed SSE JSON frame once without logging successful frames", async () => {
     const records = capture();
     const response = new Response('data: {"type":"response.created"}\n\ndata: PRIVATE_INVALID_FRAME_CANARY\n\n');
