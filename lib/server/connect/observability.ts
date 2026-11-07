@@ -5,6 +5,8 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 
 /** Server-side codes beyond the wire reasons; each is registered in `failureCodes.json`. */
 export type ConnectServerLogCode =
+  /** A file read for `computer_attach_file` that could not be stored or attached (`lib/server/tools/computerAttachFile.ts`). */
+  | "computer_output_unpublished"
   | "connect_device_paired"
   | "connect_device_queue_full"
   | "connect_device_revoked"

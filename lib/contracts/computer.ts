@@ -7,6 +7,7 @@ import {
   CONNECT_MAX_CWD_LENGTH,
   CONNECT_MAX_DEVICES_PER_USER,
   CONNECT_MAX_EXIT_CODE,
+  CONNECT_MAX_TRANSFER_BYTES,
   CONNECT_MIN_EXIT_CODE,
   CONNECT_OP_ERROR_CODES,
   CONNECT_REASON_CODES,
@@ -108,6 +109,24 @@ export const COMPUTER_REFUSAL_HTTP_STATUS = Object.freeze({
   connect_disabled: 409
 } satisfies Record<ComputerRefusalCode, number>);
 
+/**
+ * The tool that gives the user a file from the computer to download from the answer (operator decision 2026-11-07):
+ * it reads only, and only the main agent has it, since only the main agent's run is shown on the answer.
+ */
+export const COMPUTER_ATTACH_FILE_TOOL_NAME = "computer_attach_file";
+
+/**
+ * `computer_attach_file`'s bounds: a file is one device transfer; an answer takes at most `filesPerRun` of them, about
+ * as many as a Workspace answer exports by default, so its list of downloads stays readable and one answer stores at
+ * most 1.25 GiB. `callMs` bounds one call, the transfer and the upload to storage (`uploadMs`) together.
+ */
+export const COMPUTER_ATTACH_FILE_LIMITS = Object.freeze({
+  callMs: 300_000,
+  filesPerRun: 20,
+  maxBytes: CONNECT_MAX_TRANSFER_BYTES,
+  uploadMs: 60_000
+});
+
 /** The engine's computer tools, available only to a run admitted with a computer binding. */
 export const COMPUTER_TOOL_NAMES = [
   "computer_shell",
@@ -117,12 +136,14 @@ export const COMPUTER_TOOL_NAMES = [
   "computer_write",
   "computer_edit",
   "computer_glob",
-  "computer_grep"
+  "computer_grep",
+  COMPUTER_ATTACH_FILE_TOOL_NAME
 ] as const;
 export type ComputerToolName = (typeof COMPUTER_TOOL_NAMES)[number];
 
 /** The device op each tool sends. */
 export const COMPUTER_TOOL_OPS = Object.freeze({
+  computer_attach_file: "read_bytes",
   computer_edit: "edit",
   computer_glob: "glob",
   computer_grep: "grep",

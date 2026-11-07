@@ -1,4 +1,4 @@
-import { decodeThreadWorkspaceCheckpointOutput, type ThreadGeneratedFile } from "@/lib/contracts/workspace";
+import { decodeThreadComputerFile, decodeThreadWorkspaceCheckpointOutput, type ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
 import { THREAD_SEARCH_SOURCE_MAX_ITEMS, decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { foldScheduledTaskCards } from "@/lib/contracts/scheduledTasks";
@@ -93,16 +93,18 @@ export function summarizeThreadArtifacts(
     .map(groundingDisplayFromEvent)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
     .at(-1) ?? null;
-  const checkpointFiles = new Map<string, ThreadGeneratedFile>();
+  // Workspace drafts and files attached from the user's computer: both are settled attachments as their events arrive.
+  const liveFiles = new Map<string, ThreadGeneratedFile>();
   for (const event of events) {
-    if (artifactTypeFromEvent(event) !== "workspace_checkpoint") continue;
-    const output = decodeThreadWorkspaceCheckpointOutput(artifactPayload(event));
-    for (const file of output?.files ?? []) {
+    const type = artifactTypeFromEvent(event);
+    const files = type === "workspace_checkpoint" ? decodeThreadWorkspaceCheckpointOutput(artifactPayload(event))?.files ?? []
+      : type === "computer_file" ? [decodeThreadComputerFile(artifactPayload(event))].filter((file): file is ThreadGeneratedFile => file !== null) : [];
+    for (const file of files) {
       // Redelivery cannot rename or replace an already selected immutable version.
-      if (!checkpointFiles.has(file.attachmentId)) checkpointFiles.set(file.attachmentId, file);
+      if (!liveFiles.has(file.attachmentId)) liveFiles.set(file.attachmentId, file);
     }
   }
-  const generatedFiles = [...checkpointFiles.values()];
+  const generatedFiles = [...liveFiles.values()];
   const generatedImages = [...new Map(events.filter((event) => artifactTypeFromEvent(event) === "image").flatMap((event) => {
     const image = decodeThreadGeneratedImage(artifactPayload(event));
     return image ? [[image.attachmentId, image] as const] : [];

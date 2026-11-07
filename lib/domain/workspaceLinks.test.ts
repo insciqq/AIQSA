@@ -16,6 +16,15 @@ describe("resolveWorkspaceOutputLink", () => {
       .toEqual({ file: files[1], kind: "download" });
   });
 
+  it("never resolves a link to a file attached from the user's computer, whatever its name", () => {
+    const computer = { attachmentId: "att-3", byteSize: 10, fileName: "notes.md", mimeType: "text/markdown", relativePath: "notes.md",
+      source: "computer" as const };
+    expect(resolveWorkspaceOutputLink({ generatedFiles: [...files, computer], href: "sandbox:/workspace/output/run-1/notes.md", runId: "run-1" }))
+      .toEqual({ kind: "unresolved" });
+    expect(resolveWorkspaceOutputLink({ generatedFiles: [computer, ...files], href: "sandbox:/workspace/output/run-1/report.md", runId: "run-1" }))
+      .toEqual({ file: files[0], kind: "download" });
+  });
+
   it("renders every other sandbox link as inert text and ignores ordinary links", () => {
     const unresolved = { kind: "unresolved" };
     expect(resolveWorkspaceOutputLink({ generatedFiles: files, href: "sandbox:/workspace/output/run-2/report.md", runId: "run-1" })).toEqual(unresolved);

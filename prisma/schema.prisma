@@ -204,6 +204,8 @@ enum AttachmentOrigin {
   WORKSPACE_OUTPUT
   WORKSPACE_EXPORT
   IMAGE_OUTPUT
+  /// A file the agent attached to its answer from the user's computer (`computer_attach_file`, `lib/server/connect/computerOutputs.ts`).
+  COMPUTER_OUTPUT
 }
 
 enum ArtifactKind {

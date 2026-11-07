@@ -347,6 +347,7 @@ type StepPhaseV2 = "cancelled" | "failed" | "held" | "running" | "settled";
 
 /** [running, settled, failed, cancelled] verbs of each computer tool (§7 of the Connect spec). */
 const COMPUTER_STEP_VERBS: Readonly<Record<string, readonly [string, string, string, string]>> = {
+  computer_attach_file: ["Attaching", "Attached", "Could not attach", "Stopped attaching"],
   computer_edit: ["Editing", "Edited", "Could not edit", "Stopped editing"],
   computer_glob: ["Searching", "Searched", "Could not search", "Stopped searching"],
   computer_grep: ["Searching", "Searched", "Could not search", "Stopped searching"],

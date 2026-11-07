@@ -35,6 +35,7 @@ import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { displayedToolCallState } from "../runs/toolLoopPersistence";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
+import { computerOutputFile } from "../connect/computerOutputs";
 import { Prisma, type ModelRunStatus } from "@prisma/client";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
@@ -1548,6 +1549,8 @@ export function summarizeMessageRunArtifacts(
           mimeType: attachment.mimeType,
           relativePath: attachment.workspaceRunOutput.relativePath
         }]
+      // A file attached from the user's computer: its name, never its path there.
+      : attachment.origin === "COMPUTER_OUTPUT" ? [computerOutputFile(attachment)]
       : []
   );
   const generatedArtifacts = latestGeneratedArtifactsForAnswer(run.events
