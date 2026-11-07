@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { McpClientSessionError } from "../mcp/clientSession";
+import { mcpToolFailureGuidance } from "../mcp/toolFailureGuidance";
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { ToolCallRepeatHistory, TOOL_CALL_REPEAT_BLOCKED } from "../runs/toolCallRepeatGuard";
 import { TOOL_CALL_UNKNOWN, UNKNOWN_TOOL_CALL_MESSAGE, unknownToolCall } from "../runs/unknownToolCall";
@@ -168,6 +170,34 @@ describe("native tool batch", () => {
     expect(outcome.results[0]!.outcome).toBe("complete");
     expect(outcome.results[1]!.outcome).toBe("unknown");
     expect(outcome.results[1]!.output).toContain("effect is unknown");
+  });
+
+  it("tells the model why a read-only MCP call failed and what to do next, and keeps a write's unknown outcome as it was", async () => {
+    const tooLarge = () => new McpClientSessionError({ code: "mcp_call_result_too_large", maxBytes: 16 * 1_048_576, operation: "call_tool" });
+    const guidance = (error: unknown) => mcpToolFailureGuidance(error, "read_only");
+    const read = vi.fn(async () => { throw tooLarge(); });
+    const write = vi.fn(async () => { throw tooLarge(); });
+    const { rows, store } = fakeStore();
+    const outcome = await runToolBatch(deps({ read: tool("read", "none", read, { failureGuidance: guidance }),
+      write: tool("write", "external", write, { failureGuidance: guidance }) }, store),
+    { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "read" }, { arguments: {}, id: "c2", name: "write" }], round: 1 });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(outcome.results[0]).toMatchObject({ outcome: "error" });
+    expect(JSON.parse(outcome.results[0]!.output)).toEqual({ error: "mcp_call_result_too_large", reason: "result_too_large",
+      message: guidance(tooLarge()).message });
+    expect(outcome.results[0]!.output).toContain("larger than the 16 MB limit");
+    expect(outcome.results[0]!.output).toContain("nothing changed");
+    const saved = [...rows.values()].find((row) => row.providerCallId === "c1")!;
+    expect(JSON.stringify(saved.result)).toContain("result_too_large");
+    expect(outcome.results[1]).toMatchObject({ outcome: "unknown" });
+    expect(JSON.parse(outcome.results[1]!.output)).toEqual({ error: "mcp_call_result_too_large", outcome: "unknown",
+      message: "The call failed after it may have been sent; its effect is unknown and it was not repeated. " +
+        "Check its effect before trying again." });
+    // A tool without guidance keeps the generic words.
+    const plain = vi.fn(async () => { throw new Error("PRIVATE_SERVER_TEXT_CANARY"); });
+    const other = await runToolBatch(deps({ plain: tool("plain", "none", plain) }, fakeStore().store), { calls: 0 },
+      { calls: [{ arguments: {}, id: "c3", name: "plain" }], round: 1 });
+    expect(JSON.parse(other.results[0]!.output)).toEqual({ error: "tool_execution_failed", message: "The tool failed; nothing changed." });
   });
 
   it("starts no retry of a read-only call once the tool time ran out while it was running", async () => {
