@@ -60,11 +60,17 @@ func newFakeRegistry(j *journal) *fakeRegistry {
 }
 
 func (r *fakeRegistry) SetString(key, name, value string) error {
+	if err := r.fail["set"]; err != nil {
+		return err
+	}
 	r.values[key+`\`+name] = value
 	return nil
 }
 
 func (r *fakeRegistry) SetDWord(key, name string, value uint32) error {
+	if err := r.fail["set"]; err != nil {
+		return err
+	}
 	r.values[key+`\`+name] = value
 	return nil
 }
@@ -109,10 +115,13 @@ func (r *fakeRegistry) keys() []string {
 }
 
 type fakeSystem struct {
-	journal *journal
-	running bool
-	stopErr error
-	opened  []string
+	journal  *journal
+	running  bool
+	stopErr  error
+	startErr error
+	opened   []string
+	// started are the full command lines of Start.
+	started [][]string
 }
 
 func (s *fakeSystem) Running() bool { return s.running }
@@ -128,6 +137,10 @@ func (s *fakeSystem) StopRunning(context.Context) error {
 
 func (s *fakeSystem) Start(exe string, args ...string) error {
 	s.journal.add("start %s %s", filepath.Base(exe), strings.Join(args, " "))
+	s.started = append(s.started, append([]string{exe}, args...))
+	if s.startErr != nil {
+		return s.startErr
+	}
 	s.running = true
 	return nil
 }

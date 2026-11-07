@@ -84,12 +84,28 @@ func runTray(inv *invocation) int {
 		Daemon: trayDaemon(paths, func() *logx.Logger { return log }),
 		UI:     tray,
 	}
+	if layout.Runs(selfExecutable()) {
+		controller.Installed = &winapp.Installer{
+			Layout:   layout,
+			Registry: winapp.WindowsRegistry{},
+			System:   winapp.WindowsSystem{},
+			Dialogs:  dialogs,
+			Version:  version,
+			Revoke:   revokeDevice,
+		}
+	}
 	tray.Choose = controller.Choose
+	tray.AppItems = controller.AppItems
 	go func() {
 		<-inv.ctx.Done()
 		tray.Exit()
 	}()
-	err = tray.Run(ready, func() { controller.Start(ctx) })
+	err = tray.Run(ready, func() {
+		controller.Start(ctx)
+		if installed := controller.Installed; installed != nil {
+			go maintainInstalled(ctx, installed, log)
+		}
+	})
 	cancel()
 	if release != nil {
 		release()
@@ -99,4 +115,17 @@ func runTray(inv *invocation) int {
 		return 1
 	}
 	return 0
+}
+
+// maintainInstalled tidies the installed program after a start, as after a
+// self-update: Windows Apps shows the running version, and the file the
+// update moved aside goes once the previous process has exited. Failures
+// are only logged; the next start tries again.
+func maintainInstalled(ctx context.Context, installed *winapp.Installer, log *logx.Logger) {
+	if changed, err := installed.RefreshAppsEntry(); err != nil {
+		log.Event("apps_entry_refresh_failed", "error", err)
+	} else if changed {
+		log.Event("apps_entry_refreshed")
+	}
+	winapp.RemoveStaleOldLater(ctx, installed.Layout.Exe(), winapp.StaleOldRetries)
 }

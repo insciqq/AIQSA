@@ -30,6 +30,10 @@ const (
 	MenuQuit
 	// MenuSeparator is a line between groups.
 	MenuSeparator
+	// MenuStartAtSignIn turns the start at sign-in on or off.
+	MenuStartAtSignIn
+	// MenuUninstall starts the program's removal.
+	MenuUninstall
 )
 
 // MenuItem is one line of the tray menu.
@@ -37,6 +41,18 @@ type MenuItem struct {
 	ID      MenuID
 	Label   string
 	Enabled bool
+	// Checked draws a check mark beside the label.
+	Checked bool
+}
+
+// AppItems are the menu's lines about the installed program. They are
+// read when the menu opens, so the check mark follows the registry.
+type AppItems struct {
+	// Installed: this copy runs from the installed location. Only then
+	// does the menu offer Start at sign-in and Uninstall.
+	Installed bool
+	// StartAtSignIn: the start at sign-in points at the installed program.
+	StartAtSignIn bool
 }
 
 // View is what the tray shows for a state.
@@ -53,8 +69,9 @@ type View struct {
 // UTF-16 units with the terminating zero.
 const MaxTooltipLength = 127
 
-// ViewOf is the tray for s (spec O-06, §9 step 6).
-func ViewOf(s state.State) View {
+// ViewOf is the tray for s (spec O-06, §9 step 6) with the installed
+// program's items.
+func ViewOf(s state.State, app AppItems) View {
 	host := "AIQSA"
 	if s.Origin != "" {
 		host = Host(s.Origin)
@@ -89,7 +106,15 @@ func ViewOf(s state.State) View {
 	if canDisconnect {
 		view.Menu = append(view.Menu, MenuItem{ID: MenuDisconnect, Label: "Disconnect this computer", Enabled: true})
 	}
+	if app.Installed {
+		view.Menu = append(view.Menu, MenuItem{ID: MenuSeparator},
+			MenuItem{ID: MenuStartAtSignIn, Label: "Start at sign-in", Enabled: true, Checked: app.StartAtSignIn})
+	}
 	view.Menu = append(view.Menu, MenuItem{ID: MenuSeparator}, MenuItem{ID: MenuQuit, Label: "Quit", Enabled: true})
+	if app.Installed {
+		// Last and apart from Quit; the removal asks before it does anything.
+		view.Menu = append(view.Menu, MenuItem{ID: MenuSeparator}, MenuItem{ID: MenuUninstall, Label: "Uninstall AIQSA Connect…", Enabled: true})
+	}
 	return view
 }
 

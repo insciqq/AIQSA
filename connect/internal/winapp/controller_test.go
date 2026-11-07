@@ -21,6 +21,7 @@ type fakeUI struct {
 	notices  []string
 	opened   []string
 	confirms []bool
+	warnings []string
 	exited   chan struct{}
 	changed  chan struct{}
 }
@@ -52,6 +53,12 @@ func (u *fakeUI) Confirm(string, string) bool {
 	answer := u.confirms[0]
 	u.confirms = u.confirms[1:]
 	return answer
+}
+
+func (u *fakeUI) Warn(_, text string) {
+	u.mu.Lock()
+	u.warnings = append(u.warnings, text)
+	u.mu.Unlock()
 }
 
 func (u *fakeUI) OpenURL(url string) error {
@@ -225,7 +232,7 @@ func TestTrayPairsThroughTheBrowserThenConnects(t *testing.T) {
 	if pairing.UserCode != "ABCD-EFGH" || pairing.VerificationURI != testOrigin+"/connect/pair?code=ABCD-EFGH" {
 		t.Fatalf("pairing state %+v", pairing)
 	}
-	if view := ViewOf(pairing); view.Status != "Waiting for approval · ABCD-EFGH" || view.Icon != IconWaiting {
+	if view := ViewOf(pairing, AppItems{}); view.Status != "Waiting for approval · ABCD-EFGH" || view.Icon != IconWaiting {
 		t.Fatalf("view %+v", view)
 	}
 	if len(f.ui.opened) != 1 || f.ui.opened[0] != pairing.VerificationURI {
@@ -242,7 +249,7 @@ func TestTrayPairsThroughTheBrowserThenConnects(t *testing.T) {
 
 	f.api.approval <- nil
 	connected := f.ui.waitFor(t, state.Connected)
-	if view := ViewOf(connected); view.Status != "Connected to ai.example.com" || view.Icon != IconConnected {
+	if view := ViewOf(connected, AppItems{}); view.Status != "Connected to ai.example.com" || view.Icon != IconConnected {
 		t.Fatalf("view %+v", view)
 	}
 	creds, err := f.paths.LoadCredentials()
@@ -306,7 +313,7 @@ func TestDisconnectRevokesAndOffersConnect(t *testing.T) {
 	if _, err := f.paths.LoadCredentials(); !errors.Is(err, config.ErrNotLoggedIn) {
 		t.Fatalf("credentials kept: %v", err)
 	}
-	view := ViewOf(revoked)
+	view := ViewOf(revoked, AppItems{})
 	if view.Status != "Not connected" || !hasItem(view, MenuConnect) || hasItem(view, MenuDisconnect) {
 		t.Fatalf("view %+v", view)
 	}
