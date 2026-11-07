@@ -8,6 +8,7 @@ import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import { ProviderStreamSafetyError } from "./streamSafety";
 import { providerStreamDrop, type ProviderStreamDrop } from "./streamDrop";
 import { providerErrorCode, providerErrorCodeOf } from "./providerErrorCode";
+import { providerStreamProgress } from "./streamProgress";
 
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
@@ -30,7 +31,8 @@ const scopes = scopeGlobal[scopeKey] ??= new AsyncLocalStorage<ProviderObservati
 const codeSet = new Set<string>(observedFailureCodes);
 const providerStatuses = new Set<string>(["completed", "failed", "cancelled", "incomplete", "queued", "in_progress", "retrying"]);
 type TransportFields = EventFields["transport_stage"];
-type TransportFacts = Pick<TransportFields, "category" | "code" | "bytes" | "chunks" | "last_progress_ms" | "timeout_ms">;
+type TransportFacts = Pick<TransportFields, "category" | "code" | "bytes" | "chunks" | "last_progress_ms" | "timeout_ms" |
+  "last_event_ms" | "response_started">;
 type TransportBinding = Readonly<{
   fields: Pick<TransportFields, "transport" | "operation" | "adapterKind" | "connectionId" | "providerFamily" | "providerModelId" | "attempt" | "httpStatus" | "timeout_ms">;
   emit: (fields: TransportFields) => void;
@@ -85,7 +87,8 @@ export function beginTransportStage(stage: TransportFields["stage"],
   const emit = (outcome: TransportFields["outcome"], facts: TransportFacts = {}) => binding.emit({
     ...binding.fields, stage, outcome, duration_ms: Math.max(0, performance.now() - startedAt),
     category: facts.category, code: facts.code, bytes: facts.bytes, chunks: facts.chunks,
-    last_progress_ms: facts.last_progress_ms, timeout_ms: facts.timeout_ms ?? binding.fields.timeout_ms
+    last_progress_ms: facts.last_progress_ms, timeout_ms: facts.timeout_ms ?? binding.fields.timeout_ms,
+    last_event_ms: facts.last_event_ms, response_started: facts.response_started
   });
   emit("started");
   return {
@@ -154,11 +157,13 @@ export function createProviderAbortObserver(owner?: Pick<ProviderObservation, "i
   const identity = owner?.identity ?? scope?.identity;
   const stage = owner?.stage ?? scope?.stage;
   let observed = false;
-  return bindContext((fields: Pick<EventFields["nested_abort"], "stage" | "abort_source" | "duration_ms" | "timeout_ms" | "deadline_kind">) => {
+  return bindContext((fields: Pick<EventFields["nested_abort"], "stage" | "abort_source" | "duration_ms" | "timeout_ms" | "deadline_kind" |
+    "last_byte_ms" | "last_event_ms" | "response_started">) => {
     if (observed) return;
     observed = true;
     logEvent("nested_abort", { layer: "provider", stage: fields.stage, abort_source: fields.abort_source,
       duration_ms: fields.duration_ms, timeout_ms: fields.timeout_ms, deadline_kind: fields.deadline_kind,
+      last_byte_ms: fields.last_byte_ms, last_event_ms: fields.last_event_ms, response_started: fields.response_started,
       operation: stage, attempt: owner ? undefined : scope?.attempt,
       adapterKind: identity?.adapterKind, connectionId: identity?.connectionId,
       providerFamily: identity?.providerFamily, providerModelId: identity?.providerModelId });
@@ -422,6 +427,8 @@ function writeOperation(scope: ProviderObservation, startedAt: number,
   result?: Readonly<{ provider_status?: ProviderStatus; action?: "retry"; code?: ObservedFailureCode; provider_error_code?: string }>) {
   const failure = observedFailure(error, signal);
   const code = result?.code ?? failure.code;
+  // How far a stream had got when a timeout ended it (`streamProgress.ts`).
+  const progress = providerStreamProgress(error);
   logEvent("provider_operation", {
     adapterKind: scope.identity.adapterKind, connectionId: scope.identity.connectionId,
     providerFamily: scope.identity.providerFamily, providerModelId: scope.identity.providerModelId,
@@ -430,7 +437,8 @@ function writeOperation(scope: ProviderObservation, startedAt: number,
       : failure.stream_drop !== undefined ? "provider_stream_failed" : code, reason: failure.reason,
     provider_status: result?.provider_status ?? failure.provider_status, cause: failure.cause,
     httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop,
-    provider_error_code: result?.provider_error_code ?? failure.provider_error_code
+    provider_error_code: result?.provider_error_code ?? failure.provider_error_code,
+    ...(progress ? { last_byte_ms: progress.last_byte_ms, last_event_ms: progress.last_event_ms, response_started: progress.response_started } : {})
   });
 }
 

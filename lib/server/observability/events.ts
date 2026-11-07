@@ -71,6 +71,8 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
   /** The provider's own error identity from providerErrorCodes.json; any other is `other`. */
   provider_error_code?: string;
+  /** A timed-out stream's progress: milliseconds since its last byte and last parsed event, and whether an event arrived. */
+  last_byte_ms?: number; last_event_ms?: number; response_started?: boolean;
 }>;
 /** Subsystems whose hot-path interactive transactions are timed (`db_transaction`). */
 export type DbTransactionSubsystem = "memory" | "workspace" | "runs";
@@ -197,6 +199,7 @@ export type EventFields = {
     layer: "tool" | ToolKind | "provider"; stage: "before_start" | "delivery";
     abort_source: NestedAbortSource; duration_ms?: number; timeout_ms?: number;
     deadline_kind?: "operation" | "request" | "sdk_request" | "stream_idle" | "stream_absolute" | "polling";
+    last_byte_ms?: number; last_event_ms?: number; response_started?: boolean;
     operation?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
     attempt?: number;
   }>;
@@ -206,6 +209,7 @@ export type EventFields = {
     outcome: OperationOutcome; duration_ms?: number; httpStatus?: number; code?: string;
     category?: "dns" | "tls" | "connect" | "timeout" | "parse" | "http" | "aborted" | "unknown";
     bytes?: number; chunks?: number; last_progress_ms?: number; timeout_ms?: number; attempt?: number;
+    last_event_ms?: number; response_started?: boolean;
   }>;
   provider_operation: ProviderFields;
   /** Provider-reported input tokens of one dispatched round against the
