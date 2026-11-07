@@ -9,6 +9,7 @@ import { admitsToolObservationReservation, decodeToolObservationSourceBinding, O
   type ToolObservationBudgetUsage, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
 import { OBSERVATION_READ_LIMITS } from "./byteReader";
 import { measureObservationJson } from "./codec";
+import { sourceAuthorityFailure } from "./storeFailure";
 
 export type ObservationActor = Readonly<{ runId: string; userId: string }>;
 export type ObservationProducer = ObservationActor & Readonly<{ toolCallId: string }>;
@@ -223,7 +224,8 @@ export function createToolObservationRepository(input: Readonly<{
         const row = await producer(tx, context, true);
         if (row.state !== "RESERVED" || !["complete", "error"].includes(row.executionOutcome ?? "") ||
           value.byteSize > row.reservedBytes) throw conflict();
-        await input.authorizeSource(tx, row, context);
+        // The store's failure record names a refusal here apart from the run's own authority.
+        await input.authorizeSource(tx, row, context).catch(sourceAuthorityFailure);
         if (value.storageMode === "SOURCE") {
           const original = measureObservationJson(await input.loadSource(tx, row, context), row.reservedBytes, 0);
           if (original.byteSize !== value.byteSize || original.checksum !== value.checksum) throw conflict();
@@ -243,7 +245,7 @@ export function createToolObservationRepository(input: Readonly<{
       return prisma.$transaction(async tx => {
         const row = await producer(tx, context, true);
         if (row.state !== "STORING" || row.leaseToken !== token || !row.leaseExpiresAt || row.leaseExpiresAt <= new Date() || !row.storageKey) throw conflict();
-        await input.authorizeSource(tx, row, context);
+        await input.authorizeSource(tx, row, context).catch(sourceAuthorityFailure);
         const [job] = await tx.$queryRaw<Array<{ claimToken: string | null }>>`
           SELECT "claimToken" FROM "AttachmentDeletionJob" WHERE "storageKey" = ${row.storageKey} FOR UPDATE`;
         if (job?.claimToken !== token) throw conflict();
