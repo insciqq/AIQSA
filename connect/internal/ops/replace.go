@@ -28,15 +28,17 @@ var errWriteInPlace = errors.New("the file is written in place")
 // file whole. A symbolic link is followed, so the file it points to is
 // replaced, not the link. On macOS (System.WritesInPlace), in a folder the
 // user cannot create files in, or when the replacement cannot keep what is
-// attached to the file, the file is written in place (writeInPlace).
+// attached to the file, the file is written in place (writeInPlace, through
+// files). The caller holds the file's locks (lockFile).
 //
 // Every error is an *unchangedError when the file is as it was, or a
-// *notRestoredError when it may not be; replaceCode maps them.
-func replaceFile(sys System, path string, data []byte, info fs.FileInfo) error {
+// *notRestoredError or *modeChangedError when it may not be; replaceCode
+// maps them.
+func replaceFile(sys System, files inPlaceFiles, path string, data []byte, info fs.FileInfo) error {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
-	inPlace := func() error { return writeInPlace(osFiles{}, path, data) }
+	inPlace := func() error { return writeInPlace(files, path, data) }
 	if sys.WritesInPlace() {
 		return inPlace()
 	}
@@ -115,6 +117,28 @@ func (e *notRestoredError) Error() string {
 		e.err, e.restoreErr, e.backup)
 }
 
+// modeChangedError is a write in place after which the file's mode bits
+// could not be put back (keepMode): the kernel cleared its setuid or setgid
+// bit on the write, and chmod failed or did not hold. The file has the new
+// content (err is nil) or its original one (err is the write's
+// *unchangedError). It has no Unwrap, so its code is connect_device_error:
+// the file changed.
+type modeChangedError struct {
+	err, modeErr error
+}
+
+func (e *modeChangedError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("the file was written, but its mode could not be put back: %v", e.modeErr)
+	}
+	return fmt.Sprintf("%v, but its mode could not be put back: %v", e.err, e.modeErr)
+}
+
+// errModeNotKept refuses to write in place a file with setuid, setgid or
+// sticky bits the process could not put back once the write cleared them
+// (canKeepSpecialBits).
+var errModeNotKept = fmt.Errorf("the file's setuid, setgid or sticky bit could not be kept: %w", fs.ErrPermission)
+
 // replaceCode is the reply code of a replaceFile error. A failure that
 // left the file as it was is definite, so the server reports it as not
 // done: computer_permission_denied, computer_file_too_large for a full
@@ -152,6 +176,8 @@ type inPlaceFile interface {
 	io.ReaderAt
 	io.WriterAt
 	Name() string
+	Stat() (fs.FileInfo, error)
+	Chmod(mode fs.FileMode) error
 	Truncate(size int64) error
 	Sync() error
 	Close() error
@@ -185,12 +211,26 @@ func (osFiles) Remove(name string) error { return os.Remove(name) }
 // file is cut to its length, never emptied first. On a failure the bytes
 // that may have changed are put back from the backup. When that fails too,
 // the backup is kept and the error names it; otherwise it is removed.
+//
+// The kernel clears a file's setuid and setgid bits when it is written, so
+// the mode bits are put back after the write and after a restore, and
+// checked (keepMode). A file with setuid, setgid or sticky bits the process
+// could not put back (canKeepSpecialBits) is refused before anything
+// changes.
 func writeInPlace(files inPlaceFiles, path string, data []byte) error {
 	f, err := files.Open(path)
 	if err != nil {
 		return &unchangedError{err: err}
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return &unchangedError{err: err}
+	}
+	mode := info.Mode() & keptModeBits
+	if mode&specialModeBits != 0 && !canKeepSpecialBits(info) {
+		return &unchangedError{err: errModeNotKept}
+	}
 	backup, size, err := backUp(files, f)
 	if err != nil {
 		return &unchangedError{err: err}
@@ -198,14 +238,40 @@ func writeInPlace(files inPlaceFiles, path string, data []byte) error {
 	changed, err := overwrite(f, data)
 	if err != nil {
 		if restoreErr := restore(f, backup, size, changed); restoreErr != nil {
+			keepMode(f, mode)
 			backup.Close()
 			return &notRestoredError{err: err, restoreErr: restoreErr, backup: backup.Name()}
 		}
 		err = &unchangedError{err: err, restored: true}
 	}
+	if modeErr := keepMode(f, mode); modeErr != nil {
+		err = &modeChangedError{err: err, modeErr: modeErr}
+	}
 	backup.Close()
 	files.Remove(backup.Name())
 	return err
+}
+
+// keepMode gives f the mode bits mode again when a write changed them, and
+// checks that they hold: chmod can drop setgid without an error.
+func keepMode(f inPlaceFile, mode fs.FileMode) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Mode()&keptModeBits == mode {
+		return nil
+	}
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if info, err = f.Stat(); err != nil {
+		return err
+	}
+	if got := info.Mode() & keptModeBits; got != mode {
+		return fmt.Errorf("the mode is %v instead of %v", got, mode)
+	}
+	return nil
 }
 
 // backUp copies the open file f to a new backup file and makes the copy

@@ -126,8 +126,9 @@ func TestReplaceInAFolderWithADefaultACLKeepsTheFilesPermissions(t *testing.T) {
 		[3]uint32{userObj, 6, noID}, [3]uint32{namedUser, 6, 4242}, [3]uint32{groupObj, 0, noID},
 		[3]uint32{mask, 6, noID}, [3]uint32{other, 0, noID})
 	if err := unix.Setxattr(dir, "system.posix_acl_default", acl, 0); err != nil {
-		if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EPERM) {
-			t.Skipf("the temporary folder takes no default ACL: %v", err)
+		// EINVAL: a sandbox whose user namespace does not map UID 4242.
+		if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EPERM) || errors.Is(err, unix.EINVAL) {
+			t.Skipf("the temporary folder takes no such default ACL: %v", err)
 		}
 		t.Fatal(err)
 	}

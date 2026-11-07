@@ -220,6 +220,61 @@ func TestWriteOverAFileTooLargeToLoadKeepsItsEncoding(t *testing.T) {
 	}
 }
 
+// The review's reproduction: the encoding of a file too large to load was
+// told from its first bytes, so a cp1251 file whose start is ASCII, or
+// whose start ends on a byte that begins a UTF-8 sequence, was rewritten
+// as UTF-8. The whole file now decides: in cp1251 where that is the code
+// page, and of an unknown encoding, which takes only ASCII, where there is
+// none. NUL bytes past the start make the file binary.
+func TestWriteOverALargeFileDecidesItsEncodingFromAllOfIt(t *testing.T) {
+	previous := maxTextFileBytes
+	maxTextFileBytes = 64
+	t.Cleanup(func() { maxTextFileBytes = previous })
+	tail, _ := cp1251{}.Encode("Сумма: 100\r\n")
+	files := map[string][]byte{
+		"ascii start": append(bytes.Repeat([]byte("ascii line\r\n"), 20), tail...),
+		// 0xD0 is Р in cp1251 and begins a two-byte UTF-8 sequence; it is
+		// the start's last byte, and the file goes on in ASCII.
+		"start cut on a lead byte": append(append(bytes.Repeat([]byte("x"), 63), 0xD0), bytes.Repeat([]byte(" 1\r\n"), 20)...),
+	}
+	for name, old := range files {
+		t.Run(name, func(t *testing.T) {
+			e, home := newTestExecutor(t, testSystem{codePage: cp1251{}})
+			path := filepath.Join(home, "ansi.txt")
+			writeTestFile(t, path, old)
+			mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "Итог\n"})
+			ending := "\n"
+			if lineEnding(string(old[:64])) == protocol.LineEndingCRLF {
+				ending = "\r\n"
+			}
+			want, _ := cp1251{}.Encode("Итог" + ending)
+			if got := readTestFile(t, path); !bytes.Equal(got, want) {
+				t.Fatalf("with the code page: % x", got)
+			}
+
+			e, home = newTestExecutor(t, testSystem{})
+			path = filepath.Join(home, "legacy.txt")
+			writeTestFile(t, path, old)
+			wantCode(t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "Итог\n"}, protocol.CodeComputerTextUnencodable)
+			if got := readTestFile(t, path); !bytes.Equal(got, old) {
+				t.Fatal("a refused write changed the file")
+			}
+			mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "Total\n"})
+			if got := readTestFile(t, path); string(got) != "Total"+ending {
+				t.Fatalf("ASCII write: %q", got)
+			}
+		})
+	}
+
+	e, home := newTestExecutor(t, testSystem{codePage: cp1251{}})
+	binary := filepath.Join(home, "data.bin")
+	writeTestFile(t, binary, append(bytes.Repeat([]byte("header\n"), 20), 0, 1, 2))
+	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: binary, Cwd: home, Content: "новое\n"})
+	if got := readTestFile(t, binary); string(got) != "новое\n" {
+		t.Fatalf("binary: % x", got)
+	}
+}
+
 // write and edit replace a file through a rename: its mode stays, a link
 // still points at it, and nothing is left beside it.
 func TestWriteAndEditReplaceAtomically(t *testing.T) {
