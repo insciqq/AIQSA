@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
 
@@ -64,9 +66,94 @@ func (g groupTree) Terminate() { syscall.Kill(-int(g), syscall.SIGTERM) }
 func (g groupTree) Kill()      { syscall.Kill(-int(g), syscall.SIGKILL) }
 func (g groupTree) Release()   {}
 
-// matchFile gives a replacement file the mode bits of the file it replaces.
-func matchFile(tmp *os.File, info fs.FileInfo) error {
+// PrepareReplacement gives tmp the owner and group, extended attributes
+// and mode bits of the file it replaces. A user who may not give the file
+// its owner or group, or an attribute, gets the file written in place.
+// The mode comes last: chown clears setuid and setgid, and the ACL's mask
+// is the group bits of the mode.
+func (nativeSystem) PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error {
+	if want, ok := info.Sys().(*syscall.Stat_t); ok {
+		current, err := tmp.Stat()
+		if err != nil {
+			return err
+		}
+		if have, ok := current.Sys().(*syscall.Stat_t); ok && (have.Uid != want.Uid || have.Gid != want.Gid) {
+			uid, gid := -1, -1
+			if have.Uid != want.Uid {
+				uid = int(want.Uid)
+			}
+			if have.Gid != want.Gid {
+				gid = int(want.Gid)
+			}
+			if err := tmp.Chown(uid, gid); err != nil {
+				return errWriteInPlace
+			}
+		}
+	}
+	if err := copyXattrs(unixXattrs{}, path, tmp.Name()); err != nil {
+		return err
+	}
 	return tmp.Chmod(info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky))
+}
+
+// Replace renames tmp over path.
+func (nativeSystem) Replace(tmp, path string) error { return os.Rename(tmp, path) }
+
+// unixXattrs reads and writes extended attributes through x/sys/unix,
+// following symbolic links (the paths are resolved already).
+type unixXattrs struct{}
+
+func (unixXattrs) List(path string) ([]string, error) {
+	buf, err := xattrRead(func(dest []byte) (int, error) { return unix.Listxattr(path, dest) })
+	if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) {
+		return nil, errXattrsUnsupported
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, name := range strings.Split(string(buf), "\x00") {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+func (unixXattrs) Get(path, name string) ([]byte, bool, error) {
+	value, err := xattrRead(func(dest []byte) (int, error) { return unix.Getxattr(path, name, dest) })
+	if errors.Is(err, errNoXattr) {
+		return nil, false, nil
+	}
+	return value, err == nil, err
+}
+
+func (unixXattrs) Set(path, name string, value []byte) error {
+	return unix.Setxattr(path, name, value, 0)
+}
+
+// xattrRead asks read for the size, then for the bytes, again when they
+// grew in between.
+func xattrRead(read func(dest []byte) (int, error)) ([]byte, error) {
+	for range 3 {
+		size, err := read(nil)
+		if err != nil {
+			return nil, err
+		}
+		if size == 0 {
+			return []byte{}, nil
+		}
+		buf := make([]byte, size)
+		n, err := read(buf)
+		if errors.Is(err, unix.ERANGE) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return buf[:n], nil
+	}
+	return nil, unix.ERANGE
 }
 
 func isNotDirError(err error) bool { return errors.Is(err, syscall.ENOTDIR) }

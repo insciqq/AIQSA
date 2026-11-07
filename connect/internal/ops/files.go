@@ -130,53 +130,10 @@ func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol
 			}
 		}
 	}
-	if err := replaceFile(target, content, info); err != nil {
+	if err := replaceFile(e.sys, target, content, info); err != nil {
 		return nil, codeOf(err)
 	}
 	return &protocol.WriteResult{Bytes: int64(len(content)), Created: false}, ""
-}
-
-// replaceFile replaces the file at path, described by info, with data
-// atomically: the data goes to a temporary file in the same folder, which
-// takes the file's mode (its attributes on Windows) and is renamed over it,
-// so a full disk or a crash leaves the old file whole. A symbolic link is
-// followed, so the file it points to is replaced, not the link. In a folder
-// the user cannot create files in, the file is written in place.
-func replaceFile(path string, data []byte, info fs.FileInfo) error {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".aiqsa-*")
-	if err != nil {
-		if errors.Is(err, fs.ErrPermission) {
-			return os.WriteFile(path, data, info.Mode().Perm())
-		}
-		return err
-	}
-	tmpName := tmp.Name()
-	fail := func(err error) error {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := matchFile(tmp, info); err != nil {
-		return fail(err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
 }
 
 // edit replaces oldString with newString, once unless replaceAll, keeping
@@ -209,7 +166,7 @@ func (e *Executor) edit(args *protocol.EditArgs) (protocol.Validator, protocol.R
 	if code != "" {
 		return nil, code
 	}
-	if err := replaceFile(target, out, info); err != nil {
+	if err := replaceFile(e.sys, target, out, info); err != nil {
 		return nil, codeOf(err)
 	}
 	return &protocol.EditResult{Replacements: int64(count)}, ""

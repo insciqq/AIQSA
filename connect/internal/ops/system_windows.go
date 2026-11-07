@@ -169,6 +169,7 @@ var (
 	kernel32                = windows.NewLazySystemDLL("kernel32.dll")
 	procGetOEMCP            = kernel32.NewProc("GetOEMCP")
 	procWideCharToMultiByte = kernel32.NewProc("WideCharToMultiByte")
+	procReplaceFileW        = kernel32.NewProc("ReplaceFileW")
 )
 
 const (
@@ -275,10 +276,11 @@ func isNotDirError(err error) bool {
 
 func isIsDirError(err error) bool { return errors.Is(err, syscall.EISDIR) }
 
-// matchFile gives a replacement file the hidden, system, archive and
-// not-indexed attributes of the file it replaces. Read-only is not copied:
-// a read-only file cannot be replaced, and the rename refuses it.
-func matchFile(tmp *os.File, info fs.FileInfo) error {
+// PrepareReplacement gives a replacement file the hidden, system, archive
+// and not-indexed attributes of the file it replaces; ReplaceFileW keeps
+// the rest (Replace). Read-only is not copied: a read-only file cannot be
+// replaced, and ReplaceFileW refuses it.
+func (nativeSystem) PrepareReplacement(tmp *os.File, _ string, info fs.FileInfo) error {
 	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
 	if !ok {
 		return nil
@@ -293,4 +295,46 @@ func matchFile(tmp *os.File, info fs.FileInfo) error {
 		return err
 	}
 	return windows.SetFileAttributes(name, attributes)
+}
+
+// Replace moves tmp over path with ReplaceFileW, which keeps the replaced
+// file's ACL, owner, attributes, creation time and alternate data streams
+// (replaceWindowsFile).
+func (nativeSystem) Replace(tmp, path string) error {
+	return replaceWindowsFile(winFileAPI{}, tmp, path)
+}
+
+type winFileAPI struct{}
+
+// ReplaceFile calls ReplaceFileW without flags: errors merging the ACL or
+// attributes are failures, not ignored.
+func (winFileAPI) ReplaceFile(replaced, replacement, backup string) error {
+	replacedPtr, err := windows.UTF16PtrFromString(replaced)
+	if err != nil {
+		return err
+	}
+	replacementPtr, err := windows.UTF16PtrFromString(replacement)
+	if err != nil {
+		return err
+	}
+	backupPtr, err := windows.UTF16PtrFromString(backup)
+	if err != nil {
+		return err
+	}
+	ok, _, callErr := procReplaceFileW.Call(uintptr(unsafe.Pointer(replacedPtr)), uintptr(unsafe.Pointer(replacementPtr)),
+		uintptr(unsafe.Pointer(backupPtr)), 0, 0, 0)
+	if ok != 0 {
+		return nil
+	}
+	if errno, isErrno := callErr.(syscall.Errno); isErrno && errno != 0 {
+		return &os.LinkError{Op: "replace", Old: replacement, New: replaced, Err: errno}
+	}
+	return &os.LinkError{Op: "replace", Old: replacement, New: replaced, Err: syscall.EINVAL}
+}
+
+func (winFileAPI) Rename(from, to string) error { return os.Rename(from, to) }
+func (winFileAPI) Remove(path string) error     { return os.Remove(path) }
+func (winFileAPI) Exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
