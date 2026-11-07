@@ -2,9 +2,13 @@ package ops
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"math/rand/v2"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
@@ -88,6 +92,81 @@ func TestDecodeTextRefusesBinaryButReadsUTF16(t *testing.T) {
 	file, _ = decodeText([]byte("caf\xe9"), nil)
 	if file.text != "caf\uFFFD" || file.encoding != "utf-8" || file.raw == nil {
 		t.Fatalf("invalid: %+v", file)
+	}
+}
+
+// scanFormat, which reads a file too large to load in chunks, decides as
+// decodeText does from the whole file, wherever the chunks end: in UTF-8
+// characters, in runs without a line break, before or after the bytes that
+// are not UTF-8.
+func TestScanFormatDecidesAsTheWholeFileDoes(t *testing.T) {
+	previous := maxTextFileBytes
+	t.Cleanup(func() { maxTextFileBytes = previous })
+	pieces := []string{"a", "b", "\n", "\r\n", " ", "Ш", "я", "\xc0", "\xe9", "\x98", "\xd0", "\xa8"}
+	rng := rand.New(rand.NewPCG(3, 4))
+	dir := t.TempDir()
+	type decision struct {
+		binary                 bool
+		encoding               string
+		codePage, raw, withBOM bool
+	}
+	decide := func(file *textFile, err error) decision {
+		if err != nil || file == nil {
+			return decision{binary: true}
+		}
+		return decision{encoding: file.encoding, codePage: file.codePage != nil, raw: file.raw != nil, withBOM: file.bom != nil}
+	}
+	for i := range 2000 {
+		maxTextFileBytes = int64(4 + rng.IntN(40))
+		var b strings.Builder
+		if rng.IntN(6) == 0 {
+			b.Write(bomUTF8)
+		}
+		// Mostly UTF-8, so the bytes that are not come late.
+		utf8Only := rng.IntN(2) == 0
+		for b.Len() <= int(maxTextFileBytes) || rng.IntN(8) != 0 {
+			piece := pieces[rng.IntN(len(pieces))]
+			if utf8Only && !utf8.ValidString(piece) && rng.IntN(20) != 0 {
+				continue
+			}
+			b.WriteString(piece)
+		}
+		if rng.IntN(30) == 0 {
+			b.WriteByte(0)
+		}
+		data := []byte(b.String())
+		path := filepath.Join(dir, fmt.Sprintf("f%d", i))
+		writeTestFile(t, path, data)
+		for _, cp := range []CodePage{nil, cp1251{}} {
+			whole, err := decodeText(data, cp)
+			want := decide(&whole, err)
+			scanned, code := scanFormat(context.Background(), path, cp)
+			if code != "" {
+				t.Fatalf("%q: %s", data, code)
+			}
+			if got := decide(scanned, nil); got != want {
+				t.Fatalf("%q in chunks of %d, code page %v: %+v, want %+v", data, maxTextFileBytes, cp != nil, got, want)
+			}
+		}
+	}
+}
+
+// A file read through for its encoding stops when its op ends.
+func TestScanFormatStopsWithItsOp(t *testing.T) {
+	previous := maxTextFileBytes
+	maxTextFileBytes = 16
+	t.Cleanup(func() { maxTextFileBytes = previous })
+	path := filepath.Join(t.TempDir(), "large.txt")
+	writeTestFile(t, path, bytes.Repeat([]byte("line\n"), 100))
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, code := textFormat(cancelled, path, nil); code != protocol.CodeComputerCancelled {
+		t.Fatalf("cancelled: %q", code)
+	}
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, code := textFormat(expired, path, nil); code != protocol.CodeComputerTimeout {
+		t.Fatalf("deadline: %q", code)
 	}
 }
 

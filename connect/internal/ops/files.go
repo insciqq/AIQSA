@@ -1,12 +1,15 @@
 package ops
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
@@ -90,26 +93,35 @@ func (e *Executor) read(args *protocol.ReadArgs) (protocol.Validator, protocol.R
 // write creates or replaces a file, creating its parent folders. A new file
 // is UTF-8 without a BOM. A replaced text file keeps its encoding as edit
 // does: UTF-16 or UTF-8 with its BOM, the ANSI code page, CRLF line
-// endings, told from its start when it is too large to load (textFormat).
-// Text that code page cannot hold answers computer_text_unencodable and
-// writes nothing; a file that cannot be read answers its code and is not
-// written either. A file that is not text becomes UTF-8. The replacement
-// is atomic, or the file is written in place with a backup (replaceFile).
-func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol.ReasonCode) {
+// endings, told from the whole file also when it is too large to load
+// (textFormat). Text that code page cannot hold answers
+// computer_text_unencodable and writes nothing; a file that cannot be read
+// answers its code and is not written either. A file that is not text
+// becomes UTF-8. The replacement is atomic, or the file is written in place
+// with a backup (replaceFile). The file's locks are held from the first
+// look at it to the end (lockFile).
+func (e *Executor) write(ctx context.Context, args *protocol.WriteArgs) (protocol.Validator, protocol.ReasonCode) {
 	e.useCwd(args.Cwd)
-	target := e.resolve(args.Cwd, args.Path)
+	held, code := e.lockFile(ctx, e.resolve(args.Cwd, args.Path))
+	if code != "" {
+		return nil, code
+	}
+	defer held.release()
+	target := held.path
 	content := []byte(args.Content)
 	info, err := os.Stat(target)
-	created := errors.Is(err, fs.ErrNotExist)
+	if errors.Is(err, fs.ErrNotExist) {
+		result, code, exists := create(ctx, held, content)
+		if !exists {
+			return result, code
+		}
+		// Another name of the file created it since: it is replaced.
+		if err := held.lockExisting(ctx); err != nil {
+			return nil, ctxCode(ctx)
+		}
+		info, err = os.Stat(target)
+	}
 	switch {
-	case created:
-		if err := os.MkdirAll(filepath.Dir(target), 0o777); err != nil {
-			return nil, codeOf(err)
-		}
-		if err := os.WriteFile(target, content, 0o666); err != nil {
-			return nil, codeOf(err)
-		}
-		return &protocol.WriteResult{Bytes: int64(len(content)), Created: true}, ""
 	case err != nil:
 		return nil, codeOf(err)
 	case info.IsDir():
@@ -117,7 +129,7 @@ func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol
 	case !info.Mode().IsRegular():
 		return nil, protocol.CodeComputerFileBinary
 	}
-	file, code := textFormat(target, e.sys.TextCodePage())
+	file, code := textFormat(ctx, target, e.sys.TextCodePage())
 	if code != "" {
 		return nil, code
 	}
@@ -134,56 +146,164 @@ func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol
 			return nil, protocol.CodeComputerTextUnencodable
 		}
 	}
-	if err := replaceFile(e.sys, target, content, info); err != nil {
+	if err := replaceFile(e.sys, e.inPlace, target, content, info); err != nil {
 		return nil, replaceCode(err)
 	}
 	return &protocol.WriteResult{Bytes: int64(len(content)), Created: false}, ""
 }
 
-// formatProbeBytes is how much of a file too large to load textFormat
-// reads; never more than maxTextFileBytes, which tests lower.
-const formatProbeBytes = 1 << 20
+// create writes content to a new file at held.path, creating its folders.
+// The file is created only where none is (O_EXCL), so a file another name
+// of it created since the lock was taken is never cut: exists is then true
+// and nothing was written. The new file's own lock is taken before its
+// content goes in, as another name of it may have reached it already; when
+// ctx ends during that wait, the new file stays empty and the reply is
+// computer_timeout or computer_cancelled, whose outcome the server keeps
+// unknown.
+func create(ctx context.Context, held *heldFile, content []byte) (result protocol.Validator, code protocol.ReasonCode, exists bool) {
+	if err := os.MkdirAll(filepath.Dir(held.path), 0o777); err != nil {
+		return nil, codeOf(err), false
+	}
+	f, err := os.OpenFile(held.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if errors.Is(err, fs.ErrExist) {
+		return nil, "", true
+	}
+	if err != nil {
+		return nil, codeOf(err), false
+	}
+	if err := held.lockCreated(ctx, f); err != nil {
+		f.Close()
+		return nil, ctxCode(ctx), false
+	}
+	// What another name of the file wrote before its lock was taken is
+	// written over whole.
+	_, err = f.WriteAt(content, 0)
+	if err == nil {
+		err = f.Truncate(int64(len(content)))
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, codeOf(err), false
+	}
+	return &protocol.WriteResult{Bytes: int64(len(content)), Created: true}, "", false
+}
 
-// textFormat tells how the existing file at path stores its text: from the
-// whole file when read and edit can load it, else from its first bytes
-// (formatProbeBytes); nil when it is not text. A file that cannot be read
-// answers its code, so a write never changes how a file is stored unseen.
-func textFormat(path string, cp CodePage) (*textFile, protocol.ReasonCode) {
+// formatChunkBytes is how much of a file too large to load scanFormat
+// reads at a time; never more than maxTextFileBytes, which tests lower.
+const formatChunkBytes = 1 << 20
+
+// textFormat tells how the existing file at path stores its text, as
+// decodeText does from the whole file; nil when it is not text. A file too
+// large to load is read through in chunks (scanFormat). A file that cannot
+// be read answers its code, so a write never changes how a file is stored
+// unseen.
+func textFormat(ctx context.Context, path string, cp CodePage) (*textFile, protocol.ReasonCode) {
 	data, _, code := loadFile(path)
-	decode := decodeText
 	if code == protocol.CodeComputerFileTooLarge {
-		data, code = loadStart(path, min(formatProbeBytes, maxTextFileBytes))
-		decode = decodeStart
+		return scanFormat(ctx, path, cp)
 	}
 	if code != "" {
 		return nil, code
 	}
-	file, err := decode(data, cp)
+	file, err := decodeText(data, cp)
 	if err != nil {
 		return nil, ""
 	}
 	return &file, ""
 }
 
-// loadStart reads the first n bytes of a file.
-func loadStart(path string, n int64) ([]byte, protocol.ReasonCode) {
+// scanFormat tells how a file too large to load stores its text, deciding
+// as decodeText does from the whole file, read in chunks of
+// formatChunkBytes in bounded memory: a start that is ASCII, or that ends
+// inside a character, decides nothing. A UTF-16 BOM makes it UTF-16, read
+// from the first chunk alone (binary when that has a NUL code unit);
+// otherwise NUL bytes make it binary (nil), and it is UTF-8 (with its BOM)
+// when all of it is, else in the code page cp when all of it decodes in
+// it, else of an unknown encoding (raw). Its text is the first chunk's,
+// which gives the line endings. Each chunk ends where a character does
+// (chunkEnd), and an incomplete one is carried into the next. It stops,
+// answering computer_timeout or computer_cancelled, when ctx ends.
+func scanFormat(ctx context.Context, path string, cp CodePage) (*textFile, protocol.ReasonCode) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, codeOf(err)
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, n))
-	if err != nil {
-		return nil, codeOf(err)
+	read := make([]byte, min(formatChunkBytes, maxTextFileBytes))
+	var buf, head, bom []byte
+	utf8OK, cpOK := true, cp != nil
+	for first := true; ; first = false {
+		if ctx.Err() != nil {
+			return nil, ctxCode(ctx)
+		}
+		n, err := io.ReadFull(f, read)
+		end := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+		if err != nil && !end {
+			return nil, codeOf(err)
+		}
+		buf = append(buf, read[:n]...)
+		if first {
+			if bytes.HasPrefix(buf, bomUTF16LE) || bytes.HasPrefix(buf, bomUTF16BE) {
+				// A code unit cut in two is left out; a surrogate pair cut in
+				// two reads as U+FFFD.
+				file, err := decodeText(buf[:len(buf)&^1], cp)
+				if err != nil {
+					return nil, ""
+				}
+				return &file, ""
+			}
+			if bytes.HasPrefix(buf, bomUTF8) {
+				bom = bomUTF8
+				buf = append(buf[:0], buf[len(bomUTF8):]...)
+				// decodeText reads no code page after a UTF-8 BOM.
+				cpOK = false
+			}
+			head = bytes.Clone(buf)
+		}
+		if bytes.IndexByte(buf, 0) >= 0 {
+			return nil, ""
+		}
+		cut := len(buf)
+		if !end {
+			cut = chunkEnd(buf)
+		}
+		chunk := buf[:cut]
+		utf8OK = utf8OK && utf8.Valid(chunk)
+		if cpOK {
+			_, cpOK = cp.Decode(chunk)
+		}
+		if end {
+			break
+		}
+		buf = append(buf[:0], buf[cut:]...)
 	}
-	return data, ""
+	file := textFile{text: strings.ToValidUTF8(string(head), "�"), encoding: "utf-8", bom: bom}
+	if bom != nil {
+		file.encoding = "utf-8-bom"
+	}
+	switch {
+	case utf8OK:
+	case cpOK:
+		file.encoding, file.codePage = cp.Name(), cp
+	default:
+		file.raw = append([]byte{}, head...)
+	}
+	return &file, ""
 }
 
 // edit replaces oldString with newString, once unless replaceAll, keeping
-// the file's encoding, BOM and line endings.
-func (e *Executor) edit(args *protocol.EditArgs) (protocol.Validator, protocol.ReasonCode) {
+// the file's encoding, BOM and line endings. The file's locks are held from
+// its read to the end (lockFile).
+func (e *Executor) edit(ctx context.Context, args *protocol.EditArgs) (protocol.Validator, protocol.ReasonCode) {
 	e.useCwd(args.Cwd)
-	target := e.resolve(args.Cwd, args.Path)
+	held, code := e.lockFile(ctx, e.resolve(args.Cwd, args.Path))
+	if code != "" {
+		return nil, code
+	}
+	defer held.release()
+	target := held.path
 	data, info, code := loadFile(target)
 	if code != "" {
 		return nil, code
@@ -209,7 +329,7 @@ func (e *Executor) edit(args *protocol.EditArgs) (protocol.Validator, protocol.R
 	if code != "" {
 		return nil, code
 	}
-	if err := replaceFile(e.sys, target, out, info); err != nil {
+	if err := replaceFile(e.sys, e.inPlace, target, out, info); err != nil {
 		return nil, replaceCode(err)
 	}
 	return &protocol.EditResult{Replacements: int64(count)}, ""

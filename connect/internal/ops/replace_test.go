@@ -146,11 +146,14 @@ func TestWriteAndEditInPlaceKeepTheFile(t *testing.T) {
 
 // faults makes a faultyFile fail: WriteAt past writeLimit (when set) with
 // ENOSPC after writing up to it, as a full disk or a file size limit does;
-// the first truncateFails calls of Truncate and syncFails of Sync with EIO.
+// the first truncateFails calls of Truncate, syncFails of Sync and
+// chmodFails of Chmod with EIO. stat, when set, changes what Stat answers.
 type faults struct {
 	writeLimit    int64
 	truncateFails int
 	syncFails     int
+	chmodFails    int
+	stat          func(fs.FileInfo) fs.FileInfo
 	writes        int
 }
 
@@ -182,6 +185,22 @@ func (f faultyFile) Sync() error {
 		return &fs.PathError{Op: "sync", Path: f.Name(), Err: syscall.EIO}
 	}
 	return f.File.Sync()
+}
+
+func (f faultyFile) Chmod(mode fs.FileMode) error {
+	if f.chmodFails > 0 {
+		f.chmodFails--
+		return &fs.PathError{Op: "chmod", Path: f.Name(), Err: syscall.EIO}
+	}
+	return f.File.Chmod(mode)
+}
+
+func (f faultyFile) Stat() (fs.FileInfo, error) {
+	info, err := f.File.Stat()
+	if err == nil && f.stat != nil {
+		info = f.stat(info)
+	}
+	return info, err
 }
 
 // fakeFiles is osFiles with faults: backups go to a folder of the test.
