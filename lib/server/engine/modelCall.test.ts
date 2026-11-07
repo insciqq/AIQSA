@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { gatewayRoutingLane } from "../providers/gatewayRouting";
-import { providerHttpFailureMessage } from "../providers/providerObservability";
+import { providerFailureMessage } from "../providers/providerFailureMessage";
 import { providerResponseFailure } from "../providers/responseFailure";
 import { markProviderStreamDrop } from "../providers/streamDrop";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { engineTestFaults } from "./faults";
-import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_RETRY, modelCallRetryDecision, type ModelCallPorts } from "./modelCall";
+import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_RETRY, MODEL_CALL_UNATTENDED_RETRY, modelCallRetryDecision, type ModelCallPorts } from "./modelCall";
 
 type Script = readonly (Readonly<{ events?: readonly ModelRunSseEvent[]; fail?: unknown; text?: string }>)[];
 
@@ -51,7 +51,7 @@ describe("native model call", () => {
     await expect(callModel(call, request)).rejects.toMatchObject({ code: "provider_request_rejected" });
     expect(provider.calls).toBe(1);
     expect(call.discarded).toEqual([]);
-    expect(providerHttpFailureMessage(rejected)).toContain("was not sent again");
+    expect(providerFailureMessage(rejected)).toContain("sending it again will not help");
   });
 
   describe("what the request waits on its provider for", () => {
@@ -230,6 +230,50 @@ describe("native model call", () => {
       await expect(callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now, sleep: clock.sleep }), request))
         .rejects.toThrow("stream_incomplete");
       expect(clock.provider.calls).toBe(6);
+    });
+
+    // An upstream that fails each attempt after about two minutes (codex-lb's `missing_response_created_timeout`).
+    const slowFailure = () => markProviderStreamDrop(new Error("server_error"), "response_failed");
+
+    it("starts no chat attempt three minutes after the request first failed", async () => {
+      const clock = clocked([{ fail: slowFailure() }], 121_000);
+      const waits: unknown[] = [];
+      await expect(callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now,
+        onProviderWait: (wait) => waits.push(wait), slowAfterMs: 1_000, sleep: clock.sleep }), request)).rejects.toThrow("server_error");
+      // The first failure at 121 s; the second and third attempts start within three minutes of it, a fourth would not:
+      // about six minutes of waiting instead of the six attempts' twelve.
+      expect(clock.provider.calls).toBe(3);
+      const firstFailedAt = clock.starts[0]! + 121_000;
+      expect(clock.starts.at(-1)! - firstFailedAt).toBeLessThanOrEqual(MODEL_CALL_RETRY.failureWindowMs!);
+      expect(clock.now() - firstFailedAt).toBeGreaterThan(MODEL_CALL_RETRY.failureWindowMs!);
+      expect(waits).toEqual(["retrying"]);
+    });
+
+    it("counts the window from the first failure, so a long answer that drops at its end is still retried", async () => {
+      const clock = clocked([{ fail: slowFailure() }, { events: [token("Done")], text: "Done" }], 600_000);
+      const result = await callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now, sleep: clock.sleep }), request);
+      expect(result.finalText).toBe("Done");
+      expect(clock.provider.calls).toBe(2);
+    });
+
+    it("still recovers a chat's request from a burst of short drops", async () => {
+      const failures = Array.from({ length: 5 }, () => ({ fail: drop() }));
+      const clock = clocked([...failures, { events: [token("Hello")], text: "Hello" }], 2_000);
+      const result = await callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now, sleep: clock.sleep }), request);
+      expect(result.finalText).toBe("Hello");
+      expect(clock.provider.calls).toBe(6);
+    });
+
+    it("keeps a scheduled or webhook occurrence's six attempts without the window", async () => {
+      const clock = clocked([{ fail: slowFailure() }], 121_000);
+      await expect(callModel(ports(clock.provider, { deadlineAt: clock.start + 3_600_000, now: clock.now, retry: MODEL_CALL_UNATTENDED_RETRY,
+        sleep: clock.sleep }), request)).rejects.toThrow("server_error");
+      expect(clock.provider.calls).toBe(6);
+      expect(MODEL_CALL_UNATTENDED_RETRY.failureWindowMs).toBeUndefined();
+    });
+
+    it("leaves Deep research's ten minutes from the first attempt as they were", () => {
+      expect(MODEL_CALL_RESEARCH_RETRY).toEqual({ backoff: MODEL_CALL_RETRY.backoff, maxAttempts: 50, windowMs: 600_000 });
     });
   });
 

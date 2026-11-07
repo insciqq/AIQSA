@@ -284,48 +284,6 @@ export function providerContextRejection(value: unknown): ProviderContextRejecti
   } catch { return null; }
 }
 
-/** Safe user-facing wording for a reviewed provider HTTP or transport
- * identity, or null. It names only the provider, status and allow-listed code. */
-export function providerHttpFailureMessage(value: unknown): string | null {
-  if (observedFailureCode(value) === "provider_request_outcome_unknown") {
-    // No provider evidence exists either way: claim neither a charge nor its absence.
-    return "The connection to the model provider was lost after the request may have been sent. " +
-      "Its outcome and any provider charge are unknown, so it was not repeated automatically.";
-  }
-  const rejection = providerContextRejection(value);
-  if (rejection) {
-    return `${rejection.httpStatus !== undefined
-      ? `The model provider rejected the request as too long for the model's context window (HTTP ${rejection.httpStatus}).`
-      : "The request exceeded the model's context window."} Reduce the context or choose a model with a larger context window.`;
-  }
-  const failure = geminiHttpFailure(value);
-  if (failure) return `The model provider rejected the request (Gemini HTTP ${failure.httpStatus}: ${failure.identity}).`;
-  const observed = observedFailure(value);
-  if (observed.code === "provider_http_invalid_request" && observed.httpStatus === 400) {
-    return "The model provider rejected the request (HTTP 400: invalid_request).";
-  }
-  const status = `HTTP ${observed.httpStatus}`;
-  switch (observed.code) {
-    case "provider_request_rejected":
-      return "The model provider rejected this request, so it was not sent again. Try changing the request or removing an attachment.";
-    case "provider_auth_rejected":
-      return `The model provider rejected the configured credentials (${status}). Ask an administrator to check the provider key.`;
-    case "provider_quota_exhausted":
-      return `The model provider reports that the account has no remaining quota or balance (${status}). Ask an administrator to check the provider account.`;
-    case "provider_rate_limited":
-      return `The model provider is limiting requests (${status}) and the retries did not succeed. Wait a minute before trying again.`;
-    // A run fails with these only after any admitted re-send did not help;
-    // nothing switches the model on the user's behalf.
-    case "provider_server_error":
-      return `The model provider returned a server error (${status}) and kept failing when retried. ` +
-        "Try again in a moment, or choose another model.";
-    default:
-      return observed.code === "unknown" && observed.stream_drop !== undefined
-        ? "The model provider kept failing before the response was complete. Try again in a moment, or choose another model."
-        : null;
-  }
-}
-
 export function observedFailureCode(value: unknown): ObservedFailureCode {
   const code = ownValue(value, "code");
   return typeof code === "string" && codeSet.has(code) ? code as ObservedFailureCode : "unknown";
