@@ -22,6 +22,7 @@ import {
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
+import type { ToolObservationAgentKind } from "../toolObservations/storeFailure";
 import { ComputerOpError, computerActivityFacts, computerUnknownOutcomeText } from "../tools/computerTools";
 import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "../tools/types";
@@ -160,8 +161,9 @@ export type ToolBatchDeps = Readonly<{
    */
   reservedToolName?: string;
   runId: string;
-  saveResult(input: Readonly<{ outcome: "complete" | "error"; signal: AbortSignal; source: ToolObservationSource;
-    sourceBinding?: ToolObservationSourceBinding; text: string; toolCallId: string }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>>;
+  /** `agentKind` names a sub-agent's host for the store's failure record (`execution.ts`, `subagents/runSubagents.ts`). */
+  saveResult(input: Readonly<{ agentKind?: ToolObservationAgentKind; outcome: "complete" | "error"; signal: AbortSignal;
+    source: ToolObservationSource; sourceBinding?: ToolObservationSourceBinding; text: string; toolCallId: string }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>>;
   signal: AbortSignal;
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;

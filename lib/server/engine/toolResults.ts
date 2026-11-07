@@ -9,6 +9,7 @@ import {
 import { searchToolResultFairShare } from "../search/toolResult";
 import { readObservationOriginal } from "../toolObservations/searchOriginal";
 import type { ToolObservationService } from "../toolObservations/service";
+import type { ToolObservationAgentKind } from "../toolObservations/storeFailure";
 import type { ModelToolCall, RunTool, ToolExecutionContent, ToolExecutionResult } from "../tools/types";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
@@ -101,6 +102,8 @@ export function toolModelOutput(result: ToolExecutionResult, text: string, excer
 
 /** Saves a long result text once as its call's observation; null when the store retained nothing. */
 export async function saveToolResultText(input: Readonly<{
+  /** The kind of agent whose call produced the text; only the store's failure record carries it. */
+  agentKind?: ToolObservationAgentKind;
   outcome: "complete" | "error";
   producer: Readonly<{ runId: string; toolCallId: string; userId: string }>;
   service: Pick<ToolObservationService, "withReservation">;
@@ -113,6 +116,7 @@ export async function saveToolResultText(input: Readonly<{
   const maximumBytes = Buffer.byteLength(JSON.stringify(input.text)) + 64;
   try {
     return await input.service.withReservation({
+      ...(input.agentKind ? { agentKind: input.agentKind } : {}),
       maximumBytes, producer: input.producer, source: input.source, ...(input.signal ? { signal: input.signal } : {}),
       ...(input.sourceBinding ? { sourceBinding: input.sourceBinding } : {})
     }, async (receipt) => {
