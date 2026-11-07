@@ -153,6 +153,24 @@ func TestWriteKeepsTheFilesEncoding(t *testing.T) {
 	}
 }
 
+// Without a code page (macOS, Linux) a file that is not UTF-8 has an
+// unknown encoding: a write beyond ASCII is refused and leaves it as it was,
+// while ASCII, which every such encoding stores alike, is written.
+func TestWriteOverAnUnknownEncodingRefusesTextBeyondASCII(t *testing.T) {
+	e, home := newTestExecutor(t, testSystem{})
+	legacy, _ := cp1251{}.Encode("Сумма: 100\r\n")
+	path := filepath.Join(home, "legacy.txt")
+	writeTestFile(t, path, legacy)
+	wantCode(t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "Сумма: 200\n"}, protocol.CodeComputerTextUnencodable)
+	if got := readTestFile(t, path); !bytes.Equal(got, legacy) {
+		t.Fatalf("a refused write changed the file: % x", got)
+	}
+	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: path, Cwd: home, Content: "Total: 200\n"})
+	if got := readTestFile(t, path); string(got) != "Total: 200\r\n" {
+		t.Fatalf("ASCII write: %q", got)
+	}
+}
+
 // A file too large to load keeps its encoding, BOM and line endings, told
 // from its start even where that start ends inside a character; a file
 // that cannot be read is not written.

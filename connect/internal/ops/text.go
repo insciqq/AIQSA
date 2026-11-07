@@ -125,6 +125,12 @@ func (f textFile) encode(text string) ([]byte, error) {
 			return nil, errUnencodable
 		}
 		body = encoded
+	case f.raw != nil && !isASCII(text):
+		// The file is not UTF-8 and no code page decodes it (a legacy encoding
+		// on macOS or Linux): its encoding is unknown, so text beyond ASCII,
+		// which every such encoding writes alike, is refused rather than
+		// silently stored as UTF-8.
+		return nil, errUnencodable
 	default:
 		body = []byte(text)
 	}
@@ -253,4 +259,14 @@ func cutLine(line string, max int) (string, bool) {
 		count++
 	}
 	return line, false
+}
+
+// isASCII reports whether text has only 7-bit characters.
+func isASCII(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
