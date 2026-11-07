@@ -140,13 +140,15 @@ export function isComputerToolName(value: unknown): value is ComputerToolName {
 /**
  * Codes the server decides for an operation: the device is not connected,
  * its stream dropped while the operation waited, it is gone or not the
- * user's, or AIQSA Connect is off.
+ * user's, or AIQSA Connect is off; or a file fetched in chunks changed
+ * between them (`computer_file_changed`, `lib/server/connect/computerFileFetch.ts`).
  */
 export const COMPUTER_SERVER_FAILURE_CODES = [
   "connect_device_offline",
   "connect_device_disconnected",
   "connect_device_unavailable",
-  "connect_disabled"
+  "connect_disabled",
+  "computer_file_changed"
 ] as const;
 
 /** Every stable code an operation can fail with: the server's and the device's ({@link CONNECT_OP_ERROR_CODES}). */
@@ -266,6 +268,7 @@ export const COMPUTER_ERROR_HTTP_STATUS = Object.freeze({
   computer_permission_denied: 403,
   computer_file_binary: 422,
   computer_file_too_large: 413,
+  computer_file_changed: 409,
   computer_edit_no_match: 422,
   computer_edit_ambiguous: 422,
   computer_job_not_found: 404,

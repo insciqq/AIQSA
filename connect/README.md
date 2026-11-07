@@ -319,7 +319,8 @@ Without a Go toolchain the development server answers
 - `internal/daemon/`: the `up` main loop: reconnects, the single event sender
   and server commands.
 - `internal/ops/`: the agent's operations: shell commands and background jobs,
-  reading, writing, editing and searching files, and the folder picker.
+  reading files as text or in byte chunks (`read_bytes`, files up to 64 MiB),
+  writing, editing and searching files, and the folder picker.
 - `internal/state/`: the connection state the Windows tray shows.
 - `internal/winapp/`: the Windows install, uninstall, switch and tray flows,
   testable on any system; the Win32 parts are in the `_windows.go` files.

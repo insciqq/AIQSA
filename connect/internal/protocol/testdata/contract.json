@@ -37,6 +37,8 @@
     "maxReadLineLength": 2000,
     "maxLineBytes": 8000,
     "maxReadBytes": 262144,
+    "maxBytesChunk": 262144,
+    "maxTransferBytes": 67108864,
     "maxLineNumber": 2147483647,
     "maxGlobPaths": 1000,
     "maxGrepMatches": 1000,
@@ -124,6 +126,7 @@
     "job_output",
     "job_stop",
     "read",
+    "read_bytes",
     "write",
     "edit",
     "glob",
@@ -150,7 +153,8 @@
     "urlPrefix": "^https?:\\/\\/",
     "devicePath": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\).*$",
     "jobId": "^job-[a-z0-9]{6,16}$",
-    "encoding": "^[a-z0-9][a-z0-9-]{0,31}$"
+    "encoding": "^[a-z0-9][a-z0-9-]{0,31}$",
+    "base64": "^[A-Za-z0-9+/]*={0,2}$"
   },
   "devicePaths": {
     "pairings": "/connect-api/v1/pairings",

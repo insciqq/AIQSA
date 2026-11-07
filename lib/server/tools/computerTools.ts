@@ -264,6 +264,7 @@ const FAILURE_TEXT: Readonly<Record<ComputerFailureCode, string>> = {
   computer_edit_ambiguous: "oldString occurs more than once in the file. Include more of the surrounding lines so it is unique, or set replaceAll.",
   computer_edit_no_match: "oldString is not in the file. Read the file again and copy the exact text.",
   computer_file_binary: "The file is binary, so it cannot be read as text; use a command for it.",
+  computer_file_changed: "The file changed on the computer while it was being read; read it again once it is no longer being written.",
   computer_file_too_large: "The file or the text is too large for this tool; read the file in parts with offset and limit, or use a command.",
   computer_is_a_directory: "The path is a folder, not a file.",
   computer_job_not_found: "No such background job: the id is wrong, or the job ended with an earlier answer.",
