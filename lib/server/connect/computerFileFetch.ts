@@ -89,6 +89,11 @@ export type ComputerFile = Readonly<{
   modifiedMs: number;
   /** The path's last part, `\` and `/` both separating; `file` when the path names none. */
   fileName: string;
+  /**
+   * Gives the file's bytes back to the process budget. The caller holds them reserved until its last use of `bytes`
+   * (an upload, a parse, a preview) and calls this in its own `finally`; calling it again does nothing.
+   */
+  release(): void;
 }>;
 
 /**
@@ -122,7 +127,8 @@ function failure(code: ComputerFailureCode, sent: boolean): ComputerFileFetchFai
 
 /**
  * Fetches the file at `path` whole, or fails with a stable code. The first chunk tells the size: a file over
- * `maxBytes` fails before the rest is read, and the size is reserved in the process budget until the fetch returns.
+ * `maxBytes` fails before the rest is read, and the size is reserved in the process budget until a failed fetch
+ * returns or the caller calls the file's `release`.
  * The rest follows {@link COMPUTER_FILE_FETCH_LIMITS}`.inFlight` calls at a time; every chunk must report the first
  * one's size and modification time, so a file written meanwhile fails rather than mixing versions. On any failure,
  * Stop or the deadline the other calls are aborted (the port cancels them on the device), and the fetch returns only
@@ -231,7 +237,10 @@ export async function fetchComputerFile(input: ComputerFileFetchInput): Promise<
     await Promise.all(Array.from({ length: Math.min(COMPUTER_FILE_FETCH_LIMITS.inFlight, offsets.length) }, worker));
     if (state.failed) return settled(state.failed.code);
     if (input.signal.aborted || timedOut) return settled("computer_cancelled");
-    return { bytes, fileName: computerFileName(input.path), modifiedMs: first.modifiedMs, ok: true, size: first.size };
+    // The bytes stay reserved with the file the caller now holds, until it releases them.
+    const handed = release ?? (() => undefined);
+    release = null;
+    return { bytes, fileName: computerFileName(input.path), modifiedMs: first.modifiedMs, ok: true, release: handed, size: first.size };
   } finally {
     clearTimeout(timer);
     release?.();

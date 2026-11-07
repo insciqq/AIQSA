@@ -37,6 +37,7 @@ import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { decodeFrozenComputerBinding } from "../tools/computerBinding";
 import { executeComputerAttachFile } from "../tools/computerAttachFile";
 import { createComputerReadFiles } from "../tools/computerReadFiles";
+import { createRequestImageAllowance } from "../tools/requestImageAllowance";
 import { computerEngineTools } from "../tools/computerTools";
 import type { ComputerOps } from "../connect/computerPort";
 import type { ComputerOutputStore } from "../connect/computerOutputs";
@@ -436,6 +437,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   // A result image the run's requests do not carry is named with the way this run can see it again.
   let images: TranscriptImages | undefined;
+  // One request's image room for every tool whose results carry previews: count, bytes and window share are the request's.
+  const imageAllowance = createRequestImageAllowance(request);
   for (const definition of analyzeImageTools(request)) {
     if (definition.name !== ANALYZE_IMAGE_TOOL_NAME || !input.services.vision) continue;
     const service = input.services.vision;
@@ -447,7 +450,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   // Direct view, frozen at admission with the chat model's verified vision: the run's requests carry its own
   // previews as image content of their results (`directImageView.ts`).
   if (clientTools && request.workspaceImageView === true && request.workspace && input.services.workspace) {
-    const viewer = createWorkspaceImageViewer({ captures: input.services.workspaceImageCaptures ?? defaultWorkspaceImageCaptures,
+    const viewer = createWorkspaceImageViewer({ allowance: imageAllowance,
+      captures: input.services.workspaceImageCaptures ?? defaultWorkspaceImageCaptures,
       ...(prepareWorkspace ? { prepareWorkspace } : {}), request, runId: input.runId, userId: input.userId });
     add({ activity: named(viewWorkspaceImageTool, "Workspace"), definition: viewWorkspaceImageTool, effects: "none",
       observationSource: "workspace", execute: (execution) => viewer.execute(execution.call, execution, execution.signal) });
@@ -455,7 +459,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
 
   if (!request.workspace) {
-    const files = createChatFileTool({ request, runId: input.runId, userId: input.userId, resultImages: input.resultImages === true,
+    const files = createChatFileTool({ allowance: imageAllowance, request, runId: input.runId, userId: input.userId,
+      resultImages: input.resultImages === true,
       reader: input.services.chatFiles, readImage: input.services.images?.readConversationImage });
     add({ activity: named(readChatFileTool, "Chat files"), definition: readChatFileTool, effects: "none", observationSource: "workspace",
       execute: (execution) => files.execute(execution.call, execution.round, execution.signal) });
@@ -690,7 +695,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   if (computer) {
     // Documents and images `computer_read` reads, in this run's memory: its previews ride on its own requests whether or not
     // the run has a Workspace, gated on the model this request names and its route (a sub-agent's own).
-    const files = createComputerReadFiles({ request, resultImages: input.resultImages === true, runId: input.runId });
+    const files = createComputerReadFiles({ allowance: imageAllowance, request, resultImages: input.resultImages === true,
+      runId: input.runId });
     const context = { binding: computer, ...(input.services.computer ? { ops: input.services.computer } : {}), runId: input.runId,
       ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId };
     const outputs = input.services.computerOutputs;

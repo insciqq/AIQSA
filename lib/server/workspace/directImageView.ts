@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { imageTokenEstimator } from "../../domain/imageTokenEstimate";
-import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import type { ProviderHistoryImage } from "../providers/history";
 import type { ProviderRunRequest } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import { DIRECT_IMAGE_VIEW_LIMITS } from "./directImageLimits";
+import { createRequestImageAllowance, type AllowanceEntry, type RequestImageAllowance } from "../tools/requestImageAllowance";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import type { WorkspaceImageEvidence } from "./directImageEvidence";
@@ -24,7 +24,9 @@ import type { createWorkspaceSelectedCaptures } from "./selectedCapture";
  *
  * A request carries the run's newest previews within per-request bounds:
  * count, bytes, the model's declared image limits and a share of its window,
- * the images of the run's own input counted first. A view that does not fit
+ * the images of the run's own input counted first, one room shared with the
+ * agent's other image tools (`read_chat_file`, `computer_read`;
+ * `lib/server/tools/requestImageAllowance.ts`). A view that does not fit
  * releases previews earlier requests already carried, oldest first and down
  * to half the count bound, so the requests' common prefix changes only every
  * few views and provider prompt caches keep reading it; previews no request
@@ -36,18 +38,7 @@ import type { createWorkspaceSelectedCaptures } from "./selectedCapture";
  * flight. A view the budget cannot take is refused with what to do instead,
  * never queued for long.
  */
-export const DIRECT_IMAGE_VIEW_LIMITS = Object.freeze({
-  /** Bytes of one preview: under Anthropic's 5 MB per image once base64-encoded. */
-  imageBytes: 3 * 1024 * 1024,
-  /** Pixels of one preview: the largest resize the tool takes (2048×2048). */
-  imagePixels: 2048 * 2048,
-  /** Base64 bytes of the previews one request carries, well inside every route's request size limit. */
-  requestBytes: 12 * 1024 * 1024,
-  /** Previews one request carries (`viewWorkspaceImageTool`'s description says so). */
-  requestImages: 8,
-  /** Share of the model's context window the previews of one request may take. */
-  windowShare: 0.25
-});
+export { DIRECT_IMAGE_VIEW_LIMITS };
 
 /**
  * What the runs of one process share. The app container has 2 GiB by
@@ -176,15 +167,11 @@ export type WorkspaceImageViewer = Readonly<{
     signal?: AbortSignal): Promise<ToolExecutionResult>;
 }>;
 
-type HeldPreview = Readonly<{
+/** A preview the viewer holds, counted in the agent's shared request room (its size and round). */
+type HeldPreview = AllowanceEntry & Readonly<{
   consumerKey: string;
   descriptor: WorkspaceImageDescriptor;
-  /** Base64 characters the preview adds to a request. */
-  encodedBytes: number;
   image: ProviderHistoryImage;
-  /** The round whose batch viewed it: requests of later rounds carried it. */
-  round: number;
-  tokens: number;
 }>;
 
 /** What to do instead, for refusals the model can act on; any other failure stays the batch's. */
@@ -252,13 +239,20 @@ export function createWorkspaceImageViewer(input: Readonly<{
   runId: string;
   /** Settles when the run ends, which frees its previews; the run's own settlement in this process by default. */
   runEnded?: Promise<void> | null;
+  /** The agent's request room, shared with its other image tools (`RequestImageAllowance`); the viewer's own by default. */
+  allowance?: RequestImageAllowance;
   userId: string;
 }>): WorkspaceImageViewer {
   const { request } = input;
   const budget = input.budget ?? directImageBudget();
   const limits = request.modelCapabilities.imageInputLimits;
-  const estimateTokens = imageTokenEstimator({ modelId: request.modelId, provider: request.provider });
+  const allowance = input.allowance ?? createRequestImageAllowance(request);
   const held: HeldPreview[] = [];
+  const forget = (entry: HeldPreview) => {
+    const index = held.indexOf(entry);
+    if (index >= 0) held.splice(index, 1);
+    allowance.remove(entry);
+  };
   /** Attempts per call: the batch retries a read-only call after a transient failure under the same call id. */
   const attempts = new Map<string, number>();
   let ended = false;
@@ -275,41 +269,10 @@ export function createWorkspaceImageViewer(input: Readonly<{
   const releaseAll = () => {
     ended = true;
     budget.free(heldBytes(held));
+    for (const entry of held) allowance.remove(entry);
     held.length = 0;
   };
   void runEnded?.then(releaseAll, releaseAll);
-
-  /** What one request has room for: the run's input images ride on every request and count first. */
-  function capacity() {
-    const own = request.attachments.filter((attachment) => attachment.kind === "image" && typeof attachment.dataUrl === "string");
-    const window = request.modelCapabilities.contextWindow;
-    const ownTokens = providerAttachmentBudgetTokens({ attachments: own, estimateImageTokens: estimateTokens,
-      modelCapabilities: request.modelCapabilities });
-    return {
-      bytes: Math.max(0, Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestBytes, limits?.payloadBytes ?? Infinity) -
-        own.reduce((total, attachment) => total + attachment.dataUrl!.length, 0)),
-      count: Math.max(0, Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestImages, limits?.imageCount ?? Infinity) - own.length),
-      tokens: typeof window === "number" && window > 0
-        ? Math.max(0, Math.floor(window * DIRECT_IMAGE_VIEW_LIMITS.windowShare) - ownTokens) : Infinity
-    };
-  }
-
-  /** The run's previews that stay when `next` joins them, or null when this round's own previews already fill a request. */
-  function planHold(next: Pick<HeldPreview, "encodedBytes" | "round" | "tokens">): HeldPreview[] | null {
-    const bound = capacity();
-    const fits = (list: readonly HeldPreview[]) => list.length + 1 <= bound.count &&
-      heldBytes(list) + next.encodedBytes <= bound.bytes &&
-      list.reduce((total, entry) => total + entry.tokens, next.tokens) <= bound.tokens;
-    const carried = (entry: HeldPreview) => entry.round < next.round;
-    let kept = [...held];
-    if (!fits(kept)) {
-      while (!fits(kept) && kept[0] && carried(kept[0])) kept = kept.slice(1);
-      if (!fits(kept)) return null;
-      const half = Math.floor(bound.count / 2);
-      while (kept.length + 1 > half && kept[0] && carried(kept[0])) kept = kept.slice(1);
-    }
-    return kept;
-  }
 
   return {
     attached(result) {
@@ -364,15 +327,19 @@ export function createWorkspaceImageViewer(input: Readonly<{
         }
         signal?.throwIfAborted();
         if (ended) throw new WorkspaceImageError("workspace_image_cancelled");
-        const next = { encodedBytes: Math.ceil(bytes.byteLength / 3) * 4, round: execution.round, tokens: estimateTokens(descriptor) };
-        const kept = planHold(next);
-        if (!kept) return refusal(call, "workspace_image_limit_exceeded", REQUEST_FULL);
-        // The process's budget takes the encoding before it exists, net of the previews this run lets go for it.
-        if (!budget.swap(next.encodedBytes, heldBytes(held.filter((entry) => !kept.includes(entry))))) {
+        const next = { encodedBytes: Math.ceil(bytes.byteLength / 3) * 4, round: execution.round, tokens: allowance.tokens(descriptor) };
+        // The request's room is shared with the agent's other image tools, so the previews let go may be theirs.
+        const drops = allowance.plan(next);
+        if (!drops) return refusal(call, "workspace_image_limit_exceeded", REQUEST_FULL);
+        // The process's budget takes the encoding before it exists, net of the previews let go for it.
+        if (!budget.swap(next.encodedBytes, drops.reduce((total, entry) => total + entry.encodedBytes, 0))) {
           return refusal(call, "workspace_image_busy", REFUSALS.workspace_image_busy!);
         }
-        held.splice(0, held.length, ...kept, { ...next, consumerKey: consumer.consumerKey, descriptor,
-          image: { data: bytes.toString("base64"), mimeType: descriptor.mimeType } });
+        for (const entry of drops) entry.drop();
+        const entry: HeldPreview = { ...next, consumerKey: consumer.consumerKey, descriptor, drop: () => forget(entry),
+          image: { data: bytes.toString("base64"), mimeType: descriptor.mimeType } };
+        held.push(entry);
+        allowance.add(entry);
         const path = selected.file.root === "output" ? `${workspace.outputDirectory}/${selected.file.relativePath}`
           : `/workspace/${selected.file.root}/${selected.file.relativePath}`;
         return { callId: call.id, content: [{ text: previewText(path, descriptor), type: "text" },

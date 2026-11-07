@@ -39,7 +39,6 @@ import { computerOsLabel, type FrozenComputerBinding } from "./computerBinding";
 import {
   COMPUTER_DOCUMENT_TYPES,
   COMPUTER_IMAGE_TYPES,
-  COMPUTER_READ_FILE_CALL_MS,
   COMPUTER_READ_FILE_LIMITS,
   type ComputerFileRead,
   type ComputerReadFiles
@@ -99,15 +98,17 @@ export const COMPUTER_TOOL_EFFECTS: Readonly<Record<ComputerToolName, Exclude<Ha
 });
 
 /**
- * The longest one call of the tool may take (`toolCallBounds`): a command's longest timeout and its reply, a document's
- * transfer and parse for `computer_read` (`computerReadFiles.ts`), a file's transfer to the answer for
- * `computer_attach_file`, else a minute.
+ * The longest one call of the tool may take (`toolCallBounds`): a command's longest timeout and its reply, a file's
+ * transfer to the answer for `computer_attach_file`, else a minute. The engine reads it only to decide whether a call
+ * may still start before the turn's tool time ends, never to stop one. `computer_read` keeps the minute whatever it
+ * reads, so a text read late in a turn still starts; a document or image read (`computerReadFiles.ts`) then runs each
+ * step to at most the tool time left (`within`), never past it.
  */
 export function computerToolCallMs(name: string): number {
   if (name === COMPUTER_ATTACH_FILE_TOOL_NAME) return COMPUTER_ATTACH_FILE_LIMITS.callMs;
   return name === "computer_shell"
     ? CONNECT_MAX_SHELL_TIMEOUT_SECONDS * 1_000 + COMPUTER_TOOL_LIMITS.shellReplyMs
-    : name === "computer_read" ? COMPUTER_READ_FILE_CALL_MS : COMPUTER_TOOL_LIMITS.callMs;
+    : COMPUTER_TOOL_LIMITS.callMs;
 }
 
 // Definitions. Descriptions depend only on the frozen binding's OS, never on whether the computer is online (D-08).
