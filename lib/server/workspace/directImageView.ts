@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ProviderHistoryImage } from "../providers/history";
 import type { ProviderRunRequest } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import { DIRECT_IMAGE_VIEW_LIMITS } from "./directImageLimits";
 import { createRequestImageAllowance, type AllowanceEntry, type RequestImageAllowance } from "../tools/requestImageAllowance";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
@@ -37,18 +38,7 @@ import type { createWorkspaceSelectedCaptures } from "./selectedCapture";
  * flight. A view the budget cannot take is refused with what to do instead,
  * never queued for long.
  */
-export const DIRECT_IMAGE_VIEW_LIMITS = Object.freeze({
-  /** Bytes of one preview: under Anthropic's 5 MB per image once base64-encoded. */
-  imageBytes: 3 * 1024 * 1024,
-  /** Pixels of one preview: the largest resize the tool takes (2048×2048). */
-  imagePixels: 2048 * 2048,
-  /** Base64 bytes of the previews one request carries, well inside every route's request size limit. */
-  requestBytes: 12 * 1024 * 1024,
-  /** Previews one request carries (`viewWorkspaceImageTool`'s description says so). */
-  requestImages: 8,
-  /** Share of the model's context window the previews of one request may take. */
-  windowShare: 0.25
-});
+export { DIRECT_IMAGE_VIEW_LIMITS };
 
 /**
  * What the runs of one process share. The app container has 2 GiB by
