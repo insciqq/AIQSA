@@ -33,10 +33,15 @@ type System interface {
 	Hidden(info fs.FileInfo) bool
 	// OSVersion describes the system for device_info, for example "Ubuntu 24.04.1 LTS".
 	OSVersion() string
+	// WritesInPlace reports whether an existing file is always written in
+	// place (writeInPlace) instead of replaced: true on macOS, whose
+	// extended ACLs (chmod +a) are not extended attributes, so a
+	// replacement file could not take them without cgo.
+	WritesInPlace() bool
 	// PrepareReplacement gives tmp, the open replacement for the file at
 	// path described by info, what is attached to that file besides its
 	// data: owner, group, mode bits and extended attributes (POSIX ACLs
-	// included) on macOS and Linux, attributes on Windows.
+	// included) on Linux, attributes on Windows.
 	// errWriteInPlace when it cannot, so nothing attached is lost.
 	PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error
 	// Replace moves the closed replacement tmp over path: a rename on macOS

@@ -153,6 +153,55 @@ func TestWriteKeepsTheFilesEncoding(t *testing.T) {
 	}
 }
 
+// A file too large to load keeps its encoding, BOM and line endings, told
+// from its start even where that start ends inside a character; a file
+// that cannot be read is not written.
+func TestWriteOverAFileTooLargeToLoadKeepsItsEncoding(t *testing.T) {
+	e, home := newTestExecutor(t, testSystem{codePage: cp1251{}})
+	previous := maxTextFileBytes
+	// Odd, so the start read ends inside a UTF-16 code unit.
+	maxTextFileBytes = 65
+	t.Cleanup(func() { maxTextFileBytes = previous })
+
+	utf16 := filepath.Join(home, "utf16.txt")
+	writeTestFile(t, utf16, utf16Bytes(bomUTF16LE, false, strings.Repeat("строка\r\n", 6)))
+	w := mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: utf16, Cwd: home, Content: "новое\nвсё\n"})
+	want := utf16Bytes(bomUTF16LE, false, "новое\r\nвсё\r\n")
+	if got := readTestFile(t, utf16); !bytes.Equal(got, want) || w.Bytes != int64(len(want)) {
+		t.Fatalf("utf-16: % x (%+v)", got, w)
+	}
+
+	// "Ш" is D0 A8 in UTF-8, both bytes letters of the code page: cut after
+	// D0, the start must still read as UTF-8.
+	utf8File := filepath.Join(home, "utf8.txt")
+	writeTestFile(t, utf8File, []byte(strings.Repeat("Ш", 40)))
+	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: utf8File, Cwd: home, Content: "Шов\n"})
+	if got := readTestFile(t, utf8File); string(got) != "Шов\n" {
+		t.Fatalf("utf-8: % x", got)
+	}
+
+	ansi := filepath.Join(home, "ansi.txt")
+	ansiOld, _ := cp1251{}.Encode(strings.Repeat("Договор\r\n", 10))
+	writeTestFile(t, ansi, ansiOld)
+	mustRun[*protocol.WriteResult](t, e, &protocol.WriteArgs{Path: ansi, Cwd: home, Content: "Итог\n"})
+	if ansiNew, _ := (cp1251{}).Encode("Итог\r\n"); !bytes.Equal(readTestFile(t, ansi), ansiNew) {
+		t.Fatalf("ansi: % x", readTestFile(t, ansi))
+	}
+
+	if os.Getuid() != 0 {
+		writeOnly := filepath.Join(home, "write-only.txt")
+		writeTestFile(t, writeOnly, utf16Bytes(bomUTF16LE, false, "x"))
+		if err := os.Chmod(writeOnly, 0o200); err != nil {
+			t.Fatal(err)
+		}
+		wantCode(t, e, &protocol.WriteArgs{Path: writeOnly, Cwd: home, Content: "y"}, protocol.CodeComputerPermissionDenied)
+		os.Chmod(writeOnly, 0o600)
+		if got := readTestFile(t, writeOnly); !bytes.Equal(got, utf16Bytes(bomUTF16LE, false, "x")) {
+			t.Fatalf("a file that could not be read was written: % x", got)
+		}
+	}
+}
+
 // write and edit replace a file through a rename: its mode stays, a link
 // still points at it, and nothing is left beside it.
 func TestWriteAndEditReplaceAtomically(t *testing.T) {

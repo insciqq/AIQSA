@@ -276,6 +276,22 @@ func isNotDirError(err error) bool {
 
 func isIsDirError(err error) bool { return errors.Is(err, syscall.EISDIR) }
 
+// isNoSpaceError is a full disk, a disk quota or a file too large for the
+// volume.
+func isNoSpaceError(err error) bool {
+	for _, code := range []syscall.Errno{windows.ERROR_DISK_FULL, windows.ERROR_HANDLE_DISK_FULL,
+		windows.ERROR_DISK_QUOTA_EXCEEDED, windows.ERROR_FILE_TOO_LARGE, syscall.ENOSPC, syscall.EFBIG} {
+		if errors.Is(err, code) {
+			return true
+		}
+	}
+	return false
+}
+
+// WritesInPlace is false: ReplaceFileW keeps what is attached to the file
+// (Replace).
+func (nativeSystem) WritesInPlace() bool { return false }
+
 // PrepareReplacement gives a replacement file the hidden, system, archive
 // and not-indexed attributes of the file it replaces; ReplaceFileW keeps
 // the rest (Replace). Read-only is not copied: a read-only file cannot be

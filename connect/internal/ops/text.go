@@ -75,6 +75,26 @@ func decodeText(data []byte, cp CodePage) (textFile, error) {
 	return textFile{text: strings.ToValidUTF8(string(data), "�"), encoding: "utf-8", raw: data}, nil
 }
 
+// decodeStart tells how a file stores its text from its first bytes, data,
+// which may end inside a character: UTF-8 cut there stays UTF-8 rather
+// than the code page, UTF-16 stays UTF-16 rather than binary, and a
+// code page's character cut in two does not make the file raw. Its text
+// is only that start.
+func decodeStart(data []byte, cp CodePage) (textFile, error) {
+	if bytes.HasPrefix(data, bomUTF16LE) || bytes.HasPrefix(data, bomUTF16BE) {
+		// A code unit cut in two; a surrogate pair cut in two decodes as U+FFFD.
+		return decodeText(data[:len(data)&^1], cp)
+	}
+	file, err := decodeText(trimUTF8End(data), cp)
+	if err == nil && file.raw != nil && cp != nil && len(data) > 1 {
+		// A double-byte character of the code page cut in two.
+		if shorter, err := decodeText(data[:len(data)-1], cp); err == nil && shorter.codePage != nil {
+			return shorter, nil
+		}
+	}
+	return file, err
+}
+
 func decodeUTF16(body []byte, order binary.ByteOrder, name string, bom []byte) (textFile, error) {
 	if len(body)%2 != 0 {
 		return textFile{}, errBinary
