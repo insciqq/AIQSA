@@ -2095,7 +2095,9 @@ describe("model run route handlers", () => {
     const plain = await send({ computer: { cwd: "~", deviceId: other } });
     expect(plain.status).toBe(200);
     await plain.text();
-    expect(state.created?.normalizedRequest.computer).toBeUndefined();
+    // `state.created = null` above narrows the field to null for TypeScript; the send sets it again.
+    const createdPlain = state.created as unknown as { normalizedRequest: { computer?: unknown } } | null;
+    expect(createdPlain?.normalizedRequest.computer).toBeUndefined();
     expect(state.created).not.toHaveProperty("chatComputer");
 
     // The gated run's computer is rechecked as a regenerate's is: Connect turned off since refuses the turn visibly.
