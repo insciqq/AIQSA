@@ -61,7 +61,8 @@ describe("computer tool definitions", () => {
 
   it("bounds a command by its longest timeout and its reply, and the rest by a minute", () => {
     expect(computerToolCallMs("computer_shell")).toBe(600_000 + COMPUTER_TOOL_LIMITS.shellReplyMs);
-    expect(computerToolCallMs("computer_read")).toBe(COMPUTER_READ_FILE_LIMITS.fetchMs + COMPUTER_READ_FILE_LIMITS.parseMs);
+    expect(computerToolCallMs("computer_read")).toBe(COMPUTER_READ_FILE_LIMITS.fetchMs + COMPUTER_READ_FILE_LIMITS.parseMs +
+      COMPUTER_READ_FILE_LIMITS.pdfFallbackMs);
     expect(computerToolCallMs("computer_grep")).toBe(60_000);
   });
 });

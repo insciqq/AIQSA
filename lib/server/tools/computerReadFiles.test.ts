@@ -65,19 +65,23 @@ function parsed(text: string, status: "complete" | "partial" = "complete"): Pars
     quality: {} as ParsedDocument["quality"], status, text, warnings: [], workbook: null };
 }
 
-function setup(options: Readonly<{ vision?: boolean; parse?: (input: DocumentParseInput) => Promise<ParsedDocument>;
-  limits?: { available: boolean; maxBytes: number } | null; answer?: Parameters<typeof device>[0] }> = {}) {
+type PdfText = (bytes: Buffer, signal: AbortSignal) => Promise<Readonly<{ text: string; status: "complete" | "partial" | "no_text" }>>;
+
+function setup(options: Readonly<{ vision?: boolean; resultImages?: boolean; parse?: (input: DocumentParseInput) => Promise<ParsedDocument>;
+  limits?: { available: boolean; maxBytes: number } | null; answer?: Parameters<typeof device>[0]; pdfText?: PdfText }> = {}) {
   const computer = device(options.answer);
   const parse = vi.fn<(input: DocumentParseInput) => Promise<ParsedDocument>>(options.parse ?? (async () => parsed("one\ntwo\nthree\nfour\n")));
+  const pdfText = vi.fn<PdfText>(options.pdfText ?? (async () => { throw new Error("unpdf failed"); }));
   let finish!: () => void;
   const runEnded = new Promise<void>((resolve) => { finish = resolve; });
   const budget = createDirectImageBudget();
   const files = createComputerReadFiles({ budget, parse, parserLimits: () => options.limits === undefined
-    ? { available: true, maxBytes: 25_000_000 } : options.limits, request: request(options.vision ?? true), runEnded, runId: RUN });
+    ? { available: true, maxBytes: 25_000_000 } : options.limits, pdfText, request: request(options.vision ?? true),
+  resultImages: options.resultImages ?? true, runEnded, runId: RUN });
   const context: ComputerToolContext = { binding, files, ops: computer.ops, runId: RUN, userId: USER };
   const read = (path: string, offset: number | null = null, limit: number | null = null, id = "r1") =>
     executeComputerTool(context, { arguments: { limit, offset, path }, id, name: "computer_read" }, new AbortController().signal, 1);
-  return { budget, computer, end: async () => { finish(); await runEnded; }, files, parse, read };
+  return { budget, computer, end: async () => { finish(); await runEnded; }, files, parse, pdfText, read };
 }
 
 const text = (result: ToolExecutionResult) => (result.content[0] as { text: string }).text;
@@ -148,6 +152,29 @@ describe("a document on the computer", () => {
     expect(missing.parse).not.toHaveBeenCalled();
   });
 
+  it("reads a PDF with unpdf when the parser is unavailable or timed out, as uploads do, and keeps the parser's code otherwise", async () => {
+    const run = setup({ parse: async () => { throw new DocumentParserError("parser_unavailable", "tika"); },
+      pdfText: async () => ({ status: "complete", text: "page one\r\npage two\n" }) });
+    run.computer.files.set("scan.pdf", { bytes: Buffer.from("%PDF-1.7"), modifiedMs: MODIFIED });
+    expect(text(await run.read("scan.pdf"))).toBe("scan.pdf: lines 1-2 of 2 (extracted text from pdf, not the file's raw bytes)\n" +
+      "     1\tpage one\n     2\tpage two");
+    expect(run.pdfText).toHaveBeenCalledTimes(1);
+    const timedOut = setup({ parse: async () => { throw new DocumentParserError("parser_timeout", "tika"); } });
+    timedOut.computer.files.set("scan.pdf", { bytes: Buffer.from("%PDF-1.7"), modifiedMs: MODIFIED });
+    // unpdf failed too: the parser's own code stands.
+    expect(failure(await timedOut.read("scan.pdf"))).toMatchObject({ error: "parser_timeout" });
+    expect(timedOut.pdfText).toHaveBeenCalledTimes(1);
+    const docx = setup({ parse: async () => { throw new DocumentParserError("parser_unavailable", "tika"); },
+      pdfText: async () => ({ status: "complete", text: "never" }) });
+    docx.computer.files.set("report.docx", { bytes: Buffer.from("x"), modifiedMs: MODIFIED });
+    expect(failure(await docx.read("report.docx"))).toMatchObject({ error: "parser_unavailable" });
+    expect(docx.pdfText).not.toHaveBeenCalled();
+    const rejected = setup({ parse: async () => { throw new DocumentParserError("parser_rejected", "tika"); } });
+    rejected.computer.files.set("bad.pdf", { bytes: Buffer.from("x"), modifiedMs: MODIFIED });
+    expect(failure(await rejected.read("bad.pdf"))).toMatchObject({ error: "parser_rejected" });
+    expect(rejected.pdfText).not.toHaveBeenCalled();
+  });
+
   it("refuses a document over the parser's limit after its first chunk", async () => {
     const run = setup({ limits: { available: true, maxBytes: 1_048_576 } });
     run.computer.files.set("big.pdf", { bytes: Buffer.alloc(2 * 1_048_576), modifiedMs: MODIFIED });
@@ -211,6 +238,11 @@ describe("an image on the computer", () => {
     expect(failure(result)).toMatchObject({ error: "computer_image_needs_vision",
       message: expect.stringContaining("choose a model that can see images") });
     expect(run.computer.calls).toEqual([]);
+    // A vision model on a route whose requests carry no result image would never see it either.
+    const route = setup({ resultImages: false });
+    expect(failure(await route.read("photo.png"))).toMatchObject({ error: "computer_image_needs_vision",
+      message: expect.stringContaining("Nothing was sent to the computer") });
+    expect(route.computer.calls).toEqual([]);
   });
 
   it("refuses an image over 24 MiB and one that does not decode", async () => {
@@ -221,6 +253,12 @@ describe("an image on the computer", () => {
       message: expect.stringContaining("larger than the 24 MiB") });
     run.computer.files.set("broken.png", { bytes: Buffer.from("not a png"), modifiedMs: MODIFIED });
     expect(failure(await run.read("broken.png"))).toMatchObject({ error: "image_reference_unsupported" });
+    // A GIF whose header reads but whose data stops early fails inside the decoder: still a stable refusal.
+    const gif = await sharp({ create: { background: "red", channels: 3, height: 20, width: 20 } }).gif().toBuffer();
+    run.computer.files.set("cut.gif", { bytes: Buffer.concat([gif.subarray(0, 40), Buffer.from([0x3b])]), modifiedMs: MODIFIED });
+    const cut = await run.read("cut.gif");
+    expect(cut.status).toBe("error");
+    expect(failure(cut)).toMatchObject({ error: "image_reference_unsupported" });
   });
 });
 
@@ -228,7 +266,7 @@ describe("other files", () => {
   it("keeps the device's text read, and a binary file's refusal names what computer_read and computer_attach_file do", async () => {
     const ops = createFakeComputerOps();
     ops.enqueue({ code: "computer_file_binary", ok: false, sent: true }, "read");
-    const files = createComputerReadFiles({ request: request(true), runEnded: null, runId: RUN });
+    const files = createComputerReadFiles({ request: request(true), resultImages: true, runEnded: null, runId: RUN });
     const result = await executeComputerTool({ binding, files, ops, runId: RUN, userId: USER },
       { arguments: { limit: null, offset: null, path: "data.bin" }, id: "b1", name: "computer_read" }, new AbortController().signal);
     expect(ops.calls[0]).toMatchObject({ op: "read" });

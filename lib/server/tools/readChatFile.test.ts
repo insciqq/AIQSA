@@ -91,7 +91,7 @@ describe("read_chat_file", () => {
     const readImage = vi.fn(async () => ({ bytes: Buffer.from("synthetic pixels"), mimeType: "image/png" as const, width: 100, height: 100 }));
     const base = request();
     const { tool: viewer } = tool({ ...file, kind: "image" }, { request: request({ modelCapabilities: { ...base.modelCapabilities, vision: true } }),
-      readImage, budget, runEnded });
+      readImage, budget, resultImages: true, runEnded });
     const shown = await viewer.execute(call({ attachment_id: "old-image" }), 1);
     expect(readImage).toHaveBeenCalledWith({ attachmentId: "old-image", chatId: "chat", userId: "owner" }, undefined);
     const items: TranscriptItem[] = [ { id: "c", kind: "tool_call", callId: shown.callId, name: shown.name, arguments: "{}" },
@@ -112,7 +112,16 @@ describe("read_chat_file", () => {
 
   it("refuses an image on a nonvision model without reading pixels", async () => {
     const readImage = vi.fn();
-    const { tool: reader } = tool({ ...file, kind: "image" }, { readImage });
+    const { tool: reader } = tool({ ...file, kind: "image" }, { readImage, resultImages: true });
+    expect(json(await reader.execute(call({ attachment_id: "old-image" }), 1)).error).toBe("chat_image_unavailable");
+    expect(readImage).not.toHaveBeenCalled();
+  });
+
+  it("refuses an image to a vision model whose route carries no result image, without reading pixels", async () => {
+    const readImage = vi.fn();
+    const base = request();
+    const { tool: reader } = tool({ ...file, kind: "image" }, { readImage,
+      request: request({ modelCapabilities: { ...base.modelCapabilities, vision: true } }) });
     expect(json(await reader.execute(call({ attachment_id: "old-image" }), 1)).error).toBe("chat_image_unavailable");
     expect(readImage).not.toHaveBeenCalled();
   });

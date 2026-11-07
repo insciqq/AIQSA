@@ -12,6 +12,8 @@ import { isDocumentParserError, type DocumentParserErrorCode } from "../parsing/
 import type { DocumentParseInput, ParsedDocument } from "../parsing/types";
 import type { ProviderRunRequest } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import { extractPdfTextChunks } from "../uploads/pdf";
+import { getPdfExtractionConfig } from "../uploads/pdfConfig";
 import { defaultUploadMaxBytes } from "../uploads/validation";
 import type { DirectImageBudget } from "../workspace/directImageView";
 import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
@@ -36,6 +38,8 @@ export const COMPUTER_READ_FILE_LIMITS = Object.freeze({
   fetchMs: 120_000,
   /** One document's parse; the parser's own timeout may be shorter. */
   parseMs: 120_000,
+  /** A PDF's text by unpdf when the parser was unavailable or timed out, as uploads read it. */
+  pdfFallbackMs: 60_000,
   /** The probe that tells whether a cached document is unchanged. */
   probeMs: 30_000,
   /** The largest image read, as for chat images (`WORKSPACE_IMAGE_LIMITS`). */
@@ -48,8 +52,9 @@ export const COMPUTER_READ_FILE_LIMITS = Object.freeze({
   minMs: 1_000
 });
 
-/** The longest one `computer_read` may take: a whole file's transfer and its parse. */
-export const COMPUTER_READ_FILE_CALL_MS = COMPUTER_READ_FILE_LIMITS.fetchMs + COMPUTER_READ_FILE_LIMITS.parseMs;
+/** The longest one `computer_read` may take: a whole file's transfer, its parse and a PDF's fallback. */
+export const COMPUTER_READ_FILE_CALL_MS = COMPUTER_READ_FILE_LIMITS.fetchMs + COMPUTER_READ_FILE_LIMITS.parseMs +
+  COMPUTER_READ_FILE_LIMITS.pdfFallbackMs;
 
 /** Plain-text formats the parser also reads but the device reads better as text. */
 const TEXT_FORMAT_IDS: ReadonlySet<string> = new Set(["csv", "html"]);
@@ -129,7 +134,9 @@ const size = (bytes: number) => bytes < 1_024 ? `${bytes} bytes` : bytes < 1_048
 function parserLimits(extension: string): Readonly<{ available: boolean; maxBytes: number }> | null {
   try {
     const tika = getDocumentParserConfig().tika;
-    return { available: Boolean(tika) || !sidecarExtensions.has(extension), maxBytes: tika?.requestMaxBytes ?? defaultUploadMaxBytes() };
+    // A PDF reads without the parser too (unpdf, as uploads do).
+    return { available: Boolean(tika) || !sidecarExtensions.has(extension) || extension === ".pdf",
+      maxBytes: tika?.requestMaxBytes ?? defaultUploadMaxBytes() };
   } catch {
     return null;
   }
@@ -140,6 +147,8 @@ type CachedText = { size: number; modifiedMs: number; text: string; partial: boo
 /** The run's document and image reads on the user's computer; built with its tool registry. */
 export function createComputerReadFiles(input: Readonly<{
   request: ProviderRunRequest;
+  /** The answer route carries a tool result's image (`rendersToolResultImages`); without it no image is shown. */
+  resultImages: boolean;
   runId: string;
   /** The process's preview budget by default. */
   budget?: DirectImageBudget;
@@ -149,6 +158,8 @@ export function createComputerReadFiles(input: Readonly<{
   parse?: (input: DocumentParseInput) => Promise<ParsedDocument>;
   /** Tests; the installation's parser settings by default. */
   parserLimits?: (extension: string) => Readonly<{ available: boolean; maxBytes: number }> | null;
+  /** Tests; unpdf under the uploads' PDF settings by default. */
+  pdfText?: (bytes: Buffer, signal: AbortSignal) => Promise<Readonly<{ text: string; status: "complete" | "partial" | "no_text" }>>;
 }>): ComputerReadFiles {
   const { request } = input;
   const runEnded = input.runEnded === undefined ? activeRunControllerRegistry.settled(input.runId) : input.runEnded;
@@ -156,6 +167,7 @@ export function createComputerReadFiles(input: Readonly<{
     ...(input.budget ? { budget: input.budget } : {}), runEnded });
   const parse = input.parse ?? ((document: DocumentParseInput) => createDocumentParserBoundary().parse(document));
   const limitsFor = input.parserLimits ?? parserLimits;
+  const pdfText = input.pdfText ?? ((bytes: Buffer, signal: AbortSignal) => extractPdfTextChunks(bytes, { config: getPdfExtractionConfig(), signal }));
   /** Most recently used last. */
   const cache = new Map<string, CachedText>();
   let ended = false;
@@ -205,8 +217,8 @@ export function createComputerReadFiles(input: Readonly<{
       return readDocument();
 
       async function readImage(): Promise<ToolExecutionResult> {
-        // Gated on the run's frozen model, as `read_chat_file` is; a sub-agent's request carries its own route's.
-        if (!request.modelCapabilities.vision) return args.failure("computer_image_needs_vision", false);
+        // Gated as `read_chat_file` is: the model this request names (a sub-agent's own) sees images and its route carries them.
+        if (!request.modelCapabilities.vision || !input.resultImages) return args.failure("computer_image_needs_vision", false);
         const fetched = await fetch(COMPUTER_READ_FILE_LIMITS.imageBytes);
         signal.throwIfAborted();
         if (!fetched.ok) return fetchFailure(fetched.code, fetched.sent, IMAGE_LIMIT_TEXT);
@@ -295,8 +307,26 @@ export function createComputerReadFiles(input: Readonly<{
             text: parsed.text.replace(/\r\n?/gu, "\n") };
         } catch (error) {
           signal.throwIfAborted();
-          if (timeout.aborted) return { error: "parser_timeout" };
-          return { error: isDocumentParserError(error) ? error.code : "parser_unavailable" };
+          const code: DocumentParserErrorCode = timeout.aborted ? "parser_timeout"
+            : isDocumentParserError(error) ? error.code : "parser_unavailable";
+          // As uploads do (`lib/server/uploads/processing.ts`): a PDF the parser could not take reads with unpdf.
+          if (kind.mimeType === "application/pdf" && (code === "parser_unavailable" || code === "parser_timeout")) {
+            return await pdfFallback(file) ?? { error: code };
+          }
+          return { error: code };
+        }
+      }
+
+      /** The PDF's text by unpdf, or null when it failed too; the parser's code then stands. */
+      async function pdfFallback(file: ComputerFile): Promise<CachedText | null> {
+        try {
+          const extracted = await pdfText(file.bytes, AbortSignal.any([signal, AbortSignal.timeout(within(COMPUTER_READ_FILE_LIMITS.pdfFallbackMs))]));
+          signal.throwIfAborted();
+          return { modifiedMs: file.modifiedMs, partial: extracted.status === "partial", size: file.size,
+            text: extracted.text.replace(/\r\n?/gu, "\n") };
+        } catch {
+          signal.throwIfAborted();
+          return null;
         }
       }
     }

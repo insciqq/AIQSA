@@ -286,7 +286,7 @@ const FAILURE_TEXT: Readonly<Record<ComputerFailureCode, string>> = {
     "computer_attach_file.",
   computer_file_changed: "The file changed on the computer while it was being read; read it again once it is no longer being written.",
   computer_file_too_large: "The file or the text is too large for this tool; read the file in parts with offset and limit, or use a command.",
-  computer_image_needs_vision: "The model of this chat cannot see images, so the image was not read. Tell the user to choose a " +
+  computer_image_needs_vision: "The model of this chat cannot be shown images here, so the image was not read. Tell the user to choose a " +
     "model that can see images for this chat and ask again; do not guess what the image shows.",
   computer_is_a_directory: "The path is a folder, not a file.",
   computer_job_not_found: "No such background job: the id is wrong, or the job ended with an earlier answer.",
