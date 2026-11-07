@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { createToolObservationRepository, OBSERVATION_AVAILABILITY_HANDLES, ObservationStoreError } from "./repository";
 import { TOOL_OBSERVATION_LIMITS, type ToolObservationBudgetUsage } from "./contract";
+import { observationStoreFailureStep } from "./storeFailure";
 
 const actor = { runId: "run-2", userId: "user-1" };
 
@@ -135,6 +136,25 @@ describe("observation availability", () => {
     const many = Array.from({ length: OBSERVATION_AVAILABILITY_HANDLES + 1 }, (_, index) => index.toString(16).padStart(32, "0"));
     await expect(f.repository.available(actor, many)).rejects.toThrow("tool_observation_conflict");
     expect(f.prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("write authority failures", () => {
+  const write = { byteSize: 10, checksum: "b".repeat(64), inlineText: "\"synthetic\"", projection: null,
+    sourceTruncated: false, maskable: false, storageMode: "INLINE" as const };
+  const producer = { ...actor, toolCallId: "call-0" };
+
+  it("marks a source owner's refusal at begin write as source authority, never the run's own refusal", async () => {
+    const f = fixture([]);
+    f.tx.toolObservation.findUnique.mockResolvedValue(row(0, { modelRunId: "run-2", state: "RESERVED" }) as never);
+    f.authorizeSource.mockRejectedValueOnce(new McpToolAccessDeniedError());
+    const refused = await f.repository.beginWrite(producer, write).then(() => null, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(McpToolAccessDeniedError);
+    expect(observationStoreFailureStep(refused, "begin_write")).toBe("source_authority");
+    f.tx.user.findFirst.mockResolvedValueOnce(null as never);
+    const lost = await f.repository.beginWrite(producer, write).then(() => null, (error: unknown) => error);
+    expect(lost).toMatchObject({ code: "tool_observation_unavailable" });
+    expect(observationStoreFailureStep(lost, "begin_write")).toBe("begin_write");
   });
 });
 

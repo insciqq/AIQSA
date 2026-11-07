@@ -128,6 +128,27 @@ describe("telemetry aggregation", () => {
     expect(JSON.stringify(counters)).not.toContain("call-");
   });
 
+  it("counts unsaved tool results by store step, failure class and producing agent, dropping any other value", () => {
+    const aggregator = createTelemetryAggregator();
+    const failed: EventFields["tool_execution"] = { tool_kind: "mcp", stage: "result", outcome: "failed",
+      code: "tool_observation_store_failed", reason: "unknown", action: "degrade",
+      step: "source_authority", failure_class: "authority", agent_kind: "background_subagent" };
+    const observe = (fields: EventFields["tool_execution"], runId: string) => aggregator.observe(runWithContext({ run_id: runId },
+      () => Object.freeze(JSON.parse(serializeEvent("tool_execution", fields)!))));
+    observe(failed, "run-1");
+    observe(failed, "run-2");
+    observe({ ...failed, step: "PRIVATE_STEP", failure_class: "PRIVATE_CLASS", agent_kind: "PRIVATE_AGENT" } as never, "run-3");
+    const { counters } = aggregator.drain();
+    const base = { action: "degrade", code: "tool_observation_store_failed", outcome: "failed", reason: "unknown", stage: "result",
+      tool_kind: "mcp" };
+    expect(counters.map(({ count, dimensions, level }) => ({ count, dimensions, level }))).toEqual(expect.arrayContaining([
+      { count: 2, level: "warn", dimensions: { ...base, agent_kind: "background_subagent", failure_class: "authority", step: "source_authority" } },
+      { count: 1, level: "warn", dimensions: base }
+    ]));
+    expect(TELEMETRY_DIMENSIONS).toEqual(expect.arrayContaining(["agent_kind", "failure_class", "step"]));
+    expect(JSON.stringify(counters)).not.toMatch(/run-|PRIVATE/u);
+  });
+
   it("counts sign-in attempts by method, step, outcome and code, with incidents only for errors", () => {
     const aggregator = createTelemetryAggregator();
     const observe = (fields: EventFields["sign_in"]) =>
