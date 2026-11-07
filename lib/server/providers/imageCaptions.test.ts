@@ -6,7 +6,7 @@ import { buildGeminiInteractionsRequest, buildGeminiInteractionsRequestPreview }
 import { buildOpenAICompatibleChatRequest, buildOpenAICompatibleChatRequestPreview } from "./openaiCompatibleChatRequest";
 import { buildOpenAIResponsesRequest, buildOpenAIResponsesRequestPreview } from "./openaiResponsesRequest";
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "./openRouterChatRequest";
-import { providerAttachmentBudgetTokens } from "./attachmentPayload";
+import { animatedGifFrameNote, providerAttachmentBudgetTokens } from "./attachmentPayload";
 import type { ProviderAttachment, ProviderImageProvenance, ProviderRunRequest } from "./types";
 
 const HISTORY_PIXELS = Buffer.from("history-pixels").toString("base64");
@@ -79,6 +79,27 @@ describe("conversation image captions", () => {
       expect(JSON.stringify(body)).not.toContain("[Image image_id=");
       expect(userParts(body).at(-1)).toMatch(/^IMAGE:/);
     }
+  });
+
+  it.each(builders)("%s tells the model right before a still frame that it comes from an animated GIF", (_name, build, preview) => {
+    const note = animatedGifFrameNote({ attachmentId: "c1", frames: 12, inboxIndexPath: "/workspace/inbox/index.json" });
+    const still = { ...image("c1", CURRENT_PIXELS), imageNote: note };
+    for (const body of [build(request([still])), ...(preview ? [preview(request([still]))] : [])]) {
+      expect(userParts(body).slice(-2)).toEqual([note, expect.stringMatching(/^IMAGE:/u)]);
+    }
+    const history = { ...image("c1", CURRENT_PIXELS, { role: "current_message" }), imageNote: note };
+    expect(userParts(build(request([history]))).slice(-2)).toEqual([`${CURRENT_CAPTION}\n${note}`, "IMAGE:current"]);
+  });
+
+  it("names the frames, the Workspace original only when the run has Workspace, and never the file name", () => {
+    const withWorkspace = animatedGifFrameNote({ attachmentId: "c1", frames: 12, inboxIndexPath: "/workspace/inbox/index.json" });
+    expect(withWorkspace).toContain("first frame of an animated GIF with 12 frames");
+    expect(withWorkspace).toContain("/workspace/inbox/index.json");
+    const without = animatedGifFrameNote({ attachmentId: "c1", frames: 12 });
+    expect(without).toBe("[Image image_id=\"c1\" is the first frame of an animated GIF with 12 frames; the other frames are not in this request.]");
+    const estimateTokens = (value: unknown) => String(value).length;
+    expect(providerAttachmentBudgetTokens({ attachments: [{ ...image("c1", CURRENT_PIXELS), imageNote: without }], estimateTokens,
+      estimateImageTokens: () => 100, modelCapabilities: request(plain).modelCapabilities })).toBe(100 + without.length);
   });
 
   it("counts caption text in the attachment budget only for captioned images", () => {

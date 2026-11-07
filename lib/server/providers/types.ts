@@ -90,6 +90,9 @@ export type ProviderAttachment = {
   /** Server-only source of vision pixels, set only when images from earlier
    * messages accompany the request; builders caption each image with it. */
   imageProvenance?: ProviderImageProvenance;
+  /** Server-written words about the pixels sent, captioned right before them:
+   * an animated GIF's still frame (`animatedGifFrameNote`). Never user text. */
+  imageNote?: string;
   kind: string;
   metadata: unknown;
   mimeType: string;

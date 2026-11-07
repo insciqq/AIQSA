@@ -110,6 +110,15 @@ describe("read_chat_file", () => {
     expect(budget.usage().heldBytes).toBe(0);
   });
 
+  it("names an animated GIF's preview as its first frame", async () => {
+    const readImage = vi.fn(async () => ({ bytes: Buffer.from("synthetic frame"), mimeType: "image/png" as const, width: 4, height: 3, frames: 12 }));
+    const base = request();
+    const { tool: viewer } = tool({ ...file, kind: "image" }, { request: request({ modelCapabilities: { ...base.modelCapabilities, vision: true } }),
+      readImage, resultImages: true });
+    const shown = await viewer.execute(call({ attachment_id: "old-image" }), 1);
+    expect(JSON.stringify(json(shown))).toContain("Image preview of the first frame of an animated GIF with 12 frames.");
+  });
+
   it("refuses an image on a nonvision model without reading pixels", async () => {
     const readImage = vi.fn();
     const { tool: reader } = tool({ ...file, kind: "image" }, { readImage, resultImages: true });

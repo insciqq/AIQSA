@@ -53,6 +53,44 @@ const ENCODED_TYPES = { jpeg: "image/jpeg", png: "image/png", webp: "image/webp"
 
 export type FittedProviderImage = Readonly<{ bytes: Buffer; height: number; mimeType: string; width: number }>;
 
+export class ProviderImageFrameError extends Error {
+  constructor() {
+    super("provider_image_frame_invalid");
+    this.name = "ProviderImageFrameError";
+  }
+}
+
+/**
+ * The first frame of an animated GIF as a PNG within the same limit (operator request 2026-11-07): providers read at
+ * most one frame of a GIF and some refuse an animated one, so the model gets one still frame and the stored file, which
+ * Workspace receives, stays as it is. Only the first frame is decoded, under the same source bound, time limit and
+ * one-at-a-time turn as a resize. Throws `ProviderImageTooLargeError` for a canvas too large to decode and
+ * `ProviderImageFrameError` for bytes that are no decodable GIF.
+ */
+export async function gifStillFrameForProvider(bytes: Buffer, signal?: AbortSignal): Promise<FittedProviderImage> {
+  const metadata = await sharp(bytes, { failOn: "none" }).metadata().catch(() => null);
+  if (metadata?.format !== "gif" || !metadata.width || !metadata.height) throw new ProviderImageFrameError();
+  // Without `animated`, sharp reports the size of one page, which is what the decode below allocates.
+  const { width, height } = metadata;
+  if (width * height > PROVIDER_IMAGE_MAX_SOURCE_PIXELS) throw new ProviderImageTooLargeError(width, height);
+  const target = providerImageTargetSize(width, height);
+  return oneResizeAtATime(async () => {
+    signal?.throwIfAborted();
+    let frame = sharp(bytes, { failOn: "none", limitInputPixels: PROVIDER_IMAGE_MAX_SOURCE_PIXELS, page: 0, pages: 1 })
+      .timeout({ seconds: 30 });
+    if (target) frame = frame.resize({ fit: "fill", height: target.height, width: target.width });
+    let output: { data: Buffer; info: sharp.OutputInfo };
+    try {
+      output = await frame.png().toBuffer({ resolveWithObject: true });
+    } catch {
+      signal?.throwIfAborted();
+      throw new ProviderImageFrameError();
+    }
+    signal?.throwIfAborted();
+    return { bytes: output.data, height: output.info.height, mimeType: "image/png", width: output.info.width };
+  });
+}
+
 /**
  * A copy within the limit, keeping the format and the way the photo is turned.
  * Null for an image that fits, or whose header cannot be read: that one goes as

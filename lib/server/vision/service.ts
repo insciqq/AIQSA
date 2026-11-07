@@ -29,7 +29,7 @@ const VISION_ERRORS = new Set([
 /** Actionable next steps for the chat form's refusals before dispatch. */
 const CHAT_IMAGE_HINTS: Readonly<Record<string, string>> = {
   chat_image_unavailable: "Use an exact image_id from this conversation's image references or an image generated in this answer. The image may have been removed.",
-  chat_image_unsupported: "Only PNG, JPEG, WebP and static GIF images can be analyzed. Ask the user for a PNG or JPEG copy of the image.",
+  chat_image_unsupported: "Only PNG, JPEG, WebP and GIF images can be analyzed, an animated GIF as its first frame. Ask the user for a PNG or JPEG copy of the image.",
   chat_image_invalid: "Keep crop and resize within the image's width and height. If the image itself cannot be read, ask the user to upload it again.",
   chat_image_limit_exceeded: "The image exceeds the analysis size or pixel limits. Use fewer images, or ask the user for a smaller copy."
 };
