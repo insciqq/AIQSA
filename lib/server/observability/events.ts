@@ -39,6 +39,13 @@ export type ToolKind = "search" | "mcp" | "workspace" | "vision";
  * their own executor records keep the narrower `ToolKind`. */
 export type ToolCallKind = ToolKind | "fetch_url" | "artifact" | "image_generation" | "skill" | "scheduled_task" |
   "session_status" | "workspace_image" | "memory" | "monitoring" | "computer" | "other";
+/** Where saving a tool result failed (`tool_observation_store_failed`, `lib/server/toolObservations/storeFailure.ts`): the
+ * store's step, the failure's closed class from the error's type or code (never its text), and the kind of agent whose call
+ * produced the result. */
+export type ToolObservationStoreStep = "outcome_record" | "measure" | "preview" | "projection_limit" | "admission" | "begin_write" |
+  "source_authority" | "object_put" | "read_back" | "finish_write" | "unretained_close" | "search_receipt" | "callback";
+export type ToolObservationFailureClass = "database" | "storage" | "limit" | "abort" | "authority" | "conflict" | "invalid" | "unknown";
+export type ToolObservationAgentKind = "main" | "foreground_subagent" | "background_subagent";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
   engine_index?: number; operation_index?: number;
@@ -71,6 +78,8 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
   /** The provider's own error identity from providerErrorCodes.json; any other is `other`. */
   provider_error_code?: string;
+  /** A timed-out stream's progress: milliseconds since its last byte and last parsed event, and whether an event arrived. */
+  last_byte_ms?: number; last_event_ms?: number; response_started?: boolean;
 }>;
 /** Subsystems whose hot-path interactive transactions are timed (`db_transaction`). */
 export type DbTransactionSubsystem = "memory" | "workspace" | "runs";
@@ -164,6 +173,8 @@ export type EventFields = {
     max_bytes?: number;
     /** An MCP result over its byte limit, delivered cut to it: JSON snapshot sizes only. */
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
+    /** A result that could not be saved: the failing step, its class and the producing agent's kind. */
+    step?: ToolObservationStoreStep; failure_class?: ToolObservationFailureClass; agent_kind?: ToolObservationAgentKind;
   }>;
   /** Page-reader proxy attempts: never a user-authored name, endpoint, credentials or page content. */
   fetch_proxy: Readonly<{ outcome: "started" | "read" | "failed"; code?: string }>;
@@ -197,6 +208,7 @@ export type EventFields = {
     layer: "tool" | ToolKind | "provider"; stage: "before_start" | "delivery";
     abort_source: NestedAbortSource; duration_ms?: number; timeout_ms?: number;
     deadline_kind?: "operation" | "request" | "sdk_request" | "stream_idle" | "stream_absolute" | "polling";
+    last_byte_ms?: number; last_event_ms?: number; response_started?: boolean;
     operation?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
     attempt?: number;
   }>;
@@ -206,6 +218,7 @@ export type EventFields = {
     outcome: OperationOutcome; duration_ms?: number; httpStatus?: number; code?: string;
     category?: "dns" | "tls" | "connect" | "timeout" | "parse" | "http" | "aborted" | "unknown";
     bytes?: number; chunks?: number; last_progress_ms?: number; timeout_ms?: number; attempt?: number;
+    last_event_ms?: number; response_started?: boolean;
   }>;
   provider_operation: ProviderFields;
   /** Provider-reported input tokens of one dispatched round against the

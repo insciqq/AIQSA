@@ -6,7 +6,8 @@ import {
   coerceReasoningEffort,
   coerceReasoningMode,
   defaultParameterControls,
-  fallbackCatalogModel
+  fallbackCatalogModel,
+  savedReasoningModeNotice
 } from "./controlDefaults";
 
 function model(input: Partial<CatalogModel> & Pick<CatalogModel, "modelId" | "provider">): CatalogModel {
@@ -155,6 +156,35 @@ describe("control defaults", () => {
     // The saved personal value is kept, so it returns if the model offers Off again.
     expect(saved[modelControlKey(selected)]).toEqual({ reasoningEffort: "none" });
     expect(coerceReasoningEffort("none", selected.parameterControls)).toBe("medium");
+  });
+
+  it("uses the model's default for a saved Pro mode it no longer offers, names it, and keeps it saved", () => {
+    // A codex-lb model now offers no mode; the user's saved Pro stays saved.
+    const codexLb = model({ modelId: "codex-lb:gpt-6.1-sol", provider: "codex-lb" });
+    codexLb.parameterControls.reasoningEffort = {
+      defaultValue: "medium", options: ["low", "medium", "high", "xhigh", "max"], supported: true
+    };
+    delete codexLb.parameterControls.reasoningMode;
+    const saved = { [modelControlKey(codexLb)]: { reasoningEffort: "high", reasoningMode: "pro" } };
+
+    expect(resolveModelControlDefaults(codexLb, saved)).toMatchObject({ reasoningEffort: "high", reasoningMode: "standard" });
+    expect(saved[modelControlKey(codexLb)]).toEqual({ reasoningEffort: "high", reasoningMode: "pro" });
+    expect(savedReasoningModeNotice("pro", codexLb.parameterControls)).toBe(
+      "Your saved reasoning mode “pro” is not available for this model, so its default is used."
+    );
+    // A saved "standard" asks for nothing a model without modes does not do.
+    expect(savedReasoningModeNotice("standard", codexLb.parameterControls)).toBeNull();
+    expect(savedReasoningModeNotice(undefined, codexLb.parameterControls)).toBeNull();
+
+    const withModes = defaultParameterControls(null);
+    withModes.reasoningMode = { defaultValue: "balanced", options: ["fast", "balanced"], supported: true };
+    expect(coerceReasoningMode("pro", withModes)).toBe("balanced");
+    expect(savedReasoningModeNotice("pro", withModes)).not.toBeNull();
+    expect(savedReasoningModeNotice("fast", withModes)).toBeNull();
+    // An administrator-configured Pro is still offered and kept.
+    withModes.reasoningMode = { defaultValue: "standard", options: ["standard", "pro"], supported: true };
+    expect(coerceReasoningMode("pro", withModes)).toBe("pro");
+    expect(savedReasoningModeNotice("pro", withModes)).toBeNull();
   });
 
   it("uses the first option only when the model default is unavailable too", () => {

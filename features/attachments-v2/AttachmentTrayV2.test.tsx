@@ -237,13 +237,14 @@ describe("AttachmentTrayV2", () => {
     const gif: ComposerAttachment = { fileName: "loop.gif", id: "loop", kind: "image",
       processingErrorCode: "animated_gif_not_supported", status: "failed" };
 
-    it("tells the truth with a Workspace: nothing extracted, the original goes, Send stays open, Retry is gone", () => {
+    it("tells the truth with a Workspace: nothing extracted, the original goes, Send stays open, Retry only where it helps", () => {
       const [spreadsheet, image] = attachmentItemsForV2([oversized, gif], [], undefined, true);
       expect(spreadsheet).toMatchObject({ blocksSend: false, retryable: false, statusLabel: "No text extracted" });
       expect(spreadsheet?.detail).toContain("250,000 filled cells");
       expect(spreadsheet?.detail).toContain("original in Workspace");
-      expect(image).toMatchObject({ blocksSend: false, retryable: false, statusLabel: "Not sent as an image" });
-      expect(image?.detail).toContain("one frame");
+      // A GIF an earlier version refused becomes ready on Retry.
+      expect(image).toMatchObject({ blocksSend: false, retryable: true, statusLabel: "Not sent as an image" });
+      expect(image?.detail).toContain("Retry processing to send its first frame");
       expect(attachmentSendBlockReasonV2([spreadsheet!, image!], null, false)).toBeNull();
 
       render(<AttachmentTrayV2 items={[spreadsheet!]} onRetry={vi.fn()} />);
@@ -259,7 +260,8 @@ describe("AttachmentTrayV2", () => {
       expect(attachmentSendBlockReasonV2(mapped, null, false)).toBe("Remove “big.xlsx” to send this message.");
 
       const animated = attachmentItemsForV2([gif], [], undefined, false);
-      expect(animated[0]?.detail).toContain("one frame");
+      expect(animated[0]?.detail).toContain("earlier version could not send animated GIFs");
+      expect(animated[0]).toMatchObject({ retryable: true });
       expect(animated[0]?.statusLabel).toBeUndefined();
     });
 

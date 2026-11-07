@@ -121,12 +121,18 @@ export type McpRuntimeCoordinatorRepository = {
 type McpOperationalStatus = "active" | "checking" | "inactive";
 
 type LiveRuntime = {
+  /** Tool calls sent on the session and not yet settled; a slow probe beside them is no strike. */
+  callsInFlight: number;
+  /** Consecutive timed-out health probes with no protocol success since. */
+  healthTimeoutStrikes: number;
   healthUsesToolList: boolean;
   toolDefinitionHashes: ReadonlyMap<string, string>;
   disabledToolNames: ReadonlySet<string>;
   enabledToolNames: ReadonlySet<string>;
   evictionErrorCode: string | null;
   fingerprint: string;
+  /** When the last tolerated probe timeout settled; the next probe waits one cadence after it. */
+  lastHealthTimeoutAt: number | null;
   lastProtocolSuccessAt: number;
   allowUnpublishedTools: boolean;
   /** Fixed for the generation: its fingerprint binds the revision. */
@@ -222,6 +228,13 @@ const DEFAULT_INTERVAL_MS = 30_000;
 const MAX_PARALLEL_STARTS = 4;
 export const MCP_HEALTH_CADENCE_MS = 30_000;
 export const MCP_HEALTH_DEADLINE_MS = 2_000;
+/**
+ * A single-process MCP server busy with a long call misses a 2-second ping
+ * (production 2026-11-07), so a timed-out probe alone does not evict: only
+ * this many consecutive timeouts with no protocol success in between do. Any
+ * other probe failure still evicts at once.
+ */
+export const MCP_HEALTH_TIMEOUT_STRIKES = 3;
 /**
  * Inventory health reads a paginated tools/list. Each page must answer within
  * MCP_HEALTH_DEADLINE_MS as liveness proof, while the complete traversal of a
@@ -360,10 +373,11 @@ export class McpRuntimeCoordinator {
     }
   }
 
-  #failed(generationId: string, stage: LifecycleStage, error: unknown, cancelled = false): void {
+  #failed(generationId: string, stage: LifecycleStage, error: unknown, cancelled = false, strikes?: number): void {
     const failure = observedFailure(error);
     logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage,
-      outcome: cancelled ? "cancelled" : "failed", code: failure.code, prisma_code: databaseFailureCode(error), action: "stop" });
+      outcome: cancelled ? "cancelled" : "failed", code: failure.code, prisma_code: databaseFailureCode(error), action: "stop",
+      ...(strikes === undefined ? {} : { count: strikes }) });
     if (!cancelled) reportSubsystemFailure({ subsystem: "mcp", stage: "process", scope_id: generationId,
       code: failure.code, prisma_code: databaseFailureCode(error), action: "retry" });
   }
@@ -526,7 +540,7 @@ export class McpRuntimeCoordinator {
     signal?: AbortSignal;
   }): Promise<AiqsaMcpToolCallResult> {
     const runtime = this.#live.get(input.generationId);
-    if (!runtime) throw new Error("mcp_runtime_not_ready");
+    if (!runtime) throw Object.assign(new Error("mcp_runtime_not_ready"), { code: "mcp_runtime_not_ready" });
     if (!runtime.enabledToolNames.has(input.name)) {
       throw new McpClientSessionError({ code: "mcp_tool_not_available", operation: "call_tool" });
     }
@@ -540,12 +554,15 @@ export class McpRuntimeCoordinator {
     if (runtime.toolDefinitionHashes.get(input.name) !== input.definitionHash) {
       throw mcpDispatchError("mcp_tool_definition_changed");
     }
+    runtime.callsInFlight += 1;
     try {
       const result = await runtime.session.callTool({
         arguments: input.arguments,
         name: input.name,
         ...(input.signal ? { signal: input.signal } : {})
       });
+      // An answered call proves the session as well as a ping does.
+      if (!isClosedSession(runtime.session)) this.#renewLiveness(runtime, this.#now().getTime());
       return redactMcpToolCallResult(result, runtime.redactionValues);
     } catch (error) {
       const fatalErrorCode = fatalResponseErrorCode(runtime.session);
@@ -555,7 +572,21 @@ export class McpRuntimeCoordinator {
         await this.#evictFailedRuntime(input.generationId, runtime, "mcp_session_closed");
       }
       throw error;
+    } finally {
+      runtime.callsInFlight -= 1;
     }
+  }
+
+  /** Protocol success on the session: fresh liveness, and any timeout strikes forgiven. */
+  #renewLiveness(runtime: LiveRuntime, at: number): void {
+    runtime.lastProtocolSuccessAt = at;
+    runtime.healthTimeoutStrikes = 0;
+    runtime.lastHealthTimeoutAt = null;
+  }
+
+  /** One cadence after the later of the last protocol success and the last tolerated probe timeout. */
+  #healthDueAt(runtime: LiveRuntime): number {
+    return Math.max(runtime.lastProtocolSuccessAt, runtime.lastHealthTimeoutAt ?? -Infinity) + MCP_HEALTH_CADENCE_MS;
   }
 
   hasLiveGeneration(generationId: string): boolean {
@@ -602,15 +633,18 @@ export class McpRuntimeCoordinator {
       );
       return "inactive";
     }
-    const age = this.#now().getTime() - runtime.lastProtocolSuccessAt;
-    if (age < 0 || age >= MCP_HEALTH_CADENCE_MS || this.#healthProbes.has(generationId)) {
+    const nowMs = this.#now().getTime();
+    const clockMovedBack = nowMs < Math.max(runtime.lastProtocolSuccessAt, runtime.lastHealthTimeoutAt ?? -Infinity);
+    if (clockMovedBack || nowMs >= this.#healthDueAt(runtime) || this.#healthProbes.has(generationId)) {
       if (!this.#healthProbes.has(generationId)) {
         this.#healthProbes.set(generationId, { runtime, controller: null });
         this.#drainHealthProbes();
       }
       return "checking";
     }
-    return this.#refreshes.has(generationId) ? "checking" : "active";
+    // A runtime with timeout strikes stays live and dispatches; its health is
+    // only unconfirmed until the next probe or call answers.
+    return this.#refreshes.has(generationId) || runtime.healthTimeoutStrikes > 0 ? "checking" : "active";
   }
 
   #discardHealthProbe(generationId: string, runtime: LiveRuntime): void {
@@ -627,7 +661,7 @@ export class McpRuntimeCoordinator {
     let dueAt = Infinity;
     for (const [generationId, runtime] of this.#live) {
       if (!this.#healthProbes.has(generationId) && !isClosedSession(runtime.session)) {
-        dueAt = Math.min(dueAt, runtime.lastProtocolSuccessAt + MCP_HEALTH_CADENCE_MS);
+        dueAt = Math.min(dueAt, this.#healthDueAt(runtime));
       }
     }
     if (!Number.isFinite(dueAt)) return;
@@ -661,6 +695,8 @@ export class McpRuntimeCoordinator {
 
   async #probe(generationId: string, probe: HealthProbe, controller: AbortController): Promise<void> {
     const runtime = probe.runtime;
+    const probeStartedAt = this.#now().getTime();
+    let busy = runtime.callsInFlight > 0;
     const timeoutError = new McpClientSessionError({ code: "mcp_request_timeout", operation: "ping" });
     const abortAfter = (deadlineMs: number) => setTimeout(() => controller.abort(timeoutError), deadlineMs);
     let timer = abortAfter(runtime.healthUsesToolList ? MCP_HEALTH_INVENTORY_DEADLINE_MS : MCP_HEALTH_DEADLINE_MS);
@@ -705,14 +741,28 @@ export class McpRuntimeCoordinator {
       ]);
       if (this.#live.get(generationId) !== runtime || this.#healthProbes.get(generationId) !== probe) return;
       if (isClosedSession(runtime.session)) throw runtimeStateError("mcp_session_closed");
-      runtime.lastProtocolSuccessAt = this.#now().getTime();
+      this.#renewLiveness(runtime, this.#now().getTime());
       if (refreshInventory) void this.#refresh(generationId, runtime.fingerprint, true).catch(() => undefined);
     } catch (error) {
-      // Eviction removes live proof immediately; cleanup does not hold a probe slot.
-      if (this.#live.get(generationId) === runtime) {
-        this.#failed(generationId, "health", error);
-        void this.#evictFailedRuntime(generationId, runtime, stableRuntimeError(error), true).catch(() => undefined);
+      if (this.#live.get(generationId) !== runtime) return;
+      const timedOut = error === timeoutError ||
+        error instanceof McpClientSessionError && error.code === "mcp_request_timeout";
+      if (timedOut && !isClosedSession(runtime.session) && fatalResponseErrorCode(runtime.session) === null) {
+        // A call in flight, or one answered since the probe began, proves the
+        // server is alive and busy: its slow probe is no strike.
+        busy ||= runtime.callsInFlight > 0 || runtime.lastProtocolSuccessAt > probeStartedAt;
+        if (!busy) runtime.healthTimeoutStrikes += 1;
+        if (runtime.healthTimeoutStrikes < MCP_HEALTH_TIMEOUT_STRIKES) {
+          runtime.lastHealthTimeoutAt = this.#now().getTime();
+          logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage: "health",
+            outcome: busy ? "skipped" : "failed", code: observedFailure(error).code, count: runtime.healthTimeoutStrikes,
+            action: "wait" });
+          return;
+        }
       }
+      // Eviction removes live proof immediately; cleanup does not hold a probe slot.
+      this.#failed(generationId, "health", error, false, timedOut ? runtime.healthTimeoutStrikes : undefined);
+      void this.#evictFailedRuntime(generationId, runtime, stableRuntimeError(error), true).catch(() => undefined);
     } finally {
       clearTimeout(timer);
       controller.signal.removeEventListener("abort", onAbort);
@@ -914,12 +964,15 @@ export class McpRuntimeCoordinator {
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       this.#live.set(launch.generationId, {
         allowUnpublishedTools: launch.personalRuntime === true,
+        callsInFlight: 0,
+        healthTimeoutStrikes: 0,
         healthUsesToolList: false,
         toolDefinitionHashes: new Map(effective.tools.map((tool) => [tool.name, tool.definitionHash])),
         disabledToolNames,
         enabledToolNames: new Set(effective.tools.map((tool) => tool.name)),
         evictionErrorCode: null,
         fingerprint: launch.fingerprint,
+        lastHealthTimeoutAt: null,
         lastProtocolSuccessAt: protocolSuccessAt,
         publishedTools,
         redactionValues: [...launch.redactionValues],
@@ -1028,7 +1081,7 @@ export class McpRuntimeCoordinator {
       if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
       live.enabledToolNames = new Set(effective.tools.map((tool) => tool.name));
       live.toolDefinitionHashes = new Map(effective.tools.map((tool) => [tool.name, tool.definitionHash]));
-      live.lastProtocolSuccessAt = protocolSuccessAt;
+      this.#renewLiveness(live, protocolSuccessAt);
       this.#scheduleHealthCheck();
       logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage: "refresh", outcome: "completed" });
       reportSubsystemHealthy("mcp", "process", generationId);

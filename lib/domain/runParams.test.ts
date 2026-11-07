@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { defaultProviderModels } from "./catalog";
+import { defaultProviderModels, fallbackParameterControls } from "./catalog";
 import {
   invalidRunParamsError,
+  reasoningModeNotAvailableError,
   resolveAcceptedRunReasoningEffort,
   validateRunParams
 } from "./runParams";
@@ -91,18 +92,61 @@ describe("run parameter validation", () => {
   });
 
   it("rejects GPT-5.6-only reasoning controls for GPT-5.5", () => {
-    for (const reasoning of [
-      { effort: "max", summary: "auto" },
-      { effort: "medium", mode: "pro", summary: "auto" }
-    ]) {
-      expect(
-        validateRunParams({
-          controls: openAiControls("gpt-5.5"),
-          params: { reasoning },
-          provider: "openai"
-        })
-      ).toEqual({ code: invalidRunParamsError, ok: false });
+    expect(
+      validateRunParams({
+        controls: openAiControls("gpt-5.5"),
+        params: { reasoning: { effort: "max", summary: "auto" } },
+        provider: "openai"
+      })
+    ).toEqual({ code: invalidRunParamsError, ok: false });
+    expect(
+      validateRunParams({
+        controls: openAiControls("gpt-5.5"),
+        params: { reasoning: { effort: "medium", mode: "pro", summary: "auto" } },
+        provider: "openai"
+      })
+    ).toEqual({ code: reasoningModeNotAvailableError, ok: false });
+  });
+
+  it("refuses a reasoning mode a codex-lb row does not offer by name, accepts a neutral standard as no mode", () => {
+    const controls = fallbackParameterControls({
+      adapterKind: "openai_responses_compatible",
+      defaultParams: { reasoning: { effort: "medium" } },
+      provider: "openai_compatible",
+      supportsReasoning: true,
+      supportsReasoningMode: true,
+      upstreamModelId: "gpt-6.1-sol"
+    });
+    for (const mode of ["pro", "max", ""]) {
+      expect(validateRunParams({
+        controls,
+        params: { reasoning: { effort: "medium", mode } },
+        provider: "openai"
+      })).toMatchObject({ ok: false });
     }
+    expect(validateRunParams({
+      controls,
+      params: { reasoning: { effort: "medium", mode: "pro" } },
+      provider: "openai"
+    })).toEqual({ code: reasoningModeNotAvailableError, ok: false });
+    const params = { reasoning: { effort: "medium" } };
+    expect(validateRunParams({ controls, params, provider: "openai" })).toEqual({ ok: true, params });
+    // A tab opened before the model stopped offering modes, or a saved "standard", sends what no mode means.
+    expect(validateRunParams({ controls, params: { reasoning: { effort: "medium", mode: "standard" } }, provider: "openai" }))
+      .toEqual({ ok: true, params });
+    expect(validateRunParams({ controls, params: { reasoning: { mode: "standard" } }, provider: "openai" }))
+      .toEqual({ ok: true, params: {} });
+    expect(validateRunParams({
+      controls: fallbackParameterControls({
+        adapterKind: "openai_responses_compatible",
+        provider: "openai_compatible",
+        reasoningModes: ["standard", "pro"],
+        supportsReasoning: true,
+        supportsReasoningMode: true
+      }),
+      params: { reasoning: { effort: "medium", mode: "pro" } },
+      provider: "openai"
+    })).toMatchObject({ ok: true });
   });
 
   it("accepts reviewed Gemini reasoning and rejects unsupported sampling params", () => {

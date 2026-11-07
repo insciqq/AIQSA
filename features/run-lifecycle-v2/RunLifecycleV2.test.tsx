@@ -170,7 +170,7 @@ describe("Run lifecycle v2", () => {
     const computer = { attachmentId: "computer-1", byteSize: 2_048, fileName: "report.pdf", mimeType: "application/pdf",
       relativePath: "report.pdf", source: "computer" as const };
     const toolActivity = { calls: [{ durationMs: 8_000, round: 1, status: "complete" as const, toolName: "computer_attach_file" }] };
-    render(<RunAnswerV2 artifact={{ citations: [], generatedFiles: [computer], sources: [], workDurationMs: 8_000 }}
+    render(<RunAnswerV2 artifact={{ citations: [], generatedFiles: [computer], reasoningText: [], sources: [], workDurationMs: 8_000 }}
       content="Attached." toolActivity={toolActivity} presentation={presentation({ kind: "complete", runId: "run-attach" })} />);
     const label = screen.getByTestId("tool-activity-disclosure").querySelector(".v2-answer-process-label");
     expect(label).toHaveTextContent("Worked for 8s");

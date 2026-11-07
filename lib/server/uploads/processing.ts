@@ -13,7 +13,6 @@ import { getPdfExtractionConfig } from "./pdfConfig";
 import { isStoredObjectTooLargeError, type StorageAdapter } from "./storage";
 
 export type AttachmentProcessingErrorCode =
-  | "animated_gif_not_supported"
   | "attachment_checksum_mismatch"
   | "attachment_object_read_failed"
   | "attachment_object_size_mismatch"
@@ -249,10 +248,10 @@ export function createAttachmentProcessor(input: Readonly<{
       }
 
       if (record.kind === "image") {
+        // An animated GIF is ready like any image: models get its first frame and Workspace the original
+        // (`lib/server/runs/runAttachmentMaterialization.ts`). Rows that failed with `animated_gif_not_supported`
+        // before 2026-11-07 keep that code and can be retried.
         const image = extractImageMetadata(object.body, record.mimeType);
-        if (image.format === "gif" && image.animated) {
-          throw new AttachmentProcessingError("animated_gif_not_supported");
-        }
         return { extractedText: null, metadata: { image } };
       }
       if (record.kind !== "document" && record.kind !== "pdf") {

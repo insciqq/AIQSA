@@ -8,5 +8,6 @@ export { setFatalExitTask } from "./process.cjs";
 export type {
   EventFields, ObservabilityContext, ProcessRole, Subsystem, SubsystemState,
   LifecycleStage, LifecycleOutcome, LifecycleAction, LifecycleFields, SubsystemFailure,
-  ToolKind, ToolCallKind, NestedAbortSource, WorkspaceFailureCause
+  ToolKind, ToolCallKind, NestedAbortSource, WorkspaceFailureCause,
+  ToolObservationStoreStep, ToolObservationFailureClass, ToolObservationAgentKind
 } from "./events";

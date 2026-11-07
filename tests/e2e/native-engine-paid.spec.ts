@@ -877,7 +877,7 @@ test.describe("native engine transport faults", () => {
       await sendComposer(page, `Begin your reply with the code word ${word}, then write three short sentences about rivers. ` +
         "Mention the code word only once. Do not use any tool.");
       // The failed attempt is named while the request is sent again, and the real answer replaces it.
-      await expect(page.getByText("The provider isn’t responding, trying again…")).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText(/^The (?:model provider|provider of .+) isn’t responding, trying again…$/u)).toBeVisible({ timeout: 60_000 });
       const run = await settledRun((await newRun(chatId, earlier)).id);
       await waitAnswerSettled(page);
       const stream = await runStreamFacts(page, run.id);

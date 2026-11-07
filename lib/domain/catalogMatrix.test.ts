@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   defaultProviderModels,
   defaultSearchStrategies,
-  fallbackParameterControls
+  fallbackParameterControls,
+  resolveProviderModelParameterControls
 } from "./catalog";
 import { availableSearchStrategiesForModel, buildCatalogModel, isSearchCombinationCompatible, reconcileSearchPlanSelection, resolveSearchRouteForModel, toCatalogSearchStrategy } from "./catalogMatrix";
 
@@ -116,7 +117,7 @@ describe("catalog capability matrix", () => {
     expect(buildCatalogModel(model!, defaultSearchStrategies).capabilities.toolCalling).toBe(true);
   });
 
-  it("uses reported compatible reasoning controls or the GPT-5.6 Sol fallback", () => {
+  it("uses reported compatible reasoning controls and offers a mode only where it is configured", () => {
     const fallback = fallbackParameterControls({
       adapterKind: "openai_responses_compatible",
       provider: "opaque-compatible-connection",
@@ -127,11 +128,15 @@ describe("catalog capability matrix", () => {
       options: ["none", "low", "medium", "high", "xhigh", "max"],
       supported: true
     });
-    expect(fallback.reasoningMode).toEqual({
-      defaultValue: "standard",
-      options: ["standard", "pro"],
-      supported: true
-    });
+    // No probe proves a mode, so an unconfigured compatible model offers none
+    // and its requests carry no `reasoning.mode`.
+    expect(fallback.reasoningMode).toBeUndefined();
+    expect(fallbackParameterControls({
+      adapterKind: "openai_responses_compatible",
+      provider: "opaque-compatible-connection",
+      supportsReasoning: true,
+      supportsReasoningMode: true
+    }).reasoningMode).toBeUndefined();
 
     const reported = fallbackParameterControls({
       adapterKind: "openai_responses_compatible",
@@ -223,6 +228,30 @@ describe("catalog capability matrix", () => {
     );
     expect(gpt55?.parameterControls.reasoningEffort.options).not.toContain("max");
     expect(gpt55?.parameterControls.reasoningMode).toBeUndefined();
+  });
+
+  it("offers no Pro on a codex-lb row unless its administrator configured the model's modes", () => {
+    // codex-lb rows are saved by setup with reasoning on and no listed levels or modes;
+    // the native OpenAI template for the same model id is never their template.
+    const codexLb = {
+      adapterKind: "openai_responses_compatible" as const,
+      defaultParams: { reasoning: { effort: "medium" } },
+      providerFamily: "openai_compatible",
+      supportsReasoning: true,
+      supportsReasoningMode: true,
+      supportsStreaming: true
+    };
+    for (const upstreamModelId of ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"]) {
+      const controls = resolveProviderModelParameterControls({ ...codexLb, upstreamModelId });
+      expect(controls.reasoningEffort.supported).toBe(true);
+      expect(controls.reasoningMode).toBeUndefined();
+    }
+    expect(resolveProviderModelParameterControls({
+      ...codexLb,
+      defaultReasoningMode: "standard",
+      reasoningModes: ["standard", "pro"],
+      upstreamModelId: "gpt-6.1-sol"
+    }).reasoningMode).toEqual({ defaultValue: "standard", options: ["standard", "pro"], supported: true });
   });
 
   it("publishes current Claude 5 and native Gemini defaults as reviewed models", () => {
