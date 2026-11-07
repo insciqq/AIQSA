@@ -526,7 +526,7 @@ export class McpRuntimeCoordinator {
     signal?: AbortSignal;
   }): Promise<AiqsaMcpToolCallResult> {
     const runtime = this.#live.get(input.generationId);
-    if (!runtime) throw new Error("mcp_runtime_not_ready");
+    if (!runtime) throw Object.assign(new Error("mcp_runtime_not_ready"), { code: "mcp_runtime_not_ready" });
     if (!runtime.enabledToolNames.has(input.name)) {
       throw new McpClientSessionError({ code: "mcp_tool_not_available", operation: "call_tool" });
     }
