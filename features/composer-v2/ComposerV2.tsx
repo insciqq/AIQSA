@@ -370,6 +370,8 @@ export type ComposerV2Props = Readonly<{
    * model has no reasoning control: the composer then shows no level.
    */
   reasoningEffort?: Readonly<{
+    /** Names a saved reasoning mode this model does not offer (its default is sent instead). */
+    modeNotice?: string | null;
     onChange(value: string): void;
     options: readonly string[];
     value: string;
@@ -1709,6 +1711,11 @@ export function ComposerV2({
                     {reasoningNotice && reasoningProvenance
                       ? <AssistantRowNoticeV2 kind={reasoningProvenance.kind} text={reasoningNotice} />
                       : null}
+                    {reasoningChip.modeNotice ? (
+                      <p className="v2-composer-layer-note" data-testid="composer-reasoning-mode-notice">
+                        {reasoningChip.modeNotice}
+                      </p>
+                    ) : null}
                     {reasoningChip.options.map((option) => (
                       <CapabilityRow
                         key={option}

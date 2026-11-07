@@ -24,13 +24,17 @@ const reasoningKeys = [
   "reasoningModes"
 ] as const;
 
+/**
+ * The GPT-5.6 Sol effort levels for a compatible connection. It names no
+ * reasoning mode: nothing probes one, and codex-lb rejects or never starts a
+ * `reasoning.mode: "pro"` request (2026-11-07). Modes the endpoint reports
+ * stay available through "As reported by the endpoint".
+ */
 export function openAiGpt56SolReasoning(): ReasoningCapabilities {
   return {
     defaultReasoningEffort: "medium",
-    defaultReasoningMode: "standard",
     reasoning: true,
-    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
-    reasoningModes: ["standard", "pro"]
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"]
   };
 }
 

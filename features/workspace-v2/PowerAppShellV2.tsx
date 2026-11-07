@@ -170,10 +170,12 @@ import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  modelControlKey,
   resolveModelControlDefaults,
+  savedControlDraft,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
-import { coerceReasoningEffort } from "@/components/app-shell/controlDefaults";
+import { coerceReasoningEffort, coerceReasoningMode, savedReasoningModeNotice } from "@/components/app-shell/controlDefaults";
 import { useBranchGraphController } from "./useBranchGraphController";
 import { decodeChatBranchesResponse, type ChatBranchGraphWire } from "@/lib/contracts/chats";
 import { highlightRevealedMessage, openMessageSearchMatch } from "./messageSearchMatch";
@@ -1992,7 +1994,15 @@ export function PowerAppShellV2({
     // The level the next message sends: a held level the model no longer
     // offers (Off on a model that always reasons) shows its fallback.
     reasoningEffort: coerceReasoningEffort(reasoningEffort, currentParameterControls),
-    reasoningMode,
+    // Likewise the mode; a saved mode the model no longer offers (Pro on a
+    // codex-lb model) is named beside the reasoning controls and stays saved.
+    reasoningMode: coerceReasoningMode(reasoningMode, currentParameterControls),
+    reasoningModeNotice: currentModel
+      ? savedReasoningModeNotice(
+        savedControlDraft(catalog?.defaults.controlValues[modelControlKey(currentModel)]).reasoningMode,
+        currentParameterControls
+      )
+      : null,
     retryCatalog,
     searchPlanMode,
     selectMcpMode,

@@ -1071,6 +1071,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       layerController={attachComposerLayerController}
       modelParametersSummary={modelParametersSummary}
       reasoningEffort={composer.currentModel && composer.currentParameterControls.reasoningEffort.supported ? {
+        modeNotice: composer.reasoningModeNotice ?? null,
         onChange: composer.changeReasoningEffort,
         options: composer.currentParameterControls.reasoningEffort.options,
         value: composer.reasoningEffort
