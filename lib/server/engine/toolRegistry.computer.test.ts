@@ -107,6 +107,38 @@ describe("the computer tools in a run's registry", () => {
     }
   });
 
+  it("shares one request's image room between read_chat_file and computer_read: never more than 8 previews at once", async () => {
+    const png = await sharp({ create: { background: "#3366cc", channels: 3, height: 20, width: 30 } }).png().toBuffer();
+    const ids = Array.from({ length: 8 }, (_, index) => `old-${index}`);
+    const ops = createFakeComputerOps();
+    ops.enqueue({ ok: true, result: { data: png.toString("base64"), eof: true, modifiedMs: 1, size: png.length } }, "read_bytes");
+    const registry = await buildToolRegistry(input({
+      request: request({ computer: online, context: { messages: [{ content: { blocks: ids.map((attachmentId) => ({ attachmentId, type: "image" })) },
+        id: "m1", role: "user" }], mode: "branch_path" }, modelCapabilities: { ...request().modelCapabilities, vision: true } }),
+      resultImages: true,
+      services: { chatFiles: { read: async () => ({ extractedText: null, fileName: "old.png", kind: "image", metadata: {}, status: "ready" }) },
+        computer: ops, images: { execute: vi.fn(), readConversationImage: async () => ({ bytes: png, height: 20, mimeType: "image/png" as const,
+          width: 30 }), withConversationPixels: async (value: ProviderRunRequest) => value } as never,
+        repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) } }
+    }, ops));
+    const items: { callId: string; id: string; kind: "tool_result"; name: string; outcome: "complete"; output: string }[] = [];
+    const run = async (name: string, args: Record<string, unknown>, id: string, round: number) => {
+      const result = await registry.resolve(name)!.execute({ call: { arguments: args, id, name }, ordinal: 0, persistedToolCallId: `row-${id}`,
+        round, signal: new AbortController().signal });
+      expect(result.status).toBe("complete");
+      const part = result.content[0]!;
+      items.push({ callId: id, id: `item-${id}`, kind: "tool_result", name, outcome: "complete",
+        output: part.type === "json" ? JSON.stringify(part.value) : (part as { text: string }).text });
+    };
+    for (const [index, id] of ids.entries()) await run("read_chat_file", { attachment_id: id }, `chat-${index}`, 1);
+    expect(items.filter((item) => registry.images?.attached(item))).toHaveLength(8);
+    await run("computer_read", { limit: null, offset: null, path: "shot.png" }, "computer-1", 2);
+    const attached = items.filter((item) => registry.images?.attached(item));
+    expect(attached.length).toBeLessThanOrEqual(8);
+    // The newest stays and the oldest went first, down to half the bound, as direct view lets previews go.
+    expect(attached.map((item) => item.callId)).toEqual(["chat-5", "chat-6", "chat-7", "computer-1"]);
+  });
+
   it("refuses an image to a vision model whose route carries no result image, before anything is sent", async () => {
     const ops = createFakeComputerOps();
     const registry = await buildToolRegistry(input({ request: request({ computer: online,
