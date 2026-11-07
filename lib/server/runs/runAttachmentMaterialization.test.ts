@@ -145,7 +145,7 @@ describe("run attachment materialization", () => {
       });
       await expect(loadProviderAttachments({ repository: repository([gif]) }, "user-1", ["loop"],
         { capabilities: baseCapabilities, limits: limits() })).rejects.toMatchObject({
-        code: "attachment_needs_workspace", message: expect.stringContaining("one frame")
+        code: "attachment_needs_workspace", message: expect.stringMatching(/earlier version could not send animated GIFs.*Retry/su)
       });
     });
 
@@ -507,6 +507,72 @@ describe("run attachment materialization", () => {
       { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: 1_000_000, maxMaterializedBytes: 1_000_000 }) });
     expect(sent!.dataUrl).toBe(`data:image/png;base64,${source.toString("base64")}`);
     expect(sent!.metadata).toEqual({});
+  });
+
+  describe("an animated GIF", () => {
+    const frame = (background: string, width = 40, height = 30) =>
+      sharp({ create: { background, channels: 3, height, width } }).png().toBuffer();
+    const animated = async (width = 40, height = 30) => sharp(
+      [await frame("#ff0000", width, height), await frame("#00ff00", width, height), await frame("#0000ff", width, height)],
+      { join: { animated: true } }).gif({ delay: 100 }).toBuffer();
+    const gifRecord = (id: string, bytes: Buffer, animatedImage: boolean): RunAttachmentRecord => ({
+      ...attachment(id, "image", bytes.length), fileName: `${id}.gif`, mimeType: "image/gif",
+      metadata: { image: { animated: animatedImage, format: "gif", ...(animatedImage ? { frames: 3 } : {}), height: 30, width: 40 } } });
+    const roomy = limits({ maxEncodedBytes: 8_000_000, maxMaterializedBytes: 8_000_000 });
+    const load = (record: RunAttachmentRecord, bytes: Buffer, workspaceEnabled: boolean, limitsUsed = roomy) =>
+      loadProviderAttachments({ repository: repository([record]), storage: {
+        getObject: vi.fn(async (storageKey: string) => ({ body: bytes, contentType: "image/gif", storageKey })) } },
+      "user-1", [record.id], { capabilities: baseCapabilities, limits: limitsUsed, workspaceEnabled });
+    const sentBytes = (dataUrl: string | undefined) => Buffer.from(dataUrl!.split(",")[1]!, "base64");
+
+    it("reaches a vision model as its first frame, a still PNG, named animated with its frames and the Workspace original", async () => {
+      const bytes = await animated();
+      const [sent] = await load(gifRecord("banner", bytes, true), bytes, true);
+      expect(sent).toMatchObject({ id: "banner", kind: "image", mimeType: "image/png", status: "ready",
+        metadata: { image: { animated: true, format: "gif", frames: 3, height: 30, width: 40 } } });
+      expect(sent!.dataUrl).toMatch(/^data:image\/png;base64,/u);
+      const still = sentBytes(sent!.dataUrl);
+      expect(sent!.byteSize).toBe(still.length);
+      expect((await sharp(still, { animated: true }).metadata()).pages ?? 1).toBe(1);
+      const [red, green, blue] = (await sharp(still).stats()).channels.map((channel) => Math.round(channel.mean));
+      expect({ blue, green, red }).toEqual({ blue: 0, green: 0, red: 255 });
+      expect(sent!.imageNote).toBe('[Image image_id="banner" is the first frame of an animated GIF with 3 frames; the other ' +
+        "frames are not in this request. The unchanged original is in /workspace/inbox: find it in /workspace/inbox/index.json " +
+        "by this attachmentId and open it with Workspace tools when the animation matters.]");
+      expect(sent!.imageNote).not.toContain("banner.gif");
+    });
+
+    it("tells a run without Workspace only that the other frames are missing", async () => {
+      const bytes = await animated();
+      const [sent] = await load(gifRecord("banner", bytes, true), bytes, false);
+      expect(sent!.mimeType).toBe("image/png");
+      expect(sent!.imageNote).toContain("first frame of an animated GIF with 3 frames");
+      expect(sent!.imageNote).not.toContain("Workspace");
+    });
+
+    it("sends a large one within the provider patch limit", async () => {
+      const bytes = await animated(6500, 4900);
+      const [sent] = await load({ ...gifRecord("poster", bytes, true), byteSize: bytes.length }, bytes, false);
+      const copy = await sharp(sentBytes(sent!.dataUrl)).metadata();
+      expect(Math.ceil(copy.width! / 32) * Math.ceil(copy.height! / 32)).toBeLessThanOrEqual(30_000);
+      expect(sent!.metadata).toMatchObject({ image: { frames: 3, height: copy.height, width: copy.width } });
+    });
+
+    it("refuses visibly a frame over the request's encoded budget", async () => {
+      const bytes = await animated();
+      const [sent] = await load(gifRecord("banner", bytes, true), bytes, false);
+      const room = limits({ maxEncodedBytes: sent!.dataUrl!.length - 1, maxMaterializedBytes: 8_000_000 });
+      await expect(load(gifRecord("banner", bytes, true), bytes, false, room))
+        .rejects.toMatchObject({ code: "attachment_encoded_size_limit_exceeded" });
+    });
+
+    it("leaves a static GIF exactly as before: its own bytes, no note", async () => {
+      const bytes = await sharp(await frame("#ff0000")).gif().toBuffer();
+      const [sent] = await load(gifRecord("still", bytes, false), bytes, true);
+      expect(sent!.dataUrl).toBe(`data:image/gif;base64,${bytes.toString("base64")}`);
+      expect(sent).toMatchObject({ byteSize: bytes.length, mimeType: "image/gif" });
+      expect(sent).not.toHaveProperty("imageNote");
+    });
   });
 
   it("accepts an encoded provider payload exactly at its estimated boundary", async () => {

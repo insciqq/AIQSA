@@ -63,8 +63,9 @@ type Decoded = Readonly<{ bytes: Buffer; metadata: StaticRasterMetadata; checksu
  * Chat images for System Vision under the run's current chat authority: the
  * user's own attachments in their chat, limited to the references admitted
  * with the run and images this run
- * generated. PNG and JPEG reach Vision as stored; WebP and a static GIF are
- * decoded to PNG; any other format is refused before dispatch.
+ * generated. PNG and JPEG reach Vision as stored; WebP and a GIF are decoded
+ * to PNG, an animated GIF to its first frame; any other format is refused
+ * before dispatch.
  */
 export function createConversationImageSource(db: PrismaClient, storage: Pick<StorageAdapter, "getObject">) {
   async function load(input: Readonly<{ runId: string; userId: string; chatId: string; admittedImageIds: readonly string[] }>,
@@ -103,8 +104,7 @@ export function createConversationImageSource(db: PrismaClient, storage: Pick<St
       if (row.mimeType !== "image/gif") throw new ConversationImageError("chat_image_invalid");
       let gif: ReturnType<typeof extractImageMetadata>;
       try { gif = extractImageMetadata(body, "image/gif"); } catch { throw new ConversationImageError("chat_image_invalid"); }
-      // Upload admission refuses animated GIFs; one that reaches here is refused too.
-      if (gif.animated) throw new ConversationImageError("chat_image_unsupported");
+      // An animated GIF is decoded to its first frame, as chat models receive it; the canvas bounds every frame.
       if (gif.width * gif.height > LIMITS.maxPixels || Math.max(gif.width, gif.height) > LIMITS.maxDimension) {
         throw new ConversationImageError("chat_image_limit_exceeded");
       }

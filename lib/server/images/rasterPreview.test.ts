@@ -17,6 +17,17 @@ describe("an image preview", () => {
     expect(preview).toMatchObject({ height: 384, mimeType: "image/png", source: { height: 600, width: 1600 }, width: 1024 });
   });
 
+  it("shows an animated GIF's first frame and names its frames; a static GIF names none", async () => {
+    const frame = (background: string) => sharp({ create: { background, channels: 3, height: 30, width: 40 } }).png().toBuffer();
+    const animated = await sharp([await frame("#ff0000"), await frame("#00ff00")], { join: { animated: true } }).gif().toBuffer();
+    const preview = await rasterPreview(animated, "image/gif", new AbortController().signal);
+    expect(preview).toMatchObject({ frames: 2, mimeType: "image/png", source: { height: 30, width: 40 } });
+    const [red, green] = (await sharp(preview.bytes).stats()).channels.map((channel) => Math.round(channel.mean));
+    expect({ green, red }).toEqual({ green: 0, red: 255 });
+    const still = await rasterPreview(await sharp(await frame("#0000ff")).gif().toBuffer(), "image/gif", new AbortController().signal);
+    expect(still).not.toHaveProperty("frames");
+  });
+
   it("refuses bytes a decoder fails on as image_reference_unsupported, never as a bare decoder error", async () => {
     const gif = await truncatedGif();
     expect(extractImageMetadata(gif, "image/gif")).toMatchObject({ animated: false, height: 20, width: 20 });

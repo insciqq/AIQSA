@@ -1,5 +1,7 @@
 export type ImageMetadata = {
   animated?: boolean;
+  /** An animated GIF's frame count; absent for every other image. */
+  frames?: number;
   format: "gif" | "jpeg" | "png" | "webp";
   height: number;
   width: number;
@@ -37,9 +39,14 @@ function skipGifSubBlocks(buffer: Buffer, initialOffset: number): number | null 
   return null;
 }
 
-function hasMultipleGifImages(buffer: Buffer): boolean {
+/**
+ * The image descriptors (frames) of a GIF, counted in one linear walk until
+ * its trailer or the first malformed block, so a broken tail adds no frames.
+ */
+function gifImageCount(buffer: Buffer): number {
+  let imageDescriptors = 0;
   if (!hasBytes(buffer, 10, 3)) {
-    return false;
+    return imageDescriptors;
   }
 
   const logicalScreenPackedByte = buffer[10];
@@ -47,44 +54,40 @@ function hasMultipleGifImages(buffer: Buffer): boolean {
   if ((logicalScreenPackedByte & 0x80) !== 0) {
     const colorTableLength = gifColorTableByteLength(logicalScreenPackedByte);
     if (!hasBytes(buffer, offset, colorTableLength)) {
-      return false;
+      return imageDescriptors;
     }
     offset += colorTableLength;
   }
 
-  let imageDescriptors = 0;
   while (offset < buffer.length) {
     const marker = buffer[offset];
     offset += 1;
 
     if (marker === 0x3b) {
-      return false;
+      return imageDescriptors;
     }
 
     if (marker === 0x21) {
       if (!hasBytes(buffer, offset, 1)) {
-        return false;
+        return imageDescriptors;
       }
       offset += 1;
       const nextOffset = skipGifSubBlocks(buffer, offset);
       if (nextOffset === null) {
-        return false;
+        return imageDescriptors;
       }
       offset = nextOffset;
       continue;
     }
 
     if (marker !== 0x2c) {
-      return false;
+      return imageDescriptors;
     }
 
     imageDescriptors += 1;
-    if (imageDescriptors > 1) {
-      return true;
-    }
 
     if (!hasBytes(buffer, offset, 9)) {
-      return false;
+      return imageDescriptors;
     }
     const imagePackedByte = buffer[offset + 8];
     offset += 9;
@@ -92,23 +95,33 @@ function hasMultipleGifImages(buffer: Buffer): boolean {
     if ((imagePackedByte & 0x80) !== 0) {
       const colorTableLength = gifColorTableByteLength(imagePackedByte);
       if (!hasBytes(buffer, offset, colorTableLength)) {
-        return false;
+        return imageDescriptors;
       }
       offset += colorTableLength;
     }
 
     if (!hasBytes(buffer, offset, 1)) {
-      return false;
+      return imageDescriptors;
     }
     offset += 1;
     const nextOffset = skipGifSubBlocks(buffer, offset);
     if (nextOffset === null) {
-      return false;
+      return imageDescriptors;
     }
     offset = nextOffset;
   }
 
-  return false;
+  return imageDescriptors;
+}
+
+/** An animated GIF's frame count, or null for a static or unreadable GIF and any other bytes. */
+export function animatedGifFrameCount(buffer: Buffer): number | null {
+  try {
+    const gif = extractImageMetadata(buffer, "image/gif");
+    return gif.animated && gif.frames ? gif.frames : null;
+  } catch {
+    return null;
+  }
 }
 
 function unsupportedWebp(): never {
@@ -142,8 +155,11 @@ export function extractImageMetadata(buffer: Buffer, mimeType: string): ImageMet
       return unsupportedGif();
     }
 
+    const frames = gifImageCount(buffer);
     return {
-      animated: hasMultipleGifImages(buffer),
+      animated: frames > 1,
+      // Only an animated GIF names its frames, so a static one's metadata stays as it was.
+      ...(frames > 1 ? { frames } : {}),
       format: "gif",
       height: buffer.readUInt16LE(8),
       width: buffer.readUInt16LE(6)
