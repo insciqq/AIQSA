@@ -54,6 +54,12 @@ describe("materializeAssistantRunParams", () => {
     )).toEqual(expected);
   });
 
+  it("treats a saved standard mode on a model without modes as no mode, and still names Pro", () => {
+    const noModes = controls({ reasoningMode: undefined });
+    expect(assistantRunControlIssue({ reasoningMode: "standard" }, noModes)).toBeNull();
+    expect(assistantRunControlIssue({ reasoningMode: "pro" }, noModes)).toEqual({ control: "reasoningMode" });
+  });
+
   it("returns the violated numeric model limit", () => {
     expect(assistantRunControlIssue(
       { maxOutputTokens: 128_001 },
