@@ -357,10 +357,16 @@ type AnswerPresentationThreadV2 = Readonly<{
  * catalog does not list it. The browser learns nothing new: the catalog and the answer's model id are already its own.
  */
 export function answerModelNameV2(source: Pick<ThreadMessage, "modelId" | "provider">,
-  models: readonly Readonly<{ displayName: string; modelId: string; provider: string }>[] | null | undefined): string | null {
+  models: readonly Readonly<{ displayName: string; modelId: string; provider: string; providerFamily?: string;
+    upstreamModelId?: string }>[] | null | undefined): string | null {
   if (!source.modelId || !models) return null;
-  return models.find((model) => model.modelId === source.modelId && (!source.provider || model.provider === source.provider))
-    ?.displayName ?? null;
+  const exact = models.find((model) => model.modelId === source.modelId && (!source.provider || model.provider === source.provider));
+  if (exact) return exact.displayName;
+  // A configured connection's answer names its provider family and upstream model, while the catalog keys the model by
+  // connection: take the name only when exactly one listed model fits, never a guess between connections.
+  const upstream = models.filter((model) => model.upstreamModelId === source.modelId &&
+    (!source.provider || model.providerFamily === source.provider));
+  return upstream.length === 1 ? upstream[0]!.displayName : null;
 }
 
 /** One lifecycle projection per answer, shared by the answer and the announcer. */
