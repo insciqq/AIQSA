@@ -1,4 +1,5 @@
 // @vitest-environment node
+import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 import { COMPUTER_TOOL_NAMES } from "@/lib/contracts/computer";
 import { SUBAGENT_TOOL_GROUPS } from "@/lib/contracts/subagents";
@@ -85,6 +86,35 @@ describe("the computer tools in a run's registry", () => {
     const grouped = subagentToolRegistry(registry, Object.values(SUBAGENT_TOOL_GROUPS));
     expect(computerNames(grouped)).toEqual([]);
     expect(grouped.resolve("computer_shell")).toBeUndefined();
+  });
+
+  it("carries an image computer_read showed a vision model on its result, with a Workspace and without, sub-agents included", async () => {
+    const png = await sharp({ create: { background: "#cc3333", channels: 3, height: 20, width: 30 } }).png().toBuffer();
+    const vision = { ...request().modelCapabilities, vision: true };
+    for (const workspace of [undefined, { enabled: true } as unknown as ProviderRunRequest["workspace"]]) {
+      const ops = createFakeComputerOps();
+      ops.enqueue({ ok: true, result: { data: png.toString("base64"), eof: true, modifiedMs: 1, size: png.length } }, "read_bytes");
+      const registry = await buildToolRegistry(input({ request: request({ computer: online, modelCapabilities: vision,
+        ...(workspace ? { workspace } : {}) }), resultImages: true }, ops));
+      const sub = subagentToolRegistry(registry, null);
+      const result = await sub.resolve("computer_read")!.execute({ call: { arguments: { limit: null, offset: null, path: "shot.png" }, id: "v1",
+        name: "computer_read" }, ordinal: 0, persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
+      expect(result.status).toBe("complete");
+      const output = (result.content[0] as { text: string }).text;
+      expect(output).toContain("PNG image, 30×20 pixels");
+      expect(sub.images?.attached({ callId: "v1", id: "i1", kind: "tool_result", name: "computer_read", outcome: "complete", output }))
+        .toMatchObject({ image: { mimeType: "image/png" } });
+    }
+  });
+
+  it("refuses an image to a vision model whose route carries no result image, before anything is sent", async () => {
+    const ops = createFakeComputerOps();
+    const registry = await buildToolRegistry(input({ request: request({ computer: online,
+      modelCapabilities: { ...request().modelCapabilities, vision: true } }) }, ops));
+    const result = await registry.resolve("computer_read")!.execute({ call: { arguments: { limit: null, offset: null, path: "shot.png" },
+      id: "v2", name: "computer_read" }, ordinal: 0, persistedToolCallId: "row-2", round: 1, signal: new AbortController().signal });
+    expect(result).toMatchObject({ content: [{ value: { error: "computer_image_needs_vision" } }], status: "error" });
+    expect(ops.calls).toEqual([]);
   });
 
   it("bounds each call by its own time and the turn's tool time left", async () => {

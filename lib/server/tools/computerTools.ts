@@ -18,6 +18,8 @@ import {
   CONNECT_MAX_JOB_WAIT_SECONDS,
   CONNECT_MAX_OP_DEADLINE_MS,
   CONNECT_MAX_PATTERN_LENGTH,
+  CONNECT_MAX_READ_BYTES,
+  CONNECT_MAX_READ_LINE_LENGTH,
   CONNECT_MAX_READ_LINES,
   CONNECT_MAX_SHELL_TIMEOUT_SECONDS,
   CONNECT_MAX_WRITE_BYTES,
@@ -34,6 +36,14 @@ import {
 import type { EngineTool } from "../engine/toolRegistry";
 import { getComputerOps, type ComputerOps, type ComputerOpOutcome } from "../connect/computerPort";
 import { computerOsLabel, type FrozenComputerBinding } from "./computerBinding";
+import {
+  COMPUTER_DOCUMENT_TYPES,
+  COMPUTER_IMAGE_TYPES,
+  COMPUTER_READ_FILE_CALL_MS,
+  COMPUTER_READ_FILE_LIMITS,
+  type ComputerFileRead,
+  type ComputerReadFiles
+} from "./computerReadFiles";
 import type { HarnessToolEffects } from "./harnessTool";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
@@ -89,14 +99,15 @@ export const COMPUTER_TOOL_EFFECTS: Readonly<Record<ComputerToolName, Exclude<Ha
 });
 
 /**
- * The longest one call of the tool may take (`toolCallBounds`): a command's longest timeout and its reply, a file's
- * transfer to the answer, else a minute.
+ * The longest one call of the tool may take (`toolCallBounds`): a command's longest timeout and its reply, a document's
+ * transfer and parse for `computer_read` (`computerReadFiles.ts`), a file's transfer to the answer for
+ * `computer_attach_file`, else a minute.
  */
 export function computerToolCallMs(name: string): number {
   if (name === COMPUTER_ATTACH_FILE_TOOL_NAME) return COMPUTER_ATTACH_FILE_LIMITS.callMs;
   return name === "computer_shell"
     ? CONNECT_MAX_SHELL_TIMEOUT_SECONDS * 1_000 + COMPUTER_TOOL_LIMITS.shellReplyMs
-    : COMPUTER_TOOL_LIMITS.callMs;
+    : name === "computer_read" ? COMPUTER_READ_FILE_CALL_MS : COMPUTER_TOOL_LIMITS.callMs;
 }
 
 // Definitions. Descriptions depend only on the frozen binding's OS, never on whether the computer is online (D-08).
@@ -126,7 +137,12 @@ The result has the exit code, stdout and stderr; a long stream keeps its first $
 For files prefer computer_read, computer_glob, computer_grep, computer_write and computer_edit. Nothing asks the user before a command runs, so never delete, overwrite, move or send away the user's files, or change their system, unless the user asked for exactly that.`;
 }
 
-const READ_DESCRIPTION = `Reads a text file on the user's computer. path: ${PATH_TEXT}. Returns numbered lines like cat -n, from offset (the first line, from 1; null: 1) for up to limit lines (1-${CONNECT_MAX_READ_LINES}; null: ${CONNECT_DEFAULT_READ_LINES}), with the file's encoding and line endings; a line longer than 2000 characters is cut. UTF-8, UTF-16 and the system's legacy code page are decoded. A binary file is refused: use a command for it. Read a file before you edit it, and a long one in parts.`;
+const extensions = (types: ReadonlyMap<string, string>) => [...types.keys()].map((extension) => extension.slice(1)).join(", ");
+const COMPUTER_DOCUMENT_EXTENSIONS = extensions(COMPUTER_DOCUMENT_TYPES);
+const COMPUTER_IMAGE_EXTENSIONS = extensions(COMPUTER_IMAGE_TYPES);
+
+const READ_DESCRIPTION = `Reads a file on the user's computer. path: ${PATH_TEXT}. A text file gives numbered lines like cat -n, from offset (the first line, from 1; null: 1) for up to limit lines (1-${CONNECT_MAX_READ_LINES}; null: ${CONNECT_DEFAULT_READ_LINES}), with the file's encoding and line endings; a line longer than ${CONNECT_MAX_READ_LINE_LENGTH} characters is cut. UTF-8, UTF-16 and the system's legacy code page are decoded. Read a file before you edit it, and a long one in parts.
+Documents (${COMPUTER_DOCUMENT_EXTENSIONS}), by extension, give their extracted text, paged with offset and limit the same way: it is not the file's raw content, so computer_edit cannot change it; the server's document limit is 25 MB unless an administrator set another. Images (${COMPUTER_IMAGE_EXTENSIONS}; gif only when static), up to ${COMPUTER_READ_FILE_LIMITS.imageBytes / 1_048_576} MiB, are shown to you as a preview attached to the result, with their format, pixel size and byte size; offset and limit do not apply. Any other binary file is refused: use a command for it, or give it to the user with computer_attach_file.`;
 
 const WRITE_DESCRIPTION = `Writes a text file on the user's computer, creating it or replacing all of its content. path: ${PATH_TEXT}. content: the whole new text, at most ${CONNECT_MAX_WRITE_BYTES / 1_048_576} MiB. A new file is UTF-8 without BOM; replacing a file with CRLF line endings keeps CRLF. To change part of an existing file use computer_edit, and read a file before you replace it. Never overwrite a file the user did not ask you to change.`;
 
@@ -283,9 +299,13 @@ const FAILURE_TEXT: Readonly<Record<ComputerFailureCode, string>> = {
   computer_cancelled: "The operation was cancelled.",
   computer_edit_ambiguous: "oldString occurs more than once in the file. Include more of the surrounding lines so it is unique, or set replaceAll.",
   computer_edit_no_match: "oldString is not in the file. Read the file again and copy the exact text.",
-  computer_file_binary: "The file is binary, so it cannot be read as text; use a command for it.",
+  computer_file_binary: `The file is binary, so it cannot be read as text. computer_read reads documents (${COMPUTER_DOCUMENT_EXTENSIONS}) ` +
+    `and images (${COMPUTER_IMAGE_EXTENSIONS}) by their extension; for another file use a command, or give it to the user with ` +
+    "computer_attach_file.",
   computer_file_changed: "The file changed on the computer while it was being read; read it again once it is no longer being written.",
   computer_file_too_large: "The file or the text is too large for this tool; read the file in parts with offset and limit, or use a command.",
+  computer_image_needs_vision: "The model of this chat cannot be shown images here, so the image was not read. Tell the user to choose a " +
+    "model that can see images for this chat and ask again; do not guess what the image shows.",
   computer_is_a_directory: "The path is a folder, not a file.",
   computer_job_not_found: "No such background job: the id is wrong, or the job ended with an earlier answer.",
   computer_limit: "Too many operations or background jobs are running on the computer; wait, or stop a background job first.",
@@ -327,6 +347,9 @@ export function computerUnknownOutcomeText(code: ComputerFailureCode): string {
  * so they are ordinary errors, never unknown outcomes or retries.
  */
 const DEFINITE_CODES: ReadonlySet<ComputerFailureCode> = new Set<ComputerFailureCode>([
+  // A file that changed while it was fetched (`computerFileFetch.ts`): the read ended on its own terms, and one tried again at
+  // once most likely meets the same writer and spends a whole transfer again, so the model is told and reads again later.
+  "computer_file_changed", "computer_image_needs_vision",
   "computer_edit_ambiguous", "computer_edit_no_match", "computer_file_binary", "computer_file_too_large", "computer_is_a_directory",
   "computer_job_not_found", "computer_limit", "computer_not_a_directory", "computer_path_not_found", "computer_pattern_invalid",
   "computer_permission_denied", "computer_text_unencodable", "connect_unsupported"
@@ -373,18 +396,59 @@ function streams(stdout: string, stderr: string): string {
   return parts.length > 0 ? parts.join("\n") : "(no output)";
 }
 
-function readText(path: string, result: ConnectOpResult<"read">): string {
+type ReadPage = Pick<ConnectOpResult<"read">, "content" | "startLine" | "totalLines" | "truncated">;
+
+/** Numbered lines as the model reads them; `about` names what they are (the encoding and line endings of a text file). */
+function numberedText(path: string, result: ReadPage, about: string): string {
   const body = result.content === "" ? [] : lines(result.content).split(/\r\n|\n|\r/u);
   if (body.length === 0) {
-    return result.totalLines === 0 ? `${path}: empty file (${result.encoding})`
+    return result.totalLines === 0 ? `${path}: empty file (${about})`
       : `${path}: no lines from line ${result.startLine}; the file has ${result.totalLines}.`;
   }
   const end = result.startLine + body.length - 1;
   const numbered = body.map((line, index) => `${String(result.startLine + index).padStart(6)}\t${line}`).join("\n");
   const more = end < result.totalLines ? `\nLines ${end + 1}-${result.totalLines} are not shown: read on with offset ${end + 1}.`
     : result.truncated ? "\nSome long lines were cut." : "";
-  return `${path}: lines ${result.startLine}-${end} of ${result.totalLines} (${result.encoding}, ${result.lineEnding} line endings)\n` +
-    `${numbered}${more}`;
+  return `${path}: lines ${result.startLine}-${end} of ${result.totalLines} (${about})\n${numbered}${more}`;
+}
+
+function readText(path: string, result: ConnectOpResult<"read">): string {
+  return result.content === "" && result.totalLines === 0 ? `${path}: empty file (${result.encoding})`
+    : numberedText(path, result, `${result.encoding}, ${result.lineEnding} line endings`);
+}
+
+/**
+ * One page of a text the server holds (a document's extracted text), cut as the device cuts a text read: lines from
+ * `offset` for `limit` lines, each cut to {@link CONNECT_MAX_READ_LINE_LENGTH} characters, at most
+ * {@link CONNECT_MAX_READ_BYTES} bytes of UTF-8 in all.
+ */
+export function pageServerText(text: string, offset: number, limit: number): ReadPage {
+  const all = text.split(/(?<=\n)/u);
+  if (all.at(-1) === "") all.pop();
+  let content = "";
+  let bytes = 0;
+  let truncated = offset - 1 + limit < all.length;
+  for (let index = offset - 1; index < all.length && index < offset - 1 + limit; index += 1) {
+    const raw = all[index]!;
+    const ended = raw.endsWith("\n");
+    let line = ended ? raw.slice(0, -1) : raw;
+    if (line.length > CONNECT_MAX_READ_LINE_LENGTH) {
+      const points = Array.from(line);
+      if (points.length > CONNECT_MAX_READ_LINE_LENGTH) {
+        line = points.slice(0, CONNECT_MAX_READ_LINE_LENGTH).join("");
+        truncated = true;
+      }
+    }
+    if (ended) line += "\n";
+    const size = Buffer.byteLength(line, "utf8");
+    if (bytes + size > CONNECT_MAX_READ_BYTES) {
+      truncated = true;
+      break;
+    }
+    content += line;
+    bytes += size;
+  }
+  return { content, startLine: offset, totalLines: all.length, truncated };
 }
 
 function grepText(result: ConnectOpResult<"grep">): string {
@@ -448,6 +512,8 @@ function successResult(call: ModelToolCall, name: SingleOpToolName, args: Connec
 
 export type ComputerToolContext = Readonly<{
   binding: FrozenComputerBinding;
+  /** The run's document and image reads (`createComputerReadFiles`); absent, `computer_read` reads every file as text. */
+  files?: ComputerReadFiles;
   /** The port; absent, the process's (`getComputerOps`), read at each call since the relay installs it. */
   ops?: ComputerOps;
   runId: string;
@@ -461,7 +527,7 @@ export type ComputerToolContext = Readonly<{
  * definite failure; throws `ComputerOpError` for a failure after the device may have started it, and the run's abort
  * when Stop or the deadline ended the call.
  */
-export async function executeComputerTool(context: ComputerToolContext, call: ModelToolCall, signal: AbortSignal):
+export async function executeComputerTool(context: ComputerToolContext, call: ModelToolCall, signal: AbortSignal, round = 0):
   Promise<ToolExecutionResult> {
   if (!isComputerToolName(call.name) || call.name === COMPUTER_ATTACH_FILE_TOOL_NAME) {
     return errorResult(call, "tool_unavailable", "This tool is not available.");
@@ -480,6 +546,17 @@ export async function executeComputerTool(context: ComputerToolContext, call: Mo
       "on the computer, so nothing was sent to it. Answer with what you have and say what you could not check.");
   }
   signal.throwIfAborted();
+  // A document or an image: the server fetches the file and reads it (`computerReadFiles.ts`); anything else is the device's text read.
+  if (name === "computer_read" && context.files) {
+    const args = prepared.args as ConnectOpArgs<"read">;
+    const read: ComputerFileRead = { cwd: args.cwd, limit: args.limit, offset: args.offset, path: args.path };
+    const handled = context.files.read({ call, context, read, round, signal,
+      complete: (text) => complete(call, text),
+      error: (code, message) => errorResult(call, code, message),
+      failure: (code, sent, text) => failureResult(call, name, code, sent, text),
+      page: (text, page, about) => numberedText(page.path, pageServerText(text, page.offset, page.limit), about) });
+    if (handled) return await handled;
+  }
   // The port answers by itself at `timeoutMs`; this is the engine's backstop, after which the call counts as timed out.
   const timer = new AbortController();
   const handle = setTimeout(() => timer.abort(), prepared.timeoutMs + COMPUTER_TOOL_LIMITS.graceMs);
@@ -501,12 +578,20 @@ export async function executeComputerTool(context: ComputerToolContext, call: Mo
     if (result) return successResult(call, name, prepared.args, result);
     outcome = { code: "connect_device_error", ok: false, sent: true };
   }
-  const code: ComputerFailureCode = timer.signal.aborted ? "computer_timeout" : outcome.code;
-  if (!outcome.sent) return errorResult(call, code, notSentText(code));
-  if (DEFINITE_CODES.has(code)) return errorResult(call, code, FAILURE_TEXT[code]);
+  return failureResult(call, name, timer.signal.aborted ? "computer_timeout" : outcome.code, outcome.sent);
+}
+
+/**
+ * A failed operation's result: an error result for a failure nothing was sent for and for a definite one, else thrown for
+ * the batch (`ComputerOpError`). `text` replaces the code's own words where a caller's are truer.
+ */
+function failureResult(call: Pick<ModelToolCall, "id" | "name">, name: ComputerToolName, code: ComputerFailureCode, sent: boolean,
+  text?: string): ToolExecutionResult {
+  if (!sent) return errorResult(call, code, text ? `${text} Nothing was sent to the computer.` : notSentText(code));
+  if (DEFINITE_CODES.has(code)) return errorResult(call, code, text ?? FAILURE_TEXT[code]);
   if (COMPUTER_TOOL_EFFECTS[name] === "external") throw new ComputerOpError(code, { timedOut: code === "computer_timeout" });
   if (TRANSIENT_READ_CODES.has(code)) throw new ComputerOpError(code, { transient: true });
-  return errorResult(call, code, FAILURE_TEXT[code]);
+  return errorResult(call, code, text ?? FAILURE_TEXT[code]);
 }
 
 // Steps in the answer (§7): `ThreadToolActivityCall` with origin `computer`.
@@ -559,7 +644,7 @@ export function computerEngineTools(input: ComputerToolContext & Readonly<{
       definition,
       effects: COMPUTER_TOOL_EFFECTS[name],
       observationSource: "workspace",
-      execute: attachFile ?? ((execution) => executeComputerTool(input, execution.call, execution.signal))
+      execute: attachFile ?? ((execution) => executeComputerTool(input, execution.call, execution.signal, execution.round))
     }];
   });
 }

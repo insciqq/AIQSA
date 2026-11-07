@@ -36,6 +36,7 @@ import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, t
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { decodeFrozenComputerBinding } from "../tools/computerBinding";
 import { executeComputerAttachFile } from "../tools/computerAttachFile";
+import { createComputerReadFiles } from "../tools/computerReadFiles";
 import { computerEngineTools } from "../tools/computerTools";
 import type { ComputerOps } from "../connect/computerPort";
 import type { ComputerOutputStore } from "../connect/computerOutputs";
@@ -179,10 +180,10 @@ export type ToolRegistry = Readonly<{
   browser?: true;
   definitions(): readonly RunTool[];
   /**
-   * The Workspace previews this run viewed itself (`view_workspace_image`),
-   * which its requests carry with their results, and how a result image they
-   * do not carry is seen again; absent where the run offers neither direct
-   * view nor System Vision.
+   * The previews this run viewed itself (`view_workspace_image`, `read_chat_file`,
+   * `computer_read`), which its requests carry with their results, and how a
+   * Workspace result image they do not carry is seen again; absent where the
+   * run offers none of them nor System Vision.
    */
   images?: TranscriptImages;
   /**
@@ -304,6 +305,11 @@ export type ToolRegistryInput = Readonly<{
   researchEvidence?: RecordEvidenceTarget;
   /** Where `change_research_frame` writes, bound as `researchEvidence` is. Absent, the tool is not offered. */
   researchFrame?: ChangeResearchFrameTarget;
+  /**
+   * This agent's answer route carries a tool result's image (`rendersToolResultImages`): only then do `read_chat_file`
+   * and `computer_read` show an image to a vision model, since elsewhere its pixels would never reach it.
+   */
+  resultImages?: true;
   runId: string;
   /** A scheduled task's occurrence (a schedule, a webhook or a monitoring check): it never works on the user's computer. */
   scheduled?: true;
@@ -449,7 +455,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
 
   if (!request.workspace) {
-    const files = createChatFileTool({ request, runId: input.runId, userId: input.userId,
+    const files = createChatFileTool({ request, runId: input.runId, userId: input.userId, resultImages: input.resultImages === true,
       reader: input.services.chatFiles, readImage: input.services.images?.readConversationImage });
     add({ activity: named(readChatFileTool, "Chat files"), definition: readChatFileTool, effects: "none", observationSource: "workspace",
       execute: (execution) => files.execute(execution.call, execution.round, execution.signal) });
@@ -682,13 +688,18 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   const computer = clientTools && !input.telegram && !input.scheduled && request.monitoringVerdictTool !== true &&
     request.prompt.baseline?.source !== "assistant_chat" ? decodeFrozenComputerBinding(request.computer) : null;
   if (computer) {
+    // Documents and images `computer_read` reads, in this run's memory: its previews ride on its own requests whether or not
+    // the run has a Workspace, gated on the model this request names and its route (a sub-agent's own).
+    const files = createComputerReadFiles({ request, resultImages: input.resultImages === true, runId: input.runId });
     const context = { binding: computer, ...(input.services.computer ? { ops: input.services.computer } : {}), runId: input.runId,
       ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId };
     const outputs = input.services.computerOutputs;
     // A sub-agent's registry filters `computer_attach_file` out (`SUBAGENT_EXCLUDED_TOOL_NAMES`): only the main answer shows files.
-    for (const tool of computerEngineTools({ ...context, serverName: descriptors.get("computer_shell")?.serverName,
+    for (const tool of computerEngineTools({ ...context, files, serverName: descriptors.get("computer_shell")?.serverName,
       ...(outputs ? { attachFile: (execution: EngineToolExecution) => executeComputerAttachFile({ ...context, outputs }, execution) } : {})
     })) add(tool);
+    const previous = images;
+    images = { attached: (item) => files.images.attached(item) ?? previous?.attached(item), note: previous?.note ?? IMAGE_REFERENCE_NOTE };
   }
 
   return {
