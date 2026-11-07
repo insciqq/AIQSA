@@ -5,6 +5,14 @@ import {
 } from "./providerParams";
 
 export const invalidRunParamsError = "invalid_run_params";
+/**
+ * A request names a `reasoning.mode` the model's controls do not offer. It is
+ * refused by name, never dropped or replaced: a saved Pro choice on a model
+ * that no longer offers Pro must not silently become a different request.
+ */
+export const reasoningModeNotAvailableError = "reasoning_mode_not_available";
+export const reasoningModeNotAvailableMessage =
+  "The reasoning mode (reasoning.mode) is not available for this model. Send without it or choose a mode the model offers.";
 
 export type RunParamValidationResult =
   | {
@@ -12,7 +20,7 @@ export type RunParamValidationResult =
       params: Record<string, unknown>;
     }
   | {
-      code: typeof invalidRunParamsError;
+      code: typeof invalidRunParamsError | typeof reasoningModeNotAvailableError;
       ok: false;
     };
 
@@ -221,6 +229,15 @@ function validateReasoningMode(value: unknown, controls: ModelParameterControls)
     controls.reasoningMode?.supported === true &&
     controls.reasoningMode.options.includes(value)
   );
+}
+
+function requestsUnofferedReasoningMode(params: Record<string, unknown>, controls: ModelParameterControls): boolean {
+  const reasoning = params.reasoning;
+  return isRecord(reasoning) &&
+    hasOwn(reasoning, "mode") &&
+    typeof reasoning.mode === "string" &&
+    reasoning.mode.trim() !== "" &&
+    !validateReasoningMode(reasoning.mode, controls);
 }
 
 export function validateSearchRunParams(
@@ -527,6 +544,9 @@ export function validateRunParams(input: {
 
   if (!allKeysAllowed(input.params, allowed)) {
     return invalid();
+  }
+  if (requestsUnofferedReasoningMode(input.params, input.controls)) {
+    return { code: reasoningModeNotAvailableError, ok: false };
   }
   const searchValidation = validateSearchRunParams(input.params.search, input.searchControls);
   if (!searchValidation.ok) {
