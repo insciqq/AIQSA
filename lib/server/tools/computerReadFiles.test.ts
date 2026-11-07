@@ -2,7 +2,7 @@
 import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectOpArgs } from "@/lib/contracts/connect";
-import { COMPUTER_FILE_FETCH_LIMITS } from "../connect/computerFileFetch";
+import { COMPUTER_FILE_FETCH_LIMITS, createComputerFileBudget, type ComputerFileBudget } from "../connect/computerFileFetch";
 import type { ComputerOpCall, ComputerOpOutcome, ComputerOps } from "../connect/computerPort";
 import { createFakeComputerOps } from "../connect/computerPort";
 import { projectTranscript, type TranscriptToolResultItem } from "../engine/transcript";
@@ -35,16 +35,19 @@ function request(vision: boolean): ProviderRunRequest {
     toolMode: "auto" };
 }
 
-type Device = { files: Map<string, { bytes: Buffer; modifiedMs: number }>; calls: ConnectOpArgs<"read_bytes">[]; ops: ComputerOps };
+type Device = { files: Map<string, { bytes: Buffer; modifiedMs: number }>; calls: ConnectOpArgs<"read_bytes">[]; timeouts: number[];
+  ops: ComputerOps };
 
 /** A computer whose files answer `read_bytes` as the device does; `answer` overrides one call. */
 function device(answer?: (args: ConnectOpArgs<"read_bytes">) => ComputerOpOutcome | undefined): Device {
   const files = new Map<string, { bytes: Buffer; modifiedMs: number }>();
   const calls: ConnectOpArgs<"read_bytes">[] = [];
+  const timeouts: number[] = [];
   const ops: ComputerOps = {
     call: (async (input: ComputerOpCall<"read_bytes">): Promise<ComputerOpOutcome> => {
       expect(input).toMatchObject({ deviceId: DEVICE, op: "read_bytes", runId: RUN, userId: USER });
       calls.push(input.args);
+      timeouts.push(input.timeoutMs);
       const own = answer?.(input.args);
       if (own) return own;
       const file = files.get(input.args.path);
@@ -57,7 +60,7 @@ function device(answer?: (args: ConnectOpArgs<"read_bytes">) => ComputerOpOutcom
     describe: async () => null,
     runEnded: () => {}
   };
-  return { calls, files, ops };
+  return { calls, files, ops, timeouts };
 }
 
 function parsed(text: string, status: "complete" | "partial" = "complete"): ParsedDocument {
@@ -68,17 +71,19 @@ function parsed(text: string, status: "complete" | "partial" = "complete"): Pars
 type PdfText = (bytes: Buffer, signal: AbortSignal) => Promise<Readonly<{ text: string; status: "complete" | "partial" | "no_text" }>>;
 
 function setup(options: Readonly<{ vision?: boolean; resultImages?: boolean; parse?: (input: DocumentParseInput) => Promise<ParsedDocument>;
-  limits?: { available: boolean; maxBytes: number } | null; answer?: Parameters<typeof device>[0]; pdfText?: PdfText }> = {}) {
+  limits?: { available: boolean; maxBytes: number } | null; answer?: Parameters<typeof device>[0]; pdfText?: PdfText;
+  fileBudget?: ComputerFileBudget; timeLeftMs?: () => number }> = {}) {
   const computer = device(options.answer);
   const parse = vi.fn<(input: DocumentParseInput) => Promise<ParsedDocument>>(options.parse ?? (async () => parsed("one\ntwo\nthree\nfour\n")));
   const pdfText = vi.fn<PdfText>(options.pdfText ?? (async () => { throw new Error("unpdf failed"); }));
   let finish!: () => void;
   const runEnded = new Promise<void>((resolve) => { finish = resolve; });
   const budget = createDirectImageBudget();
-  const files = createComputerReadFiles({ budget, parse, parserLimits: () => options.limits === undefined
+  const files = createComputerReadFiles({ budget, ...(options.fileBudget ? { fileBudget: options.fileBudget } : {}), parse, parserLimits: () => options.limits === undefined
     ? { available: true, maxBytes: 25_000_000 } : options.limits, pdfText, request: request(options.vision ?? true),
   resultImages: options.resultImages ?? true, runEnded, runId: RUN });
-  const context: ComputerToolContext = { binding, files, ops: computer.ops, runId: RUN, userId: USER };
+  const context: ComputerToolContext = { binding, files, ops: computer.ops, runId: RUN,
+    ...(options.timeLeftMs ? { timeLeftMs: options.timeLeftMs } : {}), userId: USER };
   const read = (path: string, offset: number | null = null, limit: number | null = null, id = "r1") =>
     executeComputerTool(context, { arguments: { limit, offset, path }, id, name: "computer_read" }, new AbortController().signal, 1);
   return { budget, computer, end: async () => { finish(); await runEnded; }, files, parse, pdfText, read };
@@ -173,6 +178,45 @@ describe("a document on the computer", () => {
     rejected.computer.files.set("bad.pdf", { bytes: Buffer.from("x"), modifiedMs: MODIFIED });
     expect(failure(await rejected.read("bad.pdf"))).toMatchObject({ error: "parser_rejected" });
     expect(rejected.pdfText).not.toHaveBeenCalled();
+  });
+
+  it("keeps a document's bytes in the process's transfer budget until its parse ends, so transfers never outgrow it", async () => {
+    const fileBudget = createComputerFileBudget(1_024);
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    let peak = 0;
+    const run = setup({ fileBudget, parse: async () => {
+      peak = Math.max(peak, 1_024 - fileBudget.available());
+      await gate;
+      return parsed("done\n");
+    } });
+    run.computer.files.set("a.docx", { bytes: Buffer.alloc(600, 1), modifiedMs: MODIFIED });
+    run.computer.files.set("b.docx", { bytes: Buffer.alloc(600, 2), modifiedMs: MODIFIED });
+    const first = run.read("a.docx", null, null, "r1");
+    await vi.waitFor(() => expect(run.parse).toHaveBeenCalledTimes(1));
+    // The first document is still being parsed and holds 600 of 1024 bytes: the second does not fit and is refused at once.
+    const second = await run.read("b.docx", null, null, "r2");
+    expect(failure(second)).toMatchObject({ error: "computer_limit" });
+    expect(fileBudget.available()).toBe(424);
+    open();
+    expect(text(await first)).toContain("     1\tdone");
+    expect(peak).toBeLessThanOrEqual(1_024);
+    expect(fileBudget.available()).toBe(1_024);
+    // A failed parse and an image's preview give their bytes back as well.
+    const failing = setup({ fileBudget, parse: async () => { throw new DocumentParserError("parser_rejected", "tika"); } });
+    failing.computer.files.set("c.docx", { bytes: Buffer.alloc(600, 3), modifiedMs: MODIFIED });
+    await failing.read("c.docx");
+    failing.computer.files.set("d.png", { bytes: Buffer.from("not a png"), modifiedMs: MODIFIED });
+    await failing.read("d.png");
+    expect(fileBudget.available()).toBe(1_024);
+  });
+
+  it("starts a document read like a text read and keeps each of its steps within the tool time left", async () => {
+    const run = setup({ timeLeftMs: () => 5_000 });
+    run.computer.files.set("report.docx", { bytes: Buffer.from("docx bytes"), modifiedMs: MODIFIED });
+    expect(text(await run.read("report.docx"))).toContain("     1\tone");
+    expect(run.computer.timeouts.length).toBeGreaterThan(0);
+    expect(Math.max(...run.computer.timeouts)).toBeLessThanOrEqual(5_000);
   });
 
   it("refuses a document over the parser's limit after its first chunk", async () => {

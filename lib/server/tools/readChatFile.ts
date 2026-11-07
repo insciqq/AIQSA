@@ -6,6 +6,7 @@ import { attachmentIdsFromContentBlocks } from "../runs/runAttachmentMaterializa
 import type { DirectImageBudget } from "../workspace/directImageView";
 import { CHAT_FILE_NO_TEXT, CHAT_FILE_UNTRUSTED, READ_CHAT_FILE_NAME } from "./chatFileContext";
 import { createHeldResultImages } from "./heldResultImages";
+import type { RequestImageAllowance } from "./requestImageAllowance";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "./types";
 
 export const CHAT_FILE_READ_LIMIT = 12_000;
@@ -52,6 +53,8 @@ const notFound = (call: ModelToolCall) => refusal(call, "chat_file_not_found", "
 export function createChatFileTool(input: Readonly<{
   request: ProviderRunRequest; userId: string; runId: string;
   reader?: ChatFileReader; readImage?: ChatImageReader; budget?: DirectImageBudget; runEnded?: Promise<void> | null;
+  /** The agent's request room, shared with its other image tools (`RequestImageAllowance`); the tool's own by default. */
+  allowance?: RequestImageAllowance;
   /** The answer route carries a tool result's image (`rendersToolResultImages`); without it no image is shown. */
   resultImages?: boolean;
 }>) {
@@ -62,7 +65,7 @@ export function createChatFileTool(input: Readonly<{
   }
   for (const id of attachmentIdsFromContentBlocks(request.content.blocks)) ids.add(id);
   const held = createHeldResultImages({ request, runId: input.runId, toolName: READ_CHAT_FILE_NAME,
-    ...(input.budget ? { budget: input.budget } : {}), ...(input.runEnded === undefined ? {} : { runEnded: input.runEnded }) });
+    ...(input.allowance ? { allowance: input.allowance } : {}), ...(input.budget ? { budget: input.budget } : {}), ...(input.runEnded === undefined ? {} : { runEnded: input.runEnded }) });
   const images = held.images;
 
   async function view(call: ModelToolCall, scope: ChatFileScope, round: number, signal?: AbortSignal): Promise<ToolExecutionResult> {

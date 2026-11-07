@@ -2,7 +2,7 @@ import { parseConnectOpResult } from "@/lib/contracts/connect";
 import type { ComputerFailureCode } from "@/lib/contracts/computer";
 import { normalizedUploadFileExtension, UPLOAD_FORMAT_REGISTRY } from "@/lib/domain/uploadFormats";
 import type { TranscriptImages } from "../engine/transcript";
-import { fetchComputerFile, computerFileName, type ComputerFile } from "../connect/computerFileFetch";
+import { fetchComputerFile, computerFileName, type ComputerFile, type ComputerFileBudget } from "../connect/computerFileFetch";
 import { getComputerOps } from "../connect/computerPort";
 import { ImageInputError } from "../images/inputError";
 import { rasterPreview } from "../images/rasterPreview";
@@ -19,6 +19,7 @@ import type { DirectImageBudget } from "../workspace/directImageView";
 import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { ComputerToolContext } from "./computerTools";
 import { createHeldResultImages, type ResultImagePreview } from "./heldResultImages";
+import type { RequestImageAllowance } from "./requestImageAllowance";
 import type { ModelToolCall, ToolExecutionResult } from "./types";
 
 /**
@@ -52,9 +53,6 @@ export const COMPUTER_READ_FILE_LIMITS = Object.freeze({
   minMs: 1_000
 });
 
-/** The longest one `computer_read` may take: a whole file's transfer, its parse and a PDF's fallback. */
-export const COMPUTER_READ_FILE_CALL_MS = COMPUTER_READ_FILE_LIMITS.fetchMs + COMPUTER_READ_FILE_LIMITS.parseMs +
-  COMPUTER_READ_FILE_LIMITS.pdfFallbackMs;
 
 /** Plain-text formats the parser also reads but the device reads better as text. */
 const TEXT_FORMAT_IDS: ReadonlySet<string> = new Set(["csv", "html"]);
@@ -150,8 +148,12 @@ export function createComputerReadFiles(input: Readonly<{
   /** The answer route carries a tool result's image (`rendersToolResultImages`); without it no image is shown. */
   resultImages: boolean;
   runId: string;
+  /** The process's transfer budget by default (`fetchComputerFile`). */
+  fileBudget?: ComputerFileBudget;
   /** The process's preview budget by default. */
   budget?: DirectImageBudget;
+  /** The agent's request room, shared with its other image tools (`RequestImageAllowance`); this tool's own by default. */
+  allowance?: RequestImageAllowance;
   /** Settles when the run ends, which frees the cache and the previews; the run's own settlement by default. */
   runEnded?: Promise<void> | null;
   /** Tests; the parser boundary by default. */
@@ -164,7 +166,7 @@ export function createComputerReadFiles(input: Readonly<{
   const { request } = input;
   const runEnded = input.runEnded === undefined ? activeRunControllerRegistry.settled(input.runId) : input.runEnded;
   const held = createHeldResultImages({ request, runId: input.runId, toolName: "computer_read",
-    ...(input.budget ? { budget: input.budget } : {}), runEnded });
+    ...(input.allowance ? { allowance: input.allowance } : {}), ...(input.budget ? { budget: input.budget } : {}), runEnded });
   const parse = input.parse ?? ((document: DocumentParseInput) => createDocumentParserBoundary().parse(document));
   const limitsFor = input.parserLimits ?? parserLimits;
   const pdfText = input.pdfText ?? ((bytes: Buffer, signal: AbortSignal) => extractPdfTextChunks(bytes, { config: getPdfExtractionConfig(), signal }));
@@ -202,7 +204,8 @@ export function createComputerReadFiles(input: Readonly<{
         return value !== undefined && Number.isFinite(value) ? value : Infinity;
       };
       const within = (ms: number) => Math.max(COMPUTER_READ_FILE_LIMITS.minMs, Math.min(ms, left()));
-      const fetch = (maxBytes: number) => fetchComputerFile({ ...(context.ops ? { ops: context.ops } : {}), cwd: args.read.cwd,
+      const fetch = (maxBytes: number) => fetchComputerFile({ ...(input.fileBudget ? { budget: input.fileBudget } : {}),
+        ...(context.ops ? { ops: context.ops } : {}), cwd: args.read.cwd,
         deviceId: context.binding.deviceId, maxBytes, path: args.read.path, runId: context.runId, signal,
         timeoutMs: within(COMPUTER_READ_FILE_LIMITS.fetchMs), userId: context.userId });
       /** A fetch's failure, in this path's words where the tool's own would mislead. */
@@ -220,8 +223,20 @@ export function createComputerReadFiles(input: Readonly<{
         // Gated as `read_chat_file` is: the model this request names (a sub-agent's own) sees images and its route carries them.
         if (!request.modelCapabilities.vision || !input.resultImages) return args.failure("computer_image_needs_vision", false);
         const fetched = await fetch(COMPUTER_READ_FILE_LIMITS.imageBytes);
-        signal.throwIfAborted();
-        if (!fetched.ok) return fetchFailure(fetched.code, fetched.sent, IMAGE_LIMIT_TEXT);
+        if (!fetched.ok) {
+          signal.throwIfAborted();
+          return fetchFailure(fetched.code, fetched.sent, IMAGE_LIMIT_TEXT);
+        }
+        // The file's bytes stay in the process's transfer budget until its preview is made, whatever ends the read.
+        try {
+          signal.throwIfAborted();
+          return await previewImage(fetched);
+        } finally {
+          fetched.release();
+        }
+      }
+
+      async function previewImage(fetched: ComputerFile): Promise<ToolExecutionResult> {
         const preparation = await held.prepare(signal);
         if (!preparation) return args.error("computer_limit", "Image previews are at their limit on this server right now. " +
           "Read the image again in a moment.");
@@ -264,10 +279,19 @@ export function createComputerReadFiles(input: Readonly<{
         }
         if (!entry) {
           const fetched = await fetch(limits.maxBytes);
-          signal.throwIfAborted();
-          if (!fetched.ok) return fetchFailure(fetched.code, fetched.sent, megabytes(limits.maxBytes));
-          if (fetched.size === 0) return args.complete(`${args.read.path}: empty file (${kind.extension.slice(1)} document)`);
-          const parsed = await parseFile(fetched);
+          if (!fetched.ok) {
+            signal.throwIfAborted();
+            return fetchFailure(fetched.code, fetched.sent, megabytes(limits.maxBytes));
+          }
+          let parsed: Awaited<ReturnType<typeof parseFile>>;
+          // The file's bytes stay in the process's transfer budget until the parse (and a PDF's fallback) is done with them.
+          try {
+            signal.throwIfAborted();
+            if (fetched.size === 0) return args.complete(`${args.read.path}: empty file (${kind.extension.slice(1)} document)`);
+            parsed = await parseFile(fetched);
+          } finally {
+            fetched.release();
+          }
           if ("error" in parsed) return args.error(parsed.error, PARSER_TEXT[parsed.error]);
           entry = parsed;
           keep(key, entry);

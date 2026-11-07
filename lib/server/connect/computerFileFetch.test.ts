@@ -97,6 +97,9 @@ describe("fetchComputerFile", () => {
     ]);
     expect(calls.every((args) => args.cwd === "C:\\Users\\ivan" && args.path === "Documents\\Отчёт.pdf")).toBe(true);
     expect(stats.maxInFlight).toBe(COMPUTER_FILE_FETCH_LIMITS.inFlight);
+    // The file holds its bytes reserved until its holder releases them.
+    expect(budget.available()).toBe(COMPUTER_FILE_FETCH_LIMITS.processBytes - file.length);
+    if (outcome.ok) outcome.release();
     expect(budget.available()).toBe(COMPUTER_FILE_FETCH_LIMITS.processBytes);
   });
 
@@ -180,7 +183,14 @@ describe("fetchComputerFile", () => {
     await expect(fetchComputerFile(input(ops, { budget }))).resolves.toEqual({ code: "computer_limit", ok: false, sent: true });
     expect(calls).toHaveLength(1);
     held?.();
-    await expect(fetchComputerFile(input(ops, { budget }))).resolves.toMatchObject({ ok: true, size: CHUNK * 2 });
+    const fetched = await fetchComputerFile(input(ops, { budget }));
+    expect(fetched).toMatchObject({ ok: true, size: CHUNK * 2 });
+    // The file keeps its bytes reserved until its holder is done with them; releasing twice frees them once.
+    expect(budget.available()).toBe(CHUNK);
+    await expect(fetchComputerFile(input(ops, { budget }))).resolves.toEqual({ code: "computer_limit", ok: false, sent: true });
+    if (!fetched.ok) throw new Error("expected a file");
+    fetched.release();
+    fetched.release();
     expect(budget.available()).toBe(CHUNK * 3);
   });
 

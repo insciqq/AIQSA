@@ -190,6 +190,37 @@ describe("computer_attach_file", () => {
     const failed = await executeComputerAttachFile(context(ops, broken), execution({ name: null, path: "a.txt" }));
     expect(failed).toMatchObject({ content: [{ value: { error: "computer_output_unpublished" } }], status: "error" });
   });
+
+  it("keeps a file's bytes in the process's transfer budget until its upload ends, so transfers never outgrow it", async () => {
+    const budget = createComputerFileBudget(1_024);
+    const { ops } = stubOps(fileAnswer(Buffer.alloc(600, 7)));
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    let peak = 0;
+    const uploads: Buffer[] = [];
+    const store: ComputerOutputStore = { find: async () => null, publish: async (input) => {
+      uploads.push(input.bytes);
+      peak = Math.max(peak, 1_024 - budget.available());
+      await gate;
+      return { file: { attachmentId: "a1", byteSize: input.bytes.length, fileName: input.fileName, mimeType: "application/octet-stream",
+        relativePath: input.fileName, source: "computer" }, ok: true, reused: false };
+    } };
+    const owner = { ...context(ops, store), budget };
+    const first = executeComputerAttachFile(owner, execution({ name: null, path: "a.bin" }, undefined, "row-1"));
+    await vi.waitFor(() => expect(uploads).toHaveLength(1));
+    // The first file is still uploading and holds 600 of 1024 bytes: the second does not fit and is refused at once.
+    const second = await executeComputerAttachFile(owner, execution({ name: null, path: "b.bin" }, undefined, "row-2"));
+    expect(second).toMatchObject({ content: [{ value: { error: "computer_limit" } }], status: "error" });
+    expect(budget.available()).toBe(424);
+    open();
+    await expect(first).resolves.toMatchObject({ status: "complete" });
+    expect(peak).toBeLessThanOrEqual(1_024);
+    expect(budget.available()).toBe(1_024);
+    // A refused upload releases its bytes too.
+    const broken: ComputerOutputStore = { find: async () => null, publish: async () => { throw new Error("storage down"); } };
+    await executeComputerAttachFile({ ...owner, outputs: broken }, execution({ name: null, path: "c.bin" }, undefined, "row-3"));
+    expect(budget.available()).toBe(1_024);
+  });
 });
 
 describe("the name a computer file shows", () => {

@@ -116,26 +116,32 @@ export async function executeComputerAttachFile(context: ComputerAttachFileConte
   const fetched = await fetchComputerFile({ ...(context.budget ? { budget: context.budget } : {}), cwd: context.binding.cwd,
     deviceId: context.binding.deviceId, maxBytes: COMPUTER_ATTACH_FILE_LIMITS.maxBytes, ...(context.ops ? { ops: context.ops } : {}),
     path, runId: context.runId, signal, timeoutMs, userId: context.userId });
-  // Stop or the turn's deadline: the batch's cancellation path settles the call, and nothing is attached.
-  signal.throwIfAborted();
   if (!fetched.ok) {
+    // Stop or the turn's deadline: the batch's cancellation path settles the call, and nothing is attached.
+    signal.throwIfAborted();
     const text = ATTACH_TEXT[fetched.code] ?? computerFailureText(fetched.code);
     if (!fetched.sent) return errorResult(call, fetched.code, `${text} Nothing was sent to the computer.`);
     if (TRANSIENT_CODES.has(fetched.code)) throw new ComputerOpError(fetched.code, { transient: true });
     return errorResult(call, fetched.code, text);
   }
-  if (fetched.size === 0) {
-    return errorResult(call, "computer_file_empty", "The file is empty, so there is nothing to download. Tell the user.");
-  }
-  const fileName = computerAttachmentName(typeof givenName === "string" ? givenName : null, fetched.fileName) ?? "file";
   let publication: Awaited<ReturnType<ComputerOutputStore["publish"]>>;
+  // The file's bytes count against the process's transfer budget until the upload is done with them, whatever ends it.
   try {
-    publication = await context.outputs.publish({ ...owner, bytes: fetched.bytes, fileName, signal });
-  } catch (error) {
     signal.throwIfAborted();
-    logConnect({ code: "computer_output_unpublished", count: fetched.size, error, outcome: "failed", stage: "publish" });
-    return errorResult(call, "computer_output_unpublished", "The file was read but could not be saved to the answer. Try once more; " +
-      "if it fails again, tell the user.");
+    if (fetched.size === 0) {
+      return errorResult(call, "computer_file_empty", "The file is empty, so there is nothing to download. Tell the user.");
+    }
+    const fileName = computerAttachmentName(typeof givenName === "string" ? givenName : null, fetched.fileName) ?? "file";
+    try {
+      publication = await context.outputs.publish({ ...owner, bytes: fetched.bytes, fileName, signal });
+    } catch (error) {
+      signal.throwIfAborted();
+      logConnect({ code: "computer_output_unpublished", count: fetched.size, error, outcome: "failed", stage: "publish" });
+      return errorResult(call, "computer_output_unpublished", "The file was read but could not be saved to the answer. Try once more; " +
+        "if it fails again, tell the user.");
+    }
+  } finally {
+    fetched.release();
   }
   if (!publication.ok) {
     return publication.code === "computer_output_limit"
