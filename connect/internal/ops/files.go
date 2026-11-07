@@ -90,9 +90,11 @@ func (e *Executor) read(args *protocol.ReadArgs) (protocol.Validator, protocol.R
 // write creates or replaces a file, creating its parent folders. A new file
 // is UTF-8 without a BOM. A replaced text file keeps its encoding as edit
 // does: UTF-16 or UTF-8 with its BOM, the ANSI code page, CRLF line
-// endings; text that code page cannot hold answers
-// computer_text_unencodable and writes nothing. A file that is not text
-// becomes UTF-8. The replacement is atomic (replaceFile).
+// endings, told from its start when it is too large to load (textFormat).
+// Text that code page cannot hold answers computer_text_unencodable and
+// writes nothing; a file that cannot be read answers its code and is not
+// written either. A file that is not text becomes UTF-8. The replacement
+// is atomic, or the file is written in place with a backup (replaceFile).
 func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol.ReasonCode) {
 	e.useCwd(args.Cwd)
 	target := e.resolve(args.Cwd, args.Path)
@@ -115,25 +117,66 @@ func (e *Executor) write(args *protocol.WriteArgs) (protocol.Validator, protocol
 	case !info.Mode().IsRegular():
 		return nil, protocol.CodeComputerFileBinary
 	}
-	if existing, _, code := loadFile(target); code == "" {
-		if file, err := decodeText(existing, e.sys.TextCodePage()); err == nil {
-			text := args.Content
-			if lineEnding(file.text) == protocol.LineEndingCRLF {
-				text = toCRLF(text)
-			}
-			if file.bom != nil {
-				// The file's BOM is written once.
-				text = strings.TrimPrefix(text, string(rune(0xFEFF)))
-			}
-			if content, err = file.encode(text); err != nil {
-				return nil, protocol.CodeComputerTextUnencodable
-			}
+	file, code := textFormat(target, e.sys.TextCodePage())
+	if code != "" {
+		return nil, code
+	}
+	if file != nil {
+		text := args.Content
+		if lineEnding(file.text) == protocol.LineEndingCRLF {
+			text = toCRLF(text)
+		}
+		if file.bom != nil {
+			// The file's BOM is written once.
+			text = strings.TrimPrefix(text, string(rune(0xFEFF)))
+		}
+		if content, err = file.encode(text); err != nil {
+			return nil, protocol.CodeComputerTextUnencodable
 		}
 	}
 	if err := replaceFile(e.sys, target, content, info); err != nil {
-		return nil, codeOf(err)
+		return nil, replaceCode(err)
 	}
 	return &protocol.WriteResult{Bytes: int64(len(content)), Created: false}, ""
+}
+
+// formatProbeBytes is how much of a file too large to load textFormat
+// reads; never more than maxTextFileBytes, which tests lower.
+const formatProbeBytes = 1 << 20
+
+// textFormat tells how the existing file at path stores its text: from the
+// whole file when read and edit can load it, else from its first bytes
+// (formatProbeBytes); nil when it is not text. A file that cannot be read
+// answers its code, so a write never changes how a file is stored unseen.
+func textFormat(path string, cp CodePage) (*textFile, protocol.ReasonCode) {
+	data, _, code := loadFile(path)
+	decode := decodeText
+	if code == protocol.CodeComputerFileTooLarge {
+		data, code = loadStart(path, min(formatProbeBytes, maxTextFileBytes))
+		decode = decodeStart
+	}
+	if code != "" {
+		return nil, code
+	}
+	file, err := decode(data, cp)
+	if err != nil {
+		return nil, ""
+	}
+	return &file, ""
+}
+
+// loadStart reads the first n bytes of a file.
+func loadStart(path string, n int64) ([]byte, protocol.ReasonCode) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, codeOf(err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, n))
+	if err != nil {
+		return nil, codeOf(err)
+	}
+	return data, ""
 }
 
 // edit replaces oldString with newString, once unless replaceAll, keeping
@@ -167,7 +210,7 @@ func (e *Executor) edit(args *protocol.EditArgs) (protocol.Validator, protocol.R
 		return nil, code
 	}
 	if err := replaceFile(e.sys, target, out, info); err != nil {
-		return nil, codeOf(err)
+		return nil, replaceCode(err)
 	}
 	return &protocol.EditResult{Replacements: int64(count)}, ""
 }
