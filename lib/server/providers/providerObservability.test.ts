@@ -8,9 +8,9 @@ import {
   observeProviderOperation,
   observeProviderStream,
   withProviderAttempt,
-  providerContextRejection,
-  providerHttpFailureMessage
+  providerContextRejection
 } from "./providerObservability";
+import { providerFailureMessage } from "./providerFailureMessage";
 import { createFetchGeminiInteractionsClient, GeminiHttpError } from "./geminiInteractionsTransport";
 import { createFetchOpenAIResponsesClient } from "./openaiResponsesTransport";
 import { createFetchOpenAIChatCompletionClient } from "./openaiCompatibleChatTransport";
@@ -22,6 +22,9 @@ import { ProviderSearchExecutionError } from "./types";
 import { GeminiInteractionsStreamError } from "./geminiInteractionsStreamError";
 import { parseGeminiInteractionsSse } from "./geminiInteractionsResponse";
 import { parseOpenAIResponsesSse } from "./openaiResponsesResponse";
+
+const TRANSIENT = "This is a problem on the provider's side, not in AIQSA. Try again in a few minutes, or choose another model.";
+const REJECTED = "The provider rejected it, not AIQSA, so sending it again will not help: change the request or its attachments, or choose another model.";
 
 const identity = { adapterKind: "openai_responses_compatible", providerFamily: "openai_compatible", connectionId: "connection-safe", providerModelId: "model-safe" };
 
@@ -125,7 +128,7 @@ describe("provider diagnostics", () => {
     expect(error).toBeInstanceOf(GeminiHttpError);
     expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
       code: "provider_http_invalid_request", httpStatus: 400, reason: "http" }));
-    expect(providerHttpFailureMessage(error)).toBe("The model provider rejected the request (Gemini HTTP 400: invalid_request).");
+    expect(providerFailureMessage(error)).toBe("The model provider rejected the request (HTTP 400: invalid_request). " + REJECTED);
     expect(JSON.stringify(records())).not.toMatch(/PRIVATE_|fieldViolations/u);
   });
 
@@ -149,7 +152,7 @@ describe("provider diagnostics", () => {
       code: "provider_context_length_exceeded", httpStatus: 400, reason: "http" }));
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
     expect(providerContextRejection(error)).toEqual({ httpStatus: 400, maximumTokens: 272_000, promptTokens: 300_000 });
-    expect(providerHttpFailureMessage(error)).toBe("The model provider rejected the request as too long for the model's context window (HTTP 400). Reduce the context or choose a model with a larger context window.");
+    expect(providerFailureMessage(error)).toBe("The model provider rejected the request as too long for the model's context window (HTTP 400). Reduce the context or choose a model with a larger context window.");
   });
 
   it("maps the Gemini context-length identity and a generation-time window without a status", () => {
@@ -159,7 +162,7 @@ describe("provider diagnostics", () => {
     const stopReason = Object.assign(new Error("anthropic_message_model_context_window_exceeded"), { code: "provider_context_length_exceeded" });
     expect(observedFailure(stopReason)).toEqual({ code: "provider_context_length_exceeded", reason: "safety_limit" });
     expect(providerContextRejection(stopReason)).toEqual({});
-    expect(providerHttpFailureMessage(stopReason)).toBe("The request exceeded the model's context window. Reduce the context or choose a model with a larger context window.");
+    expect(providerFailureMessage(stopReason)).toBe("The request exceeded the model's context window. Reduce the context or choose a model with a larger context window.");
     // Counts outside the reviewed bound never cross; other codes are no rejection.
     expect(providerContextRejection(Object.assign(new Error("x"), { code: "provider_context_length_exceeded", status: 400,
       reportedPromptTokens: 1e12, reportedMaximumTokens: -1 }))).toEqual({ httpStatus: 400 });
@@ -171,17 +174,17 @@ describe("provider diagnostics", () => {
     // Only the Gemini transport's own key-rejection mark counts, never a look-alike property on another error.
     expect(observedFailure(Object.assign(new Error("x"), { httpStatus: 400, keyRejected: true })))
       .toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
-    expect(providerHttpFailureMessage(new GeminiHttpError(400))).toBeNull();
+    // An unreviewed rejection names only its status, never an identity it did not prove.
+    expect(providerFailureMessage(new GeminiHttpError(400))).toBe(`The model provider rejected this request (HTTP 400). ${REJECTED}`);
     const lookalike = Object.assign(new Error("PRIVATE_MESSAGE_CANARY"), { code: "invalid_request", httpStatus: 400 });
     expect(observedFailure(lookalike)).toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
-    expect(providerHttpFailureMessage(lookalike)).toBeNull();
+    expect(providerFailureMessage(lookalike)).toBe(`The model provider rejected this request (HTTP 400). ${REJECTED}`);
   });
 
   const authMessage = (status: number) => `The model provider rejected the configured credentials (HTTP ${status}). Ask an administrator to check the provider key.`;
   const quotaMessage = (status: number) => `The model provider reports that the account has no remaining quota or balance (HTTP ${status}). Ask an administrator to check the provider account.`;
-  const rateMessage = "The model provider is limiting requests (HTTP 429) and the retries did not succeed. Wait a minute before trying again.";
-  const unavailableMessage = (status: number) => `The model provider returned a server error (HTTP ${status}) and kept failing when retried. ` +
-    "Try again in a moment, or choose another model.";
+  const rateMessage = `The model provider is limiting requests (HTTP 429) and the retries did not succeed. ${TRANSIENT}`;
+  const unavailableMessage = (status: number) => `The model provider returned a server error (HTTP ${status}) and kept failing when retried. ${TRANSIENT}`;
   const openai = (fetchFn: typeof fetch) => () => createFetchOpenAIResponsesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn }).create({});
   const openrouter = (fetchFn: typeof fetch) => () => createFetchOpenAIChatCompletionClient({ bodyMissingError: "missing",
     endpoint: "https://openrouter.test/api/v1/chat/completions", fetchFn, headers: { authorization: "Bearer PRIVATE_KEY_CANARY" },
@@ -228,8 +231,8 @@ describe("provider diagnostics", () => {
     expect(observedFailure(error)).toMatchObject({ code, httpStatus: status, reason: "http" });
     expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
       code, httpStatus: status, reason: "http", connectionId: identity.connectionId, providerModelId: identity.providerModelId }));
-    expect(providerHttpFailureMessage(error)).toBe(message);
-    expect(JSON.stringify([records(), providerHttpFailureMessage(error)])).not.toContain("PRIVATE_");
+    expect(providerFailureMessage(error)).toBe(message);
+    expect(JSON.stringify([records(), providerFailureMessage(error)])).not.toContain("PRIVATE_");
   });
 
   it("names an exhausted rate limit only after the unchanged retry policy gave up", async () => {
@@ -246,7 +249,7 @@ describe("provider diagnostics", () => {
       { attempt: 3, action: "stop", code: "provider_rate_limited", httpStatus: 429 }
     ]);
     expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed", code: "provider_rate_limited", httpStatus: 429 }));
-    expect(providerHttpFailureMessage(error)).toBe(rateMessage);
+    expect(providerFailureMessage(error)).toBe(rateMessage);
   });
 
   it("keeps more specific codes ahead of the HTTP status class", () => {
@@ -272,13 +275,14 @@ describe("provider diagnostics", () => {
     expect(observedFailureWithoutHttpClass(withStatus(401))).toEqual({ code: "unknown", httpStatus: 401, reason: "http" });
     expect(observedFailureWithoutHttpClass(withStatus(429, { code: "provider_response_not_retryable", quotaExhausted: true })).code)
       .toBe("provider_response_not_retryable");
-    expect(providerHttpFailureMessage(withStatus(404))).toBeNull();
+    expect(providerFailureMessage(withStatus(404))).toBe(`The model provider rejected this request (HTTP 404). ${REJECTED}`);
+    expect(providerFailureMessage(withStatus(408))).toBe(`The model provider kept failing (HTTP 408). ${TRANSIENT}`);
   });
 
   it("explains a typed invalid request across native transports without provider prose", () => {
     const error = Object.assign(new Error("PRIVATE_PROVIDER_CANARY"), { code: "provider_http_invalid_request", status: 400 });
-    expect(providerHttpFailureMessage(error)).toBe("The model provider rejected the request (HTTP 400: invalid_request).");
-    expect(providerHttpFailureMessage({ code: "provider_http_invalid_request", status: 503 })).toBeNull();
+    expect(providerFailureMessage(error)).toBe(`The model provider rejected the request (HTTP 400: invalid_request). ${REJECTED}`);
+    expect(providerFailureMessage({ code: "provider_http_invalid_request", status: 503 })).toBeNull();
   });
 
   it("does not invoke untrusted error getters or infer codes from exception text", () => {
@@ -330,15 +334,14 @@ describe("provider diagnostics", () => {
   it("tells the user to retry or choose another model when the provider kept dropping the response", () => {
     for (const drop of ["truncated", "error_event", "response_failed", "reset"]) {
       const error = Object.defineProperty(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), "streamDrop", { value: drop });
-      expect(providerHttpFailureMessage(error)).toBe(
-        "The model provider kept failing before the response was complete. Try again in a moment, or choose another model.");
+      expect(providerFailureMessage(error)).toBe(`The model provider kept failing before the response was complete. ${TRANSIENT}`);
     }
-    expect(providerHttpFailureMessage(new Error("openai_response_not_completed"))).toBeNull();
-    expect(providerHttpFailureMessage(Object.assign(new Error("x"), { streamDrop: "PRIVATE_DROP_CANARY" }))).toBeNull();
+    expect(providerFailureMessage(new Error("openai_response_not_completed"))).toBeNull();
+    expect(providerFailureMessage(Object.assign(new Error("x"), { streamDrop: "PRIVATE_DROP_CANARY" }))).toBeNull();
     // A classified failure keeps its own wording even when its stream dropped.
     const contextLength = Object.defineProperty(Object.assign(new Error("x"), { code: "provider_context_length_exceeded" }), "streamDrop",
       { value: "error_event" });
-    expect(providerHttpFailureMessage(contextLength)).toContain("context window");
+    expect(providerFailureMessage(contextLength)).toContain("context window");
   });
 
   it("does not treat the Gemini diagnostic prefix or exception text as an allowlist", () => {

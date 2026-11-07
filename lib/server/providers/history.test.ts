@@ -20,7 +20,8 @@ import { buildOpenAICompatibleChatRequest, buildOpenAICompatibleChatRequestPrevi
 import { buildOpenAIResponsesRequest, buildOpenAIResponsesRequestPreview } from "./openaiResponsesRequest";
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "./openRouterChatRequest";
 import { streamOpenRouterSseResponse } from "./openRouterChatResponse";
-import { observedFailure, providerHttpFailureMessage } from "./providerObservability";
+import { providerFailureMessage } from "./providerFailureMessage";
+import { observedFailure } from "./providerObservability";
 import type { ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "./types";
 
 const tool: RunTool = {
@@ -278,7 +279,7 @@ describe("provider history rendering", () => {
     }
     expect(observedFailure(thrown)).toMatchObject({ code: RUN_CURRENT_INPUT_MISSING, reason: "unknown" });
     expect(RUN_CURRENT_INPUT_MISSING).not.toMatch(/provider/u);
-    expect(providerHttpFailureMessage(thrown)).toBeNull();
+    expect(providerFailureMessage(thrown)).toBeNull();
   });
 });
 

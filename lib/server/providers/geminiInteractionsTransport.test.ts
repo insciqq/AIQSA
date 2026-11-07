@@ -9,9 +9,9 @@ import {
   observedFailure,
   observeProviderFetch,
   observeProviderOperation,
-  providerContextRejection,
-  providerHttpFailureMessage
+  providerContextRejection
 } from "./providerObservability";
+import { providerFailureMessage } from "./providerFailureMessage";
 import { ProviderSafeFetchError } from "./providerSafeFetch";
 
 afterEach(() => {
@@ -323,7 +323,7 @@ describe("Gemini Interactions transport", () => {
         expect(fetchFn).toHaveBeenCalledOnce();
         expect(providerContextRejection(error)).toBeNull();
         expect(observedFailure(error)).toEqual({ code: "provider_request_outcome_unknown", reason: "network" });
-        expect(providerHttpFailureMessage(error)).toMatch(/outcome and any provider charge are unknown/u);
+        expect(providerFailureMessage(error)).toMatch(/outcome and any provider charge are unknown/u);
       }
     });
 

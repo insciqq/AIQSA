@@ -352,8 +352,19 @@ type AnswerPresentationThreadV2 = Readonly<{
   liveArtifactSummary: ThreadArtifactSummary | null;
 }>;
 
+/**
+ * The display name of an answer's model as the user's own catalog lists it, which a provider's wait names; null when the
+ * catalog does not list it. The browser learns nothing new: the catalog and the answer's model id are already its own.
+ */
+export function answerModelNameV2(source: Pick<ThreadMessage, "modelId" | "provider">,
+  models: readonly Readonly<{ displayName: string; modelId: string; provider: string }>[] | null | undefined): string | null {
+  if (!source.modelId || !models) return null;
+  return models.find((model) => model.modelId === source.modelId && (!source.provider || model.provider === source.provider))
+    ?.displayName ?? null;
+}
+
 /** One lifecycle projection per answer, shared by the answer and the announcer. */
-export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentationThreadV2) {
+export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentationThreadV2, modelName?: string | null) {
   const live = liveAnswerSourceV2(source, thread);
   // A genuinely lost stream transport (reader error / end without a
   // terminal frame, recorded by the run-lifecycle store) presents as the
@@ -373,6 +384,7 @@ export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentatio
     content: messageText(source),
     contextCompaction: live.artifact?.contextCompaction,
     events: live.events,
+    ...(modelName ? { modelName } : {}),
     // The server's mark (`ChatMessageWire.researchAnswer`): such an answer offers Continue, never Regenerate.
     ...(source.researchAnswer ? { research: true as const } : {}),
     runId: source.runId ?? null
@@ -386,10 +398,11 @@ export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentatio
  */
 export function announcedPresentationV2(
   tail: ThreadMessage | undefined,
-  thread: AnswerPresentationThreadV2
+  thread: AnswerPresentationThreadV2,
+  modelName?: string | null
 ): AnnouncedRunPresentationV2 {
   return tail?.role === "assistant"
-    ? { ...presentAnswerV2(tail, thread).presentation, answerId: tail.id }
+    ? { ...presentAnswerV2(tail, thread, modelName).presentation, answerId: tail.id }
     : { kind: "idle", runId: null };
 }
 
@@ -1239,8 +1252,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     if (!next.delete(id)) next.add(id);
     return next;
   });
-  const presentAnswer = (source: ThreadMessage) => presentAnswerV2(source, thread);
-  const announcedPresentation = announcedPresentationV2(liveTail, thread);
+  const presentAnswer = (source: ThreadMessage) => presentAnswerV2(source, thread, answerModelNameV2(source, composer.catalog?.models));
+  const announcedPresentation = announcedPresentationV2(liveTail, thread,
+    liveTail ? answerModelNameV2(liveTail, composer.catalog?.models) : null);
 
   /** "Report a problem…" on a settled answer of a saved chat; reporting never waits for the chat's run. */
   const problemReportActionFor = (answer: ThreadMessage): Pick<ConversationMessageActionsV2, "onReportProblem"> => {

@@ -5,8 +5,9 @@ import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import { disableMemoryRecall, selectFakeModel } from "./support/workspace";
 
-const RETRYING = "The provider isn’t responding, trying again…";
-const SLOW = "The provider is taking longer than usual…";
+// The wait names the model provider, by the answer's model when the catalog lists it.
+const RETRYING = /^The (?:model provider|provider of .+) isn’t responding, trying again…$/u;
+const SLOW = /^The (?:model provider|provider of .+) is taking longer than usual…$/u;
 
 const viewports = [
   { height: 900, name: "desktop", width: 1440 },

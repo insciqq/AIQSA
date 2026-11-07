@@ -12,7 +12,8 @@ import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { codexLbConnection, effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
-import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
+import { providerFailureMessage, type ProviderFailureNames } from "../providers/providerFailureMessage";
+import { observedFailure } from "../providers/providerObservability";
 import { isProviderResponseFailure, PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllers, runSettlements } from "../runs/activeRunControllerRegistry";
@@ -52,7 +53,7 @@ import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { ANSWER_NOW_INSTRUCTION, runAgentLoop, type LoopToolChoice } from "./loop";
-import { callModel, MODEL_CALL_RESEARCH_RETRY } from "./modelCall";
+import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_UNATTENDED_RETRY } from "./modelCall";
 import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
 import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
 import { SUBAGENT_RUN_NO_ANSWER, type NativeRunStore } from "./runStore";
@@ -282,8 +283,12 @@ function maxOutputTokens(request: ProviderRunRequest): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
-/** The failure a terminal error shows: a stable code and a message without values. */
-function failurePayload(error: unknown, workspaceRun: boolean, answerPublished: boolean): Readonly<{ code: string; message: string }> {
+/**
+ * The failure a terminal error shows: a stable code and a message without values. A provider's failure names the run's
+ * model and connection (`providerFailureMessage`); the Workspace's and AIQSA's own keep their wording.
+ */
+export function failurePayload(error: unknown, workspaceRun: boolean, answerPublished: boolean,
+  names?: ProviderFailureNames): Readonly<{ code: string; message: string }> {
   if (error instanceof EngineFailure) return { code: error.code, message: error.message };
   if (answerPublished && error instanceof WorkspaceRuntimeError) {
     if (error.code === "workspace_output_limit_exceeded") return { code: error.code,
@@ -294,16 +299,12 @@ function failurePayload(error: unknown, workspaceRun: boolean, answerPublished: 
   if (error instanceof WorkspaceRuntimeError) return { code: error.code, message: "The Workspace could not complete this turn." };
   const failure = observedFailure(error);
   if (failure.code === PROVIDER_CONTEXT_LENGTH_EXCEEDED) return { code: "context_too_large", message: CONTEXT_TOO_LARGE_MESSAGE };
-  if (isProviderDeadlineExceededError(error)) {
-    return { code: "provider_request_timed_out", message: "The model provider did not answer in time. The answer so far is kept." };
-  }
-  return {
-    code: failure.code !== "unknown" ? failure.code : isProviderResponseFailure(error) ? "provider_response_failed"
-      : failure.stream_drop !== undefined ? "provider_stream_failed" : "run_execution_failed",
-    message: providerHttpFailureMessage(error) ?? (workspaceRun
-      ? "The answer could not be completed. Its Workspace files and the answer so far are kept."
-      : "The answer could not be completed. The answer so far is kept.")
-  };
+  const kept = workspaceRun ? "Its Workspace files and the answer so far are kept." : "The answer so far is kept.";
+  const code = isProviderDeadlineExceededError(error) ? "provider_request_timed_out"
+    : failure.code !== "unknown" ? failure.code : isProviderResponseFailure(error) ? "provider_response_failed"
+      : failure.stream_drop !== undefined ? "provider_stream_failed" : "run_execution_failed";
+  const provider = providerFailureMessage(error, names);
+  return { code, message: provider ? `${provider} ${kept}` : `The answer could not be completed. ${kept}` };
 }
 
 /**
@@ -698,7 +699,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           budgets, callTimeLeft: agentCallTimeLeft, chatId: scope.chatId, deadline: deadline.signal,
           get deadlineAt() { return startedAt + turnMs; }, engine, faults,
           followupTexts: () => delivered,
-          modelConfiguration: input.prepared.providerAdmissionPlan.answer.modelConfiguration, now,
+          modelConfiguration: input.prepared.providerAdmissionPlan.answer.modelConfiguration,
+          // A scheduled or webhook occurrence's sub-agents keep its attempts without the chat's window; research sets its own.
+          ...(input.scheduled ? { modelRetry: MODEL_CALL_UNATTENDED_RETRY } : {}), now,
           onWorkspaceLifecycle: onWorkspaceActivity,
           // Every follow-up the user wrote into this answer, delivered to the main agent or not yet: a sub-agent gets each once.
           userFollowups: async () => {
@@ -843,8 +846,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // compactions, which run beside the loop and may outlive the run, have their own.
         const loopRouting = gatewayRoutingLane({ chatId: scope.chatId, name: "loop" });
         const compactionRouting = gatewayRoutingLane({ chatId: scope.chatId, name: `compaction:${runId}` });
-        // A research run's requests keep being sent again far longer than a chat's (`MODEL_CALL_RESEARCH_RETRY`): nobody waits on them.
-        const modelRetry = runResearch ? { retry: MODEL_CALL_RESEARCH_RETRY } : {};
+        // A research run's requests keep being sent again far longer than a chat's (`MODEL_CALL_RESEARCH_RETRY`), and a scheduled
+        // or webhook occurrence's keep their attempts without the chat's window (`MODEL_CALL_UNATTENDED_RETRY`): nobody waits on
+        // them. A chat, Telegram turn or sub-agent turn takes the interactive default (`MODEL_CALL_RETRY`).
+        const modelRetry = runResearch ? { retry: MODEL_CALL_RESEARCH_RETRY } : input.scheduled ? { retry: MODEL_CALL_UNATTENDED_RETRY } : {};
         // Measurement and compaction before every request (`runContext.ts`); compaction calls are the answer model's.
         const context = createRunContext({
           append,
@@ -1135,7 +1140,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const cancelled = !interrupted && (stop.signal.aborted || error instanceof ToolBatchInactiveError && !deadline.signal.aborted);
         const failure = interrupted ? new EngineFailure(WORKSPACE_STOPPED_INTERRUPTION.code, WORKSPACE_STOPPED_INTERRUPTION.message)
           : deadline.signal.aborted && !cancelled ? deadline.signal.reason : error;
-        const payload = failurePayload(failure, Boolean(workspace), answerPublished);
+        const payload = failurePayload(failure, Boolean(workspace), answerPublished,
+          { connection: snapshot.connectionDisplayName, model: snapshot.modelDisplayName });
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, code: cancelled ? "model_run_cancelled" : payload.code,
           connectionId: snapshot.connectionId, duration_ms: Math.max(0, now() - startedAt), error,
           outcome: cancelled ? "cancelled" : "failed", providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId,
