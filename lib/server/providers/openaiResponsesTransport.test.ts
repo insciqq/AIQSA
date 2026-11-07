@@ -5,7 +5,8 @@ import {
   openAIRetryableErrorPayload
 } from "./openaiResponsesTransport";
 import { ProviderResponseTooLargeError } from "./network";
-import { observedFailure, providerContextRejection, providerHttpFailureMessage } from "./providerObservability";
+import { providerFailureMessage } from "./providerFailureMessage";
+import { observedFailure, providerContextRejection } from "./providerObservability";
 import { ProviderSafeFetchError } from "./providerSafeFetch";
 import { markProviderStreamDrop, providerStreamDrop } from "./streamDrop";
 
@@ -380,7 +381,7 @@ describe("OpenAI Responses transport", () => {
         // Not an unpaid context refusal, and no billing claim either way.
         expect(providerContextRejection(error)).toBeNull();
         expect(observedFailure(error)).toEqual({ code: "provider_request_outcome_unknown", reason: "network" });
-        expect(providerHttpFailureMessage(error)).toMatch(/outcome and any provider charge are unknown/u);
+        expect(providerFailureMessage(error)).toMatch(/outcome and any provider charge are unknown/u);
       }
     });
 

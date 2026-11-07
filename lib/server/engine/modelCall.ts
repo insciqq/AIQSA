@@ -24,6 +24,11 @@ export type ModelCallRetryPolicy = Readonly<{
   maxAttempts: number;
   /** No new attempt starts once this long has passed since the request's first attempt started. */
   windowMs?: number;
+  /**
+   * No new attempt starts once this long has passed since the request's first attempt failed. Counted from the
+   * failure, not the start, so a long healthy answer that drops near its end still gets its retries.
+   */
+  failureWindowMs?: number;
 }>;
 
 /**
@@ -36,10 +41,27 @@ export type ModelCallRetryPolicy = Readonly<{
  * accounted. A deterministic rejection is never sent again. A model request
  * has no effect beyond the answer: its tool calls run only after it
  * completed, so a retry repeats no tool.
+ *
+ * This is an interactive run's policy (a web chat, Telegram, sub-agent turns
+ * and the compactions inside them): someone waits on the answer, so no new
+ * attempt starts three minutes after the request first failed (operator
+ * decision 2026-11-07). Nearly every request that recovers does so within two
+ * minutes of its first failure, while a provider that keeps failing slowly
+ * (about two minutes per failed attempt) held users for a quarter of an hour.
  */
 export const MODEL_CALL_RETRY: ModelCallRetryPolicy = Object.freeze({
   backoff: { baseDelayMs: 2_000, maxBackoffMs: 30_000 },
+  failureWindowMs: 180_000,
   maxAttempts: 6
+});
+
+/**
+ * A scheduled task's or webhook's occurrence: nobody waits on it as on a
+ * chat, so its requests keep the six attempts without the interactive window.
+ */
+export const MODEL_CALL_UNATTENDED_RETRY: ModelCallRetryPolicy = Object.freeze({
+  backoff: MODEL_CALL_RETRY.backoff,
+  maxAttempts: MODEL_CALL_RETRY.maxAttempts
 });
 
 /**
@@ -102,7 +124,7 @@ export type ModelCallPorts = Readonly<{
   /** One physical request's provider-reported usage and cost. */
   onUsage(usage: ModelRunUsage, costUsd: number | undefined): void;
   random?: () => number;
-  /** How long a failed request keeps being sent again; absent, `MODEL_CALL_RETRY` (a chat's user waits on it). */
+  /** How long a failed request keeps being sent again; absent, `MODEL_CALL_RETRY` (an interactive run's user waits on it). */
   retry?: ModelCallRetryPolicy;
   /**
    * The gateway routing lane of the request (`gatewayRouting.ts`): each attempt
@@ -136,6 +158,7 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
   const stage = ports.stage ?? "answer";
   const policy = ports.retry ?? MODEL_CALL_RETRY;
   const firstStartedAt = now();
+  let firstFailedAt: number | null = null;
   let waiting: RunProviderWait | null = null;
   const wait = (next: RunProviderWait | null) => {
     if (next === waiting) return;
@@ -180,8 +203,11 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
       const delayMs = decision && attempt < policy.maxAttempts
         ? providerRetryDelayMs(attempt, decision.retryAfterMs, ports.random, policy.backoff) : null;
       const failure = observedFailure(error);
-      if (delayMs === null || now() + delayMs >= ports.deadlineAt ||
-        (policy.windowMs !== undefined && now() + delayMs - firstStartedAt > policy.windowMs)) {
+      const failedAt = now();
+      firstFailedAt ??= failedAt;
+      if (delayMs === null || failedAt + delayMs >= ports.deadlineAt ||
+        (policy.windowMs !== undefined && failedAt + delayMs - firstStartedAt > policy.windowMs) ||
+        (policy.failureWindowMs !== undefined && failedAt + delayMs - firstFailedAt > policy.failureWindowMs)) {
         if (decision) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage,
           ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
         throw error;
