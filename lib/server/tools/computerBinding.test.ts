@@ -39,7 +39,10 @@ describe("a run's computer binding", () => {
     const line = computerTurnGuidance(freezeComputerBinding(choice, online)!);
     expect(line).toBe("The user's computer \"DESKTOP-7Q2\" is connected for this chat (Windows 11 Pro 23H2, x64; shell: Windows " +
       "PowerShell 5.1). Working folder: C:\\Users\\ivan\\Documents\\Reports. Home: C:\\Users\\ivan. Use the computer_* tools for the user's " +
-      "files and commands there; the Workspace is a separate cloud sandbox and cannot see these files.");
+      "files and commands there; the Workspace is a separate cloud sandbox and cannot see these files. Before you work on a project " +
+      "there, read its instructions for agents (AGENTS.md or CLAUDE.md in the project's root and in the folder you work in) when this " +
+      "conversation has not read them yet, and follow them; after changing a project, run its own checks (tests, linters, build) when " +
+      "it has them.");
     const offline = computerTurnGuidance(freezeComputerBinding(choice, { ...online, online: false })!);
     expect(offline).toContain("was offline when this message was sent (Windows, x64)");
     expect(offline).toContain("never use the Workspace in its place");
