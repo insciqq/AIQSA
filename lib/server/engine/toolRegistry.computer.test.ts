@@ -31,11 +31,16 @@ function request(extra: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   };
 }
 
+/** The answer's file store, so `computer_attach_file` is offered. */
+const outputs = { find: vi.fn(async () => null), publish: vi.fn() };
+const SINGLE_OP_NAMES = COMPUTER_TOOL_NAMES.filter((name) => name !== "computer_attach_file");
+
 function input(extra: Partial<ToolRegistryInput> & { request: ProviderRunRequest }, ops?: FakeComputerOps): ToolRegistryInput {
   return {
     chatId: "chat", followupTexts: () => [], mcpBindings: new Map<string, EngineMcpBinding>(), onEvent: vi.fn(async () => undefined),
     onUsage: vi.fn(), onWorkspaceActivity: vi.fn(async () => undefined), runId: RUN, userId: USER,
-    services: { ...(ops ? { computer: ops } : {}), repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) } },
+    services: { ...(ops ? { computer: ops } : {}), computerOutputs: outputs, repository: { createSearchRun: vi.fn() } as never,
+      savedResults: { read: vi.fn(async () => null) } },
     ...extra
   };
 }
@@ -43,14 +48,19 @@ function input(extra: Partial<ToolRegistryInput> & { request: ProviderRunRequest
 const computerNames = (registry: ToolRegistry) => registry.definitions().map((tool) => tool.name).filter((name) => name.startsWith("computer_"));
 
 describe("the computer tools in a run's registry", () => {
-  it("offers the eight tools with their effects to a bound run, the same whether the computer was online or not", async () => {
+  it("offers the tools with their effects to a bound run, the same whether the computer was online or not", async () => {
     const bound = await buildToolRegistry(input({ request: request({ computer: online }) }));
     expect(computerNames(bound)).toEqual([...COMPUTER_TOOL_NAMES]);
     expect(bound.resolve("computer_read")).toMatchObject({ definition: { capability: "computer" }, effects: "none" });
     expect(bound.resolve("computer_shell")).toMatchObject({ definition: { capability: "computer" }, effects: "external" });
     const away = await buildToolRegistry(input({ request: request({ computer: offline }) }));
     expect(JSON.stringify(away.definitions())).toBe(JSON.stringify(bound.definitions()));
+    expect(bound.resolve("computer_attach_file")).toMatchObject({ definition: { capability: "computer" }, effects: "none" });
     expect(computerNames(await buildToolRegistry(input({ request: request() })))).toEqual([]);
+    // Without the answer's file store the rest stays offered.
+    const storeless = input({ request: request({ computer: online }) });
+    const { computerOutputs: _store, ...services } = storeless.services;
+    expect(computerNames(await buildToolRegistry({ ...storeless, services }))).toEqual(SINGLE_OP_NAMES);
   });
 
   it("never offers them where a computer is never available, whatever the request holds", async () => {
@@ -66,10 +76,12 @@ describe("the computer tools in a run's registry", () => {
     ]) expect(computerNames(registry)).toEqual([]);
   });
 
-  it("gives them to a sub-agent with every tool and to no grouped one", async () => {
+  it("gives them to a sub-agent with every tool, except the answer's file attachment, and to no grouped one", async () => {
     const registry = await buildToolRegistry(input({ request: request({ computer: online }) }));
-    expect(computerNames(subagentToolRegistry(registry, null))).toEqual([...COMPUTER_TOOL_NAMES]);
+    expect(computerNames(subagentToolRegistry(registry, null))).toEqual(SINGLE_OP_NAMES);
     expect(subagentToolRegistry(registry, null).resolve("computer_shell")).toBeDefined();
+    // A sub-agent's run is not shown on the answer, so it attaches nothing there.
+    expect(subagentToolRegistry(registry, null).resolve("computer_attach_file")).toBeUndefined();
     const grouped = subagentToolRegistry(registry, Object.values(SUBAGENT_TOOL_GROUPS));
     expect(computerNames(grouped)).toEqual([]);
     expect(grouped.resolve("computer_shell")).toBeUndefined();

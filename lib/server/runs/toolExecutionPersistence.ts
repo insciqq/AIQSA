@@ -15,6 +15,7 @@ import {
 
 const artifactTypes = new Set([
   "workspace_checkpoint",
+  "computer_file",
   "generated_artifact",
   "image",
   "citation",

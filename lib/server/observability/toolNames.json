@@ -58,5 +58,6 @@
   "computer_write": "computer",
   "computer_edit": "computer",
   "computer_glob": "computer",
-  "computer_grep": "computer"
+  "computer_grep": "computer",
+  "computer_attach_file": "computer"
 }

@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 describe("computer tool definitions", () => {
-  it("offers the eight tools, strict, of capability computer, with the effects D-05 names", () => {
+  it("offers the tools, strict, of capability computer, with the effects D-05 names", () => {
     const tools = computerToolDefinitions("windows");
     expect(tools.map((tool) => tool.name)).toEqual([...COMPUTER_TOOL_NAMES]);
     for (const tool of tools) {
@@ -40,7 +40,7 @@ describe("computer tool definitions", () => {
       expect(schema.required.sort()).toEqual(Object.keys(schema.properties).sort());
     }
     expect(Object.entries(COMPUTER_TOOL_EFFECTS).filter(([, effects]) => effects === "none").map(([name]) => name).sort())
-      .toEqual(["computer_glob", "computer_grep", "computer_job_output", "computer_read"]);
+      .toEqual(["computer_attach_file", "computer_glob", "computer_grep", "computer_job_output", "computer_read"]);
     expect(Object.entries(COMPUTER_TOOL_EFFECTS).filter(([, effects]) => effects === "external").map(([name]) => name).sort())
       .toEqual(["computer_edit", "computer_job_stop", "computer_shell", "computer_write"]);
   });
@@ -61,6 +61,7 @@ describe("computer tool definitions", () => {
   it("bounds a command by its longest timeout and its reply, and the rest by a minute", () => {
     expect(computerToolCallMs("computer_shell")).toBe(600_000 + COMPUTER_TOOL_LIMITS.shellReplyMs);
     expect(computerToolCallMs("computer_read")).toBe(60_000);
+    expect(computerToolCallMs("computer_attach_file")).toBe(300_000);
   });
 });
 
@@ -215,9 +216,23 @@ describe("computer steps", () => {
     expect(computerActivityFacts("sandbox_exec", { command: "ls" })).toEqual({});
   });
 
-  it("registers each tool as a computer step named after the computer", () => {
+  it("registers each tool as a computer step named after the computer, the file attachment only with its executor", async () => {
     const tools = computerEngineTools({ binding, runId: RUN, serverName: "DESKTOP-7Q2", userId: USER });
-    expect(tools.map((tool) => [tool.definition.name, tool.effects])).toEqual(COMPUTER_TOOL_NAMES.map((name) => [name, COMPUTER_TOOL_EFFECTS[name]]));
+    expect(tools.map((tool) => [tool.definition.name, tool.effects])).toEqual(COMPUTER_TOOL_NAMES
+      .filter((name) => name !== "computer_attach_file").map((name) => [name, COMPUTER_TOOL_EFFECTS[name]]));
+    const attachFile = vi.fn(async () => ({ callId: "c", content: [], name: "computer_attach_file", status: "complete" as const }));
+    const withAttach = computerEngineTools({ attachFile, binding, runId: RUN, userId: USER });
+    expect(withAttach.map((tool) => tool.definition.name)).toEqual([...COMPUTER_TOOL_NAMES]);
+    const attach = withAttach.find((tool) => tool.definition.name === "computer_attach_file")!;
+    expect(attach.effects).toBe("none");
+    const execution = { call: call("computer_attach_file", { name: null, path: "a.pdf" }), ordinal: 0, persistedToolCallId: "row", round: 1,
+      signal: signal() };
+    await attach.execute(execution);
+    expect(attachFile).toHaveBeenCalledWith(execution);
+    expect(attach.activity(execution.call)).toMatchObject({ summary: "a.pdf", toolName: "computer_attach_file" });
+    // The single-op path never sends it.
+    await expect(executeComputerTool({ binding, runId: RUN, userId: USER }, execution.call, signal()))
+      .resolves.toMatchObject({ content: [{ value: { error: "tool_unavailable" } }], status: "error" });
     expect(tools[0]!.activity(call("computer_shell", { command: "dir" }))).toEqual({ origin: "computer", serverName: "DESKTOP-7Q2",
       summary: "dir", toolName: "computer_shell" });
   });

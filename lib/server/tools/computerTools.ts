@@ -1,5 +1,7 @@
 import type { z } from "zod";
 import {
+  COMPUTER_ATTACH_FILE_LIMITS,
+  COMPUTER_ATTACH_FILE_TOOL_NAME,
   COMPUTER_TOOL_NAMES,
   COMPUTER_TOOL_OPS,
   computerActivitySummary,
@@ -37,9 +39,10 @@ import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type
 
 /**
  * The agent's tools on the user's computer (AIQSA Connect, §6–§7 of the
- * computer PRD): eight native tools of capability `computer`, offered only to a
+ * computer PRD): native tools of capability `computer`, offered only to a
  * run admitted with a computer binding (`computerBinding.ts`), its sub-agents
- * with every tool included (D-07). Each call goes through the port
+ * with every tool included (D-07) except `computer_attach_file`, which puts a
+ * file on the main agent's answer (`computerAttachFile.ts`). Each call goes through the port
  * (`getComputerOps`) with the run's id, the frozen device and folder, a
  * timeout bounded by the turn's tool time and the call's signal.
  *
@@ -69,8 +72,12 @@ export const COMPUTER_TOOL_LIMITS = Object.freeze({
   jobReplyMs: 5_000
 });
 
-/** What each tool may do (D-05). */
+/**
+ * What each tool may do (D-05). `computer_attach_file` only reads the computer, and its one write, the answer's file, is
+ * idempotent per call (`lib/server/connect/computerOutputs.ts`), so a call that failed on the way is tried again too.
+ */
 export const COMPUTER_TOOL_EFFECTS: Readonly<Record<ComputerToolName, Exclude<HarnessToolEffects, "local">>> = Object.freeze({
+  computer_attach_file: "none",
   computer_edit: "external",
   computer_glob: "none",
   computer_grep: "none",
@@ -81,8 +88,12 @@ export const COMPUTER_TOOL_EFFECTS: Readonly<Record<ComputerToolName, Exclude<Ha
   computer_write: "external"
 });
 
-/** The longest one call of the tool may take (`toolCallBounds`): a command's longest timeout and its reply, else a minute. */
+/**
+ * The longest one call of the tool may take (`toolCallBounds`): a command's longest timeout and its reply, a file's
+ * transfer to the answer, else a minute.
+ */
 export function computerToolCallMs(name: string): number {
+  if (name === COMPUTER_ATTACH_FILE_TOOL_NAME) return COMPUTER_ATTACH_FILE_LIMITS.callMs;
   return name === "computer_shell"
     ? CONNECT_MAX_SHELL_TIMEOUT_SECONDS * 1_000 + COMPUTER_TOOL_LIMITS.shellReplyMs
     : COMPUTER_TOOL_LIMITS.callMs;
@@ -129,7 +140,10 @@ const JOB_OUTPUT_DESCRIPTION = `Reads what a background job started by computer_
 
 const JOB_STOP_DESCRIPTION = "Stops a background job started by computer_shell with background: true, with its child processes.";
 
-/** The eight tools, in `COMPUTER_TOOL_NAMES` order, for a computer of this OS. */
+const MIB = 1_048_576;
+const ATTACH_FILE_DESCRIPTION = `Attaches a file from the user's computer to this answer: the user downloads it from the answer, with its other files. Use it when the user wants a file from their computer here, or one you made or changed there to take away. path: ${PATH_TEXT}. name: the file name the user sees, with its extension (null: the file's own name). Any type of file of up to ${COMPUTER_ATTACH_FILE_LIMITS.maxBytes / MIB} MiB, at most ${COMPUTER_ATTACH_FILE_LIMITS.filesPerRun} files per answer; for a folder or a larger file make an archive or a smaller file first. It only reads the file: nothing changes on the computer. The same unchanged file under the same name is attached once.`;
+
+/** The tools, in `COMPUTER_TOOL_NAMES` order, for a computer of this OS. */
 export function computerToolDefinitions(os: ConnectOs): readonly RunTool[] {
   const path = string(`The path, ${PATH_TEXT}.`, CONNECT_MAX_CWD_LENGTH);
   const optionalPath = nullable("string", `A path, ${PATH_TEXT}; null for the working folder.`, { maxLength: CONNECT_MAX_CWD_LENGTH });
@@ -175,6 +189,10 @@ export function computerToolDefinitions(os: ConnectOs): readonly RunTool[] {
       mode: { anyOf: [{ enum: ["files", "content", "count"], type: "string" }, { type: "null" }],
         description: "files, content or count; null for files." },
       context: nullable("integer", "Lines around each match in content mode; null for 0.", { maximum: CONNECT_MAX_GREP_CONTEXT, minimum: 0 })
+    }) },
+    computer_attach_file: { description: ATTACH_FILE_DESCRIPTION, inputSchema: schema({
+      path,
+      name: nullable("string", "The file name the user sees, with its extension; null for the file's own name.", { maxLength: 255 })
     }) }
   };
   return COMPUTER_TOOL_NAMES.map((name): RunTool => ({ capability: "computer", description: tools[name].description,
@@ -198,7 +216,9 @@ const OMIT = Symbol("omit");
 
 /** Each tool's arguments: the key, its check and what null or absent stands for (none: required). */
 type ArgumentSpec = readonly [key: string, check: (value: unknown) => boolean, fallback?: unknown];
-const ARGUMENTS: Readonly<Record<ComputerToolName, readonly ArgumentSpec[]>> = {
+/** The tools that send one device op; `computer_attach_file` fetches a file in chunks instead (`computerAttachFile.ts`). */
+type SingleOpToolName = Exclude<ComputerToolName, typeof COMPUTER_ATTACH_FILE_TOOL_NAME>;
+const ARGUMENTS: Readonly<Record<SingleOpToolName, readonly ArgumentSpec[]>> = {
   computer_edit: [["path", text], ["oldString", text], ["newString", text], ["replaceAll", boolean, false]],
   computer_glob: [["pattern", text], ["path", text, OMIT]],
   computer_grep: [["pattern", text], ["path", text, OMIT], ["glob", text, OMIT], ["ignoreCase", boolean, false],
@@ -211,7 +231,7 @@ const ARGUMENTS: Readonly<Record<ComputerToolName, readonly ArgumentSpec[]>> = {
 };
 
 /** The model's arguments with their defaults and, for the ops that resolve paths, the folder; a string names a bad one. */
-function modelArgs(name: ComputerToolName, args: Record<string, unknown>, cwd: string): Record<string, unknown> | string {
+function modelArgs(name: SingleOpToolName, args: Record<string, unknown>, cwd: string): Record<string, unknown> | string {
   const values: Record<string, unknown> = {};
   for (const [key, check, fallback] of ARGUMENTS[name]) {
     const value = args[key];
@@ -229,7 +249,7 @@ function modelArgs(name: ComputerToolName, args: Record<string, unknown>, cwd: s
  * past the turn's tool time; a command and a wait shorten to fit, and a command left less than `minShellSeconds` is not
  * sent (`COMPUTER_NO_TOOL_TIME`). A string names the argument that is missing or invalid.
  */
-export function prepareComputerCall(name: ComputerToolName, args: Record<string, unknown>, cwd: string,
+export function prepareComputerCall(name: SingleOpToolName, args: Record<string, unknown>, cwd: string,
   timeLeftMs?: number): PreparedCall | string | typeof COMPUTER_NO_TOOL_TIME {
   const values = modelArgs(name, args, cwd);
   if (typeof values === "string") return values;
@@ -285,6 +305,11 @@ const FAILURE_TEXT: Readonly<Record<ComputerFailureCode, string>> = {
   connect_disabled: "An administrator turned AIQSA Connect off, so the user's computer cannot be used now.",
   connect_unsupported: "The computer's AIQSA Connect is too old for this operation; ask the user to update it."
 };
+
+/** What a failure code means for the model (`computerAttachFile.ts` words some of them for its own work). */
+export function computerFailureText(code: ComputerFailureCode): string {
+  return FAILURE_TEXT[code];
+}
 
 /** What a failure nothing was sent for tells the model: its code's words, and that nothing ran. */
 function notSentText(code: ComputerFailureCode): string {
@@ -377,7 +402,7 @@ function grepText(result: ConnectOpResult<"grep">): string {
 }
 
 /** A successful operation as the model reads it: compact text, numbered lines for a file. */
-function successResult(call: ModelToolCall, name: ComputerToolName, args: ConnectOpArgs, result: ConnectOpResult): ToolExecutionResult {
+function successResult(call: ModelToolCall, name: SingleOpToolName, args: ConnectOpArgs, result: ConnectOpResult): ToolExecutionResult {
   const path = "path" in args && typeof args.path === "string" ? args.path : "";
   switch (name) {
     case "computer_shell": {
@@ -438,7 +463,9 @@ export type ComputerToolContext = Readonly<{
  */
 export async function executeComputerTool(context: ComputerToolContext, call: ModelToolCall, signal: AbortSignal):
   Promise<ToolExecutionResult> {
-  if (!isComputerToolName(call.name)) return errorResult(call, "tool_unavailable", "This tool is not available.");
+  if (!isComputerToolName(call.name) || call.name === COMPUTER_ATTACH_FILE_TOOL_NAME) {
+    return errorResult(call, "tool_unavailable", "This tool is not available.");
+  }
   const name = call.name;
   if (hasInvalidProviderToolArguments(call.arguments)) {
     return errorResult(call, "tool_arguments_invalid", "The arguments were not one JSON object, so nothing was sent.");
@@ -490,6 +517,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** The argument a step names: the command, the path, the pattern or the job. */
 const SUMMARY_ARGUMENT: Readonly<Record<ComputerToolName, string>> = {
+  computer_attach_file: "path",
   computer_edit: "path",
   computer_glob: "pattern",
   computer_grep: "pattern",
@@ -513,17 +541,25 @@ export function computerActivityFacts(toolName: string, argumentsValue: unknown,
   return { ...(summary ? { summary } : {}), ...(exitCode !== undefined ? { exitCode } : {}) };
 }
 
-/** The run's computer tools for its registry, each a step of origin `computer` named after the computer. */
-export function computerEngineTools(input: ComputerToolContext & Readonly<{ serverName?: string }>): EngineTool[] {
-  return computerToolDefinitions(input.binding.os).map((definition): EngineTool => {
+/**
+ * The run's computer tools for its registry, each a step of origin `computer` named after the computer.
+ * `computer_attach_file` is offered only with its executor (`computerAttachFile.ts`), which needs the answer's storage.
+ */
+export function computerEngineTools(input: ComputerToolContext & Readonly<{
+  attachFile?: EngineTool["execute"];
+  serverName?: string;
+}>): EngineTool[] {
+  return computerToolDefinitions(input.binding.os).flatMap((definition): EngineTool[] => {
     const name = definition.name as ComputerToolName;
-    return {
+    const attachFile = name === COMPUTER_ATTACH_FILE_TOOL_NAME ? input.attachFile : undefined;
+    if (name === COMPUTER_ATTACH_FILE_TOOL_NAME && !attachFile) return [];
+    return [{
       activity: (call) => ({ origin: "computer", ...(input.serverName ? { serverName: input.serverName } : {}), toolName: call.name,
         ...computerActivityFacts(call.name, call.arguments) }),
       definition,
       effects: COMPUTER_TOOL_EFFECTS[name],
       observationSource: "workspace",
-      execute: (execution) => executeComputerTool(input, execution.call, execution.signal)
-    };
+      execute: attachFile ?? ((execution) => executeComputerTool(input, execution.call, execution.signal))
+    }];
   });
 }
