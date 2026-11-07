@@ -12,6 +12,7 @@ import {
 } from "./streamSafety";
 import { beginTransportStage, createProviderAbortObserver, observeProviderDeadline, transportFailureFacts } from "./providerObservability";
 import { markProviderStreamReset } from "./streamDrop";
+import { markProviderStreamProgress, providerStreamProgressFacts } from "./streamProgress";
 
 export type ParsedServerSentEvent = {
   data: string;
@@ -191,9 +192,17 @@ export async function* parseSseStream(
   let receivedBytes = 0;
   let chunks = 0;
   let lastProgressAt: number | undefined;
+  // The last parsed event, never a comment: a gateway's keepalive comments keep bytes flowing while nothing happens.
+  let lastEventAt: number | undefined;
   const progress = () => preAborted ? {} : ({
     bytes: receivedBytes, chunks,
     last_progress_ms: lastProgressAt === undefined ? undefined : Math.max(0, performance.now() - lastProgressAt)
+  });
+  // How far the stream had got when a timeout ended it (`streamProgress.ts`); diagnostics only.
+  const timeoutProgress = () => providerStreamProgressFacts({
+    lastByteMs: lastProgressAt === undefined ? undefined : performance.now() - lastProgressAt,
+    lastEventMs: lastEventAt === undefined ? undefined : performance.now() - lastEventAt,
+    responseStarted: lastEventAt !== undefined
   });
   let completed = false;
   let terminated = false;
@@ -341,7 +350,7 @@ export async function* parseSseStream(
       rejectPendingRead = rejectRead;
       idleTimer = setTimeout(() => {
         if (!terminated && !completed) observeAbort({ stage: "delivery", abort_source: "provider_deadline", deadline_kind: "stream_idle",
-          timeout_ms: limits.idleTimeoutMs, duration_ms: elapsedMs() });
+          timeout_ms: limits.idleTimeoutMs, duration_ms: elapsedMs(), ...timeoutProgress() });
         const durationMs = elapsedMs();
         const observedIdleMs = Math.max(
           limits.idleTimeoutMs,
@@ -417,6 +426,7 @@ export async function* parseSseStream(
 
         const event = parseSseChunk(decoder.decode(frame));
         if (event) {
+          lastEventAt = performance.now();
           ensureActive();
           yield attachProviderStreamSafetySnapshot(event, snapshot());
           ensureActive();
@@ -432,7 +442,11 @@ export async function* parseSseStream(
     observation.finish("completed", progress());
   } catch (error) {
     const facts = transportFailureFacts(error, options.signal);
-    observation.finish(facts.category === "aborted" ? "cancelled" : "failed", { ...progress(), ...facts });
+    // A timeout's records say how far the stream had got: the stream's own here, the request's through its failure.
+    const timedOut = facts.category === "timeout" && !preAborted ? timeoutProgress() : null;
+    if (timedOut) markProviderStreamProgress(error, timedOut);
+    observation.finish(facts.category === "aborted" ? "cancelled" : "failed", { ...progress(), ...facts,
+      ...(timedOut ? { last_event_ms: timedOut.last_event_ms, response_started: timedOut.response_started } : {}) });
     if (!completed && !terminated) {
       terminate(error);
     }
