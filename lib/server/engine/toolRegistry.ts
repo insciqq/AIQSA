@@ -35,9 +35,11 @@ import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { decodeFrozenComputerBinding } from "../tools/computerBinding";
+import { executeComputerAttachFile } from "../tools/computerAttachFile";
 import { createComputerReadFiles } from "../tools/computerReadFiles";
 import { computerEngineTools } from "../tools/computerTools";
 import type { ComputerOps } from "../connect/computerPort";
+import type { ComputerOutputStore } from "../connect/computerOutputs";
 import { createFetchUrlSession, type FetchUrlBrowserStep, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
 import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
@@ -234,6 +236,8 @@ export type ToolRegistryServices = Readonly<{
   chatFiles?: ChatFileReader;
   /** Test seam of the computer port; absent, the process's (`getComputerOps`), read at each call. */
   computer?: ComputerOps;
+  /** Where `computer_attach_file` puts files on the answer; absent, the tool is not offered. */
+  computerOutputs?: ComputerOutputStore;
   mcp?: Readonly<{
     filterTools: McpToolAccessFilter;
     materialize?(userId: string, tools: readonly Readonly<{ namespacedName: string; revisionId: string; serverId: string }>[]):
@@ -687,9 +691,13 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     // Documents and images `computer_read` reads, in this run's memory: its previews ride on its own requests whether or not
     // the run has a Workspace, gated on the model this request names and its route (a sub-agent's own).
     const files = createComputerReadFiles({ request, resultImages: input.resultImages === true, runId: input.runId });
-    for (const tool of computerEngineTools({ binding: computer, files, ...(input.services.computer ? { ops: input.services.computer } : {}),
-      runId: input.runId, serverName: descriptors.get("computer_shell")?.serverName,
-      ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId })) add(tool);
+    const context = { binding: computer, ...(input.services.computer ? { ops: input.services.computer } : {}), runId: input.runId,
+      ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId };
+    const outputs = input.services.computerOutputs;
+    // A sub-agent's registry filters `computer_attach_file` out (`SUBAGENT_EXCLUDED_TOOL_NAMES`): only the main answer shows files.
+    for (const tool of computerEngineTools({ ...context, files, serverName: descriptors.get("computer_shell")?.serverName,
+      ...(outputs ? { attachFile: (execution: EngineToolExecution) => executeComputerAttachFile({ ...context, outputs }, execution) } : {})
+    })) add(tool);
     const previous = images;
     images = { attached: (item) => files.images.attached(item) ?? previous?.attached(item), note: previous?.note ?? IMAGE_REFERENCE_NOTE };
   }

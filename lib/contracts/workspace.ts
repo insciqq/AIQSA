@@ -1,3 +1,4 @@
+import { COMPUTER_ATTACH_FILE_LIMITS } from "./computer";
 import { isMcpToolFailureMessage } from "./mcpToolFailure";
 import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "./workspaceFailure";
 
@@ -77,7 +78,13 @@ export type ThreadGeneratedFile = Readonly<{
   byteSize: number;
   fileName: string;
   mimeType: string;
+  /** A Workspace file's path; a computer file's name, never its path on the computer. */
   relativePath: string;
+  /**
+   * `computer`: a file the agent attached from the user's computer (`computer_attach_file`), never a Workspace path, so
+   * no `sandbox:` link resolves to it. Absent: a Workspace output or draft.
+   */
+  source?: "computer";
 }>;
 
 export type WorkspaceRuntimeHealthWire = Readonly<{
@@ -173,7 +180,7 @@ export function decodeThreadWorkspaceCheckpointOutput(value: unknown): ThreadWor
   for (const item of value.files) {
     if (!isRecord(item) || Object.keys(item).some(key => !["attachmentId", "byteSize", "fileName", "mimeType", "relativePath", "checkpoint"].includes(key))) return null;
     const file = decodeThreadGeneratedFile(item);
-    if (!file?.checkpoint || file.checkpoint.id !== checkpoint.id ||
+    if (!file?.checkpoint || file.source || file.checkpoint.id !== checkpoint.id ||
       file.checkpoint.description !== checkpoint.description || file.checkpoint.createdAt !== checkpoint.createdAt ||
       ids.has(file.attachmentId)) return null;
     ids.add(file.attachmentId);
@@ -196,28 +203,46 @@ export function decodeThreadGeneratedFile(value: unknown): ThreadGeneratedFile |
   }
   const checkpoint = value.checkpoint === undefined ? undefined : decodeThreadWorkspaceCheckpoint(value.checkpoint);
   if (checkpoint === null) return null;
+  // A computer file is no draft, and it is named by its file name alone.
+  if (value.source !== undefined && (value.source !== "computer" || checkpoint || value.relativePath !== value.fileName)) return null;
   return {
     ...(checkpoint ? { checkpoint } : {}),
     attachmentId: value.attachmentId,
     byteSize: value.byteSize as number,
     fileName: value.fileName,
     mimeType: value.mimeType,
-    relativePath: value.relativePath
+    relativePath: value.relativePath,
+    ...(value.source === "computer" ? { source: "computer" as const } : {})
   };
 }
 
-/** Final exports (runtime ceiling 100) plus 16 checkpoints of at most 8 files. */
+/** A `computer_file` event's payload: exactly one computer file, no other keys. */
+export function decodeThreadComputerFile(value: unknown): ThreadGeneratedFile | null {
+  if (!isRecord(value) || Object.keys(value).some(key =>
+    !["attachmentId", "byteSize", "fileName", "mimeType", "relativePath", "source"].includes(key))) return null;
+  const file = decodeThreadGeneratedFile(value);
+  return file?.source === "computer" ? file : null;
+}
+
+/**
+ * Final exports (runtime ceiling 100) plus 16 checkpoints of at most 8 files, plus the files attached from the user's
+ * computer (`COMPUTER_ATTACH_FILE_LIMITS`), whose names may repeat each other's and the exports'.
+ */
 export function decodeThreadGeneratedFiles(value: unknown): ThreadGeneratedFile[] | null {
-  if (!Array.isArray(value) || value.length > 228) return null;
+  if (!Array.isArray(value) || value.length > 228 + COMPUTER_ATTACH_FILE_LIMITS.filesPerRun) return null;
   const files: ThreadGeneratedFile[] = [];
   const attachmentIds = new Set<string>();
   const finalPaths = new Set<string>();
   const checkpoints = new Map<string, { metadata: ThreadWorkspaceCheckpoint; count: number }>();
+  let computerFiles = 0;
   for (const item of value) {
     const file = decodeThreadGeneratedFile(item);
     if (!file || attachmentIds.has(file.attachmentId)) return null;
     attachmentIds.add(file.attachmentId);
-    if (file.checkpoint) {
+    if (file.source === "computer") {
+      computerFiles += 1;
+      if (computerFiles > COMPUTER_ATTACH_FILE_LIMITS.filesPerRun) return null;
+    } else if (file.checkpoint) {
       const current = checkpoints.get(file.checkpoint.id);
       if (current && (current.metadata.description !== file.checkpoint.description ||
         current.metadata.createdAt !== file.checkpoint.createdAt || current.count >= 8)) return null;

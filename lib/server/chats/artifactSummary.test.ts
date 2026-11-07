@@ -464,6 +464,39 @@ describe("summarizeMessageRunArtifacts", () => {
     ]);
     expect(JSON.stringify(summary)).not.toContain(same);
   });
+
+  it("shows a file attached from the user's computer while the answer streams and after a reload alike", () => {
+    const checksum = "d".repeat(64);
+    const file = { attachmentId: "computer-1", byteSize: 15, fileName: "report.pdf", mimeType: "application/pdf", relativePath: "report.pdf",
+      source: "computer" as const };
+    // The tool's event crosses exactly; one carrying anything else, a path on the computer included, never does.
+    const event: ModelRunSseEvent = { data: { artifactType: "computer_file", payload: file }, type: "artifact" };
+    expect(projectRunOutputArtifactEvent(event)).toEqual(event);
+    expect(projectRunOutputArtifactEvent({ data: { artifactType: "computer_file", payload: { ...file, path: "/home/ivan/report.pdf" } },
+      type: "artifact" })).toBeNull();
+    expect(projectRunOutputArtifactEvent({ data: { artifactType: "computer_file", payload: { ...file, source: undefined } },
+      type: "artifact" })).toBeNull();
+    const live = summarizeThreadArtifacts([event, event]);
+    expect(live?.generatedFiles).toEqual([file]);
+
+    // The reload reads the attachment row: the same file, beside a Workspace export of the same name.
+    const saved = summarizeMessageRunArtifacts({ events: [], searchRuns: [], workspaceProducedAttachments: [
+      { byteSize: 15, checksum, fileName: "report.pdf", id: "computer-1", metadata: { computerOutput: { toolCallId: "row-1" } },
+        mimeType: "application/pdf", origin: "COMPUTER_OUTPUT", workspaceCheckpointFile: null, workspaceRunOutput: null },
+      { byteSize: 10, checksum, fileName: "report.pdf", id: "final", mimeType: "application/pdf", origin: "WORKSPACE_OUTPUT",
+        workspaceCheckpointFile: null, workspaceRunOutput: { relativePath: "report.pdf" } }
+    ] });
+    expect(saved?.generatedFiles).toEqual([file, { attachmentId: "final", byteSize: 10, fileName: "report.pdf", mimeType: "application/pdf",
+      relativePath: "report.pdf" }]);
+    expect(JSON.stringify(saved)).not.toContain("row-1");
+    const page = decodeChatMessagesPageResponse(JSON.parse(JSON.stringify({
+      messages: [{ artifactSummary: saved, citationMessageId: null, content: { blocks: [{ text: "Answer", type: "text" }] },
+        createdAt: "2026-11-07T00:00:00.000Z", errorMessage: null, id: "message-1", modelId: "model", modelRunId: "run-1",
+        parentMessageId: null, provider: "provider", role: "assistant", status: "complete" }],
+      pageInfo: { activeLeafMessageId: "message-1", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: "2026-11-07T00:00:00.000Z" }
+    })) as unknown);
+    expect(page?.messages[0]?.artifactSummary?.generatedFiles).toEqual(saved?.generatedFiles);
+  });
 });
 
 describe("summarizeMessageRunToolActivity", () => {

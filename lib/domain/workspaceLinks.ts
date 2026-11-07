@@ -51,7 +51,8 @@ export function resolveWorkspaceOutputLink(input: Readonly<{
   if (runId !== input.runId || !isSafeWorkspaceRelativePath(relativePath)) {
     return { kind: "unresolved" };
   }
-  const matches = input.generatedFiles.filter(candidate => candidate.relativePath === relativePath);
+  // A file attached from the user's computer is no Workspace file, whatever its name.
+  const matches = input.generatedFiles.filter(candidate => candidate.source !== "computer" && candidate.relativePath === relativePath);
   // A mutable guest path cannot choose between different saved versions.
   const ids = new Set(matches.map(file => file.attachmentId));
   const file = matches[0];

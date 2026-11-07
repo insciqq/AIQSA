@@ -885,6 +885,22 @@ it("offers immutable draft downloads before answer text and keeps them after fai
   expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("could not be prepared");
 });
 
+it("shows a file attached from the user's computer while the answer streams and once it settles, with its download", () => {
+  const computer = { attachmentId: "computer-1", byteSize: 2_048, fileName: "report.pdf", mimeType: "application/pdf",
+    relativePath: "report.pdf", source: "computer" as const };
+  const live = summarizeThreadArtifacts([{ type: "artifact", data: { artifactType: "computer_file", payload: computer } }]);
+  expect(live?.generatedFiles).toEqual([computer]);
+  const { rerender } = render(<AnswerOutputsV2 live artifact={live} />);
+  const download = () => within(screen.getByRole("region", { name: "Generated files" })).getByRole("link", { name: "Download" });
+  expect(download()).toHaveAttribute("href", "/api/attachments/computer-1/content");
+  expect(screen.getByText("report.pdf")).toBeVisible();
+  expect(screen.queryByText(/^Draft · /u)).not.toBeInTheDocument();
+  // Settled with a Workspace export in progress: the computer file is no Workspace file being exported.
+  rerender(<AnswerOutputsV2 artifact={live} workspaceOutputStatus={{ state: "exporting" }} />);
+  expect(download()).toHaveAttribute("href", "/api/attachments/computer-1/content");
+  expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("Preparing generated files");
+});
+
 it("keeps a draft's card and image preview as the same elements when the answer settles", () => {
   const checkpoint = { id: "cp-png", description: "Cart page before checkout", createdAt: "2026-10-27T10:49:43.000Z" };
   const final = { attachmentId: "draft-png", byteSize: 56_115, fileName: "cart.png", mimeType: "image/png", relativePath: "cart.png" };
