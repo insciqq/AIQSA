@@ -18,7 +18,10 @@ import {
   ProviderRasterConversionError,
   providerRasterNeedsConversion
 } from "../uploads/providerRasterConversion";
-import { fitImageForProvider, PROVIDER_IMAGE_MAX_SOURCE_PIXELS, ProviderImageTooLargeError } from "../uploads/providerImageFit";
+import { fitImageForProvider, gifStillFrameForProvider, PROVIDER_IMAGE_MAX_SOURCE_PIXELS, ProviderImageTooLargeError } from "../uploads/providerImageFit";
+import { animatedGifFrameCount } from "../uploads/imageMetadata";
+import { animatedGifFrameNote } from "../providers/attachmentPayload";
+import { WORKSPACE_INBOX_INDEX_PATH } from "../../domain/workspace";
 import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import type { RunAttachmentRecord, RunRepository } from "./runRepositoryContract";
@@ -359,7 +362,8 @@ function providerAttachment(
     mimeType: record.mimeType,
     status: record.status,
     // Adapters refuse an image without pixels, so an image processing refused
-    // (an animated GIF) rides like an opaque Workspace file: inbox only.
+    // (an animated GIF uploaded before 2026-11-07) rides like an opaque
+    // Workspace file: inbox only.
     ...(record.kind === "image" && record.status === "failed" ? { kind: "file" } : {}),
     ...overrides
   };
@@ -444,11 +448,57 @@ async function fittedImageAttachment(
     metadata: { ...metadata, image: { ...image, height: fitted.height, width: fitted.width } } });
 }
 
+/**
+ * An animated GIF reaches the model as its first frame, a PNG within the
+ * provider image limit, with a caption naming it animated; the stored file,
+ * which Workspace stages unchanged, stays as it is.
+ */
+async function stillFrameAttachment(
+  record: RunAttachmentRecord,
+  body: Buffer,
+  frames: number,
+  maxEncodedBytes: number,
+  workspaceEnabled: boolean,
+  signal: AbortSignal
+): Promise<ProviderAttachment> {
+  let frame: Awaited<ReturnType<typeof gifStillFrameForProvider>>;
+  try {
+    frame = await gifStillFrameForProvider(body, signal);
+  } catch (error) {
+    if (signal.aborted) throw abortReason(signal);
+    if (error instanceof ProviderImageTooLargeError) {
+      throw new AttachmentMaterializationError({
+        actual: { height: error.height, width: error.width },
+        code: "attachment_materialization_limit_exceeded",
+        limits: { maxPixels: PROVIDER_IMAGE_MAX_SOURCE_PIXELS },
+        message: "An attached image is too large to send to the model. Try a smaller copy of it.",
+        status: 413
+      });
+    }
+    throw new AttachmentMaterializationError({
+      code: "attachment_image_invalid",
+      message: "An attached image could not be prepared for the model.",
+      status: 400
+    });
+  }
+  const dataUrl = `data:${frame.mimeType};base64,${frame.bytes.toString("base64")}`;
+  if (dataUrl.length > maxEncodedBytes) throw encodedSizeLimitError(dataUrl.length, maxEncodedBytes);
+  const metadata = record.metadata !== null && typeof record.metadata === "object" ? record.metadata as Record<string, unknown> : {};
+  const image = metadata.image !== null && typeof metadata.image === "object" ? metadata.image : {};
+  return {
+    ...providerAttachment(record, { byteSize: frame.bytes.length, dataUrl, mimeType: frame.mimeType,
+      metadata: { ...metadata, image: { ...image, height: frame.height, width: frame.width } } }),
+    imageNote: animatedGifFrameNote({ attachmentId: record.id, frames,
+      ...(workspaceEnabled ? { inboxIndexPath: WORKSPACE_INBOX_INDEX_PATH } : {}) })
+  };
+}
+
 async function materializeOne(
   storage: Pick<StorageAdapter, "getObject">,
   entry: MaterializationPlanEntry,
   signal: AbortSignal,
   maxEncodedBytes: number,
+  workspaceEnabled: boolean,
   pdfRoute?: ChatPdfRouteAdmission,
   admissions?: Map<string, ChatPdfAttachmentAdmission>
 ): Promise<ProviderAttachment> {
@@ -513,6 +563,9 @@ async function materializeOne(
   if (providerRasterNeedsConversion(contentType)) {
     return convertedImageAttachment(record, object.body, contentType, maxEncodedBytes, signal);
   }
+  // A static or unreadable GIF goes as it always did.
+  const frames = record.kind === "image" && contentType === "image/gif" ? animatedGifFrameCount(object.body) : null;
+  if (frames) return stillFrameAttachment(record, object.body, frames, maxEncodedBytes, workspaceEnabled, signal);
   const fitted = record.kind === "image" ? await fittedImageAttachment(record, object.body, maxEncodedBytes, signal) : null;
   if (fitted) return fitted;
   return providerAttachment(record, {
@@ -686,7 +739,7 @@ export async function loadProviderAttachments(
 
       try {
         results[index] = await materializeOne(deps.storage!, entry, internalController.signal,
-          options.limits.maxEncodedBytes, pdfRoute, pdfAdmissions);
+          options.limits.maxEncodedBytes, options.workspaceEnabled === true, pdfRoute, pdfAdmissions);
       } catch (error) {
         if (firstError === undefined) {
           firstError = error;

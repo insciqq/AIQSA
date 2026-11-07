@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { fitImageForProvider, oneResizeAtATime, PROVIDER_IMAGE_MAX_PATCHES, ProviderImageTooLargeError,
-  providerImageTargetSize } from "./providerImageFit";
+import { fitImageForProvider, gifStillFrameForProvider, oneResizeAtATime, PROVIDER_IMAGE_MAX_PATCHES, ProviderImageFrameError,
+  ProviderImageTooLargeError, providerImageTargetSize } from "./providerImageFit";
 
 const measured = (width: number, height: number) => Math.ceil(width / 32) * Math.ceil(height / 32);
 const flat = (width: number, height: number) => sharp({ create: { background: "#808080", channels: 3, height, width } });
@@ -88,5 +88,37 @@ describe("the copy of an oversized image", () => {
   it("stops when the run was cancelled", async () => {
     const source = await flat(6500, 4900).jpeg().toBuffer();
     await expect(fitImageForProvider(source, AbortSignal.abort(new Error("stopped")))).rejects.toThrow("stopped");
+  });
+});
+
+describe("the still frame of an animated GIF", () => {
+  const animated = async (width: number, height: number, colors: readonly string[]) => sharp(
+    await Promise.all(colors.map((background) => sharp({ create: { background, channels: 3, height, width } }).png().toBuffer())),
+    { join: { animated: true } }).gif({ delay: 100 }).toBuffer();
+
+  it("is the first frame as a single-page PNG, at its own size when it fits", async () => {
+    const frame = await gifStillFrameForProvider(await animated(40, 30, ["#ff0000", "#00ff00", "#0000ff"]));
+    const decoded = await sharp(frame.bytes, { animated: true }).metadata();
+    expect(frame).toMatchObject({ height: 30, mimeType: "image/png", width: 40 });
+    expect(decoded).toMatchObject({ format: "png", height: 30, width: 40 });
+    expect(decoded.pages ?? 1).toBe(1);
+    const [red, green, blue] = (await sharp(frame.bytes).stats()).channels.map((channel) => Math.round(channel.mean));
+    expect({ blue, green, red }).toEqual({ blue: 0, green: 0, red: 255 });
+  });
+
+  it("fits the same patch limit as every other image", async () => {
+    const frame = await gifStillFrameForProvider(await animated(6500, 4900, ["#808080", "#000000"]));
+    const copy = await sharp(frame.bytes).metadata();
+    expect({ format: copy.format, height: copy.height, width: copy.width })
+      .toEqual({ format: "png", height: frame.height, width: frame.width });
+    expect(measured(frame.width, frame.height)).toBeLessThanOrEqual(PROVIDER_IMAGE_MAX_PATCHES);
+    expect(frame.width / frame.height).toBeCloseTo(6500 / 4900, 2);
+  });
+
+  it("refuses bytes that are no GIF, and stops when the run was cancelled", async () => {
+    await expect(gifStillFrameForProvider(Buffer.from("GIF89a not really"))).rejects.toBeInstanceOf(ProviderImageFrameError);
+    await expect(gifStillFrameForProvider(await flat(10, 10).png().toBuffer())).rejects.toBeInstanceOf(ProviderImageFrameError);
+    await expect(gifStillFrameForProvider(await animated(10, 10, ["#ff0000", "#00ff00"]), AbortSignal.abort(new Error("stopped"))))
+      .rejects.toThrow("stopped");
   });
 });

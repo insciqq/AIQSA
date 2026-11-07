@@ -81,6 +81,18 @@ describe("a provider that is slow or keeps failing", () => {
     expect(present([]).activity?.label).toBe(runWaitingPhraseV2(runId));
   });
 
+  it("names the model provider, and the answer's model when the catalog lists it", () => {
+    expect(PROVIDER_RETRYING_LABEL_V2).toBe("The model provider isn’t responding, trying again…");
+    expect(PROVIDER_SLOW_LABEL_V2).toBe("The model provider is taking longer than usual…");
+    const named = (events: readonly RunEventView[], modelName: string | null) => presentRunLifecycleV2({ ...base, events, modelName });
+    expect(named([model("retrying")], "GPT-6-Astra").activity?.label).toBe("The provider of GPT-6-Astra isn’t responding, trying again…");
+    expect(named([model("slow")], "GPT-6-Astra").activity?.label).toBe("The provider of GPT-6-Astra is taking longer than usual…");
+    expect(presentRunLifecycleV2({ ...base, events: [], modelName: "GPT-6-Astra", providerWait: "retrying" }).activity?.label)
+      .toBe("The provider of GPT-6-Astra isn’t responding, trying again…");
+    expect(named([model("retrying")], "  ").activity?.label).toBe(PROVIDER_RETRYING_LABEL_V2);
+    expect(named([model("slow")], null).activity?.label).toBe(PROVIDER_SLOW_LABEL_V2);
+  });
+
   it("lets the live feed win over a wait a chat update left on the message", () => {
     expect(present([token], "retrying").kind).toBe("streaming");
     expect(present([model("waiting")], "retrying").activity?.label).toBe(runWaitingPhraseV2(runId));

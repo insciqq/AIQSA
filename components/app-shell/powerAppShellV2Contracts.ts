@@ -406,6 +406,8 @@ export type ShellComposerView = {
   operationErrorRecoveries?: readonly ComposerOperationRecovery[];
   reasoningEffort: string;
   reasoningMode: string;
+  /** Names a saved reasoning mode the current model does not offer; the composer sends the model's default. */
+  reasoningModeNotice?: string | null;
   retryCatalog(): void;
   searchPlanMode: SearchPlanMode;
   selectMcpMode(selection: McpRunSelection): void;

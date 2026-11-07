@@ -13,7 +13,9 @@ export const CHAT_FILE_READ_LIMIT = 12_000;
 export type ChatFileScope = Readonly<{ attachmentId: string; chatId: string; userId: string }>;
 export type ChatFile = Readonly<{ fileName: string; kind: string; status: string; extractedText: string | null; metadata: unknown }>;
 export type ChatFileReader = Readonly<{ read(scope: ChatFileScope): Promise<ChatFile | null> }>;
-export type ChatImagePreview = Readonly<{ bytes: Buffer; width: number; height: number; mimeType: "image/png" | "image/jpeg" }>;
+export type ChatImagePreview = Readonly<{ bytes: Buffer; width: number; height: number; mimeType: "image/png" | "image/jpeg";
+  /** An animated GIF's frame count; the preview is its first frame. */
+  frames?: number }>;
 export type ChatImageReader = (scope: ChatFileScope, signal?: AbortSignal) => Promise<ChatImagePreview | null>;
 
 /** Both attachment ownership and live chat access are checked at the read, even for an admitted reference. */
@@ -79,7 +81,8 @@ export function createChatFileTool(input: Readonly<{
       signal?.throwIfAborted();
       if (held.ended()) return refusal(call, "chat_image_unavailable", "The run has ended.");
       const value = { attachment_id: scope.attachmentId, width: preview.width, height: preview.height,
-        note: "Image preview. " + CHAT_FILE_UNTRUSTED + " Pixels accompany this result only while this run holds them. " +
+        note: (preview.frames ? `Image preview of the first frame of an animated GIF with ${preview.frames} frames. ` : "Image preview. ") +
+          CHAT_FILE_UNTRUSTED + " Pixels accompany this result only while this run holds them. " +
           "If no image is attached to this result, call read_chat_file with this attachment_id to view it again." };
       if (!held.hold(call, round, preview, JSON.stringify(value))) {
         return refusal(call, "chat_image_limit_exceeded", "This image preview exceeds this request's image limits. Read fewer images at once.");

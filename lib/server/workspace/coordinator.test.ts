@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { inspect } from "node:util";
+import sharp from "sharp";
 import { runWithContext } from "../observability";
 import { describeFailureFacts } from "../observability/failureFacts.cjs";
 import {
@@ -1489,6 +1490,30 @@ describe("Workspace coordinator incremental staging", () => {
     await expect(value.coordinator.imagePath!({ attachmentId: image.attachmentId, runId: value.runId,
       userId: "user_1", workspace: value.workspace, signal: controller.signal })).rejects.toThrow();
     expect(value.runtime.stageAttachments).toHaveBeenCalledOnce();
+  });
+
+  it("stages an uploaded animated GIF as its exact original bytes, every frame included", async () => {
+    const value = fixture();
+    const frame = (background: string) => sharp({ create: { background, channels: 3, height: 30, width: 40 } }).png().toBuffer();
+    const bytes = await sharp([await frame("#ff0000"), await frame("#00ff00"), await frame("#0000ff")], { join: { animated: true } })
+      .gif({ delay: 100 }).toBuffer();
+    const gif = { attachmentId: "banner_gif", byteSize: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex"),
+      fileName: "banner.gif", kind: "image" as const, messageId: "message_1", mimeType: "image/gif", storageKey: "user_1/banner" };
+    await value.storage.putObject({ body: bytes, contentType: "image/gif", storageKey: gif.storageKey });
+    vi.spyOn(value.repository, "attachments").mockResolvedValue([gif]);
+    let stagedBytes: ArrayBuffer | undefined;
+    vi.mocked(value.runtime.stageAttachments).mockImplementationOnce(async input => {
+      stagedBytes = await new Response(input.attachments.find(entry => entry.attachmentId === gif.attachmentId)!.body).arrayBuffer();
+    });
+
+    await expect(value.coordinator.execute({ call: { arguments: { command: "pwd" }, id: "call_gif", name: value.shellToolName },
+      modelRunToolCallId: "stored_gif", runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .resolves.toMatchObject({ status: "complete" });
+
+    expect(Buffer.from(stagedBytes!).equals(bytes)).toBe(true);
+    expect((await sharp(Buffer.from(stagedBytes!), { animated: true }).metadata()).pages).toBe(3);
+    expect(vi.mocked(value.runtime.stageAttachments).mock.calls[0]![0].inboxIndex).toMatchObject({ attachments: [
+      expect.objectContaining({ attachmentId: gif.attachmentId, checksum: gif.checksum, mimeType: "image/gif", source: "upload" })] });
   });
 
   it("reads and writes only originals the guest index does not already hold", async () => {

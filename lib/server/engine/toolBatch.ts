@@ -22,6 +22,7 @@ import {
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
+import type { ToolObservationAgentKind } from "../toolObservations/storeFailure";
 import { ComputerOpError, computerActivityFacts, computerUnknownOutcomeText } from "../tools/computerTools";
 import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "../tools/types";
@@ -160,8 +161,9 @@ export type ToolBatchDeps = Readonly<{
    */
   reservedToolName?: string;
   runId: string;
-  saveResult(input: Readonly<{ outcome: "complete" | "error"; signal: AbortSignal; source: ToolObservationSource;
-    sourceBinding?: ToolObservationSourceBinding; text: string; toolCallId: string }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>>;
+  /** `agentKind` names a sub-agent's host for the store's failure record (`execution.ts`, `subagents/runSubagents.ts`). */
+  saveResult(input: Readonly<{ agentKind?: ToolObservationAgentKind; outcome: "complete" | "error"; signal: AbortSignal;
+    source: ToolObservationSource; sourceBinding?: ToolObservationSourceBinding; text: string; toolCallId: string }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>>;
   signal: AbortSignal;
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;
@@ -563,8 +565,11 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
         const item = await hooks.afterToolCall(execution, tool, begun.row, result);
         return finished({ ...item, outcome: "unknown" }, "error");
       }
-      result = { callId: call.id, content: [{ type: "json", value: { error: code, message: "The tool failed; nothing changed." } }],
-        name: call.name, status: "error" };
+      // A tool that knows its failures (MCP) says why and what to try next; its effect is known to be none here.
+      const guidance = tool.failureGuidance?.(error);
+      result = { callId: call.id, content: [{ type: "json", value: guidance
+        ? { error: code, message: guidance.message, reason: guidance.reason }
+        : { error: code, message: "The tool failed; nothing changed." } }], name: call.name, status: "error" };
       settled({ effectUnknown: false, error, kind: "thrown", result });
       deps.unknownEffects.record(call, result.status);
       return finished(await hooks.afterToolCall(execution, tool, begun.row, result), "error");

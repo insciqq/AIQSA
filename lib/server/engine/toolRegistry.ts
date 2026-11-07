@@ -8,6 +8,7 @@ import { executeDurableMcpDiscovery } from "../mcp/durableDiscovery";
 import type { McpRunPlanBinding, McpRunPlanResult, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
 import { mcpDispatchError } from "../mcp/dispatchStatus";
+import { mcpToolFailureGuidance } from "../mcp/toolFailureGuidance";
 import { dispatchMcpTool, mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor";
 import { mcpApprovalRequest, type McpApprovalRequest } from "../mcp/writeApproval";
 import { memorySearchTool } from "../memory/search/contract";
@@ -135,6 +136,12 @@ export type EngineTool = Readonly<{
   execute(execution: EngineToolExecution): Promise<ToolExecutionResult>;
   /** The rows the call's record links; null when the binding it needs is gone. */
   links?(call: ModelToolCall): EngineToolLinks | null;
+  /**
+   * For a tool without external effects, why its thrown failure happened and what the model should do next, in
+   * place of the batch's generic text; content-free by construction (MCP: `lib/server/mcp/toolFailureGuidance.ts`).
+   * A call whose effect may be unknown never uses it.
+   */
+  failureGuidance?(error: unknown): Readonly<{ message: string; reason: string }>;
   /** The store a long result is saved in. */
   observationSource: ToolObservationSource;
   /**
@@ -368,11 +375,15 @@ function admittedAttachmentIds(request: ProviderRunRequest): string[] {
   return [...ids].slice(-ADMITTED_ATTACHMENTS_LIMIT);
 }
 
-/** A call refused before it was sent (a stale runtime, invalid arguments): its outcome is known, nothing happened. */
+/**
+ * An MCP call refused before it was sent (a stale runtime, invalid arguments): its outcome is known, nothing happened,
+ * and the model reads why and what to do next.
+ */
 function notSent(call: ModelToolCall, error: unknown): ToolExecutionResult {
   const own = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
   const code = typeof own === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(own) ? own : "mcp_call_not_sent";
-  return { callId: call.id, content: [{ type: "json", value: { error: code, message: "Nothing was sent." } }], name: call.name,
+  const { message, reason } = mcpToolFailureGuidance(error, "not_sent");
+  return { callId: call.id, content: [{ type: "json", value: { error: code, message, reason } }], name: call.name,
     status: "error" };
 }
 
@@ -807,6 +818,7 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
           title: current.tool.title ?? annotatedTitle, toolName: call.name });
       },
       effects: readOnly ? "none" : "external",
+      failureGuidance: (error) => mcpToolFailureGuidance(error, "read_only"),
       links: () => {
         const current = route();
         const binding = current ? input.mcpBindings.get(current.serverId) : undefined;

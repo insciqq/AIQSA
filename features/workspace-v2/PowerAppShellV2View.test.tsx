@@ -14,6 +14,7 @@ import {
   TemporaryChatIndicatorV2,
   WorkspaceHeaderV2,
   liveAnswerSourceV2,
+  answerModelNameV2,
   announcedPresentationV2,
   presentAnswerV2,
   retryAutoMcpDiscoveryV2,
@@ -1024,5 +1025,36 @@ describe("answer sound settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play preview" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Preview could not play"));
     expect(composer.toggleNotificationSound).not.toHaveBeenCalled();
+  });
+});
+
+describe("Provider wait naming v2", () => {
+  const models = [{ displayName: "GPT-6-Astra", modelId: "gpt-6-astra", provider: "codex-lb" },
+    { displayName: "Other", modelId: "gpt-6-astra", provider: "openai" }];
+
+  it("names an answer's model only as the user's own catalog lists it", () => {
+    expect(answerModelNameV2({ modelId: "gpt-6-astra", provider: "codex-lb" }, models)).toBe("GPT-6-Astra");
+    expect(answerModelNameV2({ modelId: "gpt-6-astra", provider: "openai" }, models)).toBe("Other");
+    expect(answerModelNameV2({ modelId: "missing", provider: "codex-lb" }, models)).toBeNull();
+    expect(answerModelNameV2({ modelId: "gpt-6-astra", provider: "codex-lb" }, null)).toBeNull();
+    expect(answerModelNameV2({ provider: "codex-lb" }, models)).toBeNull();
+  });
+
+  it("names a configured connection's answer by its provider family and upstream model, only when one model fits", () => {
+    const connection = { displayName: "GPT-6.1 Sol", modelId: "model-row-1", provider: "connection-1",
+      providerFamily: "openai_compatible", upstreamModelId: "gpt-6.1-sol" };
+    expect(answerModelNameV2({ modelId: "gpt-6.1-sol", provider: "openai_compatible" }, [connection])).toBe("GPT-6.1 Sol");
+    expect(answerModelNameV2({ modelId: "gpt-6.1-sol", provider: "anthropic" }, [connection])).toBeNull();
+    expect(answerModelNameV2({ modelId: "gpt-6.1-sol", provider: "openai_compatible" },
+      [connection, { ...connection, displayName: "Sol elsewhere", modelId: "model-row-2", provider: "connection-2" }])).toBeNull();
+  });
+
+  it("puts the name in a waiting answer's provider line", () => {
+    const waiting: ThreadMessage = { content: "", id: "answer-wait", modelId: "gpt-6-astra", parentMessageId: null, provider: "codex-lb",
+      providerWait: "retrying", role: "assistant", runId: "run-wait", status: "streaming" };
+    const thread = { activeChatStreaming: true, currentRunId: "run-wait", events: [], interruptedRun: null, liveArtifactSummary: null };
+    expect(presentAnswerV2(waiting, thread, answerModelNameV2(waiting, models)).presentation.activity?.label)
+      .toBe("The provider of GPT-6-Astra isn’t responding, trying again…");
+    expect(presentAnswerV2(waiting, thread).presentation.activity?.label).toBe("The model provider isn’t responding, trying again…");
   });
 });

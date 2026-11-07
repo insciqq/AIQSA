@@ -5,7 +5,7 @@ import {
   type ChatAssistantOverridesPatch
 } from "../../contracts/chats";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
-import { invalidRunParamsError } from "../../domain/runParams";
+import { invalidRunParamsError, reasoningModeNotAvailableError } from "../../domain/runParams";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import {
   storedOverridesInEffect,
@@ -176,6 +176,10 @@ const ordinaryUnavailableCodes: UnavailableCodes = {
 export function assistantRowFailure(failure: AssistantRowResolutionFailure): AssistantAdmissionFailure {
   if (failure.code === "assistant_overrides_not_allowed") return rejected(failure.code, 400);
   if (failure.code === "request_value_not_available") {
+    // As in an ordinary chat, a requested mode the model does not offer is refused by name.
+    if (failure.row === "controls" && failure.field === "reasoningMode") {
+      return rejected(reasoningModeNotAvailableError, 400);
+    }
     const [code, status] = ordinaryUnavailableCodes[failure.row] ?? ["assistant_overrides_invalid", 400];
     return rejected(code, status);
   }

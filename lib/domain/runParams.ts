@@ -5,6 +5,14 @@ import {
 } from "./providerParams";
 
 export const invalidRunParamsError = "invalid_run_params";
+/**
+ * A request names a `reasoning.mode` the model's controls do not offer. It is
+ * refused by name, never dropped or replaced: a saved Pro choice on a model
+ * that no longer offers Pro must not silently become a different request.
+ */
+export const reasoningModeNotAvailableError = "reasoning_mode_not_available";
+export const reasoningModeNotAvailableMessage =
+  "The reasoning mode (reasoning.mode) is not available for this model. Send without it or choose a mode the model offers.";
 
 export type RunParamValidationResult =
   | {
@@ -12,7 +20,7 @@ export type RunParamValidationResult =
       params: Record<string, unknown>;
     }
   | {
-      code: typeof invalidRunParamsError;
+      code: typeof invalidRunParamsError | typeof reasoningModeNotAvailableError;
       ok: false;
     };
 
@@ -221,6 +229,36 @@ function validateReasoningMode(value: unknown, controls: ModelParameterControls)
     controls.reasoningMode?.supported === true &&
     controls.reasoningMode.options.includes(value)
   );
+}
+
+/**
+ * "standard" on a model that offers no reasoning mode asks for exactly what a request without a mode gets, so it is the
+ * absence of a mode, never a substitution. Browser tabs opened before a model stopped offering modes, and the many saved
+ * "standard" values, still send it (2026-11-07); only a mode that would change the request, such as Pro, is refused.
+ */
+export function isNeutralReasoningMode(value: unknown, controls: ModelParameterControls): boolean {
+  return value === "standard" && controls.reasoningMode?.supported !== true;
+}
+
+/** The params without a neutral "standard" mode (see `isNeutralReasoningMode`); the same object when there is none. */
+function withoutNeutralReasoningMode(params: Record<string, unknown>, controls: ModelParameterControls): Record<string, unknown> {
+  const reasoning = params.reasoning;
+  if (!isRecord(reasoning) || !hasOwn(reasoning, "mode") || !isNeutralReasoningMode(reasoning.mode, controls)) return params;
+  const rest = { ...reasoning };
+  delete rest.mode;
+  const next = { ...params };
+  if (Object.keys(rest).length > 0) next.reasoning = rest;
+  else delete next.reasoning;
+  return next;
+}
+
+function requestsUnofferedReasoningMode(params: Record<string, unknown>, controls: ModelParameterControls): boolean {
+  const reasoning = params.reasoning;
+  return isRecord(reasoning) &&
+    hasOwn(reasoning, "mode") &&
+    typeof reasoning.mode === "string" &&
+    reasoning.mode.trim() !== "" &&
+    !validateReasoningMode(reasoning.mode, controls);
 }
 
 export function validateSearchRunParams(
@@ -527,6 +565,10 @@ export function validateRunParams(input: {
 
   if (!allKeysAllowed(input.params, allowed)) {
     return invalid();
+  }
+  input = { ...input, params: withoutNeutralReasoningMode(input.params, input.controls) };
+  if (requestsUnofferedReasoningMode(input.params, input.controls)) {
+    return { code: reasoningModeNotAvailableError, ok: false };
   }
   const searchValidation = validateSearchRunParams(input.params.search, input.searchControls);
   if (!searchValidation.ok) {

@@ -3,7 +3,7 @@ import type {
   AssistantRunControls
 } from "../../contracts/assistants";
 import type { ModelParameterControls } from "../../contracts/catalog";
-import { validateRunParams } from "../../domain/runParams";
+import { isNeutralReasoningMode, validateRunParams } from "../../domain/runParams";
 
 export type AssistantRunParamsResult =
   | { ok: false }
@@ -107,6 +107,8 @@ export function assistantRunControlIssue(
   }
   if (
     runControls.reasoningMode !== undefined &&
+    // A saved "standard" on a model without modes asks for nothing different (`isNeutralReasoningMode`).
+    !isNeutralReasoningMode(runControls.reasoningMode, controls) &&
     !(controls.reasoningMode?.supported === true &&
       controls.reasoningMode.options.includes(runControls.reasoningMode))
   ) {

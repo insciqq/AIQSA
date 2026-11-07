@@ -45,6 +45,11 @@ export type RunLifecycleStateV2 = Readonly<{
   content: string;
   events: readonly RunEventView[];
   failure?: RunFailureV2 | null;
+  /**
+   * The display name of the answer's model from the user's own catalog, when it lists it: a provider's wait names it.
+   * Absent, the wait names the model provider alone.
+   */
+  modelName?: string | null;
   /** The answer's run researched (`ThreadMessage.researchAnswer`). */
   research?: true;
   runId: string | null;
@@ -726,8 +731,25 @@ export function runWaitingPhraseV2(runId: string | null): string {
 }
 
 export const SUBAGENT_WAIT_LABEL_V2 = "Waiting for sub-agents…";
-export const PROVIDER_RETRYING_LABEL_V2 = "The provider isn’t responding, trying again…";
-export const PROVIDER_SLOW_LABEL_V2 = "The provider is taking longer than usual…";
+export const PROVIDER_RETRYING_LABEL_V2 = "The model provider isn’t responding, trying again…";
+export const PROVIDER_SLOW_LABEL_V2 = "The model provider is taking longer than usual…";
+
+function waitModelName(name: string | null | undefined): string | null {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  return trimmed.length > 0 && trimmed.length <= 120 ? trimmed : null;
+}
+
+/** A failed request sent again: the model provider is failing, named by the answer's model when the catalog has it. */
+export function providerRetryingLabelV2(modelName?: string | null): string {
+  const name = waitModelName(modelName);
+  return name ? `The provider of ${name} isn’t responding, trying again…` : PROVIDER_RETRYING_LABEL_V2;
+}
+
+/** A first request still silent: the model provider is slow, named by the answer's model when the catalog has it. */
+export function providerSlowLabelV2(modelName?: string | null): string {
+  const name = waitModelName(modelName);
+  return name ? `The provider of ${name} is taking longer than usual…` : PROVIDER_SLOW_LABEL_V2;
+}
 
 /** A `call_subagent` step of the main agent: its answer is waiting on the sub-agent, which has a place of its own in the answer. */
 export function subagentCallV2(call: ToolActivityIdentity): boolean {
@@ -738,7 +760,7 @@ function subagentWaitSignal(signal: Pick<ActivitySignal, "kind" | "origin" | "se
   return signal.kind === "tool" && subagentCallV2(signal);
 }
 
-function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | null): string {
+function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | null, modelName?: string | null): string {
   if (subagentWaitSignal(signal)) return SUBAGENT_WAIT_LABEL_V2;
   switch (signal.kind) {
     case "synthesis":
@@ -752,9 +774,9 @@ function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | nu
     case "compaction":
       return "Compacting context…";
     case "provider_retrying":
-      return PROVIDER_RETRYING_LABEL_V2;
+      return providerRetryingLabelV2(modelName);
     case "provider_slow":
-      return PROVIDER_SLOW_LABEL_V2;
+      return providerSlowLabelV2(modelName);
     case "files":
       return "Reading files…";
     case "results":
@@ -1361,7 +1383,7 @@ export function presentRunLifecycleV2(
     return present({
       activity: {
         ...signal,
-        label: activityLabel(signal, state.runId),
+        label: activityLabel(signal, state.runId, state.modelName),
         ...(reasoningHeading && (signal.kind === "provider" || signal.kind === "results") ? { reasoningHeading } : {})
       },
       kind: "activity",
@@ -1371,7 +1393,7 @@ export function presentRunLifecycleV2(
 
   if (state.providerWait && latestTokenIndex < 0) {
     const kind = providerWaitKind(state.providerWait);
-    return present({ activity: { kind, label: activityLabel({ kind }, state.runId) }, kind: "activity", runId: state.runId });
+    return present({ activity: { kind, label: activityLabel({ kind }, state.runId, state.modelName) }, kind: "activity", runId: state.runId });
   }
 
   const activity = statusActivity(state.status, state.runId);

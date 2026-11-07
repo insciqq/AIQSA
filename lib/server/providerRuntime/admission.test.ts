@@ -14,8 +14,12 @@ const capabilities = (input: Readonly<{
   nativePdfInput?: boolean;
   nativeSearch?: boolean;
   pdf?: boolean;
+  reasoningModes?: readonly string[];
   toolCalling?: boolean;
 }> = {}) => ({
+  ...(input.reasoningModes
+    ? { defaultReasoningMode: input.reasoningModes[0], reasoningModes: [...input.reasoningModes] }
+    : {}),
   nativePdfInput: input.nativePdfInput ?? true,
   nativeSearch: input.nativeSearch ?? false,
   pdf: input.pdf ?? true,
@@ -46,6 +50,7 @@ type ModelSpec = Readonly<{
   nativeSearch?: boolean;
   pdf?: boolean;
   responseTimeoutMs?: number;
+  reasoningModes?: readonly string[];
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
   toolCalling?: boolean;
   upstreamModelId: string;
@@ -95,6 +100,7 @@ function providerModel(
         nativePdfInput: spec.nativePdfInput,
         nativeSearch: spec.nativeSearch,
         pdf: spec.pdf,
+        reasoningModes: spec.reasoningModes,
         toolCalling: spec.toolCalling
       }),
       defaultParams: spec.defaultParams ?? {},
@@ -554,16 +560,20 @@ describe("provider admission", () => {
     }));
   });
 
+  // A mode is offered only where the administrator listed the model's modes and the
+  // route can carry one; an unconfigured codex-lb row offers none (2026-11-07).
   it.each([
-    { adapterKind: "openai_responses_compatible", mapping: undefined, mode: true },
-    { adapterKind: "openai_responses_compatible", mapping: { effortPath: "thinking.effort", modePath: "thinking.mode" }, mode: true },
-    { adapterKind: "openai_chat_completions_compatible", mapping: { effortPath: "reasoning_effort", modePath: "reasoning_mode" }, mode: true },
-    { adapterKind: "openai_chat_completions_compatible", mapping: undefined, mode: false }
-  ] as const)("accepts catalog reasoning controls after $adapterKind admission with mode=$mode", async ({ adapterKind, mapping, mode }) => {
+    { adapterKind: "openai_responses_compatible", mapping: undefined, mode: true, modes: ["standard", "pro"] },
+    { adapterKind: "openai_responses_compatible", mapping: undefined, mode: false, modes: undefined },
+    { adapterKind: "openai_responses_compatible", mapping: { effortPath: "thinking.effort", modePath: "thinking.mode" }, mode: true, modes: ["standard", "pro"] },
+    { adapterKind: "openai_chat_completions_compatible", mapping: { effortPath: "reasoning_effort", modePath: "reasoning_mode" }, mode: true, modes: ["standard", "pro"] },
+    { adapterKind: "openai_chat_completions_compatible", mapping: undefined, mode: false, modes: ["standard", "pro"] }
+  ] as const)("accepts catalog reasoning controls after $adapterKind admission with mode=$mode", async ({ adapterKind, mapping, mode, modes }) => {
     const answer: ModelSpec = {
       adapterKind, connectionId: "connection-compatible", family: "openai_compatible",
       id: "model-compatible", upstreamModelId: "vendor/reasoning-model",
-      ...(mapping ? { reasoningRequestMapping: mapping } : {})
+      ...(mapping ? { reasoningRequestMapping: mapping } : {}),
+      ...(modes ? { reasoningModes: modes } : {})
     };
     const { db } = admissionDb({ answer, options: [off] });
     const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {

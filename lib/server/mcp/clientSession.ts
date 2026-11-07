@@ -129,6 +129,8 @@ export class McpClientSessionError extends Error {
   readonly httpStatus?: number;
   /** The byte bound a response exceeded, for the response-size codes. */
   readonly maxBytes?: number;
+  /** The request deadline that passed, for `mcp_request_timeout`. */
+  readonly timeoutMs?: number;
 
   constructor(input: Readonly<{
     code: McpClientSessionErrorCode;
@@ -136,6 +138,7 @@ export class McpClientSessionError extends Error {
     retryable?: boolean;
     httpStatus?: number;
     maxBytes?: number;
+    timeoutMs?: number;
   }>) {
     super(ERROR_MESSAGES[input.code]);
     this.name = "McpClientSessionError";
@@ -144,6 +147,7 @@ export class McpClientSessionError extends Error {
     this.retryable = input.retryable ?? false;
     if (Number.isInteger(input.httpStatus) && input.httpStatus! >= 400 && input.httpStatus! <= 599) this.httpStatus = input.httpStatus;
     if (Number.isSafeInteger(input.maxBytes) && input.maxBytes! > 0) this.maxBytes = input.maxBytes;
+    if (Number.isSafeInteger(input.timeoutMs) && input.timeoutMs! > 0) this.timeoutMs = input.timeoutMs;
   }
 
   toJSON(): Readonly<{
@@ -153,6 +157,7 @@ export class McpClientSessionError extends Error {
     retryable: boolean;
     httpStatus?: number;
     maxBytes?: number;
+    timeoutMs?: number;
   }> {
     return {
       code: this.code,
@@ -160,7 +165,8 @@ export class McpClientSessionError extends Error {
       operation: this.operation,
       ...(this.httpStatus ? { httpStatus: this.httpStatus } : {}),
       ...(this.maxBytes ? { maxBytes: this.maxBytes } : {}),
-      retryable: this.retryable
+      retryable: this.retryable,
+      ...(this.timeoutMs ? { timeoutMs: this.timeoutMs } : {})
     };
   }
 }
@@ -300,7 +306,9 @@ function requestFailure(
   error: unknown,
   operation: Exclude<SessionOperation, "close" | "session">,
   signal: AbortSignal | undefined,
-  fallbackCode: McpClientSessionErrorCode
+  fallbackCode: McpClientSessionErrorCode,
+  /** The request's deadline, kept on a timeout so its reader can name it. */
+  timeoutMs?: number
 ): McpClientSessionError {
   if (error instanceof McpResponseTooLargeError) {
     return responseTooLargeFailure(error);
@@ -312,7 +320,7 @@ function requestFailure(
     return sessionError("mcp_request_cancelled", operation);
   }
   if (SdkError.isInstance(error) && error.code === SdkErrorCode.RequestTimeout) {
-    return sessionError("mcp_request_timeout", operation, true);
+    return new McpClientSessionError({ code: "mcp_request_timeout", operation, retryable: true, timeoutMs });
   }
   if (SdkHttpError.isInstance(error)) {
     const status = error.data.status;
@@ -1063,7 +1071,7 @@ export class McpClientSession {
     } catch (error) {
       const timedOut = SdkError.isInstance(error) && error.code === SdkErrorCode.RequestTimeout;
       if (timedOut) observeAbort({ stage: "delivery", abort_source: "mcp_deadline", deadline_kind: "sdk_request", timeout_ms: sdkOptions.timeout });
-      const failure = requestFailure(error, "call_tool", options?.signal, "mcp_call_failed");
+      const failure = requestFailure(error, "call_tool", options?.signal, "mcp_call_failed", sdkOptions.timeout);
       const facts = timedOut ? { code: "mcp_request_timeout", reason: "deadline" as const } : mcpToolFailure(failure);
       finish({ outcome: facts.reason === "cancelled" ? "cancelled" : "failed", ...facts,
         ...(failure.maxBytes ? { max_bytes: failure.maxBytes } : {}) });

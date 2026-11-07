@@ -1627,6 +1627,17 @@ describe("the composer's reasoning effort chip", () => {
     expect(chip()).toHaveTextContent(/^low$/u);
   });
 
+  it("names a saved reasoning mode the model does not offer in the reasoning menu", () => {
+    const notice = "Your saved reasoning mode “pro” is not available for this model, so its default is used.";
+    const { rerender } = render(<ComposerV2 {...props({ reasoningEffort: { ...reasoning(), modeNotice: notice } })} />);
+    fireEvent.click(chip());
+    expect(within(screen.getByRole("menu", { name: "Reasoning effort" }))
+      .getByTestId("composer-reasoning-mode-notice")).toHaveTextContent(notice);
+
+    rerender(<ComposerV2 {...props({ reasoningEffort: reasoning() })} />);
+    expect(screen.queryByTestId("composer-reasoning-mode-notice")).toBeNull();
+  });
+
   it("is absent for a model without a reasoning control and closes its menu with the level", () => {
     const { rerender } = render(<ComposerV2 {...props({ reasoningEffort: reasoning() })} />);
     fireEvent.click(chip());

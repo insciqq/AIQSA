@@ -126,6 +126,8 @@ export function humanizeErrorCode(code: string): string {
     image_attachment_not_supported:
       "This model can't use images here. Remove the image, choose a model that supports images, or ask an administrator to assign the Vision Model",
     provider_not_available: "Provider is not available",
+    reasoning_mode_not_available:
+      "The reasoning mode is not available for this model. Reload the page and send again",
     provider_unavailable: "Provider is unavailable. Try again",
     openrouter_required_parameters_unavailable:
       "OpenRouter could not route the answer request with its required parameters. Ask an administrator to review the selected model's routing and tool support before retrying",

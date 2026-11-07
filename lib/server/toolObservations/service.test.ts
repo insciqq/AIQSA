@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Prisma, ToolObservation } from "@prisma/client";
+import { Prisma, type ToolObservation } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
@@ -16,8 +16,18 @@ import { createToolObservationService, type ToolObservationRepository } from "./
 import { SEARCH_TOOL_RESULT_VERSION, searchToolResultContent, type SearchExecutionEvidence } from "../search/toolResult";
 import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, searchObservationReceipt } from "./searchReceipt";
 import * as observability from "../observability";
+import { sourceAuthorityFailure } from "./storeFailure";
 
-const producer = { runId: "synthetic-run", userId: "synthetic-owner", toolCallId: "synthetic-call" };
+// A real preview never passes the projection bound (re-escaping at most doubles
+// it), so the test of that step lowers the bound; every other test keeps it.
+const projectionBound = vi.hoisted(() => ({ bytes: undefined as number | undefined }));
+vi.mock("./contract", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./contract")>();
+  return { ...actual, TOOL_OBSERVATION_LIMITS: { ...actual.TOOL_OBSERVATION_LIMITS,
+    get projectionBytes() { return projectionBound.bytes ?? actual.TOOL_OBSERVATION_LIMITS.projectionBytes; } } };
+});
+
+const producer ={ runId: "synthetic-run", userId: "synthetic-owner", toolCallId: "synthetic-call" };
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const clean of cleanups.splice(0)) await clean(); });
 
@@ -399,6 +409,102 @@ describe("observation admission holds storage phases, not business calls", () =>
     await holding;
     expect((await pending).observation.byteSize).toBeGreaterThan(20_000);
     expect(observations.rows.get("queued")).toMatchObject({ state: "READY", storageMode: "OBJECT" });
+  });
+});
+
+describe("unsaved result records", () => {
+  /** The store-failed records the service logs, as it hands them to the logger. */
+  function storeFailures() {
+    const records: Array<Record<string, unknown>> = [];
+    const logged = vi.spyOn(observability, "logEvent").mockImplementation((_event, fields) => {
+      if ((fields as { code?: unknown }).code === "tool_observation_store_failed") records.push(fields as Record<string, unknown>);
+    });
+    cleanups.push(async () => { logged.mockRestore(); });
+    return records;
+  }
+  const stored = (f: ReturnType<typeof fixture>, original: unknown, extra: Readonly<{ maximumBytes?: number;
+    agentKind?: "main" | "foreground_subagent" | "background_subagent" }> = {}) =>
+    f.service().withReservation({ producer, source: "mcp", maximumBytes: 1024 * 1024, ...extra },
+      receipt => receipt.store({ original, outcome: "complete", sourceTruncated: false, maskable: true }));
+  const large = { value: "x".repeat(10_000) };
+
+  it("names a source authority refusal at begin write apart from the run's own authority, with the producing agent", async () => {
+    const records = storeFailures();
+    const f = fixture();
+    f.repository.beginWrite.mockImplementationOnce(async () =>
+      sourceAuthorityFailure(new ObservationStoreError("tool_observation_unavailable")));
+    await expect(stored(f, { text: "small" }, { agentKind: "background_subagent" }))
+      .rejects.toMatchObject({ code: "tool_observation_unavailable" });
+    const run = fixture();
+    run.repository.beginWrite.mockRejectedValueOnce(new ObservationStoreError("tool_observation_unavailable"));
+    await expect(stored(run, { text: "small" })).rejects.toMatchObject({ code: "tool_observation_unavailable" });
+    expect(records).toEqual([
+      expect.objectContaining({ tool_kind: "mcp", stage: "result", outcome: "failed", action: "degrade",
+        step: "source_authority", failure_class: "authority", agent_kind: "background_subagent" }),
+      expect.objectContaining({ step: "begin_write", failure_class: "authority" })
+    ]);
+    // A producer whose kind the caller did not name carries none.
+    expect(records[1]).not.toHaveProperty("agent_kind");
+  });
+
+  it.each([
+    ["an object put", (f: ReturnType<typeof fixture>) => {
+      vi.spyOn(f.storage, "putObjectStream").mockRejectedValue(new Error("private-upload-error"));
+    }, "object_put", "storage"],
+    ["a read-back", (f: ReturnType<typeof fixture>) => {
+      vi.spyOn(f.storage, "getObjectStream").mockRejectedValue(new Error("private-read-error"));
+    }, "read_back", "storage"],
+    ["a read-back past its storage deadline", (f: ReturnType<typeof fixture>) => {
+      vi.spyOn(f.storage, "getObjectStream").mockRejectedValue(new DOMException("private-timeout", "TimeoutError"));
+    }, "read_back", "abort"],
+    ["a finishing write", (f: ReturnType<typeof fixture>) => {
+      f.repository.finishWrite.mockRejectedValue(new Prisma.PrismaClientKnownRequestError("private-database-error",
+        { code: "P2034", clientVersion: "synthetic" }));
+    }, "finish_write", "database"],
+    ["a conflicting finishing write", (f: ReturnType<typeof fixture>) => {
+      f.repository.finishWrite.mockRejectedValue(new ObservationStoreError("tool_observation_conflict"));
+    }, "finish_write", "conflict"]
+  ])("names %s failure by its step and class, never its text", async (_label, inject, step, failureClass) => {
+    const records = storeFailures();
+    const f = fixture();
+    inject(f);
+    await expect(stored(f, large, { agentKind: "foreground_subagent" })).rejects.toBeInstanceOf(ObservationStoreError);
+    expect(records).toEqual([expect.objectContaining({ step, failure_class: failureClass, agent_kind: "foreground_subagent" })]);
+    const { error: _error, ...fields } = records[0]!;
+    expect(JSON.stringify(fields)).not.toContain("private");
+  });
+
+  it("names the projection limit and a measured original over its ceiling as limits", async () => {
+    const records = storeFailures();
+    projectionBound.bytes = 64;
+    const f = fixture();
+    try {
+      await expect(stored(f, { text: "small" })).rejects.toMatchObject({ code: "tool_observation_unavailable" });
+    } finally {
+      projectionBound.bytes = undefined;
+    }
+    expect(f.repository.beginWrite).not.toHaveBeenCalled();
+    await expect(stored(fixture(), { text: "y".repeat(1_000) }, { maximumBytes: 100 })).rejects.toBeInstanceOf(ObservationStoreError);
+    expect(records).toEqual([expect.objectContaining({ step: "projection_limit", failure_class: "limit" }),
+      expect.objectContaining({ step: "measure", failure_class: "limit" })]);
+  });
+
+  it("keeps the store's own failure when the callback swallows it, and names a callback's own failure", async () => {
+    const records = storeFailures();
+    const f = fixture();
+    vi.spyOn(f.storage, "putObjectStream").mockRejectedValue(new Error("private-upload-error"));
+    await expect(f.service().withReservation({ producer, source: "workspace", maximumBytes: 1024 * 1024, agentKind: "main" },
+      async receipt => receipt.store({ original: large, outcome: "complete", sourceTruncated: false, maskable: true })
+        .catch(() => "delivered without a handle"))).rejects.toMatchObject({ code: "tool_observation_unavailable" });
+    const after = fixture();
+    await expect(after.service().withReservation({ producer, source: "mcp", maximumBytes: 1024 * 1024 }, async receipt => {
+      await receipt.store({ original: { text: "small" }, outcome: "complete", sourceTruncated: false, maskable: true });
+      throw new Error("private-callback-error");
+    })).rejects.toMatchObject({ code: "tool_observation_unavailable" });
+    expect(records).toEqual([
+      expect.objectContaining({ tool_kind: "workspace", step: "object_put", failure_class: "storage", agent_kind: "main" }),
+      expect.objectContaining({ tool_kind: "mcp", step: "callback", failure_class: "unknown" })
+    ]);
   });
 });
 
