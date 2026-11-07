@@ -2,9 +2,12 @@ import { SPREADSHEET_MAX_COLUMNS_PER_SHEET, SPREADSHEET_MAX_POPULATED_CELLS, SPR
   SPREADSHEET_MAX_SHEETS } from "./spreadsheetLimits";
 import { uploadAdmissionFormatFor } from "./uploadFormats";
 
-/** Processing outcomes the same file always gets again, so Retry cannot help. */
+/**
+ * Processing outcomes the same file always gets again, so Retry cannot help.
+ * `animated_gif_not_supported` is not one any more: no upload gets it since
+ * 2026-11-07, and Retry makes an older one ready.
+ */
 const finalFailureCodes: ReadonlySet<string> = new Set([
-  "animated_gif_not_supported",
   "parser_output_too_large",
   "parser_rejected"
 ]);
@@ -22,7 +25,8 @@ const count = (value: number) => value.toLocaleString("en-US");
  */
 export function attachmentLimitSentence(code: string | null | undefined, fileName: string): string | null {
   if (code === "animated_gif_not_supported") {
-    return "Animated GIFs can't reach a model as an image: the limit is one frame.";
+    // Only rows from before 2026-11-07 carry it.
+    return "An earlier version could not send animated GIFs as images. Retry processing to send its first frame.";
   }
   if (code !== "parser_output_too_large") return null;
   return uploadAdmissionFormatFor(fileName, "", "attachment")?.parser?.kind === "spreadsheet"

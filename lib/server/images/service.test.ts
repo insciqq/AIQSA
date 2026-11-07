@@ -211,6 +211,28 @@ describe("withConversationPixels", () => {
     expect(system(result)).toContain("[\"h1\",\"h3\"]");
   });
 
+  it("sends an earlier animated GIF as its first frame with its note, and an earlier static GIF as it is", async () => {
+    const frame = (background: string) => sharp({ create: { background, channels: 3, height: 3, width: 4 } }).png().toBuffer();
+    const bodies = { h1: await sharp([await frame("#ff0000"), await frame("#00ff00")], { join: { animated: true } }).gif().toBuffer(),
+      h2: await sharp(await frame("#0000ff")).gif().toBuffer() };
+    const stored = (id: keyof typeof bodies) => row(id, { byteSize: bodies[id].length,
+      checksum: createHash("sha256").update(bodies[id]).digest("hex"), fileName: `${id}.gif`, mimeType: "image/gif" });
+    const workspace = { enabled: true, inboxIndexPath: "/workspace/inbox/index.json" } as unknown as NonNullable<ProviderRunRequest["workspace"]>;
+    for (const withWorkspace of [false, true]) {
+      const { service } = harness([stored("h1"), stored("h2")], bodies);
+      const result = await service.withConversationPixels(request([], history(2), withWorkspace ? { workspace } : {}), USER);
+      const [animated, still] = result.attachments;
+      expect(animated).toMatchObject({ id: "h1", mimeType: "image/png", imageProvenance: { role: "earlier_message", messageId: "m1" } });
+      const png = Buffer.from(animated!.base64Data!, "base64");
+      expect(animated!.byteSize).toBe(png.length);
+      expect((await decodedPixels(png)).pixels[0]!.slice(0, 3)).toEqual([255, 0, 0]);
+      expect(animated!.imageNote).toContain("first frame of an animated GIF with 2 frames");
+      expect(animated!.imageNote?.includes("/workspace/inbox/index.json")).toBe(withWorkspace);
+      expect(still).toMatchObject({ id: "h2", mimeType: "image/gif", base64Data: bodies.h2.toString("base64") });
+      expect(still).not.toHaveProperty("imageNote");
+    }
+  });
+
   it("keeps the access and checksum fences", async () => {
     const earlier = history(2);
     const foreign = harness([row("h1"), row("h2", { userId: "other-user" })]);
@@ -558,6 +580,18 @@ describe("reading a requested earlier chat image", () => {
       expect(preview).toMatchObject({ width: 2, height: 2, mimeType: "image/png" });
       expect(await sharp(preview!.bytes).metadata()).toMatchObject({ format: "png" });
     }
+  });
+
+  it("previews an animated GIF as its first frame and names its frames", async () => {
+    const frame = (background: string) => sharp({ create: { background, channels: 3, height: 2, width: 2 } }).png().toBuffer();
+    const body = await sharp([await frame("#ff0000"), await frame("#00ff00"), await frame("#0000ff")], { join: { animated: true } }).gif().toBuffer();
+    const findFirst = vi.fn(async () => row("old", { mimeType: "image/gif", byteSize: body.length,
+      checksum: createHash("sha256").update(body).digest("hex") }));
+    const service = createPrismaImageGenerationService({ attachment: { findFirst } } as unknown as PrismaClient,
+      { getObject: async () => ({ body, contentType: "image/gif" }) } as unknown as StorageAdapter);
+    const preview = await service.readConversationImage(scope);
+    expect(preview).toMatchObject({ frames: 3, height: 2, mimeType: "image/png", width: 2 });
+    expect((await decodedPixels(preview!.bytes)).pixels[0]!.slice(0, 3)).toEqual([255, 0, 0]);
   });
 
   it("refuses an image its decoder fails on as unsupported, not as a bare decoder error", async () => {

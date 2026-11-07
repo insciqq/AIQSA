@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DocumentParserError } from "../parsing";
 import { finalizeParsedDocument } from "../parsing/assessment";
@@ -281,6 +282,23 @@ describe("attachment processor", () => {
 
     await expect(process(record(bytes, { byteSize: bytes.byteLength + 1 })))
       .rejects.toMatchObject({ code: "attachment_object_size_mismatch", retryable: false });
+    expect(parser.parse).not.toHaveBeenCalled();
+  });
+
+  it("settles an animated GIF as a ready image with its frame count, and a static GIF as before", async () => {
+    const frame = (background: string) => sharp({ create: { background, channels: 3, height: 30, width: 40 } }).png().toBuffer();
+    const animated = await sharp([await frame("#ff0000"), await frame("#00ff00"), await frame("#0000ff")],
+      { join: { animated: true } }).gif({ delay: 100 }).toBuffer();
+    const still = await sharp(await frame("#ff0000")).gif().toBuffer();
+    const parser = { parse: vi.fn() };
+
+    await expect(createAttachmentProcessor({ parser, storage: storage(animated) })(record(animated, {
+      fileName: "banner.gif", kind: "image", mimeType: "image/gif"
+    }))).resolves.toEqual({ extractedText: null,
+      metadata: { image: { animated: true, format: "gif", frames: 3, height: 30, width: 40 } } });
+    await expect(createAttachmentProcessor({ parser, storage: storage(still) })(record(still, {
+      fileName: "still.gif", kind: "image", mimeType: "image/gif"
+    }))).resolves.toEqual({ extractedText: null, metadata: { image: { animated: false, format: "gif", height: 30, width: 40 } } });
     expect(parser.parse).not.toHaveBeenCalled();
   });
 });

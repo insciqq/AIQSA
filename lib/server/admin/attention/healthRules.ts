@@ -54,6 +54,8 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
  * model's context, an unsupported or oversized attachment, the model's own
  * refusal of the request, an exhausted usage budget). Nothing in AIQSA failed,
  * so they are neither failed runs to investigate nor new errors.
+ * `animated_gif_not_supported` stays for records from before 2026-11-07,
+ * when animated GIF uploads became ready; nothing produces it any more.
  */
 export const RUN_FAILURE_USER_INPUT_CODES: ReadonlySet<string> = new Set([
   "animated_gif_not_supported",
