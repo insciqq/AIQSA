@@ -44,13 +44,13 @@ async function fixture() {
     await prisma.user.deleteMany({ where: { id: user.id } });
   });
 
-  const mainRun = async () => {
+  const mainRun = async (status: "complete" | "in_progress" = "in_progress") => {
     const question = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete",
       content: textMessageContent("Read the synthetic card") } });
     const answer = await prisma.message.create({ data: { chatId: chat.id, role: "assistant", status: "streaming",
       parentMessageId: question.id, content: textMessageContent("") } });
     const run = await prisma.modelRun.create({ data: { chatId: chat.id, userId: user.id, userMessageId: question.id,
-      assistantMessageId: answer.id, engine: "native", provider: "fake", modelId: "fake-qsa", normalizedRequest: {}, status: "in_progress" } });
+      assistantMessageId: answer.id, engine: "native", provider: "fake", modelId: "fake-qsa", normalizedRequest: {}, status } });
     const binding = await prisma.mcpRunBinding.create({ data: { modelRunId: run.id, runtimeGenerationId: generation.id,
       runtimeGenerationFingerprint: fingerprint } });
     return { id: run.id, userMessageId: question.id, bindingId: binding.id };
@@ -111,8 +111,9 @@ describe("MCP observation source authority", () => {
 
   it("refuses a binding held by any other run of the chat", async () => {
     const f = await fixture();
+    // One active main-agent run per chat: the other run of the chat has already ended.
+    const other = await f.mainRun("complete");
     const main = await f.mainRun();
-    const other = await f.mainRun();
     const child = await f.background(main.id, main.id, main.userMessageId);
     expect(await f.saveAndRead(child.id, other.bindingId)).toEqual({ unsavedReason: "tool_observation_unavailable" });
     expect(await f.saveAndRead(main.id, other.bindingId)).toEqual({ unsavedReason: "tool_observation_unavailable" });
