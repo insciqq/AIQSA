@@ -70,6 +70,13 @@ const (
 	MaxExitCode                = 4_294_967_295
 )
 
+// read_bytes limits: a chunk (as base64 in its reply it stays well within
+// MaxReplyBytes and is never shrunk to fit) and the largest file it reads.
+const (
+	MaxBytesChunk    = 262_144
+	MaxTransferBytes = 67_108_864
+)
+
 // ReasonCode is a stable refusal or failure code.
 type ReasonCode string
 
@@ -173,6 +180,7 @@ const (
 	OpJobOutput  Op = "job_output"
 	OpJobStop    Op = "job_stop"
 	OpRead       Op = "read"
+	OpReadBytes  Op = "read_bytes"
 	OpWrite      Op = "write"
 	OpEdit       Op = "edit"
 	OpGlob       Op = "glob"
@@ -182,7 +190,7 @@ const (
 	OpRecentDirs Op = "recent_dirs"
 )
 
-var Ops = []Op{OpShell, OpJobOutput, OpJobStop, OpRead, OpWrite, OpEdit, OpGlob, OpGrep, OpStat, OpListDirs, OpRecentDirs}
+var Ops = []Op{OpShell, OpJobOutput, OpJobStop, OpRead, OpReadBytes, OpWrite, OpEdit, OpGlob, OpGrep, OpStat, OpListDirs, OpRecentDirs}
 
 // ShellKind is the shell `shell` runs: Windows PowerShell 5.1, PowerShell 7+ or the user's POSIX login shell.
 type ShellKind string
@@ -265,6 +273,9 @@ const (
 	JobIDPattern      = `^job-[a-z0-9]{6,16}$`
 	// EncodingPattern is a text encoding's lowercase name, for example utf-8, utf-16le or windows-1251.
 	EncodingPattern = `^[a-z0-9][a-z0-9-]{0,31}$`
+	// Base64Pattern is standard base64 with padding, together with a length
+	// that is a multiple of four: read_bytes' data.
+	Base64Pattern = `^[A-Za-z0-9+/]*={0,2}$`
 )
 
 var (
@@ -280,6 +291,7 @@ var (
 	DevicePathRegexp       = regexp.MustCompile(DevicePathPattern)
 	JobIDRegexp            = regexp.MustCompile(JobIDPattern)
 	EncodingRegexp         = regexp.MustCompile(EncodingPattern)
+	Base64Regexp           = regexp.MustCompile(Base64Pattern)
 )
 
 // Device-facing paths.

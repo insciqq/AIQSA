@@ -231,6 +231,32 @@ func (m *ReadArgs) Validate() error {
 	)
 }
 
+// ReadBytesArgs reads bytes Offset..Offset+Length of a regular file of at
+// most MaxTransferBytes; Path and Cwd as in ReadArgs. An offset at or past
+// the end answers an empty chunk with EOF.
+type ReadBytesArgs struct {
+	Path   string `json:"path"`
+	Cwd    string `json:"cwd"`
+	Offset int64  `json:"offset"`
+	Length int    `json:"length"`
+}
+
+func (m *ReadBytesArgs) ArgsOp() Op { return OpReadBytes }
+
+func (m *ReadBytesArgs) UnmarshalJSON(data []byte) error {
+	type plain ReadBytesArgs
+	return strictUnmarshal(data, (*plain)(m))
+}
+
+func (m *ReadBytesArgs) Validate() error {
+	return firstError(
+		checkArgPath("path", m.Path),
+		checkArgPath("cwd", m.Cwd),
+		checkInt64("offset", m.Offset, 0, MaxTransferBytes),
+		checkRange("length", m.Length, 1, MaxBytesChunk),
+	)
+}
+
 // WriteArgs creates or replaces a file.
 type WriteArgs struct {
 	Path    string `json:"path"`
@@ -399,6 +425,8 @@ func NewOpArgs(op Op) (OpArgs, bool) {
 		return &JobStopArgs{}, true
 	case OpRead:
 		return &ReadArgs{}, true
+	case OpReadBytes:
+		return &ReadBytesArgs{}, true
 	case OpWrite:
 		return &WriteArgs{}, true
 	case OpEdit:
@@ -678,6 +706,34 @@ func (m *ReadResult) Validate() error {
 	)
 }
 
+// MaxBytesChunkBase64 is the base64 length of a full MaxBytesChunk.
+const MaxBytesChunkBase64 = (MaxBytesChunk + 2) / 3 * 4
+
+// ReadBytesResult is one chunk of a file's bytes as standard base64, with
+// the whole file's size and modification time (ms since the epoch) as the
+// device read them; EOF when the chunk ends where the file does.
+type ReadBytesResult struct {
+	Data       string `json:"data"`
+	Size       int64  `json:"size"`
+	ModifiedMs int64  `json:"modifiedMs"`
+	EOF        bool   `json:"eof"`
+}
+
+func (m *ReadBytesResult) UnmarshalJSON(data []byte) error {
+	type plain ReadBytesResult
+	return strictUnmarshal(data, (*plain)(m))
+}
+
+func (m *ReadBytesResult) Validate() error {
+	if len(m.Data) > MaxBytesChunkBase64 || len(m.Data)%4 != 0 || !Base64Regexp.MatchString(m.Data) {
+		return errors.New("data: invalid base64")
+	}
+	return firstError(
+		checkInt64("size", m.Size, 0, MaxTransferBytes),
+		checkInt64("modifiedMs", m.ModifiedMs, -int64(MaxSeq), int64(MaxSeq)),
+	)
+}
+
 // WriteResult reports the bytes written and whether the file is new.
 type WriteResult struct {
 	Bytes   int64 `json:"bytes"`
@@ -909,6 +965,8 @@ func newOpResults(op Op) []Validator {
 		return []Validator{&JobStopResult{}}
 	case OpRead:
 		return []Validator{&ReadResult{}}
+	case OpReadBytes:
+		return []Validator{&ReadBytesResult{}}
 	case OpWrite:
 		return []Validator{&WriteResult{}}
 	case OpEdit:

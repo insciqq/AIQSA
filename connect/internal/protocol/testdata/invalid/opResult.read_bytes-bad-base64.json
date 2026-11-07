@@ -1,0 +1,9 @@
+{
+  "op": "read_bytes",
+  "result": {
+    "data": "JVBE-i0x",
+    "size": 6,
+    "modifiedMs": 1762500000123,
+    "eof": true
+  }
+}
