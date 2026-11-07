@@ -34,6 +34,9 @@ type Tray struct {
 	// Choose receives the menu's commands on the tray's thread; it must
 	// not block (Controller.Choose).
 	Choose func(MenuID)
+	// AppItems gives the installed program's menu lines when the menu
+	// opens (Controller.AppItems); nil shows none.
+	AppItems func() AppItems
 
 	hwnd           atomic.Uintptr
 	taskbarCreated uint32
@@ -41,6 +44,7 @@ type Tray struct {
 	added          bool
 
 	mu      sync.Mutex
+	state   state.State
 	view    View
 	notice  string
 	exiting bool
@@ -54,7 +58,7 @@ var wndProcCallback = sync.OnceValue(func() uintptr { return windows.NewCallback
 // Show updates the icon, tooltip and menu.
 func (t *Tray) Show(s state.State) {
 	t.mu.Lock()
-	t.view = ViewOf(s)
+	t.state, t.view = s, ViewOf(s, AppItems{})
 	t.mu.Unlock()
 	postMessage(t.hwnd.Load(), wmTrayUpdate, 0, 0)
 }
@@ -69,6 +73,8 @@ func (t *Tray) Notify(text string) {
 }
 
 func (t *Tray) Confirm(title, text string) bool { return WindowsDialogs{}.Confirm(title, text) }
+
+func (t *Tray) Warn(title, text string) { WindowsDialogs{}.Warn(title, text) }
 
 func (t *Tray) OpenURL(link string) error { return openURL(link) }
 
@@ -116,7 +122,8 @@ func (t *Tray) Run(ready func() bool, start func()) error {
 	}
 	t.mu.Lock()
 	if t.view.Status == "" {
-		t.view = ViewOf(state.State{Kind: state.Stopped})
+		t.state = state.State{Kind: state.Stopped}
+		t.view = ViewOf(t.state, AppItems{})
 	}
 	t.mu.Unlock()
 	// At sign-in the taskbar may not exist yet; TaskbarCreated adds the icon then.
@@ -250,9 +257,16 @@ func (t *Tray) showNotice() {
 
 // showMenu shows the menu at the pointer and hands the chosen command to
 // Choose. The window must be in the foreground for the menu to close when
-// the user clicks elsewhere.
+// the user clicks elsewhere. The installed program's lines are read now,
+// so the check mark follows the registry.
 func (t *Tray) showMenu(hwnd uintptr) {
-	_, view := t.iconData()
+	var app AppItems
+	if t.AppItems != nil {
+		app = t.AppItems()
+	}
+	t.mu.Lock()
+	view := ViewOf(t.state, app)
+	t.mu.Unlock()
 	menu, _, _ := procCreatePopupMenu.Call()
 	if menu == 0 {
 		return
@@ -266,6 +280,9 @@ func (t *Tray) showMenu(hwnd uintptr) {
 		flags := uintptr(mfString)
 		if !item.Enabled {
 			flags |= mfGrayed
+		}
+		if item.Checked {
+			flags |= mfChecked
 		}
 		label := strings.ReplaceAll(item.Label, "&", "&&")
 		procAppendMenuW.Call(menu, flags, uintptr(item.ID), uintptr(unsafe.Pointer(utf16Ptr(label))))
