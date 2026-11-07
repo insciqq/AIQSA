@@ -365,6 +365,8 @@ func (e *Executor) execute(ctx context.Context, op *protocol.OpCommand, limits p
 		return e.jobStop(args)
 	case *protocol.ReadArgs:
 		return e.read(args)
+	case *protocol.ReadBytesArgs:
+		return e.readBytes(args)
 	case *protocol.WriteArgs:
 		if len(args.Content) > limits.MaxWriteBytes {
 			return nil, protocol.CodeComputerFileTooLarge
@@ -485,6 +487,9 @@ func shrink(result protocol.Validator) bool {
 			return false
 		}
 		r.Dirs, r.Truncated = r.Dirs[:len(r.Dirs)/2], true
+	case *protocol.ReadBytesResult:
+		// Cut base64 is a corrupt chunk: a reply that does not fit fails.
+		return false
 	default:
 		return false
 	}

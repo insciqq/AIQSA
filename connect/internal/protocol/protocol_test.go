@@ -231,6 +231,8 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 			"maxReadLineLength":             MaxReadLineLength,
 			"maxLineBytes":                  MaxLineBytes,
 			"maxReadBytes":                  MaxReadBytes,
+			"maxBytesChunk":                 MaxBytesChunk,
+			"maxTransferBytes":              MaxTransferBytes,
 			"maxLineNumber":                 MaxLineNumber,
 			"maxGlobPaths":                  MaxGlobPaths,
 			"maxGrepMatches":                MaxGrepMatches,
@@ -273,6 +275,7 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 			"devicePath":       DevicePathPattern,
 			"jobId":            JobIDPattern,
 			"encoding":         EncodingPattern,
+			"base64":           Base64Pattern,
 		},
 		"headers": map[string]string{
 			"clientVersion": ClientVersionHeader,

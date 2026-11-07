@@ -1359,6 +1359,7 @@
   "computer_permission_denied",
   "computer_file_binary",
   "computer_file_too_large",
+  "computer_file_changed",
   "computer_edit_no_match",
   "computer_edit_ambiguous",
   "computer_job_not_found",

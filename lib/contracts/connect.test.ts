@@ -4,6 +4,7 @@ import contract from "../../connect/internal/protocol/testdata/contract.json";
 import { connectComputerEventsStreamEventSchema, connectComputerListResponseSchema } from "./computer";
 import {
   CONNECT_ARCH_VALUES,
+  CONNECT_BASE64_PATTERN,
   CONNECT_CLIENT_CHECKSUMS_PATH,
   CONNECT_CLIENT_MANIFEST_PATH,
   CONNECT_CLIENT_VERSION_HEADER,
@@ -32,6 +33,7 @@ import {
   CONNECT_LEGACY_PROTOCOL_VERSION,
   CONNECT_LINE_ENDINGS,
   CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
+  CONNECT_MAX_BYTES_CHUNK,
   CONNECT_MAX_CLIENT_BINARY_BYTES,
   CONNECT_MAX_CLIENT_TARGETS,
   CONNECT_MAX_COMMAND_BYTES,
@@ -66,6 +68,7 @@ import {
   CONNECT_MAX_SHELL_TIMEOUT_SECONDS,
   CONNECT_MAX_SHELL_VERSION_LENGTH,
   CONNECT_MAX_STREAM_OUTPUT_BYTES,
+  CONNECT_MAX_TRANSFER_BYTES,
   CONNECT_MAX_URL_LENGTH,
   CONNECT_MAX_WRITE_BYTES,
   CONNECT_MIN_EXIT_CODE,
@@ -250,6 +253,8 @@ describe("connect contract constants", () => {
         maxReadLineLength: CONNECT_MAX_READ_LINE_LENGTH,
         maxLineBytes: CONNECT_MAX_LINE_BYTES,
         maxReadBytes: CONNECT_MAX_READ_BYTES,
+        maxBytesChunk: CONNECT_MAX_BYTES_CHUNK,
+        maxTransferBytes: CONNECT_MAX_TRANSFER_BYTES,
         maxLineNumber: CONNECT_MAX_LINE_NUMBER,
         maxGlobPaths: CONNECT_MAX_GLOB_PATHS,
         maxGrepMatches: CONNECT_MAX_GREP_MATCHES,
@@ -291,7 +296,8 @@ describe("connect contract constants", () => {
         urlPrefix: CONNECT_URL_PREFIX_PATTERN.source,
         devicePath: CONNECT_DEVICE_PATH_PATTERN.source,
         jobId: CONNECT_JOB_ID_PATTERN.source,
-        encoding: CONNECT_ENCODING_PATTERN.source
+        encoding: CONNECT_ENCODING_PATTERN.source,
+        base64: CONNECT_BASE64_PATTERN.source
       },
       headers: {
         clientVersion: CONNECT_CLIENT_VERSION_HEADER,
@@ -370,6 +376,19 @@ describe("connect protocol 2", () => {
     expect(parseConnectOpResult("write", { replacements: 2 })).toBeNull();
     expect(parseConnectOpResult("shell", { jobId: "job-k3x9q2ab" })).toEqual({ jobId: "job-k3x9q2ab" });
     expect(parseConnectOpResult("stat", { exists: false })).toEqual({ exists: false });
+  });
+
+  it("carries a full read_bytes chunk within one reply and refuses broken base64", () => {
+    const bytes = Buffer.alloc(CONNECT_MAX_BYTES_CHUNK, 0xff);
+    const result = { data: bytes.toString("base64"), size: CONNECT_MAX_TRANSFER_BYTES, modifiedMs: Number.MAX_SAFE_INTEGER, eof: false };
+    const reply = { type: "reply", requestId: REQUEST_ID, ok: true, result };
+    expect(connectDeviceEventV2Schema.parse(reply)).toEqual(reply);
+    expect(connectUtf8ByteLength(JSON.stringify(reply))).toBeLessThanOrEqual(CONNECT_MAX_REPLY_BYTES);
+    expect(parseConnectOpResult("read_bytes", result)).toEqual(result);
+    expect(parseConnectOpResult("read_bytes", { ...result, data: `${result.data}AAAA` })).toBeNull();
+    expect(parseConnectOpResult("read_bytes", { ...result, data: "AAA" })).toBeNull();
+    expect(parseConnectOpResult("read_bytes", { ...result, data: "AA=A" })).toBeNull();
+    expect(parseConnectOpResult("read", result)).toBeNull();
   });
 
   it("bounds write content and command output in UTF-8 bytes", () => {
