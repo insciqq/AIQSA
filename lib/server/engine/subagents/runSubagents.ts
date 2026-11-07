@@ -287,7 +287,8 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     requestShape: subagentRequestShape,
     route,
     runContextItems: input.runContextItems,
-    saveResult: input.saveResult,
+    // A background turn replaces it with its own run's (`backgroundSubagentRunner`).
+    saveResult: (save) => input.saveResult({ ...save, agentKind: "foreground_subagent" }),
     ...(input.secrets ? { secrets: input.secrets } : {}),
     setTurnState: (turn) => store.setActiveState({ ...scopeOf, ...turn }),
     settleTurn: ({ result, turnId }) => store.settle({ chatId: input.chatId, result, turnId, userId: input.scope.userId }),

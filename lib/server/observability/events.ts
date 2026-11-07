@@ -39,6 +39,13 @@ export type ToolKind = "search" | "mcp" | "workspace" | "vision";
  * their own executor records keep the narrower `ToolKind`. */
 export type ToolCallKind = ToolKind | "fetch_url" | "artifact" | "image_generation" | "skill" | "scheduled_task" |
   "session_status" | "workspace_image" | "memory" | "monitoring" | "computer" | "other";
+/** Where saving a tool result failed (`tool_observation_store_failed`, `lib/server/toolObservations/storeFailure.ts`): the
+ * store's step, the failure's closed class from the error's type or code (never its text), and the kind of agent whose call
+ * produced the result. */
+export type ToolObservationStoreStep = "outcome_record" | "measure" | "preview" | "projection_limit" | "admission" | "begin_write" |
+  "source_authority" | "object_put" | "read_back" | "finish_write" | "unretained_close" | "search_receipt" | "callback";
+export type ToolObservationFailureClass = "database" | "storage" | "limit" | "abort" | "authority" | "conflict" | "invalid" | "unknown";
+export type ToolObservationAgentKind = "main" | "foreground_subagent" | "background_subagent";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
   engine_index?: number; operation_index?: number;
@@ -164,6 +171,8 @@ export type EventFields = {
     max_bytes?: number;
     /** An MCP result over its byte limit, delivered cut to it: JSON snapshot sizes only. */
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
+    /** A result that could not be saved: the failing step, its class and the producing agent's kind. */
+    step?: ToolObservationStoreStep; failure_class?: ToolObservationFailureClass; agent_kind?: ToolObservationAgentKind;
   }>;
   /** Page-reader proxy attempts: never a user-authored name, endpoint, credentials or page content. */
   fetch_proxy: Readonly<{ outcome: "started" | "read" | "failed"; code?: string }>;

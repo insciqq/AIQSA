@@ -635,7 +635,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...(rendersToolResultImages(snapshot.model.adapterKind) ? { resultImages: true as const } : {}) });
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
         const toolState: ToolBatchState = { calls: 0 };
-        const saveResult: ToolBatchDeps["saveResult"] = async (save) => saveToolResultText({ outcome: save.outcome,
+        // The main agent's own batches name no kind; the foreground sub-agents' host names itself (`subagents/runSubagents.ts`).
+        const saveResult: ToolBatchDeps["saveResult"] = async (save) => saveToolResultText({ agentKind: save.agentKind ?? "main",
+          outcome: save.outcome,
           producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
           signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
           text: save.text });
@@ -656,7 +658,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           recordDetachedCompaction: (backgroundRunId, { item, sequence, thread }) =>
             engine.runs.recordDetachedCompaction(backgroundScope(backgroundRunId), { item, sequence, status: null, thread }),
           ...(computerRunEnded ? { runEnded: computerRunEnded } : {}),
-          saveResult: (backgroundRunId) => async (save) => saveToolResultText({ outcome: save.outcome,
+          saveResult: (backgroundRunId) => async (save) => saveToolResultText({ agentKind: "background_subagent", outcome: save.outcome,
             producer: { runId: backgroundRunId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
             signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
             text: save.text }),

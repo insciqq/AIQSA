@@ -11,6 +11,8 @@ import { decodeToolObservationDescriptor, decodeToolObservationReadInput, isTool
 import type { ObservationActor, ObservationProducer, createToolObservationRepository } from "./repository";
 import { readObservationOriginal, readSearchOriginal } from "./searchOriginal";
 import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
+import { observationStoreFailureClass, observationStoreFailureStep, type ToolObservationAgentKind,
+  type ToolObservationStoreStep } from "./storeFailure";
 import type { ToolExecutionResult } from "../tools/types";
 
 export type ToolObservationRepository = ReturnType<typeof createToolObservationRepository>;
@@ -48,19 +50,32 @@ const STREAMED_READ_BYTES = 128 * 1024;
 const OBSERVED_CODES = Object.freeze({ busy: "tool_observation_busy", budget_degraded: "tool_observation_budget_degraded",
   waited: "tool_observation_waiting", store_failed: "tool_observation_store_failed" });
 
+/** Where a store failed: its step, the failure itself (classified by type and
+ * code, never serialized) and the producing agent's kind when the caller knows it. */
+type StoreFailure = Readonly<{ step: ToolObservationStoreStep; error: unknown; agentKind?: ToolObservationAgentKind }>;
+
+const observed = (source: string): source is "mcp" | "workspace" | "search" =>
+  source === "mcp" || source === "workspace" || source === "search";
+
 /** Content-free store/budget/queue counters. Skills are source-owned and never
  * reach object storage or the branch budget. */
-function observe(source: string, event: keyof typeof OBSERVED_CODES): void {
-  if (source !== "mcp" && source !== "workspace" && source !== "search") return;
+function observe(source: string, event: Exclude<keyof typeof OBSERVED_CODES, "store_failed">): void {
+  if (!observed(source)) return;
   const code = OBSERVED_CODES[event];
-  if (event === "store_failed") {
-    logEvent("tool_execution", { tool_kind: source, stage: "result", outcome: "failed", code, reason: "unknown", action: "degrade" });
-    return;
-  }
   logEvent("tool_execution", { tool_kind: source, stage: "admission", code,
     outcome: event === "busy" ? "failed" : "degraded",
     reason: event === "budget_degraded" ? "policy" : "safety_limit",
     action: event === "busy" ? "retry" : event === "waited" ? "wait" : "degrade" });
+}
+
+/** A result that could not be saved, with its step, class and producing agent:
+ * bounded values the hourly counters keep, and the error's own projection. */
+function observeStoreFailure(source: string, failure: StoreFailure): void {
+  if (!observed(source)) return;
+  const step = observationStoreFailureStep(failure.error, failure.step);
+  logEvent("tool_execution", { tool_kind: source, stage: "result", outcome: "failed", code: OBSERVED_CODES.store_failed,
+    reason: "unknown", action: "degrade", step, failure_class: observationStoreFailureClass(failure.error, step),
+    ...(failure.agentKind ? { agent_kind: failure.agentKind } : {}), error: failure.error });
 }
 
 /** What a read's tool batch may still receive; `take` draws the chosen response. */
@@ -168,6 +183,8 @@ export function createToolObservationService(input: Readonly<{
       maximumBytes: number;
       sourceOwned?: boolean;
       signal?: AbortSignal;
+      /** The kind of agent whose call produced the result, for the failure record only. */
+      agentKind?: ToolObservationAgentKind;
     }>, work: (receipt: Readonly<{
       /** False when the run or branch budget could not admit an original:
        * use `recordUnretained` instead of `store`, and deliver the executed
@@ -207,59 +224,86 @@ export function createToolObservationService(input: Readonly<{
       let attempted = false;
       let receiptFailed = false;
       let token: string | undefined;
+      // The step under way, and the first failure of a step: a callback may
+      // swallow it, and the record still names what actually failed.
+      let step: ToolObservationStoreStep = "outcome_record";
+      let failure: StoreFailure | undefined;
+      const agent = options.agentKind ? { agentKind: options.agentKind } : {};
+      const record = (error: unknown, at: ToolObservationStoreStep = step): StoreFailure =>
+        failure ??= { step: at, error, ...agent };
       const store = async (value: Readonly<{ original: unknown; outcome: "complete" | "error";
         sourceTruncated: boolean; maskable: boolean }>): Promise<ToolObservationProjection> => {
         if (attempted || !publishable || !retained) throw new ObservationStoreError("tool_observation_conflict");
         attempted = true;
-        // Preserve known execution independently of storage or Stop.
-        await repository.recordOutcome(producer, value.outcome);
-        signal?.throwIfAborted();
-        const identity = measureObservationJson(value.original, options.maximumBytes,
-          Math.min(options.maximumBytes, TOOL_OBSERVATION_LIMITS.inlineBytes));
-        const storageMode = options.sourceOwned ? "SOURCE" : identity.inline !== null ? "INLINE" : "OBJECT";
-        const publish = async (): Promise<ToolObservationProjection> => {
-          const reference = descriptor({ ...reservation.observation, ...identity,
-            sourceTruncated: value.sourceTruncated, maskable: value.maskable });
-          const preview = await readObservationBytes({ body: observationJsonStream(value.original, options.maximumBytes),
-            identity, selector: { offset: 0, maxBytes: TOOL_OBSERVATION_LIMITS.previewBytes }, signal });
-          const projection: ToolObservationProjection = { observation: reference, fragmentKind: "serialized_json_text",
-            preview: preview.fragment, incomplete: !preview.completeDocument, reader: "read_tool_result" };
-          // This is the only copy retained in a checkpoint, never the full
-          // externalized original. Source-owned instructions remain pinned.
-          if (Buffer.byteLength(JSON.stringify(projection)) > TOOL_OBSERVATION_LIMITS.projectionBytes) throw unavailable();
-          if (storageMode === "OBJECT") requireStreaming(storage);
-          const row = await repository.beginWrite(producer, { byteSize: identity.byteSize, checksum: identity.checksum,
-            inlineText: storageMode === "INLINE" ? identity.inline : null, projection,
-            sourceTruncated: value.sourceTruncated, maskable: value.maskable, storageMode });
-          if (storageMode === "OBJECT") {
-            if (!row.storageKey || !row.leaseToken) throw unavailable();
-            token = row.leaseToken;
-            const storageSignal = boundedSignal(signal);
-            await storage.putObjectStream!({ storageKey: row.storageKey, contentType: "application/json",
-              byteSize: identity.byteSize, checksum: identity.checksum,
-              body: observationJsonStream(value.original, options.maximumBytes), signal: storageSignal });
-            const written = await getStoredObjectStream(storage, row.storageKey,
-              { requireStreaming: true, maxBytes: identity.byteSize, signal: storageSignal });
-            await readObservationBytes({ body: written.body, identity, selector: { offset: 0, maxBytes: 4 }, signal: storageSignal });
-            storageSignal.throwIfAborted();
-            await repository.finishWrite(producer, token);
-          }
-          stored = true;
-          return projection;
-        };
-        // The executed result waits for capacity rather than being discarded.
-        // Admission precedes beginWrite, so waiting never consumes its lease.
-        return storageMode === "OBJECT"
-          ? admit(identity.byteSize, publish, { ...(signal ? { signal } : {}), whenBusy: "wait",
-            onWait: () => observe(options.source, "waited") })
-          : publish();
+        try {
+          // Preserve known execution independently of storage or Stop.
+          step = "outcome_record";
+          await repository.recordOutcome(producer, value.outcome);
+          signal?.throwIfAborted();
+          step = "measure";
+          const identity = measureObservationJson(value.original, options.maximumBytes,
+            Math.min(options.maximumBytes, TOOL_OBSERVATION_LIMITS.inlineBytes));
+          const storageMode = options.sourceOwned ? "SOURCE" : identity.inline !== null ? "INLINE" : "OBJECT";
+          const publish = async (): Promise<ToolObservationProjection> => {
+            step = "preview";
+            const reference = descriptor({ ...reservation.observation, ...identity,
+              sourceTruncated: value.sourceTruncated, maskable: value.maskable });
+            const preview = await readObservationBytes({ body: observationJsonStream(value.original, options.maximumBytes),
+              identity, selector: { offset: 0, maxBytes: TOOL_OBSERVATION_LIMITS.previewBytes }, signal });
+            const projection: ToolObservationProjection = { observation: reference, fragmentKind: "serialized_json_text",
+              preview: preview.fragment, incomplete: !preview.completeDocument, reader: "read_tool_result" };
+            // This is the only copy retained in a checkpoint, never the full
+            // externalized original. Source-owned instructions remain pinned.
+            step = "projection_limit";
+            if (Buffer.byteLength(JSON.stringify(projection)) > TOOL_OBSERVATION_LIMITS.projectionBytes) throw unavailable();
+            step = "begin_write";
+            if (storageMode === "OBJECT") requireStreaming(storage);
+            const row = await repository.beginWrite(producer, { byteSize: identity.byteSize, checksum: identity.checksum,
+              inlineText: storageMode === "INLINE" ? identity.inline : null, projection,
+              sourceTruncated: value.sourceTruncated, maskable: value.maskable, storageMode });
+            if (storageMode === "OBJECT") {
+              if (!row.storageKey || !row.leaseToken) throw unavailable();
+              token = row.leaseToken;
+              const storageSignal = boundedSignal(signal);
+              step = "object_put";
+              await storage.putObjectStream!({ storageKey: row.storageKey, contentType: "application/json",
+                byteSize: identity.byteSize, checksum: identity.checksum,
+                body: observationJsonStream(value.original, options.maximumBytes), signal: storageSignal });
+              step = "read_back";
+              const written = await getStoredObjectStream(storage, row.storageKey,
+                { requireStreaming: true, maxBytes: identity.byteSize, signal: storageSignal });
+              await readObservationBytes({ body: written.body, identity, selector: { offset: 0, maxBytes: 4 }, signal: storageSignal });
+              storageSignal.throwIfAborted();
+              step = "finish_write";
+              await repository.finishWrite(producer, token);
+            }
+            stored = true;
+            return projection;
+          };
+          // The executed result waits for capacity rather than being discarded.
+          // Admission precedes beginWrite, so waiting never consumes its lease.
+          if (storageMode !== "OBJECT") return await publish();
+          step = "admission";
+          return await admit(identity.byteSize, publish, { ...(signal ? { signal } : {}), whenBusy: "wait",
+            onWait: () => observe(options.source, "waited") });
+        } catch (error) {
+          record(error);
+          throw error;
+        }
       };
       const recordUnretained = async (outcome: "complete" | "error"): Promise<void> => {
         if (attempted || !publishable || retained) throw new ObservationStoreError("tool_observation_conflict");
         attempted = true;
-        await repository.recordOutcome(producer, outcome);
-        signal?.throwIfAborted();
-        await repository.unavailable(producer, OBSERVED_CODES.budget_degraded);
+        try {
+          step = "outcome_record";
+          await repository.recordOutcome(producer, outcome);
+          signal?.throwIfAborted();
+          step = "unretained_close";
+          await repository.unavailable(producer, OBSERVED_CODES.budget_degraded);
+        } catch (error) {
+          record(error);
+          throw error;
+        }
         stored = true;
       };
       try {
@@ -268,10 +312,11 @@ export function createToolObservationService(input: Readonly<{
           try {
             await repository.recordSearchReceipt(producer, searchObservationReceipt(result));
             await repository.recordOutcome(producer, result.status);
-          } catch {
+          } catch (error) {
             // The Search has executed: never report this as a failure that
             // prevented dispatch or invites a repeat.
             receiptFailed = true;
+            record(error, "search_receipt");
             throw new ObservationStoreError("tool_observation_unavailable", { executed: true });
           }
         }, async storeSource(value) {
@@ -302,7 +347,8 @@ export function createToolObservationService(input: Readonly<{
         // The source keeps its precise transport/validation failure. Once
         // store() starts, never claim a storage preflight prevented dispatch.
         if (!attempted && !receiptFailed) throw error;
-        observe(options.source, "store_failed");
+        // A failure no store step recorded was thrown by the callback itself.
+        observeStoreFailure(options.source, record(error, "callback"));
         throw error instanceof ObservationStoreError &&
           (error.code === "tool_observation_conflict" || error.code === "tool_observation_unavailable") ? error : unavailable();
       }
