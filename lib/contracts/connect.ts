@@ -72,6 +72,13 @@ export const CONNECT_MAX_READ_LINE_LENGTH = 2_000;
 export const CONNECT_MAX_LINE_BYTES = 8_000;
 /** `read.content` in UTF-8 bytes; the device stops earlier and sets `truncated`. */
 export const CONNECT_MAX_READ_BYTES = 262_144;
+/**
+ * `read_bytes.length`: one chunk of a file's bytes. As base64 in its reply it stays well within
+ * {@link CONNECT_MAX_REPLY_BYTES}, and the device never shrinks it to fit.
+ */
+export const CONNECT_MAX_BYTES_CHUNK = 262_144;
+/** The largest file `read_bytes` reads; a larger one answers `computer_file_too_large`. */
+export const CONNECT_MAX_TRANSFER_BYTES = 67_108_864;
 export const CONNECT_MAX_LINE_NUMBER = 2_147_483_647;
 export const CONNECT_MAX_GLOB_PATHS = 1_000;
 export const CONNECT_MAX_GREP_MATCHES = 1_000;
@@ -138,6 +145,7 @@ export const CONNECT_OPS = [
   "job_output",
   "job_stop",
   "read",
+  "read_bytes",
   "write",
   "edit",
   "glob",
@@ -211,6 +219,8 @@ export const CONNECT_DEVICE_PATH_PATTERN = /^(?:\/|[A-Za-z]:[\\/]|\\\\).*$/u;
 export const CONNECT_JOB_ID_PATTERN = /^job-[a-z0-9]{6,16}$/u;
 /** A text encoding's lowercase name as `read` reports it, for example `utf-8`, `utf-16le` or `windows-1251`. */
 export const CONNECT_ENCODING_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/u;
+/** Standard base64 with padding, together with a length that is a multiple of four: `read_bytes.data`. */
+export const CONNECT_BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/u;
 
 // Paths. Device API: Bearer device token only, never cookies.
 export const CONNECT_DEVICE_API_PREFIX = "/connect-api/v1";
@@ -488,6 +498,16 @@ export const connectReadArgsSchema = z.strictObject({
   offset: lineNumberSchema,
   limit: boundedInt(1, CONNECT_MAX_READ_LINES)
 });
+/**
+ * Bytes `offset`..`offset + length` of a regular file of at most {@link CONNECT_MAX_TRANSFER_BYTES}; `path` and `cwd` as
+ * `read`. An offset at or past the end answers an empty chunk with `eof`. Read-only, unlike `read` it records no recent folder.
+ */
+export const connectReadBytesArgsSchema = z.strictObject({
+  path: argPathSchema,
+  cwd: argPathSchema,
+  offset: boundedInt(0, CONNECT_MAX_TRANSFER_BYTES),
+  length: boundedInt(1, CONNECT_MAX_BYTES_CHUNK)
+});
 export const connectWriteArgsSchema = z.strictObject({
   path: argPathSchema,
   cwd: argPathSchema,
@@ -529,6 +549,7 @@ export const connectOpArgsSchemas = {
   job_output: connectJobOutputArgsSchema,
   job_stop: connectJobStopArgsSchema,
   read: connectReadArgsSchema,
+  read_bytes: connectReadBytesArgsSchema,
   write: connectWriteArgsSchema,
   edit: connectEditArgsSchema,
   glob: connectGlobArgsSchema,
@@ -558,6 +579,7 @@ export const connectOpCommandSchema = z.discriminatedUnion("op", [
   opCommandSchema("job_output"),
   opCommandSchema("job_stop"),
   opCommandSchema("read"),
+  opCommandSchema("read_bytes"),
   opCommandSchema("write"),
   opCommandSchema("edit"),
   opCommandSchema("glob"),
@@ -635,6 +657,22 @@ export const connectReadResultSchema = z.strictObject({
   encoding: z.string().regex(CONNECT_ENCODING_PATTERN),
   lineEnding: z.enum(CONNECT_LINE_ENDINGS)
 });
+/** The base64 length of a full {@link CONNECT_MAX_BYTES_CHUNK}. */
+const MAX_BYTES_CHUNK_BASE64 = Math.ceil(CONNECT_MAX_BYTES_CHUNK / 3) * 4;
+/** One chunk of a file's bytes, with the whole file's size and modification time as the device read them. */
+export const connectReadBytesResultSchema = z.strictObject({
+  /** The chunk's bytes as standard base64; empty at or past the end. */
+  data: z.string()
+    .max(MAX_BYTES_CHUNK_BASE64)
+    .regex(CONNECT_BASE64_PATTERN)
+    .refine((value) => value.length % 4 === 0, "base64 length"),
+  /** The whole file's size in bytes. */
+  size: boundedInt(0, CONNECT_MAX_TRANSFER_BYTES),
+  /** The file's modification time in milliseconds since the epoch. */
+  modifiedMs: boundedInt(-CONNECT_MAX_SEQ, CONNECT_MAX_SEQ),
+  /** The chunk ends where the file does. */
+  eof: z.boolean()
+});
 export const connectWriteResultSchema = z.strictObject({
   /** Bytes written to the file. */
   bytes: countSchema,
@@ -704,6 +742,7 @@ export const connectOpResultSchemas = {
   job_output: connectJobOutputResultSchema,
   job_stop: connectJobStopResultSchema,
   read: connectReadResultSchema,
+  read_bytes: connectReadBytesResultSchema,
   write: connectWriteResultSchema,
   edit: connectEditResultSchema,
   glob: connectGlobResultSchema,
@@ -733,6 +772,7 @@ export const connectOpReplyEventSchema = z.discriminatedUnion("ok", [
       connectJobOutputResultSchema,
       connectJobStopResultSchema,
       connectReadResultSchema,
+      connectReadBytesResultSchema,
       connectWriteResultSchema,
       connectEditResultSchema,
       connectGlobResultSchema,
