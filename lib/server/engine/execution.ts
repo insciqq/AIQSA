@@ -39,6 +39,7 @@ import { invalidProviderToolArguments, type ModelToolCall, type RunTool } from "
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import { browserLiveRelay, type BrowserLiveRunHandle } from "../workspace/browserLive";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { rendersToolResultImages } from "../workspace/directImageView";
 import { getAuthConfig } from "../auth/config";
 import type { BrowserHandoffMode } from "../tools/browserHandoff";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -630,7 +631,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           fetchUrlEarlierRunIds: input.scheduled ? [] : branchRunIds,
           fetchUrlResearch: async (signal) => research?.holding() ? research.unreachableSites(signal) : null,
           followupTexts: () => delivered,
-          onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base });
+          onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base,
+          ...(rendersToolResultImages(snapshot.model.adapterKind) ? { resultImages: true as const } : {}) });
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
         const toolState: ToolBatchState = { calls: 0 };
         const saveResult: ToolBatchDeps["saveResult"] = async (save) => saveToolResultText({ outcome: save.outcome,
@@ -689,6 +691,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             followupTexts: agentInput.followupTexts,
             // A sub-agent's outputs stay its own; the answer shows its steps under its call.
             onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
+            // The sub-agent's own route decides whether its requests carry result images.
+            ...(agentInput.resultImages ? { resultImages: true as const } : {}),
             services: { ...registryInput.services, ...(input.services.selfService
               ? { selfService: { ...input.services.selfService, tools: [READ_AIQSA_GUIDE_TOOL_NAME] } } : {}) } }),
           budgets, callTimeLeft: agentCallTimeLeft, chatId: scope.chatId, deadline: deadline.signal,

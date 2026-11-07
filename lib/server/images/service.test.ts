@@ -559,4 +559,15 @@ describe("reading a requested earlier chat image", () => {
       expect(await sharp(preview!.bytes).metadata()).toMatchObject({ format: "png" });
     }
   });
+
+  it("refuses an image its decoder fails on as unsupported, not as a bare decoder error", async () => {
+    const gif = await sharp({ create: { background: "red", channels: 3, height: 20, width: 20 } }).gif().toBuffer();
+    // The header reads, the image data stops early: only the decoder refuses it.
+    const body = Buffer.concat([gif.subarray(0, 40), Buffer.from([0x3b])]);
+    const findFirst = vi.fn(async () => row("old", { mimeType: "image/gif", byteSize: body.length,
+      checksum: createHash("sha256").update(body).digest("hex") }));
+    const service = createPrismaImageGenerationService({ attachment: { findFirst } } as unknown as PrismaClient,
+      { getObject: async () => ({ body, contentType: "image/gif" }) } as unknown as StorageAdapter);
+    await expect(service.readConversationImage(scope)).rejects.toMatchObject({ code: "image_reference_unsupported" });
+  });
 });

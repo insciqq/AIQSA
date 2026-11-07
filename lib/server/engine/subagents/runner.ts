@@ -50,6 +50,7 @@ import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
 import { COMPUTER_TURN_GUIDANCE_PREFIX } from "../../tools/computerBinding";
 import type { ModelToolCall, RunTool } from "../../tools/types";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
+import { rendersToolResultImages } from "../../workspace/directImageView";
 import { engineItemRules, type ToolResultClearingPolicy } from "../compaction";
 import { compactionModelCall } from "../compactionCalls";
 import { turnContextItem } from "../conversation";
@@ -149,6 +150,8 @@ export type SubagentHost = Readonly<{
     followupTexts(): readonly string[];
     onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>;
     request: ProviderRunRequest;
+    /** The sub-agent's route carries tool-result images (`rendersToolResultImages`). */
+    resultImages?: true;
   }>): Promise<ToolRegistry>;
   /** The native runs of the branch's earlier answers, in branch order. */
   branchRunIds: readonly string[];
@@ -762,7 +765,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         if (path && entry.kind !== "file_change") files.add(path);
       };
       const filtered = subagentToolRegistry(await host.buildRegistry({ agent,
-        followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request }), input.type?.toolGroups ?? null);
+        followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request,
+        ...(rendersToolResultImages(route.snapshot.model.adapterKind) ? { resultImages: true as const } : {}) }), input.type?.toolGroups ?? null);
       // No tool group narrows them: they reach the agents of the chat, nothing outside it.
       const messages = host.messaging ? subagentMessageTools({ chatId: host.chatId, messaging: host.messaging, parentRunId: input.parentRunId,
         userId: host.userId }, agentTurn) : [];
