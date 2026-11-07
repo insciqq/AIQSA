@@ -7,8 +7,10 @@ import { MAX_TOOL_DESCRIPTION_LENGTH } from "@/lib/contracts/mcp";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
 import type { McpPublishedToolDefinitions } from "./definitions";
 import {
+  MCP_HEALTH_CADENCE_MS,
   MCP_HEALTH_DEADLINE_MS,
   MCP_HEALTH_INVENTORY_DEADLINE_MS,
+  MCP_HEALTH_TIMEOUT_STRIKES,
   McpRuntimeCoordinator,
   type McpRuntimeCoordinatorRepository,
   type McpRuntimeGenerationLaunch,
@@ -339,9 +341,17 @@ describe("MCP runtime coordinator", () => {
     if (failure === "timeout") vi.mocked(test.session.listTools).mockImplementation(() => new Promise(() => {}));
     else test.setInventory([{ name: "echo", definitionHash: "changed", inputSchema: { type: "object" },
       description: failure === "secret" ? "PRIVATE_SECRET" : null }]);
-    await vi.advanceTimersByTimeAsync(30_000);
-    test.coordinator.operationalStatus("generation-1");
-    await vi.advanceTimersByTimeAsync(MCP_HEALTH_INVENTORY_DEADLINE_MS);
+    // A timed-out inventory read is a strike like a timed-out ping; the others evict at once.
+    const probes = failure === "timeout" ? MCP_HEALTH_TIMEOUT_STRIKES : 1;
+    for (let index = 1; index <= probes; index += 1) {
+      await vi.advanceTimersByTimeAsync(30_000);
+      test.coordinator.operationalStatus("generation-1");
+      await vi.advanceTimersByTimeAsync(MCP_HEALTH_INVENTORY_DEADLINE_MS);
+      if (index < probes) {
+        expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+        expect(test.repository.markFailed).not.toHaveBeenCalled();
+      }
+    }
     expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
     expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: failure === "timeout" ? "mcp_timeout" : failure === "secret" ? "mcp_inventory_invalid" : "mcp_inventory_changed"
@@ -438,7 +448,23 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.stop();
   });
 
-  it("cancels a hanging probe at two seconds and ignores a late success", async () => {
+  const call = (test: ReturnType<typeof harness>, name = "echo") => test.coordinator.callTool({
+    arguments: {}, definitionHash: `hash-${name}`, generationId: "generation-1", inputSchema: { type: "object" }, name
+  });
+
+  /** Lets the next due probe start and time out; the ping never answers. */
+  async function timeOutNextProbe(test: ReturnType<typeof harness>): Promise<void> {
+    vi.mocked(test.session.ping).mockImplementationOnce(() => new Promise(() => {}));
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_CADENCE_MS);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_DEADLINE_MS);
+  }
+
+  const healthRecords = (writer: { mock: { calls: unknown[][] } }) => writer.mock.calls
+    .map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>)
+    .filter((record) => record.event === "job_attempt" && record.stage === "health");
+
+  it("cancels a hanging probe at two seconds, ignores a late success and keeps the runtime live", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     const test = harness({ now: () => new Date() });
@@ -451,13 +477,144 @@ describe("MCP runtime coordinator", () => {
     expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
     await vi.advanceTimersByTimeAsync(1);
     expect(vi.mocked(test.session.ping).mock.calls[0]![0]!.signal!.aborted).toBe(true);
-    expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
-    expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "mcp_timeout" }));
+    // One timeout is a strike, not an eviction: health is unconfirmed, dispatch stays open.
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
     ping.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
+    // The late answer belongs to an abandoned probe and renews nothing.
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    // The next probe waits one cadence after the timeout, not a hot loop.
+    vi.mocked(test.session.ping).mockResolvedValue(undefined);
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_CADENCE_MS - 1);
+    test.coordinator.operationalStatus("generation-1");
+    expect(test.session.ping).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    test.coordinator.operationalStatus("generation-1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.session.ping).toHaveBeenCalledTimes(2);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
     expect(test.createSession).toHaveBeenCalledTimes(1);
     await test.coordinator.stop();
+  });
+
+  it("keeps dispatching through two timed-out probes and evicts on the third consecutive one", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const test = harness({ now: () => new Date() });
+    try {
+      await test.coordinator.reconcileNow();
+      for (let strike = 1; strike < MCP_HEALTH_TIMEOUT_STRIKES; strike += 1) {
+        await timeOutNextProbe(test);
+        expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+        await expect(test.coordinator.ensureAcceptedGeneration("generation-1")).resolves.toBe(true);
+        expect(test.repository.markFailed).not.toHaveBeenCalled();
+        expect(test.session.close).not.toHaveBeenCalled();
+      }
+      await timeOutNextProbe(test);
+      expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
+      expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(test.repository.markFailed).toHaveBeenCalledOnce();
+      expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "mcp_timeout" }));
+      expect(test.session.close).toHaveBeenCalledOnce();
+      expect(healthRecords(writer).map(({ action, code, count, outcome }) => ({ action, code, count, outcome }))).toEqual([
+        { action: "wait", code: "mcp_request_timeout", count: 1, outcome: "failed" },
+        { action: "wait", code: "mcp_request_timeout", count: 2, outcome: "failed" },
+        { action: "stop", code: "mcp_request_timeout", count: 3, outcome: "failed" }
+      ]);
+    } finally { await test.coordinator.stop(); writer.mockRestore(); }
+  });
+
+  it("forgives timeout strikes after a successful call", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    for (let strike = 1; strike < MCP_HEALTH_TIMEOUT_STRIKES; strike += 1) await timeOutNextProbe(test);
+    // A call between the timeouts dispatches and proves the session.
+    await expect(call(test)).resolves.toMatchObject({ isError: false });
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+    for (let strike = 1; strike < MCP_HEALTH_TIMEOUT_STRIKES; strike += 1) await timeOutNextProbe(test);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    await timeOutNextProbe(test);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "mcp_timeout" }));
+    await test.coordinator.stop();
+  });
+
+  it.each([
+    ["a closed session", "mcp_session_closed", "mcp_session_closed"],
+    ["a failed ping", "mcp_ping_failed", "mcp_health_check_failed"]
+  ] as const)("still evicts at once on %s, strikes or not", async (_label, code, errorCode) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    await timeOutNextProbe(test);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    vi.mocked(test.session.ping).mockImplementationOnce(async () => {
+      if (code === "mcp_session_closed") test.setClosed(true);
+      throw new McpClientSessionError({ code, operation: "ping" });
+    });
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_CADENCE_MS);
+    test.coordinator.operationalStatus("generation-1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+    expect(test.repository.markFailed).toHaveBeenCalledOnce();
+    expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({ errorCode }));
+    await test.coordinator.stop();
+  });
+
+  it("evicts a session found closed after a timed-out probe at once", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    vi.mocked(test.session.ping).mockImplementationOnce(() => {
+      test.setClosed(true);
+      return new Promise(() => {});
+    });
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_CADENCE_MS);
+    test.coordinator.operationalStatus("generation-1");
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_DEADLINE_MS);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.repository.markFailed).toHaveBeenCalledOnce();
+    await test.coordinator.stop();
+  });
+
+  it("does not count a slow probe while a call is in flight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const test = harness({ now: () => new Date() });
+    try {
+      await test.coordinator.reconcileNow();
+      const slow = deferred<Awaited<ReturnType<McpRuntimeSession["callTool"]>>>();
+      vi.mocked(test.session.callTool).mockReturnValueOnce(slow.promise);
+      const pending = call(test, "slow");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(test.session.callTool).toHaveBeenCalledOnce();
+      for (let probe = 0; probe < MCP_HEALTH_TIMEOUT_STRIKES + 1; probe += 1) await timeOutNextProbe(test);
+      expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+      expect(test.repository.markFailed).not.toHaveBeenCalled();
+      // Other calls still dispatch beside the long one.
+      await expect(call(test)).resolves.toMatchObject({ isError: false });
+      slow.resolve({ isError: false, structuredContent: { name: "slow" }, text: [], unsupportedContentTypes: [] });
+      await expect(pending).resolves.toMatchObject({ structuredContent: { name: "slow" } });
+      expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+      expect(healthRecords(writer).map(({ action, count, outcome }) => ({ action, count, outcome })))
+        .toEqual(Array.from({ length: MCP_HEALTH_TIMEOUT_STRIKES + 1 }, () => ({ action: "wait", count: 0, outcome: "skipped" })));
+      // Once the calls have ended, a timeout counts again.
+      await timeOutNextProbe(test);
+      expect(healthRecords(writer).at(-1)).toMatchObject({ action: "wait", count: 1, outcome: "failed" });
+      expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    } finally { await test.coordinator.stop(); writer.mockRestore(); }
   });
 
   it("renews 30 seconds after protocol success independently of the reconciliation timer's phase", async () => {
