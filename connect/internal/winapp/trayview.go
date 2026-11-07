@@ -34,6 +34,8 @@ const (
 	MenuStartAtSignIn
 	// MenuUninstall starts the program's removal.
 	MenuUninstall
+	// MenuVersion is the inactive line with the running version.
+	MenuVersion
 )
 
 // MenuItem is one line of the tray menu.
@@ -45,9 +47,13 @@ type MenuItem struct {
 	Checked bool
 }
 
-// AppItems are the menu's lines about the installed program. They are
-// read when the menu opens, so the check mark follows the registry.
+// AppItems are the menu's lines about the program. The installed
+// program's lines are read when the menu opens, so the check mark follows
+// the registry.
 type AppItems struct {
+	// Version is the running program's version, in the tooltip and the
+	// menu; empty shows "dev".
+	Version string
 	// Installed: this copy runs from the installed location. Only then
 	// does the menu offer Start at sign-in and Uninstall.
 	Installed bool
@@ -94,7 +100,11 @@ func ViewOf(s state.State, app AppItems) View {
 	default: // Revoked, Stopped
 		view.Status, canConnect = "Not connected", true
 	}
-	view.Tooltip = truncateUTF16(AppName+"\n"+view.Status, MaxTooltipLength)
+	version := app.Version
+	if version == "" {
+		version = "dev"
+	}
+	view.Tooltip = truncateUTF16(AppName+" "+version+"\n"+view.Status, MaxTooltipLength)
 	view.Menu = []MenuItem{
 		{ID: MenuStatus, Label: view.Status},
 		{ID: MenuSeparator},
@@ -110,7 +120,9 @@ func ViewOf(s state.State, app AppItems) View {
 		view.Menu = append(view.Menu, MenuItem{ID: MenuSeparator},
 			MenuItem{ID: MenuStartAtSignIn, Label: "Start at sign-in", Enabled: true, Checked: app.StartAtSignIn})
 	}
-	view.Menu = append(view.Menu, MenuItem{ID: MenuSeparator}, MenuItem{ID: MenuQuit, Label: "Quit", Enabled: true})
+	view.Menu = append(view.Menu, MenuItem{ID: MenuSeparator},
+		MenuItem{ID: MenuVersion, Label: "Version " + version},
+		MenuItem{ID: MenuQuit, Label: "Quit", Enabled: true})
 	if app.Installed {
 		// Last and apart from Quit; the removal asks before it does anything.
 		view.Menu = append(view.Menu, MenuItem{ID: MenuSeparator}, MenuItem{ID: MenuUninstall, Label: "Uninstall AIQSA Connect…", Enabled: true})

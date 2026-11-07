@@ -52,7 +52,9 @@ Nothing else is needed: no tmux, no administrator rights.
 3. Confirm the install window. AIQSA Connect installs for your Windows account
    only, without administrator rights, into
    `%LOCALAPPDATA%\Programs\AIQSA Connect`. It starts when you sign in to
-   Windows and is listed in Settings → Apps.
+   Windows, has an **AIQSA Connect** shortcut in the Start menu (it starts
+   the program, or opens AIQSA when it already runs) and is listed in
+   Settings → Apps.
 4. Your browser opens AIQSA with the computer's name and a code. Check that the
    code matches the one in the tray menu ("Waiting for approval · <code>") and
    choose **Approve**.
@@ -66,7 +68,8 @@ not connected), and its menu has:
   again.
 - **Disconnect this computer**: removes the computer from AIQSA and deletes its
   credentials here. The program stays installed; use Connect… to connect again.
-- **Quit**: stops AIQSA Connect until you sign in to Windows again.
+- **Quit**: stops AIQSA Connect until you sign in to Windows again. The
+  greyed line above it shows the running version, as does the icon's tooltip.
 
 Opening a downloaded file for another AIQSA installation asks whether to
 switch: a computer is connected to one installation at a time. Opening a newer
@@ -179,7 +182,10 @@ checksum, replaces its own file and restarts. If an update fails for a reason
 that may pass (network, a busy server), it tries again when it next connects,
 first after 5 minutes, then after pauses doubling up to an hour.
 `aiqsa-connect update` does the same by hand. If you cannot write to the
-client's file, it says so and keeps its current version: reinstall it.
+client's file, it says so and keeps its current version: reinstall it. On
+Windows a notification says which version AIQSA Connect was updated to, and
+an update restores the Start menu shortcut when it is missing; you can delete
+the shortcut otherwise, and it stays deleted until the next update.
 
 ## Disconnect and uninstall
 
@@ -189,7 +195,7 @@ token stops working at once.
 **Windows.** Disconnect this computer in the tray menu keeps the program
 installed. To remove it, open Settings → Apps, find AIQSA Connect and choose
 Uninstall: it removes the computer from AIQSA, stops the program, removes the
-start at sign-in, the Apps entry, its folders
+start at sign-in, the Apps entry, the Start menu shortcut, its folders
 (`%APPDATA%\AIQSA Connect`, `%LOCALAPPDATA%\AIQSA Connect`) and the program.
 If AIQSA cannot be reached, it says so; revoke the computer in AIQSA then.
 

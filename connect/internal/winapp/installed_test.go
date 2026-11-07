@@ -52,7 +52,7 @@ func TestInstalledItemsOnlyForTheInstalledCopy(t *testing.T) {
 	}
 	got := menuIDs(ViewOf(state.State{Kind: state.Connected, Origin: testOrigin}, AppItems{Installed: true}))
 	want := []MenuID{MenuStatus, MenuSeparator, MenuOpen, MenuDisconnect, MenuSeparator, MenuStartAtSignIn,
-		MenuSeparator, MenuQuit, MenuSeparator, MenuUninstall}
+		MenuSeparator, MenuVersion, MenuQuit, MenuSeparator, MenuUninstall}
 	if !slices.Equal(got, want) {
 		t.Fatalf("menu %v, want %v", got, want)
 	}
@@ -179,8 +179,8 @@ func TestUninstallItemStartsTheInstalledUninstall(t *testing.T) {
 func TestRefreshAppsEntryShowsTheRunningVersion(t *testing.T) {
 	f := newInstallFixture(t)
 	in := f.installer
-	if changed, err := in.RefreshAppsEntry(); changed || err != nil || len(f.registry.keys()) != 0 {
-		t.Fatalf("created an entry: %v %v %v", changed, err, f.registry.keys())
+	if previous, err := in.RefreshAppsEntry(); previous != "" || err != nil || len(f.registry.keys()) != 0 {
+		t.Fatalf("created an entry: %q %v %v", previous, err, f.registry.keys())
 	}
 	if err := os.MkdirAll(in.Layout.ProgramDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -193,8 +193,8 @@ func TestRefreshAppsEntryShowsTheRunningVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := f.registry.keys()
-	if changed, err := in.RefreshAppsEntry(); changed || err != nil {
-		t.Fatalf("same version: %v %v", changed, err)
+	if previous, err := in.RefreshAppsEntry(); previous != "" || err != nil {
+		t.Fatalf("same version: %q %v", previous, err)
 	}
 
 	// A self-update replaced the program.
@@ -202,8 +202,8 @@ func TestRefreshAppsEntryShowsTheRunningVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	in.Version = "1.2.3"
-	if changed, err := in.RefreshAppsEntry(); !changed || err != nil {
-		t.Fatalf("new version: %v %v", changed, err)
+	if previous, err := in.RefreshAppsEntry(); previous != "1.0.0" || err != nil {
+		t.Fatalf("new version: %q %v", previous, err)
 	}
 	if got := f.registry.values[UninstallKey+`\DisplayVersion`]; got != "1.2.3" {
 		t.Fatalf("DisplayVersion %v", got)
@@ -217,8 +217,8 @@ func TestRefreshAppsEntryShowsTheRunningVersion(t *testing.T) {
 
 	in.Version = "1.2.4"
 	f.registry.fail["set"] = errors.New("Access is denied.")
-	if changed, err := in.RefreshAppsEntry(); changed || err == nil {
-		t.Fatalf("failed write: %v %v", changed, err)
+	if previous, err := in.RefreshAppsEntry(); previous != "" || err == nil {
+		t.Fatalf("failed write: %q %v", previous, err)
 	}
 	if got := f.registry.values[UninstallKey+`\DisplayVersion`]; got != "1.2.3" {
 		t.Fatalf("DisplayVersion %v", got)

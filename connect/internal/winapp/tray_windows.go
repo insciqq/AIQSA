@@ -37,6 +37,9 @@ type Tray struct {
 	// AppItems gives the installed program's menu lines when the menu
 	// opens (Controller.AppItems); nil shows none.
 	AppItems func() AppItems
+	// Version is the running program's version, in the tooltip and the
+	// menu; set it before Run.
+	Version string
 
 	hwnd           atomic.Uintptr
 	taskbarCreated uint32
@@ -58,7 +61,7 @@ var wndProcCallback = sync.OnceValue(func() uintptr { return windows.NewCallback
 // Show updates the icon, tooltip and menu.
 func (t *Tray) Show(s state.State) {
 	t.mu.Lock()
-	t.state, t.view = s, ViewOf(s, AppItems{})
+	t.state, t.view = s, ViewOf(s, AppItems{Version: t.Version})
 	t.mu.Unlock()
 	postMessage(t.hwnd.Load(), wmTrayUpdate, 0, 0)
 }
@@ -90,7 +93,8 @@ func (t *Tray) Exit() {
 // goroutine, locked to its thread, until Exit. ready runs on that thread
 // once the window exists (acquire the single-instance mutex there); when
 // it returns false, Run returns at once. start runs after the icon is
-// shown (Controller.Start).
+// added (Controller.Start); when the taskbar is not there yet, notices
+// wait until the icon is.
 func (t *Tray) Run(ready func() bool, start func()) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -123,7 +127,7 @@ func (t *Tray) Run(ready func() bool, start func()) error {
 	t.mu.Lock()
 	if t.view.Status == "" {
 		t.state = state.State{Kind: state.Stopped}
-		t.view = ViewOf(t.state, AppItems{})
+		t.view = ViewOf(t.state, AppItems{Version: t.Version})
 	}
 	t.mu.Unlock()
 	// At sign-in the taskbar may not exist yet; TaskbarCreated adds the icon then.
@@ -219,6 +223,8 @@ func (t *Tray) addIcon() {
 	data.UVersion = notifyIconVersion4
 	shellNotifyIcon(nimSetVersion, &data)
 	t.added = true
+	// A notice that came before the icon existed shows now.
+	t.showNotice()
 }
 
 func (t *Tray) updateIcon() {
@@ -240,12 +246,19 @@ func (t *Tray) deleteIcon() {
 	t.added = false
 }
 
+// showNotice shows the pending notice. Without an icon (at sign-in the
+// taskbar may not exist yet) the notice stays pending until addIcon
+// succeeds, so a notice from the start, such as the update notice, is not
+// lost.
 func (t *Tray) showNotice() {
+	if !t.added {
+		return
+	}
 	t.mu.Lock()
 	text := t.notice
 	t.notice = ""
 	t.mu.Unlock()
-	if text == "" || !t.added {
+	if text == "" {
 		return
 	}
 	data := notifyIconData{HWnd: t.hwnd.Load(), UID: trayIconID, UFlags: nifInfo, DwInfoFlags: niifInfo | niifNoSound}
@@ -264,6 +277,7 @@ func (t *Tray) showMenu(hwnd uintptr) {
 	if t.AppItems != nil {
 		app = t.AppItems()
 	}
+	app.Version = t.Version
 	t.mu.Lock()
 	view := ViewOf(t.state, app)
 	t.mu.Unlock()
