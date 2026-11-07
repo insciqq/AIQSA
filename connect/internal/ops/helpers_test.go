@@ -91,6 +91,24 @@ type testSystem struct {
 	hidden   func(fs.FileInfo) bool
 	// start, when set, starts commands in place of the real Start.
 	start func(sys System, cmd *exec.Cmd) (ProcessTree, error)
+	// prepare and replace, when set, stand in for the real
+	// PrepareReplacement and Replace.
+	prepare func(tmp *os.File, path string, info fs.FileInfo) error
+	replace func(tmp, path string) error
+}
+
+func (s testSystem) PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error {
+	if s.prepare != nil {
+		return s.prepare(tmp, path, info)
+	}
+	return s.System.PrepareReplacement(tmp, path, info)
+}
+
+func (s testSystem) Replace(tmp, path string) error {
+	if s.replace != nil {
+		return s.replace(tmp, path)
+	}
+	return s.System.Replace(tmp, path)
 }
 
 func (s testSystem) Start(cmd *exec.Cmd) (ProcessTree, error) {
