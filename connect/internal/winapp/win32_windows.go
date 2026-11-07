@@ -74,6 +74,7 @@ const (
 
 	mfString    = 0x0000
 	mfGrayed    = 0x0001
+	mfChecked   = 0x0008
 	mfSeparator = 0x0800
 
 	tpmRightButton = 0x0002

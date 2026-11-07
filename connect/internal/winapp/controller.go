@@ -51,6 +51,8 @@ type UI interface {
 	// Notify shows a short message beside the tray icon.
 	Notify(text string)
 	Confirm(title, text string) bool
+	// Warn shows a message box and blocks until the user closes it.
+	Warn(title, text string)
 	OpenURL(url string) error
 	// Exit ends the tray; the process exits.
 	Exit()
@@ -70,6 +72,10 @@ type Controller struct {
 	Daemon      DaemonFunc
 	UI          UI
 	PairOptions api.PairOptions
+	// Installed is the installed program when this copy runs from the
+	// installed location; nil otherwise. The menu then offers Start at
+	// sign-in and Uninstall.
+	Installed *Installer
 
 	actions  sync.Mutex // one menu command at a time
 	mu       sync.Mutex
@@ -106,6 +112,46 @@ func (c *Controller) Do(id MenuID) {
 		c.Disconnect()
 	case MenuQuit:
 		c.Quit()
+	case MenuStartAtSignIn:
+		c.ToggleStartAtSignIn()
+	case MenuUninstall:
+		c.StartUninstall()
+	}
+}
+
+// AppItems are the installed program's menu lines, read from the registry
+// each time the menu opens.
+func (c *Controller) AppItems() AppItems {
+	if c.Installed == nil {
+		return AppItems{}
+	}
+	return AppItems{Installed: true, StartAtSignIn: c.Installed.StartsAtSignIn()}
+}
+
+// ToggleStartAtSignIn turns the start at sign-in off when it points at the
+// installed program, otherwise on. A failure leaves it as it was.
+func (c *Controller) ToggleStartAtSignIn() {
+	if c.Installed == nil {
+		return
+	}
+	on := !c.Installed.StartsAtSignIn()
+	if err := c.Installed.SetStartAtSignIn(on); err != nil {
+		change := "turned off"
+		if on {
+			change = "turned on"
+		}
+		c.UI.Warn(AppName, fmt.Sprintf("Start at sign-in could not be %s: %v", change, err))
+	}
+}
+
+// StartUninstall starts the removal as its own process, which asks the
+// user and, when they agree, stops this tray like any other running copy.
+func (c *Controller) StartUninstall() {
+	if c.Installed == nil {
+		return
+	}
+	if err := c.Installed.StartUninstall(); err != nil {
+		c.UI.Warn(AppName, fmt.Sprintf("The removal of AIQSA Connect could not start: %v", err))
 	}
 }
 
