@@ -108,7 +108,7 @@ describe("run parameter validation", () => {
     ).toEqual({ code: reasoningModeNotAvailableError, ok: false });
   });
 
-  it("refuses a reasoning mode a codex-lb row does not offer by name, and sends none without a mode", () => {
+  it("refuses a reasoning mode a codex-lb row does not offer by name, accepts a neutral standard as no mode", () => {
     const controls = fallbackParameterControls({
       adapterKind: "openai_responses_compatible",
       defaultParams: { reasoning: { effort: "medium" } },
@@ -117,15 +117,25 @@ describe("run parameter validation", () => {
       supportsReasoningMode: true,
       upstreamModelId: "gpt-6.1-sol"
     });
-    for (const mode of ["pro", "standard"]) {
+    for (const mode of ["pro", "max", ""]) {
       expect(validateRunParams({
         controls,
         params: { reasoning: { effort: "medium", mode } },
         provider: "openai"
-      })).toEqual({ code: reasoningModeNotAvailableError, ok: false });
+      })).toMatchObject({ ok: false });
     }
+    expect(validateRunParams({
+      controls,
+      params: { reasoning: { effort: "medium", mode: "pro" } },
+      provider: "openai"
+    })).toEqual({ code: reasoningModeNotAvailableError, ok: false });
     const params = { reasoning: { effort: "medium" } };
     expect(validateRunParams({ controls, params, provider: "openai" })).toEqual({ ok: true, params });
+    // A tab opened before the model stopped offering modes, or a saved "standard", sends what no mode means.
+    expect(validateRunParams({ controls, params: { reasoning: { effort: "medium", mode: "standard" } }, provider: "openai" }))
+      .toEqual({ ok: true, params });
+    expect(validateRunParams({ controls, params: { reasoning: { mode: "standard" } }, provider: "openai" }))
+      .toEqual({ ok: true, params: {} });
     expect(validateRunParams({
       controls: fallbackParameterControls({
         adapterKind: "openai_responses_compatible",
