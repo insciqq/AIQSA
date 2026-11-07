@@ -1,14 +1,16 @@
 import packageMetadata from "@/package.json";
 import {
-  CONNECT_DEFAULT_HELLO_LIMITS,
+  CONNECT_DEFAULT_HELLO_V2_LIMITS,
   CONNECT_HEARTBEAT_SECONDS,
+  CONNECT_ID_PATTERN,
   CONNECT_MAX_EVENTS_BODY_BYTES,
+  CONNECT_MAX_EVENTS_PER_POST,
   CONNECT_PROTOCOL_VERSION,
   CONNECT_VERSION_PATTERN,
-  connectDeviceEventBatchSchema,
+  connectDeviceEventBatchV2Schema,
   connectPairingCreateRequestSchema,
   connectPairingPollRequestSchema,
-  type ConnectHello
+  type ConnectHelloV2
 } from "@/lib/contracts/connect";
 import { hashToken, verifyTokenHash } from "../auth/token";
 import type { LoginRateLimiter } from "../auth/rateLimit";
@@ -20,6 +22,7 @@ import {
   connectRateLimited,
   connectRefusal,
   connectUnavailable,
+  isConnectProtocol2,
   readConnectJson
 } from "./http";
 import { logConnect } from "./observability";
@@ -31,7 +34,11 @@ import { CONNECT_DEVICE_STREAM_QUEUE_BYTES, createConnectSseStream } from "./sse
 
 /** The application version, announced in `hello`; an unstamped build announces `dev`. */
 export const CONNECT_SERVER_VERSION = CONNECT_VERSION_PATTERN.test(packageMetadata.version) ? packageMetadata.version : "dev";
-/** The oldest client this server speaks to; only a protocol change raises it. */
+/**
+ * The oldest client version this server announces in `hello`. The protocol
+ * header already keeps terminal clients out (D-03), so this rises only when
+ * protocol 2 clients themselves must be cut off.
+ */
 export const CONNECT_MIN_CLIENT_VERSION = "0.3.20";
 /** `lastSeenAt` moves at most this often, so an online device does not rewrite its row per heartbeat. */
 export const CONNECT_LAST_SEEN_INTERVAL_MS = 60_000;
@@ -48,18 +55,43 @@ export type ConnectDeviceHandlerDeps = Readonly<{
   policy: Pick<ConnectPolicyGate, "enabled">;
   rateLimits: Readonly<{ create: LoginRateLimiter; poll: LoginRateLimiter }>;
   relay: Pick<ConnectRelay,
-    "acceptEvents" | "attachDevice" | "closeDeviceStream" | "detachDevice" | "epoch" | "hasDeviceStream" | "markDeviceSeen">;
-  repository: Pick<ConnectRepository, "findStreamDevice" | "touchDevice">;
+    | "acceptEvents"
+    | "attachDevice"
+    | "closeDeviceStream"
+    | "detachDevice"
+    | "disconnectDevice"
+    | "epoch"
+    | "hasDeviceStream"
+    | "markDeviceSeen"
+    | "notifyDevicesChanged"
+    | "rejectReplies">;
+  repository: Pick<ConnectRepository, "deleteDeviceByToken" | "findStreamDevice" | "touchDevice">;
 }>;
 
-function hello(deviceId: string): ConnectHello {
+function hello(deviceId: string): ConnectHelloV2 {
   return {
     deviceId,
-    limits: CONNECT_DEFAULT_HELLO_LIMITS,
+    limits: CONNECT_DEFAULT_HELLO_V2_LIMITS,
     minClientVersion: CONNECT_MIN_CLIENT_VERSION,
     protocol: CONNECT_PROTOCOL_VERSION,
     serverVersion: CONNECT_SERVER_VERSION
   };
+}
+
+/**
+ * The request ids of `reply` events in a batch that failed validation: those
+ * operations fail now instead of waiting for their deadline. Anything else in
+ * such a batch is dropped.
+ */
+function replyRequestIds(value: unknown): string[] {
+  if (typeof value !== "object" || value === null) return [];
+  const events = (value as { events?: unknown }).events;
+  if (!Array.isArray(events)) return [];
+  return events.slice(0, CONNECT_MAX_EVENTS_PER_POST).flatMap((event: unknown) => {
+    if (typeof event !== "object" || event === null) return [];
+    const { requestId, type } = event as { requestId?: unknown; type?: unknown };
+    return type === "reply" && typeof requestId === "string" && CONNECT_ID_PATTERN.test(requestId) ? [requestId] : [];
+  });
 }
 
 function record(device: ConnectStreamDevice): ConnectDeviceRecord {
@@ -78,8 +110,10 @@ function record(device: ConnectStreamDevice): ConnectDeviceRecord {
 
 /**
  * The device API under `/connect-api/v1`: pairing (no credential, limited per
- * address), the command stream and event posts (the device's Bearer token
- * only). Requests from browsers, which carry `Origin`, are refused.
+ * address), the command stream, event posts and the device's own revocation
+ * (the device's Bearer token only). Requests from browsers, which carry
+ * `Origin`, are refused; a stream of a terminal client (no protocol 2 header)
+ * answers 426 so it updates itself (D-03).
  */
 export function createConnectDeviceHandlers(deps: ConnectDeviceHandlerDeps) {
   const clock = deps.now ?? (() => new Date());
@@ -216,6 +250,11 @@ export function createConnectDeviceHandlers(deps: ConnectDeviceHandlerDeps) {
     async stream(request: Request): Promise<Response> {
       const token = connectDeviceToken(request);
       if (!token) return connectRefusal("connect_unauthorized", headers);
+      if (!isConnectProtocol2(request)) {
+        // A terminal client: it installs the manifest's version on this answer.
+        logConnect({ action: "skip", code: "connect_client_outdated", outcome: "skipped", stage: "preflight" });
+        return connectRefusal("connect_client_outdated", headers);
+      }
       const tokenHash = hashToken(token);
       const version = connectClientVersion(request);
       for (let attempt = 0; attempt < STREAM_ATTACH_ATTEMPTS; attempt += 1) {
@@ -267,9 +306,37 @@ export function createConnectDeviceHandlers(deps: ConnectDeviceHandlerDeps) {
       if (!deps.relay.hasDeviceStream(tokenHash)) return connectRefusal("connect_stream_required", headers);
       const body = await readConnectJson(request, CONNECT_MAX_EVENTS_BODY_BYTES);
       if (!body.ok) return connectRefusal(body.code, headers);
-      const batch = connectDeviceEventBatchSchema.safeParse(body.value);
-      if (!batch.success) return connectRefusal("connect_request_invalid", headers);
+      const batch = connectDeviceEventBatchV2Schema.safeParse(body.value);
+      if (!batch.success) {
+        logConnect({ action: "fail", code: "connect_request_invalid", outcome: "failed", stage: "validate" });
+        deps.relay.rejectReplies(tokenHash, replyRequestIds(body.value));
+        return connectRefusal("connect_request_invalid", headers);
+      }
       if (!deps.relay.acceptEvents(tokenHash, batch.data.events)) return connectRefusal("connect_stream_required", headers);
+      return new Response(null, { headers, status: 204 });
+    },
+
+    /**
+     * `DELETE /connect-api/v1/device`: the device revokes itself (D-16), as
+     * the owner's Revoke does; its stream ends at once. Idempotent: a token
+     * that names no device any more answers the same 204. It works while
+     * AIQSA Connect is off, since it only removes access.
+     */
+    async revokeSelf(request: Request): Promise<Response> {
+      const token = connectDeviceToken(request);
+      if (!token) return connectRefusal("connect_unauthorized", headers);
+      let deleted: Awaited<ReturnType<ConnectRepository["deleteDeviceByToken"]>>;
+      try {
+        deleted = await deps.repository.deleteDeviceByToken(hashToken(token));
+      } catch (error) {
+        logConnect({ action: "retry", code: "connect_store_unavailable", error, outcome: "failed", stage: "delete" });
+        return connectUnavailable(headers);
+      }
+      if (deleted) {
+        deps.relay.disconnectDevice(deleted.id, "connect_unauthorized");
+        deps.relay.notifyDevicesChanged(deleted.userId);
+        logConnect({ code: "connect_device_revoked", outcome: "completed", stage: "delete" });
+      }
       return new Response(null, { headers, status: 204 });
     }
   };

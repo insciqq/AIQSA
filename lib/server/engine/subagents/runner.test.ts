@@ -30,6 +30,7 @@ import { createAgentUnknownEffects, type AgentUnknownEffects } from "../unknownE
 import type { SubagentModelRoute } from "./modelRoutes";
 import { subagentRequestShape } from "./runSubagents";
 import { workspacePromptContract } from "../../workspace/promptContract";
+import { COMPUTER_TURN_GUIDANCE_PREFIX } from "../../tools/computerBinding";
 import {
   WORKSPACE_TURN_GUIDANCE_PREFIX,
   createSubagentRunner,
@@ -605,6 +606,19 @@ describe("sub-agent runner", () => {
       searchEnabled: false, workspace: { normalized: { inboxIndexPath: "/i", internetEnabled: true, messageManifestPath: "/m",
         outputDirectory: "/o", projectDirectory: "/p" }, toolDefinitions: [] } as never }).turn.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX))
       .toBe(true);
+  });
+
+  it("keeps the line about the user's computer, with or without the Workspace", () => {
+    const computer = `${COMPUTER_TURN_GUIDANCE_PREFIX}MacBook" is connected for this chat (macOS, arm64). Working folder: ~/work.`;
+    const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.`;
+    const files = "Images in this chat: image_1 is the user's photo.";
+    const parent = { ...request, prompt: { ...request.prompt, system: `Contract.\n\n${paths}\n\n${files}\n\n${computer}`,
+      turnGuidance: [paths, files, computer] } };
+    const route = { adapter: {} as ProviderAdapter, request: { modelCapabilities: request.modelCapabilities, modelId: "fake-qsa", params: {},
+      provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 1 };
+    expect(subagentRequest(parent, route).prompt).toMatchObject({ system: `Contract.\n\n${paths}\n\n${computer}`, turnGuidance: [paths, computer] });
+    expect(subagentRequest(parent, route, { withoutWorkspace: true }).prompt).toMatchObject({ system: `Contract.\n\n${computer}`,
+      turnGuidance: [computer] });
   });
 
   describe("image tools follow the sub-agent's own route", () => {

@@ -31,6 +31,16 @@ import { headerModelProvenanceV2 } from "@/features/workspace-v2/HeaderAssistant
 import { ComposerOperationErrorV2 } from "@/features/workspace-v2/PowerAppShellV2View";
 import { MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE } from "@/components/app-shell/shellFormatting";
 import type { ComposerAttachmentItemV2 } from "@/features/attachments-v2/attachmentPresentation";
+import { requestComposerComputerPicker } from "@/features/composer-v2/computerPickerRequest";
+import type { ChatComputerBinding } from "@/lib/contracts/computer";
+import {
+  CONNECT_FIXTURE_BOX_ID,
+  CONNECT_FIXTURE_REMOVED_ID,
+  CONNECT_FIXTURE_WINDOWS_ID,
+  connectFixtureComputers,
+  installConnectFixtureApi,
+  staticConnectComputerSource
+} from "./connectFixtureApi";
 
 export type ComposerGalleryState =
   | "assistant"
@@ -46,6 +56,15 @@ export type ComposerGalleryState =
   | "chips-off"
   | "chips-off-pinned"
   | "commands"
+  | "computer-assistant"
+  | "computer-empty"
+  | "computer-folder"
+  | "computer-menu"
+  | "computer-offline"
+  | "computer-online"
+  | "computer-picker"
+  | "computer-refused"
+  | "computer-removed"
   | "default"
   | "error"
   | "model"
@@ -397,6 +416,7 @@ const ALL_FIXED: Record<AssistantRowKey, AssistantRowPolicy> = {
 function galleryAssistantSetup(state: ComposerGalleryState): GalleryAssistantSetup | null {
   switch (state) {
     case "assistant":
+    case "computer-assistant":
       return { origins: {} };
     case "assistant-fixed":
       return { origins: {}, policies: ALL_FIXED };
@@ -421,7 +441,8 @@ function galleryAssistantSetup(state: ComposerGalleryState): GalleryAssistantSet
 
 function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
   if (state === "model" || state === "assistant-fallback" || state === "assistant-fixed-model") return "model";
-  if (state === "add" || state === "research-menu" || state === "research-disabled") return "add";
+  if (state === "add" || state === "research-menu" || state === "research-disabled" ||
+    state === "computer-menu" || state === "computer-assistant") return "add";
   if (state === "assistant") return "skills";
   if (state === "assistant-fixed" || state === "mcp-personal") return "tools";
   if (state === "assistant-changed") return "search";
@@ -490,9 +511,45 @@ const GALLERY_PALETTE_SKILLS = [
   { description: "Check claims against the attached documents", id: "fact-check", name: "Fact check" }
 ] as const;
 
+/** The chat's computer in each computer state: online Windows, an offline Linux box, or one no longer the user's. */
+function galleryComputerBinding(state: ComposerGalleryState): ChatComputerBinding | null {
+  switch (state) {
+    case "computer-online":
+    case "computer-folder":
+      return { cwd: "C:\\Users\\dana\\Documents\\Reports", deviceId: CONNECT_FIXTURE_WINDOWS_ID };
+    case "computer-offline":
+      return { cwd: "/home/dana/work/infrastructure", deviceId: CONNECT_FIXTURE_BOX_ID };
+    case "computer-removed":
+    case "computer-refused":
+      return { cwd: "~/Documents", deviceId: CONNECT_FIXTURE_REMOVED_ID };
+    default:
+      return null;
+  }
+}
+
 export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalleryState }) {
   // Deep research states sit on the widest chip row, where the chip must fit beside every tool.
   const researchState = state.startsWith("research-");
+  const computerState = state.startsWith("computer-");
+  const [computerBinding, setComputerBinding] = useState<ChatComputerBinding | null>(() => galleryComputerBinding(state));
+  const [computerSource] = useState(() => staticConnectComputerSource(state === "computer-empty" ? [] : connectFixtureComputers()));
+  if (computerState) installConnectFixtureApi();
+  // The picker states open it as "Use a computer…" or the chip's "Change folder" would.
+  useEffect(() => {
+    if (state !== "computer-picker" && state !== "computer-empty" && state !== "computer-folder") return;
+    const frame = window.requestAnimationFrame(() => {
+      if (state === "computer-folder") {
+        galleryRef.current?.querySelector<HTMLButtonElement>('[data-testid="composer-v2-computer"]')?.click();
+        window.requestAnimationFrame(() => {
+          [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+            .find((item) => item.textContent?.includes("Change folder"))?.click();
+        });
+      } else {
+        requestComposerComputerPicker();
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [state]);
   const wideChips = state === "chips-wide" || state === "chips-wide-comments" || (researchState && state !== "research-disabled");
   const [deepResearch, setDeepResearch] = useState(state === "research-on");
   const [sentWithResearch, setSentWithResearch] = useState(state === "research-sent" || state === "research-edit");
@@ -680,7 +737,14 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
             {/* A Load all refusal over the tool limit arrives before a run:
                 the shell shows it above the composer and keeps the draft. */}
             <ComposerOperationErrorV2
-              error={state === "load-all-refused" ? MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE : null}
+              actions={state === "computer-refused" && computerBinding ? [
+                { label: "Choose another computer", onClick: requestComposerComputerPicker },
+                { label: "Stop using computer", onClick: () => setComputerBinding(null) }
+              ] : []}
+              error={state === "load-all-refused" ? MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE
+                : state === "computer-refused" && computerBinding
+                  ? "This computer is no longer connected to your account. Choose another computer, or send without one."
+                  : null}
               live
               onRetry={() => undefined}
               retryable={false}
@@ -751,6 +815,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               }}
               deepResearch={deepResearch}
               onDeepResearchChange={setDeepResearch}
+              computer={computerState ? { binding: computerBinding, onChange: setComputerBinding, source: computerSource } : null}
               onToggleMcpServer={(serverId, enabled) => setConfig((current) => ({
                 ...current,
                 mcpServers: current.mcpServers.map((server) =>

@@ -80,6 +80,9 @@ describe("which runs researched", () => {
     const findMany = vi.spyOn(client.modelRun, "findMany");
     await expect(researchedRuns(prismaResearchedRunsReader(client as never, { chatId: "chat", userId: "user" }), ["research"])).resolves.toEqual(new Set(["research"]));
     for (const [args] of findMany.mock.calls) expect(args.where).toMatchObject({ chatId: "chat", id: { in: ["research"] }, subagentTurnId: null, userId: "user" });
+    // Two statements a read, which every page open sends: the rows, and the run's own research, the frozen choice or the frame row in one.
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany.mock.calls[1]![0].where).toMatchObject({ OR: [{ normalizedRequest: { equals: true, path: ["deepResearch"] } }, { researchFrame: { isNot: null } }] });
     await expect(researchedRuns(prismaResearchedRunsReader(client as never, { chatId: "chat", userId: "stranger" }), ["research"])).resolves.toEqual(new Set());
   });
 

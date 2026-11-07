@@ -11,6 +11,7 @@ import { analyzeConversationImageTool, analyzeImageTool } from "./analyzeImage";
 import { artifactTool, readArtifactTool } from "./artifact";
 import { browserHandoffTool } from "./browserHandoff";
 import { checkpointOutputsTool } from "./checkpointOutputs";
+import { computerToolDefinitions } from "./computerTools";
 import { fetchUrlTool } from "./fetchUrlPlan";
 import { HARNESS_TOOLS } from "./harnessTools";
 import { monitoringVerdictTool } from "./monitoringVerdict";
@@ -77,7 +78,8 @@ function firstPartyTools(): RunTool[] {
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
     loadSkillTool, readSkillFileTool, artifactTool(), readArtifactTool(), checkpointOutputsTool, analyzeImageTool(),
     analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool,
-    recordEvidenceTool, changeResearchFrameTool, submitResearchDraftTool
+    recordEvidenceTool, changeResearchFrameTool, submitResearchDraftTool,
+    ...computerToolDefinitions("windows"), ...computerToolDefinitions("linux")
   ];
 }
 

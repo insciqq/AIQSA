@@ -1,52 +1,82 @@
-import type { z } from "zod";
+import { z } from "zod";
 
 import contract from "../../connect/internal/protocol/testdata/contract.json";
+import { connectComputerEventsStreamEventSchema, connectComputerListResponseSchema } from "./computer";
 import {
-  CONNECT_ABSOLUTE_PATH_PATTERN,
   CONNECT_ARCH_VALUES,
   CONNECT_BASE64_PATTERN,
   CONNECT_CLIENT_CHECKSUMS_PATH,
   CONNECT_CLIENT_MANIFEST_PATH,
+  CONNECT_CLIENT_VERSION_HEADER,
   CONNECT_CONTROL_CHARACTER_PATTERN,
-  CONNECT_DEFAULT_HELLO_LIMITS,
+  CONNECT_DEFAULT_HELLO_V2_LIMITS,
+  CONNECT_DEFAULT_READ_LINES,
+  CONNECT_DEFAULT_SHELL_TIMEOUT_SECONDS,
   CONNECT_DEVICE_EVENTS_PATH,
+  CONNECT_DEVICE_PATH_PATTERN,
+  CONNECT_DEVICE_SELF_PATH,
   CONNECT_DEVICE_STREAM_CLOSED_CODES,
   CONNECT_DEVICE_STREAM_EVENTS,
   CONNECT_DEVICE_STREAM_PATH,
   CONNECT_DEVICE_TOKEN_PATTERN,
+  CONNECT_ENCODING_PATTERN,
   CONNECT_EVENTS_STREAM_CLOSED_CODES,
   CONNECT_EVENTS_STREAM_EVENTS,
+  CONNECT_GREP_MODES,
   CONNECT_HEARTBEAT_SECONDS,
   CONNECT_ID_PATTERN,
   CONNECT_INSTALL_SCRIPT_PATH,
-  CONNECT_MAX_ATTACHED_CLIENTS,
+  CONNECT_JOB_ID_PATTERN,
+  CONNECT_LEGACY_CLIENT_TARGETS,
+  CONNECT_LEGACY_MAX_CLIENT_TARGETS,
+  CONNECT_LEGACY_OS_VALUES,
+  CONNECT_LEGACY_PROTOCOL_VERSION,
+  CONNECT_LINE_ENDINGS,
+  CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
+  CONNECT_MAX_BYTES_CHUNK,
   CONNECT_MAX_CLIENT_BINARY_BYTES,
   CONNECT_MAX_CLIENT_TARGETS,
-  CONNECT_MAX_COLS,
+  CONNECT_MAX_COMMAND_BYTES,
+  CONNECT_MAX_CONCURRENT_OPS,
   CONNECT_MAX_CWD_LENGTH,
   CONNECT_MAX_DEVICE_NAME_LENGTH,
   CONNECT_MAX_DEVICES_PER_USER,
+  CONNECT_MAX_DIR_NAME_LENGTH,
   CONNECT_MAX_EVENTS_BODY_BYTES,
   CONNECT_MAX_EVENTS_PER_POST,
-  CONNECT_MAX_HISTORY_BYTES,
-  CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
+  CONNECT_MAX_EXIT_CODE,
+  CONNECT_MAX_GLOB_PATHS,
+  CONNECT_MAX_GREP_CONTEXT,
+  CONNECT_MAX_GREP_MATCHES,
   CONNECT_MAX_HOSTNAME_LENGTH,
-  CONNECT_MAX_INPUT_BYTES,
-  CONNECT_MAX_OPTION_LABEL_LENGTH,
-  CONNECT_MAX_OUTPUT_CHUNK_BYTES,
+  CONNECT_MAX_JOB_BUFFER_BYTES,
+  CONNECT_MAX_JOB_WAIT_SECONDS,
+  CONNECT_MAX_JOBS,
+  CONNECT_MAX_LINE_BYTES,
+  CONNECT_MAX_LINE_NUMBER,
+  CONNECT_MAX_LIST_DIRS,
+  CONNECT_MAX_OP_DEADLINE_MS,
+  CONNECT_MAX_OS_VERSION_LENGTH,
+  CONNECT_MAX_PATTERN_LENGTH,
+  CONNECT_MAX_READ_BYTES,
+  CONNECT_MAX_READ_LINE_LENGTH,
+  CONNECT_MAX_READ_LINES,
   CONNECT_MAX_RECENT_DIRS,
-  CONNECT_MAX_ROWS,
+  CONNECT_MAX_REPLY_BYTES,
   CONNECT_MAX_SEQ,
-  CONNECT_MAX_SESSION_OPTIONS,
-  CONNECT_MAX_SESSIONS_PER_DEVICE,
-  CONNECT_MAX_SNAPSHOT_SESSIONS,
-  CONNECT_MAX_TITLE_LENGTH,
+  CONNECT_MAX_SHELL_NAME_LENGTH,
+  CONNECT_MAX_SHELL_TIMEOUT_SECONDS,
+  CONNECT_MAX_SHELL_VERSION_LENGTH,
+  CONNECT_MAX_STREAM_OUTPUT_BYTES,
+  CONNECT_MAX_TRANSFER_BYTES,
   CONNECT_MAX_URL_LENGTH,
-  CONNECT_MAX_VIEWS_PER_DEVICE,
-  CONNECT_MIN_COLS,
-  CONNECT_MIN_ROWS,
-  CONNECT_OPTION_KEY_PATTERN,
+  CONNECT_MAX_WRITE_BYTES,
+  CONNECT_MIN_EXIT_CODE,
+  CONNECT_OP_ERROR_CODES,
+  CONNECT_OPS,
   CONNECT_OS_VALUES,
+  CONNECT_OUTPUT_HEAD_BYTES,
+  CONNECT_OUTPUT_TAIL_BYTES,
   CONNECT_PAIRING_DECISIONS,
   CONNECT_PAIRING_POLL_INTERVAL_MAX_SECONDS,
   CONNECT_PAIRING_POLL_INTERVAL_SECONDS,
@@ -54,36 +84,27 @@ import {
   CONNECT_PAIRING_TTL_SECONDS,
   CONNECT_PAIRINGS_PATH,
   CONNECT_POLL_SECRET_PATTERN,
-  CONNECT_PROGRAMS,
+  CONNECT_PROTOCOL_HEADER,
   CONNECT_PROTOCOL_VERSION,
   CONNECT_REASON_CODES,
-  CONNECT_REPLY_ERROR_CODES,
-  CONNECT_REPLY_TIMEOUT_SECONDS,
-  CONNECT_REQUESTED_CWD_PATTERN,
-  CONNECT_SESSION_ID_PATTERN,
-  CONNECT_SESSION_STATUSES,
   CONNECT_SHA256_PATTERN,
-  CONNECT_STATUS_REASONS,
+  CONNECT_SHELL_KINDS,
+  CONNECT_STAT_KINDS,
   CONNECT_TIMESTAMP_PATTERN,
   CONNECT_URL_PREFIX_PATTERN,
   CONNECT_USER_CODE_ALPHABET,
   CONNECT_USER_CODE_PATTERN,
   CONNECT_VERSION_PATTERN,
-  CONNECT_VIEW_CLOSED_REASONS,
-  CONNECT_VIEW_ORPHAN_TIMEOUT_SECONDS,
-  CONNECT_VIEW_STREAM_CLOSED_REASONS,
-  CONNECT_VIEW_STREAM_EVENTS,
+  connectClientBinaryName,
   connectClientDownloadPath,
   connectClientManifestSchema,
-  connectCommandResultSchemas,
-  connectDeviceEventBatchSchema,
-  connectDeviceEventSchema,
-  connectDeviceSessionPath,
-  connectDeviceSessionsPath,
-  connectDeviceStreamEventSchema,
-  connectDevicesResponseSchema,
+  connectDeviceEventBatchV2Schema,
+  connectDeviceEventV2Schema,
+  connectDeviceStreamEventV2Schema,
   connectErrorResponseSchema,
-  connectEventsStreamEventSchema,
+  connectLegacyClientManifestSchema,
+  connectOpArgsSchemas,
+  connectOpResultSchemas,
   connectPairingByCodePath,
   connectPairingCreateRequestSchema,
   connectPairingCreateResponseSchema,
@@ -94,35 +115,11 @@ import {
   connectPairingPollResponseSchema,
   connectPairPagePath,
   connectRecentDirsPath,
-  connectRecentDirsResultSchema,
-  connectServerCommandSchema,
-  connectSessionCreateRequestSchema,
-  connectSessionCreateResultSchema,
-  connectSessionHistoryPath,
-  connectSessionHistoryResultSchema,
-  connectSessionKillResultSchema,
-  connectSessionOptionsPath,
-  connectSessionOptionsResultSchema,
-  connectSessionPath,
-  connectSessionSchema,
+  connectServerCommandV2Schema,
   connectUtf8ByteLength,
-  connectViewCreateRequestSchema,
-  connectViewCreateResponseSchema,
-  connectViewInputPath,
-  connectViewInputRequestSchema,
-  connectViewPath,
-  connectViewResizePath,
-  connectViewResizeRequestSchema,
-  connectViewStreamEventSchema,
-  connectViewStreamPath,
-  connectViewVisibilityPath,
-  connectViewVisibilityRequestSchema,
-  decodeConnectDevicesResponse,
   decodeConnectErrorResponse,
-  decodeConnectEventsStreamEvent,
-  decodeConnectViewStreamEvent,
   normalizeConnectUserCode,
-  parseConnectCommandResult
+  parseConnectOpResult
 } from "./connect";
 
 declare global {
@@ -139,7 +136,6 @@ declare global {
  */
 const fixtureSchemas: Readonly<Record<string, z.ZodType>> = {
   errorResponse: connectErrorResponseSchema,
-  session: connectSessionSchema,
   pairingCreateRequest: connectPairingCreateRequestSchema,
   pairingCreateResponse: connectPairingCreateResponseSchema,
   pairingPollRequest: connectPairingPollRequestSchema,
@@ -147,25 +143,21 @@ const fixtureSchemas: Readonly<Record<string, z.ZodType>> = {
   pairingLookupResponse: connectPairingLookupResponseSchema,
   pairingDecisionRequest: connectPairingDecisionRequestSchema,
   pairingDecisionResponse: connectPairingDecisionResponseSchema,
-  deviceStreamEvent: connectDeviceStreamEventSchema,
-  serverCommand: connectServerCommandSchema,
-  sessionCreateResult: connectSessionCreateResultSchema,
-  sessionKillResult: connectSessionKillResultSchema,
-  sessionHistoryResult: connectSessionHistoryResultSchema,
-  sessionOptionsResult: connectSessionOptionsResultSchema,
-  recentDirsResult: connectRecentDirsResultSchema,
-  deviceEvent: connectDeviceEventSchema,
-  deviceEventBatch: connectDeviceEventBatchSchema,
   clientManifest: connectClientManifestSchema,
-  devicesResponse: connectDevicesResponseSchema,
-  sessionCreateRequest: connectSessionCreateRequestSchema,
-  viewCreateRequest: connectViewCreateRequestSchema,
-  viewCreateResponse: connectViewCreateResponseSchema,
-  viewInputRequest: connectViewInputRequestSchema,
-  viewResizeRequest: connectViewResizeRequestSchema,
-  viewVisibilityRequest: connectViewVisibilityRequestSchema,
-  eventsStreamEvent: connectEventsStreamEventSchema,
-  viewStreamEvent: connectViewStreamEventSchema
+  deviceStreamEventV2: connectDeviceStreamEventV2Schema,
+  serverCommandV2: connectServerCommandV2Schema,
+  /** `{op, result}`: the result checked against the op it answers, as `parseConnectOpResult` does. */
+  opResult: z.strictObject({ op: z.enum(CONNECT_OPS), result: z.unknown() }).transform((value, context) => {
+    const result = parseConnectOpResult(value.op, value.result);
+    if (result === null) {
+      context.addIssue({ code: "custom", message: "result does not match op" });
+      return z.NEVER;
+    }
+    return { op: value.op, result };
+  }),
+  deviceEventV2: connectDeviceEventV2Schema,
+  deviceEventBatchV2: connectDeviceEventBatchV2Schema,
+  legacyClientManifest: connectLegacyClientManifestSchema
 };
 
 type Fixture = Readonly<{ name: string; schema: string; value: unknown }>;
@@ -173,7 +165,8 @@ type Fixture = Readonly<{ name: string; schema: string; value: unknown }>;
 function fixtures(files: Record<string, string>): Fixture[] {
   return Object.entries(files).map(([path, raw]) => {
     const name = path.slice(path.lastIndexOf("/") + 1);
-    return { name, schema: name.slice(0, name.indexOf(".")), value: JSON.parse(raw) as unknown };
+    const schema = name.slice(0, name.indexOf("."));
+    return { name, schema, value: JSON.parse(raw) as unknown };
   });
 }
 
@@ -187,11 +180,6 @@ const invalidFixtures = fixtures(import.meta.glob("../../connect/internal/protoc
   import: "default",
   query: "?raw"
 }));
-
-const DEVICE_ID = "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11";
-const VIEW_ID = "c4ca4238-a0b9-4382-8dcc-509a6f75849b";
-const REQUEST_ID = "e4da3b7f-bbce-4345-9777-2b0670b8a1c4";
-const SESSION_ID = "ac-k3x9q2";
 
 describe("connect contract fixtures", () => {
   it("loads fixtures for every schema", () => {
@@ -222,60 +210,81 @@ describe("connect contract fixtures", () => {
 
 describe("connect contract constants", () => {
   it("match the contract shared with the Go client", () => {
-    const optionValues = <T extends { options: readonly { shape: { type: { value: string } } }[] }>(schema: T) =>
-      schema.options.map((option) => option.shape.type.value);
+    const typeValues = (schema: { options: readonly unknown[] }) => schema.options.map((option) => {
+      const variant = option as { shape?: { type: { value: string } }; options?: readonly { shape: { type: { value: string } } }[] };
+      return variant.shape ? variant.shape.type.value : variant.options![0]!.shape.type.value;
+    });
     expect({
       protocolVersion: CONNECT_PROTOCOL_VERSION,
+      legacyProtocolVersion: CONNECT_LEGACY_PROTOCOL_VERSION,
       limits: {
         maxDevicesPerUser: CONNECT_MAX_DEVICES_PER_USER,
-        maxSessionsPerDevice: CONNECT_MAX_SESSIONS_PER_DEVICE,
-        maxViewsPerDevice: CONNECT_MAX_VIEWS_PER_DEVICE,
         maxEventsPerPost: CONNECT_MAX_EVENTS_PER_POST,
         maxEventsBodyBytes: CONNECT_MAX_EVENTS_BODY_BYTES,
-        maxOutputChunkBytes: CONNECT_MAX_OUTPUT_CHUNK_BYTES,
-        maxInputBytes: CONNECT_MAX_INPUT_BYTES,
-        maxHistoryBytes: CONNECT_MAX_HISTORY_BYTES,
-        replyTimeoutSeconds: CONNECT_REPLY_TIMEOUT_SECONDS,
         heartbeatSeconds: CONNECT_HEARTBEAT_SECONDS,
-        viewOrphanTimeoutSeconds: CONNECT_VIEW_ORPHAN_TIMEOUT_SECONDS,
         pairingTtlSeconds: CONNECT_PAIRING_TTL_SECONDS,
         pairingPollIntervalSeconds: CONNECT_PAIRING_POLL_INTERVAL_SECONDS,
         pairingPollIntervalMaxSeconds: CONNECT_PAIRING_POLL_INTERVAL_MAX_SECONDS,
-        maxTitleLength: CONNECT_MAX_TITLE_LENGTH,
         maxCwdLength: CONNECT_MAX_CWD_LENGTH,
         maxRecentDirs: CONNECT_MAX_RECENT_DIRS,
-        maxSnapshotSessions: CONNECT_MAX_SNAPSHOT_SESSIONS,
         maxDeviceNameLength: CONNECT_MAX_DEVICE_NAME_LENGTH,
         maxHostnameLength: CONNECT_MAX_HOSTNAME_LENGTH,
         maxAccountLabelLength: CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
-        maxSessionOptions: CONNECT_MAX_SESSION_OPTIONS,
-        maxOptionLabelLength: CONNECT_MAX_OPTION_LABEL_LENGTH,
-        maxAttachedClients: CONNECT_MAX_ATTACHED_CLIENTS,
         maxUrlLength: CONNECT_MAX_URL_LENGTH,
         maxClientBinaryBytes: CONNECT_MAX_CLIENT_BINARY_BYTES,
         maxClientTargets: CONNECT_MAX_CLIENT_TARGETS,
         maxSeq: CONNECT_MAX_SEQ,
-        minCols: CONNECT_MIN_COLS,
-        maxCols: CONNECT_MAX_COLS,
-        minRows: CONNECT_MIN_ROWS,
-        maxRows: CONNECT_MAX_ROWS
+        legacyMaxClientTargets: CONNECT_LEGACY_MAX_CLIENT_TARGETS,
+        maxConcurrentOps: CONNECT_MAX_CONCURRENT_OPS,
+        maxJobs: CONNECT_MAX_JOBS,
+        maxReplyBytes: CONNECT_MAX_REPLY_BYTES,
+        maxWriteBytes: CONNECT_MAX_WRITE_BYTES,
+        defaultShellTimeoutSeconds: CONNECT_DEFAULT_SHELL_TIMEOUT_SECONDS,
+        maxShellTimeoutSeconds: CONNECT_MAX_SHELL_TIMEOUT_SECONDS,
+        maxOpDeadlineMs: CONNECT_MAX_OP_DEADLINE_MS,
+        maxJobWaitSeconds: CONNECT_MAX_JOB_WAIT_SECONDS,
+        maxJobBufferBytes: CONNECT_MAX_JOB_BUFFER_BYTES,
+        outputHeadBytes: CONNECT_OUTPUT_HEAD_BYTES,
+        outputTailBytes: CONNECT_OUTPUT_TAIL_BYTES,
+        maxStreamOutputBytes: CONNECT_MAX_STREAM_OUTPUT_BYTES,
+        maxCommandBytes: CONNECT_MAX_COMMAND_BYTES,
+        defaultReadLines: CONNECT_DEFAULT_READ_LINES,
+        maxReadLines: CONNECT_MAX_READ_LINES,
+        maxReadLineLength: CONNECT_MAX_READ_LINE_LENGTH,
+        maxLineBytes: CONNECT_MAX_LINE_BYTES,
+        maxReadBytes: CONNECT_MAX_READ_BYTES,
+        maxBytesChunk: CONNECT_MAX_BYTES_CHUNK,
+        maxTransferBytes: CONNECT_MAX_TRANSFER_BYTES,
+        maxLineNumber: CONNECT_MAX_LINE_NUMBER,
+        maxGlobPaths: CONNECT_MAX_GLOB_PATHS,
+        maxGrepMatches: CONNECT_MAX_GREP_MATCHES,
+        maxGrepContext: CONNECT_MAX_GREP_CONTEXT,
+        maxPatternLength: CONNECT_MAX_PATTERN_LENGTH,
+        maxListDirs: CONNECT_MAX_LIST_DIRS,
+        maxDirNameLength: CONNECT_MAX_DIR_NAME_LENGTH,
+        maxOsVersionLength: CONNECT_MAX_OS_VERSION_LENGTH,
+        maxShellNameLength: CONNECT_MAX_SHELL_NAME_LENGTH,
+        maxShellVersionLength: CONNECT_MAX_SHELL_VERSION_LENGTH,
+        minExitCode: CONNECT_MIN_EXIT_CODE,
+        maxExitCode: CONNECT_MAX_EXIT_CODE
       },
-      helloLimits: CONNECT_DEFAULT_HELLO_LIMITS,
+      helloV2Limits: CONNECT_DEFAULT_HELLO_V2_LIMITS,
       reasonCodes: CONNECT_REASON_CODES,
-      replyErrorCodes: CONNECT_REPLY_ERROR_CODES,
+      opErrorCodes: CONNECT_OP_ERROR_CODES,
       deviceStreamClosedCodes: CONNECT_DEVICE_STREAM_CLOSED_CODES,
       eventsStreamClosedCodes: CONNECT_EVENTS_STREAM_CLOSED_CODES,
-      viewClosedReasons: CONNECT_VIEW_CLOSED_REASONS,
-      viewStreamClosedReasons: CONNECT_VIEW_STREAM_CLOSED_REASONS,
       os: CONNECT_OS_VALUES,
+      legacyOs: CONNECT_LEGACY_OS_VALUES,
       arch: CONNECT_ARCH_VALUES,
-      programs: CONNECT_PROGRAMS,
-      sessionStatuses: CONNECT_SESSION_STATUSES,
-      statusReasons: CONNECT_STATUS_REASONS,
+      legacyClientTargets: CONNECT_LEGACY_CLIENT_TARGETS,
+      ops: CONNECT_OPS,
+      shellKinds: CONNECT_SHELL_KINDS,
+      grepModes: CONNECT_GREP_MODES,
+      lineEndings: CONNECT_LINE_ENDINGS,
+      statKinds: CONNECT_STAT_KINDS,
       pairingDecisions: CONNECT_PAIRING_DECISIONS,
       userCodeAlphabet: CONNECT_USER_CODE_ALPHABET,
       patterns: {
-        sessionId: CONNECT_SESSION_ID_PATTERN.source,
         userCode: CONNECT_USER_CODE_PATTERN.source,
         deviceToken: CONNECT_DEVICE_TOKEN_PATTERN.source,
         pollSecret: CONNECT_POLL_SECRET_PATTERN.source,
@@ -283,12 +292,16 @@ describe("connect contract constants", () => {
         version: CONNECT_VERSION_PATTERN.source,
         timestamp: CONNECT_TIMESTAMP_PATTERN.source,
         sha256: CONNECT_SHA256_PATTERN.source,
-        optionKey: CONNECT_OPTION_KEY_PATTERN.source,
-        base64: CONNECT_BASE64_PATTERN.source,
         controlCharacter: CONNECT_CONTROL_CHARACTER_PATTERN.source,
-        requestedCwd: CONNECT_REQUESTED_CWD_PATTERN.source,
-        absolutePath: CONNECT_ABSOLUTE_PATH_PATTERN.source,
-        urlPrefix: CONNECT_URL_PREFIX_PATTERN.source
+        urlPrefix: CONNECT_URL_PREFIX_PATTERN.source,
+        devicePath: CONNECT_DEVICE_PATH_PATTERN.source,
+        jobId: CONNECT_JOB_ID_PATTERN.source,
+        encoding: CONNECT_ENCODING_PATTERN.source,
+        base64: CONNECT_BASE64_PATTERN.source
+      },
+      headers: {
+        clientVersion: CONNECT_CLIENT_VERSION_HEADER,
+        protocol: CONNECT_PROTOCOL_HEADER
       },
       devicePaths: {
         pairings: CONNECT_PAIRINGS_PATH,
@@ -298,24 +311,21 @@ describe("connect contract constants", () => {
         client: CONNECT_CLIENT_MANIFEST_PATH,
         installScript: CONNECT_INSTALL_SCRIPT_PATH,
         checksums: CONNECT_CLIENT_CHECKSUMS_PATH,
-        downloadLinuxArm64: connectClientDownloadPath("linux", "arm64")
+        downloadLinuxArm64: connectClientDownloadPath("linux", "arm64"),
+        downloadWindowsAmd64: connectClientDownloadPath("windows", "amd64")
       },
       deviceStreamEvents: CONNECT_DEVICE_STREAM_EVENTS,
       eventsStreamEvents: CONNECT_EVENTS_STREAM_EVENTS,
-      viewStreamEvents: CONNECT_VIEW_STREAM_EVENTS,
-      serverCommandTypes: optionValues(connectServerCommandSchema),
-      requestCommandTypes: Object.keys(connectCommandResultSchemas),
-      deviceEventTypes: connectDeviceEventSchema.options.map((option) =>
-        "shape" in option ? option.shape.type.value : option.options[0].shape.type.value)
+      serverCommandV2Types: typeValues(connectServerCommandV2Schema),
+      deviceEventV2Types: typeValues(connectDeviceEventV2Schema)
     }).toEqual(contract);
   });
 
   it("names every SSE event its stream schema accepts", () => {
     const names = (schema: { options: readonly { shape: { event: { value: string } } }[] }) =>
       schema.options.map((option) => option.shape.event.value);
-    expect(names(connectDeviceStreamEventSchema)).toEqual([...CONNECT_DEVICE_STREAM_EVENTS]);
-    expect(names(connectEventsStreamEventSchema)).toEqual([...CONNECT_EVENTS_STREAM_EVENTS]);
-    expect(names(connectViewStreamEventSchema)).toEqual([...CONNECT_VIEW_STREAM_EVENTS]);
+    expect(names(connectDeviceStreamEventV2Schema)).toEqual([...CONNECT_DEVICE_STREAM_EVENTS]);
+    expect(names(connectComputerEventsStreamEventSchema)).toEqual([...CONNECT_EVENTS_STREAM_EVENTS]);
   });
 
   it("uses an unambiguous pairing code alphabet", () => {
@@ -326,88 +336,92 @@ describe("connect contract constants", () => {
     expect(normalizeConnectUserCode("BCD0-2345")).toBeNull();
     expect(normalizeConnectUserCode("BCDF-234")).toBeNull();
   });
-});
 
-describe("connect contract size limits", () => {
-  const output = (size: number) => ({
-    type: "output",
-    viewId: VIEW_ID,
-    seq: 1,
-    data: btoa("x".repeat(size))
-  });
-
-  it("bounds decoded output chunks", () => {
-    expect(connectDeviceEventSchema.safeParse(output(CONNECT_MAX_OUTPUT_CHUNK_BYTES)).success).toBe(true);
-    expect(connectDeviceEventSchema.safeParse(output(CONNECT_MAX_OUTPUT_CHUNK_BYTES + 1)).success).toBe(false);
-  });
-
-  it("counts input in UTF-8 bytes", () => {
-    const full = "ж".repeat(CONNECT_MAX_INPUT_BYTES / 2);
-    expect(connectUtf8ByteLength(full)).toBe(CONNECT_MAX_INPUT_BYTES);
+  it("counts text in UTF-8 bytes as the Go client does", () => {
+    expect(connectUtf8ByteLength("ж".repeat(4))).toBe(8);
     expect(connectUtf8ByteLength("😀")).toBe(4);
-    expect(connectViewInputRequestSchema.safeParse({ data: full }).success).toBe(true);
-    expect(connectViewInputRequestSchema.safeParse({ data: `${full}x` }).success).toBe(false);
-    expect(connectServerCommandSchema.safeParse({ type: "view_input", viewId: VIEW_ID, data: `${full}x` }).success)
-      .toBe(false);
-  });
-
-  it("bounds history text", () => {
-    expect(connectSessionHistoryResultSchema.safeParse({ text: "a".repeat(CONNECT_MAX_HISTORY_BYTES) }).success)
-      .toBe(true);
-    expect(connectSessionHistoryResultSchema.safeParse({ text: "a".repeat(CONNECT_MAX_HISTORY_BYTES + 1) }).success)
-      .toBe(false);
-  });
-
-  it("counts titles in code points", () => {
-    const title = "😀".repeat(CONNECT_MAX_TITLE_LENGTH);
-    const create = (value: string) => ({ type: "session_create", requestId: REQUEST_ID, program: "shell", cwd: "~", title: value });
-    expect(connectServerCommandSchema.safeParse(create(title)).success).toBe(true);
-    expect(connectServerCommandSchema.safeParse(create(`${title}😀`)).success).toBe(false);
-  });
-});
-
-describe("connect command results", () => {
-  it("checks a reply result against the command it answers", () => {
-    expect(parseConnectCommandResult("session_create", { sessionId: SESSION_ID })).toEqual({ sessionId: SESSION_ID });
-    expect(parseConnectCommandResult("session_history", { sessionId: SESSION_ID })).toBeNull();
-    expect(parseConnectCommandResult("session_kill", {})).toEqual({});
-    expect(parseConnectCommandResult("recent_dirs", { home: "/home/user", dirs: [] }))
-      .toEqual({ home: "/home/user", dirs: [] });
+    expect(connectUtf8ByteLength("\ud800")).toBe(3);
   });
 });
 
 describe("connect paths", () => {
-  it("builds browser API and page paths with encoded segments", () => {
+  it("builds browser API, device API and page paths with encoded segments", () => {
     expect(connectPairingByCodePath("BCDF-2345")).toBe("/api/connect/pairings/by-code/BCDF-2345");
-    expect(connectDeviceSessionsPath(DEVICE_ID)).toBe(`/api/connect/devices/${DEVICE_ID}/sessions`);
-    expect(connectDeviceSessionPath(DEVICE_ID, SESSION_ID)).toBe(`/api/connect/devices/${DEVICE_ID}/sessions/${SESSION_ID}`);
-    expect(connectSessionHistoryPath(DEVICE_ID, SESSION_ID)).toBe(`/api/connect/devices/${DEVICE_ID}/sessions/${SESSION_ID}/history`);
-    expect(connectSessionOptionsPath(DEVICE_ID, SESSION_ID)).toBe(`/api/connect/devices/${DEVICE_ID}/sessions/${SESSION_ID}/options`);
-    expect(connectRecentDirsPath(DEVICE_ID)).toBe(`/api/connect/devices/${DEVICE_ID}/recent-dirs`);
-    expect(connectViewPath(VIEW_ID)).toBe(`/api/connect/views/${VIEW_ID}`);
-    expect(connectViewStreamPath(VIEW_ID)).toBe(`/api/connect/views/${VIEW_ID}/stream`);
-    expect(connectViewInputPath(VIEW_ID)).toBe(`/api/connect/views/${VIEW_ID}/input`);
-    expect(connectViewResizePath(VIEW_ID)).toBe(`/api/connect/views/${VIEW_ID}/resize`);
-    expect(connectViewVisibilityPath(VIEW_ID)).toBe(`/api/connect/views/${VIEW_ID}/visibility`);
+    expect(connectRecentDirsPath("../x")).toBe("/api/connect/devices/..%2Fx/recent-dirs");
     expect(connectPairPagePath("BCDF-2345")).toBe("/connect/pair?code=BCDF-2345");
-    expect(connectSessionPath(DEVICE_ID, SESSION_ID)).toBe(`/connect/${DEVICE_ID}/${SESSION_ID}`);
-    expect(connectViewPath("../x")).toBe("/api/connect/views/..%2Fx");
+    expect(CONNECT_DEVICE_SELF_PATH).toBe("/connect-api/v1/device");
   });
 });
 
 describe("connect browser decoders", () => {
   it("returns null for invalid values", () => {
     expect(decodeConnectErrorResponse({ code: "connect_disabled" })).toEqual({ code: "connect_disabled" });
+    expect(decodeConnectErrorResponse({ code: "connect_session_not_found" })).toBeNull();
     expect(decodeConnectErrorResponse({ code: "nope" })).toBeNull();
-    expect(decodeConnectDevicesResponse({ devices: [] })).toEqual({ devices: [] });
-    expect(decodeConnectDevicesResponse(null)).toBeNull();
+    expect(connectComputerListResponseSchema.safeParse({ computers: [] }).success).toBe(true);
+  });
+});
+
+const REQUEST_ID = "e4da3b7f-bbce-4345-9777-2b0670b8a1c4";
+const RUN_ID = "1679091c-5a88-4faf-afb5-e6087eb1b2dc";
+
+describe("connect protocol 2", () => {
+  it("names every op's arguments and results in op order", () => {
+    expect(Object.keys(connectOpArgsSchemas)).toEqual([...CONNECT_OPS]);
+    expect(Object.keys(connectOpResultSchemas)).toEqual([...CONNECT_OPS]);
   });
 
-  it("decodes SSE frames from the event name and raw data", () => {
-    expect(decodeConnectEventsStreamEvent("ping", "{}")).toEqual({ event: "ping", data: {} });
-    expect(decodeConnectEventsStreamEvent("devices", "not json")).toBeNull();
-    expect(decodeConnectViewStreamEvent("closed", JSON.stringify({ reason: "session_ended" })))
-      .toEqual({ event: "closed", data: { reason: "session_ended" } });
-    expect(decodeConnectViewStreamEvent("message", "{}")).toBeNull();
+  it("checks a reply result against the op it answers", () => {
+    expect(parseConnectOpResult("edit", { replacements: 2 })).toEqual({ replacements: 2 });
+    expect(parseConnectOpResult("write", { replacements: 2 })).toBeNull();
+    expect(parseConnectOpResult("shell", { jobId: "job-k3x9q2ab" })).toEqual({ jobId: "job-k3x9q2ab" });
+    expect(parseConnectOpResult("stat", { exists: false })).toEqual({ exists: false });
+  });
+
+  it("carries a full read_bytes chunk within one reply and refuses broken base64", () => {
+    const bytes = Buffer.alloc(CONNECT_MAX_BYTES_CHUNK, 0xff);
+    const result = { data: bytes.toString("base64"), size: CONNECT_MAX_TRANSFER_BYTES, modifiedMs: Number.MAX_SAFE_INTEGER, eof: false };
+    const reply = { type: "reply", requestId: REQUEST_ID, ok: true, result };
+    expect(connectDeviceEventV2Schema.parse(reply)).toEqual(reply);
+    expect(connectUtf8ByteLength(JSON.stringify(reply))).toBeLessThanOrEqual(CONNECT_MAX_REPLY_BYTES);
+    expect(parseConnectOpResult("read_bytes", result)).toEqual(result);
+    expect(parseConnectOpResult("read_bytes", { ...result, data: `${result.data}AAAA` })).toBeNull();
+    expect(parseConnectOpResult("read_bytes", { ...result, data: "AAA" })).toBeNull();
+    expect(parseConnectOpResult("read_bytes", { ...result, data: "AA=A" })).toBeNull();
+    expect(parseConnectOpResult("read", result)).toBeNull();
+  });
+
+  it("bounds write content and command output in UTF-8 bytes", () => {
+    const write = (content: string) => ({
+      type: "op", requestId: REQUEST_ID, runId: RUN_ID, op: "write", args: { path: "a.txt", cwd: "~", content }, deadlineMs: 60_000
+    });
+    const full = "ж".repeat(CONNECT_MAX_WRITE_BYTES / 2);
+    expect(connectServerCommandV2Schema.safeParse(write(full)).success).toBe(true);
+    expect(connectServerCommandV2Schema.safeParse(write(`${full}x`)).success).toBe(false);
+    const shell = (stdout: string) => ({
+      exitCode: 0, stdout, stderr: "", truncated: true, stdoutBytes: 2 ** 30, stderrBytes: 0, durationMs: 5
+    });
+    expect(parseConnectOpResult("shell", shell("a".repeat(CONNECT_MAX_STREAM_OUTPUT_BYTES)))).not.toBeNull();
+    expect(parseConnectOpResult("shell", shell("a".repeat(CONNECT_MAX_STREAM_OUTPUT_BYTES + 1)))).toBeNull();
+  });
+
+  it("accepts the absolute paths of every supported system", () => {
+    for (const path of ["/home/ivan", "C:\\Users\\ivan", "c:/Users/ivan", "\\\\server\\share"]) {
+      expect(CONNECT_DEVICE_PATH_PATTERN.test(path)).toBe(true);
+    }
+    for (const path of ["ivan", "~/x", "C:relative", "\\single"]) {
+      expect(CONNECT_DEVICE_PATH_PATTERN.test(path)).toBe(false);
+    }
+  });
+
+  it("names Windows release files with .exe and keeps the legacy targets", () => {
+    expect(connectClientBinaryName("windows", "arm64")).toBe("aiqsa-connect-windows-arm64.exe");
+    expect(connectClientBinaryName("linux", "amd64")).toBe("aiqsa-connect-linux-amd64");
+    expect(CONNECT_LEGACY_CLIENT_TARGETS.map(({ arch, os }) => connectClientBinaryName(os, arch))).toEqual([
+      "aiqsa-connect-darwin-amd64",
+      "aiqsa-connect-darwin-arm64",
+      "aiqsa-connect-linux-amd64",
+      "aiqsa-connect-linux-arm64"
+    ]);
   });
 });

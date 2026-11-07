@@ -93,6 +93,8 @@ export type SubagentBackgroundParts = Readonly<{
   live(runId: string): BrowserLiveRunHandle | null;
   /** Records a compaction of the run's thread that finished after its turn. */
   recordDetachedCompaction(runId: string, input: Parameters<SubagentHost["recordDetachedCompaction"]>[0]): Promise<boolean>;
+  /** The run ended: the user's computer stops the processes and jobs it started for it; absent where the run has no computer. */
+  runEnded?(runId: string): void;
   /** Saves a long result of the run's own calls for a later read. */
   saveResult(runId: string): ToolBatchDeps["saveResult"];
   /** The runs holding a thread's items on the branch (`SubagentThreadStore.threadRunIds`). */
@@ -147,7 +149,9 @@ export type PrepareRunSubagentsInput = Readonly<{
   buildRegistry(input: Readonly<{ agent: WorkspaceAgent; followupTexts(): readonly string[];
     /** A background turn's own run; absent, the parent run's. */
     host?: SubagentRegistryHost;
-    onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>; request: ProviderRunRequest }>): Promise<ToolRegistry>;
+    onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>; request: ProviderRunRequest;
+    /** The sub-agent's route carries tool-result images. */
+    resultImages?: true }>): Promise<ToolRegistry>;
   /** Background turns' own runs; absent, background turns cannot run here. */
   backgroundParts?: SubagentBackgroundParts;
   budgets: ToolRunBudgets;
@@ -405,7 +409,13 @@ function backgroundSubagentRunner(input: PrepareRunSubagentsInput, parent: Subag
     usage: (attribution) => ledger.add(attribution),
     userFollowups: async () => []
   });
+  let runEnded = false;
   const ended = async () => {
+    // Once per run, first: whatever its end, the computer stops what this turn left running there.
+    if (!runEnded) {
+      runEnded = true;
+      parts.runEnded?.(runId);
+    }
     await ledger.settle();
     await live?.end("run_finished").catch(() => undefined);
   };

@@ -1,0 +1,10 @@
+{
+  "op": "job_output",
+  "result": {
+    "running": true,
+    "exitCode": 0,
+    "stdout": "",
+    "stderr": "",
+    "truncated": false
+  }
+}

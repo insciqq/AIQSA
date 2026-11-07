@@ -1,30 +1,33 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { connectComputerEventsStreamEventSchema, connectComputerListResponseSchema } from "@/lib/contracts/computer";
 import {
   CONNECT_CLIENT_VERSION_HEADER,
   CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
   CONNECT_MAX_DEVICES_PER_USER,
   CONNECT_MAX_EVENTS_BODY_BYTES,
-  CONNECT_MAX_INPUT_BYTES,
-  CONNECT_MAX_VIEWS_PER_DEVICE,
-  connectDeviceStreamEventSchema,
-  connectDevicesResponseSchema,
-  connectEventsStreamEventSchema,
+  CONNECT_PROTOCOL_HEADER,
+  connectDeviceStreamEventV2Schema,
   connectPairingCreateResponseSchema,
   connectPairingLookupResponseSchema,
   connectPairingPollResponseSchema,
-  connectViewStreamEventSchema,
-  type ConnectDeviceEvent,
-  type ConnectSession
+  connectServerCommandV2Schema,
+  type ConnectDeviceEventV2
 } from "@/lib/contracts/connect";
 import type { AuthenticatedSession } from "../auth/requestAuth";
 import { hashToken } from "../auth/token";
 import { createConnectAdminPolicyHandlers } from "./adminHandlers";
-import { CONNECT_DEVICES_CHANGED_REREAD_MS, createConnectBrowserHandlers } from "./browserHandlers";
+import {
+  CONNECT_DEVICES_CHANGED_REREAD_MS,
+  CONNECT_PICKER_OP_TIMEOUT_MS,
+  createConnectBrowserHandlers
+} from "./browserHandlers";
+import { createConnectComputerOps } from "./computerOps";
 import { createConnectDeviceHandlers } from "./deviceHandlers";
 import { connectAccountLabel, createConnectPairingService } from "./pairingService";
 import {
+  CONNECT_OP_REPLY_GRACE_MS,
   CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER,
   createConnectRelay,
   type ConnectDeviceRecord,
@@ -122,6 +125,12 @@ function memoryStore() {
       devices.delete(input.id);
       return true;
     },
+    async deleteDeviceByToken(tokenHash) {
+      const device = [...devices.values()].find((candidate) => candidate.tokenHash === tokenHash);
+      if (!device) return null;
+      devices.delete(device.id);
+      return { id: device.id, userId: device.userId };
+    },
     async denyPairing(input) {
       const pairing = [...pairings.values()].find((candidate) => candidate.userCodeHash === input.userCodeHash);
       if (!pendingPairing(pairing, input.now)) return "expired";
@@ -130,6 +139,10 @@ function memoryStore() {
     },
     async deviceExists(input) {
       return devices.get(input.id)?.userId === input.userId;
+    },
+    async findDevice(input) {
+      const device = devices.get(input.id);
+      return device && device.userId === input.userId ? withoutToken(device) : null;
     },
     async findPairing(id) {
       const pairing = pairings.get(id);
@@ -162,7 +175,7 @@ function memoryStore() {
     }
   };
 
-  function seedDevice(userId: string, name = "Synthetic laptop") {
+  function seedDevice(userId: string, name = "Synthetic laptop", os: ConnectDeviceRecord["os"] = "linux") {
     const token = issueConnectDeviceToken();
     const id = randomUUID();
     devices.set(id, {
@@ -173,7 +186,7 @@ function memoryStore() {
       id,
       lastSeenAt: null,
       name,
-      os: "linux",
+      os,
       tokenHash: token.hash,
       userId
     });
@@ -240,6 +253,7 @@ function setup() {
     };
   });
   const clientKey = vi.fn((_request: Request): string | null => "ip:203.0.113.5");
+  const computerOps = createConnectComputerOps({ policy: gate, relay, repository: store.repository });
   const device = createConnectDeviceHandlers({
     clientKey,
     pairing,
@@ -250,6 +264,7 @@ function setup() {
   });
   const browser = createConnectBrowserHandlers({
     codeRateLimiter: limits.code,
+    computerOps,
     pairing,
     policy: gate,
     relay,
@@ -267,18 +282,21 @@ function setup() {
     },
     resolveAuth
   });
-  return { admin, browser, clientKey, device, gate, limits, policy, relay, relayEvents, resolveAuth, store };
+  return { admin, browser, clientKey, computerOps, device, gate, limits, policy, relay, relayEvents, resolveAuth, store };
 }
 
+/** A device API request; a protocol 2 client unless `legacy` (a terminal client without the protocol header). */
 function deviceRequest(path: string, init: Readonly<{
   body?: unknown;
   headers?: Record<string, string>;
+  legacy?: boolean;
   method?: string;
   token?: string;
 }> = {}) {
   return new Request(`${ORIGIN}${path}`, {
     ...(init.body === undefined ? {} : { body: typeof init.body === "string" ? init.body : JSON.stringify(init.body) }),
     headers: {
+      ...(init.legacy ? {} : { [CONNECT_PROTOCOL_HEADER]: "2" }),
       ...(init.token ? { authorization: `Bearer ${init.token}` } : {}),
       ...(init.body === undefined ? {} : { "content-type": "application/json" }),
       ...init.headers
@@ -303,39 +321,38 @@ async function json(response: Response) {
   return { body: response.status === 204 ? null : await response.json(), status: response.status };
 }
 
-function session(id: string, title = "Fix the build", status: ConnectSession["status"] = "running"): ConnectSession {
-  return {
-    attachedClients: 1,
-    createdAt: "2026-10-19T09:00:00.000Z",
-    cwd: "/home/synthetic/project",
-    id,
-    program: "claude",
-    status,
-    statusAt: "2026-10-19T09:00:00.000Z",
-    title
-  };
-}
-
 async function openDeviceStream(context: ReturnType<typeof setup>, token: string, headers: Record<string, string> = {}) {
   const response = await context.device.stream(deviceRequest("/connect-api/v1/stream", { headers, token }));
   expect(response.status).toBe(200);
   const stream = frames(response);
   const hello = await stream.next();
-  expect(connectDeviceStreamEventSchema.parse(hello)).toMatchObject({ event: "hello" });
+  expect(connectDeviceStreamEventV2Schema.parse(hello)).toMatchObject({ data: { protocol: 2 }, event: "hello" });
   return stream;
 }
 
-async function postEvents(context: ReturnType<typeof setup>, token: string, events: ConnectDeviceEvent[]) {
+async function postEvents(context: ReturnType<typeof setup>, token: string, events: unknown[]) {
   return context.device.events(deviceRequest("/connect-api/v1/events", { body: { events }, token }));
 }
 
-async function createView(context: ReturnType<typeof setup>, sessionName: string, deviceId: string, sessionId = "ac-session1") {
-  const response = await context.browser.createView(browserRequest("/api/connect/views", sessionName, {
-    body: { cols: 100, deviceId, rows: 30, sessionId }
-  }));
-  expect(response.status).toBe(201);
-  return ((await response.json()) as { viewId: string }).viewId;
+/** The next `op` command on a device stream, checked against the protocol. */
+async function nextOp(stream: ReturnType<typeof frames>) {
+  const frame = await stream.nextOf("command");
+  const command = connectServerCommandV2Schema.parse(frame?.data);
+  if (command.type !== "op") throw new Error(`not an op: ${command.type}`);
+  return command;
 }
+
+const recentDirs = { dirs: ["/home/synthetic/project"], home: "/home/synthetic" };
+
+const deviceInfo: ConnectDeviceEventV2 = {
+  arch: "amd64",
+  home: "C:\\Users\\synthetic",
+  hostname: "DESKTOP-SYNTH",
+  os: "windows",
+  osVersion: "Windows 11 Pro 23H2",
+  shell: { kind: "powershell", name: "Windows PowerShell", version: "5.1" },
+  type: "device_info"
+};
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
@@ -517,7 +534,7 @@ describe("AIQSA Connect device API", () => {
       await expect(json(await context.device.stream(request))).resolves.toEqual({ body: { code: "connect_unauthorized" }, status: 401 });
     }
     expect(lookup).not.toHaveBeenCalled();
-    for (const handler of [context.device.createPairing, context.device.pollPairing, context.device.events]) {
+    for (const handler of [context.device.createPairing, context.device.pollPairing, context.device.events, context.device.revokeSelf]) {
       const response = await handler(deviceRequest("/connect-api/v1/pairings", { body: machine, headers: { origin: ORIGIN }, token }));
       expect(response.status).toBe(401);
     }
@@ -526,7 +543,20 @@ describe("AIQSA Connect device API", () => {
       .resolves.toEqual({ body: { code: "connect_unauthorized" }, status: 401 });
   });
 
-  it("opens with hello, refreshes lastSeenAt at most once a minute and records the client version it names", async () => {
+  it("sends a terminal client without the protocol 2 header to update itself before any hello", async () => {
+    const context = setup();
+    const { token } = context.store.seedDevice("alice");
+    const lookup = vi.spyOn(context.store.repository, "findStreamDevice");
+    const headerSets: Record<string, string>[] = [{}, { [CONNECT_PROTOCOL_HEADER]: "1" }, { [CONNECT_PROTOCOL_HEADER]: "two" }];
+    for (const headers of headerSets) {
+      const response = await context.device.stream(deviceRequest("/connect-api/v1/stream", { headers, legacy: true, token }));
+      await expect(json(response)).resolves.toEqual({ body: { code: "connect_client_outdated" }, status: 426 });
+    }
+    expect(lookup).not.toHaveBeenCalled();
+    expect(context.relay.size().devices).toBe(0);
+  });
+
+  it("opens with hello v2, refreshes lastSeenAt at most once a minute and records the client version it names", async () => {
     const context = setup();
     const { id, token } = context.store.seedDevice("alice");
     const stream = await openDeviceStream(context, token, { [CONNECT_CLIENT_VERSION_HEADER]: "0.3.21" });
@@ -574,6 +604,33 @@ describe("AIQSA Connect device API", () => {
       .resolves.toEqual({ body: { code: "connect_unauthorized" }, status: 401 });
   });
 
+  it("lets a device revoke only itself, idempotently, also while AIQSA Connect is off", async () => {
+    const context = setup();
+    const own = context.store.seedDevice("alice");
+    const other = context.store.seedDevice("alice", "Other laptop");
+    const bobs = context.store.seedDevice("bob");
+    const stream = await openDeviceStream(context, own.token);
+    const list = frames(await context.browser.events(browserRequest("/api/connect/events", "alice-session")));
+    await list.next();
+
+    const revoke = (token: string) => context.device.revokeSelf(deviceRequest("/connect-api/v1/device", { method: "DELETE", token }));
+    expect((await revoke(own.token)).status).toBe(204);
+    await expect(stream.nextOf("closed")).resolves.toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
+    expect(context.store.devices.has(own.id)).toBe(false);
+    expect(context.store.devices.has(other.id)).toBe(true);
+    expect(context.store.devices.has(bobs.id)).toBe(true);
+    const reloaded = connectComputerEventsStreamEventSchema.parse(await list.nextOf("devices"));
+    expect(reloaded.event === "devices" && reloaded.data.computers.map((computer) => computer.id)).toEqual([other.id]);
+
+    // The same token again, and a token that never named a device: the same answer, nothing else removed.
+    expect((await revoke(own.token)).status).toBe(204);
+    expect((await revoke(issueConnectDeviceToken().value)).status).toBe(204);
+    context.policy.enabled = false;
+    expect((await revoke(other.token)).status).toBe(204);
+    expect(context.store.devices.has(other.id)).toBe(false);
+    expect(context.store.devices.has(bobs.id)).toBe(true);
+  });
+
   it("ends a stream whose device or account disappears at the next minute's check", async () => {
     const context = setup();
     const { id, token } = context.store.seedDevice("alice");
@@ -584,15 +641,14 @@ describe("AIQSA Connect device API", () => {
     await expect(stream.nextOf("closed")).resolves.toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
   });
 
-  it("ends every stream, view and device list with connect_disabled when the administrator turns it off", async () => {
+  it("ends every stream and device list with connect_disabled when the administrator turns it off", async () => {
     const context = setup();
     const { id, token } = context.store.seedDevice("alice");
     const deviceStream = await openDeviceStream(context, token);
     const events = frames(await context.browser.events(browserRequest("/api/connect/events", "alice-session")));
     await events.next();
-    const viewId = await createView(context, "alice-session", id);
-    const view = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${viewId}/stream`, "alice-session"), params({ viewId })));
+    const pending = context.browser.recentDirs(browserRequest(`/api/connect/devices/${id}/recent-dirs`, "alice-session"), params({ deviceId: id }));
+    await nextOp(deviceStream);
 
     const patched = await context.admin.PATCH(new Request(`${ORIGIN}/api/admin/connect`, {
       body: JSON.stringify({ enabled: false, expectedVersion: 1 }),
@@ -603,66 +659,63 @@ describe("AIQSA Connect device API", () => {
 
     await expect(deviceStream.nextOf("closed")).resolves.toEqual({ data: { code: "connect_disabled" }, event: "closed" });
     await expect(events.nextOf("closed")).resolves.toEqual({ data: { code: "connect_disabled" }, event: "closed" });
-    await expect(view.nextOf("closed")).resolves.toEqual({ data: { reason: "connect_disabled" }, event: "closed" });
+    await expect(json(await pending)).resolves.toEqual({ body: { code: "connect_disabled" }, status: 403 });
     for (const response of [
       await context.device.stream(deviceRequest("/connect-api/v1/stream", { token })),
       await context.device.events(deviceRequest("/connect-api/v1/events", { body: { events: [] }, token })),
       await context.device.createPairing(deviceRequest("/connect-api/v1/pairings", { body: machine })),
       await context.browser.listDevices(browserRequest("/api/connect/devices", "alice-session")),
-      await context.browser.events(browserRequest("/api/connect/events", "alice-session"))
+      await context.browser.events(browserRequest("/api/connect/events", "alice-session")),
+      await context.browser.stat(browserRequest(`/api/connect/devices/${id}/stat?path=~`, "alice-session"), params({ deviceId: id }))
     ]) {
       await expect(json(response)).resolves.toEqual({ body: { code: "connect_disabled" }, status: 403 });
     }
   });
 
-  it("needs an open stream for events and keeps one device's events away from another device's views and requests", async () => {
+  it("needs an open stream for events and keeps one device's replies away from another device's operations", async () => {
     const context = setup();
     const alice = context.store.seedDevice("alice");
     const bob = context.store.seedDevice("bob");
-    await expect(json(await postEvents(context, alice.token, [{ sessions: [], type: "sessions" }])))
+    await expect(json(await postEvents(context, alice.token, [deviceInfo])))
       .resolves.toEqual({ body: { code: "connect_stream_required" }, status: 409 });
 
     const aliceStream = await openDeviceStream(context, alice.token);
     const bobStream = await openDeviceStream(context, bob.token);
-    const viewId = await createView(context, "alice-session", alice.id);
-    const view = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${viewId}/stream`, "alice-session"), params({ viewId })));
-    const history = context.browser.history(
-      browserRequest(`/api/connect/devices/${alice.id}/sessions/ac-session1/history`, "alice-session"),
-      params({ deviceId: alice.id, sessionId: "ac-session1" })
-    );
-    await aliceStream.next();
-    const command = (await aliceStream.next())!.data as { requestId: string; type: string };
-    expect(command.type).toBe("session_history");
+    const pending = context.browser.recentDirs(
+      browserRequest(`/api/connect/devices/${alice.id}/recent-dirs`, "alice-session"), params({ deviceId: alice.id }));
+    const command = await nextOp(aliceStream);
+    expect(command).toMatchObject({ args: {}, deadlineMs: CONNECT_PICKER_OP_TIMEOUT_MS, op: "recent_dirs" });
 
     expect((await postEvents(context, bob.token, [
-      { data: "Zm9yZ2Vk", seq: 0, type: "output", viewId },
-      { ok: true, requestId: command.requestId, result: { text: "forged" }, type: "reply" }
+      { ok: true, requestId: command.requestId, result: { dirs: [], home: "/home/forged" }, type: "reply" }
     ])).status).toBe(204);
     expect((await postEvents(context, alice.token, [
-      { data: "cmVhbA==", seq: 0, type: "output", viewId },
-      { ok: true, requestId: command.requestId, result: { text: "real history" }, type: "reply" }
+      { ok: true, requestId: command.requestId, result: recentDirs, type: "reply" }
     ])).status).toBe(204);
-
-    await expect(view.next()).resolves.toEqual({ data: { data: "cmVhbA==", seq: 0 }, event: "output" });
-    await expect(json(await history)).resolves.toEqual({ body: { text: "real history" }, status: 200 });
+    await expect(json(await pending)).resolves.toEqual({ body: recentDirs, status: 200 });
     await bobStream.close();
   });
 
-  it("bounds and validates event batches", async () => {
+  it("bounds and validates event batches, failing the ops whose replies were malformed", async () => {
     const context = setup();
-    const { token } = context.store.seedDevice("alice");
-    await openDeviceStream(context, token);
+    const { id, token } = context.store.seedDevice("alice");
+    const stream = await openDeviceStream(context, token);
 
     const tooLarge = await context.device.events(deviceRequest("/connect-api/v1/events", {
-      body: `{"events":[{"type":"sessions","sessions":[]}],"pad":"${"x".repeat(CONNECT_MAX_EVENTS_BODY_BYTES)}"}`,
+      body: `{"events":[${JSON.stringify(deviceInfo)}],"pad":"${"x".repeat(CONNECT_MAX_EVENTS_BODY_BYTES)}"}`,
       token
     }));
     await expect(json(tooLarge)).resolves.toEqual({ body: { code: "connect_input_too_large" }, status: 413 });
-    for (const body of ["{", { events: [] }, { events: [{ type: "unknown" }] }, [{ sessions: [], type: "sessions" }]]) {
+    for (const body of ["{", { events: [] }, { events: [{ type: "unknown" }] }, [deviceInfo], { events: [{ sessions: [], type: "sessions" }] }]) {
       const response = await context.device.events(deviceRequest("/connect-api/v1/events", { body, token }));
       await expect(json(response)).resolves.toEqual({ body: { code: "connect_request_invalid" }, status: 400 });
     }
+
+    const pending = context.browser.recentDirs(browserRequest(`/api/connect/devices/${id}/recent-dirs`, "alice-session"), params({ deviceId: id }));
+    const command = await nextOp(stream);
+    const malformed = await postEvents(context, token, [{ ok: true, requestId: command.requestId, result: { home: "relative" }, type: "reply" }]);
+    expect(malformed.status).toBe(400);
+    await expect(json(await pending)).resolves.toEqual({ body: { code: "connect_device_error" }, status: 502 });
   });
 
   it("answers an unreachable store with a retryable 503 that names nothing", async () => {
@@ -670,6 +723,7 @@ describe("AIQSA Connect device API", () => {
     const { token } = context.store.seedDevice("alice");
     vi.spyOn(context.store.repository, "findStreamDevice").mockRejectedValueOnce(new Error("connect ECONNREFUSED 10.0.0.5:5432"));
     vi.spyOn(context.store.repository, "listDevices").mockRejectedValueOnce(new Error("connect ECONNREFUSED 10.0.0.5:5432"));
+    vi.spyOn(context.store.repository, "deleteDeviceByToken").mockRejectedValueOnce(new Error("connect ECONNREFUSED 10.0.0.5:5432"));
     // The stream and the list reach their store; the pairing request finds the switch unreadable.
     context.gate.enabled
       .mockResolvedValueOnce(true)
@@ -679,7 +733,8 @@ describe("AIQSA Connect device API", () => {
     for (const response of [
       await context.device.stream(deviceRequest("/connect-api/v1/stream", { token })),
       await context.browser.listDevices(browserRequest("/api/connect/devices", "alice-session")),
-      await context.device.createPairing(deviceRequest("/connect-api/v1/pairings", { body: machine }))
+      await context.device.createPairing(deviceRequest("/connect-api/v1/pairings", { body: machine })),
+      await context.device.revokeSelf(deviceRequest("/connect-api/v1/device", { method: "DELETE", token }))
     ]) {
       expect(response.status).toBe(503);
       expect(response.headers.get("retry-after")).toBe("5");
@@ -692,272 +747,133 @@ describe("AIQSA Connect device API", () => {
 });
 
 describe("AIQSA Connect browser API isolation", () => {
-  it("answers another account's devices, sessions and views exactly like missing ones, for administrators too", async () => {
+  it("answers another account's computers exactly like missing ones on every route, for administrators too", async () => {
     const context = setup();
     const online = context.store.seedDevice("alice", "Online laptop");
     const offline = context.store.seedDevice("alice", "Offline desktop");
-    await openDeviceStream(context, online.token);
-    const viewId = await createView(context, "alice-session", online.id);
+    const aliceStream = await openDeviceStream(context, online.token);
 
-    const responses = async (deviceId: string, view: string) => {
-      const sessionId = "ac-session1";
+    const responses = async (deviceId: string) => {
       const all = [
         await context.browser.revokeDevice(browserRequest(`/api/connect/devices/${deviceId}`, "bob-session", { method: "DELETE" }), params({ deviceId })),
-        await context.browser.createSession(
-          browserRequest(`/api/connect/devices/${deviceId}/sessions`, "bob-session", { body: { cwd: "~", program: "shell" } }),
-          params({ deviceId })
-        ),
-        await context.browser.killSession(
-          browserRequest(`/api/connect/devices/${deviceId}/sessions/${sessionId}`, "bob-session", { method: "DELETE" }),
-          params({ deviceId, sessionId })
-        ),
-        await context.browser.history(
-          browserRequest(`/api/connect/devices/${deviceId}/sessions/${sessionId}/history`, "bob-session"),
-          params({ deviceId, sessionId })
-        ),
-        await context.browser.options(
-          browserRequest(`/api/connect/devices/${deviceId}/sessions/${sessionId}/options`, "bob-session"),
-          params({ deviceId, sessionId })
-        ),
         await context.browser.recentDirs(browserRequest(`/api/connect/devices/${deviceId}/recent-dirs`, "bob-session"), params({ deviceId })),
-        await context.browser.createView(browserRequest("/api/connect/views", "bob-session", {
-          body: { cols: 80, deviceId, rows: 24, sessionId }
-        })),
-        await context.browser.viewStream(browserRequest(`/api/connect/views/${view}/stream`, "bob-session"), params({ viewId: view })),
-        await context.browser.viewInput(
-          browserRequest(`/api/connect/views/${view}/input`, "bob-session", { body: { data: "rm -rf /\r" } }),
-          params({ viewId: view })
-        ),
-        await context.browser.viewResize(
-          browserRequest(`/api/connect/views/${view}/resize`, "bob-session", { body: { cols: 80, rows: 24 } }),
-          params({ viewId: view })
-        ),
-        await context.browser.viewVisibility(
-          browserRequest(`/api/connect/views/${view}/visibility`, "bob-session", { body: { visible: true } }),
-          params({ viewId: view })
-        ),
-        await context.browser.deleteView(browserRequest(`/api/connect/views/${view}`, "bob-session", { method: "DELETE" }), params({ viewId: view }))
+        await context.browser.listDirs(browserRequest(`/api/connect/devices/${deviceId}/dirs?path=%2F`, "bob-session"), params({ deviceId })),
+        await context.browser.stat(browserRequest(`/api/connect/devices/${deviceId}/stat?path=~`, "bob-session"), params({ deviceId }))
       ];
       for (const response of all) expect(response.headers.get("cache-control")).toBe("private, no-store");
       return Promise.all(all.map(json));
     };
 
-    const missing = await responses(randomUUID(), randomUUID());
-    expect(missing.every((answer) => answer.status === 404 && answer.body.code === "connect_not_found")).toBe(true);
-    await expect(responses(online.id, viewId)).resolves.toEqual(missing);
-    await expect(responses(offline.id, viewId)).resolves.toEqual(missing);
+    const missing = await responses(randomUUID());
+    expect(missing).toEqual([
+      { body: { code: "connect_not_found" }, status: 404 },
+      { body: { code: "connect_device_unavailable" }, status: 404 },
+      { body: { code: "connect_device_unavailable" }, status: 404 },
+      { body: { code: "connect_device_unavailable" }, status: 404 }
+    ]);
+    await expect(responses("not-a-device")).resolves.toEqual(missing);
+    await expect(responses(online.id)).resolves.toEqual(missing);
+    await expect(responses(offline.id)).resolves.toEqual(missing);
     expect(context.store.devices.has(online.id)).toBe(true);
-    const listed = connectDevicesResponseSchema.parse(await (await context.browser.listDevices(
+    const listed = connectComputerListResponseSchema.parse(await (await context.browser.listDevices(
       browserRequest("/api/connect/devices", "bob-session"))).json());
-    expect(listed.devices).toEqual([]);
-    // The view still belongs to its owner.
-    expect((await context.browser.viewVisibility(
-      browserRequest(`/api/connect/views/${viewId}/visibility`, "alice-session", { body: { visible: true } }),
-      params({ viewId })
-    )).status).toBe(204);
+    expect(listed.computers).toEqual([]);
+    // Nothing reached Alice's computer, and the port refuses Bob as well.
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(aliceStream.next()).resolves.toEqual({ data: {}, event: "ping" });
+    const describedForBob = await context.computerOps.describe("bob", online.id);
+    expect(describedForBob).toBeNull();
+    await expect(context.computerOps.call({
+      args: {},
+      deviceId: online.id,
+      op: "recent_dirs",
+      runId: randomUUID(),
+      signal: new AbortController().signal,
+      timeoutMs: 1_000,
+      userId: "bob"
+    })).resolves.toEqual({ code: "connect_device_unavailable", ok: false, sent: false });
   });
 
-  it("answers missing sessions with not found and an offline device with its own code", async () => {
+  it("answers the owner's offline computer with its own code and refuses a malformed path", async () => {
     const context = setup();
     const offline = context.store.seedDevice("alice");
-    const history = await context.browser.history(
-      browserRequest(`/api/connect/devices/${offline.id}/sessions/ac-session1/history`, "alice-session"),
-      params({ deviceId: offline.id, sessionId: "ac-session1" })
-    );
-    await expect(json(history)).resolves.toEqual({ body: { code: "connect_device_offline" }, status: 409 });
-    const malformed = await context.browser.history(
-      browserRequest(`/api/connect/devices/${offline.id}/sessions/not-a-session/history`, "alice-session"),
-      params({ deviceId: offline.id, sessionId: "not-a-session" })
-    );
-    await expect(json(malformed)).resolves.toEqual({ body: { code: "connect_not_found" }, status: 404 });
+    const recent = await context.browser.recentDirs(
+      browserRequest(`/api/connect/devices/${offline.id}/recent-dirs`, "alice-session"), params({ deviceId: offline.id }));
+    await expect(json(recent)).resolves.toEqual({ body: { code: "connect_device_offline" }, status: 409 });
+    for (const query of ["", "?path=", "?path=%20", `?path=a%07b`, `?path=${"x".repeat(1_025)}`]) {
+      const response = await context.browser.listDirs(
+        browserRequest(`/api/connect/devices/${offline.id}/dirs${query}`, "alice-session"), params({ deviceId: offline.id }));
+      await expect(json(response)).resolves.toEqual({ body: { code: "connect_request_invalid" }, status: 400 });
+    }
     const anonymous = await context.browser.listDevices(new Request(`${ORIGIN}/api/connect/devices`));
     await expect(json(anonymous)).resolves.toEqual({ body: { code: "connect_unauthorized" }, status: 401 });
   });
 });
 
-describe("AIQSA Connect sessions and views", () => {
-  it("relays commands to the device, its replies to the browser and its errors with their codes", async () => {
+describe("AIQSA Connect folder picker", () => {
+  it("relays list_dirs and stat to the owner's computer and its answers back", async () => {
     const context = setup();
-    const { id, token } = context.store.seedDevice("alice");
-    const deviceStream = await openDeviceStream(context, token);
-    const reply = async (result: Record<string, unknown>) => {
-      const command = (await deviceStream.nextOf("command"))!.data as { requestId: string };
-      await postEvents(context, token, [{ requestId: command.requestId, type: "reply", ...result } as ConnectDeviceEvent]);
-      return command;
-    };
+    const { id, token } = context.store.seedDevice("alice", "Windows desktop", "windows");
+    const stream = await openDeviceStream(context, token);
 
-    const created = context.browser.createSession(
-      browserRequest(`/api/connect/devices/${id}/sessions`, "alice-session", { body: { cwd: "~/work", program: "claude", title: "Fix the build" } }),
-      params({ deviceId: id })
-    );
-    expect(await reply({ ok: true, result: { sessionId: "ac-new123" } })).toMatchObject({
-      cwd: "~/work", program: "claude", title: "Fix the build", type: "session_create"
-    });
-    await expect(json(await created)).resolves.toEqual({ body: { sessionId: "ac-new123" }, status: 201 });
+    const dirs = context.browser.listDirs(
+      browserRequest(`/api/connect/devices/${id}/dirs?path=${encodeURIComponent("C:\\Users\\synthetic")}`, "alice-session"), params({ deviceId: id }));
+    const listCommand = await nextOp(stream);
+    expect(listCommand).toMatchObject({ args: { path: "C:\\Users\\synthetic" }, op: "list_dirs" });
+    const listing = { dirs: ["Documents", "Отчёты"], parent: "C:\\Users", path: "C:\\Users\\synthetic", truncated: false };
+    await postEvents(context, token, [{ ok: true, requestId: listCommand.requestId, result: listing, type: "reply" }]);
+    await expect(json(await dirs)).resolves.toEqual({ body: listing, status: 200 });
 
-    const limited = context.browser.createSession(
-      browserRequest(`/api/connect/devices/${id}/sessions`, "alice-session", { body: { cwd: "/srv", program: "shell" } }),
-      params({ deviceId: id })
-    );
-    await reply({ code: "connect_session_limit", ok: false });
-    await expect(json(await limited)).resolves.toEqual({ body: { code: "connect_session_limit" }, status: 409 });
+    const stat = context.browser.stat(browserRequest(`/api/connect/devices/${id}/stat?path=~%2Fmissing`, "alice-session"), params({ deviceId: id }));
+    const statCommand = await nextOp(stream);
+    expect(statCommand).toMatchObject({ args: { path: "~/missing" }, op: "stat" });
+    await postEvents(context, token, [{ ok: true, requestId: statCommand.requestId, result: { exists: false }, type: "reply" }]);
+    await expect(json(await stat)).resolves.toEqual({ body: { exists: false }, status: 200 });
 
-    const options = context.browser.options(
-      browserRequest(`/api/connect/devices/${id}/sessions/ac-new123/options`, "alice-session"),
-      params({ deviceId: id, sessionId: "ac-new123" })
-    );
-    await reply({ ok: true, result: { options: [{ key: "1", label: "Yes" }, { key: "2", label: "No" }] } });
-    await expect(json(await options)).resolves.toEqual({ body: { options: [{ key: "1", label: "Yes" }, { key: "2", label: "No" }] }, status: 200 });
-
-    const dirs = context.browser.recentDirs(browserRequest(`/api/connect/devices/${id}/recent-dirs`, "alice-session"), params({ deviceId: id }));
-    await reply({ ok: true, result: { dirs: ["/home/synthetic/work"], home: "/home/synthetic" } });
-    await expect(json(await dirs)).resolves.toEqual({ body: { dirs: ["/home/synthetic/work"], home: "/home/synthetic" }, status: 200 });
-
-    const killed = context.browser.killSession(
-      browserRequest(`/api/connect/devices/${id}/sessions/ac-new123`, "alice-session", { method: "DELETE" }),
-      params({ deviceId: id, sessionId: "ac-new123" })
-    );
-    await reply({ code: "connect_session_not_found", ok: false });
-    await expect(json(await killed)).resolves.toEqual({ body: { code: "connect_session_not_found" }, status: 404 });
-
-    const slow = context.browser.history(
-      browserRequest(`/api/connect/devices/${id}/sessions/ac-new123/history`, "alice-session"),
-      params({ deviceId: id, sessionId: "ac-new123" })
-    );
-    await deviceStream.nextOf("command");
-    await vi.advanceTimersByTimeAsync(10_000);
-    await expect(json(await slow)).resolves.toEqual({ body: { code: "connect_device_timeout" }, status: 504 });
+    const denied = context.browser.listDirs(browserRequest(`/api/connect/devices/${id}/dirs?path=C%3A%5CSystem`, "alice-session"), params({ deviceId: id }));
+    const deniedCommand = await nextOp(stream);
+    await postEvents(context, token, [{ code: "computer_permission_denied", ok: false, requestId: deniedCommand.requestId, type: "reply" }]);
+    await expect(json(await denied)).resolves.toEqual({ body: { code: "computer_permission_denied" }, status: 403 });
   });
 
-  it("sends input in order to the device and output only to the owning view", async () => {
+  it("gives up after a short timeout and cancels the operation on the computer", async () => {
     const context = setup();
     const { id, token } = context.store.seedDevice("alice");
-    const deviceStream = await openDeviceStream(context, token);
-    const viewId = await createView(context, "alice-session", id, "ac-session1");
-    expect((await deviceStream.next())!.data).toEqual({ cols: 100, rows: 30, sessionId: "ac-session1", type: "view_open", viewId });
-    const otherTab = await createView(context, "alice-other-tab", id, "ac-session1");
-    await deviceStream.next();
-    const view = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${viewId}/stream`, "alice-session"), params({ viewId })));
-    const other = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${otherTab}/stream`, "alice-other-tab"), params({ viewId: otherTab })));
-    // A view belongs to the browser session that opened it.
-    expect((await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${viewId}/stream`, "alice-other-tab"), params({ viewId }))).status).toBe(404);
+    const stream = await openDeviceStream(context, token);
+    const pending = context.browser.recentDirs(browserRequest(`/api/connect/devices/${id}/recent-dirs`, "alice-session"), params({ deviceId: id }));
+    const command = await nextOp(stream);
 
-    for (const data of ["echo one", "\r", "\u001b[A"]) {
-      const sent = await context.browser.viewInput(
-        browserRequest(`/api/connect/views/${viewId}/input`, "alice-session", { body: { data } }), params({ viewId }));
-      expect(sent.status).toBe(204);
-    }
-    expect((await context.browser.viewResize(
-      browserRequest(`/api/connect/views/${viewId}/resize`, "alice-session", { body: { cols: 50, rows: 20 } }), params({ viewId }))).status).toBe(204);
-    const commands = [await deviceStream.next(), await deviceStream.next(), await deviceStream.next(), await deviceStream.next()];
-    expect(commands.map((frame) => frame!.data)).toEqual([
-      { data: "echo one", type: "view_input", viewId },
-      { data: "\r", type: "view_input", viewId },
-      { data: "\u001b[A", type: "view_input", viewId },
-      { cols: 50, rows: 20, type: "view_resize", viewId }
-    ]);
-
-    await postEvents(context, token, [
-      { data: "b25l", seq: 0, type: "output", viewId },
-      { data: "dHdv", seq: 0, type: "output", viewId: otherTab }
-    ]);
-    expect(connectViewStreamEventSchema.parse(await view.next())).toEqual({ data: { data: "b25l", seq: 0 }, event: "output" });
-    await expect(other.next()).resolves.toEqual({ data: { data: "dHdv", seq: 0 }, event: "output" });
-
-    const tooLarge = await context.browser.viewInput(
-      browserRequest(`/api/connect/views/${viewId}/input`, "alice-session", { body: { data: "x".repeat(CONNECT_MAX_INPUT_BYTES + 1) } }),
-      params({ viewId })
-    );
-    await expect(json(tooLarge)).resolves.toEqual({ body: { code: "connect_input_too_large" }, status: 413 });
-    const closed = await context.browser.deleteView(
-      browserRequest(`/api/connect/views/${viewId}`, "alice-session", { method: "DELETE" }), params({ viewId }));
-    expect(closed.status).toBe(204);
-    await expect(view.next()).resolves.toEqual({ data: { reason: "detached" }, event: "closed" });
-    await expect(deviceStream.next()).resolves.toEqual({ data: { type: "view_close", viewId }, event: "command" });
-  });
-
-  it("closes a view nobody streams after thirty seconds and enforces the view limit", async () => {
-    const context = setup();
-    const { id, token } = context.store.seedDevice("alice");
-    const deviceStream = await openDeviceStream(context, token);
-    const orphan = await createView(context, "alice-session", id);
-    await deviceStream.next();
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    await expect(deviceStream.nextOf("command")).resolves.toEqual({ data: { type: "view_close", viewId: orphan }, event: "command" });
-    expect((await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${orphan}/stream`, "alice-session"), params({ viewId: orphan }))).status).toBe(404);
-
-    for (let index = 0; index < CONNECT_MAX_VIEWS_PER_DEVICE; index += 1) await createView(context, "alice-session", id);
-    const limited = await context.browser.createView(browserRequest("/api/connect/views", "alice-session", {
-      body: { cols: 80, deviceId: id, rows: 24, sessionId: "ac-session1" }
-    }));
-    await expect(json(limited)).resolves.toEqual({ body: { code: "connect_view_limit" }, status: 409 });
-  });
-
-  it("closes a revoked browser session's views and device list at the next heartbeat", async () => {
-    const context = setup();
-    const { id, token } = context.store.seedDevice("alice");
-    const deviceStream = await openDeviceStream(context, token);
-    const viewId = await createView(context, "alice-session", id);
-    const view = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${viewId}/stream`, "alice-session"), params({ viewId })));
-    const list = frames(await context.browser.events(browserRequest("/api/connect/events", "alice-session")));
-    await list.next();
-
-    // Logout revokes the session row; nothing else is told.
-    context.store.sessions.get("alice-session")!.revokedAt = new Date();
-    await vi.advanceTimersByTimeAsync(15_000);
-
-    await expect(view.nextOf("closed")).resolves.toEqual({ data: { reason: "connect_unauthorized" }, event: "closed" });
-    await expect(list.nextOf("closed")).resolves.toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
-    await expect(deviceStream.nextOf("command")).resolves.toMatchObject({ data: { type: "view_open" } });
-    await expect(deviceStream.nextOf("command")).resolves.toEqual({ data: { type: "view_close", viewId }, event: "command" });
-    const input = await context.browser.viewInput(
-      browserRequest(`/api/connect/views/${viewId}/input`, "alice-session", { body: { data: "x" } }), params({ viewId }));
-    expect(input.status).toBe(401);
-  });
-
-  it("tells the relay which session the owner has on screen", async () => {
-    const context = setup();
-    const { id, token } = context.store.seedDevice("alice");
-    await openDeviceStream(context, token);
-    const viewId = await createView(context, "alice-session", id, "ac-session1");
-    frames(await context.browser.viewStream(browserRequest(`/api/connect/views/${viewId}/stream`, "alice-session"), params({ viewId })));
-
-    const hidden = await context.browser.viewVisibility(
-      browserRequest(`/api/connect/views/${viewId}/visibility`, "alice-session", { body: { visible: false } }), params({ viewId }));
-    expect(hidden.status).toBe(204);
-    expect(context.relay.isSessionVisible("alice", id, "ac-session1", Date.now())).toBe(false);
-    await context.browser.viewVisibility(
-      browserRequest(`/api/connect/views/${viewId}/visibility`, "alice-session", { body: { visible: true } }), params({ viewId }));
-    expect(context.relay.isSessionVisible("alice", id, "ac-session1", Date.now())).toBe(true);
-    expect(context.relay.isSessionVisible("bob", id, "ac-session1", Date.now())).toBe(false);
+    await vi.advanceTimersByTimeAsync(CONNECT_PICKER_OP_TIMEOUT_MS + CONNECT_OP_REPLY_GRACE_MS);
+    await expect(json(await pending)).resolves.toEqual({ body: { code: "computer_timeout" }, status: 504 });
+    await expect(stream.nextOf("command")).resolves.toEqual({ data: { requestId: command.requestId, type: "cancel" }, event: "command" });
   });
 });
 
 describe("AIQSA Connect device list stream", () => {
-  it("sends a snapshot, device updates, and a new snapshot when a device is added or removed", async () => {
+  it("sends a snapshot, computer updates, and a new snapshot when a computer is added or removed", async () => {
     const context = setup();
-    const laptop = context.store.seedDevice("alice", "Laptop");
+    const laptop = context.store.seedDevice("alice", "Laptop", "windows");
     const list = frames(await context.browser.events(browserRequest("/api/connect/events", "alice-session")));
     const bobList = frames(await context.browser.events(browserRequest("/api/connect/events", "bob-session")));
-    const first = connectEventsStreamEventSchema.parse(await list.next());
-    expect(first).toMatchObject({ data: { devices: [{ id: laptop.id, name: "Laptop", online: false, sessions: [] }] }, event: "devices" });
-    await expect(bobList.next()).resolves.toEqual({ data: { devices: [] }, event: "devices" });
+    const first = connectComputerEventsStreamEventSchema.parse(await list.next());
+    expect(first).toEqual({
+      data: {
+        computers: [{ arch: "amd64", clientVersion: "0.3.20", id: laptop.id, lastSeenAt: null, name: "Laptop", online: false, os: "windows" }]
+      },
+      event: "devices"
+    });
+    await expect(bobList.next()).resolves.toEqual({ data: { computers: [] }, event: "devices" });
 
     await openDeviceStream(context, laptop.token);
-    expect(connectEventsStreamEventSchema.parse(await list.next())).toMatchObject({ data: { device: { id: laptop.id, online: true } }, event: "device" });
-    await postEvents(context, laptop.token, [{ sessions: [session("ac-session1", "Fix the build")], type: "sessions" }]);
-    expect(connectEventsStreamEventSchema.parse(await list.next())).toMatchObject({
-      data: { device: { online: true, sessions: [{ id: "ac-session1", title: "Fix the build" }] } },
+    expect(connectComputerEventsStreamEventSchema.parse(await list.next())).toMatchObject({ data: { computer: { id: laptop.id, online: true } }, event: "device" });
+    expect((await postEvents(context, laptop.token, [deviceInfo])).status).toBe(204);
+    expect(connectComputerEventsStreamEventSchema.parse(await list.next())).toMatchObject({
+      data: { computer: { info: { home: "C:\\Users\\synthetic", osVersion: "Windows 11 Pro 23H2" }, online: true } },
       event: "device"
     });
-    await postEvents(context, laptop.token, [{ reason: "turn_end", sessionId: "ac-session1", status: "waiting", statusAt: "2026-10-19T10:00:05.000Z", type: "status" }]);
-    expect(await list.next()).toMatchObject({ data: { device: { sessions: [{ status: "waiting", statusAt: "2026-10-19T10:00:05.000Z" }] } }, event: "device" });
+    const listed = connectComputerListResponseSchema.parse(await (await context.browser.listDevices(
+      browserRequest("/api/connect/devices", "alice-session"))).json());
+    expect(listed.computers[0]).toMatchObject({ info: { shell: { kind: "powershell" } }, online: true, os: "windows" });
 
     const pairing = connectPairingCreateResponseSchema.parse(await (await context.device.createPairing(
       deviceRequest("/connect-api/v1/pairings", { body: machine }))).json());
@@ -968,17 +884,17 @@ describe("AIQSA Connect device list stream", () => {
     await context.device.pollPairing(deviceRequest("/connect-api/v1/pairings/poll", {
       body: { pairingId: pairing.pairingId, pollSecret: pairing.pollSecret }
     }));
-    const added = connectEventsStreamEventSchema.parse(await list.nextOf("devices"));
-    expect(added.event === "devices" && added.data.devices.map((device) => device.name)).toEqual(["Laptop", "Studio"]);
+    const added = connectComputerEventsStreamEventSchema.parse(await list.nextOf("devices"));
+    expect(added.event === "devices" && added.data.computers.map((computer) => computer.name)).toEqual(["Laptop", "Studio"]);
 
     await context.browser.revokeDevice(
       browserRequest(`/api/connect/devices/${laptop.id}`, "alice-session", { method: "DELETE" }), params({ deviceId: laptop.id }));
-    await expect(list.next()).resolves.toMatchObject({ data: { device: { id: laptop.id, online: false } }, event: "device" });
-    const removed = connectEventsStreamEventSchema.parse(await list.nextOf("devices"));
-    expect(removed.event === "devices" && removed.data.devices.map((device) => device.name)).toEqual(["Studio"]);
+    await expect(list.next()).resolves.toMatchObject({ data: { computer: { id: laptop.id, online: false } }, event: "device" });
+    const removed = connectComputerEventsStreamEventSchema.parse(await list.nextOf("devices"));
+    expect(removed.event === "devices" && removed.data.computers.map((computer) => computer.name)).toEqual(["Studio"]);
     await vi.advanceTimersByTimeAsync(CONNECT_DEVICES_CHANGED_REREAD_MS);
-    const reread = connectEventsStreamEventSchema.parse(await list.next());
-    expect(reread.event === "devices" && reread.data.devices.map((device) => device.name)).toEqual(["Studio"]);
+    const reread = connectComputerEventsStreamEventSchema.parse(await list.next());
+    expect(reread.event === "devices" && reread.data.computers.map((computer) => computer.name)).toEqual(["Studio"]);
 
     await vi.advanceTimersByTimeAsync(15_000 - CONNECT_DEVICES_CHANGED_REREAD_MS);
     await expect(list.next()).resolves.toEqual({ data: {}, event: "ping" });
@@ -994,35 +910,24 @@ describe("AIQSA Connect device list stream", () => {
 
     // The revocation announces the change inside its transaction: the row is still visible to other reads.
     context.relay.notifyDevicesChanged("alice");
-    const early = connectEventsStreamEventSchema.parse(await list.next());
-    expect(early.event === "devices" && early.data.devices.map((device) => device.id)).toEqual([laptop.id]);
+    const early = connectComputerEventsStreamEventSchema.parse(await list.next());
+    expect(early.event === "devices" && early.data.computers.map((computer) => computer.id)).toEqual([laptop.id]);
     context.store.devices.delete(laptop.id);
 
     await vi.advanceTimersByTimeAsync(CONNECT_DEVICES_CHANGED_REREAD_MS);
-    await expect(list.next()).resolves.toEqual({ data: { devices: [] }, event: "devices" });
+    await expect(list.next()).resolves.toEqual({ data: { computers: [] }, event: "devices" });
   });
 
-  it("keeps a password change's own session signed in: views end as device offline and the list only loses the devices", async () => {
+  it("ends the account's device streams and empties its lists when its access is revoked", async () => {
     const context = setup();
     const { id, token } = context.store.seedDevice("alice");
     const deviceStream = await openDeviceStream(context, token);
-    const keptViewId = await createView(context, "alice-session", id);
-    const otherViewId = await createView(context, "alice-other-tab", id);
-    const keptView = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${keptViewId}/stream`, "alice-session"), params({ viewId: keptViewId })));
-    const otherView = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${otherViewId}/stream`, "alice-other-tab"), params({ viewId: otherViewId })));
+    const pending = context.browser.recentDirs(browserRequest(`/api/connect/devices/${id}/recent-dirs`, "alice-session"), params({ deviceId: id }));
+    await nextOp(deviceStream);
     const list = frames(await context.browser.events(browserRequest("/api/connect/events", "alice-session")));
     await list.next();
 
-    // The shape of a password change: the other sessions are revoked first, then the devices, in one transaction.
-    context.store.sessions.get("alice-other-tab")!.revokedAt = new Date();
     const tx = {
-      authSession: {
-        findMany: vi.fn(async () => [...context.store.sessions.entries()]
-          .filter(([, stored]) => stored.userId === "alice" && !stored.revokedAt && stored.expiresAt > new Date())
-          .map(([sessionId]) => ({ id: sessionId })))
-      },
       connectDevice: {
         deleteMany: vi.fn(async () => {
           const owned = [...context.store.devices.values()].filter((device) => device.userId === "alice");
@@ -1035,15 +940,21 @@ describe("AIQSA Connect device list stream", () => {
     await expect(revokeConnectDevicesForUser(tx, { userId: "alice" }, context.relay)).resolves.toBe(1);
 
     await expect(deviceStream.nextOf("closed")).resolves.toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
-    await expect(keptView.nextOf("closed")).resolves.toEqual({ data: { reason: "connect_device_offline" }, event: "closed" });
-    await expect(otherView.nextOf("closed")).resolves.toEqual({ data: { reason: "connect_unauthorized" }, event: "closed" });
-    await expect(list.next()).resolves.toMatchObject({ data: { device: { id, online: false } }, event: "device" });
-    await expect(list.next()).resolves.toEqual({ data: { devices: [] }, event: "devices" });
-    await vi.advanceTimersByTimeAsync(15_000);
-    await expect(list.next()).resolves.toEqual({ data: { devices: [] }, event: "devices" });
-    await expect(list.next()).resolves.toEqual({ data: {}, event: "ping" });
+    await expect(json(await pending)).resolves.toEqual({ body: { code: "connect_device_disconnected" }, status: 409 });
+    await expect(list.next()).resolves.toMatchObject({ data: { computer: { id, online: false } }, event: "device" });
+    await expect(list.next()).resolves.toEqual({ data: { computers: [] }, event: "devices" });
     const devices = await context.browser.listDevices(browserRequest("/api/connect/devices", "alice-session"));
-    await expect(json(devices)).resolves.toEqual({ body: { devices: [] }, status: 200 });
+    await expect(json(devices)).resolves.toEqual({ body: { computers: [] }, status: 200 });
+  });
+
+  it("closes a revoked browser session's device list at the next heartbeat", async () => {
+    const context = setup();
+    context.store.seedDevice("alice");
+    const list = frames(await context.browser.events(browserRequest("/api/connect/events", "alice-session")));
+    await list.next();
+    context.store.sessions.get("alice-session")!.revokedAt = new Date();
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(list.nextOf("closed")).resolves.toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
   });
 
   it("leaves nothing behind for streams the browser or device abandoned while they were authorized", async () => {
@@ -1071,28 +982,24 @@ describe("AIQSA Connect device list stream", () => {
     }
     expect((await context.browser.events(browserRequest("/api/connect/events", "alice-session"))).status).toBe(429);
 
-    // An abandoned device or view stream never replaces the live one.
+    // An abandoned device stream never replaces the live one; an abandoned picker request leaves no operation waiting.
     const deviceStream = await openDeviceStream(context, token);
     await context.device.stream(new Request(deviceRequest("/connect-api/v1/stream", { token }), { signal: aborted() }));
-    const viewId = await createView(context, "alice-session", id);
-    const view = frames(await context.browser.viewStream(
-      browserRequest(`/api/connect/views/${viewId}/stream`, "alice-session"), params({ viewId })));
-    await context.browser.viewStream(abandoned(`/api/connect/views/${viewId}/stream`, "alice-session"), params({ viewId }));
-    expect((await postEvents(context, token, [{ data: "c3RpbGw=", seq: 0, type: "output", viewId }])).status).toBe(204);
-    await expect(view.next()).resolves.toEqual({ data: { data: "c3RpbGw=", seq: 0 }, event: "output" });
-    expect(context.relay.projectDevice(context.store.devices.get(id)!).online).toBe(true);
+    expect(context.relay.projectComputer(context.store.devices.get(id)!).online).toBe(true);
+    await expect(json(await context.browser.recentDirs(abandoned(`/api/connect/devices/${id}/recent-dirs`, "alice-session"), params({ deviceId: id }))))
+      .resolves.toEqual({ body: { code: "computer_cancelled" }, status: 409 });
+    expect(context.relay.size().pendingOps).toBe(0);
 
     for (const stream of open) await stream.close();
-    await view.close();
     await deviceStream.close();
     context.relay.disable();
-    expect(context.relay.size()).toEqual({ devices: 0, listeners: start, pendingReplies: 0, views: 0 });
+    expect(context.relay.size()).toEqual({ devices: 0, listeners: start, pendingOps: 0 });
     expect(context.relay.acquireEventsStream("alice")).toBe(true);
   });
 });
 
 describe("AIQSA Connect logging", () => {
-  it("records codes and counts only: no terminal data, paths, titles, names, tokens or pairing codes", async () => {
+  it("records codes and counts only: no paths, names, tokens, pairing codes or identifiers", async () => {
     const context = setup();
     const created = connectPairingCreateResponseSchema.parse(await (await context.device.createPairing(
       deviceRequest("/connect-api/v1/pairings", { body: { ...machine, hostname: "secret-host.example", name: "Secret Machine" } }))).json());
@@ -1104,37 +1011,35 @@ describe("AIQSA Connect logging", () => {
       deviceRequest("/connect-api/v1/pairings/poll", { body: { pairingId: created.pairingId, pollSecret: created.pollSecret } }))).json());
     if (approved.status !== "approved") throw new Error("not approved");
     const deviceStream = await openDeviceStream(context, approved.deviceToken);
-    await postEvents(context, approved.deviceToken, [{ sessions: [session("ac-secret1", "Secret title")], type: "sessions" }]);
-    const viewId = await createView(context, "alice-session", approved.deviceId, "ac-secret1");
-    await context.browser.viewInput(
-      browserRequest(`/api/connect/views/${viewId}/input`, "alice-session", { body: { data: "secret typed password" } }), params({ viewId }));
-    await postEvents(context, approved.deviceToken, [
-      { data: "c2VjcmV0IG91dHB1dA==", seq: 0, type: "output", viewId },
-      { data: "Z2Fw", seq: 3, type: "output", viewId }
-    ]);
+    await postEvents(context, approved.deviceToken, [deviceInfo]);
+    const listing = context.browser.listDirs(browserRequest(
+      `/api/connect/devices/${approved.deviceId}/dirs?path=%2Fhome%2Fsecret-folder`, "alice-session"), params({ deviceId: approved.deviceId }));
+    const command = await nextOp(deviceStream);
+    await postEvents(context, approved.deviceToken, [{ ok: true, requestId: command.requestId, result: { secret: "listing" }, type: "reply" }]);
+    await listing;
     context.limits.code.check.mockResolvedValueOnce({ allowed: false, retryAfterSeconds: 5 });
     await context.browser.lookupPairing(browserRequest("/api/connect/pairings/by-code/ABCD-EFGH", "alice-session"), params({ userCode: "ABCD-EFGH" }));
-    const history = context.browser.history(
-      browserRequest(`/api/connect/devices/${approved.deviceId}/sessions/ac-secret1/history`, "alice-session"),
-      params({ deviceId: approved.deviceId, sessionId: "ac-secret1" })
-    );
-    await vi.advanceTimersByTimeAsync(10_000);
-    await history;
+    const timed = context.browser.recentDirs(browserRequest(
+      `/api/connect/devices/${approved.deviceId}/recent-dirs`, "alice-session"), params({ deviceId: approved.deviceId }));
+    await vi.advanceTimersByTimeAsync(CONNECT_PICKER_OP_TIMEOUT_MS + CONNECT_OP_REPLY_GRACE_MS);
+    await timed;
     await context.device.stream(deviceRequest("/connect-api/v1/stream", { token: issueConnectDeviceToken().value }));
+    await context.device.stream(deviceRequest("/connect-api/v1/stream", { legacy: true, token: approved.deviceToken }));
+    await context.device.revokeSelf(deviceRequest("/connect-api/v1/device", { method: "DELETE", token: approved.deviceToken }));
     await deviceStream.close();
 
     expect(logs.logEvent).toHaveBeenCalled();
     const logged = JSON.stringify(logs.logEvent.mock.calls);
     for (const secret of [
-      "secret-host", "Secret Machine", "Secret title", "secret typed", "c2VjcmV0", "/home/synthetic", approved.deviceToken,
-      approved.deviceId, created.userCode, created.pollSecret, created.pairingId, viewId, "alice"
+      "secret-host", "Secret Machine", "secret-folder", "listing", "DESKTOP-SYNTH", "C:\\\\Users", approved.deviceToken,
+      approved.deviceId, created.userCode, created.pollSecret, created.pairingId, command.requestId, command.runId, "alice"
     ]) {
       expect(logged).not.toContain(secret);
     }
     for (const [event, fields] of logs.logEvent.mock.calls) {
       expect(event).toBe("service_operation");
       expect(fields).toMatchObject({ subsystem: "connect" });
-      expect(String((fields as { code: string }).code)).toMatch(/^connect_[a-z_]+$/u);
+      expect(String((fields as { code: string }).code)).toMatch(/^(?:connect|computer)_[a-z_]+$/u);
     }
   });
 });

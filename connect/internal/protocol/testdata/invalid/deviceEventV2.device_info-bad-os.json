@@ -1,0 +1,13 @@
+{
+  "type": "device_info",
+  "os": "freebsd",
+  "osVersion": "Windows 11 Pro 23H2",
+  "arch": "amd64",
+  "hostname": "DESKTOP-7Q2",
+  "home": "C:\\Users\\ivan",
+  "shell": {
+    "kind": "powershell",
+    "name": "Windows PowerShell",
+    "version": "5.1.22621.4391"
+  }
+}

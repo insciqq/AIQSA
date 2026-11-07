@@ -16,7 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 const topbar = { title: "AIQSA Connect" };
 
 export const ADMIN_CONNECT_WARNING =
-  "Lets users open terminals on their own computers from AIQSA. The server relays their terminal traffic.";
+  "Lets users connect their own computers so the AIQSA agent can work with files and run commands there, with their permissions and without asking first. The server relays the agent's commands and their results.";
 
 /** The installation switch of AIQSA Connect; off by default. */
 export function AdminConnectSection({ reportNotice }: Readonly<{
@@ -75,7 +75,7 @@ export function AdminConnectSection({ reportNotice }: Readonly<{
   return (
     <section aria-label="AIQSA Connect policy" className="flex max-w-[1120px] min-w-0 flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
       <p className="max-w-2xl text-sm leading-6 text-ink-secondary">
-        Remote terminals for Claude Code, Codex and shells running on users&apos; own computers.
+        The AIQSA agent working on users&apos; own Windows, macOS and Linux computers, in chats where they choose one.
       </p>
       {error ? <p className="border-l-2 border-critical bg-critical/10 px-3 py-2 text-xs text-critical" role="alert">{error}</p> : null}
       {readError ? <p className="text-xs leading-5 text-critical" role="alert">{readError}</p> : null}
@@ -90,7 +90,8 @@ export function AdminConnectSection({ reportNotice }: Readonly<{
             onChange={(enabled) => void update(enabled)}
           />
           <p className="border-t border-trace-subtle py-4 text-xs leading-5 text-ink-muted">
-            Off by default. Turning it off hides the mode, disconnects every computer and stops serving the client download.
+            Off by default. Turning it off hides the mode, disconnects every computer, stops the agent from using them and stops
+            serving the client download.
           </p>
         </div>
       ) : loading ? (

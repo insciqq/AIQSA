@@ -17,8 +17,20 @@ const CONNECT_BUILD_TARGETS = Object.freeze([
   ["darwin", "amd64"],
   ["darwin", "arm64"],
   ["linux", "amd64"],
-  ["linux", "arm64"]
+  ["linux", "arm64"],
+  ["windows", "amd64"],
+  ["windows", "arm64"]
 ]);
+
+/** The release file name: `.exe` on Windows (connectClientBinaryName in lib/contracts/connect.ts). */
+function binaryName(os, arch) {
+  return `aiqsa-connect-${os}-${arch}${os === "windows" ? ".exe" : ""}`;
+}
+
+/** The linker flags, byte for byte as the Dockerfile's: Windows builds are GUI programs (D-12). */
+function linkerFlags(os, version) {
+  return `-s -w -buildid= ${os === "windows" ? "-H windowsgui " : ""}-X main.version=${version}`;
+}
 
 const VERSION_PATTERN = /^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})(?:-[0-9A-Za-z.-]{1,32})?$/u;
 
@@ -58,12 +70,12 @@ mkdirSync(distDir, { recursive: true });
 
 const sums = [];
 for (const [os, arch] of CONNECT_BUILD_TARGETS) {
-  const name = `aiqsa-connect-${os}-${arch}`;
+  const name = binaryName(os, arch);
   const result = spawnSync("go", [
     "build",
     "-trimpath",
     "-buildvcs=false",
-    `-ldflags=-s -w -buildid= -X main.version=${version}`,
+    `-ldflags=${linkerFlags(os, version)}`,
     "-o",
     path.join(distDir, name),
     "./cmd/aiqsa-connect"

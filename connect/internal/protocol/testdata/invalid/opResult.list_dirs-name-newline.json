@@ -1,0 +1,11 @@
+{
+  "op": "list_dirs",
+  "result": {
+    "path": "/home",
+    "parent": "/",
+    "dirs": [
+      "a\nb"
+    ],
+    "truncated": false
+  }
+}

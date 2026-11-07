@@ -5,6 +5,8 @@ import { createPrismaLoginRateLimiter } from "../auth/prismaRateLimit";
 import { prisma } from "../prisma";
 import { createConnectAdminPolicyHandlers } from "./adminHandlers";
 import { createConnectBrowserHandlers } from "./browserHandlers";
+import { createConnectComputerOps } from "./computerOps";
+import { setComputerOps } from "./computerPort";
 import { createConnectDeviceHandlers } from "./deviceHandlers";
 import { createConnectPairingService } from "./pairingService";
 import { getConnectPolicyGate } from "./policy";
@@ -44,6 +46,20 @@ const pairing = createConnectPairingService({
   repository
 });
 
+/**
+ * The engine's port to the user's computers over this process's relay
+ * (`getComputerOps()`). Installed when this module loads, which the
+ * application's startup does (`instrumentation.ts`), so the engine never
+ * meets the unavailable default once the server runs.
+ */
+const computerOps = createConnectComputerOps({ policy, relay: getConnectRelay(), repository });
+setComputerOps(computerOps);
+
+/** Installs the port; the import above already did, this names it for startup. */
+export function installConnectComputerOps(): void {
+  setComputerOps(computerOps);
+}
+
 export const connectDeviceHandlers = createConnectDeviceHandlers({
   clientKey,
   pairing,
@@ -55,6 +71,7 @@ export const connectDeviceHandlers = createConnectDeviceHandlers({
 
 export const connectBrowserHandlers = createConnectBrowserHandlers({
   codeRateLimiter: limiter(CONNECT_PAIRING_CODE_LIMIT),
+  computerOps,
   pairing,
   policy,
   relay: getConnectRelay(),

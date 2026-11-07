@@ -2,6 +2,8 @@ import { modelSearchPricing, modelSearchPricingSelect } from "../providers/model
 import { loadProviderModelCostBasis } from "../usage";
 import { loadWorkspaceInboxFacts } from "../workspace/inboxFacts";
 import { decodeSearchPlan } from "../../domain/search";
+import { decodeChatComputerBinding } from "../../contracts/computer";
+import { decodeFrozenComputerBinding } from "../tools/computerBinding";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
 import { AttachmentLinkConflictError } from "./runRepositoryContract";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
@@ -142,6 +144,9 @@ function contentHasImage(value: unknown): boolean {
 
 /** The message's run was sent with Deep research, which refuses a regenerate of it (`NormalizedRunRequest.deepResearch`). */
 const sentWithDeepResearch = (normalizedRequest: unknown) => isRecord(normalizedRequest) && normalizedRequest.deepResearch === true;
+/** The computer a run was admitted with, null for none (a malformed record offers none either). */
+const frozenComputerOf = (normalizedRequest: unknown) => isRecord(normalizedRequest)
+  ? decodeFrozenComputerBinding(normalizedRequest.computer) : null;
 
 export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
   return rows.flatMap((row) => {
@@ -424,7 +429,16 @@ export function createPrismaRunRepository(
     loadScheduledPromptMessageIds: (input) =>
       fetchUrlOperations.loadScheduledPromptMessageIds(input).catch(retainRunPrismaCode),
     loadMcpToolConsentServerIds: (input) => loadMcpToolConsentServerIds(prismaClient, input).catch(retainRunPrismaCode),
-    loadMcpApprovalContinuation: (input) => loadMcpApprovalContinuation(prismaClient, input).catch(retainRunPrismaCode),
+    loadMcpApprovalContinuation: async (input) => {
+      const approval = await loadMcpApprovalContinuation(prismaClient, input).catch(retainRunPrismaCode);
+      if (!approval) return null;
+      // The turn continues the run the approval gated, so it keeps the computer that run was admitted with.
+      const gated = await prismaClient.mcpToolApproval.findFirst({
+        select: { modelRun: { select: { normalizedRequest: true } } },
+        where: { chatId: input.chatId, id: input.approvalId, userId: input.userId }
+      }).catch(retainRunPrismaCode);
+      return { ...approval, computer: frozenComputerOf(gated?.modelRun.normalizedRequest) };
+    },
     loadRunMcpApprovalCards: (input) => loadRunMcpApprovalCards(prismaClient, input).catch(retainRunPrismaCode),
     loadScheduledTaskManagement: (input) => loadScheduledTaskManagementAdmission(prismaClient, input).catch(retainRunPrismaCode),
     manageScheduledTaskForCall: (input) => manageScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
@@ -718,6 +732,8 @@ export function createPrismaRunRepository(
           activeLeafMessageId: true,
           assistantId: true,
           assistantOverrides: true,
+          computerCwd: true,
+          computerDeviceId: true,
           defaultProviderModel: { select: { connectionId: true, id: true } },
           folder: { select: { projectMemory: true } },
           folderId: true,
@@ -738,6 +754,7 @@ export function createPrismaRunRepository(
         activeLeafMessageId: chat.activeLeafMessageId,
         assistantId: chat.assistantId,
         assistantOverrides: chat.assistantOverrides,
+        computer: decodeChatComputerBinding({ cwd: chat.computerCwd, deviceId: chat.computerDeviceId }),
         defaultModelId: chat.defaultProviderModel?.id ?? "",
         defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
         folderId: chat.folderId,
@@ -886,6 +903,7 @@ export function createPrismaRunRepository(
           ? normalizedRequest.artifactEdit : undefined;
         const memory = await scheduledTaskMemory(sourceMessage, userId);
         return {
+          ...(sourceRun ? { computer: frozenComputerOf(normalizedRequest) } : {}),
           ...(artifactEdit !== undefined ? { artifactEdit } : {}),
           ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
           ...(sentWithDeepResearch(normalizedRequest) ? { deepResearch: true as const } : {}),
@@ -944,6 +962,7 @@ export function createPrismaRunRepository(
       const memory = await scheduledTaskMemory({ ...question, chatId: sourceMessage.chat.id }, userId);
 
       return {
+        ...(sourceRun ? { computer: frozenComputerOf(normalizedRequest) } : {}),
         ...(regenerationFollowups?.entries.length ? { followups: { messageId: sourceMessage.id,
           revision: regenerationFollowups.entries.length, entries: regenerationFollowups.entries } } : {}),
         ...(artifactEdit !== undefined ? { artifactEdit } : {}),
@@ -1026,6 +1045,8 @@ export function createPrismaRunRepository(
             }
           },
           activeLeafMessageId: true,
+          computerCwd: true,
+          computerDeviceId: true,
           createdAt: true,
           defaultSearchPlan: true,
           defaultProviderModel: {
@@ -1098,6 +1119,8 @@ export function createPrismaRunRepository(
                   toolCalls: {
                     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
                     select: {
+                      // A computer step names its command or path from them, as the chat page does.
+                      arguments: true,
                       mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
                       completedAt: true,
                       id: true,
@@ -1188,6 +1211,8 @@ export function createPrismaRunRepository(
         return {
           chat: {
             activeLeafMessageId: chat.activeLeafMessageId,
+            // The choice this send may just have stored, so the composer shows what the next message uses.
+            computer: decodeChatComputerBinding({ cwd: chat.computerCwd, deviceId: chat.computerDeviceId }),
             contextStats,
             createdAt: chat.createdAt,
             defaultSearchPlan: (() => { const decoded = decodeSearchPlan(chat.defaultSearchPlan); return decoded.ok ? decoded.plan : null; })(),

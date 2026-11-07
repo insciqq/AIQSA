@@ -1,0 +1,13 @@
+{
+  "op": "grep",
+  "result": {
+    "mode": "count",
+    "matches": [
+      {
+        "path": "/srv/a.go",
+        "count": 2
+      }
+    ],
+    "truncated": false
+  }
+}

@@ -6,14 +6,17 @@ import {
   CONNECT_ARCH_VALUES,
   CONNECT_CLIENT_CHECKSUMS_PATH,
   CONNECT_CLIENT_DOWNLOAD_PREFIX,
+  CONNECT_LEGACY_OS_VALUES,
   CONNECT_MAX_CLIENT_BINARY_BYTES,
   CONNECT_OS_VALUES,
+  CONNECT_WINDOWS_EXECUTABLE_SUFFIX,
   connectClientBinaryName,
   connectClientManifestSchema,
+  connectLegacyClientManifestSchema,
   type ConnectArch,
   type ConnectOs
 } from "@/lib/contracts/connect";
-import { CONNECT_DEVICE_HEADERS, connectRefusal, connectUnavailable } from "./http";
+import { CONNECT_DEVICE_HEADERS, connectRefusal, connectUnavailable, isConnectProtocol2 } from "./http";
 import { logConnect } from "./observability";
 import type { ConnectPolicyGate } from "./policy";
 
@@ -21,6 +24,7 @@ import type { ConnectPolicyGate } from "./policy";
 export const CONNECT_CLIENT_SUMS_FILE = "SHA256SUMS";
 const SUMS_MAX_BYTES = 4_096;
 
+/** Every target the build makes (D-13): darwin, linux and windows on amd64 and arm64, in this order. */
 export const CONNECT_CLIENT_TARGETS: readonly Readonly<{ arch: ConnectArch; os: ConnectOs }>[] = Object.freeze(
   CONNECT_OS_VALUES.flatMap((os) => CONNECT_ARCH_VALUES.map((arch) => Object.freeze({ arch, os })))
 );
@@ -252,7 +256,6 @@ if [ -n "$service_file" ]; then
 else
   printf '\\nNext steps:\\n'
   printf '  %s login %s       # connect this computer to your AIQSA account\\n' "$command" "$origin"
-  printf '  %s setup                # check tmux and add the agent hooks\\n' "$command"
   printf '  %s service install      # keep it running in the background\\n' "$command"
 fi
 `;
@@ -309,6 +312,35 @@ type FileParams = Readonly<{ params: Promise<Readonly<{ file: string }>> }>;
 
 const PUBLIC_HEADERS = Object.freeze({ ...CONNECT_DEVICE_HEADERS, "x-content-type-options": "nosniff" });
 
+const WINDOWS_FILE_HOST = /^[a-z0-9.-]+$/u;
+
+/** RFC 8187 `filename*` value: UTF-8, every byte outside the attribute characters percent-encoded. */
+function extendedFileName(name: string): string {
+  return `UTF-8''${encodeURIComponent(name).replace(/['()*]/gu, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+}
+
+/**
+ * The Windows client's download name, which carries the installation it
+ * belongs to (O-07, §9): `AIQSA Connect - <host>.exe`, `_<port>` for a port
+ * that is not the scheme's default, and an `http_` prefix for plain http.
+ * Null for an origin the client cannot read back from a file name (IPv6 and
+ * anything that is not a plain host name), which keeps the release name.
+ */
+export function connectWindowsDownloadName(origin: string | null): string | null {
+  if (!origin) return null;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return null;
+  }
+  if (!WINDOWS_FILE_HOST.test(url.hostname)) return null;
+  const scheme = url.protocol === "http:" ? "http_" : url.protocol === "https:" ? "" : null;
+  if (scheme === null) return null;
+  return `AIQSA Connect - ${scheme}${url.hostname}${url.port ? `_${url.port}` : ""}${CONNECT_WINDOWS_EXECUTABLE_SUFFIX}`;
+}
+
 function notFound(): Response {
   return new Response("Not found\n", {
     headers: { ...PUBLIC_HEADERS, "content-type": "text/plain; charset=utf-8" },
@@ -324,10 +356,12 @@ function text(body: string): Response {
 }
 
 /**
- * The public client distribution: `/connect/install.sh`, the four
+ * The public client distribution: `/connect/install.sh`, the six
  * `/connect/download/<binary>` files, `/connect/checksums.txt` and the device
  * API manifest `/connect-api/v1/client`. They exist only while AIQSA Connect
- * is on; without built binaries they answer `connect_client_unavailable`.
+ * is on; without built binaries they answer `connect_client_unavailable`. A
+ * manifest request without the protocol 2 header comes from a terminal
+ * client, which decodes four darwin and linux targets only (D-03).
  */
 export function createConnectDistributionHandlers(deps: ConnectDistributionDeps) {
   /** The distribution, or the refusal: hidden (public paths) or `connect_disabled` (device API) while off. */
@@ -353,11 +387,14 @@ export function createConnectDistributionHandlers(deps: ConnectDistributionDeps)
       const loaded = await load(notFound);
       if (loaded instanceof Response) return loaded;
       const entry = loaded.files.find((candidate) => candidate.name === file)!;
+      const windowsName = entry.os === "windows" ? connectWindowsDownloadName(deps.origin()) : null;
       const body = fileBody(entry.path, entry.size);
       return new Response(body, {
         headers: {
           ...PUBLIC_HEADERS,
-          "content-disposition": `attachment; filename="${entry.name}"`,
+          "content-disposition": windowsName
+            ? `attachment; filename="${windowsName}"; filename*=${extendedFileName(windowsName)}`
+            : `attachment; filename="${entry.name}"`,
           "content-length": String(entry.size),
           "content-type": "application/octet-stream"
         },
@@ -372,13 +409,16 @@ export function createConnectDistributionHandlers(deps: ConnectDistributionDeps)
       return origin ? text(connectInstallScript(origin)) : connectUnavailable(PUBLIC_HEADERS);
     },
 
-    async manifest(): Promise<Response> {
+    async manifest(request: Request): Promise<Response> {
       const loaded = await load(() => connectRefusal("connect_disabled", PUBLIC_HEADERS));
       if (loaded instanceof Response) return loaded;
-      const manifest = connectClientManifestSchema.parse({
-        targets: loaded.files.map(({ arch, os, sha256, size }) => ({ arch, os, sha256, size })),
-        version: deps.version
-      });
+      const targets = loaded.files.map(({ arch, os, sha256, size }) => ({ arch, os, sha256, size }));
+      const manifest = isConnectProtocol2(request)
+        ? connectClientManifestSchema.parse({ targets, version: deps.version })
+        : connectLegacyClientManifestSchema.parse({
+          targets: targets.filter((target) => (CONNECT_LEGACY_OS_VALUES as readonly ConnectOs[]).includes(target.os)),
+          version: deps.version
+        });
       return Response.json(manifest, { headers: PUBLIC_HEADERS });
     }
   };

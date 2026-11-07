@@ -1,0 +1,11 @@
+{
+  "op": "read",
+  "result": {
+    "content": "",
+    "startLine": 0,
+    "totalLines": 0,
+    "truncated": false,
+    "encoding": "utf-8",
+    "lineEnding": "lf"
+  }
+}

@@ -52,8 +52,12 @@ export type ConnectRepository = Readonly<{
     userCodeHash: string;
   }>): Promise<Readonly<{ id: string }> | null>;
   deleteDevice(input: Readonly<{ id: string; userId: string }>): Promise<boolean>;
+  /** Deletes the device a token names (its own revocation); null when no device holds the token. */
+  deleteDeviceByToken(tokenHash: string): Promise<Readonly<{ id: string; userId: string }> | null>;
   denyPairing(input: Readonly<{ now: Date; userCodeHash: string }>): Promise<"denied" | "expired">;
   deviceExists(input: Readonly<{ id: string; userId: string }>): Promise<boolean>;
+  /** The user's own device; null for a missing device and for another account's, alike. */
+  findDevice(input: Readonly<{ id: string; userId: string }>): Promise<ConnectDeviceRecord | null>;
   findPairing(id: string): Promise<ConnectPairingRecord | null>;
   findPairingByCode(userCodeHash: string): Promise<ConnectPairingRecord | null>;
   /**
@@ -266,6 +270,13 @@ export function createPrismaConnectRepository(prisma: PrismaClient): ConnectRepo
       return deleted.count === 1;
     },
 
+    async deleteDeviceByToken(tokenHash) {
+      const device = await prisma.connectDevice.findUnique({ select: { id: true, userId: true }, where: { tokenHash } });
+      if (!device) return null;
+      const deleted = await prisma.connectDevice.deleteMany({ where: { id: device.id, tokenHash } });
+      return deleted.count === 1 ? device : null;
+    },
+
     async denyPairing(input) {
       const denied = await prisma.connectPairing.updateMany({
         data: { deniedAt: input.now },
@@ -283,6 +294,11 @@ export function createPrismaConnectRepository(prisma: PrismaClient): ConnectRepo
     async deviceExists(input) {
       const device = await prisma.connectDevice.findFirst({ select: { id: true }, where: { id: input.id, userId: input.userId } });
       return device !== null;
+    },
+
+    async findDevice(input) {
+      const row = await prisma.connectDevice.findFirst({ select: deviceSelect, where: { id: input.id, userId: input.userId } });
+      return row ? deviceRecord(row) : null;
     },
 
     async findPairing(id) {

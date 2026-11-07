@@ -1,0 +1,9 @@
+{
+  "op": "job_output",
+  "result": {
+    "running": false,
+    "stdout": "",
+    "stderr": "",
+    "truncated": false
+  }
+}

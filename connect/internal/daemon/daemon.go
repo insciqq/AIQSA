@@ -1,6 +1,7 @@
 // Package daemon is the main loop of `aiqsa-connect up`: it keeps the
-// device stream to AIQSA open, runs server commands against the client's
-// tmux sessions, streams PTY views and posts events serially.
+// device stream to AIQSA open (protocol 2), runs the agent's operations on
+// this computer through internal/ops, posts their replies serially and
+// reports its connection state.
 package daemon
 
 import (
@@ -17,8 +18,9 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/api"
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/logx"
+	"github.com/insciqq/AIQSA/connect/internal/ops"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
-	"github.com/insciqq/AIQSA/connect/internal/tmux"
+	"github.com/insciqq/AIQSA/connect/internal/state"
 )
 
 // Updater is told the server's version and the minimum client version after
@@ -52,29 +54,20 @@ type Timing struct {
 	StableAfter time.Duration
 	// DisabledRetry is the wait after the server reports AIQSA Connect off.
 	DisabledRetry time.Duration
-	// PollInterval is the tmux snapshot poll.
-	PollInterval time.Duration
-	// CoalesceDelay is how long output is collected after its first byte.
-	CoalesceDelay time.Duration
 	// RetryMin and RetryMax bound retries of a failed event POST.
 	RetryMin, RetryMax time.Duration
-	// MaxPendingViewBytes bounds one view's unsent output.
-	MaxPendingViewBytes int
 }
 
 // DefaultTiming are the production intervals.
 func DefaultTiming() Timing {
 	return Timing{
-		IdleTimeout:         45 * time.Second,
-		BackoffMin:          time.Second,
-		BackoffMax:          30 * time.Second,
-		StableAfter:         60 * time.Second,
-		DisabledRetry:       10 * time.Minute,
-		PollInterval:        2 * time.Second,
-		CoalesceDelay:       16 * time.Millisecond,
-		RetryMin:            250 * time.Millisecond,
-		RetryMax:            5 * time.Second,
-		MaxPendingViewBytes: 8 << 20,
+		IdleTimeout:   45 * time.Second,
+		BackoffMin:    time.Second,
+		BackoffMax:    30 * time.Second,
+		StableAfter:   60 * time.Second,
+		DisabledRetry: 10 * time.Minute,
+		RetryMin:      250 * time.Millisecond,
+		RetryMax:      5 * time.Second,
 	}
 }
 
@@ -90,25 +83,16 @@ func (t Timing) withDefaults() Timing {
 	fill(&t.BackoffMax, d.BackoffMax)
 	fill(&t.StableAfter, d.StableAfter)
 	fill(&t.DisabledRetry, d.DisabledRetry)
-	fill(&t.PollInterval, d.PollInterval)
-	fill(&t.CoalesceDelay, d.CoalesceDelay)
 	fill(&t.RetryMin, d.RetryMin)
 	fill(&t.RetryMax, d.RetryMax)
-	if t.MaxPendingViewBytes <= 0 {
-		t.MaxPendingViewBytes = d.MaxPendingViewBytes
-	}
 	return t
 }
-
-// coalesceBytes flushes a view's output early once this much is pending.
-const coalesceBytes = 32 << 10
 
 // Options configure a Daemon.
 type Options struct {
 	Credentials config.Credentials
 	Paths       config.Paths
 	Version     string
-	Tmux        *tmux.Manager
 	Log         *logx.Logger
 	Updater     Updater
 	// Notices receives short user-facing lines (stderr for `up`).
@@ -118,41 +102,35 @@ type Options struct {
 	// Home is the user's home directory; empty uses os.UserHomeDir.
 	Home   string
 	Timing Timing
+	// OnState receives every change of the connection state: Connecting,
+	// Connected, Offline, Revoked, Disabled, Outdated and, when Run
+	// returns, Stopped. It runs on the daemon's goroutines and must return
+	// quickly (the Windows tray).
+	OnState state.Sink
+	// System replaces the operating system the ops run on (tests).
+	System ops.System
 }
 
 // Daemon is one running `up`.
 type Daemon struct {
 	api     *api.Client
-	tmux    *tmux.Manager
+	exec    *ops.Executor
 	log     *logx.Logger
 	updater Updater
 	notices io.Writer
-	recent  *recentDirs
-	home    string
 	timing  Timing
+	onState state.Sink
 
 	mu        sync.Mutex
 	conn      *connection
-	lastHello *protocol.Hello
-
-	// createSlot serializes session_create's count-then-create, so
-	// concurrent requests cannot pass the session limit together.
-	createSlot chan struct{}
-
-	// reportMu serializes ReportStatus; statusMu guards status, the last
-	// status known for each session.
-	reportMu sync.Mutex
-	statusMu sync.Mutex
-	status   map[string]protocol.SessionStatus
+	lastHello *protocol.HelloV2
+	lastState state.Kind
 }
 
 // New validates the options and returns a Daemon; Run starts it.
 func New(opts Options) (*Daemon, error) {
 	if err := opts.Credentials.Validate(); err != nil {
 		return nil, err
-	}
-	if opts.Tmux == nil {
-		return nil, errors.New("tmux manager required")
 	}
 	home := opts.Home
 	if home == "" {
@@ -174,22 +152,20 @@ func New(opts Options) (*Daemon, error) {
 	if updater == nil {
 		updater = NoopUpdater{}
 	}
+	recentFile := ""
+	if opts.Paths.StateDir != "" {
+		recentFile = opts.Paths.RecentDirsFile()
+	}
 	return &Daemon{
-		api:        client,
-		tmux:       opts.Tmux,
-		log:        log,
-		updater:    updater,
-		notices:    opts.Notices,
-		recent:     &recentDirs{path: opts.Paths.RecentDirsFile()},
-		home:       validHome(home),
-		timing:     opts.Timing.withDefaults(),
-		status:     map[string]protocol.SessionStatus{},
-		createSlot: make(chan struct{}, 1),
+		api:     client,
+		exec:    ops.New(ops.Options{Home: home, RecentFile: recentFile, Log: log, System: opts.System}),
+		log:     log,
+		updater: updater,
+		notices: opts.Notices,
+		timing:  opts.Timing.withDefaults(),
+		onState: opts.OnState,
 	}, nil
 }
-
-// Tmux is the daemon's tmux manager.
-func (d *Daemon) Tmux() *tmux.Manager { return d.tmux }
 
 // Log is the daemon's content-free log.
 func (d *Daemon) Log() *logx.Logger { return d.log }
@@ -200,6 +176,18 @@ func (d *Daemon) notice(format string, args ...any) {
 	}
 }
 
+// report tells OnState about a new state; a repeated state is not reported.
+func (d *Daemon) report(kind state.Kind) {
+	d.mu.Lock()
+	if d.lastState == kind {
+		d.mu.Unlock()
+		return
+	}
+	d.lastState = kind
+	d.mu.Unlock()
+	d.onState.Report(state.State{Kind: kind, Origin: d.api.Origin})
+}
+
 func (d *Daemon) current() *connection {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -207,12 +195,26 @@ func (d *Daemon) current() *connection {
 }
 
 // Run keeps the device stream connected until ctx ends (nil), the device is
-// revoked (ErrRevoked) or another process takes over (ErrReplaced).
-func (d *Daemon) Run(ctx context.Context) error {
+// revoked (ErrRevoked) or another process takes over (ErrReplaced). Before
+// it returns, every process and background job the ops started has ended;
+// when the server reports AIQSA Connect off, they end before the wait.
+func (d *Daemon) Run(ctx context.Context) (err error) {
 	d.log.Event("up_start")
+	defer func() {
+		d.exec.Close()
+		switch {
+		case errors.Is(err, ErrRevoked):
+			d.report(state.Revoked)
+		default:
+			d.report(state.Stopped)
+		}
+	}()
+	// The shell is detected before the first hello needs it.
+	go d.exec.Shell()
 	attempt := 0
 	disabledNoticed := false
 	for {
+		d.report(state.Connecting)
 		result := d.connectOnce(ctx)
 		if ctx.Err() != nil {
 			d.log.Event("up_stop")
@@ -235,6 +237,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.log.Event("up_stop", "reason", "replaced")
 			return ErrReplaced
 		case outcomeDisabled:
+			// While Connect is off the server can end no run here, so
+			// nothing the agent started keeps running (revocation and
+			// replacement end Run, whose Close does the same).
+			d.exec.StopAll()
+			d.report(state.Disabled)
 			if !disabledNoticed {
 				every := d.timing.DisabledRetry.String()
 				if d.timing.DisabledRetry%time.Minute == 0 {
@@ -246,10 +253,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 			attempt = 0
 			d.log.Event("reconnect_wait", "code", protocol.CodeDisabled, "delay", d.timing.DisabledRetry)
 			if api.Sleep(ctx, d.timing.DisabledRetry) != nil {
+				d.log.Event("up_stop")
 				return nil
 			}
 			continue
 		case outcomeOutdated:
+			d.report(state.Outdated)
 			server, minClient := "", ""
 			d.mu.Lock()
 			if d.lastHello != nil {
@@ -257,6 +266,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			d.mu.Unlock()
 			d.updater.OnServerVersion(server, minClient)
+		default:
+			d.report(state.Offline)
 		}
 		delay := d.backoff(attempt)
 		attempt++
@@ -407,8 +418,10 @@ func (d *Daemon) connectOnce(ctx context.Context) outcome {
 				d.conn = conn
 				d.lastHello = hello
 				d.mu.Unlock()
-				d.log.Event("stream_open", "max_views", hello.Limits.MaxViews, "max_events", hello.Limits.MaxEventsPerPost)
+				d.exec.SetLimits(hello.Limits)
+				d.log.Event("stream_open", "max_ops", hello.Limits.MaxConcurrentOps, "max_events", hello.Limits.MaxEventsPerPost)
 				d.notice("Connected to %s.", d.api.Origin)
+				d.report(state.Connected)
 				d.updater.OnServerVersion(hello.ServerVersion, hello.MinClientVersion)
 				conn.start()
 				continue
@@ -420,12 +433,12 @@ func (d *Daemon) connectOnce(ctx context.Context) outcome {
 	}
 }
 
-func (d *Daemon) decodeHello(event api.Event) (*protocol.Hello, bool) {
+func (d *Daemon) decodeHello(event api.Event) (*protocol.HelloV2, bool) {
 	if event.Name != protocol.StreamEventHello {
 		d.log.Event("stream_protocol_error", "reason", "hello_expected")
 		return nil, false
 	}
-	var hello protocol.Hello
+	var hello protocol.HelloV2
 	if err := protocol.Decode(event.Data, &hello); err != nil {
 		d.log.Event("stream_protocol_error", "reason", "hello_invalid")
 		return nil, false

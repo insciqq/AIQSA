@@ -168,6 +168,7 @@ async function loadCurrentSteps(
       ...(shown.serverName ? { serverName: shown.serverName } : {}),
       ...(shown.skillName ? { skillName: shown.skillName } : {}),
       ...(shown.skillPath ? { skillPath: shown.skillPath } : {}),
+      ...(shown.origin === "computer" && shown.summary ? { summary: shown.summary } : {}),
       toolName: shown.toolName
     });
     return step ? [[turn.id, step]] : [];

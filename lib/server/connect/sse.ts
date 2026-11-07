@@ -1,8 +1,12 @@
 import type { ConnectStreamWriter } from "./relay";
 
-/** Queue bounds per stream kind; a stream whose reader falls this far behind is closed. */
-export const CONNECT_DEVICE_STREAM_QUEUE_BYTES = 2_097_152;
-export const CONNECT_VIEW_STREAM_QUEUE_BYTES = 1_048_576;
+/**
+ * Queue bounds per stream kind; a stream whose reader falls this far behind
+ * is closed. A device's queue holds two of the largest `op` commands the
+ * relay sends (`CONNECT_MAX_OP_COMMAND_BYTES`), so a single write or edit
+ * never looks like a stalled device.
+ */
+export const CONNECT_DEVICE_STREAM_QUEUE_BYTES = 16_777_216;
 export const CONNECT_EVENTS_STREAM_QUEUE_BYTES = 4_194_304;
 
 const SSE_HEADERS = {

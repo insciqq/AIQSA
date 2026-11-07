@@ -53,7 +53,8 @@ func TestRequestsCarryVersionHeaderWithoutOriginOrCookies(t *testing.T) {
 	var seen atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen.Add(1)
-		if r.Header.Get(protocol.ClientVersionHeader) != "1.2.3" || r.Header.Get("Origin") != "" || r.Header.Get("Cookie") != "" {
+		if r.Header.Get(protocol.ClientVersionHeader) != "1.2.3" || r.Header.Get(protocol.ProtocolHeader) != "2" ||
+			r.Header.Get("Origin") != "" || r.Header.Get("Cookie") != "" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.URL.Path == protocol.DeviceEventsPath {

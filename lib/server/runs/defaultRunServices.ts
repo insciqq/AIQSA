@@ -1,5 +1,7 @@
 import { createMcpGuardService } from "../mcp/guard";
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
+import { getComputerOps } from "../connect/computerPort";
+import { isConnectEnabled } from "../connect/policy";
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { admitMemorySearch } from "../memory/search/admission";
@@ -36,6 +38,9 @@ async function subagentModelCatalog(userId: string): Promise<SubagentModelCatalo
 export function defaultRunServices(storage: StorageAdapter) {
   return {
     artifacts: artifactServiceForStorage(storage),
+    // The port is read at each admission: the Connect relay installs its implementation when it starts.
+    computerAdmission: { describe: (userId: string, deviceId: string) => getComputerOps().describe(userId, deviceId),
+      enabled: isConnectEnabled },
     images: imageGenerationForStorage(storage),
     memorySearch: createPrismaMemorySearchService(),
     memorySearchAdmission: { async admit(userId: string, assistantId?: string | null) {

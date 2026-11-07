@@ -1,43 +1,32 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
-  CONNECT_DEVICES_PATH,
-  CONNECT_VIEWS_PATH,
+  CONNECT_COMPUTERS_PATH,
+  connectComputerDirsPath,
+  connectComputerRecentDirsPath,
+  connectComputerStatPath,
+  decodeConnectComputerDirsResponse,
+  decodeConnectComputerErrorResponse,
+  decodeConnectComputerListResponse,
+  decodeConnectComputerRecentDirsResponse,
+  decodeConnectComputerStatResponse,
+  type ComputerErrorCode,
+  type ConnectComputerDirsResponse,
+  type ConnectComputerListResponse,
+  type ConnectComputerRecentDirsResponse,
+  type ConnectComputerStatResponse
+} from "@/lib/contracts/computer";
+import {
   connectDevicePath,
-  connectDeviceSessionPath,
-  connectDeviceSessionsPath,
   connectPairingByCodePath,
-  connectRecentDirsPath,
-  connectSessionHistoryPath,
-  connectSessionOptionsPath,
-  connectViewInputPath,
-  connectViewPath,
-  connectViewResizePath,
-  connectViewVisibilityPath,
-  decodeConnectDevicesResponse,
-  decodeConnectErrorResponse,
   decodeConnectPairingDecisionResponse,
   decodeConnectPairingLookupResponse,
-  decodeConnectRecentDirsResponse,
-  decodeConnectSessionCreateResponse,
-  decodeConnectSessionHistoryResponse,
-  decodeConnectSessionOptionsResponse,
-  decodeConnectViewCreateResponse,
-  type ConnectDevicesResponse,
   type ConnectPairingDecision,
   type ConnectPairingDecisionResponse,
-  type ConnectPairingLookupResponse,
-  type ConnectReasonCode,
-  type ConnectRecentDirsResponse,
-  type ConnectSessionCreateRequest,
-  type ConnectSessionCreateResponse,
-  type ConnectSessionHistoryResponse,
-  type ConnectSessionOptionsResponse,
-  type ConnectViewCreateRequest,
-  type ConnectViewCreateResponse
+  type ConnectPairingLookupResponse
 } from "@/lib/contracts/connect";
 
-/** A refusal's reason code, or a browser-side failure that never reached a decoded answer. */
-export type ConnectFailureCode = ConnectReasonCode | "network_error" | "response_invalid";
+/** A refusal's stable code, or a browser-side failure that never reached a decoded answer. */
+export type ConnectFailureCode = ComputerErrorCode | "network_error" | "response_invalid";
 
 export type ConnectApiFailure = Readonly<{
   code: ConnectFailureCode;
@@ -92,7 +81,7 @@ async function connectRequest<T>(
   }
   if (response.status === 401) return { code: "connect_unauthorized", ok: false };
   if (!response.ok) {
-    const refusal = decodeConnectErrorResponse(await readJson(response));
+    const refusal = decodeConnectComputerErrorResponse(await readJson(response));
     const code: ConnectFailureCode = refusal?.code ?? "response_invalid";
     const retryAfter = code === "connect_rate_limited" ? retryAfterSeconds(response) : undefined;
     return retryAfter === undefined ? { code, ok: false } : { code, ok: false, retryAfterSeconds: retryAfter };
@@ -102,85 +91,59 @@ async function connectRequest<T>(
   return data === null ? { code: "response_invalid", ok: false } : { data, ok: true };
 }
 
-function jsonBody(value: unknown): Pick<RequestInit, "body" | "method"> {
-  return { body: JSON.stringify(value), method: "POST" };
+function signalInit(signal: AbortSignal | undefined): RequestInit {
+  return signal ? { signal } : {};
 }
 
-export function listConnectDevices(signal?: AbortSignal): Promise<ConnectApiResult<ConnectDevicesResponse>> {
-  return connectRequest(CONNECT_DEVICES_PATH, signal ? { signal } : {}, decodeConnectDevicesResponse);
+/** The user's computers, for `/connect` and the composer's picker. */
+export function listConnectComputers(signal?: AbortSignal): Promise<ConnectApiResult<ConnectComputerListResponse>> {
+  return connectRequest(CONNECT_COMPUTERS_PATH, signalInit(signal), decodeConnectComputerListResponse);
 }
 
-export function revokeConnectDevice(deviceId: string): Promise<ConnectApiResult<void>> {
-  return connectRequest(connectDevicePath(deviceId), { method: "DELETE" }, null);
+export function revokeConnectComputer(computerId: string): Promise<ConnectApiResult<void>> {
+  return connectRequest(connectDevicePath(computerId), { method: "DELETE" }, null);
 }
 
-export function createConnectSession(
-  deviceId: string,
-  request: ConnectSessionCreateRequest
-): Promise<ConnectApiResult<ConnectSessionCreateResponse>> {
-  return connectRequest(connectDeviceSessionsPath(deviceId), jsonBody(request), decodeConnectSessionCreateResponse);
-}
-
-export function endConnectSession(deviceId: string, sessionId: string): Promise<ConnectApiResult<void>> {
-  return connectRequest(connectDeviceSessionPath(deviceId, sessionId), { method: "DELETE" }, null);
-}
-
-/** The numbered choices on the session's screen, read when it needs approval; may be empty. */
-export function loadConnectSessionOptions(
-  deviceId: string,
-  sessionId: string,
+/** The computer's home folder and the folders the agent worked in recently. */
+export function loadConnectComputerRecentDirs(
+  computerId: string,
   signal?: AbortSignal
-): Promise<ConnectApiResult<ConnectSessionOptionsResponse>> {
-  return connectRequest(connectSessionOptionsPath(deviceId, sessionId), signal ? { signal } : {}, decodeConnectSessionOptionsResponse);
+): Promise<ConnectApiResult<ConnectComputerRecentDirsResponse>> {
+  return connectRequest(connectComputerRecentDirsPath(computerId), signalInit(signal), decodeConnectComputerRecentDirsResponse);
 }
 
-/** The session's recent lines as plain text. */
-export function loadConnectSessionHistory(
-  deviceId: string,
-  sessionId: string,
+/** One level of subfolders of `path` on the computer. */
+export function loadConnectComputerDirs(
+  computerId: string,
+  path: string,
   signal?: AbortSignal
-): Promise<ConnectApiResult<ConnectSessionHistoryResponse>> {
-  return connectRequest(connectSessionHistoryPath(deviceId, sessionId), signal ? { signal } : {}, decodeConnectSessionHistoryResponse);
+): Promise<ConnectApiResult<ConnectComputerDirsResponse>> {
+  return connectRequest(connectComputerDirsPath(computerId, path), signalInit(signal), decodeConnectComputerDirsResponse);
 }
 
-export function loadConnectRecentDirs(
-  deviceId: string,
+/** Whether `path` exists on the computer and what it is. */
+export function statConnectComputerPath(
+  computerId: string,
+  path: string,
   signal?: AbortSignal
-): Promise<ConnectApiResult<ConnectRecentDirsResponse>> {
-  return connectRequest(connectRecentDirsPath(deviceId), signal ? { signal } : {}, decodeConnectRecentDirsResponse);
+): Promise<ConnectApiResult<ConnectComputerStatResponse>> {
+  return connectRequest(connectComputerStatPath(computerId, path), signalInit(signal), decodeConnectComputerStatResponse);
 }
 
 export function lookupConnectPairing(
   userCode: string,
   signal?: AbortSignal
 ): Promise<ConnectApiResult<ConnectPairingLookupResponse>> {
-  return connectRequest(connectPairingByCodePath(userCode), signal ? { signal } : {}, decodeConnectPairingLookupResponse);
+  return connectRequest(connectPairingByCodePath(userCode), signalInit(signal), decodeConnectPairingLookupResponse);
 }
 
 export function decideConnectPairing(
   userCode: string,
   decision: ConnectPairingDecision
 ): Promise<ConnectApiResult<ConnectPairingDecisionResponse>> {
-  return connectRequest(connectPairingByCodePath(userCode), jsonBody({ decision }), decodeConnectPairingDecisionResponse);
-}
-
-export function createConnectView(request: ConnectViewCreateRequest): Promise<ConnectApiResult<ConnectViewCreateResponse>> {
-  return connectRequest(CONNECT_VIEWS_PATH, jsonBody(request), decodeConnectViewCreateResponse);
-}
-
-export function sendConnectViewInput(viewId: string, data: string): Promise<ConnectApiResult<void>> {
-  return connectRequest(connectViewInputPath(viewId), jsonBody({ data }), null);
-}
-
-export function resizeConnectView(viewId: string, cols: number, rows: number): Promise<ConnectApiResult<void>> {
-  return connectRequest(connectViewResizePath(viewId), jsonBody({ cols, rows }), null);
-}
-
-export function setConnectViewVisibility(viewId: string, visible: boolean): Promise<ConnectApiResult<void>> {
-  return connectRequest(connectViewVisibilityPath(viewId), jsonBody({ visible }), null);
-}
-
-/** Survives page unload, so a closed tab releases its view at once instead of after the orphan timeout. */
-export function closeConnectView(viewId: string): Promise<ConnectApiResult<void>> {
-  return connectRequest(connectViewPath(viewId), { keepalive: true, method: "DELETE" }, null);
+  return connectRequest(
+    connectPairingByCodePath(userCode),
+    { body: JSON.stringify({ decision }), method: "POST" },
+    decodeConnectPairingDecisionResponse
+  );
 }

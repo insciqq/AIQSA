@@ -1,0 +1,12 @@
+{
+  "op": "shell",
+  "result": {
+    "exitCode": 3221225477,
+    "stdout": "",
+    "stderr": "\u001b[31merror\u001b[0m\n",
+    "truncated": true,
+    "stdoutBytes": 0,
+    "stderrBytes": 500000,
+    "durationMs": 812
+  }
+}

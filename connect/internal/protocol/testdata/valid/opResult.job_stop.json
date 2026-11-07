@@ -1,0 +1,6 @@
+{
+  "op": "job_stop",
+  "result": {
+    "stopped": true
+  }
+}

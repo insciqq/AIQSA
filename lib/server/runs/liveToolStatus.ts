@@ -1,3 +1,4 @@
+import { isComputerActivitySummary, isComputerExitCode } from "../../contracts/computer";
 import { decodeFetchUrlActivity, type FetchUrlActivityFacts } from "../../contracts/fetchUrlActivity";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadToolActivityOrigin } from "../../contracts/chats";
@@ -9,7 +10,9 @@ import type { ModelToolCall } from "../tools/types";
  * A sent call is announced as `requested` and, once it settled, again with
  * its outcome and duration under the same identity (`ordinal`, its position
  * in its round), so its step stops when it finished. Content-free: no
- * arguments, results or error text.
+ * arguments, results or error text, except a computer step's one bounded
+ * line (the command's first line, a path or a pattern) and exit code, which
+ * the owner's stream carries as the persisted step does (`computerActivityFacts`).
  */
 export function liveToolCallStatus(
   call: ModelToolCall,
@@ -21,6 +24,10 @@ export function liveToolCallStatus(
     skillId?: string;
     skillName?: string;
     skillPath?: string;
+    /** `computer` only. */
+    summary?: string;
+    /** `computer` only, once a command's exit code is known. */
+    exitCode?: number;
   }> = {},
   progress: Readonly<{
     ordinal?: number;
@@ -44,6 +51,10 @@ export function liveToolCallStatus(
           ...(activity.skillPath ? { skillPath: activity.skillPath } : {})
         } : {}),
         ...decodeFetchUrlActivity(activity),
+        ...(activity.origin === "computer" ? {
+          ...(isComputerActivitySummary(activity.summary) ? { summary: activity.summary } : {}),
+          ...(isComputerExitCode(activity.exitCode) ? { exitCode: activity.exitCode } : {})
+        } : {}),
         ...(Number.isSafeInteger(ordinal) && Number(ordinal) >= 0 ? { ordinal } : {}),
         ...(settled
           ? { durationMs: Number.isFinite(settled.durationMs) ? Math.max(0, Math.round(settled.durationMs)) : 0,

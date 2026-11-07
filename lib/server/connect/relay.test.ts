@@ -1,21 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { connectComputerSchema } from "@/lib/contracts/computer";
 import {
-  CONNECT_DEFAULT_HELLO_LIMITS,
-  CONNECT_MAX_VIEWS_PER_DEVICE,
-  connectDeviceSchema,
-  type ConnectDeviceEvent,
-  type ConnectSession
+  CONNECT_DEFAULT_HELLO_V2_LIMITS,
+  CONNECT_MAX_CONCURRENT_OPS,
+  CONNECT_MAX_REPLY_BYTES,
+  connectServerCommandV2Schema,
+  type ConnectDeviceEventV2,
+  type ConnectOp,
+  type ConnectOpArgs
 } from "@/lib/contracts/connect";
 import {
+  CONNECT_MAX_OP_COMMAND_BYTES,
+  CONNECT_OP_REPLY_GRACE_MS,
   CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER,
-  CONNECT_RELAY_MAX_PENDING_REPLIES,
-  CONNECT_RELAY_REMEMBERED_DEVICES,
+  CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS,
+  CONNECT_RELAY_UNDELIVERED_RUN_END_TTL_MS,
   createConnectRelay,
   type ConnectDeviceRecord,
   type ConnectRelay,
-  type ConnectRelayEvent,
-  type ConnectViewOwner
+  type ConnectRelayEvent
 } from "./relay";
 
 const logs = vi.hoisted(() => ({ logConnect: vi.fn() }));
@@ -23,6 +27,7 @@ vi.mock("./observability", () => logs);
 
 type Frame = Readonly<{ data: unknown; event: string }>;
 
+/** A device stream in memory: the frames the relay sent, and the final frame it closed with. */
 function fakeWriter(capacity = Number.POSITIVE_INFINITY) {
   const state = { capacity, closed: false, final: undefined as Frame | undefined, frames: [] as Frame[] };
   return {
@@ -43,43 +48,30 @@ function fakeWriter(capacity = Number.POSITIVE_INFINITY) {
   };
 }
 
-function record(userId: string): ConnectDeviceRecord {
+function record(userId: string, os: ConnectDeviceRecord["os"] = "darwin"): ConnectDeviceRecord {
   return {
     arch: "arm64",
-    clientVersion: "0.3.20",
-    createdAt: new Date("2026-10-19T08:00:00.000Z"),
+    clientVersion: "0.4.22",
+    createdAt: new Date("2026-11-07T08:00:00.000Z"),
     hostname: "synthetic-host.local",
     id: randomUUID(),
-    lastSeenAt: new Date("2026-10-19T09:00:00.000Z"),
+    lastSeenAt: new Date("2026-11-07T09:00:00.000Z"),
     name: "Synthetic laptop",
-    os: "darwin",
+    os,
     userId
   };
 }
 
-function session(id: string, title = "Claude Code · project", status: ConnectSession["status"] = "running"): ConnectSession {
-  return {
-    attachedClients: 0,
-    createdAt: "2026-10-19T09:00:00.000Z",
-    cwd: "/home/synthetic/project",
-    id,
-    program: "claude",
-    status,
-    statusAt: "2026-10-19T09:00:00.000Z",
-    title
-  };
-}
-
-function attach(relay: ConnectRelay, device: ConnectDeviceRecord, tokenHash: string = randomUUID()) {
-  const stream = fakeWriter();
+function attach(relay: ConnectRelay, device: ConnectDeviceRecord, tokenHash: string = randomUUID(), capacity?: number) {
+  const stream = fakeWriter(capacity);
   const attached = relay.attachDevice({
     epoch: relay.epoch(),
     hello: {
       deviceId: device.id,
-      limits: CONNECT_DEFAULT_HELLO_LIMITS,
+      limits: CONNECT_DEFAULT_HELLO_V2_LIMITS,
       minClientVersion: "0.3.20",
-      protocol: 1,
-      serverVersion: "0.3.20"
+      protocol: 2,
+      serverVersion: "0.4.22"
     },
     record: device,
     tokenHash,
@@ -89,28 +81,39 @@ function attach(relay: ConnectRelay, device: ConnectDeviceRecord, tokenHash: str
   return { ...stream, streamId: attached.streamId, tokenHash };
 }
 
-function openView(relay: ConnectRelay, owner: ConnectViewOwner, deviceId: string, sessionId = "ac-session1") {
-  const opened = relay.openView({ cols: 80, deviceId, owner, rows: 24, sessionId });
-  if (!opened.ok) throw new Error(opened.code);
-  return opened.viewId;
+const RUN_ID = "1679091c-5a88-4faf-afb5-e6087eb1b2dc";
+const readArgs: ConnectOpArgs<"read"> = { cwd: "~", limit: 2000, offset: 1, path: "notes.txt" };
+const readResult = { content: "hello\n", encoding: "utf-8", lineEnding: "lf", startLine: 1, totalLines: 1, truncated: false } as const;
+
+function call(
+  relay: ConnectRelay,
+  device: ConnectDeviceRecord,
+  input: Partial<{ args: ConnectOpArgs; op: ConnectOp; signal: AbortSignal; timeoutMs: number; userId: string }> = {}
+) {
+  return relay.callOp({
+    args: input.args ?? readArgs,
+    deviceId: device.id,
+    op: input.op ?? "read",
+    runId: RUN_ID,
+    signal: input.signal ?? new AbortController().signal,
+    timeoutMs: input.timeoutMs ?? 60_000,
+    userId: input.userId ?? device.userId
+  });
 }
 
-function browser(relay: ConnectRelay, owner: ConnectViewOwner, viewId: string, capacity?: number) {
-  const stream = fakeWriter(capacity);
-  const attached = relay.attachView({ owner, viewId, writer: stream.writer });
-  if (!attached.ok) throw new Error("view not attached");
-  return { ...stream, writerId: attached.writerId };
+/** The last `op` command the device got, checked against the protocol. */
+function lastOp(stream: ReturnType<typeof attach>) {
+  const command = connectServerCommandV2Schema.parse(stream.commands().at(-1));
+  if (command.type !== "op") throw new Error(`not an op: ${command.type}`);
+  return command;
 }
 
-const output = (viewId: string, seq: number, data = "aGVsbG8="): ConnectDeviceEvent => ({ data, seq, type: "output", viewId });
-
-const alice: ConnectViewOwner = { authSessionId: "session-alice", userId: "user-alice" };
-const aliceOtherTab: ConnectViewOwner = { authSessionId: "session-alice-2", userId: "user-alice" };
-const bob: ConnectViewOwner = { authSessionId: "session-bob", userId: "user-bob" };
+const reply = (requestId: string, result: unknown = readResult): ConnectDeviceEventV2 =>
+  ({ ok: true, requestId, result, type: "reply" }) as ConnectDeviceEventV2;
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-10-19T10:00:00.000Z"));
+  vi.setSystemTime(new Date("2026-11-07T10:00:00.000Z"));
 });
 
 afterEach(() => {
@@ -121,585 +124,409 @@ afterEach(() => {
 describe("AIQSA Connect relay: device streams", () => {
   it("sends hello first and lets a newer stream of the device replace the older one", () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const first = attach(relay, laptop, "token-laptop");
-    expect(first.state.frames[0]).toMatchObject({ event: "hello", data: { deviceId: laptop.id, protocol: 1 } });
-    const viewId = openView(relay, alice, laptop.id);
-    const view = browser(relay, alice, viewId);
-    const pending = relay.request<"recent_dirs">({ command: { type: "recent_dirs" }, deviceId: laptop.id, userId: alice.userId });
+    const device = record("user-alice");
+    const first = attach(relay, device);
+    expect(first.state.frames[0]).toMatchObject({ event: "hello", data: { protocol: 2 } });
 
-    const second = attach(relay, laptop, "token-laptop");
-
-    expect(first.state.closed).toBe(true);
+    const second = attach(relay, device);
     expect(first.state.final).toEqual({ data: {}, event: "replaced" });
-    expect(second.state.frames[0]?.event).toBe("hello");
-    expect(second.commands()).toEqual([{ type: "view_close", viewId }]);
-    expect(view.state.final).toEqual({ data: { reason: "error" }, event: "closed" });
-    // The older stream's late close leaves the newer one online.
-    relay.detachDevice(laptop.id, first.streamId);
-    expect(relay.projectDevice(laptop).online).toBe(true);
-    expect(relay.hasDeviceStream("token-laptop")).toBe(true);
-    return expect(pending).resolves.toEqual({ code: "connect_device_offline", ok: false });
-  });
-
-  it("ends a device that stopped reading its commands", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    device.state.capacity = device.state.frames.length;
-
-    expect(relay.openView({ cols: 80, deviceId: laptop.id, owner: alice, rows: 24, sessionId: "ac-session1" }))
-      .toEqual({ code: "connect_device_offline", ok: false });
-    expect(device.state.closed).toBe(true);
-    expect(relay.projectDevice(laptop).online).toBe(false);
-    expect(logs.logConnect).toHaveBeenCalledWith(expect.objectContaining({ code: "connect_device_queue_full" }));
-  });
-
-  it("closes the views, fails the requests and reports the device offline when its stream ends", async () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    relay.acceptEvents(device.tokenHash, [{ sessions: [session("ac-session1")], type: "sessions" }]);
-    const events: ConnectRelayEvent[] = [];
-    relay.onEvent((event) => events.push(event));
-    const view = browser(relay, alice, openView(relay, alice, laptop.id));
-    const pending = relay.request<"recent_dirs">({ command: { type: "recent_dirs" }, deviceId: laptop.id, userId: alice.userId });
-
-    relay.detachDevice(laptop.id, device.streamId);
-
-    expect(view.state.final).toEqual({ data: { reason: "connect_device_offline" }, event: "closed" });
-    await expect(pending).resolves.toEqual({ code: "connect_device_offline", ok: false });
-    expect(events).toEqual([expect.objectContaining({ deviceId: laptop.id, type: "device_offline", userId: alice.userId })]);
-    const offline = relay.projectDevice(laptop);
-    expect(connectDeviceSchema.parse(offline)).toMatchObject({ lastSeenAt: "2026-10-19T09:00:00.000Z", online: false, sessions: [] });
-    expect(relay.hasDeviceStream(device.tokenHash)).toBe(false);
-    expect(relay.size()).toEqual({ devices: 0, listeners: 1, pendingReplies: 0, views: 0 });
+    expect(second.state.closed).toBe(false);
+    relay.detachDevice(device.id, first.streamId);
+    expect(relay.projectComputer(device).online).toBe(true);
   });
 
   it("refuses an attach that started before a revocation, so a stream never outlives its device", () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
+    const device = record("user-alice");
     const epoch = relay.epoch();
-    relay.disconnectUser(alice.userId, { activeAuthSessionIds: [] });
+    relay.disconnectDevice(device.id, "connect_unauthorized");
     const stream = fakeWriter();
-
     expect(relay.attachDevice({
       epoch,
-      hello: { deviceId: laptop.id, limits: CONNECT_DEFAULT_HELLO_LIMITS, minClientVersion: "0.3.20", protocol: 1, serverVersion: "0.3.20" },
-      record: laptop,
+      hello: { deviceId: device.id, limits: CONNECT_DEFAULT_HELLO_V2_LIMITS, minClientVersion: "0.3.20", protocol: 2, serverVersion: "0.4.22" },
+      record: device,
       tokenHash: "token",
       writer: stream.writer
     })).toEqual({ kind: "stale" });
     expect(stream.state.frames).toEqual([]);
-    expect(relay.projectDevice(laptop).online).toBe(false);
+  });
+
+  it("keeps device_info in memory for the stream and forgets it when the stream ends", () => {
+    const relay = createConnectRelay();
+    const events: ConnectRelayEvent[] = [];
+    relay.onEvent((event) => events.push(event));
+    const device = record("user-alice", "windows");
+    const stream = attach(relay, device);
+    expect(relay.projectComputer(device)).not.toHaveProperty("info");
+
+    const info = {
+      arch: "amd64",
+      home: "C:\\Users\\synthetic",
+      hostname: "DESKTOP-SYNTH",
+      os: "windows",
+      osVersion: "Windows 11 Pro 23H2",
+      shell: { kind: "powershell", name: "Windows PowerShell", version: "5.1" },
+      type: "device_info"
+    } as const;
+    expect(relay.acceptEvents(stream.tokenHash, [info])).toBe(true);
+    const projected = connectComputerSchema.parse(relay.projectComputer(device));
+    expect(projected).toMatchObject({ info: { home: "C:\\Users\\synthetic", osVersion: "Windows 11 Pro 23H2" }, online: true, os: "windows" });
+    expect(relay.onlineDevice("user-alice", device.id)?.info?.shell).toEqual(info.shell);
+    expect(events.at(-1)).toMatchObject({ computer: { info: { osVersion: "Windows 11 Pro 23H2" } }, type: "device", userId: "user-alice" });
+    // Nobody else's lookup reaches it.
+    expect(relay.onlineDevice("user-bob", device.id)).toBeNull();
+
+    relay.detachDevice(device.id, stream.streamId);
+    expect(relay.projectComputer(device)).toEqual(expect.not.objectContaining({ info: expect.anything() }));
+    expect(relay.projectComputer(device).online).toBe(false);
+    expect(events.at(-1)).toMatchObject({ computer: { online: false }, type: "device" });
+    attach(relay, device);
+    expect(relay.onlineDevice("user-alice", device.id)?.info).toBeNull();
   });
 });
 
-describe("AIQSA Connect relay: requests", () => {
-  it("correlates replies, validates results against the command and keeps foreign devices invisible", async () => {
+describe("AIQSA Connect relay: operations", () => {
+  it("sends an op with its deadline and settles it with the reply checked against the op", async () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const intruder = attach(relay, record(bob.userId));
+    const device = record("user-alice");
+    const stream = attach(relay, device);
 
-    expect(await relay.request<"recent_dirs">({ command: { type: "recent_dirs" }, deviceId: randomUUID(), userId: alice.userId }))
-      .toEqual({ code: "connect_device_offline", ok: false });
-    expect(await relay.request<"recent_dirs">({ command: { type: "recent_dirs" }, deviceId: laptop.id, userId: bob.userId }))
-      .toEqual({ code: "connect_not_found", ok: false });
+    const pending = call(relay, device, { timeoutMs: 45_000.4 })!;
+    const command = lastOp(stream);
+    expect(command).toMatchObject({ args: readArgs, deadlineMs: 45_001, op: "read", runId: RUN_ID });
+    expect(relay.size().pendingOps).toBe(1);
+    relay.acceptEvents(stream.tokenHash, [reply(command.requestId)]);
+    await expect(pending).resolves.toEqual({ ok: true, result: readResult });
+    expect(relay.size().pendingOps).toBe(0);
 
-    const history = relay.request<"session_history">({
-      command: { sessionId: "ac-session1", type: "session_history" },
-      deviceId: laptop.id,
-      userId: alice.userId
-    });
-    const sent = device.commands().at(-1)!;
-    expect(sent).toMatchObject({ sessionId: "ac-session1", type: "session_history" });
-    const requestId = sent.requestId as string;
-    // Another device's token cannot answer this device's request.
-    relay.acceptEvents(intruder.tokenHash, [{ ok: true, requestId, result: { text: "forged" }, type: "reply" }]);
-    relay.acceptEvents(device.tokenHash, [{ ok: true, requestId, result: { text: "line one\nline two" }, type: "reply" }]);
-    await expect(history).resolves.toEqual({ ok: true, result: { text: "line one\nline two" } });
-
-    const create = relay.request<"session_create">({
-      command: { cwd: "~/project", program: "shell", type: "session_create" },
-      deviceId: laptop.id,
-      userId: alice.userId
-    });
-    relay.acceptEvents(device.tokenHash, [{
-      ok: true,
-      requestId: device.commands().at(-1)!.requestId as string,
-      result: { text: "not a session" },
-      type: "reply"
-    }]);
-    await expect(create).resolves.toEqual({ code: "connect_device_error", ok: false });
-
-    const kill = relay.request<"session_kill">({
-      command: { sessionId: "ac-missing1", type: "session_kill" },
-      deviceId: laptop.id,
-      userId: alice.userId
-    });
-    relay.acceptEvents(device.tokenHash, [{
-      code: "connect_session_not_found",
-      ok: false,
-      requestId: device.commands().at(-1)!.requestId as string,
-      type: "reply"
-    }]);
-    await expect(kill).resolves.toEqual({ code: "connect_session_not_found", ok: false });
+    // A device error code passes through; the device may have started the op.
+    const failed = call(relay, device, { args: { cwd: "~", newString: "b", oldString: "a", path: "x", replaceAll: false }, op: "edit" })!;
+    relay.acceptEvents(stream.tokenHash, [{ code: "computer_edit_ambiguous", ok: false, requestId: lastOp(stream).requestId, type: "reply" }]);
+    await expect(failed).resolves.toEqual({ code: "computer_edit_ambiguous", ok: false, sent: true });
   });
 
-  it("times a request out after ten seconds and bounds the requests waiting on one device", async () => {
+  it("rejects a reply that does not match its op or exceeds the reply bound", async () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    attach(relay, laptop);
-    const waiting = Array.from({ length: CONNECT_RELAY_MAX_PENDING_REPLIES }, () =>
-      relay.request<"recent_dirs">({ command: { type: "recent_dirs" }, deviceId: laptop.id, userId: alice.userId }));
+    const device = record("user-alice");
+    const stream = attach(relay, device);
 
-    expect(await relay.request<"recent_dirs">({ command: { type: "recent_dirs" }, deviceId: laptop.id, userId: alice.userId }))
-      .toEqual({ code: "connect_rate_limited", ok: false });
-    await vi.advanceTimersByTimeAsync(9_999);
-    expect(relay.size().pendingReplies).toBe(CONNECT_RELAY_MAX_PENDING_REPLIES);
+    const mismatched = call(relay, device)!;
+    relay.acceptEvents(stream.tokenHash, [reply(lastOp(stream).requestId, { bytes: 3, created: true })]);
+    await expect(mismatched).resolves.toEqual({ code: "connect_device_error", ok: false, sent: true });
+
+    const oversize = call(relay, device, { args: { command: "cat big", cwd: "~", timeoutSeconds: 60, background: false }, op: "shell" })!;
+    const big = "x".repeat(CONNECT_MAX_REPLY_BYTES / 2);
+    relay.acceptEvents(stream.tokenHash, [reply(lastOp(stream).requestId, {
+      durationMs: 5, exitCode: 0, stderr: big, stderrBytes: big.length, stdout: big, stdoutBytes: big.length, truncated: false
+    })]);
+    await expect(oversize).resolves.toEqual({ code: "connect_device_error", ok: false, sent: true });
+
+    // A malformed batch's reply fails its op now.
+    const salvaged = call(relay, device)!;
+    relay.rejectReplies(stream.tokenHash, [lastOp(stream).requestId]);
+    await expect(salvaged).resolves.toEqual({ code: "connect_device_error", ok: false, sent: true });
+    expect(logs.logConnect).toHaveBeenCalledWith(expect.objectContaining({ code: "connect_reply_invalid" }));
+  });
+
+  it("times an op out after its deadline and a grace, sends cancel and ignores the late reply", async () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    const stream = attach(relay, device);
+
+    const pending = call(relay, device, { timeoutMs: 5_000 })!;
+    const { requestId } = lastOp(stream);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(5_000 + CONNECT_OP_REPLY_GRACE_MS - 1);
+    expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    for (const request of waiting) await expect(request).resolves.toEqual({ code: "connect_device_timeout", ok: false });
-    expect(relay.size().pendingReplies).toBe(0);
-    expect(logs.logConnect).toHaveBeenCalledWith(expect.objectContaining({ code: "connect_device_timeout" }));
-  });
-});
+    await expect(pending).resolves.toEqual({ code: "computer_timeout", ok: false, sent: true });
+    expect(stream.commands().at(-1)).toEqual({ requestId, type: "cancel" });
 
-describe("AIQSA Connect relay: views", () => {
-  it("sends input in order and output only to the view's own browser stream", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const first = openView(relay, alice, laptop.id, "ac-session1");
-    const second = openView(relay, aliceOtherTab, laptop.id, "ac-session1");
-    const firstTab = browser(relay, alice, first);
-    const secondTab = browser(relay, aliceOtherTab, second);
-    const intruder = attach(relay, record(bob.userId));
-
-    expect(relay.viewInput(alice, first, "ls")).toBeNull();
-    expect(relay.viewInput(alice, first, "\r")).toBeNull();
-    expect(relay.viewResize(alice, first, { cols: 120, rows: 40 })).toBeNull();
-    expect(device.commands().filter((command) => command.viewId === first)).toEqual([
-      { cols: 80, rows: 24, sessionId: "ac-session1", type: "view_open", viewId: first },
-      { data: "ls", type: "view_input", viewId: first },
-      { data: "\r", type: "view_input", viewId: first },
-      { cols: 120, rows: 40, type: "view_resize", viewId: first }
-    ]);
-    // A view belongs to its account and its browser session.
-    expect(relay.viewInput(aliceOtherTab, first, "x")).toBe("connect_not_found");
-    expect(relay.viewInput(bob, first, "x")).toBe("connect_not_found");
-    expect(relay.viewResize(bob, first, { cols: 80, rows: 24 })).toBe("connect_not_found");
-    expect(relay.viewVisibility(bob, first, true)).toBe("connect_not_found");
-    expect(relay.closeOwnedView(bob, first)).toBe("connect_not_found");
-
-    relay.acceptEvents(device.tokenHash, [output(first, 0, "Zmlyc3Q="), output(second, 0, "c2Vjb25k")]);
-    relay.acceptEvents(intruder.tokenHash, [output(first, 1, "Zm9yZ2Vk")]);
-    relay.acceptEvents(device.tokenHash, [output(first, 0, "ZHVwbGljYXRl"), output(first, 1, "bmV4dA==")]);
-
-    expect(firstTab.state.frames).toEqual([
-      { data: { data: "Zmlyc3Q=", seq: 0 }, event: "output" },
-      { data: { data: "bmV4dA==", seq: 1 }, event: "output" }
-    ]);
-    expect(secondTab.state.frames).toEqual([{ data: { data: "c2Vjb25k", seq: 0 }, event: "output" }]);
+    // The late reply finds nothing to settle.
+    expect(relay.acceptEvents(stream.tokenHash, [reply(requestId)])).toBe(true);
+    expect(relay.size().pendingOps).toBe(0);
   });
 
-  it("closes a view whose output skips a sequence number, and the device's attach with it", () => {
+  it("cancels on abort exactly once and never sends an op whose signal is already aborted", async () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const viewId = openView(relay, alice, laptop.id);
-    const tab = browser(relay, alice, viewId);
+    const device = record("user-alice");
+    const stream = attach(relay, device);
 
-    relay.acceptEvents(device.tokenHash, [output(viewId, 0), output(viewId, 2)]);
+    const controller = new AbortController();
+    const pending = call(relay, device, { signal: controller.signal })!;
+    const { requestId } = lastOp(stream);
+    controller.abort();
+    controller.abort();
+    await expect(pending).resolves.toEqual({ code: "computer_cancelled", ok: false, sent: true });
+    expect(stream.commands().filter((command) => command.type === "cancel")).toEqual([{ requestId, type: "cancel" }]);
+    relay.acceptEvents(stream.tokenHash, [reply(requestId)]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(stream.commands().filter((command) => command.type === "cancel")).toHaveLength(1);
 
-    expect(tab.state.final).toEqual({ data: { reason: "error" }, event: "closed" });
-    expect(device.commands().at(-1)).toEqual({ type: "view_close", viewId });
-    expect(relay.viewInput(alice, viewId, "x")).toBe("connect_not_found");
-    expect(logs.logConnect).toHaveBeenCalledWith(expect.objectContaining({ code: "connect_view_seq_gap" }));
+    const sentBefore = stream.commands().length;
+    await expect(call(relay, device, { signal: AbortSignal.abort() })).resolves.toEqual({ code: "computer_cancelled", ok: false, sent: false });
+    expect(stream.commands()).toHaveLength(sentBefore);
   });
 
-  it("keeps output that arrives before the browser stream and ends a view its browser stops reading", () => {
+  it("keeps waiting ops across a reconnect of the device and settles them with the reply from its new stream", async () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const viewId = openView(relay, alice, laptop.id);
-    relay.acceptEvents(device.tokenHash, [output(viewId, 0, "Zmlyc3Q="), output(viewId, 1, "c2NyZWVu")]);
+    const device = record("user-alice");
 
-    const tab = browser(relay, alice, viewId, 3);
-    expect(tab.state.frames.map((frame) => frame.data)).toEqual([{ data: "Zmlyc3Q=", seq: 0 }, { data: "c2NyZWVu", seq: 1 }]);
+    const ended = attach(relay, device);
+    const first = call(relay, device)!;
+    const firstId = lastOp(ended).requestId;
+    relay.detachDevice(device.id, ended.streamId);
+    expect(relay.size().pendingOps).toBe(1);
+    const reconnected = attach(relay, device, ended.tokenHash);
+    relay.acceptEvents(reconnected.tokenHash, [reply(firstId)]);
+    await expect(first).resolves.toEqual({ ok: true, result: readResult });
 
-    relay.acceptEvents(device.tokenHash, [output(viewId, 2), output(viewId, 3)]);
-    expect(tab.state.final).toEqual({ data: { reason: "error" }, event: "closed" });
-    expect(device.commands().at(-1)).toEqual({ type: "view_close", viewId });
-    expect(logs.logConnect).toHaveBeenCalledWith(expect.objectContaining({ code: "connect_view_queue_full" }));
+    // A newer stream replacing the current one answers the older stream's request.
+    const second = call(relay, device)!;
+    const secondId = lastOp(reconnected).requestId;
+    const next = attach(relay, device, reconnected.tokenHash);
+    expect(reconnected.state.final).toEqual({ data: {}, event: "replaced" });
+    relay.acceptEvents(next.tokenHash, [reply(secondId)]);
+    await expect(second).resolves.toEqual({ ok: true, result: readResult });
+
+    // Cancel goes to the stream the device has when the op is aborted.
+    const controller = new AbortController();
+    const third = call(relay, device, { signal: controller.signal })!;
+    const thirdId = lastOp(next).requestId;
+    const latest = attach(relay, device, next.tokenHash);
+    controller.abort();
+    await expect(third).resolves.toEqual({ code: "computer_cancelled", ok: false, sent: true });
+    expect(latest.commands().at(-1)).toEqual({ requestId: thirdId, type: "cancel" });
+    expect(relay.size().pendingOps).toBe(0);
   });
 
-  it("closes a view whose browser stream is gone for thirty seconds", async () => {
+  it("fails waiting ops of a device that does not come back at their deadline, and at once on revocation or switch-off", async () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const neverAttached = openView(relay, alice, laptop.id);
-    const reconnecting = openView(relay, alice, laptop.id);
-    const first = browser(relay, alice, reconnecting);
-    relay.detachView(reconnecting, first.writerId);
+    const device = record("user-alice");
+    const disconnected = { code: "connect_device_disconnected", ok: false, sent: true };
 
-    await vi.advanceTimersByTimeAsync(20_000);
-    const second = browser(relay, alice, reconnecting);
-    await vi.advanceTimersByTimeAsync(10_000);
+    const ended = attach(relay, device);
+    const timed = call(relay, device, { timeoutMs: 5_000 })!;
+    relay.detachDevice(device.id, ended.streamId);
+    let settled = false;
+    void timed.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(5_000 + CONNECT_OP_REPLY_GRACE_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(timed).resolves.toEqual({ code: "computer_timeout", ok: false, sent: true });
 
-    expect(device.commands().filter((command) => command.type === "view_close")).toEqual([{ type: "view_close", viewId: neverAttached }]);
-    expect(relay.viewInput(alice, neverAttached, "x")).toBe("connect_not_found");
-    expect(relay.viewInput(alice, reconnecting, "x")).toBeNull();
+    // Revoked while offline or online: its waiting ops fail now.
+    const offline = attach(relay, device);
+    const whileOffline = call(relay, device)!;
+    relay.detachDevice(device.id, offline.streamId);
+    relay.disconnectDevice(device.id, "connect_unauthorized");
+    await expect(whileOffline).resolves.toEqual(disconnected);
 
-    relay.detachView(reconnecting, second.writerId);
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(device.commands().at(-1)).toEqual({ type: "view_close", viewId: reconnecting });
-    expect(relay.size().views).toBe(0);
-  });
+    const online = attach(relay, device);
+    const whileOnline = call(relay, device)!;
+    relay.disconnectDevice(device.id, "connect_unauthorized");
+    await expect(whileOnline).resolves.toEqual(disconnected);
+    expect(online.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
 
-  it("limits views per device and answers foreign devices like missing ones", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    attach(relay, laptop);
-    for (let index = 0; index < CONNECT_MAX_VIEWS_PER_DEVICE; index += 1) openView(relay, alice, laptop.id);
+    const account = attach(relay, device);
+    const beforeAccountRevoked = call(relay, device)!;
+    relay.detachDevice(device.id, account.streamId);
+    relay.disconnectUser(device.userId);
+    await expect(beforeAccountRevoked).resolves.toEqual(disconnected);
 
-    expect(relay.openView({ cols: 80, deviceId: laptop.id, owner: alice, rows: 24, sessionId: "ac-session1" }))
-      .toEqual({ code: "connect_view_limit", ok: false });
-    expect(relay.openView({ cols: 80, deviceId: laptop.id, owner: bob, rows: 24, sessionId: "ac-session1" }))
-      .toEqual({ code: "connect_not_found", ok: false });
-    expect(relay.openView({ cols: 80, deviceId: randomUUID(), owner: alice, rows: 24, sessionId: "ac-session1" }))
-      .toEqual({ code: "connect_device_offline", ok: false });
-  });
-
-  it("knows whether the owner has a session on screen within the last thirty seconds", async () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    attach(relay, laptop);
-    const viewId = openView(relay, alice, laptop.id, "ac-session1");
-    browser(relay, alice, viewId);
-
-    expect(relay.isSessionVisible(alice.userId, laptop.id, "ac-session1", Date.now())).toBe(true);
-    expect(relay.isSessionVisible(bob.userId, laptop.id, "ac-session1", Date.now())).toBe(false);
-    expect(relay.isSessionVisible(alice.userId, laptop.id, "ac-session2", Date.now())).toBe(false);
-    expect(relay.isSessionVisible(alice.userId, randomUUID(), "ac-session1", Date.now())).toBe(false);
-    await vi.advanceTimersByTimeAsync(31_000);
-    expect(relay.isSessionVisible(alice.userId, laptop.id, "ac-session1", Date.now())).toBe(false);
-    expect(relay.viewVisibility(alice, viewId, true)).toBeNull();
-    expect(relay.isSessionVisible(alice.userId, laptop.id, "ac-session1", Date.now())).toBe(true);
-    expect(relay.viewVisibility(alice, viewId, false)).toBeNull();
-    expect(relay.isSessionVisible(alice.userId, laptop.id, "ac-session1", Date.now())).toBe(false);
-  });
-});
-
-describe("AIQSA Connect relay: revocation and switch-off", () => {
-  it("ends a revoked device's stream with closed and refuses its events", async () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const tab = browser(relay, alice, openView(relay, alice, laptop.id));
-
-    relay.disconnectDevice(laptop.id, "connect_unauthorized");
-
-    expect(device.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
-    expect(tab.state.final).toEqual({ data: { reason: "connect_device_offline" }, event: "closed" });
-    expect(relay.acceptEvents(device.tokenHash, [output(randomUUID(), 0)])).toBe(false);
-  });
-
-  it("ends every stream and view of an account when its access is revoked, and only that account's", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const desktop = record(alice.userId);
-    const other = record(bob.userId);
-    const laptopStream = attach(relay, laptop);
-    const desktopStream = attach(relay, desktop);
-    const otherStream = attach(relay, other);
-    const tab = browser(relay, alice, openView(relay, alice, laptop.id));
-    const events: ConnectRelayEvent[] = [];
-    relay.onEvent((event) => events.push(event));
-
-    relay.disconnectUser(alice.userId, { activeAuthSessionIds: [] });
-
-    expect(laptopStream.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
-    expect(desktopStream.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
-    expect(tab.state.final).toEqual({ data: { reason: "connect_unauthorized" }, event: "closed" });
-    expect(otherStream.state.closed).toBe(false);
-    expect(events.filter((event) => event.type === "devices_changed")).toEqual([{ type: "devices_changed", userId: alice.userId }]);
-    expect(events.some((event) => event.type === "closed")).toBe(false);
-  });
-
-  it("closes the views of a session that stays signed in as device offline when only the devices are revoked", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const kept = browser(relay, alice, openView(relay, alice, laptop.id));
-    const revoked = browser(relay, aliceOtherTab, openView(relay, aliceOtherTab, laptop.id));
-
-    // A password change keeps the current session and revokes the others.
-    relay.disconnectUser(alice.userId, { activeAuthSessionIds: [alice.authSessionId] });
-
-    expect(device.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
-    expect(kept.state.final).toEqual({ data: { reason: "connect_device_offline" }, event: "closed" });
-    expect(revoked.state.final).toEqual({ data: { reason: "connect_unauthorized" }, event: "closed" });
-    expect(device.commands().filter((command) => command.type === "view_close")).toEqual([]);
-    expect(relay.size()).toMatchObject({ devices: 0, views: 0 });
-  });
-
-  it("closes only the views of a revoked browser session", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const revokedTab = browser(relay, alice, openView(relay, alice, laptop.id));
-    const otherTab = browser(relay, aliceOtherTab, openView(relay, aliceOtherTab, laptop.id));
-
-    relay.closeViewsForAuthSession(alice.authSessionId);
-
-    expect(revokedTab.state.final).toEqual({ data: { reason: "connect_unauthorized" }, event: "closed" });
-    expect(otherTab.state.closed).toBe(false);
-    expect(device.state.closed).toBe(false);
-    expect(device.commands().filter((command) => command.type === "view_close")).toHaveLength(1);
-  });
-
-  it("ends everything with connect_disabled when the administrator turns the feature off", async () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop);
-    const other = attach(relay, record(bob.userId));
-    const tab = browser(relay, alice, openView(relay, alice, laptop.id));
-    const pending = relay.request<"recent_dirs">({ command: { type: "recent_dirs" }, deviceId: laptop.id, userId: alice.userId });
-    const events: ConnectRelayEvent[] = [];
-    relay.onEvent((event) => events.push(event));
-    const epoch = relay.epoch();
-
+    const again = attach(relay, device);
+    const beforeDisabled = call(relay, device)!;
     relay.disable();
+    await expect(beforeDisabled).resolves.toEqual({ code: "connect_disabled", ok: false, sent: true });
+    expect(again.state.final).toEqual({ data: { code: "connect_disabled" }, event: "closed" });
 
-    expect(device.state.final).toEqual({ data: { code: "connect_disabled" }, event: "closed" });
-    expect(other.state.final).toEqual({ data: { code: "connect_disabled" }, event: "closed" });
-    expect(tab.state.final).toEqual({ data: { reason: "connect_disabled" }, event: "closed" });
-    await expect(pending).resolves.toEqual({ code: "connect_disabled", ok: false });
-    expect(events.at(-1)).toEqual({ code: "connect_disabled", type: "closed" });
-    expect(relay.epoch()).toBeGreaterThan(epoch);
-    expect(relay.size()).toMatchObject({ devices: 0, views: 0 });
+    const closed = attach(relay, device);
+    const beforeClosed = call(relay, device)!;
+    relay.closeDeviceStream(device.id, closed.streamId, "connect_disabled");
+    await expect(beforeClosed).resolves.toEqual({ code: "connect_disabled", ok: false, sent: true });
+    expect(relay.size().pendingOps).toBe(0);
   });
 
-  it("ends everything as unauthorized when every session of the installation is revoked", () => {
+  it("answers null for an offline, missing or foreign device and sends nothing to it", () => {
     const relay = createConnectRelay();
-    const device = attach(relay, record(alice.userId));
+    const alice = record("user-alice");
+    const stream = attach(relay, alice);
+
+    expect(call(relay, alice, { userId: "user-bob" })).toBeNull();
+    expect(call(relay, record("user-alice"))).toBeNull();
+    expect(stream.commands()).toEqual([]);
+    relay.runEnded({ deviceId: alice.id, runId: RUN_ID, userId: "user-bob" });
+    expect(stream.commands()).toEqual([]);
+  });
+
+  it("limits waiting ops per device and refuses an oversize command before sending it", async () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    const stream = attach(relay, device);
+    for (let index = 0; index < CONNECT_MAX_CONCURRENT_OPS; index += 1) call(relay, device);
+    const sent = stream.commands().length;
+    await expect(call(relay, device)).resolves.toEqual({ code: "computer_limit", ok: false, sent: false });
+    expect(stream.commands()).toHaveLength(sent);
+
+    const other = record("user-alice");
+    const otherStream = attach(relay, other);
+    const content = "\u0001".repeat(CONNECT_MAX_OP_COMMAND_BYTES / 6 + 1);
+    await expect(call(relay, other, { args: { content, cwd: "~", path: "x" }, op: "write" }))
+      .resolves.toEqual({ code: "computer_file_too_large", ok: false, sent: false });
+    expect(otherStream.commands()).toEqual([]);
+    expect(otherStream.state.closed).toBe(false);
+  });
+
+  it("ends a device that stopped reading; the op it could not send was never sent", async () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    // Room for hello and one command.
+    const stream = attach(relay, device, randomUUID(), 2);
+    const first = call(relay, device, { timeoutMs: 1_000 })!;
+    await expect(call(relay, device)).resolves.toEqual({ code: "connect_device_disconnected", ok: false, sent: false });
+    expect(stream.state.closed).toBe(true);
+    expect(relay.projectComputer(device).online).toBe(false);
+    // The op that was sent waits for the device's next stream until its deadline.
+    await vi.advanceTimersByTimeAsync(1_000 + CONNECT_OP_REPLY_GRACE_MS);
+    await expect(first).resolves.toEqual({ code: "computer_timeout", ok: false, sent: true });
+  });
+
+  it("sends run_ended without waiting for anything", () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    const stream = attach(relay, device);
+    relay.runEnded({ deviceId: device.id, runId: RUN_ID, userId: device.userId });
+    expect(connectServerCommandV2Schema.parse(stream.commands().at(-1))).toEqual({ runId: RUN_ID, type: "run_ended" });
+    relay.runEnded({ deviceId: randomUUID(), runId: RUN_ID, userId: device.userId });
+    expect(stream.commands()).toHaveLength(1);
+  });
+});
+
+describe("AIQSA Connect relay: run_ended for a device without a stream", () => {
+  const OTHER_RUN = "8f14e45f-ceea-467a-9575-cb5bc5b0d5e1";
+  const runEnds = (stream: ReturnType<typeof attach>) => stream.commands().filter((command) => command.type === "run_ended");
+
+  it("sends a run_ended the offline device missed right after its next hello", () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    const first = attach(relay, device);
+    relay.detachDevice(device.id, first.streamId);
+    relay.runEnded({ deviceId: device.id, runId: RUN_ID, userId: device.userId });
+    relay.runEnded({ deviceId: device.id, runId: RUN_ID, userId: device.userId });
+    relay.runEnded({ deviceId: device.id, runId: OTHER_RUN, userId: device.userId });
+    expect(relay.undeliveredRunEndCount()).toBe(2);
+
+    const next = attach(relay, device, first.tokenHash);
+    expect(next.state.frames[0]!.event).toBe("hello");
+    expect(next.state.frames.slice(1)).toEqual([
+      { data: { runId: RUN_ID, type: "run_ended" }, event: "command" },
+      { data: { runId: OTHER_RUN, type: "run_ended" }, event: "command" }
+    ]);
+    expect(relay.undeliveredRunEndCount()).toBe(0);
+    // Delivered once.
+    const later = attach(relay, device, first.tokenHash);
+    expect(runEnds(later)).toEqual([]);
+  });
+
+  it("keeps a run_ended whose stream was gone, and one the next stream had no room for", () => {
+    const relay = createConnectRelay();
+    const device = record("user-alice");
+    // Room for hello only: the send fails and ends the stream.
+    attach(relay, device, randomUUID(), 1);
+    relay.runEnded({ deviceId: device.id, runId: RUN_ID, userId: device.userId });
+    expect(relay.projectComputer(device).online).toBe(false);
+    relay.runEnded({ deviceId: device.id, runId: OTHER_RUN, userId: device.userId });
+
+    // Room for hello and one command: the second waits again.
+    const cramped = attach(relay, device, randomUUID(), 2);
+    expect(runEnds(cramped)).toEqual([{ runId: RUN_ID, type: "run_ended" }]);
+    expect(cramped.state.closed).toBe(true);
+    const roomy = attach(relay, device);
+    expect(runEnds(roomy)).toEqual([{ runId: OTHER_RUN, type: "run_ended" }]);
+  });
+
+  it("never sends another user's run ids, bounds what it keeps and forgets it after a day", async () => {
+    const relay = createConnectRelay();
+    const alice = record("user-alice");
+    // A run of another user naming Alice's device, offline or online, reaches nothing.
+    relay.runEnded({ deviceId: alice.id, runId: OTHER_RUN, userId: "user-bob" });
+    const online = attach(relay, alice);
+    relay.runEnded({ deviceId: alice.id, runId: OTHER_RUN, userId: "user-bob" });
+    expect(runEnds(online)).toEqual([]);
+    relay.detachDevice(alice.id, online.streamId);
+
+    const runIds = Array.from({ length: CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS + 10 }, () => randomUUID());
+    for (const runId of runIds) relay.runEnded({ deviceId: alice.id, runId, userId: alice.userId });
+    const bounded = attach(relay, alice);
+    expect(runEnds(bounded).map((command) => command.runId)).toEqual(runIds.slice(-CONNECT_RELAY_MAX_UNDELIVERED_RUN_ENDS));
+    relay.detachDevice(alice.id, bounded.streamId);
+
+    relay.runEnded({ deviceId: alice.id, runId: RUN_ID, userId: alice.userId });
+    await vi.advanceTimersByTimeAsync(CONNECT_RELAY_UNDELIVERED_RUN_END_TTL_MS);
+    expect(runEnds(attach(relay, alice))).toEqual([]);
+  });
+
+  it("forgets a revoked device's and a revoked account's run_ended", () => {
+    const relay = createConnectRelay();
+    const alice = record("user-alice");
+    const laptop = record("user-alice");
+    const bob = record("user-bob");
+    relay.runEnded({ deviceId: alice.id, runId: RUN_ID, userId: alice.userId });
+    relay.runEnded({ deviceId: laptop.id, runId: RUN_ID, userId: laptop.userId });
+    relay.runEnded({ deviceId: bob.id, runId: RUN_ID, userId: bob.userId });
+    relay.disconnectDevice(alice.id, "connect_unauthorized");
+    expect(relay.undeliveredRunEndCount()).toBe(2);
+    relay.disconnectUser("user-alice");
+    expect(relay.undeliveredRunEndCount()).toBe(1);
+    expect(runEnds(attach(relay, bob))).toEqual([{ runId: RUN_ID, type: "run_ended" }]);
+  });
+});
+
+describe("AIQSA Connect relay: revocation, switch-off and listeners", () => {
+  it("ends every stream of an account when its access is revoked, and only that account's", () => {
+    const relay = createConnectRelay();
     const events: ConnectRelayEvent[] = [];
     relay.onEvent((event) => events.push(event));
+    const alice = attach(relay, record("user-alice"));
+    const bob = attach(relay, record("user-bob"));
+    relay.disconnectUser("user-alice");
+    expect(alice.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
+    expect(bob.state.closed).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "devices_changed", userId: "user-alice" });
+    expect(relay.hasDeviceStream(alice.tokenHash)).toBe(false);
+    expect(relay.acceptEvents(alice.tokenHash, [reply(randomUUID())])).toBe(false);
 
     relay.disconnectAll();
-
-    expect(device.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
+    expect(bob.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
     expect(events.at(-1)).toEqual({ code: "connect_unauthorized", type: "closed" });
-  });
-});
-
-describe("AIQSA Connect relay: listeners", () => {
-  it("reports online, sessions and status changes with the session title and the previous status", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const events: ConnectRelayEvent[] = [];
-    const failing = vi.fn(() => {
-      throw new Error("listener failure");
-    });
-    relay.onEvent(failing);
-    const unsubscribe = relay.onEvent((event) => events.push(event));
-    const device = attach(relay, laptop);
-
-    relay.acceptEvents(device.tokenHash, [
-      { sessions: [session("ac-session1", "Fix the build"), session("ac-session2", "Shell", "idle")], type: "sessions" },
-      { reason: "permission", sessionId: "ac-session1", status: "needs_approval", statusAt: "2026-10-19T10:00:01.000Z", type: "status" },
-      { sessionId: "ac-unknown1", status: "waiting", statusAt: "2026-10-19T10:00:02.000Z", type: "status" }
-    ]);
-
-    expect(events.map((event) => event.type)).toEqual(["device_online", "sessions", "status"]);
-    for (const event of events) {
-      if ("device" in event) connectDeviceSchema.parse(event.device);
-    }
-    expect(events[2]).toMatchObject({
-      deviceId: laptop.id,
-      previousStatus: "running",
-      reason: "permission",
-      sessionId: "ac-session1",
-      status: "needs_approval",
-      statusAt: "2026-10-19T10:00:01.000Z",
-      title: "Fix the build",
-      type: "status",
-      userId: alice.userId
-    });
-    const projected = relay.projectDevice(laptop);
-    expect(projected.online).toBe(true);
-    expect(projected.sessions.map((entry) => [entry.id, entry.status])).toEqual([["ac-session1", "needs_approval"], ["ac-session2", "idle"]]);
-    expect(failing).toHaveBeenCalled();
-
-    unsubscribe();
-    relay.notifyDevicesChanged(alice.userId);
-    expect(events).toHaveLength(3);
-  });
-
-  it("reports a transition carried only by a snapshot as one status event, also across a reconnect", () => {
-    const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const events: ConnectRelayEvent[] = [];
-    relay.onEvent((event) => events.push(event));
-    const statusEvents = () => events.filter((event) => event.type === "status");
-    const first = attach(relay, laptop);
-    relay.acceptEvents(first.tokenHash, [
-      { sessions: [session("ac-session1", "Fix the build"), session("ac-session2", "Shell", "idle")], type: "sessions" }
-    ]);
-    // The first snapshot this process sees has nothing to compare with.
-    expect(statusEvents()).toEqual([]);
-
-    // Online: a later snapshot that changed a status reports it; a new session reports nothing.
-    relay.acceptEvents(first.tokenHash, [{
-      sessions: [
-        { ...session("ac-session1", "Fix the build", "waiting"), statusAt: "2026-10-19T10:00:05.000Z" },
-        session("ac-session2", "Shell", "idle"),
-        session("ac-session3", "New one", "needs_approval")
-      ],
-      type: "sessions"
-    }]);
-    expect(events.map((event) => event.type)).toEqual(["device_online", "sessions", "sessions", "status"]);
-    expect(events[3]).toMatchObject({
-      deviceId: laptop.id,
-      previousStatus: "running",
-      reason: null,
-      sessionId: "ac-session1",
-      status: "waiting",
-      statusAt: "2026-10-19T10:00:05.000Z",
-      title: "Fix the build",
-      userId: alice.userId
-    });
-    if (events[3] && "device" in events[3]) connectDeviceSchema.parse(events[3].device);
-
-    // The device's explicit status for the same transition changes nothing new.
-    relay.acceptEvents(first.tokenHash, [{ sessionId: "ac-session1", status: "waiting", statusAt: "2026-10-19T10:00:05.000Z", type: "status" }]);
-    expect(statusEvents().at(-1)).toMatchObject({ previousStatus: "waiting", status: "waiting" });
-    // A status the device already reported is not repeated by the next snapshot.
-    relay.acceptEvents(first.tokenHash, [{ sessionId: "ac-session2", status: "running", statusAt: "2026-10-19T10:00:06.000Z", type: "status" }]);
-    const before = statusEvents().length;
-    relay.acceptEvents(first.tokenHash, [{
-      sessions: [session("ac-session1", "Fix the build", "waiting"), session("ac-session2", "Shell", "running"), session("ac-session3", "New one", "needs_approval")],
-      type: "sessions"
-    }]);
-    expect(statusEvents()).toHaveLength(before);
-
-    // The stream drops, the agent asks for approval meanwhile, and the next stream's first snapshot carries it.
-    relay.detachDevice(laptop.id, first.streamId);
-    const second = attach(relay, laptop);
-    events.length = 0;
-    relay.acceptEvents(second.tokenHash, [{
-      sessions: [session("ac-session1", "Fix the build", "waiting"), session("ac-session2", "Shell", "needs_approval")],
-      type: "sessions"
-    }]);
-    expect(events.map((event) => event.type)).toEqual(["sessions", "status"]);
-    expect(events[1]).toMatchObject({ previousStatus: "running", sessionId: "ac-session2", status: "needs_approval", title: "Shell" });
-
-    // A newer stream replacing a live one compares with the replaced stream's list too.
-    const third = attach(relay, laptop);
-    events.length = 0;
-    relay.acceptEvents(third.tokenHash, [{ sessions: [session("ac-session1", "Fix the build", "running"), session("ac-session2", "Shell", "needs_approval")], type: "sessions" }]);
-    expect(statusEvents()).toEqual([expect.objectContaining({ previousStatus: "waiting", sessionId: "ac-session1", status: "running" })]);
-  });
-
-  it("forgets a device's statuses when it is revoked, its account loses its devices or the feature turns off", () => {
-    const seen = (relay: ConnectRelay, laptop: ConnectDeviceRecord) => {
-      const stream = attach(relay, laptop);
-      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "running")], type: "sessions" }]);
-      return stream;
-    };
-    const reconnectWithApproval = (relay: ConnectRelay, laptop: ConnectDeviceRecord) => {
-      const events: ConnectRelayEvent[] = [];
-      const unsubscribe = relay.onEvent((event) => events.push(event));
-      const stream = attach(relay, laptop);
-      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "needs_approval")], type: "sessions" }]);
-      unsubscribe();
-      return events.filter((event) => event.type === "status");
-    };
-
-    const revoked = createConnectRelay();
-    const laptop = record(alice.userId);
-    seen(revoked, laptop);
-    revoked.disconnectDevice(laptop.id, "connect_unauthorized");
-    expect(reconnectWithApproval(revoked, laptop)).toEqual([]);
-
-    const account = createConnectRelay();
-    const aliceLaptop = record(alice.userId);
-    const bobLaptop = record(bob.userId);
-    seen(account, aliceLaptop);
-    const bobStream = seen(account, bobLaptop);
-    account.disconnectUser(alice.userId, { activeAuthSessionIds: [] });
-    account.detachDevice(bobLaptop.id, bobStream.streamId);
-    expect(reconnectWithApproval(account, aliceLaptop)).toEqual([]);
-    expect(reconnectWithApproval(account, bobLaptop)).toHaveLength(1);
-
-    const disabled = createConnectRelay();
-    seen(disabled, laptop);
-    disabled.disable();
-    expect(reconnectWithApproval(disabled, laptop)).toEqual([]);
-  });
-
-  it("remembers the statuses of a bounded number of offline devices, forgetting the oldest first", () => {
-    const relay = createConnectRelay();
-    const offline = (laptop: ConnectDeviceRecord) => {
-      const stream = attach(relay, laptop);
-      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "running")], type: "sessions" }]);
-      relay.detachDevice(laptop.id, stream.streamId);
-    };
-    const oldest = record(alice.userId);
-    const kept = record(alice.userId);
-    offline(oldest);
-    offline(kept);
-    for (let index = 0; index < CONNECT_RELAY_REMEMBERED_DEVICES - 1; index += 1) offline(record(bob.userId));
-    const statusDevices: string[] = [];
-    relay.onEvent((event) => {
-      if (event.type === "status") statusDevices.push(event.deviceId);
-    });
-    for (const laptop of [kept, oldest]) {
-      const stream = attach(relay, laptop);
-      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "waiting")], type: "sessions" }]);
-    }
-    expect(statusDevices).toEqual([kept.id]);
   });
 
   it("bounds the device-list streams of one account", () => {
     const relay = createConnectRelay();
     for (let index = 0; index < CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER; index += 1) {
-      expect(relay.acquireEventsStream(alice.userId)).toBe(true);
+      expect(relay.acquireEventsStream("user-alice")).toBe(true);
     }
-    expect(relay.acquireEventsStream(alice.userId)).toBe(false);
-    expect(relay.acquireEventsStream(bob.userId)).toBe(true);
-    relay.releaseEventsStream(alice.userId);
-    expect(relay.acquireEventsStream(alice.userId)).toBe(true);
+    expect(relay.acquireEventsStream("user-alice")).toBe(false);
+    expect(relay.acquireEventsStream("user-bob")).toBe(true);
+    relay.releaseEventsStream("user-alice");
+    expect(relay.acquireEventsStream("user-alice")).toBe(true);
   });
 
-  it("never logs terminal data, titles, paths or identifiers", () => {
+  it("never logs commands, paths, content, output or identifiers", async () => {
     const relay = createConnectRelay();
-    const laptop = record(alice.userId);
-    const device = attach(relay, laptop, "token-hash-secret");
-    const viewId = openView(relay, alice, laptop.id);
-    browser(relay, alice, viewId, 1);
-    relay.acceptEvents(device.tokenHash, [
-      { sessions: [session("ac-session1", "Secret project title")], type: "sessions" },
-      output(viewId, 0, "c2VjcmV0LW91dHB1dA=="),
-      output(viewId, 1, "bW9yZQ=="),
-      output(viewId, 5, "Z2Fw")
-    ]);
-    relay.request<"session_create">({ command: { cwd: "/home/synthetic/secret", program: "shell", type: "session_create" }, deviceId: laptop.id, userId: alice.userId });
-    relay.acceptEvents(device.tokenHash, [{
-      ok: true,
-      requestId: device.commands().at(-1)!.requestId as string,
-      result: { text: "wrong shape" },
-      type: "reply"
-    }]);
-
+    const device = record("user-alice");
+    const stream = attach(relay, device);
+    const pending = call(relay, device, { args: { command: "cat /secret/path", cwd: "/home/secret", timeoutSeconds: 1, background: false }, op: "shell", timeoutMs: 1_000 })!;
+    relay.acceptEvents(stream.tokenHash, [reply(lastOp(stream).requestId, { secret: "output" })]);
+    await pending;
+    const timed = call(relay, device, { timeoutMs: 1 })!;
+    await vi.advanceTimersByTimeAsync(CONNECT_OP_REPLY_GRACE_MS + 1);
+    await timed;
     const logged = JSON.stringify(logs.logConnect.mock.calls);
     expect(logs.logConnect).toHaveBeenCalled();
-    for (const secret of ["c2VjcmV0", "Secret project", "/home/synthetic", "token-hash-secret", viewId, laptop.id, alice.userId, "wrong shape"]) {
+    for (const secret of ["/secret", "/home/secret", "output", device.id, "user-alice", RUN_ID, stream.tokenHash]) {
       expect(logged).not.toContain(secret);
-    }
-    for (const [fields] of logs.logConnect.mock.calls) {
-      expect(Object.keys(fields as object).every((key) => ["action", "code", "count", "error", "outcome", "stage"].includes(key))).toBe(true);
     }
   });
 });

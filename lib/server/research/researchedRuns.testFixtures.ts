@@ -57,12 +57,12 @@ export function researchDatabase(turns: Readonly<Record<string, StoredTurn>>, op
         });
       }
       const found = ids(where).filter((id) => turns[id] !== undefined);
-      if (where.normalizedRequest !== undefined) return found.filter((id) => turns[id]!.chosen).map((id) => ({ id }));
+      // A run's own research: its frozen choice or its frame row, in one read.
+      if (where.OR !== undefined) return found.filter((id) => turns[id]!.chosen || turns[id]!.frame).map((id) => ({ id }));
       reads.rows += 1;
       return found.map((id) => {
         const turn = turns[id]!;
-        return { answerCompletedAt: turn.published ? new Date(0) : null, engine: "native", id, researchFrame: turn.frame ? { modelRunId: id } : null,
-          status: turn.status, userMessage: { id: question(id), parent: turn.previous === undefined ? null
+        return { answerCompletedAt: turn.published ? new Date(0) : null, engine: "native", id, status: turn.status, userMessage: { id: question(id), parent: turn.previous === undefined ? null
             : { assistantModelRuns: turns[turn.previous] === undefined ? [] : [{ id: turn.previous }], role: "assistant" }, systemTurnKind: kindOf(turn) } };
       });
     }

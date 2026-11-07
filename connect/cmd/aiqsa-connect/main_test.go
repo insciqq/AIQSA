@@ -23,6 +23,23 @@ func TestVersionPrintsTheStampedVersion(t *testing.T) {
 	}
 }
 
+func TestTrayArgumentsAreExactlyUpTray(t *testing.T) {
+	if !isTrayArgs([]string{"up", "--tray"}) {
+		t.Fatal("up --tray not recognized")
+	}
+	for _, args := range [][]string{{"up"}, {"up", "--service"}, {"--tray"}, {"up", "--tray", "x"}, {"tray"}} {
+		if isTrayArgs(args) {
+			t.Fatalf("%q taken for the tray", args)
+		}
+	}
+	// Outside Windows `up --tray` is an ordinary, refused `up`.
+	if trayCommand == nil {
+		if code, _, stderr := runArgs("up", "--tray"); code != 2 || !strings.Contains(stderr, "Usage: aiqsa-connect up") {
+			t.Fatalf("up --tray: %d %q", code, stderr)
+		}
+	}
+}
+
 func TestUsageListsRegisteredCommands(t *testing.T) {
 	code, stdout, _ := runArgs("help")
 	if code != 0 || !strings.Contains(stdout, "version") {

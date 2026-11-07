@@ -7,6 +7,7 @@ import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
   composerSessionModeFromKey,
+  effectiveComposerComputer,
   emptyComposerSessionSnapshot,
   folderIdFromComposerSessionKey,
   pendingSendHasNewerInput,
@@ -28,6 +29,28 @@ function session(key: ReturnType<typeof composerSessionKey>) {
 }
 
 describe("composer session store", () => {
+  it("keeps a computer chosen here over the chat's stored one, carries it into a created chat and the send token", () => {
+    const stored = { cwd: "~", deviceId: "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b" };
+    const chosen = { cwd: "~/Reports", deviceId: stored.deviceId };
+    expect(effectiveComposerComputer(null, stored)).toEqual(stored);
+    expect(effectiveComposerComputer(null, undefined)).toBeNull();
+    expect(effectiveComposerComputer({ binding: null }, stored)).toBeNull();
+    expect(effectiveComposerComputer({ binding: chosen }, stored)).toEqual(chosen);
+
+    const store = useComposerSessionStore.getState();
+    const blank = composerSessionKey(null);
+    const saved = composerSessionKey("chat-with-computer");
+    store.activateSession(blank);
+    store.updateSession(blank, { computerChoice: { binding: chosen }, draft: "Find the invoices" });
+    // The same choice again changes nothing.
+    const before = session(blank);
+    store.updateSession(blank, { computerChoice: { binding: { ...chosen } } });
+    expect(session(blank)).toBe(before);
+    expect(store.transferSession(blank, saved)).toBe(true);
+    expect(session(saved).computerChoice).toEqual({ binding: chosen });
+    expect(useComposerSessionStore.getState().beginSend(saved)?.computerChoice).toEqual({ binding: chosen });
+  });
+
   it("queues ordered comments, edits/deletes them and restores a rejected message without duplication", () => {
     const store = useComposerSessionStore.getState();
     const key = composerSessionKey("comments");
@@ -500,6 +523,7 @@ describe("composer session store", () => {
       artifactCreate: null,
       artifactEdit: null,
       attachments: [],
+      computerChoice: null,
       deepResearch: false,
       draft: "",
       editGeneration: 0,

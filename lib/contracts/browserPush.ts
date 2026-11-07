@@ -28,18 +28,16 @@ export type BrowserPushShownRunRequest = Readonly<{
 
 /**
  * The decrypted push message the service worker shows: a title, an outcome
- * line and a same-origin path. It never carries answer text, prompts,
- * terminal content or internal identifiers other than the chat id, or an
- * AIQSA Connect device and session id, inside `url` and `tag`.
+ * line and a same-origin path. It never carries answer text, prompts or
+ * internal identifiers other than the chat id inside `url` and `tag`.
  */
 export type BrowserPushMessage = Readonly<{
   body: string;
-  /** Coalesces repeated notices of one chat, of scheduled tasks or of one AIQSA Connect session. */
+  /** Coalesces repeated notices of one chat or of scheduled tasks. */
   tag: string;
   title: string;
   /**
-   * `/c/<chatId>`, `/scheduled`, `/connect/<deviceId>/<sessionId>` for an
-   * AIQSA Connect session or, for administrators' budget alerts,
+   * `/c/<chatId>`, `/scheduled` or, for administrators' budget alerts,
    * `/admin?section=limits`.
    */
   url: string;

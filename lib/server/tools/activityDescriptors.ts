@@ -1,3 +1,4 @@
+import { COMPUTER_TOOL_NAMES } from "../../contracts/computer";
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "../../contracts/memorySearchActivity";
 import {
   CHANGE_RESEARCH_FRAME_TOOL_NAME,
@@ -14,6 +15,7 @@ import { mcpDiscoveryUnavailableServers } from "../mcp/discoveryState";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { plainWorkspaceActivityText } from "../workspace/activityText";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
+import { decodeFrozenComputerBinding } from "./computerBinding";
 import { isSkillToolName, READ_SKILL_FILE_TOOL_NAME } from "./skill";
 import { skillTarPath } from "../../domain/skillBundlePaths";
 
@@ -37,7 +39,7 @@ export function activityName(value: unknown, fallback: string): string {
  * that reads another key adds it here.
  */
 export const TOOL_ACTIVITY_REQUEST_KEYS = Object.freeze([
-  "agent", "answerReviewStep", "fetchUrl", "imagePlan", "mcp", "mcpDiscovery", "monitoringVerdictTool", "scheduledTaskManagementTool",
+  "agent", "answerReviewStep", "computer", "fetchUrl", "imagePlan", "mcp", "mcpDiscovery", "monitoringVerdictTool", "scheduledTaskManagementTool",
   "scheduledTaskTool", "searchPlan", "skillSaveTool", "skills", "toolBudgets", "visionAnalysis", "workspace", "workspaceImageView"
 ]);
 
@@ -124,6 +126,14 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
     // Direct view is a Workspace step, as the live answer shows it (`toolRegistry.ts`).
     if (normalizedRequest.workspaceImageView === true) {
       descriptors.set("view_workspace_image", { origin: "workspace", serverName: "Workspace", toolName: "view_workspace_image" });
+    }
+  }
+
+  // The user's computer, named as the run froze it; the step's line and exit code come from the call (`computerActivityFacts`).
+  const computer = decodeFrozenComputerBinding(normalizedRequest.computer);
+  if (computer) {
+    for (const name of COMPUTER_TOOL_NAMES) {
+      descriptors.set(name, { origin: "computer", serverName: activityName(sanitize(computer.name), "Computer"), toolName: name });
     }
   }
 

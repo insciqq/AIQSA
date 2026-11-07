@@ -3,7 +3,9 @@ import { decodeGroundingDisplay, type GroundingDisplay } from "../../domain/grou
 import { validateGeminiSearchSuggestionsHtml } from "../providers/geminiInteractionsGrounding";
 import { decodeThreadSearchSource, type ThreadSearchSource } from "../../contracts/searchSources";
 import {
+  decodeThreadComputerFile,
   decodeThreadWorkspaceCheckpointOutput,
+  type ThreadGeneratedFile,
   type ThreadWorkspaceCheckpointOutput,
   decodeThreadWorkspaceActivityEntry,
   type ThreadWorkspaceActivityEntry
@@ -36,6 +38,8 @@ type RunOutputGeneratedArtifact = {
 export type RunOutputArtifactEvent =
   | { type: "artifact"; data: { artifactType: "memory_search_activity"; payload: MemorySearchActivitySnapshot } }
   | { type: "artifact"; data: { artifactType: "workspace_checkpoint"; payload: ThreadWorkspaceCheckpointOutput } }
+  /** A file `computer_attach_file` put on the answer; a reload reads the attachment itself. */
+  | { type: "artifact"; data: { artifactType: "computer_file"; payload: ThreadGeneratedFile } }
   | { type: "artifact"; data: { artifactType: "generated_artifact"; payload: RunOutputGeneratedArtifact } }
   | { type: "artifact"; data: { artifactType: "image"; payload: ThreadGeneratedImage } }
   | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
@@ -243,6 +247,11 @@ export function projectRunOutputArtifactEvent(
     return payload ? { type: "artifact", data: { artifactType: "workspace_checkpoint", payload } } : null;
   }
 
+  if (event.data.artifactType === "computer_file") {
+    const payload = decodeThreadComputerFile(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "computer_file", payload } } : null;
+  }
+
   if (event.data.artifactType === "workspace_activity") {
     // Already a client-safe projection; the exact decoder is the only gate.
     const entry = decodeThreadWorkspaceActivityEntry(event.data.payload);
@@ -299,6 +308,10 @@ export function isRunOutputArtifactEvent(
   }
   if (event.data.artifactType === "workspace_checkpoint") {
     return decodeThreadWorkspaceCheckpointOutput(event.data.payload) !== null;
+  }
+  if (event.data.artifactType === "computer_file") {
+    const decoded = decodeThreadComputerFile(event.data.payload);
+    return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
   }
   if (event.data.artifactType === "workspace_activity") {
     return isExactWorkspaceActivity(event.data.payload);

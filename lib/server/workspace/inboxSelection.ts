@@ -16,6 +16,8 @@ export function workspaceInboxAttachmentWhere(input: Readonly<{
         { producerModelRun: { workspaceRunBinding: { exportState: "COMPLETE" } }, workspaceRunOutput: { isNot: null } },
         { workspaceCheckpointFile: { checkpoint: { state: "SETTLED" } } }
       ] },
+      // A file the agent attached from the user's computer on this branch reaches the Workspace as the user's own file.
+      { origin: "COMPUTER_OUTPUT", status: "ready", messageId: { in: [...input.ancestorMessageIds] } },
       { origin: "IMAGE_OUTPUT", status: "ready", savedAt: null, OR: [
         { id: { in: [...input.imageIds] } }, ...(input.runId ? [{ producerModelRunId: input.runId }] : [])
       ] }

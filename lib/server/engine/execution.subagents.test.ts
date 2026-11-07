@@ -8,6 +8,8 @@ import type { SubagentTypeSnapshot } from "../subagents/ports";
 import type { FrozenSubagentDefault } from "../subagents/typeCatalog";
 import { FakeSubagentBackgroundControl, FakeSubagentTypeResolver } from "../../../tests/support/subagentPorts";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import { createFakeComputerOps } from "../connect/computerPort";
+import { computerTurnGuidance, freezeComputerBinding } from "../tools/computerBinding";
 import { subagentCatalogItem } from "./conversation";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
 import { interruptNativeRun } from "./runInterruption";
@@ -310,6 +312,34 @@ describe("native run with sub-agents", () => {
     expect(writes.every((write) => write.scope.thread?.threadId === "thread-bg" && write.scope.thread.turnId === "turn-bg")).toBe(true);
     await vi.waitFor(() => expect(memory.usageByRun.get("run-bg")?.map((entry) => entry.purpose)).toEqual(["subagent"]));
     expect(memory.settled).toEqual([]);
+  });
+
+  it("gives a background turn the parent's computer and its turn line, and ends the turn's own run on the computer", async () => {
+    const { adapter, requests } = scriptedAdapter([
+      { calls: [{ arguments: { background: true, message: "Watch the build.", name: "builder" }, id: "call-bg", name: CALL_SUBAGENT_TOOL_NAME }] },
+      { text: "The builder runs in the background." },
+      { text: "Outcome: done\nThe build passed." }
+    ]);
+    const computer = freezeComputerBinding({ cwd: "~/app", deviceId: "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11" },
+      { arch: "amd64", name: "Workstation", online: true, os: "linux" })!;
+    const line = computerTurnGuidance(computer);
+    const base = prepared();
+    const request = { ...base.normalizedRequest, computer,
+      prompt: { ...base.normalizedRequest.prompt, system: `Be brief.\n\n${line}`, turnGuidance: [line] } } as unknown as ProviderRunRequest;
+    const ops = createFakeComputerOps();
+    const background = new FakeSubagentBackgroundControl();
+    await createNativeRunExecutionResponse({ adapter, created, engine: engine().deps, prepared: { ...base, normalizedRequest: request,
+      providerRequest: request }, repository: repository() as unknown as RunRepository, services: { computer: ops }, subagents: { background },
+    userId: "user" }).text();
+    expect(ops.endedRuns.map((ended) => ended.runId)).toEqual(["run-1"]);
+    const [started] = background.turns;
+    const turn = { ...started!.input, deadlineAt: new Date(Date.now() + 60_000), hostRunId: "run-computer-bg", mode: "background" as const,
+      parentToolCallId: started!.input.parentToolCallId, signal: new AbortController().signal, turnId: "turn-computer-bg" };
+    await backgroundSubagentRunner.wait(await backgroundSubagentRunner.start(turn));
+    expect(requests[2]!.tools?.map((tool) => tool.name)).toContain("computer_shell");
+    expect(requests[2]!.prompt.system).not.toContain(line);
+    expect(JSON.stringify(requests[2]!.history)).toContain(JSON.stringify(line).slice(1, -1));
+    await vi.waitFor(() => expect(ops.endedRuns.map((ended) => ended.runId)).toEqual(["run-1", "run-computer-bg"]));
   });
 
   it("routes a background turn's model override as its own run, after the parent answered", async () => {

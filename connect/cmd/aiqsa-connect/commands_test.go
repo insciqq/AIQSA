@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,8 +20,7 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
-	"github.com/insciqq/AIQSA/connect/internal/tmux"
-	"github.com/insciqq/AIQSA/connect/internal/tmux/tmuxtest"
+	"github.com/insciqq/AIQSA/connect/internal/state"
 )
 
 const (
@@ -36,7 +37,6 @@ func isolate(t *testing.T) config.Paths {
 	t.Helper()
 	t.Setenv(config.EnvConfigDir, filepath.Join(t.TempDir(), "config"))
 	t.Setenv(config.EnvStateDir, filepath.Join(t.TempDir(), "state"))
-	t.Setenv(config.EnvTmuxSocket, "aiqsa-connect-test-unused")
 	paths, err := config.ResolvePaths()
 	if err != nil {
 		t.Fatal(err)
@@ -46,9 +46,14 @@ func isolate(t *testing.T) config.Paths {
 
 func TestUsageListsTheClientCommands(t *testing.T) {
 	_, stdout, _ := runArgs("help")
-	for _, name := range []string{"login <origin>", "up", "attach <session-id>", "sessions", "logout", "version", "update", "service install|uninstall|status"} {
+	for _, name := range []string{"login <origin>", "up", "logout", "version", "update", "service install|uninstall|status", "setup --remove"} {
 		if !strings.Contains(stdout, name) {
 			t.Errorf("usage lacks %q:\n%s", name, stdout)
+		}
+	}
+	for _, gone := range []string{"attach", "sessions", "tmux"} {
+		if strings.Contains(stdout, gone) {
+			t.Errorf("usage still names %q:\n%s", gone, stdout)
 		}
 	}
 }
@@ -107,7 +112,7 @@ func TestLoginPairsAndStoresPrivateCredentials(t *testing.T) {
 	}
 
 	code, stdout, _ = runArgs("logout")
-	if code != 0 || !strings.Contains(stdout, "revoke this computer in AIQSA → AIQSA Connect") {
+	if code != 0 || !strings.Contains(stdout, "Disconnected this computer from "+srv.URL) {
 		t.Fatalf("logout: %d %q", code, stdout)
 	}
 	if _, err := paths.LoadCredentials(); err != config.ErrNotLoggedIn {
@@ -149,8 +154,7 @@ func TestUpRefusesMissingAndReadableCredentials(t *testing.T) {
 }
 
 func TestUpExitsWithStatus3WhenRevoked(t *testing.T) {
-	tmuxtest.New(t)
-	paths, _ := config.ResolvePaths()
+	paths := isolate(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -174,9 +178,6 @@ func TestUpExitsWithStatus3WhenRevoked(t *testing.T) {
 	}
 	if _, err := os.Stat(paths.LogFile()); err != nil {
 		t.Fatalf("log file: %v", err)
-	}
-	if data, _ := os.ReadFile(paths.TmuxConfigFile()); !strings.Contains(string(data), "set -g history-limit 50000") {
-		t.Fatalf("tmux config: %q", data)
 	}
 	// The service exits 0, so launchd's KeepAlive does not restart it either.
 	writeCredentials(t, paths, srv.URL)
@@ -244,16 +245,18 @@ func TestUpServiceModeWaitsForAStoppingClient(t *testing.T) {
 	}
 }
 
-func TestUpRunsHooksAndExitsZeroWhenReplaced(t *testing.T) {
-	tmuxtest.New(t)
-	paths, _ := config.ResolvePaths()
+func TestUpRunsHooksReportsStateAndExitsZeroWhenReplaced(t *testing.T) {
+	paths := isolate(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(protocol.ProtocolHeader) != "2" {
+			t.Errorf("protocol header: %q", r.Header.Get(protocol.ProtocolHeader))
+		}
 		if r.URL.Path == protocol.DeviceEventsPath {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		hello, _ := json.Marshal(protocol.Hello{Protocol: 1, DeviceID: testDeviceID, ServerVersion: "1.0.0", MinClientVersion: "dev", Limits: protocol.DefaultHelloLimits})
+		hello, _ := json.Marshal(protocol.HelloV2{Protocol: 2, DeviceID: testDeviceID, ServerVersion: "1.0.0", MinClientVersion: "dev", Limits: protocol.DefaultHelloV2Limits})
 		fmt.Fprintf(w, "event: hello\ndata: %s\n\nevent: replaced\ndata: {}\n\n", hello)
 	}))
 	defer srv.Close()
@@ -264,9 +267,22 @@ func TestUpRunsHooksAndExitsZeroWhenReplaced(t *testing.T) {
 		return nil
 	})
 	t.Cleanup(func() { upHooks = upHooks[:len(upHooks)-1] })
+	var mu sync.Mutex
+	var kinds []state.Kind
+	upStateSink = func(s state.State) {
+		mu.Lock()
+		defer mu.Unlock()
+		kinds = append(kinds, s.Kind)
+	}
+	t.Cleanup(func() { upStateSink = nil })
 	code, _, stderr := runArgs("up")
 	if code != 0 || !strings.Contains(stderr, "another aiqsa-connect process is connected as this device") || !hooked.Load() {
 		t.Fatalf("replaced: %d %q hooked=%v", code, stderr, hooked.Load())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(kinds, []state.Kind{state.Connecting, state.Connected, state.Stopped}) {
+		t.Fatalf("states: %v", kinds)
 	}
 }
 
@@ -281,37 +297,5 @@ func TestUpIsSingleInstance(t *testing.T) {
 	defer release()
 	if code, _, stderr := runArgs("up"); code != exitNoRestart || !strings.Contains(stderr, "already running") {
 		t.Fatalf("second up: %d %q", code, stderr)
-	}
-}
-
-func TestSessionsAndAttach(t *testing.T) {
-	server := tmuxtest.New(t)
-	if code, stdout, _ := runArgs("sessions"); code != 0 || !strings.Contains(stdout, "No sessions.") {
-		t.Fatalf("empty: %d %q", code, stdout)
-	}
-	dir := t.TempDir()
-	id, err := server.Manager.Create(context.Background(), tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: dir, Title: "Build\x1b[31m"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	code, stdout, _ := runArgs("sessions")
-	if code != 0 || !strings.Contains(stdout, id) || !strings.Contains(stdout, "Shell") || !strings.Contains(stdout, "Build") || strings.Contains(stdout, "\x1b") {
-		t.Fatalf("list: %d %q", code, stdout)
-	}
-	var gotArgv []string
-	realExec := execTmux
-	t.Cleanup(func() { execTmux = realExec })
-	execTmux = func(bin string, argv []string, env []string) error {
-		gotArgv = argv
-		return nil
-	}
-	if code, _, stderr := runArgs("attach", id); code != 0 || strings.Join(gotArgv, " ") != "tmux -u -L "+server.Socket+" attach-session -t ="+id {
-		t.Fatalf("attach: %d %q %v", code, stderr, gotArgv)
-	}
-	if code, _, _ := runArgs("attach", "ac-missing0"); code != 1 {
-		t.Fatalf("missing session: %d", code)
-	}
-	if code, _, _ := runArgs("attach", "not-an-id"); code != 2 {
-		t.Fatalf("bad id: %d", code)
 	}
 }

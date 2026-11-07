@@ -1,6 +1,6 @@
 ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.60.0-noble@sha256:9bd26ad900bb5e0f4dee75839e957a89ae89c2b7ab1e76050e559790e946b948
 ARG NODE_IMAGE=node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
-ARG GO_IMAGE=golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
+ARG GO_IMAGE=golang:1.27.3-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0
 
 FROM ${PLAYWRIGHT_IMAGE} AS dev
 
@@ -112,7 +112,8 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
 # The AIQSA Connect client, cross-compiled on the build platform for every
 # supported target. Release images are built separately per architecture, so
 # these flags (the same as `npm run build:connect`) keep the binaries and
-# SHA256SUMS byte-identical on every builder.
+# SHA256SUMS byte-identical on every builder. Windows builds are GUI programs
+# (`-H windowsgui`) named `.exe`.
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS connect-build
 
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOAMD64=v1 GOARM64=v8.0
@@ -125,14 +126,17 @@ COPY package.json /src/package.json
 RUN version="$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' /src/package.json)" \
   && printf '%s\n' "$version" | grep -Eqx '(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-[0-9A-Za-z.-]{1,32})?' \
   && mkdir /out \
-  && for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do \
-    GOOS="${target%/*}" GOARCH="${target#*/}" go build -trimpath -buildvcs=false \
-      -ldflags="-s -w -buildid= -X main.version=$version" \
-      -o "/out/aiqsa-connect-${target%/*}-${target#*/}" ./cmd/aiqsa-connect || exit 1; \
+  && for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do \
+    os="${target%/*}"; arch="${target#*/}"; suffix=""; gui=""; \
+    if [ "$os" = windows ]; then suffix=".exe"; gui="-H windowsgui "; fi; \
+    GOOS="$os" GOARCH="$arch" go build -trimpath -buildvcs=false \
+      -ldflags="-s -w -buildid= ${gui}-X main.version=$version" \
+      -o "/out/aiqsa-connect-$os-$arch$suffix" ./cmd/aiqsa-connect || exit 1; \
   done \
   && cd /out \
   && sha256sum aiqsa-connect-darwin-amd64 aiqsa-connect-darwin-arm64 \
-    aiqsa-connect-linux-amd64 aiqsa-connect-linux-arm64 > SHA256SUMS
+    aiqsa-connect-linux-amd64 aiqsa-connect-linux-arm64 \
+    aiqsa-connect-windows-amd64.exe aiqsa-connect-windows-arm64.exe > SHA256SUMS
 
 # One published image owns the standalone application, private Memory and PDF
 # workers, and narrowly pruned installation tools. Compose selects the role by

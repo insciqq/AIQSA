@@ -1,6 +1,7 @@
 import type { RunProviderWait } from "../../contracts/runs";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import type { ChatImportSource } from "../../contracts/chatImport";
+import type { ChatComputerBinding } from "../../contracts/computer";
 import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
@@ -98,6 +99,8 @@ export type ChatSummaryRecord = {
   activeLeafMessageId: string | null;
   /** The chat's bound Assistant; absent reads as none. */
   assistantId?: string | null;
+  /** The owner's computer choice for the chat's next messages (`WorkspaceChatSummary.computer`); absent reads as none. */
+  computer?: ChatComputerBinding | null;
   createdAt: Date | string;
   defaultModelId: string | null;
   defaultProvider: string | null;
@@ -329,6 +332,7 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     assistantId: chat.assistantId ?? null,
+    ...(chat.computer !== undefined ? { computer: chat.computer } : {}),
     createdAt: iso(chat.createdAt),
     defaultModelId: chat.defaultModelId,
     defaultProvider: chat.defaultProvider,

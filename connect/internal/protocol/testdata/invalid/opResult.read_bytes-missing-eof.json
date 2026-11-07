@@ -1,0 +1,8 @@
+{
+  "op": "read_bytes",
+  "result": {
+    "data": "",
+    "size": 0,
+    "modifiedMs": 1762500000123
+  }
+}
