@@ -65,14 +65,31 @@ export function providerAttachmentText(
   )}`;
 }
 
+/**
+ * What a model is told about an animated GIF it receives as one still frame
+ * (operator request 2026-11-07). A run with Workspace learns where the
+ * unchanged original is; one without learns only what it does not see.
+ */
+export function animatedGifFrameNote(input: Readonly<{ attachmentId: string; frames: number; inboxIndexPath?: string }>): string {
+  const still = `[Image image_id=${JSON.stringify(input.attachmentId)} is the first frame of an animated GIF with ` +
+    `${input.frames} frames; the other frames are not in this request.`;
+  return input.inboxIndexPath
+    ? `${still} The unchanged original is in /workspace/inbox: find it in ${input.inboxIndexPath} by this attachmentId ` +
+      "and open it with Workspace tools when the animation matters.]"
+    : `${still}]`;
+}
+
 /** Text part placed immediately before a captioned image. It names only
- * server identifiers and the role; file names are untrusted user data. */
+ * server identifiers, the role and server-written notes; file names are
+ * untrusted user data. */
 export function providerImageCaption(attachment: ProviderAttachment): string | null {
   const provenance = attachment.imageProvenance;
-  if (attachment.kind !== "image" || !provenance) return null;
-  return provenance.role === "current_message"
+  if (attachment.kind !== "image") return null;
+  const source = !provenance ? null : provenance.role === "current_message"
     ? `[Image image_id=${JSON.stringify(attachment.id)}: attached to the current user message]`
     : `[Image image_id=${JSON.stringify(attachment.id)}: from earlier message message_id=${JSON.stringify(provenance.messageId)}, not a new upload]`;
+  const lines = [source, attachment.imageNote].filter((line): line is string => Boolean(line));
+  return lines.length ? lines.join("\n") : null;
 }
 
 export const providerAttachmentPreviewFilename = "[attachment filename omitted]";

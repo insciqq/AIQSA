@@ -345,9 +345,12 @@ describe("image metadata", () => {
     expect(extractImageMetadata(gif, "image/gif")).toEqual({
       animated: true,
       format: "gif",
+      frames: 2,
       height: 1,
       width: 1
     });
+    expect(extractImageMetadata(gifFile({ blocks: [control, frame, frame, control, frame], globalColorTable: twoColorTable,
+      height: 1, width: 1 }), "image/gif")).toMatchObject({ animated: true, frames: 3 });
   });
 
   it.each(malformedGifFixtures)("returns promptly for $name", ({ value }) => {

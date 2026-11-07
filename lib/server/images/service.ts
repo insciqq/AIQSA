@@ -10,6 +10,9 @@ import { IMAGE_GENERATION_CALLS_PER_ANSWER, IMAGE_GENERATION_TOOL_NAME } from ".
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
 import { convertRasterForProvider, ProviderRasterConversionError, providerRasterNeedsConversion } from "../uploads/providerRasterConversion";
+import { animatedGifFrameCount } from "../uploads/imageMetadata";
+import { gifStillFrameForProvider, ProviderImageFrameError, ProviderImageTooLargeError } from "../uploads/providerImageFit";
+import { animatedGifFrameNote } from "../providers/attachmentPayload";
 import { DIRECT_IMAGE_VIEW_LIMITS } from "../workspace/directImageView";
 import type { ChatFileScope, ChatImagePreview } from "../tools/readChatFile";
 import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
@@ -133,9 +136,27 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
           mimeType = "image/png";
           if (body.byteLength > remaining || body.byteLength > (request.modelCapabilities.imageInputLimits?.imageBytes ?? IMAGE_MAX_BYTES)) continue;
         }
+        // An earlier animated GIF goes as its first frame with the same note as on its own turn; one whose frame
+        // cannot be made or no longer fits stays without pixels.
+        let imageNote: string | undefined;
+        const frames = row.mimeType === "image/gif" ? animatedGifFrameCount(stored.body) : null;
+        if (frames) {
+          try {
+            body = (await gifStillFrameForProvider(stored.body, signal)).bytes;
+          } catch (error) {
+            signal?.throwIfAborted();
+            if (error instanceof ProviderImageTooLargeError || error instanceof ProviderImageFrameError) continue;
+            throw error;
+          }
+          mimeType = "image/png";
+          imageNote = animatedGifFrameNote({ attachmentId: id, frames,
+            ...(request.workspace ? { inboxIndexPath: request.workspace.inboxIndexPath } : {}) });
+          if (body.byteLength > remaining || body.byteLength > (request.modelCapabilities.imageInputLimits?.imageBytes ?? IMAGE_MAX_BYTES)) continue;
+        }
         const encoded = body.toString("base64");
         extra.unshift({ id, kind: "image", status: "ready", byteSize: body.byteLength, fileName: row.fileName,
-          mimeType, metadata: {}, extractedText: null, base64Data: encoded, dataUrl: `data:${mimeType};base64,${encoded}` });
+          mimeType, metadata: {}, extractedText: null, base64Data: encoded, dataUrl: `data:${mimeType};base64,${encoded}`,
+          ...(imageNote ? { imageNote } : {}) });
         remaining -= body.byteLength;
       }
       const visible = (attachments: readonly ProviderAttachment[]) => attachments
@@ -167,7 +188,8 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       }
       const preview = await rasterPreview(stored.body, row.mimeType, boundedSignal);
       if (!await resolveChatAccess(prisma, scope)) return null;
-      return { bytes: preview.bytes, width: preview.width, height: preview.height, mimeType: preview.mimeType };
+      return { bytes: preview.bytes, width: preview.width, height: preview.height, mimeType: preview.mimeType,
+        ...(preview.frames ? { frames: preview.frames } : {}) };
     },
     async authorize(plan: AcceptedImageGenerationPlan): Promise<boolean> {
       try {

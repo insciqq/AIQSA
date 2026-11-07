@@ -462,10 +462,11 @@ async function chatFixture(rows: ChatImageRow[], options: { references?: string[
   return { captures, call, context, db, execute, service, store };
 }
 
-/** Structurally valid two-frame GIF: refused before any decoding. */
-function animatedGif(): Buffer {
-  const frame = [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0x02, 0x02, 0x44, 0x01, 0x00];
-  return Buffer.from([...Buffer.from("GIF89a", "ascii"), 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255, ...frame, ...frame, 0x3b]);
+/** A real three-frame animated GIF whose frames are red, green and blue. */
+async function animatedGif(): Promise<Buffer> {
+  const frame = (background: string) => sharp({ create: { width: 6, height: 4, channels: 3, background } }).png().toBuffer();
+  return sharp([await frame("#ff0000"), await frame("#00ff00"), await frame("#0000ff")], { join: { animated: true } })
+    .gif({ delay: 100 }).toBuffer();
 }
 
 function errorOf(result: ToolExecutionResult): { error?: string; hint?: string } {
@@ -510,12 +511,25 @@ describe("chat System Vision over conversation images", () => {
     ]);
   });
 
-  it("refuses unsupported, animated and unadmitted images before dispatch with an actionable hint", async () => {
+  it("analyzes an animated GIF as its first frame, a still PNG", async () => {
+    const gif = await animatedGif();
+    const f = await chatFixture([{ id: "animated", mimeType: "image/gif", bytes: gif }]);
+    expect((await f.service.execute(f.call(["animated"]), f.context)).status).toBe("complete");
+    const sent = f.execute.mock.calls[0]![1].attachments[0]!;
+    const bytes = Buffer.from(sent.dataUrl!.split(",")[1]!, "base64");
+    expect(sent.mimeType).toBe("image/png");
+    expect(await sharp(bytes).metadata()).toMatchObject({ format: "png", width: 6, height: 4 });
+    const [red, green, blue] = (await sharp(bytes).stats()).channels.map((channel) => channel.mean);
+    expect({ red, green, blue }).toEqual({ red: 255, green: 0, blue: 0 });
+    expect((f.store.dispatch.mock.calls[0]![2] as unknown as ConversationImageDescriptor[])[0])
+      .toMatchObject({ frames: 1, source: { attachmentId: "animated", checksum: sha256(gif), width: 6, height: 4 } });
+  });
+
+  it("refuses unsupported and unadmitted images before dispatch with an actionable hint", async () => {
     const tiff = await sharp({ create: { width: 3, height: 3, channels: 3, background: "#ffffff" } }).tiff().toBuffer();
     const png = await sharp({ create: { width: 3, height: 3, channels: 3, background: "#000000" } }).png().toBuffer();
     const cases: Array<[ChatImageRow, string[] | undefined, string]> = [
       [{ id: "tiff", mimeType: "image/tiff", bytes: tiff }, undefined, "chat_image_unsupported"],
-      [{ id: "animated", mimeType: "image/gif", bytes: animatedGif() }, undefined, "chat_image_unsupported"],
       [{ id: "elsewhere", mimeType: "image/png", bytes: png }, [], "chat_image_unavailable"],
       [{ id: "other-run", mimeType: "image/png", bytes: png, origin: "IMAGE_OUTPUT", producerModelRunId: "another-run" }, [], "chat_image_unavailable"]
     ];
@@ -524,7 +538,7 @@ describe("chat System Vision over conversation images", () => {
       const result = await f.service.execute(f.call([row.id]), f.context);
       expect(result.status).toBe("error");
       expect(errorOf(result).error).toBe(code);
-      expect(errorOf(result).hint).toMatch(code === "chat_image_unsupported" ? /PNG, JPEG, WebP and static GIF/ : /exact image_id/);
+      expect(errorOf(result).hint).toMatch(code === "chat_image_unsupported" ? /PNG, JPEG, WebP and GIF/ : /exact image_id/);
       expect(f.store.dispatch).not.toHaveBeenCalled();
       expect(f.execute).not.toHaveBeenCalled();
     }
