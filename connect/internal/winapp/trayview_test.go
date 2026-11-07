@@ -29,7 +29,7 @@ func TestViewOfEveryState(t *testing.T) {
 		t.Fatalf("%d cases for %d kinds", len(cases), len(state.Kinds))
 	}
 	for _, tc := range cases {
-		view := ViewOf(tc.state)
+		view := ViewOf(tc.state, AppItems{})
 		if view.Icon != tc.icon || view.Status != tc.status || view.Tooltip != "AIQSA Connect\n"+tc.status {
 			t.Errorf("%s: %+v", tc.state.Kind, view)
 		}
@@ -49,7 +49,7 @@ func TestViewOfEveryState(t *testing.T) {
 
 func TestTooltipFitsTheNotifyIcon(t *testing.T) {
 	long := "https://" + strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + ".example"
-	view := ViewOf(state.State{Kind: state.Connected, Origin: long})
+	view := ViewOf(state.State{Kind: state.Connected, Origin: long}, AppItems{})
 	if n := len(utf16.Encode([]rune(view.Tooltip))); n > MaxTooltipLength {
 		t.Fatalf("tooltip %d units", n)
 	}

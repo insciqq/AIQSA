@@ -308,13 +308,10 @@ func (in *Installer) placeProgram(self string) error {
 // register writes the start at sign-in and the Windows Apps entry.
 func (in *Installer) register() error {
 	exe := in.Layout.Exe()
-	if err := in.Registry.SetString(RunKey, RunValue, quoteArg(exe)+" "+strings.Join(TrayArgs, " ")); err != nil {
+	if err := in.Registry.SetString(RunKey, RunValue, in.Layout.runCommand()); err != nil {
 		return fmt.Errorf("cannot register the start at sign-in: %w", err)
 	}
-	var sizeKB uint32
-	if info, err := os.Stat(exe); err == nil {
-		sizeKB = uint32((info.Size() + 1023) / 1024)
-	}
+	sizeKB := in.Layout.sizeKB()
 	strs := [][2]string{
 		{"DisplayName", AppName},
 		{"DisplayVersion", in.Version},

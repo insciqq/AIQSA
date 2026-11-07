@@ -59,6 +59,20 @@ type Layout struct {
 // Exe is the installed program.
 func (l Layout) Exe() string { return filepath.Join(l.ProgramDir, ExeName) }
 
+// Runs reports whether self is the installed program.
+func (l Layout) Runs(self string) bool { return samePath(self, l.Exe()) }
+
+// runCommand is the start at sign-in: the installed program in the tray.
+func (l Layout) runCommand() string { return quoteArg(l.Exe()) + " " + strings.Join(TrayArgs, " ") }
+
+// sizeKB is the installed program's size for Windows Apps; 0 when unknown.
+func (l Layout) sizeKB() uint32 {
+	if info, err := os.Stat(l.Exe()); err == nil {
+		return uint32((info.Size() + 1023) / 1024)
+	}
+	return 0
+}
+
 // OriginFile is the installed origin's file.
 func (l Layout) OriginFile() string { return filepath.Join(l.ConfigDir, OriginFileName) }
 
