@@ -1172,7 +1172,8 @@ describe("McpClientSession", () => {
     await expect(timedOut).rejects.toMatchObject({
       code: "mcp_request_timeout",
       operation: "call_tool",
-      retryable: true
+      retryable: true,
+      timeoutMs: 20
     });
 
     const controller = new AbortController();

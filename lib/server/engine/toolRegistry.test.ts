@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import type { ProviderRunRequest } from "../providers/types";
@@ -119,7 +120,19 @@ describe("native tool registry", () => {
     const refusing = await buildToolRegistry(input({ mcpBindings, request: request({ mcp: snapshot }),
       services: services({ callTool: vi.fn(), ensureAcceptedGeneration: async () => false }) }));
     await expect(refusing.resolve("mcp_jira_create_issue")!.execute(execution)).resolves.toMatchObject({ status: "error",
-      content: [{ type: "json", value: { error: "mcp_runtime_unavailable", message: "Nothing was sent." } }] });
+      content: [{ type: "json", value: { error: "mcp_runtime_unavailable", reason: "unavailable",
+        message: "The MCP server is unavailable or not ready. Nothing was sent, so nothing changed. Do not retry its tools in " +
+          "this answer; continue without them and tell the user." } }] });
+    // A runtime not running yet refuses with its own code, so the model reads the same cause.
+    const notReady = await buildToolRegistry(input({ mcpBindings, request: request({ mcp: snapshot }), services: services({
+      callTool: vi.fn(async () => { throw Object.assign(new Error("mcp_runtime_not_ready"), { code: "mcp_runtime_not_ready" }); }),
+      ensureAcceptedGeneration: async () => true }) }));
+    await expect(notReady.resolve("mcp_jira_create_issue")!.execute(execution)).resolves.toMatchObject({ status: "error",
+      content: [{ type: "json", value: { error: "mcp_runtime_not_ready", reason: "unavailable" } }] });
+    // A read-only tool explains its own failures to the batch.
+    expect(refusing.resolve("mcp_jira_get_issue")!.failureGuidance?.(new McpClientSessionError({ code: "mcp_call_result_too_large",
+      maxBytes: 16 * 1_048_576, operation: "call_tool" }))).toMatchObject({ reason: "result_too_large",
+      message: expect.stringContaining("larger than the 16 MB limit") });
     const callTool = vi.fn(async (call: { beforeDispatch(): Promise<void> }) => {
       await call.beforeDispatch();
       throw new TypeError("fetch failed");
