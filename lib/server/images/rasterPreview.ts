@@ -1,9 +1,9 @@
 import sharp from "sharp";
 import { extractImageMetadata } from "../uploads/imageMetadata";
-import { convertRasterForProvider, ProviderRasterConversionError, providerRasterNeedsConversion } from "../uploads/providerRasterConversion";
-import { StaticRasterError, validateStaticRaster } from "../uploads/staticRaster";
+import { convertRasterForProvider, providerRasterNeedsConversion } from "../uploads/providerRasterConversion";
+import { validateStaticRaster } from "../uploads/staticRaster";
 import { DEFAULT_PREVIEW_FIT } from "../workspace/directImageView";
-import { transformStaticImage, WorkspaceImageError, WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
+import { transformStaticImage, WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import { ImageInputError } from "./inputError";
 
 export type RasterPreview = Readonly<{
@@ -19,8 +19,9 @@ export type RasterPreview = Readonly<{
 /**
  * A bounded preview of a static raster for a model to see: BMP and TIFF converted to PNG, a GIF's single frame (an
  * animated one refused), PNG, JPEG or WebP validated under `WORKSPACE_IMAGE_LIMITS`, then fitted to
- * `DEFAULT_PREVIEW_FIT`. Bytes that are not the declared type's or break a bound fail with
- * `ImageInputError("image_reference_unsupported")`; the caller bounds the source's size and the time (`signal`).
+ * `DEFAULT_PREVIEW_FIT`. Bytes that are not the declared type's, break a bound or fail in a decoder fail with
+ * `ImageInputError("image_reference_unsupported")`; the caller bounds the source's size and the time (`signal`), whose
+ * abort is thrown as it is.
  */
 export async function rasterPreview(bytes: Buffer, mimeType: string, signal: AbortSignal): Promise<RasterPreview> {
   try {
@@ -39,9 +40,8 @@ export async function rasterPreview(bytes: Buffer, mimeType: string, signal: Abo
     return { bytes: preview.output, height: preview.dimensions.height, mimeType: "image/png",
       source: { height: metadata.height, width: metadata.width }, width: preview.dimensions.width };
   } catch (error) {
-    if (error instanceof StaticRasterError || error instanceof WorkspaceImageError || error instanceof ProviderRasterConversionError) {
-      throw new ImageInputError("image_reference_unsupported");
-    }
-    throw error;
+    // Stop or the caller's time limit stays what it is; any other failure here is the bytes' (a decoder that refused them).
+    if (signal.aborted || error instanceof ImageInputError) throw error;
+    throw new ImageInputError("image_reference_unsupported");
   }
 }

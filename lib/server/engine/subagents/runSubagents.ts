@@ -149,7 +149,9 @@ export type PrepareRunSubagentsInput = Readonly<{
   buildRegistry(input: Readonly<{ agent: WorkspaceAgent; followupTexts(): readonly string[];
     /** A background turn's own run; absent, the parent run's. */
     host?: SubagentRegistryHost;
-    onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>; request: ProviderRunRequest }>): Promise<ToolRegistry>;
+    onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>; request: ProviderRunRequest;
+    /** The sub-agent's route carries tool-result images. */
+    resultImages?: true }>): Promise<ToolRegistry>;
   /** Background turns' own runs; absent, background turns cannot run here. */
   backgroundParts?: SubagentBackgroundParts;
   budgets: ToolRunBudgets;

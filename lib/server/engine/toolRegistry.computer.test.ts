@@ -83,7 +83,7 @@ describe("the computer tools in a run's registry", () => {
       const ops = createFakeComputerOps();
       ops.enqueue({ ok: true, result: { data: png.toString("base64"), eof: true, modifiedMs: 1, size: png.length } }, "read_bytes");
       const registry = await buildToolRegistry(input({ request: request({ computer: online, modelCapabilities: vision,
-        ...(workspace ? { workspace } : {}) }) }, ops));
+        ...(workspace ? { workspace } : {}) }), resultImages: true }, ops));
       const sub = subagentToolRegistry(registry, null);
       const result = await sub.resolve("computer_read")!.execute({ call: { arguments: { limit: null, offset: null, path: "shot.png" }, id: "v1",
         name: "computer_read" }, ordinal: 0, persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
@@ -93,6 +93,16 @@ describe("the computer tools in a run's registry", () => {
       expect(sub.images?.attached({ callId: "v1", id: "i1", kind: "tool_result", name: "computer_read", outcome: "complete", output }))
         .toMatchObject({ image: { mimeType: "image/png" } });
     }
+  });
+
+  it("refuses an image to a vision model whose route carries no result image, before anything is sent", async () => {
+    const ops = createFakeComputerOps();
+    const registry = await buildToolRegistry(input({ request: request({ computer: online,
+      modelCapabilities: { ...request().modelCapabilities, vision: true } }) }, ops));
+    const result = await registry.resolve("computer_read")!.execute({ call: { arguments: { limit: null, offset: null, path: "shot.png" },
+      id: "v2", name: "computer_read" }, ordinal: 0, persistedToolCallId: "row-2", round: 1, signal: new AbortController().signal });
+    expect(result).toMatchObject({ content: [{ value: { error: "computer_image_needs_vision" } }], status: "error" });
+    expect(ops.calls).toEqual([]);
   });
 
   it("bounds each call by its own time and the turn's tool time left", async () => {

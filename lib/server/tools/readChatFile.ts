@@ -52,6 +52,8 @@ const notFound = (call: ModelToolCall) => refusal(call, "chat_file_not_found", "
 export function createChatFileTool(input: Readonly<{
   request: ProviderRunRequest; userId: string; runId: string;
   reader?: ChatFileReader; readImage?: ChatImageReader; budget?: DirectImageBudget; runEnded?: Promise<void> | null;
+  /** The answer route carries a tool result's image (`rendersToolResultImages`); without it no image is shown. */
+  resultImages?: boolean;
 }>) {
   const request = input.request;
   const ids = new Set(request.attachmentIds);
@@ -64,7 +66,7 @@ export function createChatFileTool(input: Readonly<{
   const images = held.images;
 
   async function view(call: ModelToolCall, scope: ChatFileScope, round: number, signal?: AbortSignal): Promise<ToolExecutionResult> {
-    if (!request.modelCapabilities.vision || !input.readImage) return refusal(call, "chat_image_unavailable",
+    if (!request.modelCapabilities.vision || input.resultImages !== true || !input.readImage) return refusal(call, "chat_image_unavailable",
       "This model cannot view this image here. Use analyze_image if it is offered; otherwise explain that its pixels are unavailable.");
     const preparation = await held.prepare(signal);
     if (!preparation) return refusal(call, "chat_image_limit_exceeded", "Image previews are busy. Try this read again later.");

@@ -301,6 +301,11 @@ export type ToolRegistryInput = Readonly<{
   researchEvidence?: RecordEvidenceTarget;
   /** Where `change_research_frame` writes, bound as `researchEvidence` is. Absent, the tool is not offered. */
   researchFrame?: ChangeResearchFrameTarget;
+  /**
+   * This agent's answer route carries a tool result's image (`rendersToolResultImages`): only then do `read_chat_file`
+   * and `computer_read` show an image to a vision model, since elsewhere its pixels would never reach it.
+   */
+  resultImages?: true;
   runId: string;
   /** A scheduled task's occurrence (a schedule, a webhook or a monitoring check): it never works on the user's computer. */
   scheduled?: true;
@@ -446,7 +451,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
 
   if (!request.workspace) {
-    const files = createChatFileTool({ request, runId: input.runId, userId: input.userId,
+    const files = createChatFileTool({ request, runId: input.runId, userId: input.userId, resultImages: input.resultImages === true,
       reader: input.services.chatFiles, readImage: input.services.images?.readConversationImage });
     add({ activity: named(readChatFileTool, "Chat files"), definition: readChatFileTool, effects: "none", observationSource: "workspace",
       execute: (execution) => files.execute(execution.call, execution.round, execution.signal) });
@@ -680,8 +685,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     request.prompt.baseline?.source !== "assistant_chat" ? decodeFrozenComputerBinding(request.computer) : null;
   if (computer) {
     // Documents and images `computer_read` reads, in this run's memory: its previews ride on its own requests whether or not
-    // the run has a Workspace, gated on the model this request names (a sub-agent's own route).
-    const files = createComputerReadFiles({ request, runId: input.runId });
+    // the run has a Workspace, gated on the model this request names and its route (a sub-agent's own).
+    const files = createComputerReadFiles({ request, resultImages: input.resultImages === true, runId: input.runId });
     for (const tool of computerEngineTools({ binding: computer, files, ...(input.services.computer ? { ops: input.services.computer } : {}),
       runId: input.runId, serverName: descriptors.get("computer_shell")?.serverName,
       ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId })) add(tool);
