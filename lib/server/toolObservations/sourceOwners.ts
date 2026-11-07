@@ -4,6 +4,7 @@ import { canAccessSearchStrategy } from "../auth/entitlements";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { namespacedMcpToolName } from "../mcp/runPlan";
 import { createSkillCatalogRepository } from "../skills/catalogRepository";
+import { turnMainRunId } from "../subagents/nesting";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { parsePersistedToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { snapshotToolLoopJson, toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
@@ -21,7 +22,8 @@ const record = (value: unknown): value is Record<string, unknown> =>
 export function createObservationSourceOwners() {
   return {
     async authorizeSource(tx: Prisma.TransactionClient, source: ToolObservation, actor: ObservationActor) {
-      const run = await tx.modelRun.findUnique({ where: { id: source.modelRunId }, select: { id: true } });
+      const run = await tx.modelRun.findUnique({ where: { id: source.modelRunId }, select: { id: true,
+        subagentTurn: { select: { parentRunId: true, parentRun: { select: { subagentTurn: { select: { parentRunId: true } } } } } } } });
       if (!run) throw unavailable();
       // The durable parent owns accepted Workspace bytes. Reset, expiration or
       // turning Workspace off cannot grant a reread of the mutable guest path.
@@ -36,7 +38,11 @@ export function createObservationSourceOwners() {
             runtimeGeneration: { select: { revisionId: true, revision: { select: { serverId: true } } } } } }
         } });
         const accepted = call?.mcpRunBinding;
-        if (!accepted || accepted.modelRunId !== source.modelRunId || accepted.runtimeGenerationFingerprint !== binding.fingerprint ||
+        // A background sub-agent's run holds no MCP bindings of its own: its calls use those of the main-agent run behind
+        // its turn (integrator decision 2026-10-30, `lib/server/runs/subagentBackground/store.ts`), so a result it saved
+        // belongs to that run's binding. Only that run qualifies, never another run of the chat.
+        const bindingRunId = run.subagentTurn ? turnMainRunId(run.subagentTurn.parentRunId, run.subagentTurn.parentRun) : run.id;
+        if (!accepted || accepted.modelRunId !== bindingRunId || accepted.runtimeGenerationFingerprint !== binding.fingerprint ||
           accepted.runtimeGeneration && (accepted.runtimeGeneration.revisionId !== binding.revisionId ||
             accepted.runtimeGeneration.revision.serverId !== binding.serverId) ||
           !accepted.runtimeGeneration && source.state !== "READY") throw unavailable();
