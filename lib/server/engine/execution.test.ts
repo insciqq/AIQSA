@@ -127,7 +127,7 @@ function repository() {
   };
 }
 
-function prepared(extra: Partial<ProviderRunRequest> = {}): MaterializedPreparedRunData {
+function prepared(extra: Partial<ProviderRunRequest> = {}, adapterKind = "fake"): MaterializedPreparedRunData {
   const request = {
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text: "Hello", type: "text" }] },
     context: { messages: [{ content: { blocks: [{ text: "Hello", type: "text" }] }, id: "current-user-message", role: "user" as const }],
@@ -140,7 +140,7 @@ function prepared(extra: Partial<ProviderRunRequest> = {}): MaterializedPrepared
     contextTruncation: null, defaults: null, expectedActiveLeafId: null,
     mcpBindings: [{ fingerprint: "fp-1", runtimeGenerationId: "gen-1", serverId: "jira" }],
     normalizedRequest: request, providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 300_000 },
-      connectionId: "connection-1", model: { adapterKind: "fake" }, providerFamily: "fake", providerModelId: "model-1" } } } as never,
+      connectionId: "connection-1", model: { adapterKind }, providerFamily: "fake", providerModelId: "model-1" } } } as never,
     providerRequest: request, providerRequestPreview: {}, sourceKind: "send"
   };
 }
@@ -228,7 +228,7 @@ describe("native run execution", () => {
         context: { mode: "branch_path", messages: [
           { id: "old-images", role: "user", content: { blocks: ["oldest", "next", "third", "fourth", "fifth", "sixth"].map((attachmentId) =>
             ({ type: "image", attachmentId })) } }, { id: "current", role: "user", content: { blocks: [current] } }
-        ] } }), repository: repository() as unknown as RunRepository,
+        ] } }, "openrouter_chat_completions"), repository: repository() as unknown as RunRepository,
       services: { chatFiles: { read: async () => ({ kind: "image", fileName: "old.png", status: "ready", extractedText: null, metadata: {} }) },
         images: { execute: vi.fn(), withConversationPixels: async (request) => request, readConversationImage } }, userId: "user" }));
     expect(memory.published()).toBe("The requested image is visible.");

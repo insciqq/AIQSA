@@ -156,9 +156,14 @@ const DIRECT_VIEW_ADAPTERS: ReadonlySet<string> = new Set([
   "openrouter_chat_completions"
 ]);
 
+/** Whether the answer route's requests carry a tool result's image; elsewhere an image held for a result would never reach the model. */
+export function rendersToolResultImages(adapterKind: string): boolean {
+  return DIRECT_VIEW_ADAPTERS.has(adapterKind);
+}
+
 /** Admission offers `view_workspace_image` only to a chat model with verified image input on a route that renders result images. */
 export function supportsWorkspaceImageView(adapterKind: string, verifiedVisionInput: boolean): boolean {
-  return verifiedVisionInput && DIRECT_VIEW_ADAPTERS.has(adapterKind);
+  return verifiedVisionInput && rendersToolResultImages(adapterKind);
 }
 
 export type WorkspaceImageCaptures = Pick<ReturnType<typeof createWorkspaceSelectedCaptures>, "create" | "imageSource" | "release">;
