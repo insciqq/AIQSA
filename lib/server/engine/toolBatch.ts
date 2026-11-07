@@ -563,8 +563,11 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
         const item = await hooks.afterToolCall(execution, tool, begun.row, result);
         return finished({ ...item, outcome: "unknown" }, "error");
       }
-      result = { callId: call.id, content: [{ type: "json", value: { error: code, message: "The tool failed; nothing changed." } }],
-        name: call.name, status: "error" };
+      // A tool that knows its failures (MCP) says why and what to try next; its effect is known to be none here.
+      const guidance = tool.failureGuidance?.(error);
+      result = { callId: call.id, content: [{ type: "json", value: guidance
+        ? { error: code, message: guidance.message, reason: guidance.reason }
+        : { error: code, message: "The tool failed; nothing changed." } }], name: call.name, status: "error" };
       settled({ effectUnknown: false, error, kind: "thrown", result });
       deps.unknownEffects.record(call, result.status);
       return finished(await hooks.afterToolCall(execution, tool, begun.row, result), "error");
