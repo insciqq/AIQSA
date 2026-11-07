@@ -95,7 +95,11 @@ type testSystem struct {
 	// PrepareReplacement and Replace.
 	prepare func(tmp *os.File, path string, info fs.FileInfo) error
 	replace func(tmp, path string) error
+	// inPlace writes every existing file in place, as on macOS.
+	inPlace bool
 }
+
+func (s testSystem) WritesInPlace() bool { return s.inPlace || s.System.WritesInPlace() }
 
 func (s testSystem) PrepareReplacement(tmp *os.File, path string, info fs.FileInfo) error {
 	if s.prepare != nil {
