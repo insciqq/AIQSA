@@ -1,6 +1,7 @@
 package winapp
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -30,7 +31,7 @@ func TestViewOfEveryState(t *testing.T) {
 	}
 	for _, tc := range cases {
 		view := ViewOf(tc.state, AppItems{})
-		if view.Icon != tc.icon || view.Status != tc.status || view.Tooltip != "AIQSA Connect\n"+tc.status {
+		if view.Icon != tc.icon || view.Status != tc.status || view.Tooltip != "AIQSA Connect dev\n"+tc.status {
 			t.Errorf("%s: %+v", tc.state.Kind, view)
 		}
 		if hasItem(view, MenuConnect) != tc.connect || hasItem(view, MenuDisconnect) != tc.disconnect {
@@ -47,11 +48,44 @@ func TestViewOfEveryState(t *testing.T) {
 	}
 }
 
+func TestTheTrayShowsTheRunningVersion(t *testing.T) {
+	s := state.State{Kind: state.Connected, Origin: testOrigin}
+	for _, installed := range []bool{false, true} {
+		view := ViewOf(s, AppItems{Version: "0.4.21", Installed: installed})
+		if view.Tooltip != "AIQSA Connect 0.4.21\nConnected to ai.example.com" {
+			t.Errorf("installed=%v: tooltip %q", installed, view.Tooltip)
+		}
+		quit := slices.IndexFunc(view.Menu, func(item MenuItem) bool { return item.ID == MenuQuit })
+		if quit < 1 {
+			t.Fatalf("installed=%v: no Quit in %+v", installed, view.Menu)
+		}
+		version := view.Menu[quit-1]
+		if version.ID != MenuVersion || version.Label != "Version 0.4.21" || version.Enabled || version.Checked {
+			t.Errorf("installed=%v: above Quit %+v", installed, version)
+		}
+	}
+	// A development build.
+	view := ViewOf(s, AppItems{})
+	if !strings.HasPrefix(view.Tooltip, "AIQSA Connect dev\n") || !slices.ContainsFunc(view.Menu, func(item MenuItem) bool {
+		return item.ID == MenuVersion && item.Label == "Version dev"
+	}) {
+		t.Fatalf("dev build: %+v", view)
+	}
+}
+
 func TestTooltipFitsTheNotifyIcon(t *testing.T) {
 	long := "https://" + strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + ".example"
-	view := ViewOf(state.State{Kind: state.Connected, Origin: long}, AppItems{})
+	view := ViewOf(state.State{Kind: state.Connected, Origin: long}, AppItems{Version: "10.20.30"})
 	if n := len(utf16.Encode([]rune(view.Tooltip))); n > MaxTooltipLength {
 		t.Fatalf("tooltip %d units", n)
+	}
+	if !strings.HasPrefix(view.Tooltip, "AIQSA Connect 10.20.30\nConnected to aaa") {
+		t.Fatalf("tooltip %q", view.Tooltip)
+	}
+	// A version long enough to fill the tooltip alone is cut too.
+	view = ViewOf(state.State{Kind: state.Stopped}, AppItems{Version: strings.Repeat("9", 200)})
+	if n := len(utf16.Encode([]rune(view.Tooltip))); n != MaxTooltipLength || !strings.HasPrefix(view.Tooltip, "AIQSA Connect 999") {
+		t.Fatalf("tooltip %d units: %q", n, view.Tooltip)
 	}
 	if got := truncateUTF16("ab😀c", 3); got != "ab" {
 		t.Fatalf("split a surrogate pair: %q", got)

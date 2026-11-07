@@ -33,6 +33,8 @@ type Installer struct {
 	Registry Registry
 	System   System
 	Dialogs  Dialogs
+	// Shortcuts creates the Start menu shortcut; nil creates none.
+	Shortcuts Shortcuts
 	// Version is this program's version, shown in Windows Apps.
 	Version string
 	// Revoke deletes the device of creds in AIQSA (api.Client.RevokeSelf).
@@ -245,6 +247,9 @@ func (in *Installer) Uninstall(ctx context.Context, self string, confirmed bool)
 	if err := in.Registry.DeleteKey(UninstallKey); err != nil {
 		problems = append(problems, fmt.Sprintf("The entry in Apps could not be removed: %v.", err))
 	}
+	if err := in.removeShortcut(); err != nil {
+		problems = append(problems, fmt.Sprintf("The shortcut in the Start menu could not be removed: %v.", err))
+	}
 	for _, dir := range []string{in.Layout.ConfigDir, in.Layout.StateDir} {
 		if err := removeOwnFolder(dir); err != nil {
 			problems = append(problems, fmt.Sprintf("A folder could not be removed: %v.", err))
@@ -305,8 +310,43 @@ func (in *Installer) placeProgram(self string) error {
 	return nil
 }
 
-// register writes the start at sign-in and the Windows Apps entry.
+// register writes the start at sign-in, the Windows Apps entry and the
+// Start menu shortcut. The shortcut is a convenience: failing to create it
+// does not fail the installation.
 func (in *Installer) register() error {
+	if err := in.registerEntries(); err != nil {
+		return err
+	}
+	in.createShortcut()
+	return nil
+}
+
+// createShortcut writes the Start menu shortcut to the installed program,
+// replacing one that exists. It does nothing without Shortcuts or a known
+// Start menu folder.
+func (in *Installer) createShortcut() error {
+	link := in.Layout.Shortcut()
+	if in.Shortcuts == nil || link == "" {
+		return nil
+	}
+	return in.Shortcuts.Create(link, in.Layout.Exe(), in.Layout.ProgramDir, AppName)
+}
+
+// removeShortcut deletes the Start menu shortcut, and only that file; a
+// missing one is fine.
+func (in *Installer) removeShortcut() error {
+	link := in.Layout.Shortcut()
+	if link == "" {
+		return nil
+	}
+	if err := os.Remove(link); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// registerEntries writes the start at sign-in and the Windows Apps entry.
+func (in *Installer) registerEntries() error {
 	exe := in.Layout.Exe()
 	if err := in.Registry.SetString(RunKey, RunValue, in.Layout.runCommand()); err != nil {
 		return fmt.Errorf("cannot register the start at sign-in: %w", err)

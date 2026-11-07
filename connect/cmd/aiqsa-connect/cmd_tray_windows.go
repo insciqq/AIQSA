@@ -72,7 +72,7 @@ func runTray(inv *invocation) int {
 
 	ctx, cancel := context.WithCancel(inv.ctx)
 	defer cancel()
-	tray := &winapp.Tray{}
+	tray := &winapp.Tray{Version: version}
 	controller := &winapp.Controller{
 		Origin:  origin,
 		Version: version,
@@ -86,12 +86,13 @@ func runTray(inv *invocation) int {
 	}
 	if layout.Runs(selfExecutable()) {
 		controller.Installed = &winapp.Installer{
-			Layout:   layout,
-			Registry: winapp.WindowsRegistry{},
-			System:   winapp.WindowsSystem{},
-			Dialogs:  dialogs,
-			Version:  version,
-			Revoke:   revokeDevice,
+			Layout:    layout,
+			Registry:  winapp.WindowsRegistry{},
+			System:    winapp.WindowsSystem{},
+			Dialogs:   dialogs,
+			Shortcuts: winapp.WindowsShortcuts{},
+			Version:   version,
+			Revoke:    revokeDevice,
 		}
 	}
 	tray.Choose = controller.Choose
@@ -100,10 +101,13 @@ func runTray(inv *invocation) int {
 		<-inv.ctx.Done()
 		tray.Exit()
 	}()
+	// start runs on the tray's thread after the icon is added; the update
+	// notice of AfterStart waits for the icon when the taskbar is not there
+	// yet (Tray.showNotice).
 	err = tray.Run(ready, func() {
 		controller.Start(ctx)
 		if installed := controller.Installed; installed != nil {
-			go maintainInstalled(ctx, installed, log)
+			go installed.AfterStart(ctx, tray.Notify, log)
 		}
 	})
 	cancel()
@@ -115,17 +119,4 @@ func runTray(inv *invocation) int {
 		return 1
 	}
 	return 0
-}
-
-// maintainInstalled tidies the installed program after a start, as after a
-// self-update: Windows Apps shows the running version, and the file the
-// update moved aside goes once the previous process has exited. Failures
-// are only logged; the next start tries again.
-func maintainInstalled(ctx context.Context, installed *winapp.Installer, log *logx.Logger) {
-	if changed, err := installed.RefreshAppsEntry(); err != nil {
-		log.Event("apps_entry_refresh_failed", "error", err)
-	} else if changed {
-		log.Event("apps_entry_refreshed")
-	}
-	winapp.RemoveStaleOldLater(ctx, installed.Layout.Exe(), winapp.StaleOldRetries)
 }
