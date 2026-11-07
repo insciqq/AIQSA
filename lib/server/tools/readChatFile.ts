@@ -1,15 +1,11 @@
 import type { PrismaClient } from "@prisma/client";
 import { decodePdfProcessing, documentProcessingFromMetadata } from "../../contracts/uploads";
 import { ImageInputError } from "../images/inputError";
-import { imageTokenEstimator } from "../../domain/imageTokenEstimate";
-import type { TranscriptImages } from "../engine/transcript";
-import type { ProviderHistoryImage } from "../providers/history";
-import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import type { ProviderRunRequest } from "../providers/types";
-import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import { attachmentIdsFromContentBlocks } from "../runs/runAttachmentMaterialization";
-import { directImageBudget, DIRECT_IMAGE_VIEW_LIMITS, type DirectImageBudget } from "../workspace/directImageView";
+import type { DirectImageBudget } from "../workspace/directImageView";
 import { CHAT_FILE_NO_TEXT, CHAT_FILE_UNTRUSTED, READ_CHAT_FILE_NAME } from "./chatFileContext";
+import { createHeldResultImages } from "./heldResultImages";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "./types";
 
 export const CHAT_FILE_READ_LIMIT = 12_000;
@@ -63,53 +59,26 @@ export function createChatFileTool(input: Readonly<{
     if (message.purpose === undefined) for (const id of attachmentIdsFromContentBlocks(message.content.blocks)) ids.add(id);
   }
   for (const id of attachmentIdsFromContentBlocks(request.content.blocks)) ids.add(id);
-  const estimate = imageTokenEstimator({ modelId: request.modelId, provider: request.provider });
-  const budget = input.budget ?? directImageBudget();
-  type Held = { callId: string; output: string; round: number; image: ProviderHistoryImage; tokens: number };
-  let held: Held[] = [];
-  let ended = false;
-  const heldBytes = (entries: readonly Held[]) => entries.reduce((sum, entry) => sum + entry.image.data.length, 0);
-  const release = () => { ended = true; budget.free(heldBytes(held)); held = []; };
-  void (input.runEnded === undefined ? activeRunControllerRegistry.settled(input.runId) : input.runEnded)?.then(release, release);
-  const images: TranscriptImages = { attached: (item) => {
-    const image = item.name === READ_CHAT_FILE_NAME && item.outcome === "complete" ? held.find((entry) => entry.callId === item.callId && entry.output === item.output) : undefined;
-    return image ? { image: image.image, tokens: image.tokens } : undefined;
-  }, note: "" };
+  const held = createHeldResultImages({ request, runId: input.runId, toolName: READ_CHAT_FILE_NAME,
+    ...(input.budget ? { budget: input.budget } : {}), ...(input.runEnded === undefined ? {} : { runEnded: input.runEnded }) });
+  const images = held.images;
 
   async function view(call: ModelToolCall, scope: ChatFileScope, round: number, signal?: AbortSignal): Promise<ToolExecutionResult> {
     if (!request.modelCapabilities.vision || !input.readImage) return refusal(call, "chat_image_unavailable",
       "This model cannot view this image here. Use analyze_image if it is offered; otherwise explain that its pixels are unavailable.");
-    const preparation = await budget.prepare(signal);
+    const preparation = await held.prepare(signal);
     if (!preparation) return refusal(call, "chat_image_limit_exceeded", "Image previews are busy. Try this read again later.");
     try {
       const preview = await input.readImage(scope, signal);
       if (!preview) return notFound(call);
       signal?.throwIfAborted();
-      if (ended) return refusal(call, "chat_image_unavailable", "The run has ended.");
-      const limits = request.modelCapabilities.imageInputLimits;
-      const own = request.attachments.filter((file) => file.kind === "image" && Boolean(file.base64Data || file.dataUrl));
-      const ownBytes = own.reduce((sum, file) => sum + (file.dataUrl?.length ?? file.base64Data?.length ?? 0), 0);
-      const ownTokens = providerAttachmentBudgetTokens({ attachments: own, estimateImageTokens: estimate, modelCapabilities: request.modelCapabilities });
-      const tokens = estimate(preview);
-      const encodedBytes = Math.ceil(preview.bytes.length / 3) * 4;
-      const countBound = Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestImages, limits?.imageCount ?? Infinity) - own.length;
-      const bytesBound = Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestBytes, limits?.payloadBytes ?? Infinity) - ownBytes;
-      const tokensBound = request.modelCapabilities.contextWindow
-        ? Math.floor(request.modelCapabilities.contextWindow * DIRECT_IMAGE_VIEW_LIMITS.windowShare) - ownTokens : Infinity;
-      let kept = held.filter((entry) => entry.callId !== call.id);
-      const fits = () => kept.length + 1 <= countBound && heldBytes(kept) + encodedBytes <= bytesBound &&
-        kept.reduce((sum, entry) => sum + entry.tokens, tokens) <= tokensBound;
-      while (!fits() && kept[0] && kept[0].round < round) kept = kept.slice(1);
-      if (!fits() || preview.bytes.length > Math.min(DIRECT_IMAGE_VIEW_LIMITS.imageBytes, limits?.imageBytes ?? Infinity) ||
-        preview.width * preview.height > Math.min(DIRECT_IMAGE_VIEW_LIMITS.imagePixels, limits?.imagePixels ?? Infinity) ||
-        !budget.swap(encodedBytes, heldBytes(held) - heldBytes(kept))) {
-        return refusal(call, "chat_image_limit_exceeded", "This image preview exceeds this request's image limits. Read fewer images at once.");
-      }
+      if (held.ended()) return refusal(call, "chat_image_unavailable", "The run has ended.");
       const value = { attachment_id: scope.attachmentId, width: preview.width, height: preview.height,
         note: "Image preview. " + CHAT_FILE_UNTRUSTED + " Pixels accompany this result only while this run holds them. " +
           "If no image is attached to this result, call read_chat_file with this attachment_id to view it again." };
-      held = [...kept, { callId: call.id, output: JSON.stringify(value), round, tokens,
-        image: { data: preview.bytes.toString("base64"), mimeType: preview.mimeType } }];
+      if (!held.hold(call, round, preview, JSON.stringify(value))) {
+        return refusal(call, "chat_image_limit_exceeded", "This image preview exceeds this request's image limits. Read fewer images at once.");
+      }
       return result(call, value);
     } catch (error) {
       signal?.throwIfAborted();

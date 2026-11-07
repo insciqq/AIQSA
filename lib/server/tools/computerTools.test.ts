@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { COMPUTER_TOOL_NAMES } from "@/lib/contracts/computer";
 import { createFakeComputerOps, type ComputerOpCall } from "../connect/computerPort";
 import type { FrozenComputerBinding } from "./computerBinding";
+import { COMPUTER_READ_FILE_LIMITS } from "./computerReadFiles";
 import {
   COMPUTER_TOOL_EFFECTS,
   COMPUTER_TOOL_LIMITS,
@@ -60,7 +61,8 @@ describe("computer tool definitions", () => {
 
   it("bounds a command by its longest timeout and its reply, and the rest by a minute", () => {
     expect(computerToolCallMs("computer_shell")).toBe(600_000 + COMPUTER_TOOL_LIMITS.shellReplyMs);
-    expect(computerToolCallMs("computer_read")).toBe(60_000);
+    expect(computerToolCallMs("computer_read")).toBe(COMPUTER_READ_FILE_LIMITS.fetchMs + COMPUTER_READ_FILE_LIMITS.parseMs);
+    expect(computerToolCallMs("computer_grep")).toBe(60_000);
   });
 });
 

@@ -1,4 +1,3 @@
-import sharp from "sharp";
 import { randomUUID, createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeThreadGeneratedImage, IMAGE_MAX_BYTES, IMAGE_MAX_INPUT_BYTES, IMAGE_MAX_INPUTS, IMAGE_MAX_PROMPT_CHARACTERS, IMAGE_MIME_TYPES, normalizeImageGenerationParameters, type ImageGenerationParameters, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
@@ -11,11 +10,10 @@ import { IMAGE_GENERATION_CALLS_PER_ANSWER, IMAGE_GENERATION_TOOL_NAME } from ".
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
 import { convertRasterForProvider, ProviderRasterConversionError, providerRasterNeedsConversion } from "../uploads/providerRasterConversion";
-import { extractImageMetadata } from "../uploads/imageMetadata";
-import { DEFAULT_PREVIEW_FIT, DIRECT_IMAGE_VIEW_LIMITS } from "../workspace/directImageView";
-import { StaticRasterError, validateStaticRaster } from "../uploads/staticRaster";
+import { DIRECT_IMAGE_VIEW_LIMITS } from "../workspace/directImageView";
 import type { ChatFileScope, ChatImagePreview } from "../tools/readChatFile";
-import { transformStaticImage, WorkspaceImageError, WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
+import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
+import { rasterPreview } from "./rasterPreview";
 import type { ProviderRunRequest, ProviderAttachment } from "../providers/types";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
@@ -167,27 +165,9 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       if (stored.body.length !== row.byteSize || row.checksum && hash(stored.body) !== row.checksum) {
         throw new ImageInputError("image_reference_invalid");
       }
-      try {
-        let bytes = providerRasterNeedsConversion(row.mimeType)
-          ? await convertRasterForProvider(stored.body, row.mimeType, WORKSPACE_IMAGE_LIMITS, boundedSignal) : stored.body;
-        if (row.mimeType === "image/gif") {
-          const gif = extractImageMetadata(bytes, row.mimeType);
-          if (gif.animated || gif.width * gif.height > WORKSPACE_IMAGE_LIMITS.maxPixels ||
-            Math.max(gif.width, gif.height) > WORKSPACE_IMAGE_LIMITS.maxDimension) throw new ImageInputError("image_reference_unsupported");
-          bytes = await sharp(bytes, { limitInputPixels: WORKSPACE_IMAGE_LIMITS.maxPixels, failOn: "warning" }).timeout({ seconds: 8 }).png().toBuffer();
-        }
-        const metadata = await validateStaticRaster(bytes, { ...WORKSPACE_IMAGE_LIMITS, mimeTypes: ["image/png", "image/jpeg", "image/webp"] },
-          { signal: boundedSignal });
-        const preview = await transformStaticImage(bytes, metadata, DEFAULT_PREVIEW_FIT, boundedSignal);
-        boundedSignal.throwIfAborted();
-        if (!await resolveChatAccess(prisma, scope)) return null;
-        return { bytes: preview.output, width: preview.dimensions.width, height: preview.dimensions.height, mimeType: "image/png" };
-      } catch (error) {
-        if (error instanceof StaticRasterError || error instanceof WorkspaceImageError || error instanceof ProviderRasterConversionError) {
-          throw new ImageInputError("image_reference_unsupported");
-        }
-        throw error;
-      }
+      const preview = await rasterPreview(stored.body, row.mimeType, boundedSignal);
+      if (!await resolveChatAccess(prisma, scope)) return null;
+      return { bytes: preview.bytes, width: preview.width, height: preview.height, mimeType: preview.mimeType };
     },
     async authorize(plan: AcceptedImageGenerationPlan): Promise<boolean> {
       try {
