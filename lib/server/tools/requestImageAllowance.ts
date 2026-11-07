@@ -1,7 +1,7 @@
 import { imageTokenEstimator } from "../../domain/imageTokenEstimate";
 import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import type { ProviderRunRequest } from "../providers/types";
-import { DIRECT_IMAGE_VIEW_LIMITS } from "../workspace/directImageView";
+import { DIRECT_IMAGE_VIEW_LIMITS } from "../workspace/directImageLimits";
 
 /** What one held preview adds to every request that carries it. */
 export type AllowanceSize = Readonly<{
