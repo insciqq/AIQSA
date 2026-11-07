@@ -166,6 +166,17 @@ describe("Run lifecycle v2", () => {
     expect(disclosure.querySelector(".v2-spinner")).toBeNull();
   });
 
+  it("does not call an answer that only attached a file from the user's computer Workspace work", () => {
+    const computer = { attachmentId: "computer-1", byteSize: 2_048, fileName: "report.pdf", mimeType: "application/pdf",
+      relativePath: "report.pdf", source: "computer" as const };
+    const toolActivity = { calls: [{ durationMs: 8_000, round: 1, status: "complete" as const, toolName: "computer_attach_file" }] };
+    render(<RunAnswerV2 artifact={{ citations: [], generatedFiles: [computer], sources: [], workDurationMs: 8_000 }}
+      content="Attached." toolActivity={toolActivity} presentation={presentation({ kind: "complete", runId: "run-attach" })} />);
+    const label = screen.getByTestId("tool-activity-disclosure").querySelector(".v2-answer-process-label");
+    expect(label).toHaveTextContent("Worked for 8s");
+    expect(label).not.toHaveTextContent("Workspace");
+  });
+
   it("names no duration from the tool steps until the answer has settled", () => {
     const toolActivity = { calls: [{ durationMs: 11_000, round: 1, status: "complete" as const, toolName: "web_search" }] };
     const { rerender } = render(<RunAnswerV2 content="Almost there" toolActivity={toolActivity}

@@ -1,6 +1,6 @@
 // Package api talks to the AIQSA device API under /connect-api/v1: pairing,
 // the device stream (SSE) and event batches. Requests carry the client
-// version header, never an Origin header and never cookies.
+// version and protocol 2 headers, never an Origin header and never cookies.
 package api
 
 import (
@@ -37,7 +37,7 @@ type Client struct {
 }
 
 // ErrPlainHTTPNotLocal refuses a plain http connection outside the local
-// network: the device token and the terminal would travel unencrypted.
+// network: the device token and the computer's files would travel unencrypted.
 var ErrPlainHTTPNotLocal error = plainHTTPError{}
 
 type plainHTTPError struct{}
@@ -153,6 +153,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body any) 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set(protocol.ClientVersionHeader, c.Version)
+	req.Header.Set(protocol.ProtocolHeader, strconv.Itoa(protocol.ProtocolVersion))
 	req.Header.Set("User-Agent", "aiqsa-connect/"+c.Version)
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
@@ -227,7 +228,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, want int, 
 }
 
 // marshal encodes JSON without HTML escaping, so `<`, `>` and `&` in
-// terminal text keep their one-byte size.
+// command output and file text keep their one-byte size.
 func marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)

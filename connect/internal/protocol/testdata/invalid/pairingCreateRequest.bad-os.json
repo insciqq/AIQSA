@@ -1,7 +1,7 @@
 {
   "name": "Work laptop",
   "hostname": "laptop.local",
-  "os": "windows",
+  "os": "freebsd",
   "arch": "amd64",
   "clientVersion": "0.3.20"
 }

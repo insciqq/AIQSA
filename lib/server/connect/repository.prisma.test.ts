@@ -224,7 +224,20 @@ describe("persisted AIQSA Connect devices", () => {
     expect(await prisma.connectDevice.count({ where: { userId } })).toBe(0);
     await expect(repository.findPairing(approved.id)).resolves.toBeNull();
     await expect(repository.deviceExists({ id: kept.id, userId: other })).resolves.toBe(true);
-    expect(relay.disconnectUser).toHaveBeenCalledWith(userId, { activeAuthSessionIds: [session.id] });
+    expect(relay.disconnectUser).toHaveBeenCalledWith(userId);
+  });
+
+  it("finds only the owner's device and lets a device delete itself by its token", async () => {
+    const userId = await account();
+    const other = await account();
+    const own = await device(userId);
+    const foreign = await device(other);
+
+    await expect(repository.findDevice({ id: own.id, userId })).resolves.toMatchObject({ id: own.id, userId });
+    await expect(repository.findDevice({ id: foreign.id, userId })).resolves.toBeNull();
+    await expect(repository.deleteDeviceByToken(own.tokenHash)).resolves.toEqual({ id: own.id, userId });
+    await expect(repository.deleteDeviceByToken(own.tokenHash)).resolves.toBeNull();
+    await expect(repository.deviceExists({ id: foreign.id, userId: other })).resolves.toBe(true);
   });
 });
 

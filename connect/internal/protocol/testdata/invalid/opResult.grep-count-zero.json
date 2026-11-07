@@ -1,0 +1,13 @@
+{
+  "op": "grep",
+  "result": {
+    "mode": "count",
+    "matches": [
+      {
+        "path": "/a",
+        "count": 0
+      }
+    ],
+    "truncated": false
+  }
+}

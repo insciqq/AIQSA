@@ -1,0 +1,12 @@
+{
+  "op": "grep",
+  "result": {
+    "mode": "files",
+    "matches": [
+      {
+        "path": "/home/ivan/notes.txt"
+      }
+    ],
+    "truncated": true
+  }
+}

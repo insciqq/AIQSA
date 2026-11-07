@@ -1,0 +1,10 @@
+{
+  "op": "glob",
+  "result": {
+    "paths": [
+      "C:\\Users\\ivan\\Documents\\a.pdf",
+      "/home/ivan/b.pdf"
+    ],
+    "truncated": false
+  }
+}

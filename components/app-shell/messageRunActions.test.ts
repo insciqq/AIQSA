@@ -262,6 +262,7 @@ function useMessageRunActionsForTest(input: {
   ) => Promise<ChatDetail | null>;
   refreshWorkspaceAvailability?: () => void;
   resolveCatalog?: () => Catalog | null;
+  resolveComputerOffered?: () => boolean;
   resolveWorkspaceInstallationAvailable?: () => boolean;
 }) {
   resetRunLifecycleStoreForTest();
@@ -366,6 +367,7 @@ function useMessageRunActionsForTest(input: {
     resolveCatalog: input.resolveCatalog,
     resolveWorkspaceInstallationAvailable: input.resolveWorkspaceInstallationAvailable,
     refreshWorkspaceAvailability: input.refreshWorkspaceAvailability,
+    resolveComputerOffered: input.resolveComputerOffered,
     resetThreadToLatest,
     setNotice,
     activeChatStreaming: input.activeChatStreaming ?? false
@@ -448,6 +450,115 @@ describe("message run actions", () => {
     useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { draft: "And a short follow-up" });
     await actions.submitComposer();
     expect(requestBody(fetchMock, 2)).not.toHaveProperty("deepResearch");
+  });
+
+  describe("the chat's computer", () => {
+    const WINDOWS_ID = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b";
+    const requestBody = (mock: ReturnType<typeof vi.fn>, index = 0) =>
+      JSON.parse(String((mock.mock.calls[index] as unknown as [string, RequestInit])[1].body)) as Record<string, unknown>;
+
+    it("sends the chosen computer, the chat's stored one, or an explicit none, and nothing while Connect is off", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const stored = { cwd: "C:\\Users\\dana\\Documents", deviceId: WINDOWS_ID };
+      let offered = true;
+      const actions = useMessageRunActionsForTest({
+        activeChat: { ...chat(), computer: stored },
+        attachments: [],
+        draft: "List the contracts",
+        resolveComputerOffered: () => offered
+      });
+
+      await actions.submitComposer();
+      expect(requestBody(fetchMock)).toMatchObject({ computer: stored });
+
+      const chosen = { cwd: "~/Reports", deviceId: WINDOWS_ID };
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { computerChoice: { binding: chosen }, draft: "Again" });
+      await actions.submitComposer();
+      expect(requestBody(fetchMock, 1)).toMatchObject({ computer: chosen });
+
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { computerChoice: { binding: null }, draft: "Without" });
+      await actions.submitComposer();
+      expect(requestBody(fetchMock, 2)).toHaveProperty("computer", null);
+
+      offered = false;
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { computerChoice: { binding: chosen }, draft: "Off" });
+      await actions.submitComposer();
+      expect(requestBody(fetchMock, 3)).not.toHaveProperty("computer");
+    });
+
+    it("sends no computer field in an Assistant chat or on a regenerate", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        activeChat: { ...chat(), computer: { cwd: "~", deviceId: WINDOWS_ID } },
+        attachments: [],
+        draft: "",
+        resolveComputerOffered: () => true
+      });
+      prepareRegenerationThread();
+      await actions.regenerateMessage("assistant-original");
+      expect(requestBody(fetchMock)).not.toHaveProperty("computer");
+
+      useComposerControlStore.setState({ assistant: boundComposerAssistantFixture({ id: "assistant-selected" }) });
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, {
+        computerChoice: { binding: { cwd: "~", deviceId: WINDOWS_ID } }, draft: "Hello"
+      });
+      await actions.submitComposer();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(requestBody(fetchMock, 1)).not.toHaveProperty("computer");
+    });
+
+    it("sends no computer field on the turn after an Allow, which continues the gated run's computer, and the chosen one on a Continue", async () => {
+      vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const chosen = { cwd: "~/Reports", deviceId: WINDOWS_ID };
+      const useChosenComputer = () => {
+        const actions = useMessageRunActionsForTest({
+          activeChat: { ...chat(), computer: { cwd: "~", deviceId: WINDOWS_ID } },
+          attachments: [],
+          draft: "",
+          resolveComputerOffered: () => true
+        });
+        useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { computerChoice: { binding: chosen } });
+        prepareRegenerationThread();
+        return actions;
+      };
+
+      expect(await useChosenComputer().sendMcpApprovalContinuation({ approvalId: "approval-1", serverName: "Records",
+        toolName: "delete_record" })).toBe("started");
+      expect(requestBody(fetchMock)).toMatchObject({ systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } });
+      expect(requestBody(fetchMock)).not.toHaveProperty("computer");
+
+      expect(await useChosenComputer().sendContinueTurn()).toBe("started");
+      expect(requestBody(fetchMock, 1)).toMatchObject({ computer: chosen });
+    });
+
+    it.each([
+      ["connect_device_unavailable", "no longer connected to your account", ["choose_computer", "stop_using_computer"]],
+      ["connect_disabled", "AIQSA Connect is turned off", ["stop_using_computer"]],
+      ["computer_unavailable_here", "cannot be used in this chat", ["stop_using_computer"]]
+    ] as const)("names a %s refusal with its way out and keeps the draft", async (code, copy, recoveries) => {
+      const fetchMock = vi.fn(async () => Response.json({ error: code }, { status: 409 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        activeChat: { ...chat(), computer: { cwd: "~", deviceId: WINDOWS_ID } },
+        attachments: [],
+        draft: "Find the invoices",
+        resolveComputerOffered: () => true
+      });
+      await actions.submitComposer();
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        draft: "Find the invoices",
+        operationError: expect.stringContaining(copy),
+        operationErrorRecoveries: recoveries
+      });
+
+      // Removing the computer answers the refusal: its message and actions go.
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { computerChoice: { binding: null } });
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({ operationError: null, operationErrorRecoveries: [] });
+    });
   });
 
   it("consumes an admitted artifact edit before the answer arrives without releasing send or consuming the next intent", async () => {

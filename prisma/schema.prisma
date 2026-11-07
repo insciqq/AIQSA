@@ -204,6 +204,8 @@ enum AttachmentOrigin {
   WORKSPACE_OUTPUT
   WORKSPACE_EXPORT
   IMAGE_OUTPUT
+  /// A file the agent attached to its answer from the user's computer (`computer_attach_file`, `lib/server/connect/computerOutputs.ts`).
+  COMPUTER_OUTPUT
 }
 
 enum ArtifactKind {
@@ -2494,6 +2496,13 @@ model Chat {
   /// task's history retention keeps such a chat.
   ownerKeptAt                     DateTime?
   workspaceEnabled                Boolean              @default(false)
+  /// The owner's last computer choice for the chat's next messages (AIQSA
+  /// Connect), written when a message is admitted with the send field. No
+  /// foreign key: a removed or revoked device stays named here, so the chat
+  /// shows it as removed instead of silently forgetting the choice. SQL checks
+  /// keep both columns null or both set and bound the folder.
+  computerDeviceId                String?
+  computerCwd                     String?
   /// Retired (Answer Review removed 2026-10-25): nothing reads or writes it;
   /// dropped in a later release.
   answerReviewConfig              Json?

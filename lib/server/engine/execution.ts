@@ -33,10 +33,13 @@ import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
 import { MANAGE_PROXY_TOOL_NAME, manageProxyValues } from "../tools/manageProxy";
 import { MANAGE_SECRET_TOOL_NAME, manageSecretValues } from "../tools/manageSecret";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
+import { decodeFrozenComputerBinding } from "../tools/computerBinding";
+import { getComputerOps } from "../connect/computerPort";
 import { invalidProviderToolArguments, type ModelToolCall, type RunTool } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import { browserLiveRelay, type BrowserLiveRunHandle } from "../workspace/browserLive";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { rendersToolResultImages } from "../workspace/directImageView";
 import { getAuthConfig } from "../auth/config";
 import type { BrowserHandoffMode } from "../tools/browserHandoff";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -343,6 +346,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   const scope = { assistantMessageId: input.created.assistantMessageId, chatId: normalizedRequest.chatId, runId, userId: input.userId };
   const snapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
   const workspace = normalizedRequest.workspace;
+  // The user's computer admission froze for the run: whatever ends a run of it (or a background turn's own run), the
+  // computer stops the processes and background jobs that run started there, once (`run_ended`). It never throws or waits.
+  const computer = decodeFrozenComputerBinding(normalizedRequest.computer);
+  const computerRunEnded = computer ? (endedRunId: string) => {
+    try {
+      (input.services.computer ?? getComputerOps()).runEnded({ deviceId: computer.deviceId, runId: endedRunId, userId: input.userId });
+    } catch {
+      // The port's own contract: ending a run never fails the run.
+    }
+  } : null;
   const startedAt = now();
   // Fixed for a run, except that a research plan's release moves it once (`extendTurn`). Everything below reads it when it
   // needs it, so nothing keeps the old end. An object literal that carries the end does so through a getter.
@@ -596,7 +609,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           loadMcpBindingRows: () => engine.mcpBindingRows(runId),
           mcpBindings,
           onUsage: (attribution: RunUsageAttribution) => usage.add(attribution),
+          ...(input.scheduled ? { scheduled: true as const } : {}),
           ...(input.telegram ? { telegram: true as const } : {}),
+          // A call on the user's computer never waits past the main agent's tool time.
+          toolTimeLeftMs: () => toolTimeEndsAt - now(),
           runId,
           services: { ...input.services, mcpRuntime: input.mcpRuntime, repository: input.repository, savedResults: engine.savedResults,
             workspace: input.workspace },
@@ -615,7 +631,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           fetchUrlEarlierRunIds: input.scheduled ? [] : branchRunIds,
           fetchUrlResearch: async (signal) => research?.holding() ? research.unreachableSites(signal) : null,
           followupTexts: () => delivered,
-          onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base });
+          onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base,
+          ...(rendersToolResultImages(snapshot.model.adapterKind) ? { resultImages: true as const } : {}) });
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
         const toolState: ToolBatchState = { calls: 0 };
         const saveResult: ToolBatchDeps["saveResult"] = async (save) => saveToolResultText({ outcome: save.outcome,
@@ -638,6 +655,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           },
           recordDetachedCompaction: (backgroundRunId, { item, sequence, thread }) =>
             engine.runs.recordDetachedCompaction(backgroundScope(backgroundRunId), { item, sequence, status: null, thread }),
+          ...(computerRunEnded ? { runEnded: computerRunEnded } : {}),
           saveResult: (backgroundRunId) => async (save) => saveToolResultText({ outcome: save.outcome,
             producer: { runId: backgroundRunId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
             signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
@@ -665,12 +683,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             agent: agentInput.agent,
             ...(subagentHandoff(agentInput.agent, agentInput.host) ?? {}),
             ...(agentInput.host ? { onUsage: agentInput.host.onUsage, runId: agentInput.host.runId } : {}),
+            // A sub-agent's calls on the user's computer end with its own tool time: its background turn's, or the sub-agents'.
+            toolTimeLeftMs: () => agentInput.host ? agentInput.host.toolTimeLeftMs() : agentToolTimeEndsAt - now(),
             ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),
             // Read at each build: the run's research is made after this input, and before any sub-agent's turn.
             ...(research ? { researchEvidence: researchEvidenceTarget(research), researchFrame: researchFrameTarget(research) } : {}),
             followupTexts: agentInput.followupTexts,
             // A sub-agent's outputs stay its own; the answer shows its steps under its call.
             onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
+            // The sub-agent's own route decides whether its requests carry result images.
+            ...(agentInput.resultImages ? { resultImages: true as const } : {}),
             services: { ...registryInput.services, ...(input.services.selfService
               ? { selfService: { ...input.services.selfService, tools: [READ_AIQSA_GUIDE_TOOL_NAME] } } : {}) } }),
           budgets, callTimeLeft: agentCallTimeLeft, chatId: scope.chatId, deadline: deadline.signal,
@@ -1167,6 +1189,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         else await chatUpdate();
       } finally {
         setRunProviderWait(runId, null);
+        computerRunEnded?.(runId);
         void live?.end("run_finished");
         // Its background turns keep their host for a grace, so one still attaching starts (`backgroundRunner.ts`).
         runSubagents?.releaseBackgroundHost();

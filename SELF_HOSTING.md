@@ -131,16 +131,23 @@ The journald driver cannot start containers on a host without systemd-journald. 
 
 ## AIQSA Connect
 
-AIQSA Connect lets each user open terminal sessions on their own computer from AIQSA, for example to run Claude Code or Codex there and answer them from a phone. It is **off by default**: it is a remote command line on your users' machines. Turn it on in **Admin → AIQSA Connect**. While it is off the mode is hidden, connected computers are disconnected and the client downloads answer "not found".
+AIQSA Connect lets the chat agent work on your users' own computers. A user connects a computer, picks it and a starting folder in a chat (**+ → Use a computer…**), and the agent then runs commands there and reads, searches, creates and edits files with that user's permissions. In this version it has **full access without approvals or a sandbox**: text the agent reads (web pages, files, tool results) can steer it to delete, change or send away the user's files, and whoever operates this server can run commands on every connected computer. AIQSA accepts that risk in this first version; turn the feature on only if you accept it too. Only the computer's owner can use it in AIQSA, administrators included; scheduled tasks, webhooks, Telegram and Assistant chats never get a computer.
 
-Nothing else changes on the server: no new service, port, container or environment variable. The client and the browser talk to the app through the same origin with Server-Sent Events and ordinary requests (no WebSocket), and the image already contains the client binaries. The reverse proxy must:
+It is **off by default**. Turn it on in **Admin → AIQSA Connect**. While it is off, "Use a computer…" is hidden, connected computers are disconnected and the client downloads answer "not found".
+
+Nothing else changes on the server: no new service, port, container or environment variable. The client talks to the app through the same origin with Server-Sent Events and ordinary requests (no WebSocket), and the image already contains the client binaries. The reverse proxy must:
 
 - forward `/connect-api/`, `/connect/install.sh`, `/connect/checksums.txt` and `/connect/download/` like the rest of AIQSA (the client authenticates with its own device token, so these paths have no session cookie);
 - keep event streams open for hours and pass them unbuffered: the app sends a heartbeat every 15 seconds, so an upstream read timeout of 60 seconds or more is enough. The app sends `X-Accel-Buffering: no`, which nginx honors unless `proxy_ignore_headers` drops it; other proxies need buffering and compression of `text/event-stream` turned off.
 
-Users install the client from the command shown in AIQSA Connect (`curl -fsSL https://ai.example.com/connect/install.sh | sh`), then run `aiqsa-connect login https://ai.example.com`. Client requirements: macOS, Linux or WSL on amd64 or arm64 and tmux 3.2 or newer. The client follows the server's version by itself after each AIQSA update. Without HTTPS it works over `http://` on a local network only, unencrypted, and browsers then turn off notifications and dictation. The [client guide](connect/README.md) covers installation, the background service, updates and troubleshooting.
+Supported computers: Windows 10 and 11, macOS and Linux (WSL included), on x64 or ARM64. Users add a computer on the **AIQSA Connect** page (`/connect`):
 
-The server relays terminal traffic between a user's computer and their browser in memory and never stores or logs it, but whoever operates the server could technically read it or type into those sessions; the client guide tells users so. Only the computer's owner can open its sessions in AIQSA; administrators cannot.
+- **Windows:** they download `AIQSA Connect - <host>.exe`, named after this installation's address (from `AIQSA_APP_BASE_URL`), and open it. The client is **not signed**, so SmartScreen shows "Windows protected your PC" and users choose **More info → Run anyway**. It installs for the user without administrator rights, starts at sign-in, shows its status in the notification area and is removed in Settings → Apps. The browser then opens AIQSA to approve the computer with a code.
+- **macOS and Linux:** `curl -fsSL https://ai.example.com/connect/install.sh | sh`, then `aiqsa-connect login https://ai.example.com` and `aiqsa-connect service install`.
+
+The client follows the server's version by itself after each AIQSA update and checks the SHA-256 of every download. Without HTTPS it works over `http://` only when the address is on the local network (loopback, private, link-local or Tailscale), and then unencrypted. Clients from the earlier terminal version update themselves; users remove their old Claude Code and Codex hooks with `aiqsa-connect setup --remove`. The [client guide](connect/README.md) covers installation, use in a chat, updates, removal and troubleshooting for users.
+
+The server relays the agent's requests and the computer's answers in memory and never stores or logs them. Command output and file contents the agent reads become the chat's tool results: they are kept with the chat and sent to the chat's model provider like any tool result.
 
 ## Sign-in methods
 

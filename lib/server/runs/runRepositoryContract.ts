@@ -113,6 +113,8 @@ export type RunChatUpdateRecord = {
   chat: {
     titlePending?: boolean;
     activeLeafMessageId: string | null;
+    /** The owner's computer choice (`WorkspaceChatSummary.computer`); absent reads as none. */
+    computer?: import("../../contracts/computer").ChatComputerBinding | null;
     contextStats: ChatContextStats;
     createdAt: Date | string;
     defaultModelId: string | null;
@@ -485,6 +487,8 @@ export type CreateRunInput = {
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
   chatAssistant?: AcceptedChatAssistant;
+  /** The chat's computer choice to store with the run: a binding, or null to clear it; absent leaves it as it is. */
+  chatComputer?: import("../../contracts/computer").ChatComputerBinding | null;
   chatId: string;
   content: { blocks: unknown[] };
   defaults?: AcceptedRunDefaults;
@@ -535,6 +539,8 @@ export type CreateRegenerationRunInput = {
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
   chatAssistant?: AcceptedChatAssistant;
+  /** An edited message's first run may change the chat's computer choice as a send does; a regenerate never does. */
+  chatComputer?: import("../../contracts/computer").ChatComputerBinding | null;
   chatId: string;
   defaults?: AcceptedRunDefaults;
   mcpBindings?: McpRunPlanBinding[];
@@ -638,6 +644,8 @@ export type RunOwnedChatRecord = Readonly<{
   assistantId?: string | null;
   /** Raw `Chat.assistantOverrides`, decoded by admission. */
   assistantOverrides?: unknown;
+  /** The owner's last computer choice (`Chat.computerDeviceId`, `Chat.computerCwd`): only what a turn that cannot use it says. */
+  computer?: import("../../contracts/computer").ChatComputerBinding | null;
   defaultModelId: string;
   defaultProvider: string;
   folderId?: string | null;
@@ -743,6 +751,12 @@ export type RunRepository = {
     deepResearch?: true;
     /** `true` when the question is the server's turn after an Allow in a research (`researchedRuns`), which refuses the regenerate too. */
     researchApproval?: true;
+    /**
+     * The computer the run being repeated was admitted with (`NormalizedRunRequest.computer`), null for none: a regenerate
+     * keeps it whatever the request says. Absent when the message has no run yet (an edited message's first run), whose
+     * request then chooses as a send does.
+     */
+    computer?: import("../tools/computerBinding").FrozenComputerBinding | null;
     assistantMessage: {
       id: string;
       modelId: string | null;
@@ -893,8 +907,11 @@ export type RunRepository = {
   /**
    * The approval a continuation turn names, while it may continue: the
    * user's own Allow in this chat within the approval window; null otherwise.
+   * `computer` is the gated run's frozen computer (`NormalizedRunRequest.computer`), null for none: the turn continues
+   * that run, so it keeps that binding whatever its body says (`computerAdmission.ts`); absent reads as none.
    */
   loadMcpApprovalContinuation?(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
+    computer?: import("../tools/computerBinding").FrozenComputerBinding | null;
     serverName: string; toolName: string;
   }> | null>;
   /** The approval cards of a run, as its initiator's live stream shows them. */

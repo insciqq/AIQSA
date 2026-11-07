@@ -1,0 +1,9 @@
+{
+  "op": "job_output",
+  "result": {
+    "running": true,
+    "stdout": "listening on :3000\n",
+    "stderr": "",
+    "truncated": false
+  }
+}

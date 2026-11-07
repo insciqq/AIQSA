@@ -23,8 +23,12 @@ const OTHER_RUNS = 20_000;
 // outlive, with headroom for a loaded runner; the statement count and the
 // absence of P2028 are the structural proof.
 const OPEN_BUDGET_MS = 4_000;
-// Measured 36; it must not grow with the chat's length.
-const OPEN_STATEMENTS_MAX = 40;
+// Measured 40 on 2026-11-07 (41 before the Deep research marks read a run's
+// own research in one statement); it must not grow with the chat's length.
+// The marks add a constant six to every open (`loadDeepResearchMarks`): the
+// page's questions sent with it, and one read of the page's runs with its
+// relation loads; only a research's chain off the page reads further, bounded.
+const OPEN_STATEMENTS_MAX = 44;
 
 const fragments = [
   "The quick brown fox jumps over the lazy dog, then reads the log output again. ",

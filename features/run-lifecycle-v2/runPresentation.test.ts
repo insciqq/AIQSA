@@ -154,6 +154,43 @@ describe("research's steps", () => {
   });
 });
 
+describe("steps on the user's computer", () => {
+  const step = (toolName: string, summary?: string) => ({ origin: "computer", toolName, ...(summary ? { summary } : {}) });
+  const live = (payload: Record<string, unknown>): RunEventView => ({ type: "artifact", data: { artifactType: "tool_call",
+    payload: { ordinal: 0, origin: "computer", round: 1, ...payload } } });
+
+  it("say what was run, read, written, edited or searched, in every state", () => {
+    const phases = ["running", "settled", "failed", "cancelled"] as const;
+    expect(phases.map((phase) => describeToolCallV2(step("computer_shell", "npm test"), phase)))
+      .toEqual(["Running npm test", "Ran npm test", "Could not run npm test", "Stopped npm test"]);
+    expect(describeToolCallV2(step("computer_read", "C:\\Reports\\q3.docx"), "settled")).toBe("Read C:\\Reports\\q3.docx");
+    expect(describeToolCallV2(step("computer_edit", "summary.md"), "settled")).toBe("Edited summary.md");
+    expect(describeToolCallV2(step("computer_write", "summary.md"), "failed")).toBe("Could not write summary.md");
+    expect(describeToolCallV2(step("computer_grep", "invoice"), "settled")).toBe("Searched invoice");
+    expect(describeToolCallV2(step("computer_glob", "*.pdf"), "running")).toBe("Searching *.pdf");
+    expect(describeToolCallV2(step("computer_job_output"), "settled")).toBe("Checked background job");
+    expect(describeToolCallV2(step("computer_job_stop"), "settled")).toBe("Stopped background job");
+    // A summary the contract would refuse is never shown.
+    expect(describeToolCallV2(step("computer_read", "a\u0000b"), "settled")).toBe("Read");
+    expect(toolActivityOriginV2(step("computer_shell"))).toBe("computer");
+  });
+
+  it("name the command on the live line and keep its exit code once it ends", () => {
+    const requested = live({ name: "computer_shell", status: "requested", summary: "npm test" });
+    expect(presentRunLifecycleV2(state({ events: [requested], runId: "run", status: "streaming" })).activity?.label)
+      .toBe("Running npm test…");
+    const settled = live({ durationMs: 900, exitCode: 1, name: "computer_shell", status: "complete", summary: "npm test" });
+    expect(presentToolActivityV2([requested, settled])?.calls).toEqual([
+      expect.objectContaining({ durationMs: 900, exitCode: 1, origin: "computer", status: "complete", summary: "npm test", toolName: "computer_shell" })
+    ]);
+    // Only computer steps carry these facts.
+    const other = { data: { artifactType: "tool_call", payload: { exitCode: 3, name: "search_web", ordinal: 0, origin: "web_search",
+      round: 1, status: "requested", summary: "secret" } }, type: "artifact" } satisfies RunEventView;
+    expect(presentToolActivityV2([other])?.calls[0]).not.toHaveProperty("summary");
+    expect(presentToolActivityV2([other])?.calls[0]).not.toHaveProperty("exitCode");
+  });
+});
+
 describe("native Memory search activity", () => {
   const event = (payload: Record<string, unknown>): RunEventView => ({ type: "artifact",
     data: { artifactType: "memory_search_activity", payload: { call: 1, round: 1, ...payload } } });

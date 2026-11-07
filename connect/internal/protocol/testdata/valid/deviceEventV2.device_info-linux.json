@@ -1,0 +1,12 @@
+{
+  "type": "device_info",
+  "os": "linux",
+  "osVersion": "Ubuntu 24.04.1 LTS",
+  "arch": "arm64",
+  "hostname": "studio",
+  "home": "/home/ivan",
+  "shell": {
+    "kind": "posix",
+    "name": "sh"
+  }
+}

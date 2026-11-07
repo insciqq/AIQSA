@@ -1286,6 +1286,7 @@ export function PowerAppShellV2({
     resolveCatalog: () => runCatalogRef.current,
     resolveWorkspaceInstallationAvailable: () => workspaceInstallationRef.current?.available === true,
     refreshWorkspaceAvailability: readWorkspaceAvailability,
+    resolveComputerOffered: () => connectEntryVisible,
     resetThreadToLatest,
     setNotice,
     activeChatStreaming,

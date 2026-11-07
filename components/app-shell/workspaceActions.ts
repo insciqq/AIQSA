@@ -208,6 +208,7 @@ export function useWorkspaceActions({
       ...(detail.importSource ? { importSource: detail.importSource } : {}),
       ...(detail.importSourceModel ? { importSourceModel: detail.importSourceModel } : {}),
       activeLeafMessageId: detail.activeLeafMessageId,
+      ...(detail.computer !== undefined ? { computer: detail.computer } : {}),
       createdAt: detail.createdAt,
       ...(detail.defaultSearchPlan ? { defaultSearchPlan: detail.defaultSearchPlan } : {}),
       defaultModelId: detail.defaultModelId,

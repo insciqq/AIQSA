@@ -2,7 +2,12 @@
 // its AIQSA server offers: it reads the server's client manifest, downloads
 // this computer's binary from the same origin, checks it against the
 // server's checksums.txt, makes sure it runs and reports that version, and
-// renames it over the current binary.
+// puts it in place of the current binary. On macOS and Linux it renames the
+// download over the binary. Windows cannot replace a running program file,
+// so there the download lands beside it (NewPath), the running file is
+// renamed to <exe>.old and the download takes its name (spec D-14); the
+// caller then starts the new file and exits, and the next start removes
+// <exe>.old.
 package update
 
 import (
@@ -84,9 +89,19 @@ type Client struct {
 	HTTP *http.Client
 }
 
-// Target is the binary this computer runs.
+// Target is the binary this computer runs: Windows, macOS or Linux on
+// amd64 or arm64. Its release file name is protocol.ClientBinaryName, with
+// .exe on Windows.
 func Target() (protocol.OS, protocol.Arch, error) {
-	goos, arch := protocol.OS(runtime.GOOS), protocol.Arch(runtime.GOARCH)
+	return targetFor(runtime.GOOS, runtime.GOARCH)
+}
+
+// currentTarget is the target Install looks for; tests switch it to
+// another system's.
+var currentTarget = Target
+
+func targetFor(goosName, goarch string) (protocol.OS, protocol.Arch, error) {
+	goos, arch := protocol.OS(goosName), protocol.Arch(goarch)
 	for _, known := range protocol.OSValues {
 		if known == goos {
 			for _, knownArch := range protocol.ArchValues {
@@ -105,6 +120,9 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set(protocol.ClientVersionHeader, c.Version)
+	// Without it the server answers as to a protocol 1 client, whose
+	// manifest lists no Windows binary.
+	req.Header.Set(protocol.ProtocolHeader, strconv.Itoa(protocol.ProtocolVersion))
 	req.Header.Set("User-Agent", "aiqsa-connect/"+c.Version)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -186,7 +204,7 @@ type Result struct {
 func (c *Client) Install(ctx context.Context, executable, want string) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, DownloadTimeout)
 	defer cancel()
-	osName, arch, err := Target()
+	osName, arch, err := currentTarget()
 	if err != nil {
 		return Result{}, err
 	}
@@ -219,7 +237,7 @@ func (c *Client) Install(ctx context.Context, executable, want string) (Result, 
 	}
 
 	dir := filepath.Dir(executable)
-	tmp, err := os.CreateTemp(dir, ".aiqsa-connect.update-*")
+	tmp, err := createStaging(executable)
 	if err != nil {
 		if errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS) {
 			return Result{}, fmt.Errorf("%w: %s", ErrNotWritable, dir)
@@ -268,7 +286,13 @@ func (c *Client) Install(ctx context.Context, executable, want string) (Result, 
 	} else if got != manifest.Version {
 		return Result{}, permanentError{fmt.Errorf("the downloaded aiqsa-connect reports version %s, not %s", strconv.Quote(got), manifest.Version)}
 	}
-	if err := os.Rename(tmpName, executable); err != nil {
+	if renameAside {
+		// A failure here (for example an older .old still running) may pass
+		// on a later attempt, so it is not reported as ErrNotWritable.
+		if err := SwapIn(tmpName, executable); err != nil {
+			return Result{}, err
+		}
+	} else if err := os.Rename(tmpName, executable); err != nil {
 		if errors.Is(err, fs.ErrPermission) {
 			return Result{}, fmt.Errorf("%w: %s", ErrNotWritable, dir)
 		}
@@ -280,6 +304,77 @@ func (c *Client) Install(ctx context.Context, executable, want string) (Result, 
 		d.Close()
 	}
 	return Result{Version: manifest.Version, Path: executable}, nil
+}
+
+// renameAside selects the Windows way of replacing the running binary;
+// tests switch it on to check that way on any system.
+var renameAside = runtime.GOOS == "windows"
+
+// NewPath is where a Windows update is downloaded: beside the binary, as
+// aiqsa-connect.new.exe, so the check that runs it keeps the .exe
+// extension Windows starts programs by.
+func NewPath(executable string) string {
+	if base, ok := strings.CutSuffix(executable, ".exe"); ok {
+		return base + ".new.exe"
+	}
+	return executable + ".new"
+}
+
+// OldPath is where a Windows update moves the binary it replaces.
+func OldPath(executable string) string { return executable + ".old" }
+
+// createStaging creates the file the download is written to: a private
+// temporary file beside the binary, or NewPath on Windows.
+func createStaging(executable string) (*os.File, error) {
+	if !renameAside {
+		return os.CreateTemp(filepath.Dir(executable), ".aiqsa-connect.update-*")
+	}
+	path := NewPath(executable)
+	// A download left by an interrupted attempt is replaced.
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+}
+
+// SwapIn puts newPath in place of executable while executable may be
+// running, as Windows requires: executable becomes <exe>.old (a running
+// program file can be renamed but not overwritten or removed), then newPath
+// takes its name. When the second rename fails, the first is undone. A
+// missing executable is simply replaced. A stale <exe>.old is removed first;
+// if that fails (an older process still runs from it), nothing changes.
+func SwapIn(newPath, executable string) error {
+	old := OldPath(executable)
+	if err := os.Remove(old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("cannot remove the previous version of aiqsa-connect: %w", err)
+	}
+	movedAside := true
+	if err := os.Rename(executable, old); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("cannot move the running aiqsa-connect aside: %w", err)
+		}
+		movedAside = false
+	}
+	if err := os.Rename(newPath, executable); err != nil {
+		if movedAside {
+			os.Rename(old, executable)
+		}
+		return fmt.Errorf("cannot put the new aiqsa-connect in place: %w", err)
+	}
+	if d, err := os.Open(filepath.Dir(executable)); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
+}
+
+// RemoveStaleOld removes the <exe>.old a Windows update left behind. It
+// fails quietly while the old process still runs from it; the next start
+// tries again.
+func RemoveStaleOld(executable string) {
+	if executable != "" {
+		os.Remove(OldPath(executable))
+	}
 }
 
 func reportedVersion(ctx context.Context, path string) (string, error) {

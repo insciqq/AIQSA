@@ -1,0 +1,22 @@
+{
+  "event": "hello",
+  "data": {
+    "protocol": 2,
+    "deviceId": "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11",
+    "serverVersion": "0.5.0",
+    "minClientVersion": "0.5.0",
+    "limits": {
+      "maxEventsPerPost": 64,
+      "maxEventsBodyBytes": 1048576,
+      "maxReplyBytes": 524288,
+      "maxWriteBytes": 1048576,
+      "maxConcurrentOps": 16,
+      "maxJobs": 8,
+      "maxShellTimeoutSeconds": 600,
+      "maxRecentDirs": 20,
+      "maxListDirs": 500,
+      "heartbeatSeconds": 15,
+      "maxViews": 8
+    }
+  }
+}

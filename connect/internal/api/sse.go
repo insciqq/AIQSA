@@ -11,9 +11,9 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
 
-// MaxEventBytes bounds one SSE event's data (a view_input command carries at
-// most 64 KiB of input, which JSON escaping can grow several times).
-const MaxEventBytes = 4 << 20
+// MaxEventBytes bounds one SSE event's data: an edit op carries up to 2 MiB
+// of text (old and new string), which JSON escaping can grow several times.
+const MaxEventBytes = 16 << 20
 
 // ErrEventTooLarge is returned for an SSE event above MaxEventBytes.
 var ErrEventTooLarge = errors.New("stream event too large")

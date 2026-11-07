@@ -50,5 +50,14 @@
   "stop_subagent": "other",
   "create_subagent": "other",
   "edit_subagent": "other",
-  "delete_subagent": "other"
+  "delete_subagent": "other",
+  "computer_shell": "computer",
+  "computer_job_output": "computer",
+  "computer_job_stop": "computer",
+  "computer_read": "computer",
+  "computer_write": "computer",
+  "computer_edit": "computer",
+  "computer_glob": "computer",
+  "computer_grep": "computer",
+  "computer_attach_file": "computer"
 }

@@ -1023,6 +1023,11 @@ export async function admitPreparingRunWithClient(
         throw new ActiveLeafConflictError();
       }
       if (input.chatAssistant) await applyAcceptedChatAssistant(tx, input.chatId, input.chatAssistant);
+      // The owner's computer choice for the chat's next messages, stored with the message that made it (`computerAdmission.ts`).
+      if (input.chatComputer !== undefined) {
+        await tx.chat.update({ data: { computerCwd: input.chatComputer?.cwd ?? null, computerDeviceId: input.chatComputer?.deviceId ?? null },
+          where: { id: input.chatId } });
+      }
       const workspaceFollowup = await prepareWorkspaceFollowupAdmission(tx, input, lockedChat.memoryMode !== "TEMPORARY");
 
       let assistantMessageId: string;

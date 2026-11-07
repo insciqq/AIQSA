@@ -14,6 +14,7 @@ export function serializeChatUpdate(
   return {
     chat: {
       activeLeafMessageId: update.chat.activeLeafMessageId,
+      ...(update.chat.computer !== undefined ? { computer: update.chat.computer } : {}),
       contextStats: update.chat.contextStats,
       createdAt: iso(update.chat.createdAt),
       defaultModelId: update.chat.defaultModelId,

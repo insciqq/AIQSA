@@ -34,6 +34,13 @@ import {
 import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
+import { decodeFrozenComputerBinding } from "../tools/computerBinding";
+import { executeComputerAttachFile } from "../tools/computerAttachFile";
+import { createComputerReadFiles } from "../tools/computerReadFiles";
+import { createRequestImageAllowance } from "../tools/requestImageAllowance";
+import { computerEngineTools } from "../tools/computerTools";
+import type { ComputerOps } from "../connect/computerPort";
+import type { ComputerOutputStore } from "../connect/computerOutputs";
 import { createFetchUrlSession, type FetchUrlBrowserStep, type FetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
 import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
@@ -95,6 +102,10 @@ import { IMAGE_ANALYZE_NOTE, IMAGE_REFERENCE_NOTE, IMAGE_VIEW_NOTE, type Transcr
  * self-service tools (`SELF_SERVICE_TOOLS`) on those of interactive personal
  * and temporary chats, whose handler gives their owners. A monitoring
  * check's verdict is the run's reserved report (`toolBatch.ts`, `loop.ts`).
+ * The `computer_*` tools ride on a run admission bound to the user's computer
+ * (`NormalizedRunRequest.computer`), whether or not it is online, and never on
+ * a Telegram, scheduled, monitoring or Assistant run, which admission already
+ * refuses and the registry checks again (`computerTools.ts`).
  */
 export type EngineToolEffects = HarnessToolEffects;
 
@@ -170,10 +181,10 @@ export type ToolRegistry = Readonly<{
   browser?: true;
   definitions(): readonly RunTool[];
   /**
-   * The Workspace previews this run viewed itself (`view_workspace_image`),
-   * which its requests carry with their results, and how a result image they
-   * do not carry is seen again; absent where the run offers neither direct
-   * view nor System Vision.
+   * The previews this run viewed itself (`view_workspace_image`, `read_chat_file`,
+   * `computer_read`), which its requests carry with their results, and how a
+   * Workspace result image they do not carry is seen again; absent where the
+   * run offers none of them nor System Vision.
    */
   images?: TranscriptImages;
   /**
@@ -224,6 +235,10 @@ export type ToolRegistryServices = Readonly<{
   runProxies?: FetchUrlSessionDeps["runProxies"];
   images?: Pick<ImageGenerationService, "execute" | "withConversationPixels"> & Partial<Pick<ImageGenerationService, "readConversationImage">>;
   chatFiles?: ChatFileReader;
+  /** Test seam of the computer port; absent, the process's (`getComputerOps`), read at each call. */
+  computer?: ComputerOps;
+  /** Where `computer_attach_file` puts files on the answer; absent, the tool is not offered. */
+  computerOutputs?: ComputerOutputStore;
   mcp?: Readonly<{
     filterTools: McpToolAccessFilter;
     materialize?(userId: string, tools: readonly Readonly<{ namespacedName: string; revisionId: string; serverId: string }>[]):
@@ -291,10 +306,19 @@ export type ToolRegistryInput = Readonly<{
   researchEvidence?: RecordEvidenceTarget;
   /** Where `change_research_frame` writes, bound as `researchEvidence` is. Absent, the tool is not offered. */
   researchFrame?: ChangeResearchFrameTarget;
+  /**
+   * This agent's answer route carries a tool result's image (`rendersToolResultImages`): only then do `read_chat_file`
+   * and `computer_read` show an image to a vision model, since elsewhere its pixels would never reach it.
+   */
+  resultImages?: true;
   runId: string;
+  /** A scheduled task's occurrence (a schedule, a webhook or a monitoring check): it never works on the user's computer. */
+  scheduled?: true;
   services: ToolRegistryServices;
   /** A Telegram turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
   telegram?: true;
+  /** How long this agent's tool time still lasts; a call on the user's computer never waits past it. Absent: its own bound. */
+  toolTimeLeftMs?(): number;
   userId: string;
 }>;
 
@@ -413,6 +437,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   // A result image the run's requests do not carry is named with the way this run can see it again.
   let images: TranscriptImages | undefined;
+  // One request's image room for every tool whose results carry previews: count, bytes and window share are the request's.
+  const imageAllowance = createRequestImageAllowance(request);
   for (const definition of analyzeImageTools(request)) {
     if (definition.name !== ANALYZE_IMAGE_TOOL_NAME || !input.services.vision) continue;
     const service = input.services.vision;
@@ -424,7 +450,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   // Direct view, frozen at admission with the chat model's verified vision: the run's requests carry its own
   // previews as image content of their results (`directImageView.ts`).
   if (clientTools && request.workspaceImageView === true && request.workspace && input.services.workspace) {
-    const viewer = createWorkspaceImageViewer({ captures: input.services.workspaceImageCaptures ?? defaultWorkspaceImageCaptures,
+    const viewer = createWorkspaceImageViewer({ allowance: imageAllowance,
+      captures: input.services.workspaceImageCaptures ?? defaultWorkspaceImageCaptures,
       ...(prepareWorkspace ? { prepareWorkspace } : {}), request, runId: input.runId, userId: input.userId });
     add({ activity: named(viewWorkspaceImageTool, "Workspace"), definition: viewWorkspaceImageTool, effects: "none",
       observationSource: "workspace", execute: (execution) => viewer.execute(execution.call, execution, execution.signal) });
@@ -432,7 +459,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
 
   if (!request.workspace) {
-    const files = createChatFileTool({ request, runId: input.runId, userId: input.userId,
+    const files = createChatFileTool({ allowance: imageAllowance, request, runId: input.runId, userId: input.userId,
+      resultImages: input.resultImages === true,
       reader: input.services.chatFiles, readImage: input.services.images?.readConversationImage });
     add({ activity: named(readChatFileTool, "Chat files"), definition: readChatFileTool, effects: "none", observationSource: "workspace",
       execute: (execution) => files.execute(execution.call, execution.round, execution.signal) });
@@ -658,6 +686,26 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
         execute: (execution) => browserRefused ? Promise.resolve(oldImageBrowserRefusal(execution.call))
           : executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
     }
+  }
+
+  // The user's computer, as admission froze it: only an interactive web run of a personal or temporary chat has one, and
+  // the registry checks again that this is none of the runs that never do (D-07). Online or not, the tools are the same.
+  const computer = clientTools && !input.telegram && !input.scheduled && request.monitoringVerdictTool !== true &&
+    request.prompt.baseline?.source !== "assistant_chat" ? decodeFrozenComputerBinding(request.computer) : null;
+  if (computer) {
+    // Documents and images `computer_read` reads, in this run's memory: its previews ride on its own requests whether or not
+    // the run has a Workspace, gated on the model this request names and its route (a sub-agent's own).
+    const files = createComputerReadFiles({ allowance: imageAllowance, request, resultImages: input.resultImages === true,
+      runId: input.runId });
+    const context = { binding: computer, ...(input.services.computer ? { ops: input.services.computer } : {}), runId: input.runId,
+      ...(input.toolTimeLeftMs ? { timeLeftMs: input.toolTimeLeftMs } : {}), userId: input.userId };
+    const outputs = input.services.computerOutputs;
+    // A sub-agent's registry filters `computer_attach_file` out (`SUBAGENT_EXCLUDED_TOOL_NAMES`): only the main answer shows files.
+    for (const tool of computerEngineTools({ ...context, files, serverName: descriptors.get("computer_shell")?.serverName,
+      ...(outputs ? { attachFile: (execution: EngineToolExecution) => executeComputerAttachFile({ ...context, outputs }, execution) } : {})
+    })) add(tool);
+    const previous = images;
+    images = { attached: (item) => files.images.attached(item) ?? previous?.attached(item), note: previous?.note ?? IMAGE_REFERENCE_NOTE };
   }
 
   return {

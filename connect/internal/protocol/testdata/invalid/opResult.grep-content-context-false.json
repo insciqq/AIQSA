@@ -1,0 +1,15 @@
+{
+  "op": "grep",
+  "result": {
+    "mode": "content",
+    "matches": [
+      {
+        "path": "/a",
+        "line": 1,
+        "text": "x",
+        "context": false
+      }
+    ],
+    "truncated": false
+  }
+}

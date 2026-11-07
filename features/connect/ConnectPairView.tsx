@@ -12,7 +12,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { decideConnectPairing, lookupConnectPairing, type ConnectFailureCode } from "./connectApi";
-import { ConnectPageHeader } from "./ConnectHomeView";
+import { ConnectPageHeader } from "./ConnectShell";
 import { useConnectShell } from "./connectShellContext";
 import { connectErrorMessage, connectPlatformLabel } from "./connectText";
 
@@ -49,7 +49,7 @@ function CodeForm({ initial }: Readonly<{ initial: string }>) {
   }
   return (
     <form className="mt-5 flex flex-col gap-2" noValidate onSubmit={submit}>
-      <label className="v2-connect-field-label" htmlFor={id}>Code from the terminal</label>
+      <label className="v2-connect-field-label" htmlFor={id}>Code shown on the computer</label>
       <div className="flex flex-wrap gap-2">
         <input
           aria-describedby={invalid ? `${id}-error` : undefined}
@@ -125,7 +125,7 @@ export function ConnectPairView({ code: rawCode }: Readonly<{ code: string | nul
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
           {rawCode
             ? connectErrorMessage("connect_pairing_expired")
-            : "Run aiqsa-connect login on your computer and open the link it shows, or enter its code here."}
+            : "Start AIQSA Connect on your computer and open the link it shows, or enter its code here."}
         </p>
         <CodeForm initial="" />
       </>
@@ -150,8 +150,8 @@ export function ConnectPairView({ code: rawCode }: Readonly<{ code: string | nul
       <div data-testid="connect-pair-approved">
         <h2 className="text-lg font-semibold text-ink">Computer connected</h2>
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
-          Return to the terminal to finish. On a new computer, run aiqsa-connect setup and then
-          aiqsa-connect service install there.
+          The AIQSA agent can now work on this computer in chats where you choose it with + → Use a computer.
+          On macOS or Linux, run aiqsa-connect service install there to keep it running.
         </p>
         <Link className="v2-connect-link v2-focusable mt-4 inline-block text-sm" href={CONNECT_PAGE_PATH}>Open AIQSA Connect</Link>
       </div>
@@ -161,7 +161,7 @@ export function ConnectPairView({ code: rawCode }: Readonly<{ code: string | nul
       <div data-testid="connect-pair-denied">
         <h2 className="text-lg font-semibold text-ink">Request denied</h2>
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
-          The computer was not connected and cannot reach AIQSA. You can close this page.
+          The computer was not connected, and the AIQSA agent cannot work on it. You can close this page.
         </p>
       </div>
     );
@@ -171,8 +171,8 @@ export function ConnectPairView({ code: rawCode }: Readonly<{ code: string | nul
       <>
         <h2 className="text-lg font-semibold text-ink">Connect this computer to your AIQSA?</h2>
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
-          Approve only a computer where you just ran aiqsa-connect login. Its terminals can then be opened from
-          any browser signed in to your account.
+          Approve only a computer where you just started AIQSA Connect and that shows this code. In chats where you
+          choose it, the AIQSA agent can then work with files and run commands on it, with your permissions there.
         </p>
         <dl className="v2-connect-facts mt-5" data-testid="connect-pair-facts">
           <div><dt>Name</dt><dd>{pairing.name}</dd></div>

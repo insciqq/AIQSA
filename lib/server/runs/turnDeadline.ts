@@ -5,6 +5,7 @@ import type { NormalizedRunRequest } from "../providers/types";
 import { searchOptionTimeoutMs, searchToolRoutes } from "../search/toolExecutor";
 import { ANALYZE_IMAGE_TOOL_NAME, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 import { BROWSER_HANDOFF_TOOL_NAME, BROWSER_HANDOFF_WAIT_MS } from "../tools/browserHandoff";
+import { computerToolCallMs } from "../tools/computerTools";
 import type { RunTool } from "../tools/types";
 
 /**
@@ -82,7 +83,9 @@ export type ToolCallBounds = Readonly<{
  * it started, `browserHandoff.ts`), the image model's response timeout
  * for image generation, and MCP's default for everything else; and the
  * answer model's response timeout (`answerTimeoutMs`, as its requests apply
- * it). A slow source the run never calls never shortens its tool time.
+ * it), and for a tool on the user's computer its own bound (`computerToolCallMs`: a command's longest
+ * timeout and its reply, a minute for the rest; each call is also cut to the turn's tool time left,
+ * `computerTools.ts`). A slow source the run never calls never shortens its tool time.
  * Allowances before a call is sent (a VM or MCP runtime start, Vision's
  * preparation) are not counted. A malformed bound counts as MCP's default.
  */
@@ -115,6 +118,7 @@ export function toolCallBounds(request: Pick<NormalizedRunRequest,
         case "web_search": return search.get(tool.name) ?? floor;
         case "workspace": return workspace;
         case "image": return image;
+        case "computer": return computerToolCallMs(tool.name);
         default: return floor;
       }
     }

@@ -1,0 +1,13 @@
+{
+  "op": "list_dirs",
+  "result": {
+    "path": "/home/ivan",
+    "parent": "/home",
+    "dirs": [
+      "Documents",
+      "Загрузки",
+      "projects"
+    ],
+    "truncated": false
+  }
+}

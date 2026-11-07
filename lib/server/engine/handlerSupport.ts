@@ -36,7 +36,7 @@ export type NativeEngineHandlerDeps = Readonly<{
    */
   subagents?: Readonly<{ background?: () => SubagentBackgroundControl; messaging?: () => SubagentMessaging; types?: SubagentTypeResolver }>;
   /** The owners of the harness and self-service tools (`defaultNativeToolServices`). */
-  tools?: Pick<ToolRegistryServices, "runProxies" | "secrets" | "selfService">;
+  tools?: Pick<ToolRegistryServices, "computerOutputs" | "runProxies" | "secrets" | "selfService">;
 }>;
 
 /**
@@ -179,6 +179,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     services: {
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
+      ...(tools?.computerOutputs ? { computerOutputs: tools.computerOutputs } : {}),
       ...(tools?.runProxies ? { runProxies: tools.runProxies } : {}),
       ...(tools?.secrets ? { secrets: tools.secrets } : {}),
       ...(tools?.selfService && selfServiceTools.length > 0 ? { selfService: { ...tools.selfService, tools: selfServiceTools } } : {})

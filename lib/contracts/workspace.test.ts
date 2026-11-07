@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeChatWorkspaceState,
+  decodeThreadComputerFile,
   decodeThreadGeneratedFile,
   decodeThreadGeneratedFiles,
   decodeThreadWorkspaceCheckpointOutput,
@@ -261,6 +262,22 @@ it("bounds combined final exports and checkpoints without collapsing saved paths
   expect(decodeThreadGeneratedFiles([...finals, file])).toBeNull();
   expect(decodeThreadGeneratedFiles([...drafts.slice(0, 8), { ...drafts[0], attachmentId: "ninth" }])).toBeNull();
   expect(decodeThreadGeneratedFiles([drafts[0], { ...drafts[1], checkpoint: { ...drafts[1]!.checkpoint, description: "mismatch" } }])).toBeNull();
+});
+
+it("adds the files attached from the user's computer, named alike or not, never as drafts or Workspace paths", () => {
+  const file = { attachmentId: "computer", byteSize: 7, fileName: "report.pdf", mimeType: "application/pdf", relativePath: "report.pdf",
+    source: "computer" };
+  const computer = Array.from({ length: 20 }, (_, index) => ({ ...file, attachmentId: `computer-${index}` }));
+  const final = { ...file, attachmentId: "final", source: undefined };
+  expect(decodeThreadGeneratedFiles([...computer, final])).toHaveLength(21);
+  expect(decodeThreadGeneratedFiles([...computer, { ...file, attachmentId: "twenty-first" }])).toBeNull();
+  expect(decodeThreadComputerFile(file)).toEqual(file);
+  for (const invalid of [{ ...file, source: "workspace" }, { ...file, relativePath: "out/report.pdf" }, { ...file, source: undefined },
+    { ...file, checkpoint: { id: "cp", description: "Draft", createdAt: "2026-09-24T09:00:00.000Z" } }, { ...file, path: "/home/ivan" }]) {
+    expect(decodeThreadComputerFile(invalid)).toBeNull();
+  }
+  expect(decodeThreadWorkspaceCheckpointOutput({ checkpoint: { id: "cp", description: "Draft", createdAt: "2026-09-24T09:00:00.000Z" },
+    files: [{ ...file, checkpoint: { id: "cp", description: "Draft", createdAt: "2026-09-24T09:00:00.000Z" } }] })).toBeNull();
 });
 
 it("decodes neutral execution receipts and rejects invented success or private proof fields", () => {

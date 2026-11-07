@@ -1,0 +1,11 @@
+{
+  "op": "read",
+  "result": {
+    "content": "# Отчёт\n\tстрока 2\n",
+    "startLine": 1,
+    "totalLines": 2,
+    "truncated": false,
+    "encoding": "windows-1251",
+    "lineEnding": "crlf"
+  }
+}

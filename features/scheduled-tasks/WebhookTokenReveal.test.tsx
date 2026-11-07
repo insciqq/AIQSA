@@ -46,7 +46,8 @@ describe("WebhookTokenReveal", () => {
       { cache: "no-store", credentials: "same-origin", method: "POST" });
     // The issue time reaches the parent, never the token.
     expect(onIssued).toHaveBeenCalledExactlyOnceWith("2026-10-25T08:00:00.000Z");
-    expect(screen.getByTestId("webhook-token")).toHaveFocus();
+    // The reveal moves focus in an effect after the token renders; wait for it rather than racing it.
+    await waitFor(() => expect(screen.getByTestId("webhook-token")).toHaveFocus());
     const curl = screen.getByTestId("webhook-curl").textContent ?? "";
     expect(curl).toBe(webhookCurlExample(url, tokenA));
     expect(curl).toContain(`-H 'Authorization: Bearer ${tokenA}'`);

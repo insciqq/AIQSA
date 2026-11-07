@@ -1,0 +1,153 @@
+/* The chat's computer: the composer chip and the picker sheet. */
+
+/* The chosen computer keeps its name and folder where the tools become
+   icons: it says where the agent works, so it never reads as a tool. */
+.v2-composer-indicator.v2-composer-computer {
+  max-width: min(18rem, 100%);
+}
+.v2-composer-computer > .v2-composer-indicator-face {
+  min-width: 0;
+  max-width: 100%;
+  gap: 0.375rem;
+}
+.v2-composer-computer-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.v2-composer-computer-dot {
+  position: absolute;
+  right: -0.1875rem;
+  bottom: -0.1875rem;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 50%;
+  background: var(--v2-color-text3);
+  box-shadow: 0 0 0 1.5px var(--v2-color-active);
+}
+.v2-composer-computer-dot[data-online] { background: var(--v2-color-ok); }
+.v2-composer-computer-offline {
+  flex: none;
+  color: var(--v2-color-text3);
+  font-weight: 400;
+}
+.v2-composer-indicator.v2-composer-computer[data-state="offline"] {
+  --v2-chip-background: transparent;
+}
+.v2-composer-indicator.v2-composer-computer[data-state="removed"],
+.v2-composer-indicator.v2-composer-computer[data-state="unavailable"] {
+  --v2-chip-border: var(--v2-color-warn);
+  --v2-chip-background: transparent;
+  color: var(--v2-color-warn);
+}
+
+@container composer (max-width: 46rem) {
+  .v2-composer-computer .v2-composer-indicator-label { display: inline; }
+  .v2-composer-indicators .v2-composer-computer > .v2-composer-indicator-face { width: auto; padding: 0 0.5rem; }
+  .v2-composer-computer .v2-composer-indicator-glyph { width: 0.875rem; height: 0.875rem; }
+  .v2-composer-computer .v2-composer-indicator-icon { position: relative; }
+}
+
+/* A phone keeps "offline" in words; the name and folder give way first. */
+@container composer (max-width: 26rem) {
+  .v2-composer-indicator.v2-composer-computer { max-width: 11rem; }
+}
+
+.v2-computer-picker-list {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface);
+}
+
+.v2-computer-picker-list > li + li {
+  border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-computer-picker-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.875rem;
+  border: 0;
+  background: transparent;
+  color: var(--v2-color-text);
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-computer-picker-row:hover:not(:disabled) {
+  background: var(--v2-color-hover);
+}
+
+.v2-computer-picker-row:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.v2-computer-picker-row[aria-current="true"] {
+  background: var(--v2-color-active);
+}
+
+.v2-computer-picker-row > .v2-icon {
+  flex: none;
+  color: var(--v2-color-text2);
+}
+
+.v2-computer-picker-row-icon {
+  position: relative;
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+}
+
+.v2-computer-picker-row-icon > .v2-connect-online-dot {
+  position: absolute;
+  right: -0.1875rem;
+  bottom: -0.1875rem;
+  box-shadow: 0 0 0 2px var(--v2-color-surface);
+}
+
+.v2-computer-picker-row-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.v2-computer-picker-row-copy > strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-computer-picker-row-copy > small {
+  overflow: hidden;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-computer-picker-current {
+  color: var(--v2-color-text);
+}
+
+.v2-computer-picker-path {
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text2);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.8125rem;
+}

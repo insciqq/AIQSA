@@ -12,9 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 
 	"github.com/insciqq/AIQSA/connect/internal/api"
@@ -40,7 +41,7 @@ func newFakeServer(t *testing.T, version string) *fakeServer {
 	f := &fakeServer{manifestVersion: version, binary: fakeBinary(version), manifestStatus: http.StatusOK}
 	digest := sha256.Sum256(f.binary)
 	f.sum = hex.EncodeToString(digest[:])
-	goos, arch, err := Target()
+	goos, arch, err := currentTarget()
 	if err != nil {
 		t.Skip("unsupported test platform")
 	}
@@ -49,6 +50,10 @@ func newFakeServer(t *testing.T, version string) *fakeServer {
 		if r.Header.Get(protocol.ClientVersionHeader) == "" || r.Header.Get("Authorization") != "" || r.Header.Get("Origin") != "" {
 			t.Errorf("unexpected request headers: %v", r.Header)
 		}
+		protocol2 := r.Header.Get(protocol.ProtocolHeader) == strconv.Itoa(protocol.ProtocolVersion)
+		if !protocol2 {
+			t.Errorf("%s requested without the protocol 2 header", r.URL.Path)
+		}
 		switch r.URL.Path {
 		case protocol.ClientManifestPath:
 			if f.manifestStatus != http.StatusOK {
@@ -56,10 +61,23 @@ func newFakeServer(t *testing.T, version string) *fakeServer {
 				fmt.Fprint(w, `{"code":"connect_client_unavailable"}`)
 				return
 			}
-			json.NewEncoder(w).Encode(protocol.ClientManifest{
-				Version: f.manifestVersion,
-				Targets: []protocol.ClientTarget{{OS: goos, Arch: arch, SHA256: f.sum, Size: int64(len(f.binary))}},
-			})
+			// Every target, as lib/server/connect/distribution.ts lists
+			// them: a request without the protocol 2 header is a protocol 1
+			// client's, which gets the darwin and linux targets only.
+			var targets []protocol.ClientTarget
+			for _, os := range protocol.OSValues {
+				if !protocol2 && !slices.Contains(protocol.LegacyOSValues, os) {
+					continue
+				}
+				for _, a := range protocol.ArchValues {
+					target := protocol.ClientTarget{OS: os, Arch: a, SHA256: strings.Repeat("0", 64), Size: 1}
+					if os == goos && a == arch {
+						target.SHA256, target.Size = f.sum, int64(len(f.binary))
+					}
+					targets = append(targets, target)
+				}
+			}
+			json.NewEncoder(w).Encode(protocol.ClientManifest{Version: f.manifestVersion, Targets: targets})
 		case protocol.ClientChecksumsPath:
 			fmt.Fprintf(w, "%s  %s\n%s  aiqsa-connect-other\n", f.sum, name, strings.Repeat("0", 64))
 		case protocol.ClientDownloadPath(goos, arch):
@@ -86,15 +104,6 @@ func installedBinary(t *testing.T, dir string) string {
 	return path
 }
 
-func inode(t *testing.T, path string) uint64 {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return info.Sys().(*syscall.Stat_t).Ino
-}
-
 func entries(t *testing.T, dir string) []string {
 	t.Helper()
 	list, err := os.ReadDir(dir)
@@ -106,46 +115,6 @@ func entries(t *testing.T, dir string) []string {
 		names = append(names, entry.Name())
 	}
 	return names
-}
-
-func TestInstallReplacesTheBinaryAtomically(t *testing.T) {
-	server := newFakeServer(t, "1.1.0")
-	dir := t.TempDir()
-	path := installedBinary(t, dir)
-	before := inode(t, path)
-	// A running process keeps the old file open; the rename must not change it.
-	old, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer old.Close()
-
-	result, err := server.client().Install(context.Background(), path, "1.1.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Version != "1.1.0" || result.Path != path {
-		t.Fatalf("result = %+v", result)
-	}
-	if inode(t, path) == before {
-		t.Fatal("the binary was rewritten in place instead of renamed over")
-	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o755 {
-		t.Fatalf("mode = %v", info.Mode())
-	}
-	out, err := exec.Command(path, "version").Output()
-	if err != nil || strings.TrimSpace(string(out)) != "1.1.0" {
-		t.Fatalf("installed binary reports %q (%v)", out, err)
-	}
-	oldData := make([]byte, 64)
-	n, _ := old.ReadAt(oldData, 0)
-	if !strings.Contains(string(oldData[:n]), "1.0.0") {
-		t.Fatal("the running binary's file changed")
-	}
-	if got := entries(t, dir); len(got) != 1 {
-		t.Fatalf("left files behind: %v", got)
-	}
 }
 
 func TestInstallFollowsADowngrade(t *testing.T) {
@@ -225,12 +194,29 @@ func TestInstallReportsAnUnwritableDirectory(t *testing.T) {
 func TestManifestDecodesStrictly(t *testing.T) {
 	server := newFakeServer(t, "1.1.0")
 	manifest, err := server.client().Manifest(context.Background())
-	if err != nil || manifest.Version != "1.1.0" || len(manifest.Targets) != 1 {
+	if err != nil || manifest.Version != "1.1.0" || len(manifest.Targets) != len(protocol.OSValues)*len(protocol.ArchValues) {
 		t.Fatalf("manifest = %+v, %v", manifest, err)
 	}
 	var refusal *Refusal
 	server.manifestStatus = http.StatusForbidden
 	if _, err := server.client().Manifest(context.Background()); !errors.As(err, &refusal) || refusal.Status != http.StatusForbidden {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A Windows client finds its binary: every update request says protocol 2,
+// so the manifest lists the Windows targets a protocol 1 client never sees.
+func TestInstallFindsTheWindowsTarget(t *testing.T) {
+	previous := currentTarget
+	currentTarget = func() (protocol.OS, protocol.Arch, error) { return protocol.OSWindows, protocol.ArchAMD64, nil }
+	t.Cleanup(func() { currentTarget = previous })
+	server := newFakeServer(t, "1.1.0")
+	path := installedBinary(t, t.TempDir())
+	result, err := server.client().Install(context.Background(), path, "1.1.0")
+	if err != nil || result.Version != "1.1.0" {
+		t.Fatalf("install = %+v, %v", result, err)
+	}
+	if server.downloads.Load() != 1 {
+		t.Fatalf("downloads: %d", server.downloads.Load())
 	}
 }

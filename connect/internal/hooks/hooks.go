@@ -1,15 +1,13 @@
-// Package hooks adds and removes the client's own entries in the agents'
-// user hook files: ~/.claude/settings.json (Claude Code) and
-// ~/.codex/hooks.json (Codex). Both use the shape
+// Package hooks removes the entries an earlier, terminal version of the
+// client added to the agents' user hook files: ~/.claude/settings.json
+// (Claude Code) and ~/.codex/hooks.json (Codex). Both use the shape
 // {"hooks": {"<Event>": [{"matcher"?, "hooks": [{"type": "command", ...}]}]}}.
 //
 // An entry is the client's own when its command runs an executable named
 // aiqsa-connect* with the arguments `hook claude` or `hook codex`. Nothing
 // else in a file is changed: other keys, other hooks and their order stay,
 // and values the client does not edit keep their exact text (the file is
-// re-indented with the indentation it already uses). The hooks only report
-// a status; they never print a decision, so they never change what the
-// agent does.
+// re-indented with the indentation it already uses).
 package hooks
 
 import (
@@ -23,8 +21,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+)
 
-	"github.com/insciqq/AIQSA/connect/internal/status"
+// Agent is a coding agent whose hook file may hold the client's entries.
+type Agent string
+
+const (
+	AgentClaude Agent = "claude"
+	AgentCodex  Agent = "codex"
 )
 
 // BackupSuffix names the one copy of a file taken before the client first changes it.
@@ -33,65 +37,12 @@ const BackupSuffix = ".aiqsa-connect.bak"
 // maxFileBytes bounds a hook file the client reads.
 const maxFileBytes = 4 << 20
 
-// Handler fields of an entry the client installs.
-type entry struct {
-	event   string
-	matcher string
-	async   bool
-	// timeout is in seconds; 0 leaves the agent's default.
-	timeout int
-}
-
-// claudeEntries: every hook runs in the background except SessionEnd, which
-// runs as the agent exits (an async one could be cut off) and finishes in
-// milliseconds within Claude Code's default end-of-session budget.
-var claudeEntries = []entry{
-	{event: "UserPromptSubmit", async: true},
-	{event: "PostToolUse", async: true},
-	{event: "Notification", matcher: "permission_prompt|idle_prompt|agent_needs_input", async: true},
-	{event: "Stop", async: true},
-	{event: "SessionEnd"},
-}
-
-// codexEntries: Codex documents `async` (background, cannot block) and
-// timeouts in seconds; SessionEnd always runs synchronously and allows at
-// most 3 seconds.
-var codexEntries = []entry{
-	{event: "UserPromptSubmit", async: true, timeout: 5},
-	{event: "PostToolUse", async: true, timeout: 5},
-	{event: "PermissionRequest", async: true, timeout: 5},
-	{event: "Stop", async: true, timeout: 5},
-	{event: "SessionEnd", timeout: 3},
-}
-
-func entriesFor(agent status.Agent) []entry {
-	if agent == status.AgentCodex {
-		return codexEntries
-	}
-	return claudeEntries
-}
-
 // DefaultFile is the agent's user hook file under home.
-func DefaultFile(home string, agent status.Agent) string {
-	if agent == status.AgentCodex {
+func DefaultFile(home string, agent Agent) string {
+	if agent == AgentCodex {
 		return filepath.Join(home, ".codex", "hooks.json")
 	}
 	return filepath.Join(home, ".claude", "settings.json")
-}
-
-// Command is the hook command for agent: the shell-quoted absolute
-// executable path and `hook <agent>`.
-func Command(executable string, agent status.Agent) string {
-	return shellQuote(executable) + " hook " + string(agent)
-}
-
-var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
-
-func shellQuote(s string) string {
-	if shellSafe.MatchString(s) {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // ownCommand matches a command this client installed, from any location:
@@ -142,14 +93,6 @@ type Plan struct {
 
 // Backup is the path of the file's backup copy.
 func (p *Plan) Backup() string { return p.Target + BackupSuffix }
-
-// PlanInstall plans the agent's hooks in path, running executable.
-func PlanInstall(path, executable string, agent status.Agent) (*Plan, error) {
-	if !filepath.IsAbs(executable) {
-		return nil, errors.New("the aiqsa-connect executable path is not absolute")
-	}
-	return plan(path, func(hooks *object) (bool, error) { return install(hooks, executable, agent) })
-}
 
 // PlanRemove plans removing every entry of this client from path.
 func PlanRemove(path string) (*Plan, error) {

@@ -44,6 +44,8 @@ export function subagentToolGroup(tool: Pick<RunTool, "capability" | "name">): S
     case "memory": return groups.memory;
     case "image": return groups.images;
     case "vision": return groups.vision;
+    // The user's computer belongs to no group: only a sub-agent with every tool gets it (D-07 of the computer PRD).
+    case "computer": return null;
     default: return null;
   }
 }

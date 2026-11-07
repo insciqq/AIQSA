@@ -77,6 +77,7 @@ import {
   type ThreadWorkspaceActivity
 } from "./workspace";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "./contextCompaction";
+import { decodeChatComputerBinding, isComputerActivitySummary, isComputerExitCode, type ChatComputerBinding } from "./computer";
 import {
   SCHEDULED_TASK_CARDS_LIMIT,
   decodeScheduledTaskCard,
@@ -330,6 +331,7 @@ export type ThreadToolActivity = {
 
 export type ThreadToolActivityOrigin =
   | "artifact"
+  | "computer"
   | "image"
   | "discovery"
   | "mcp"
@@ -343,7 +345,7 @@ export type ThreadToolActivityOrigin =
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
-  return value === "artifact" || value === "image" || value === "discovery" || value === "mcp" ||
+  return value === "artifact" || value === "computer" || value === "image" || value === "discovery" || value === "mcp" ||
     value === "memory" || value === "session" || value === "skill" || value === "tool" || value === "vision" ||
     value === "web_fetch" || value === "web_search" || value === "workspace";
 }
@@ -358,6 +360,8 @@ export type ThreadToolActivityCall = FetchUrlActivityFacts & {
   /** An MCP call refused for the user's approval: never sent; the answer's card decides it. */
   approvalRequired?: true;
   details?: { roundIndex: number; ordinal: number };
+  /** `computer` only: the command's exit code, once a foreground `computer_shell` call or a job has ended. */
+  exitCode?: number;
   /** `discovery` only, for the run's initiator: servers the call reported unavailable, in rank order. */
   mcpUnavailable?: ThreadMcpUnavailableServer[];
   memorySearchCall?: number;
@@ -370,6 +374,11 @@ export type ThreadToolActivityCall = FetchUrlActivityFacts & {
   round: number;
   serverName?: string;
   status: "cancelled" | "complete" | "error" | "running";
+  /**
+   * `computer` only: one line naming what the step touched, the command's first line, a path or a pattern
+   * (`computerActivitySummary`); the step's text is made from it and `toolName`. Owner-only like the chat.
+   */
+  summary?: string;
   /** A `call_subagent` or `stop_subagent` call: the sub-agent it addressed, for its card and thread link. */
   subagent?: SubagentActivityRef;
   /** A call a sub-agent made inside this answer (a foreground turn): shown nested under its `call_subagent` step. */
@@ -415,6 +424,11 @@ export type WorkspaceChatSummary = {
   activeLeafMessageId: string | null;
   /** The Assistant bound for the next messages; absent on unsaved local drafts. */
   assistantId?: string | null;
+  /**
+   * The computer and working folder the chat's next messages use (`COMPUTER_SEND_FIELD`), projected only to the chat's owner; null
+   * when none is chosen. Absent (unsaved drafts, stale caches, responses before the binding is filled) means none.
+   */
+  computer?: ChatComputerBinding | null;
   createdAt: string;
   defaultModelId: string;
   defaultSearchPlan?: SearchPlan | null;
@@ -1296,6 +1310,8 @@ export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | n
       ...(candidate.origin === "skill" && typeof candidate.skillId === "string" && candidate.skillId.length <= 64 ? { skillId: candidate.skillId } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillName === "string" && candidate.skillName.length <= 160 ? { skillName: candidate.skillName } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillPath === "string" && candidate.skillPath.length <= 256 ? { skillPath: candidate.skillPath } : {}),
+      ...(candidate.origin === "computer" && isComputerActivitySummary(candidate.summary) ? { summary: candidate.summary } : {}),
+      ...(candidate.origin === "computer" && isComputerExitCode(candidate.exitCode) ? { exitCode: candidate.exitCode } : {}),
       ...(typeof durationMs === "number" ? { durationMs } : {}),
       ...decodeFetchUrlActivity(candidate),
       ...(candidate.origin !== undefined ? { origin: candidate.origin } : {}),
@@ -1501,6 +1517,11 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
 
   const activeLeafMessageId = nullableId(value.activeLeafMessageId);
   const assistantId = value.assistantId === undefined ? undefined : nullableId(value.assistantId);
+  // Absent (older servers, other owners' projections) reads as none; anything else must be a binding or null.
+  const rawComputer = value.computer;
+  const computer = rawComputer === undefined ? undefined
+    : rawComputer === null ? null
+      : decodeChatComputerBinding(rawComputer) ?? "invalid";
   const id = requiredString(value.id);
   const createdAt = requiredString(value.createdAt);
   const defaultSelection = decodeChatDefaultSelection(
@@ -1519,6 +1540,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   if (
     activeLeafMessageId === undefined ||
     (value.assistantId !== undefined && assistantId === undefined) ||
+    computer === "invalid" ||
     !id ||
     !createdAt ||
     !defaultSelection ||
@@ -1535,6 +1557,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   return {
     activeLeafMessageId,
     ...(assistantId !== undefined ? { assistantId } : {}),
+    ...(computer !== undefined ? { computer } : {}),
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     ...importMarker,
