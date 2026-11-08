@@ -60,7 +60,7 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 
 | Changed boundary | Additional evidence |
 | --- | --- |
-| Schema, migrations, bootstrap | `npm run db:migration:smoke`; `npm run db:baseline:contract` for the baseline or custom PostgreSQL DDL. Disposable databases only. |
+| Schema, migrations, bootstrap | `npm run db:migration:smoke`; `npm run db:baseline:contract` for the baseline or custom PostgreSQL DDL. Disposable databases only. Run them once per slice, after its last schema change is integrated, never in interim stateful runs: a run before a later migration proves nothing about it (operator decision 2026-11-08). |
 | Compose, images, installation | Focused config tests; disposable startup or bootstrap only when that behavior changed. Keep non-root roles and separate identities. |
 | Backup, restore, destructive retention | Dry run first; real backup, empty-target restore or deletion only with explicit authority over a disposable or intended target. |
 | UI | The affected states, themes, viewports, focus transitions and overflow (`agent_docs/FRONTEND.md`). Assert behavior and geometry, not screenshots or component structure. |
