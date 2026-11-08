@@ -15,7 +15,9 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { activeRunControllers } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { TURN_HANDOFF_RESERVE_MS } from "../runs/turnDeadline";
-import { monitoringCheckInstruction, monitoringVerdictReservedInstruction } from "../tools/monitoringVerdict";
+import {
+  monitoringCheckInstruction, monitoringVerdictAfterAnswerInstruction, monitoringVerdictReservedInstruction
+} from "../tools/monitoringVerdict";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
@@ -120,6 +122,28 @@ describe("a scheduled monitoring check on the native engine", () => {
     expect(callTool).toHaveBeenCalledTimes(1);
     expect(repo.recordMonitoringVerdict).toHaveBeenCalledExactlyOnceWith({ runId: "run-1", userId: "owner", verdict: "update" });
     expect(memory.published()).toBe("A-1 moved.");
+  });
+
+  it("is asked for a verdict it skipped after its answer, and that round's text never reaches the answer", async () => {
+    const afterAnswer = monitoringVerdictAfterAnswerInstruction();
+    const { adapter, requests } = scriptedNativeAdapter([
+      { text: "Version 2.0 is out." },
+      { calls: [{ arguments: { status: "goal_reached" }, id: "v1", name: VERDICT }], text: "Extra words." }
+    ]);
+    const memory = memoryNativeEngine();
+    const repo = nativeRunRepository();
+    const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      prepared: nativePrepared({ monitoringVerdictTool: true }), repository: asRepository(repo), scheduled: true, services: {},
+      userId: "owner" }));
+    expect(events.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]!.toolChoice).toBe("auto");
+    expect(requests[1]!.history!.at(-1)).toEqual({ text: afterAnswer, type: "user" });
+    expect(repo.recordMonitoringVerdict).toHaveBeenCalledExactlyOnceWith({ runId: "run-1", userId: "owner", verdict: "goal_reached" });
+    expect(memory.published()).toBe("Version 2.0 is out.");
+    // Nothing of the report-only round streamed live either.
+    expect(JSON.stringify(events)).not.toContain("Extra words.");
+    expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text === afterAnswer)).toBe(false);
   });
 
   it("tells the model when its occurrence can no longer take a verdict", async () => {

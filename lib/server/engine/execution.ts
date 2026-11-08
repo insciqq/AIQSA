@@ -845,6 +845,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) }));
         const timeoutMs = answerTimeoutMs;
         let pending: ModelRunSseEvent[] = [];
+        /** The current round asks only for a report after the written answer (`prepareRequest`'s `afterAnswer`). */
+        let reportOnlyRound = false;
         let followupRevision = 0;
         const recordModelUsage = (reported: ModelRunUsage, costUsd: number | undefined) => usage.add({ ...reportedAnswerCost(costUsd),
           modelId: normalizedRequest.modelId, operationCount: 1, provider: normalizedRequest.provider,
@@ -929,7 +931,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               if (pinned.type === "token") {
                 // While research runs nothing streams into the answer: it is kept per attempt, for a provider that fails mid-report.
                 if (runResearch?.holding()) runResearch.heldToken(pinned.data.delta);
-                else answer.push(pinned.data.delta);
+                else if (!reportOnlyRound) answer.push(pinned.data.delta);
               }
               // Kept outputs of an attempt are saved once it completed; the rest are live only.
               else if (projectRunOutputArtifactEvent(pinned)) pending.push(pinned);
@@ -991,8 +993,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               runDraftCall: (call, round) => runToolBatch(batchDeps, { calls: 0 }, { calls: [call], round }) })
           } } : {}),
           maxToolRounds: budgets.maxToolRounds,
-          prepareRequest: async ({ answerNow, reserved: reservedRound, toolChoice }: Readonly<{ answerNow?: true;
-            reserved?: true; round: number; toolChoice: LoopToolChoice }>) => {
+          prepareRequest: async ({ afterAnswer, answerNow, reserved: reservedRound, toolChoice }: Readonly<{
+            afterAnswer?: true; answerNow?: true; reserved?: true; round: number; toolChoice: LoopToolChoice }>) => {
+            // The round after a written answer only reports: none of its text streams into the answer, which stands.
+            reportOnlyRound = afterAnswer === true;
             const tools = [...registry.definitions()];
             const request: ProviderRunRequest = {
               ...base,
@@ -1008,7 +1012,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const prepared = await context.prepare(request);
             void recordContextStatus("request");
             // A reserved round's or an answer-now round's instruction rides on its request only, never on the transcript.
-            const instruction = reservedRound && reserved ? reserved.instruction : answerNow ? ANSWER_NOW_INSTRUCTION : null;
+            const reservedInstruction = reserved && afterAnswer && "afterAnswerInstruction" in reserved
+              ? reserved.afterAnswerInstruction : reserved?.instruction;
+            const instruction = reservedRound && reservedInstruction ? reservedInstruction
+              : answerNow ? ANSWER_NOW_INSTRUCTION : null;
             return instruction
               ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
               : prepared;
@@ -1019,6 +1026,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target,
             requestAnchor: context.requestAnchor(result.usage), usage: result.usage }),
           roundEnd: async (result) => {
+            reportOnlyRound = false;
             for (const event of pending) await sink.publish(event);
             pending = [];
             const held = runResearch?.holding() === true;
