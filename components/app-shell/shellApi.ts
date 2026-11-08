@@ -258,6 +258,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
         : message.status === "cancelled"
           ? persistedText || "Stopped."
           : message.content,
+    createdAt: message.createdAt,
     id: message.id,
     modelId: message.modelId ?? undefined,
     parentMessageId: message.parentMessageId,

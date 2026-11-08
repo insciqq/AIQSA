@@ -43,7 +43,7 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
     scheduleEnabled: true, webhookEnabled: false, webhook: null,
     modelId: "deployment-1", provider: "connection-1", searchEnabled: true, emailNotify: false, telegramNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "same", kind: "standard", historyRetentionDays: 90,
     historyDeletedChats: 0, historyNextDeletionAt: null, status: "active", pauseReason: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false,
     revision: 1,
@@ -197,7 +197,7 @@ describe("create_scheduled_task tool", () => {
     const result = await executeCreateScheduledTask(call(reminder), context(), create);
     expect(create).toHaveBeenCalledOnce();
     expect(create.mock.calls[0]![0]).toMatchObject({ callId: "persisted-call-1", runId: "run-1", userId: "user-1", body: {
-      title: "Check mail", prompt: "Remind me to check my mail.", kind: "standard", chatMode: "new", emailNotify: false,
+      title: "Check mail", prompt: "Remind me to check my mail.", kind: "standard", chatMode: "same", emailNotify: false,
       telegramNotify: false,
       schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
       modelId: "deployment-1", provider: "connection-1", searchEnabled: true, toolsEnabled: true, workspaceEnabled: false,
@@ -225,7 +225,7 @@ describe("create_scheduled_task tool", () => {
       callId: "provider-call-1",
       content: [{ type: "json", value: expect.objectContaining({ created: true, title: "Check mail",
         schedule: "Every weekday at 09:00", timeZone: "Europe/Moscow", nextRun: "Mon 2026-10-05 09:00",
-        chat: "every run starts a new chat", webSearch: true, tools: true, workspace: false, memory: true }) }],
+        chat: "every run continues in one chat, a new one each month", webSearch: true, tools: true, workspace: false, memory: true }) }],
       name: CREATE_SCHEDULED_TASK_TOOL_NAME,
       status: "complete"
     });
@@ -264,6 +264,13 @@ describe("create_scheduled_task tool", () => {
     expect(create.mock.calls[0]![0].body).toMatchObject({ chatMode: "same", kind: "monitoring", timeZone: "UTC",
       schedule: { kind: "hourly", everyHours: 1, time: "00:00", until: null } });
     expect(result.artifacts?.[0]).toMatchObject({ data: { payload: { timeZoneFallback: true, kind: "monitoring" } } });
+  });
+
+  it("starts a new chat per run only when the model asks for it", async () => {
+    const create = creator(task({ chatMode: "new" }));
+    const result = await executeCreateScheduledTask(call({ ...reminder, chatMode: "new" }), context(), create);
+    expect(create.mock.calls[0]![0].body).toMatchObject({ chatMode: "new" });
+    expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ chat: "every run starts a new chat" }) }]);
   });
 
   it("asks for the exact links of the sites a task depends on and for naming its sources", () => {
@@ -398,7 +405,7 @@ describe("create_scheduled_task with a webhook trigger", () => {
       nextRunAt: null, schedule: { kind: "daily", time: "09:00" } }));
     const result = await executeCreateScheduledTask(call({ ...pipeline, schedule: null, webhook: true }), context(), create);
     expect(create.mock.calls[0]![0].body).toMatchObject({ scheduleEnabled: false, webhookEnabled: true,
-      schedule: SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE, chatMode: "new" });
+      schedule: SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE, chatMode: "same" });
     expect(SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE).toEqual({ kind: "daily", time: "09:00" });
     expect(result).toMatchObject({ status: "complete", content: [{ type: "json", value: {
       created: true, schedule: "none: runs only on its webhook", nextRun: null,

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import { textMessageContent } from "../../domain/content";
@@ -10,9 +11,15 @@ import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ScheduledOccurrenceConflictError, type CreateRunInput, type ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
-import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
+import { SCHEDULED_TASK_EMAIL_WINDOW_MS } from "./notifications";
+import { SCHEDULED_TASK_OCCURRENCE_RETENTION, pausingOutcome, type MonitoringVerdict } from "./runnerPolicy";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
-import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns, ScheduledTaskError } from "./store";
+import {
+  createPrismaScheduledTaskStore,
+  readScheduledTaskEmailAvailability,
+  scheduledTaskScheduleColumns,
+  ScheduledTaskError
+} from "./store";
 
 const users: string[] = [];
 const runner = createPrismaScheduledTaskRunnerStore(prisma);
@@ -498,24 +505,91 @@ describe("persisted scheduled task runner", () => {
     expect(await prisma.chat.findUniqueOrThrow({ where: { id: chat.id } })).toMatchObject({ workspaceEnabled: false });
   });
 
-  it("claims a result email once and only for a verified address with SMTP active", async () => {
+  it("claims a due result email once exactly when the editor offers email, an LDAP account without a verified identity included",
+    async () => {
+      const userId = await owner();
+      // An LDAP sign-in creates its identity unverified while the account keeps the address the directory is trusted for.
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+      await prisma.authIdentity.create({ data: { normalizedEmail: user.email!.toLowerCase(), provider: "ldap",
+        providerAccountId: `uid=${userId}`, source: "ldap:synthetic", userId } });
+      const created = await task(userId, null, { emailNotify: true });
+      const now = new Date();
+      const settledAt = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+      const due = await prisma.scheduledTaskOccurrence.create({ data: { emailDueAt: now, finishedAt: now, scheduledFor: settledAt(1),
+        state: "COMPLETED", taskId: created.id, trigger: "manual", userId } });
+      // A result the previous release settled carries no due email and is never claimed.
+      const legacy = await prisma.scheduledTaskOccurrence.create({ data: { finishedAt: now, scheduledFor: settledAt(2),
+        state: "COMPLETED", taskId: created.id, trigger: "manual", userId } });
+      const offered = await readScheduledTaskEmailAvailability(prisma, userId);
+      const smtp = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
+      expect(offered).toBe(Boolean(smtp?.enabled && smtp.activeConfig !== null));
+      expect(await runner.listDueNotifications(now, 10)).toContain(due.id);
+      const claimed = await runner.claimNotification(due.id, now);
+      expect(claimed !== null).toBe(offered);
+      if (claimed) {
+        expect(claimed).toMatchObject({ email: user.email, state: "COMPLETED", title: "Synthetic brief", trigger: "manual",
+          unavailableSources: [] });
+      }
+      // Claimed or no longer sendable, it stops being due either way, and is never claimed twice.
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: due.id } }))
+        .toMatchObject({ emailDueAt: null, notifiedAt: offered ? now : null });
+      expect(await runner.claimNotification(due.id, now)).toBeNull();
+      expect(await runner.listDueNotifications(now, 10)).not.toContain(due.id);
+      expect(await runner.claimNotification(legacy.id, now)).toBeNull();
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: legacy.id } })).toMatchObject({ notifiedAt: null });
+    });
+
+  it("offers and claims no email for an account without an address", async () => {
     const userId = await owner();
+    await prisma.user.update({ data: { email: null }, where: { id: userId } });
     const created = await task(userId, null, { emailNotify: true });
-    const settled = await prisma.scheduledTaskOccurrence.create({ data: { finishedAt: new Date(), scheduledFor: new Date(),
-      state: "COMPLETED", taskId: created.id, trigger: "manual", userId } });
-    const smtp = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
-    if (!smtp?.enabled || smtp.activeConfig === null) {
-      expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
-      return;
-    }
-    expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    await prisma.authIdentity.create({ data: { emailVerifiedAt: new Date(), normalizedEmail: user.email!.toLowerCase(),
-      provider: "password", providerAccountId: user.email!.toLowerCase(), userId } });
-    expect(await runner.claimNotification(settled.id, new Date())).toMatchObject({ email: user.email, state: "COMPLETED",
-      title: "Synthetic brief", trigger: "manual", unavailableSources: [] });
-    expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
+    const now = new Date();
+    const due = await prisma.scheduledTaskOccurrence.create({ data: { emailDueAt: now, finishedAt: now, scheduledFor: now,
+      state: "FAILED", taskId: created.id, trigger: "manual", userId } });
+    expect(await readScheduledTaskEmailAvailability(prisma, userId)).toBe(false);
+    expect(await runner.claimNotification(due.id, now)).toBeNull();
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: due.id } }))
+      .toMatchObject({ emailDueAt: null, notifiedAt: null });
   });
+
+  it("writes a notifying settlement's Telegram outbox row and due email in the settlement itself, and a quiet one writes neither",
+    async () => {
+      const userId = await owner();
+      const tomorrow = new Date(Date.now() + 24 * 60 * 60_000);
+      const notifying = await task(userId, tomorrow, { emailNotify: true, telegramNotify: true });
+      const now = new Date();
+      const failing = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+        taskId: notifying.id, trigger: "schedule", userId } });
+      // A pausing failure is news: no tick, wake or later write is needed for its notifications to exist.
+      expect(await runner.settlePending(failing.id, pausingOutcome("model_unavailable"), now, notifying.revision))
+        .toMatchObject({ state: "FAILED", taskPaused: true });
+      expect(await prisma.telegramScheduledDelivery.findMany({ where: { occurrenceId: failing.id } }))
+        .toEqual([expect.objectContaining({ attempts: 0, nextAttemptAt: now, state: "pending", userId })]);
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: failing.id } }))
+        .toMatchObject({ emailDueAt: now, notifiedAt: null, state: "FAILED" });
+      expect(await runner.listDueNotifications(now, 500)).toContain(failing.id);
+      // Past its window a due email is never picked up.
+      expect(await runner.listDueNotifications(new Date(now.getTime() + SCHEDULED_TASK_EMAIL_WINDOW_MS), 500))
+        .not.toContain(failing.id);
+
+      const quiet = await task(userId, tomorrow, { emailNotify: true, telegramNotify: true });
+      const busy = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+        taskId: quiet.id, trigger: "schedule", userId } });
+      expect(await runner.settlePending(busy.id, { reasonCode: "chat_busy", state: "SKIPPED" }, now))
+        .toMatchObject({ state: "SKIPPED", taskPaused: false });
+      expect(await prisma.telegramScheduledDelivery.count({ where: { occurrenceId: busy.id } })).toBe(0);
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: busy.id } })).toMatchObject({ emailDueAt: null });
+
+      // A notifying settlement of a task with both switches off writes neither.
+      const silent = await task(userId, tomorrow, { emailNotify: false, telegramNotify: false });
+      const silentFailure = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+        taskId: silent.id, trigger: "schedule", userId } });
+      expect(await runner.settlePending(silentFailure.id, pausingOutcome("model_unavailable"), now, silent.revision))
+        .toMatchObject({ taskPaused: true });
+      expect(await prisma.telegramScheduledDelivery.count({ where: { occurrenceId: silentFailure.id } })).toBe(0);
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: silentFailure.id } }))
+        .toMatchObject({ emailDueAt: null });
+    });
 });
 
 describe("persisted monitoring checks", () => {
@@ -528,7 +602,7 @@ describe("persisted monitoring checks", () => {
     const run = await runs.createRun(await runInput(userId, chatId, origin(occurrence.id, current, { monitoring: true })));
     return { occurrence, run };
   }
-  async function finish(admitted: Awaited<ReturnType<typeof check>>, verdict: "goal_reached" | "no_update" | "update" | null, now: Date) {
+  async function finish(admitted: Awaited<ReturnType<typeof check>>, verdict: MonitoringVerdict | null, now: Date) {
     if (verdict) expect(await runs.recordMonitoringVerdict!({ runId: admitted.run.runId, userId: admitted.occurrence.userId, verdict })).toBe(true);
     await prisma.modelRun.update({ data: { status: "complete" }, where: { id: admitted.run.runId } });
     return runner.settleLinked(admitted.occurrence.id, now);
@@ -647,6 +721,112 @@ describe("persisted monitoring checks", () => {
     expect((await occurrenceOf(recovered.occurrence.id)).unavailableSources).toBeNull();
   });
 
+  it("settles a check whose direct MCP call could not reach its server as could_not_check, never as a hidden no_update", async () => {
+    const userId = await owner();
+    await task(userId, null, { kind: "MONITORING", toolsEnabled: true });
+    const chat = await personalChat(userId);
+    const now = new Date();
+    expect(await finish(await check(userId, chat.id), "no_update", now)).toMatchObject({ reasonCode: "baseline" });
+    // The run's frozen plan names each called tool's server (its final snapshot after any tool search).
+    const withPlan = async (runId: string) => {
+      const accepted = await prisma.modelRun.findUniqueOrThrow({ where: { id: runId } });
+      const server = (serverId: string, serverName: string) => ({ fingerprint: "fingerprint", revisionId: "revision", serverId, serverName });
+      const tool = (namespacedName: string, serverId: string, serverName: string) => ({ annotations: { readOnlyHint: true },
+        definitionHash: "d".repeat(64), description: null, inputSchema: { type: "object" }, namespacedName, originalName: namespacedName,
+        serverId, serverName });
+      await prisma.modelRun.update({ where: { id: runId }, data: { normalizedRequest: { ...(accepted.normalizedRequest as object),
+        mcp: { servers: [server("server-github", "Synthetic GitHub"), server("server-wiki", "Synthetic Wiki")],
+          tools: [tool("github__get_pull_request", "server-github", "Synthetic GitHub"), tool("wiki__search", "server-wiki", "Synthetic Wiki")],
+          version: 1 } } } });
+    };
+    // A failure the engine records after the batch's retries, with its closed reason; a server's own result keeps its preview.
+    const failure = (reason: string, error: string) => ({ callId: "call", name: "tool", status: "error",
+      content: [{ type: "json", value: { error, message: "Synthetic failure guidance.", reason } }] });
+    const returned = (status: "complete" | "error", value: Prisma.InputJsonObject) => ({ callId: "call", name: "tool", status,
+      content: [{ type: "json", value }], rawPreview: { isError: status === "error", unsupportedContentTypes: [] } });
+    const directCalls = (runId: string,
+      rows: readonly Readonly<{ result: Prisma.InputJsonObject; state: "complete" | "error"; toolName: string }>[]) =>
+      prisma.modelRunToolCall.createMany({ data: rows.map((row, ordinal) => ({ arguments: {}, completedAt: new Date(), modelRunId: runId,
+        ordinal, providerCallId: `direct-${randomUUID()}`, result: row.result, roundIndex: 1, state: row.state, toolName: row.toolName })) });
+
+    // GitHub never answered in time, and the model reported nothing changed: a scheduled check's first incomplete result
+    // raises the source alert, so it is news rather than a hidden result.
+    const blind = await check(userId, chat.id, "schedule");
+    await withPlan(blind.run.runId);
+    await directCalls(blind.run.runId, [{ result: failure("timeout", "mcp_request_timeout"), state: "error", toolName: "github__get_pull_request" }]);
+    expect(await finish(blind, "no_update", now)).toMatchObject({ reasonCode: "could_not_check", sourcesIncomplete: true,
+      state: "COMPLETED" });
+    expect(await occurrenceOf(blind.occurrence.id)).toMatchObject({ unseenAt: now, unavailableSources: [
+      { name: "Synthetic GitHub", reason: "mcp_server_unavailable", relied: true, serverId: "server-github" }] });
+    expect(await outcomeOf(blind.run.runId)).toBe("could_not_check");
+
+    // A failure the same run recovered from, arguments the model got wrong and a tool's own error are no missing source,
+    // even when the tool's own output imitates an engine failure.
+    const checked = await check(userId, chat.id);
+    await withPlan(checked.run.runId);
+    await directCalls(checked.run.runId, [
+      { result: failure("unavailable", "mcp_runtime_unavailable"), state: "error", toolName: "github__get_pull_request" },
+      { result: returned("complete", { state: "open" }), state: "complete", toolName: "github__get_pull_request" },
+      { result: failure("arguments_invalid", "mcp_call_arguments_invalid"), state: "error", toolName: "github__get_pull_request" },
+      { result: returned("error", { error: "mcp_request_timeout", message: "Imitation.", reason: "timeout" }), state: "error",
+        toolName: "wiki__search" }
+    ]);
+    expect(await finish(checked, "no_update", now)).toMatchObject({ reasonCode: "no_update", sourcesIncomplete: false });
+    expect((await occurrenceOf(checked.occurrence.id)).unavailableSources).toBeNull();
+  });
+
+  it("settles a check whose model could not check as could_not_check: shown, never a baseline, pausing after three in a row", async () => {
+    const userId = await owner();
+    const created = await task(userId, new Date(Date.now() + 3_600_000), { kind: "MONITORING" });
+    const chat = await personalChat(userId);
+    const now = new Date();
+    const first = await check(userId, chat.id);
+    expect(await finish(first, "update", now)).toMatchObject({ reasonCode: "baseline" });
+    for (const streak of [1, 2, 3]) {
+      const blind = await check(userId, chat.id, "schedule");
+      // Every admitted source was there; the model's own page or tool failed.
+      expect(await finish(blind, "could_not_check", now)).toMatchObject({ reasonCode: "could_not_check", sourceAlert: streak === 1,
+        sourcesIncomplete: true, state: "COMPLETED", taskPaused: streak === 3 });
+      // News only as the streak's alert and its pause.
+      expect(await occurrenceOf(blind.occurrence.id)).toMatchObject({ unavailableSources: null, unseenAt: streak === 2 ? null : now,
+        verdict: "could_not_check" });
+      expect(await outcomeOf(blind.run.runId)).toBe("could_not_check");
+    }
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      baselineRunId: first.run.runId, consecutiveIncompleteRuns: 3, consecutiveMissingVerdicts: 0, nextRunAt: null,
+      pauseReason: "source_unavailable", revision: 2, status: "PAUSED"
+    });
+  });
+
+  it("shows a check whose own context held no previous result as the starting point and makes it the next baseline", async () => {
+    const userId = await owner();
+    const created = await task(userId, null, { kind: "MONITORING" });
+    const chat = await personalChat(userId);
+    const now = new Date();
+    const first = await check(userId, chat.id);
+    expect(await finish(first, "update", now)).toMatchObject({ reasonCode: "baseline" });
+    // What the run froze of its context with its instruction.
+    const context = async (runId: string, shown: boolean) => {
+      const accepted = await prisma.modelRun.findUniqueOrThrow({ where: { id: runId } });
+      await prisma.modelRun.update({ where: { id: runId }, data: { normalizedRequest: { ...(accepted.normalizedRequest as object),
+        monitoringPreviousResult: shown, monitoringVerdictTool: true } } });
+    };
+    // Compared with the previous result: nothing changed stays hidden.
+    const compared = await check(userId, chat.id);
+    await context(compared.run.runId, true);
+    expect(await finish(compared, "no_update", now)).toMatchObject({ reasonCode: "no_update" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ baselineRunId: first.run.runId });
+    // The baseline left the chat's active path (an owner Regenerate or a branch): the run was told no result was shown,
+    // so its check is shown and becomes the basis the next check compares with.
+    const contextless = await check(userId, chat.id);
+    await context(contextless.run.runId, false);
+    expect(await finish(contextless, "no_update", now)).toMatchObject({ reasonCode: "baseline", state: "COMPLETED" });
+    expect(await occurrenceOf(contextless.occurrence.id)).toMatchObject({ reasonCode: "baseline", unseenAt: now });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
+      .toMatchObject({ baselineRunId: contextless.run.runId });
+    expect(await outcomeOf(contextless.run.runId)).toBe("baseline");
+  });
+
   it("pauses after three scheduled checks in a row that never reported", async () => {
     const userId = await owner();
     const created = await task(userId, new Date(Date.now() + 3_600_000), { kind: "MONITORING", consecutiveMissingVerdicts: 2 });
@@ -660,26 +840,43 @@ describe("persisted monitoring checks", () => {
     expect((await occurrenceOf(unreported.occurrence.id)).unseenAt).not.toBeNull();
   });
 
-  it("completes the task on a reached goal only under the revision its run was accepted under", async () => {
+  it("completes the task on a reached goal unless the owner paused it or changed its question meanwhile", async () => {
     const userId = await owner();
     const created = await task(userId, new Date(Date.now() + 3_600_000), { kind: "MONITORING" });
     const chat = await personalChat(userId);
-    const edited = await check(userId, chat.id);
-    // An owner edit after admission wins: the goal is shown as an update and the task stays active.
-    await prisma.scheduledTask.update({ data: { revision: { increment: 1 }, title: "Renamed" }, where: { id: created.id } });
-    expect(await finish(edited, "goal_reached", new Date())).toMatchObject({ reasonCode: "update" });
-    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
-      .toMatchObject({ completionReason: null, revision: 2, status: "ACTIVE" });
+    const taskRow = () => prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } });
+    const pause = () => prisma.scheduledTask.update({ data: { nextRunAt: null, revision: { increment: 1 }, status: "PAUSED" },
+      where: { id: created.id } });
+    const resume = () => prisma.scheduledTask.update({ data: { nextRunAt: new Date(Date.now() + 3_600_000), revision: { increment: 1 },
+      status: "ACTIVE" }, where: { id: created.id } });
 
+    // An owner pause after admission wins: the goal is shown as an update and the task stays paused.
+    const paused = await check(userId, chat.id);
+    await pause();
+    expect(await finish(paused, "goal_reached", new Date())).toMatchObject({ reasonCode: "update" });
+    expect(await taskRow()).toMatchObject({ completionReason: null, revision: 2, status: "PAUSED" });
+
+    // So does a changed question: the result answers the old one and is no check of the new one.
+    await resume();
+    const reworded = await check(userId, chat.id);
+    await prisma.scheduledTask.update({ data: { generation: { increment: 1 }, prompt: "Synthetic changed prompt",
+      revision: { increment: 1 } }, where: { id: created.id } });
+    expect(await finish(reworded, "goal_reached", new Date())).toMatchObject({ reasonCode: null, state: "COMPLETED" });
+    expect(await taskRow()).toMatchObject({ completionReason: null, generation: 2, revision: 4, status: "ACTIVE" });
+
+    // A save that kept the question, and a pause and resume, during the check leave the reached goal standing.
     const reached = await check(userId, chat.id);
+    await prisma.scheduledTask.update({ data: { revision: { increment: 1 }, title: "Renamed" }, where: { id: created.id } });
+    await pause();
+    await resume();
     expect(await finish(reached, "goal_reached", new Date())).toMatchObject({ reasonCode: "goal_reached", state: "COMPLETED" });
-    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
-      completionReason: "goal_reached", nextRunAt: null, pauseReason: null, revision: 3, status: "COMPLETED"
+    expect(await taskRow()).toMatchObject({
+      completionReason: "goal_reached", nextRunAt: null, pauseReason: null, revision: 8, status: "COMPLETED"
     });
     expect((await occurrenceOf(reached.occurrence.id)).unseenAt).not.toBeNull();
     // Resume continues from now and clears why it completed.
     const completed = await owners.get(userId, created.id);
-    const resumed = await owners.update(userId, created.id, { draft: { ...completed!, kind: "monitoring" }, expectedRevision: 3,
+    const resumed = await owners.update(userId, created.id, { draft: { ...completed!, kind: "monitoring" }, expectedRevision: 8,
       nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active" });
     expect(resumed).toMatchObject({ completionReason: null, kind: "monitoring", status: "active" });
   });

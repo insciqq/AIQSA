@@ -244,6 +244,7 @@ describe("the run's reserved report", () => {
   }> = {}) {
     let made = options.made ?? false;
     const reservedRounds: number[] = [];
+    const inputs: Parameters<AgentLoopPorts["prepareRequest"]>[0][] = [];
     const run = harness(responses, { ...options, batch: (calls) => {
       if (calls.some((entry) => entry.name === "report")) made = true;
       const spent = options.budgetExhaustedBy !== undefined && calls.some((entry) => entry.id === options.budgetExhaustedBy);
@@ -253,6 +254,7 @@ describe("the run's reserved report", () => {
     const ports: AgentLoopPorts = {
       ...run.ports,
       prepareRequest: async (input) => {
+        inputs.push(input);
         if (input.reserved) reservedRounds.push(input.round);
         return prepare(input);
       },
@@ -261,7 +263,7 @@ describe("the run's reserved report", () => {
       ...(options.timeLeft === undefined ? {} : { toolTimeLeft: typeof options.timeLeft === "function" ? options.timeLeft
         : () => options.timeLeft as boolean })
     };
-    return { ...run, ports, reservedRounds };
+    return { ...run, inputs, ports, reservedRounds };
   }
 
   it("is offered alone once the call budget is spent, and only its call runs", async () => {
@@ -296,15 +298,16 @@ describe("the run's reserved report", () => {
     expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
   });
 
-  it("is not offered once made or after a batch without progress while tool time is left", async () => {
+  it("is not offered once made, and after a batch without progress only once the answer is written", async () => {
     const made = reservedHarness([response("", [call("v1", "report"), call("c1")]), response("Done")], { budgetExhaustedBy: "c1" });
     await runAgentLoop(made.ports);
     expect(made.choices).toEqual(["auto", "none"]);
     expect(made.reservedRounds).toEqual([]);
-    const stalled = reservedHarness([response("", [call("c1")]), response("Done")], { batch: () => ({ executed: 0 }) });
-    await runAgentLoop(stalled.ports);
-    expect(stalled.choices).toEqual(["auto", "none"]);
-    expect(stalled.reservedRounds).toEqual([]);
+    const stalled = reservedHarness([response("", [call("c1")]), response("Done"), response("", [call("v1", "report")])],
+      { batch: (calls) => calls.some((entry) => entry.name === "report") ? {} : { executed: 0 } });
+    await expect(runAgentLoop(stalled.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(stalled.choices).toEqual(["auto", "none", "auto"]);
+    expect(stalled.reservedRounds).toEqual([3]);
   });
 
   it("is offered alone once when the tool time ran out, then the turn answers", async () => {
@@ -356,6 +359,86 @@ describe("the run's reserved report", () => {
     await expect(runAgentLoop(ports)).rejects.toBe(reason);
     expect(ports.callModel).toHaveBeenCalledTimes(1);
     expect(reservedRounds).toEqual([]);
+  });
+
+  describe("owed after the answer", () => {
+    it("is asked for once after an answer without it, records it and keeps the answer as written", async () => {
+      const { choices, inputs, items, ports, reservedRounds } = reservedHarness([
+        response("Version 2.0 is out."), response("Reported.", [call("v1", "report"), call("c1")])
+      ], { maxToolRounds: null });
+      await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(choices).toEqual(["auto", "auto"]);
+      expect(reservedRounds).toEqual([2]);
+      expect(inputs[1]).toEqual({ afterAnswer: true, reserved: true, round: 2, toolChoice: "auto" });
+      expect(inputs[0]).not.toHaveProperty("afterAnswer");
+      // Only the report runs; another call gets its result without running.
+      expect(vi.mocked(ports.runTools).mock.calls.map(([calls]) => calls.map((entry) => entry.id))).toEqual([["v1"]]);
+      expect(items.find((item) => item.kind === "tool_result" && item.callId === "c1")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+      expect(items.find((item) => item.kind === "tool_result" && item.callId === "v1")).toMatchObject({ outcome: "complete" });
+      // The round's text is not the answer's: the answer stays the first response's.
+      expect(vi.mocked(ports.roundEnd).mock.calls.map(([result, round]) => [result.finalText, round]))
+        .toEqual([["Version 2.0 is out.", 1], ["", 2]]);
+      expect(ports.callModel).toHaveBeenCalledTimes(2);
+      // Its follow-ups are settled once, after the report.
+      expect(ports.closeFollowups).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not asked for after an answer that reported, or in a run without a reserved report", async () => {
+      const reported = reservedHarness([response("", [call("v1", "report")]), response("Done")]);
+      await expect(runAgentLoop(reported.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(reported.reservedRounds).toEqual([]);
+      expect(reported.ports.callModel).toHaveBeenCalledTimes(2);
+      const ordinary = harness([response("", [call("c1")]), response("Done"), response("never")], { maxToolRounds: null });
+      await expect(runAgentLoop(ordinary.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(ordinary.ports.callModel).toHaveBeenCalledTimes(2);
+    });
+
+    it("is never asked for twice in a turn, whether its offer came on the budget path or after the answer", async () => {
+      // The budget path offered it and the model made another call instead: the answer after it ends the turn.
+      const budget = reservedHarness([response("", [call("c1")]), response("", [call("c2")]), response("Done"), response("never")],
+        { budgetExhaustedBy: "c1" });
+      await expect(runAgentLoop(budget.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+      expect(budget.reservedRounds).toEqual([2]);
+      expect(budget.ports.callModel).toHaveBeenCalledTimes(3);
+      // Asked after the answer, the model wrote text only: nothing is added and nothing more is asked.
+      const ignored = reservedHarness([response("Done"), response("Here is the answer again."), response("never")]);
+      await expect(runAgentLoop(ignored.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(ignored.reservedRounds).toEqual([2]);
+      expect(ignored.ports.runTools).not.toHaveBeenCalled();
+      expect(vi.mocked(ignored.ports.roundEnd).mock.calls.map(([result]) => result.finalText)).toEqual(["Done", ""]);
+      // A follow-up after that round goes on with tools, and its answer is not asked again.
+      const followup: TranscriptUserItem = { callback: true, followup: true, id: "f1", kind: "user", text: "Sub-agent done." };
+      const later = reservedHarness([response("Done"), response("Ok"), response("And more.")], { closes: [false, true],
+        followups: [[followup]] });
+      await expect(runAgentLoop(later.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+      expect(later.reservedRounds).toEqual([2]);
+      expect(later.choices).toEqual(["auto", "auto", "auto"]);
+    });
+
+    it("leaves the answer when its round fails, and still ends at Stop or the deadline", async () => {
+      const failing = reservedHarness([response("Done")]);
+      const failed = vi.mocked(failing.ports.callModel);
+      failed.mockResolvedValueOnce(response("Done")).mockRejectedValueOnce(new Error("provider down"));
+      await expect(runAgentLoop(failing.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(failing.ports.runTools).not.toHaveBeenCalled();
+      // What the failed request streamed is dropped: its round still ends, without text.
+      expect(vi.mocked(failing.ports.roundEnd).mock.calls.map(([result, round]) => [result.finalText, round]))
+        .toEqual([["Done", 1], ["", 2]]);
+      const deadline = new AbortController();
+      const reason = new Error("run time limit");
+      const stopped = reservedHarness([response("Done")], { signal: deadline.signal });
+      vi.mocked(stopped.ports.callModel).mockResolvedValueOnce(response("Done"))
+        .mockImplementationOnce(async () => { deadline.abort(reason); throw reason; });
+      await expect(runAgentLoop(stopped.ports)).rejects.toBe(reason);
+    });
+
+    it("is left to a held draft, which checks its own responses without calls", async () => {
+      const { ports, reservedRounds } = reservedHarness([response("A message."), response("never")]);
+      await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => false, responseCompleted: () => undefined,
+        responseEnded: async () => null } })).resolves.toEqual({ kind: "answered", rounds: 1 });
+      expect(reservedRounds).toEqual([]);
+      expect(ports.callModel).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("a held draft", () => {

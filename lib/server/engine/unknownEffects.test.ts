@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TranscriptItem, TranscriptToolCallItem, TranscriptToolResultItem, TranscriptUserItem } from "./transcript";
-import { createAgentUnknownEffects, createUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
+import {
+  answerEffectAnchor, createAgentUnknownEffects, createUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects
+} from "./unknownEffects";
 
 const recordedAt = new Date("2026-10-29T12:00:00Z");
 const create = (callId: string, title = "one issue"): TranscriptToolCallItem =>
@@ -146,6 +148,18 @@ describe("unknown effects the old core left on a branch", () => {
     // A turn the conversation does not hold puts them last, unspoken.
     expect(withHiddenRunEffects(branch, [{ beforeItemId: "msg-gone", items: step }]).map((item) => item.id).at(-1)).toBe("call-s1");
     expect(withHiddenRunEffects(branch, [])).toEqual(branch);
+  });
+
+  it("puts the calls of a native answer that entered as text where that answer stands", () => {
+    const run = [create("p1"), result("p1", "unknown"), { id: "said", kind: "assistant_text", text: "x" } as TranscriptItem];
+    const items = withHiddenRunEffects(branch, [{ beforeItemId: answerEffectAnchor(branch, messages, "a1"), items: run }]);
+    expect(items.map((item) => item.id).slice(0, 4)).toEqual(["msg-q1", "call-p1", "result-p1-unknown", "msg-a1"]);
+    // The user's later question releases it, as when the run's items stood in the conversation.
+    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: true });
+    // An answer without text anchors at the next branch message; one off the branch puts them last.
+    const textless = branch.filter((item) => item.id !== "msg-a1");
+    expect(answerEffectAnchor(textless, messages, "a1")).toBe("msg-q2");
+    expect(answerEffectAnchor(branch, messages, "gone")).toBe("msg-gone");
   });
 });
 

@@ -172,9 +172,9 @@ export const SCHEDULED_TASK_KINDS = ["standard", "monitoring"] as const satisfie
  * previous result. `baseline` is the first check of a task or after a changed
  * prompt, schedule kind or type; `unreported` is a check whose model never
  * reported, shown because an update is never hidden by mistake;
- * `could_not_check` is a check that missed a source its previous shown result
- * relied on: shown, but news only as the source alert or a pause, and never
- * the next check's previous result.
+ * `could_not_check` is a check that missed a source it relied on, or whose
+ * model reported that it could not reach what it needed: shown, but news only
+ * as the source alert or a pause, and never the next check's previous result.
  */
 export type ScheduledTaskCheckOutcome = "baseline" | "update" | "no_update" | "goal_reached" | "unreported" |
   "could_not_check";

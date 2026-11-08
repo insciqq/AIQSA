@@ -1826,9 +1826,11 @@ export async function prepareRun(
   // The computer's facts, or why the chat's chosen computer is not available here: turn context, never the system prompt.
   appendTurnGuidance(computer.guidance);
   // The check's server-owned instruction, frozen with the accepted prompt: it
-  // compares with the previous shown result only while the context holds it.
+  // compares with the previous shown result only while the context holds it,
+  // and the run keeps which (`monitoringPreviousResult`) for its settlement.
+  const monitoringPreviousResult = (sendContext?.length ?? 0) > 0;
   if (monitoringCheck) {
-    prompt = { ...prompt, system: [prompt.system, monitoringCheckInstruction({ previousResult: (sendContext?.length ?? 0) > 0 })]
+    prompt = { ...prompt, system: [prompt.system, monitoringCheckInstruction({ previousResult: monitoringPreviousResult })]
       .filter(Boolean).join("\n\n") };
   }
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
@@ -2009,7 +2011,7 @@ export async function prepareRun(
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
-    ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
+    ...(monitoringCheck ? { monitoringPreviousResult, monitoringVerdictTool: true as const } : {}),
     ...(deepResearch === true ? { deepResearch: true as const } : {}),
     ...(computer.binding ? { computer: computer.binding } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),

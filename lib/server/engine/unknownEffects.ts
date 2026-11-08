@@ -81,7 +81,8 @@ export function withRetiredEffects(items: readonly TranscriptItem[], messages: r
 /**
  * The guard's items with the calls of runs the conversation leaves out (a
  * stopped step of an answer review recorded before the feature's removal,
- * `NativeRunBeforeTurn.reviewStep`), for `unknownEffectsOf` only: each run's
+ * `NativeRunBeforeTurn.reviewStep`, and the previous shown result a scheduled
+ * run takes as text, `answerEffectAnchor`), for `unknownEffectsOf` only: each run's
  * calls and results just before the user item that followed its answer, or
  * last when that item is not in the conversation. The model never sees them.
  */
@@ -97,6 +98,21 @@ export function withHiddenRunEffects(items: readonly TranscriptItem[],
     else last.push(...calls);
   }
   return [...items.flatMap((item) => [...(before.get(item.id) ?? []), item]), ...last];
+}
+
+/**
+ * Where `withHiddenRunEffects` puts the calls of a native answer that entered
+ * the conversation as its saved text (a scheduled run's previous shown
+ * result): just before that answer's item, or before the next branch
+ * message's item when the answer had no text; last when neither is there, as
+ * for a run's own message, which a scheduled run's server-written prompt is.
+ */
+export function answerEffectAnchor(items: readonly TranscriptItem[], messages: readonly BranchMessage[],
+  answerId: string): string {
+  const ids = new Set(items.map((item) => item.id));
+  const at = messages.findIndex((message) => message.id === answerId);
+  const next = at < 0 ? undefined : messages.slice(at).find((message) => ids.has(`msg-${message.id}`));
+  return `msg-${(next ?? { id: answerId }).id}`;
 }
 
 /**
