@@ -2,6 +2,7 @@ import { assertInstructionPresetSelection } from "../instructions/store";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
+import { keepChatListTime, monitoringAdmissionChatTime, monitoringCheckChatTime } from "./chatListTime";
 import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepositoryFollowups";
 import { claimSubagentCallbacksForRun } from "./subagentBackground/store";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
@@ -1022,6 +1023,13 @@ export async function admitPreparingRunWithClient(
       if (!lockedChat || lockedChat.archived) {
         throw new ActiveLeafConflictError();
       }
+      // A monitoring check keeps its chat's place in the chat list until its settlement shows a result
+      // (`chatListTime.ts`): this transaction's writes to the chat put that time back once they are done.
+      const keptChatTime = input.admissionKind === "NORMAL_SEND" && input.scheduledOccurrence &&
+        input.normalizedRequest.monitoringVerdictTool === true
+        ? await monitoringAdmissionChatTime(tx, { chatId: input.chatId,
+          rotatedFromChatId: input.scheduledOccurrence.rotation?.fromChatId ?? null, userId: input.userId })
+        : null;
       if (input.chatAssistant) await applyAcceptedChatAssistant(tx, input.chatId, input.chatAssistant);
       // The owner's computer choice for the chat's next messages, stored with the message that made it (`computerAdmission.ts`).
       if (input.chatComputer !== undefined) {
@@ -1439,6 +1447,8 @@ export async function admitPreparingRunWithClient(
       if (input.defaults && !scheduledOccurrence) {
         await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
       }
+      // Every write this admission makes to the chat is above, so a check's kept time goes back now.
+      if (keptChatTime) await keepChatListTime(tx, input.chatId, keptChatTime);
       if (input.deferredPdf || workspaceFollowup) {
         const source = {
           activeLeafMessageId: admittedSourceSnapshot.activeLeafMessageId,
@@ -3511,6 +3521,8 @@ export async function settleTerminalMemorySource(
     userId: input.userId
   });
   if (!chat) throw new MemorySourceStateConflictError();
+  // A monitoring check's terminal write keeps its chat's place in the chat list (`chatListTime.ts`).
+  const keptChatTime = await monitoringCheckChatTime(tx, { chatId: input.chatId, runId: input.runId });
   await applyMemorySourceMutations(tx, {
     chat,
     hooks: memorySourceHooks,
@@ -3521,6 +3533,7 @@ export async function settleTerminalMemorySource(
       status: input.status
     }
   });
+  if (keptChatTime) await keepChatListTime(tx, input.chatId, keptChatTime);
 }
 
 export async function settlePreparingRunInTransaction(

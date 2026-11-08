@@ -149,8 +149,10 @@ export async function loadChatTitleFirstTurn(
   const chat = await client.chat.findFirst({
     select: {
       _count: { select: { messages: true } },
-      // A turn the server wrote for the user never names the chat.
-      messages: { select: { content: true }, where: { id: context.userMessageId, systemTurnKind: null } },
+      // A turn the server wrote for the user never names the chat, nor does a scheduled task's prompt: the
+      // chat its run created keeps the title it was created with.
+      messages: { select: { content: true },
+        where: { id: context.userMessageId, scheduledTaskPrompt: false, systemTurnKind: null } },
       title: true,
       titleRevision: true
     },

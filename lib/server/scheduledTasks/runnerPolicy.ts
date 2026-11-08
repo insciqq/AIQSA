@@ -310,6 +310,15 @@ export function planTaskSettlement(input: Readonly<{
 }
 
 /**
+ * A monitoring check with no update: the one settlement of a run nobody is
+ * shown. It is no news, and it never moves its chat in the chat list
+ * (`lib/server/runs/chatListTime.ts`); every other outcome is shown.
+ */
+export function settlementHidden(outcome: Readonly<{ reasonCode: string | null; state: ScheduledTaskSettledState }>): boolean {
+  return outcome.state === "COMPLETED" && outcome.reasonCode === "no_update";
+}
+
+/**
  * Whether a settlement is news for the owner: an unread result, a result
  * email and a browser push all follow this one predicate. A shown result is
  * news: every completed run except a monitoring check with no update, which
@@ -328,7 +337,7 @@ export function settlementNotifiesOwner(outcome: Readonly<{
   taskPaused: boolean;
 }>): boolean {
   const completed = outcome.state === "COMPLETED";
-  if (completed && outcome.reasonCode === "no_update") return false;
+  if (settlementHidden(outcome)) return false;
   return (completed && outcome.reasonCode !== "could_not_check") || outcome.taskPaused || outcome.sourceAlert === true;
 }
 
