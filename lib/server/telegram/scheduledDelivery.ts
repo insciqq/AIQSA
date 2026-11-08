@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import type { ThreadCitation } from "../../contracts/chats";
 import {
   scheduledTaskRunTrigger as trigger,
@@ -118,9 +117,11 @@ export type TelegramScheduledDeliveryContext = Readonly<{
   }> | null;
 }>;
 
+/**
+ * The outbox. Its rows are written by the settlement that makes them due, in
+ * that settlement's transaction (`recordTelegramScheduledDelivery`).
+ */
 export type TelegramScheduledDeliveryStore = Readonly<{
-  /** Records the occurrence's delivery once (`ON CONFLICT DO NOTHING`) when its task sends to Telegram. */
-  enqueue(occurrenceId: string, now: Date): Promise<boolean>;
   /** Pending rows due by `now`, oldest first. */
   listDue(now: Date, limit: number): Promise<readonly TelegramScheduledDeliveryRow[]>;
   /** Null when the occurrence or its task is gone. */
@@ -166,7 +167,7 @@ type Settled = "sent" | "failed" | "unknown" | "skipped";
 /** Content-free: the row id, codes, delays and counts. */
 function log(fields: Readonly<{
   action?: "retry" | "skip" | "fail" | "wait"; code?: string; count?: number; delay_ms?: number; job_id?: string; prisma_code?: string;
-  outcome: "completed" | "degraded" | "failed" | "skipped" | "waiting"; stage: "claim" | "dispatch" | "settle" | "write";
+  outcome: "completed" | "degraded" | "failed" | "skipped" | "waiting"; stage: "claim" | "dispatch" | "settle";
 }>): void {
   logEvent("service_operation", { subsystem: "telegram", ...fields });
 }
@@ -505,19 +506,10 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
 
   return {
     /**
-     * Records a notifying occurrence's delivery and wakes the sender; never
-     * throws and never waits for Telegram. The row is written only for a task
-     * with Telegram delivery on. Resolves once the row is recorded.
+     * Looks for due rows now, as after a settlement that recorded one; never
+     * throws and never waits for Telegram. Without it the sweep finds them.
      */
-    queue(occurrenceId: string): Promise<void> {
-      return background(async () => {
-        try {
-          if (await deps.store.enqueue(occurrenceId, clock())) wake();
-        } catch (error) {
-          log({ action: "skip", job_id: occurrenceId, outcome: "failed", prisma_code: databaseFailureCode(error), stage: "write" });
-        }
-      }).catch(() => undefined);
-    },
+    wake,
     /** Delivers the due rows now, as the start and the once-a-minute sweep do. */
     async sweep(): Promise<void> {
       wake();
@@ -553,21 +545,6 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
   const { prisma } = deps;
   const readFile = createPrismaTelegramFileReader({ prisma, storage: deps.storage });
   return Object.freeze({
-    async enqueue(occurrenceId, now) {
-      const inserted = await prisma.$executeRaw(Prisma.sql`
-        INSERT INTO "TelegramScheduledDelivery" ("id", "occurrenceId", "userId", "state", "attempts", "nextAttemptAt", "createdAt")
-        SELECT ${randomUUID()}, occurrence."id", occurrence."userId", 'pending'::"TelegramScheduledDeliveryState", 0, ${now}, ${now}
-        FROM "ScheduledTaskOccurrence" AS occurrence
-        INNER JOIN "ScheduledTask" AS task ON task."id" = occurrence."taskId" AND task."userId" = occurrence."userId"
-        WHERE occurrence."id" = ${occurrenceId}
-          AND task."telegramNotify"
-          AND occurrence."state" IN ('COMPLETED'::"ScheduledTaskOccurrenceState",
-            'FAILED'::"ScheduledTaskOccurrenceState", 'SKIPPED'::"ScheduledTaskOccurrenceState")
-        ON CONFLICT ("occurrenceId") DO NOTHING
-      `);
-      return inserted === 1;
-    },
-
     async listDue(now, limit) {
       return prisma.telegramScheduledDelivery.findMany({
         orderBy: [{ nextAttemptAt: "asc" }, { id: "asc" }],
