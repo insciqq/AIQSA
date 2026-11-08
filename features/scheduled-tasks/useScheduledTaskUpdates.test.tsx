@@ -294,7 +294,7 @@ describe("useScheduledTaskUpdates", () => {
     const running = scheduledTaskFixture({ chatId: "chat-1", kind: "monitoring", running: true });
     const quiet = scheduledTaskFixture({ chatId: "chat-1", kind: "monitoring",
       lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: "no_update", finishedAt: "2026-10-04T08:01:00.000Z", unseen: false } });
-    useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1")] });
+    useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-2", "2026-10-03T09:00:00.000Z"), navigationRow("chat-1")] });
     list.mockResolvedValueOnce(listed([running])).mockResolvedValue(listed([quiet]));
     const { onNewResult, refreshOpenChat } = renderUpdates({ activeChatId: "chat-1" });
     await flush();
@@ -304,6 +304,10 @@ describe("useScheduledTaskUpdates", () => {
     expect(refreshOpenChat).toHaveBeenCalledTimes(2);
     expect(onNewResult).not.toHaveBeenCalled();
     expect(navigationMarker("chat-1")).toBeUndefined();
+    // A hidden check keeps the row's date and its place below a chat used since.
+    expect(useWorkspaceStore.getState().navigationChats.map(({ id, updatedAt }) => ({ id, updatedAt }))).toEqual([
+      { id: "chat-2", updatedAt: "2026-10-03T09:00:00.000Z" }, { id: "chat-1", updatedAt: "2026-10-03T08:00:00.000Z" }
+    ]);
     await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_POLL_MS); });
     expect(refreshOpenChat).toHaveBeenCalledTimes(2);
   });

@@ -21,6 +21,7 @@ import {
   scheduledDispatchNotBefore,
   scheduledTaskDispatchOffsetMs,
   settlementBaseline,
+  settlementHidden,
   settlementNotifiesOwner,
   type MonitoringVerdict
 } from "./runnerPolicy";
@@ -288,6 +289,14 @@ describe("monitoring check settlement", () => {
     expect(verdicts.map((verdict) => settle(verdict, { firstCheck: true }).outcome))
       .toEqual(["baseline", "baseline", "goal_reached", "could_not_check", "unreported"]);
     expect(effects("baseline")).toEqual({ baseline: true, notifies: true });
+  });
+
+  it("hides only a completed check with no update, so only it keeps its chat's place in the chat list", () => {
+    expect(SCHEDULED_TASK_CHECK_OUTCOMES.filter((outcome) => settlementHidden({ reasonCode: outcome, state: "COMPLETED" })))
+      .toEqual(["no_update"]);
+    // A failed or skipped occurrence, whatever its code, and a standard task's result are shown.
+    for (const state of ["FAILED", "SKIPPED"] as const) expect(settlementHidden({ reasonCode: "no_update", state })).toBe(false);
+    expect(settlementHidden({ reasonCode: null, state: "COMPLETED" })).toBe(false);
   });
 
   it("knows the model-reported outcomes, the could-not-check report among them", () => {
