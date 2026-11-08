@@ -1037,10 +1037,11 @@ test.describe("touch controls", () => {
       expect(status && action).toBeTruthy();
       expect(Math.abs((status!.y + status!.height / 2) - (action!.y + action!.height / 2))).toBeLessThan(2);
       expect(action!.x).toBeGreaterThan(status!.x + status!.width);
-      // Touch has no tooltip: the note that replies don't change the automation is on screen, below that row.
+      // Touch has no tooltip: the note that replies don't change the automation is on screen, beside that row where it
+      // fits and below it on a narrow phone.
       const note = hint.getByText("Replies here don't change the automation.", { exact: true });
       await expectWithinViewport(page, note);
-      expect((await note.boundingBox())!.y).toBeGreaterThanOrEqual(status!.y + status!.height - 1);
+      if (size.width < 768) expect((await note.boundingBox())!.y).toBeGreaterThanOrEqual(status!.y + status!.height - 1);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-chat-hint-touch-${size.width}x${size.height}.png`) });
     }
