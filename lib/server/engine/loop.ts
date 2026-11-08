@@ -26,9 +26,12 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * report (a monitoring check's verdict) is offered alone once more when its call
  * budget, tool rounds or tool time ran out before it was made; past tool time
  * that round runs inside the answer reserve, and the turn's deadline still
- * ends it. A run that researches (`draft`, `lib/server/research/run.ts`) may
- * take its answer from a checked draft instead of a further model round, and
- * has a response without calls checked like one.
+ * ends it. A turn whose answer is written while that report is still owed,
+ * and that was not offered it alone, is offered it alone once more after the
+ * answer: the answer stands as written, and the round adds nothing to it. A
+ * run that researches (`draft`, `lib/server/research/run.ts`) may take its
+ * answer from a checked draft instead of a further model round, and has a
+ * response without calls checked like one.
  * Everything the loop knows is the transcript; every effect goes through
  * its ports.
  */
@@ -74,6 +77,11 @@ export type AgentLoopPorts = Readonly<{
    * request carries the instruction that asks for it.
    */
   prepareRequest(input: Readonly<{
+    /**
+     * With `reserved`: the answer is already written and stands, so the round only asks for the reserved call, and the
+     * loop takes none of its text into the answer (`roundEnd` gets it without text).
+     */
+    afterAnswer?: true;
     /** The round asks for the answer itself: its request carries `ANSWER_NOW_INSTRUCTION`. */
     answerNow?: true; reserved?: true; round: number; toolChoice: LoopToolChoice;
   }>): Promise<ProviderRunRequest>;
@@ -124,6 +132,43 @@ function distinctCalls(calls: readonly ModelToolCall[] | undefined): ModelToolCa
 
 function refused(call: ModelToolCall, output: string): TranscriptToolResultItem {
   return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output };
+}
+
+/**
+ * The one round that asks for a run's reserved report after its answer is written: only that call may run, the response's
+ * text is not the answer's (the answer stands, and what this round writes would only follow it), and the call gets its result
+ * before the turn ends. The report is bookkeeping behind the answer: a round that fails leaves the answer as it is and the
+ * report unmade (a monitoring check then counts as unreported, which is shown), while Stop and the deadline still end the
+ * turn. Returns the approvals its call waits for.
+ */
+async function reportAfterAnswer(ports: AgentLoopPorts, reserved: NonNullable<AgentLoopPorts["reservedCall"]>,
+  round: number): Promise<readonly string[]> {
+  let roundEnded = false;
+  try {
+    await ports.roundStart(round);
+    const request = await ports.prepareRequest({ afterAnswer: true, reserved: true, round, toolChoice: "auto" });
+    const result = await ports.callModel(request, round);
+    roundEnded = true;
+    await ports.roundEnd({ ...result, finalText: "" }, round);
+    const calls = distinctCalls(result.toolCalls);
+    const runnable = calls.filter((call) => call.name === reserved.name);
+    const items = ports.responseItems(result);
+    if (runnable.length > 0) await ports.appendCalls(items);
+    else await ports.append(items);
+    const refusedCalls = calls.filter((call) => !runnable.includes(call));
+    if (refusedCalls.length > 0) await ports.append(refusedCalls.map((call) => refused(call, NO_MORE_TOOLS_OUTPUT)));
+    if (runnable.length === 0) return [];
+    const batch = await ports.runTools(runnable, round);
+    await ports.append(batch.results);
+    return batch.approvals;
+  } catch (error) {
+    if (ports.signal.aborted) throw error;
+    // A failed request may have streamed text before it gave up: the round ends without it, so the answer stays as written.
+    if (!roundEnded) {
+      await ports.roundEnd({ finalProviderResponsePreview: {}, finalText: "", toolCalls: [], usage: {} }, round).catch(() => undefined);
+    }
+    return [];
+  }
 }
 
 /**
@@ -226,6 +271,15 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
         answerText = "";
         answerNow = null;
         continue;
+      }
+      // An answer written while the run's reserved report is still owed, and never offered it alone, is offered it alone
+      // once more. A held draft checks its own responses without calls instead.
+      const owed = !callsOnly && !ports.draft && approvals.length === 0 && !reservedOffered &&
+        ports.reservedCall?.outstanding() === true ? ports.reservedCall : null;
+      if (owed) {
+        reservedOffered = true;
+        round += 1;
+        approvals.push(...await reportAfterAnswer(ports, owed, round));
       }
       // The answer is final unless a follow-up arrived: then the turn goes on with it.
       const followups = await settleFollowups(ports);
