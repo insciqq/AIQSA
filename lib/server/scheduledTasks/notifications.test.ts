@@ -74,5 +74,14 @@ describe("scheduled task result email", () => {
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "could_not_check",
       unavailableSources: [{ name: "Tracker", reason: "mcp_server_unavailable" }] }).text)
       .toContain("finished.\nCould not check: a source was unavailable.\nTracker is unavailable.\n");
+    // A check whose own model reported it could not check names no source, yet the third in a row paused the task.
+    const reported = scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "could_not_check", taskPauseReason: "source_unavailable" });
+    expect(reported.subject).toBe("Automation paused");
+    expect(reported.text).toContain("was paused.\nPaused after 3 runs in a row could not reach a source the automation uses.");
+    // Run now pauses nothing, and a check that did check did not cause the pause.
+    for (const other of [{ trigger: "manual" as const }, { reasonCode: "update" }]) {
+      expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "could_not_check", taskPauseReason: "source_unavailable", ...other }))
+        .toMatchObject({ subject: "Automation finished" });
+    }
   });
 });

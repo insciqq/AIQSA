@@ -223,8 +223,10 @@ function chatFixture(): ChatDetailWire {
     messages: [
       // An earlier run whose result was already seen, then the unread newest one.
       message("brief-question-1", "user", "Give me a short brief of the most important news from the last 24 hours.", null,
-        { scheduledTask: { taskId: "brief", taskRunId: "brief-run-0", title: "Weekday news brief", unseen: false } }),
-      message("brief-answer-1", "assistant", "Here is your brief for Thursday:\n\n- Synthetic headline zero.", "brief-question-1"),
+        { createdAt: "2026-10-01T08:00:00.000Z",
+          scheduledTask: { taskId: "brief", taskRunId: "brief-run-0", title: "Weekday news brief", unseen: false } }),
+      message("brief-answer-1", "assistant", "Here is your brief for Thursday:\n\n- Synthetic headline zero.", "brief-question-1",
+        { createdAt: "2026-10-01T08:01:00.000Z" }),
       message("brief-question", "user", "Give me a short brief of the most important news from the last 24 hours.", "brief-answer-1",
         { scheduledTask: { taskId: "brief", taskRunId: "brief-run-3", title: "Weekday news brief", unseen: true } }),
       message("brief-answer", "assistant", "Here is your brief for Friday:\n\n- Synthetic headline one.\n- Synthetic headline two.", "brief-question")
@@ -233,27 +235,42 @@ function chatFixture(): ChatDetailWire {
 }
 
 /** A monitoring chat: its first check, checks with no update around one that could not check, then an update. */
-const watchChecks: readonly Readonly<{ answer: string; outcome: ScheduledTaskCheckOutcome }>[] = [
-  { outcome: "baseline", answer: "Watching: the latest release is 1.4.0, published on 28 September." },
-  { outcome: "no_update", answer: "Still 1.4.0. No new release since the last check." },
-  { outcome: "no_update", answer: "Still 1.4.0. The release page is unchanged." },
-  { outcome: "could_not_check", answer: "I could not reach the release tracker, so I could not check for a new release." },
-  { outcome: "no_update", answer: "Still 1.4.0. Nothing new in the changelog." },
-  { outcome: "no_update", answer: "Still 1.4.0. No new tags." },
-  { outcome: "no_update", answer: "Still 1.4.0. The download page is unchanged." },
-  { outcome: "update", answer: "Release 1.5.0 is out:\n\n- Faster sync.\n- A new export format." }
+/**
+ * A monitoring chat in Europe/London (BST): its first check, a run that failed, checks with no update around one that
+ * could not check, an update, more checks with no update, then a latest run that failed and the user's own question.
+ * A check without an outcome is a run that errored: its answer is a failure card.
+ */
+const watchPrompt = "Tell me when a new release of the project is published.";
+const watchChecks: readonly Readonly<{ answer: string; at: string; outcome?: ScheduledTaskCheckOutcome }>[] = [
+  { outcome: "baseline", at: "2026-10-03T08:00:00.000Z", answer: "Watching: the latest release is 1.4.0, published on 28 September." },
+  { at: "2026-10-03T12:00:00.000Z", answer: "" },
+  { outcome: "no_update", at: "2026-10-03T16:00:00.000Z", answer: "Still 1.4.0. The release page is unchanged." },
+  { outcome: "could_not_check", at: "2026-10-03T20:00:00.000Z", answer: "I could not reach the release tracker, so I could not check for a new release." },
+  { outcome: "no_update", at: "2026-10-04T00:00:00.000Z", answer: "Still 1.4.0. Nothing new in the changelog." },
+  { outcome: "update", at: "2026-10-04T04:00:00.000Z", answer: "Release 1.5.0 is out:\n\n- Faster sync.\n- A new export format." },
+  { outcome: "no_update", at: "2026-10-04T06:00:00.000Z", answer: "Still 1.5.0. No new tags." },
+  { outcome: "no_update", at: "2026-10-04T08:00:00.000Z", answer: "Still 1.5.0. The download page is unchanged." },
+  { at: "2026-10-04T09:00:00.000Z", answer: "" }
 ];
 
 function watchChatFixture(): ChatDetailWire {
-  const updatedAt = "2026-10-04T08:01:30.000Z";
+  const updatedAt = "2026-10-04T09:30:00.000Z";
   const messages: ChatMessageWire[] = [];
   watchChecks.forEach((check, index) => {
     const turn = `watch-${index + 1}`;
     const marker = { taskId: "watch", taskRunId: `watch-run-${index + 1}`, title: "Release watch", unseen: false };
-    messages.push(message(`${turn}-question`, "user", "Tell me when a new release of the project is published.",
-      messages.at(-1)?.id ?? null, { scheduledTask: marker, scheduledOutcome: check.outcome }));
-    messages.push(message(`${turn}-answer`, "assistant", check.answer, `${turn}-question`, { scheduledOutcome: check.outcome }));
+    const outcome = check.outcome ? { scheduledOutcome: check.outcome } : {};
+    const answeredAt = new Date(Date.parse(check.at) + 60_000).toISOString();
+    messages.push(message(`${turn}-question`, "user", watchPrompt, messages.at(-1)?.id ?? null,
+      { createdAt: check.at, scheduledTask: marker, ...outcome }));
+    messages.push(message(`${turn}-answer`, "assistant", check.answer, `${turn}-question`,
+      { createdAt: answeredAt, ...outcome, ...(check.outcome ? {} : { status: "error" }) }));
   });
+  // The user's own turn in the task chat stays an ordinary, editable question.
+  messages.push(message("watch-reply-question", "user", "Which release should I install today?", messages.at(-1)!.id,
+    { createdAt: "2026-10-04T09:20:00.000Z" }));
+  messages.push(message("watch-reply-answer", "assistant", "Install 1.5.0; it is the latest release.", "watch-reply-question",
+    { createdAt: "2026-10-04T09:20:30.000Z" }));
   const leaf = messages.at(-1)!.id;
   return {
     assistant: null, id: watchChatId, title: "Release watch", createdAt: "2026-09-28T08:00:00.000Z", updatedAt,
@@ -324,17 +341,21 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   const brief = rows.filter({ hasText: "Weekday news brief" });
   await expect(brief).toContainText("Every weekday at 09:00");
   await expect(brief).toContainText("Next run Mon 5 Oct, 09:00");
-  await expect(brief).toContainText("Last run Fri 2 Oct, 09:00 · Answered");
   await expect(brief.getByText("New result")).toHaveCount(1);
+  // The title opens the task's chat; the row has no separate Open chat button.
+  await expect(brief.getByRole("button", { name: "Open chat for Weekday news brief", exact: true })).toBeVisible();
+  await expect(brief.getByRole("button", { name: "Open chat", exact: true })).toHaveCount(0);
   await expect(rows.filter({ hasText: "Market open notes" })).toContainText("Running now");
   const inbox = rows.filter({ hasText: "Inbox check" });
   await expect(inbox).toContainText("Every 2 hours, 09:00–18:00, Mon–Fri");
-  await expect(inbox).toContainText("Skipped: the previous run was still in progress");
+  // One status line: a skipped run leaves the next run in place.
+  await expect(inbox).toContainText("Next run Mon 5 Oct, 09:00");
   await expect(rows.filter({ hasText: "Model check-in" })).toContainText("Paused: the model is no longer available. Edit to choose another model.");
-  await expect(rows.filter({ hasText: "Model check-in" })).toContainText("Failed: the model was unavailable");
   await expect(rows.filter({ hasText: "New York team" })).toContainText("Every Fri at 17:00 · America/New York");
   await expect(rows.filter({ hasText: "Launch reminder" })).toContainText("Completed");
-  await expect(rows.filter({ hasText: "Monthly bills" })).toContainText("Skipped: the scheduled time passed while runs were unavailable");
+  await expect(rows.filter({ hasText: "Monthly bills" })).toContainText("Next run Sat 31 Oct, 10:00");
+  // Neither the last run nor the history retention repeats on every row.
+  await expect(panel.getByRole("list", { name: "Automations" })).not.toContainText(/Last run|Skipped|History:|current chat is kept/u);
   await expect(panel).not.toContainText(/model_unavailable|chat_busy|previous_running|missed\b/u);
   await captureState(page, info, "scheduled-list", {
     atEachSize: async () => {
@@ -343,7 +364,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
     }
   });
 
-  // Create: a weekly task through the sheet, with validation, a live preview and a new chat per run.
+  // Create: a weekly task through the sheet, with validation, a live preview and one chat for every run.
   await panel.getByRole("button", { name: "New automation", exact: true }).click();
   const sheet = page.getByTestId("scheduled-task-sheet");
   const dialog = sheet.getByRole("dialog", { name: "New automation", exact: true });
@@ -361,9 +382,11 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   await expect(sheet.getByRole("button", { name: "Monday", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.getByTestId("scheduled-task-preview")).toHaveText("Next run: Mon 5 Oct, 17:00");
   await expect(sheet.getByText("The email contains the automation's name and a link, never the answer.")).toBeVisible();
-  const chatChoice = sheet.getByRole("group", { name: "Chat", exact: true });
-  await expect(chatChoice.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeChecked();
-  await expect(chatChoice.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeEnabled();
+  // Model, chat and tools wait behind Advanced, summed up in one line.
+  const advanced = sheet.getByRole("button", { name: "Advanced", exact: true });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(sheet.getByTestId("scheduled-task-advanced-summary")).toContainText("One chat · Old chats kept 90 days");
+  await expect(sheet.getByRole("group", { name: "Chat", exact: true })).toHaveCount(0);
   expect(api.writes).toEqual([]);
   await captureState(page, info, "scheduled-create-weekly", {
     atEachSize: async (step) => {
@@ -373,6 +396,11 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
       await expectNoHorizontalOverflow(page);
     }
   });
+  await advanced.click();
+  await expect(advanced).toHaveAttribute("aria-expanded", "true");
+  const chatChoice = sheet.getByRole("group", { name: "Chat", exact: true });
+  await expect(chatChoice.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeChecked();
+  await expect(chatChoice.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeEnabled();
   await captureState(page, info, "scheduled-create-chat-mode", {
     anchor: chatChoice,
     atEachSize: async () => {
@@ -387,10 +415,11 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, scheduleEnabled: true, webhookEnabled: false, timeZone: "Europe/London",
     // New automations start with Search on where the model can search (v0.4.1).
     modelId: model.modelId, provider: model.provider, searchEnabled: true, emailNotify: false, telegramNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "same", kind: "standard", historyRetentionDays: 90,
     pinnedSkillIds: []
   } }]);
-  await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
+  // Focus returns to the new row's title, which opens its editor until a run made its chat.
+  await expect(panel.getByRole("button", { name: "Edit Weekly planning", exact: true })).toBeFocused();
   await expect(panel.getByText("“Weekly planning” is scheduled.")).toBeVisible();
 
   // Edit: the sheet lists recent runs compactly, marks the rendered unread one seen and links each run's chat.
@@ -403,6 +432,10 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   await expect(runs.getByRole("listitem").nth(1)).toContainText("Run now");
   await expect(runs.getByRole("listitem").nth(1)).toContainText("Failed: the automation's chat was busy with another answer");
   await expect(runs.getByRole("button", { name: /^Open chat from /u })).toHaveCount(2);
+  // Results come before settings: the runs sit right under the header, above Name.
+  const [runsBox, nameBox] = await Promise.all([runs.boundingBox(), edit.getByLabel("Name", { exact: true }).boundingBox()]);
+  expect(runsBox!.y).toBeLessThan(nameBox!.y);
+  await expect(edit.getByRole("button", { name: "Advanced", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect.poll(() => seenWrites(api, "brief")).toEqual([{ runIds: ["brief-run-3"] }]);
   await expect(edit.getByLabel("Repeat", { exact: true })).toHaveValue("weekdays");
   await expect(sheet.getByTestId("scheduled-task-preview")).toHaveText("Next run: Mon 5 Oct, 09:00");
@@ -430,6 +463,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   await expect(hourly.getByLabel("Until", { exact: true })).toHaveValue("18:00");
   await expect(hourly.getByRole("button", { name: "Friday", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(hourly.getByRole("button", { name: "Saturday", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await hourly.getByRole("button", { name: "Advanced", exact: true }).click();
   const hourlyChat = hourly.getByRole("group", { name: "Chat", exact: true });
   await expect(hourlyChat.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeDisabled();
   await expect(hourlyChat.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeChecked();
@@ -628,12 +662,30 @@ test("an unread scheduled chat shows a dot, clears only its rendered result and 
   // Only the unread turn the transcript renders is sent; the earlier, seen one is not.
   await expect.poll(() => seenWrites(api, "brief")).toEqual([{ runIds: ["brief-run-3"] }]);
   await expect(row).not.toHaveAttribute("aria-describedby");
+  // Each task-posted turn is one line with its run time; its instructions wait behind a disclosure and it has no edit action.
+  const thread = page.getByTestId("conversation-thread");
+  const turns = thread.getByTestId("scheduled-turn");
+  await expect(turns).toHaveCount(2);
+  await expect(turns.nth(0)).toHaveText(/^Automation · Weekday news brief\s*·\s*Thu 1 Oct, 09:00\s*·\s*Show instructions$/u);
+  await expect(turns.nth(1)).toHaveText(/^Automation · Weekday news brief\s*·\s*Fri 2 Oct, 09:00\s*·\s*Show instructions$/u);
+  await expect(thread.getByText("Give me a short brief of the most important news", { exact: false })).toHaveCount(0);
+  await expect(thread.locator('button[aria-label="Edit question"]')).toHaveCount(0);
+  const showInstructions = turns.nth(1).getByRole("button", { name: "Show instructions", exact: true });
+  await expect(showInstructions).toHaveAttribute("aria-expanded", "false");
+  await showInstructions.click();
+  await expect(thread.getByText("Give me a short brief of the most important news from the last 24 hours.", { exact: true })).toHaveCount(1);
+  await expect(turns.nth(1).getByRole("button", { name: "Copy instructions", exact: true })).toBeVisible();
+  await turns.nth(1).getByRole("button", { name: "Hide instructions", exact: true }).click();
+  await expect(thread.getByText("Give me a short brief of the most important news", { exact: false })).toHaveCount(0);
+  // The line above the composer says when the task runs next and keeps the note that replies don't change it.
   const hint = page.getByTestId("scheduled-task-chat-hint");
-  await expect(hint).toHaveText(/Replies here don't change the automation\./u);
+  await expect(hint).toContainText("Next run Mon 5 Oct, 09:00");
+  await expect(hint).toHaveAttribute("title", "Replies here don't change the automation.");
   const editTask = hint.getByRole("button", { name: "Edit automation Weekday news brief", exact: true });
   await captureState(page, info, "scheduled-transcript-chip", {
     atEachSize: async () => {
       await expect(chip).toBeVisible();
+      await expectWithinViewport(page, hint.getByText("Next run Mon 5 Oct, 09:00", { exact: true }));
       await expectWithinViewport(page, editTask);
       await expectWithinViewport(page, page.getByRole("textbox", { name: "Message", exact: true }));
       await expectNoHorizontalOverflow(page);
@@ -660,10 +712,11 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   const rows = panel.getByRole("list", { name: "Automations" }).getByRole("listitem");
   const watch = rows.filter({ hasText: "Release watch" });
   await expect(watch).toContainText("Monitoring · Next run Sun 4 Oct, 13:00");
-  await expect(watch).toContainText("Last run Sun 4 Oct, 09:00 · Update");
   const tickets = rows.filter({ hasText: "Concert ticket watch" });
   await expect(tickets).toContainText("Monitoring · Goal reached — completed");
-  await expect(tickets).toContainText("Last run Sat 3 Oct, 09:00 · Goal reached");
+  // One status line per row: an update or a reached goal needs no second line.
+  await expect(watch).not.toContainText("Last run");
+  await expect(tickets).not.toContainText("Last run");
   // A reached goal completes the task, and it can still be resumed.
   await expect(tickets.getByRole("switch", { name: "Run Concert ticket watch on schedule", exact: true })).toHaveAttribute("aria-checked", "false");
   await expect(rows.filter({ hasText: "Weekday news brief" })).not.toContainText("Monitoring");
@@ -683,6 +736,8 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   const type = dialog.getByRole("group", { name: "Type", exact: true });
   await expect(type.getByRole("radio", { name: "Monitoring", exact: true })).toBeChecked();
   await expect(type).toContainText("Monitoring reports only when something changed and can stop itself when the goal is reached.");
+  await expect(dialog.getByTestId("scheduled-task-advanced-summary")).toContainText("One chat · Old chats kept 90 days · Tools, Workspace");
+  await dialog.getByRole("button", { name: "Advanced", exact: true }).click();
   const chat = dialog.getByRole("group", { name: "Chat", exact: true });
   await expect(chat.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeDisabled();
   await expect(chat.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeChecked();
@@ -694,7 +749,13 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   await expect(workspace).toHaveAccessibleDescription("Runs share this automation's Workspace, so its files stay from run to run and move to each new month's chat.");
   const runs = dialog.getByRole("region", { name: "Recent runs", exact: true });
   const entries = runs.getByRole("listitem");
+  // The newest three show; the rest unfold on request.
+  await expect(entries).toHaveCount(3);
+  const showAll = runs.getByRole("button", { name: `Show all ${runsFixture.tickets!.length} runs`, exact: true });
+  await expect(showAll).toHaveAttribute("aria-expanded", "false");
+  await showAll.click();
   await expect(entries).toHaveCount(runsFixture.tickets!.length);
+  await expect(runs.getByRole("button", { name: "Show fewer runs", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(entries.nth(0)).toContainText("Goal reached — automation completed");
   await expect(entries.nth(1)).toContainText("Could not check: a source was unavailable");
   await expect(entries.nth(1)).toContainText("Ticket marketplace needs sign-in.");
@@ -743,6 +804,7 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   await create.getByLabel("Name", { exact: true }).fill("Docs watch");
   await create.getByRole("group", { name: "Type", exact: true }).getByRole("radio", { name: "Monitoring", exact: true }).check();
   await create.getByLabel("Instructions", { exact: true }).fill("Tell me when the documentation changes.");
+  await create.getByRole("button", { name: "Advanced", exact: true }).click();
   await expect(create.getByRole("switch", { name: "Tools (MCP and Skills)", exact: true })).toHaveAttribute("aria-checked", "true");
   await expect(create.getByRole("switch", { name: "Workspace", exact: true })).toHaveAttribute("aria-checked", "false");
   await expect(create.getByRole("switch", { name: "Workspace", exact: true }))
@@ -757,7 +819,7 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   expect(api.writes.filter((write) => write.method === "PATCH")).toEqual([]);
 });
 
-test("a monitoring chat folds checks with no update into one row and shows them unchanged on request", async ({ page }, info) => {
+test("a monitoring chat folds checks with no update and recovered failures into rows and shows them unchanged on request", async ({ page }, info) => {
   await prepare(page, monitoringFixture, "light", [chatFixture(), watchChatFixture()]);
   if ((page.viewportSize()?.width ?? 0) < 768) await page.getByRole("button", { name: "Open sidebar" }).click();
   await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
@@ -765,32 +827,51 @@ test("a monitoring chat folds checks with no update into one row and shows them 
   await expect(thread.getByText("Release 1.5.0 is out:")).toBeVisible();
   const groups = page.getByTestId("scheduled-checks-row");
   await expect(groups).toHaveCount(2);
-  await expect(groups.nth(0)).toHaveText(/2 checks with no update\s*·\s*Show/u);
-  await expect(groups.nth(1)).toHaveText(/3 checks with no update\s*·\s*Show/u);
-  // The first check, the one that could not check and the update stay visible; checks with no update do not.
+  // Each group says what it holds and when its latest check ran, in the viewer's zone (today, so without the day).
+  await expect(groups.nth(0)).toHaveText(/^2 checks with no update · 2 failed · last 01:00\s*·\s*Show$/u);
+  await expect(groups.nth(1)).toHaveText(/^2 checks with no update · last 09:00\s*·\s*Show$/u);
+  // The first check, the update, the latest failed run and the user's own question stay visible; the earlier
+  // failures, which later checks recovered from, and the checks with no update do not.
   await expect(thread.getByText("Watching: the latest release is 1.4.0")).toBeVisible();
-  await expect(thread.getByText("I could not reach the release tracker")).toBeVisible();
-  await expect(thread.getByText(/^Still 1\.4\.0/u)).toHaveCount(0);
-  const show = page.getByRole("button", { name: "Show 3 checks with no update", exact: true });
+  await expect(thread.getByText("I could not reach the release tracker")).toHaveCount(0);
+  await expect(thread.getByText(/^Still 1\.[45]\.0/u)).toHaveCount(0);
+  const failures = thread.getByRole("region", { name: "Run failed" });
+  await expect(failures).toHaveCount(1);
+  await expect(page.locator('[data-message-id="watch-9-answer"]').getByRole("region", { name: "Run failed" })).toBeVisible();
+  // Visible task turns are one line each; the user's own question keeps its edit action.
+  const turns = thread.getByTestId("scheduled-turn");
+  await expect(turns).toHaveCount(3);
+  await expect(turns.nth(0)).toHaveText(/^Automation · Release watch\s*·\s*Sat 3 Oct, 09:00\s*·\s*Show instructions$/u);
+  await expect(thread.getByText(watchPrompt, { exact: true })).toHaveCount(0);
+  await expect(turns.locator('button[aria-label="Edit question"]')).toHaveCount(0);
+  await expect(page.locator('[data-message-id="watch-reply-question"]').locator('button[aria-label="Edit question"]')).toHaveCount(1);
+  await expect(thread.getByText("Which release should I install today?", { exact: true })).toBeVisible();
+  // The composer line says when the next check runs.
+  await expect(page.getByTestId("scheduled-task-chat-hint")).toContainText("Next check Sun 4 Oct, 13:00");
+  const show = page.getByRole("button", { name: "Show 2 checks with no update, 2 failed", exact: true });
   await expect(show).toHaveAttribute("aria-expanded", "false");
   await captureState(page, info, "scheduled-transcript-checks-collapsed", {
-    anchor: groups.nth(1),
+    anchor: groups.nth(0),
     atEachSize: async () => {
       await expectWithinViewport(page, show);
       await expectNoHorizontalOverflow(page);
     }
   });
 
-  // The toggle is a keyboard control; the checks appear unchanged, each with its own turn.
+  // The toggle is a keyboard control; the checks appear unchanged, each with its own turn, failure cards included.
   await show.focus();
   await page.keyboard.press("Enter");
-  const hide = page.getByRole("button", { name: "Hide 3 checks with no update", exact: true });
+  const hide = page.getByRole("button", { name: "Hide 2 checks with no update, 2 failed", exact: true });
   await expect(hide).toHaveAttribute("aria-expanded", "true");
   await expect(hide).toBeFocused();
-  for (const text of ["Still 1.4.0. Nothing new in the changelog.", "Still 1.4.0. No new tags.", "Still 1.4.0. The download page is unchanged."]) {
+  for (const text of ["Still 1.4.0. The release page is unchanged.", "Still 1.4.0. Nothing new in the changelog.",
+    "I could not reach the release tracker, so I could not check for a new release."]) {
     await expect(thread.getByText(text, { exact: true })).toBeVisible();
   }
-  await expect(thread.getByText("Still 1.4.0. No new release since the last check.", { exact: true })).toHaveCount(0);
+  await expect(failures).toHaveCount(2);
+  await expect(page.locator('[data-message-id="watch-2-answer"]').getByRole("region", { name: "Run failed" })).toBeVisible();
+  await expect(turns).toHaveCount(7);
+  await expect(thread.getByText(/^Still 1\.5\.0/u)).toHaveCount(0);
   await captureState(page, info, "scheduled-transcript-checks-expanded", {
     anchor: hide,
     atEachSize: async () => {
@@ -799,8 +880,9 @@ test("a monitoring chat folds checks with no update into one row and shows them 
     }
   });
   await page.keyboard.press("Space");
-  await expect(page.getByRole("button", { name: "Show 3 checks with no update", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(show).toHaveAttribute("aria-expanded", "false");
   await expect(thread.getByText(/^Still 1\.4\.0/u)).toHaveCount(0);
+  await expect(failures).toHaveCount(1);
 });
 
 test.describe("touch controls", () => {
@@ -820,7 +902,13 @@ test.describe("touch controls", () => {
       const sheet = page.getByTestId("scheduled-task-sheet");
       await sheet.getByLabel("Repeat", { exact: true }).selectOption("weekly");
       for (const day of await sheet.getByRole("group", { name: "Days" }).getByRole("button").all()) await expectTouchSafe(day);
-      for (const control of await sheet.getByRole("switch").all()) await expectTouchSafe(control);
+      const advanced = sheet.getByRole("button", { name: "Advanced", exact: true });
+      await expectTouchSafe(advanced);
+      await advanced.click();
+      for (const control of await sheet.getByRole("switch").all()) {
+        await control.scrollIntoViewIfNeeded();
+        await expectTouchSafe(control);
+      }
       for (const name of ["Cancel", "Create automation"]) {
         const button = sheet.getByRole("button", { name, exact: true });
         await expectTouchSafe(button);
@@ -851,12 +939,26 @@ test.describe("touch controls", () => {
     await page.setViewportSize(touchSizes[0]!);
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
-    const show = page.getByRole("button", { name: "Show 3 checks with no update", exact: true });
+    const show = page.getByRole("button", { name: "Show 2 checks with no update, 2 failed", exact: true });
+    const turn = page.getByTestId("scheduled-turn").first();
     for (const size of touchSizes) {
       await page.setViewportSize(size);
       await show.scrollIntoViewIfNeeded();
       await expectTouchSafe(show);
       await expectWithinViewport(page, show);
+      // A task turn's title and its disclosure are separate touch-safe targets: a tap on the disclosure opens it.
+      const instructions = turn.getByRole("button", { name: "Show instructions", exact: true });
+      await instructions.scrollIntoViewIfNeeded();
+      await expectTouchSafe(instructions);
+      await instructions.tap();
+      const hideInstructions = turn.getByRole("button", { name: "Hide instructions", exact: true });
+      await expect(hideInstructions).toHaveAttribute("aria-expanded", "true");
+      await expectTouchSafe(turn.getByRole("button", { name: "Copy instructions", exact: true }));
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`scheduled-transcript-turn-touch-${size.width}x${size.height}.png`) });
+      await hideInstructions.tap();
+      await expect(instructions).toHaveAttribute("aria-expanded", "false");
+      await show.scrollIntoViewIfNeeded();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-transcript-checks-touch-${size.width}x${size.height}.png`) });
     }
@@ -870,6 +972,7 @@ test.describe("touch controls", () => {
       for (const name of ["Regular", "Monitoring"]) {
         await expectTouchSafe(sheet.getByRole("radio", { name, exact: true }).locator("xpath=.."));
       }
+      await sheet.getByRole("button", { name: "Advanced", exact: true }).click();
       for (const name of ["Tools (MCP and Skills)", "Workspace", "Use Memory"]) {
         const control = sheet.getByRole("switch", { name, exact: true });
         await control.scrollIntoViewIfNeeded();
@@ -921,11 +1024,24 @@ test.describe("touch controls", () => {
     await page.setViewportSize(touchSizes[0]!);
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await page.getByRole("treeitem", { name: "Weekday news brief", exact: true }).click();
-    const editTask = page.getByTestId("scheduled-task-chat-hint").getByRole("button", { name: "Edit automation Weekday news brief", exact: true });
+    const hint = page.getByTestId("scheduled-task-chat-hint");
+    const editTask = hint.getByRole("button", { name: "Edit automation Weekday news brief", exact: true });
+    const nextRun = hint.getByText("Next run Mon 5 Oct, 09:00", { exact: true });
     for (const size of touchSizes) {
       await page.setViewportSize(size);
       await expectTouchSafe(editTask);
       await expectWithinViewport(page, editTask);
+      await expectWithinViewport(page, nextRun);
+      // The next run and Edit automation share a row instead of the action wrapping under the text.
+      const [status, action] = await Promise.all([nextRun.boundingBox(), editTask.boundingBox()]);
+      expect(status && action).toBeTruthy();
+      expect(Math.abs((status!.y + status!.height / 2) - (action!.y + action!.height / 2))).toBeLessThan(2);
+      expect(action!.x).toBeGreaterThan(status!.x + status!.width);
+      // Touch has no tooltip: the note that replies don't change the automation is on screen, beside that row where it
+      // fits and below it on a narrow phone.
+      const note = hint.getByText("Replies here don't change the automation.", { exact: true });
+      await expectWithinViewport(page, note);
+      if (size.width < 768) expect((await note.boundingBox())!.y).toBeGreaterThanOrEqual(status!.y + status!.height - 1);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-chat-hint-touch-${size.width}x${size.height}.png`) });
     }

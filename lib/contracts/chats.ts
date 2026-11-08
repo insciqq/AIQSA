@@ -229,6 +229,8 @@ export type ThreadMessage = {
   assistantIdentity?: ThreadAssistantIdentity | null;
   citationMessageId?: string | null;
   content: unknown;
+  /** See `ChatMessageWire.createdAt`; absent on a message the browser made before the server saved it. */
+  createdAt?: string;
   id: string;
   modelId?: string;
   parentMessageId: string | null;
@@ -523,7 +525,8 @@ export type ChatMessageWire = {
    * The settled outcome of the monitoring check this message belongs to: its
    * scheduled user turn or that turn's answer. Kept on the check's run, so it
    * outlives the occurrence history and the task. Absent for other messages
-   * and while the check runs; the transcript collapses `no_update` turns.
+   * and while the check runs; the transcript folds `no_update` checks, and a
+   * failed check once a later check succeeded (`groupScheduledChecks`).
    */
   scheduledOutcome?: ScheduledTaskCheckOutcome;
   status: string;

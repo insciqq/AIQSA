@@ -15,7 +15,9 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { activeRunControllers } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { TURN_HANDOFF_RESERVE_MS } from "../runs/turnDeadline";
-import { monitoringCheckInstruction, monitoringVerdictReservedInstruction } from "../tools/monitoringVerdict";
+import {
+  monitoringCheckInstruction, monitoringVerdictAfterAnswerInstruction, monitoringVerdictReservedInstruction
+} from "../tools/monitoringVerdict";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
@@ -122,6 +124,28 @@ describe("a scheduled monitoring check on the native engine", () => {
     expect(memory.published()).toBe("A-1 moved.");
   });
 
+  it("is asked for a verdict it skipped after its answer, and that round's text never reaches the answer", async () => {
+    const afterAnswer = monitoringVerdictAfterAnswerInstruction();
+    const { adapter, requests } = scriptedNativeAdapter([
+      { text: "Version 2.0 is out." },
+      { calls: [{ arguments: { status: "goal_reached" }, id: "v1", name: VERDICT }], text: "Extra words." }
+    ]);
+    const memory = memoryNativeEngine();
+    const repo = nativeRunRepository();
+    const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      prepared: nativePrepared({ monitoringVerdictTool: true }), repository: asRepository(repo), scheduled: true, services: {},
+      userId: "owner" }));
+    expect(events.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]!.toolChoice).toBe("auto");
+    expect(requests[1]!.history!.at(-1)).toEqual({ text: afterAnswer, type: "user" });
+    expect(repo.recordMonitoringVerdict).toHaveBeenCalledExactlyOnceWith({ runId: "run-1", userId: "owner", verdict: "goal_reached" });
+    expect(memory.published()).toBe("Version 2.0 is out.");
+    // Nothing of the report-only round streamed live either.
+    expect(JSON.stringify(events)).not.toContain("Extra words.");
+    expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text === afterAnswer)).toBe(false);
+  });
+
   it("tells the model when its occurrence can no longer take a verdict", async () => {
     const { adapter, requests } = scriptedNativeAdapter([
       { calls: [{ arguments: { status: "goal_reached" }, id: "v1", name: VERDICT }] }, { text: "Done." }
@@ -144,7 +168,10 @@ describe("a scheduled run's flat context on the native engine", () => {
     { followup: true, id: "followup", kind: "user", text: "SYNTHETIC OLDER RESULTS" },
     { arguments: "{\"key\":\"A-1\"}", callId: "pc1", id: "p1", kind: "tool_call", name: "mcp_jira_get_issue", origin: NATIVE_RUN_ORIGIN },
     { callId: "pc1", id: "p2", kind: "tool_result", name: "mcp_jira_get_issue", outcome: "complete", output: "A-1: open" },
-    { id: "p3", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "A-1 is open." }
+    { id: "p3", kind: "reasoning", native: { fields: { encrypted_content: "SYNTHETIC REASONING", id: "rs_1", type: "reasoning" },
+      format: "openai_responses" }, origin: NATIVE_RUN_ORIGIN },
+    { id: "p4", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "SYNTHETIC INTERMEDIATE TEXT" },
+    { id: "p5", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "A-1 is open." }
   ];
   const context = { messages: [nativeSay("previous-user", "user", "Check A-1"), nativeSay("previous-answer", "assistant", "A-1 is open."),
     nativeSay("current-user-message", "user", "Check A-1")], mode: "branch_path" as const };
@@ -159,12 +186,17 @@ describe("a scheduled run's flat context on the native engine", () => {
     return requests[0]!.history!;
   }
 
-  it("carries the previous result's own items, never a compaction of what came before it nor a follow-up", async () => {
+  it("carries the previous shown result as its saved text, never its tool work, a compaction before it nor a follow-up", async () => {
     const flat = await firstHistory(true);
-    expect(flat.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "assistant_text", "user", "user"]);
-    expect(JSON.stringify(flat)).not.toContain("SYNTHETIC OLDER RESULTS");
-    // An ordinary chat continues from the compaction.
-    expect(JSON.stringify(await firstHistory(false))).toContain("SYNTHETIC OLDER RESULTS");
+    expect(flat.map((item) => item.type)).toEqual(["user", "assistant_text", "user", "user"]);
+    expect(flat[0]).toMatchObject({ text: "Check A-1", type: "user" });
+    expect(flat[1]).toMatchObject({ text: "A-1 is open.", type: "assistant_text" });
+    for (const hidden of ["SYNTHETIC OLDER RESULTS", "SYNTHETIC REASONING", "SYNTHETIC INTERMEDIATE TEXT", "A-1: open"]) {
+      expect(JSON.stringify(flat)).not.toContain(hidden);
+    }
+    // An ordinary chat continues from the compaction with the previous run's own work.
+    const ordinary = JSON.stringify(await firstHistory(false));
+    for (const kept of ["SYNTHETIC OLDER RESULTS", "SYNTHETIC INTERMEDIATE TEXT", "A-1: open"]) expect(ordinary).toContain(kept);
   });
 });
 
@@ -200,7 +232,8 @@ describe("an unknown effect on the native engine", () => {
       repository: asRepository(options.repo ?? nativeRunRepository()), ...(options.scheduled ? { scheduled: true as const } : {}),
       services: {}, userId: "owner", workspace: workspace as unknown as WorkspaceCoordinator }));
     const result = requests[1]?.history?.find((item) => item.type === "tool_result" && item.callId === "again");
-    return { execute: workspace.execute, output: result?.type === "tool_result" ? result.output : null };
+    return { execute: workspace.execute, first: requests[0]!.history!,
+      output: result?.type === "tool_result" ? result.output : null };
   }
 
   const occurrence = [nativeSay("previous-user", "user", "Post the daily report"), nativeSay("answer-0", "assistant", "Maybe posted."),
@@ -210,6 +243,9 @@ describe("an unknown effect on the native engine", () => {
     const scheduled = await retry(occurrence, { scheduled: true });
     expect(scheduled.execute).not.toHaveBeenCalled();
     expect(scheduled.output).toBe(UNKNOWN_OUTCOME_REPEAT_OUTPUT);
+    // The baseline run's calls guard the occurrence without entering its flat context, which holds the shown answer's text.
+    expect(scheduled.first.map((item) => item.type)).toEqual(["user", "assistant_text", "user", "user"]);
+    expect(scheduled.first[1]).toMatchObject({ text: "Maybe posted.", type: "assistant_text" });
     // The user's own message is what releases it.
     const asked = await retry(occurrence);
     expect(asked.execute).toHaveBeenCalledTimes(1);

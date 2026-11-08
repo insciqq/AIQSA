@@ -3,9 +3,11 @@
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 import { ScheduledChecksRowV2 } from "@/features/scheduled-tasks/ScheduledChecksRowV2";
-import { ScheduledMessageChipV2 } from "@/features/scheduled-tasks/ScheduledMessageChipV2";
-import { groupScheduledChecks } from "@/features/scheduled-tasks/scheduledCheckGroups";
+import { groupScheduledChecks, scheduledTurnCreatedAt, type ScheduledChecksSummary } from "@/features/scheduled-tasks/scheduledCheckGroups";
 import { ScheduledTaskChatHintV2 } from "@/features/scheduled-tasks/ScheduledTaskChatHintV2";
+import { useScheduledTasksStore } from "@/features/scheduled-tasks/scheduledTasksStore";
+import { ScheduledTurnV2 } from "@/features/scheduled-tasks/ScheduledTurnV2";
+import { scheduledTaskContinuingIn } from "@/features/scheduled-tasks/useScheduledTaskUpdates";
 import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "@/features/browser-notifications/BrowserNotificationsV2";
 import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
 
@@ -638,8 +640,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     openLibraryQuery(query);
   }, [openLibraryQuery, settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
-  /** Groups of monitoring checks with no update the reader opened, by group id. */
+  /** Groups of folded scheduled checks the reader opened, by group id. */
   const [openScheduledChecks, setOpenScheduledChecks] = useState<ReadonlySet<string>>(() => new Set());
+  // The task continuing in this chat, for when it runs next above the composer.
+  const scheduledChatTask = useScheduledTasksStore((state) => thread.scheduledTaskChat
+    ? scheduledTaskContinuingIn(state.tasks, session.activeChatId) : null);
   // "Report a problem…": the answer and chat it reports on, while its dialog is open.
   const [problemReportTarget, setProblemReportTarget] = useState<Readonly<{ chatId: string; messageId: string }> | null>(null);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
@@ -1186,7 +1191,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     <BrowserNotificationsBannerV2 notifications={composer.browserNotifications} />
   ) : null;
   const scheduledTaskHint = thread.scheduledTaskChat ? (
-    <ScheduledTaskChatHintV2 onEdit={thread.scheduledTaskChat.onEdit} title={thread.scheduledTaskChat.title} />
+    <ScheduledTaskChatHintV2 onEdit={thread.scheduledTaskChat.onEdit} task={scheduledChatTask} title={thread.scheduledTaskChat.title} />
   ) : null;
   // A blank chat with an Assistant opens with its quiet intro; the intro stays
   // while the user types so the composer below it never moves.
@@ -1246,11 +1251,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     role: message.role,
     streaming: message.status === "streaming"
   });
-  // Consecutive monitoring checks with no update fold into one quiet row; opening it shows them unchanged below.
-  const scheduledCheckGroups = new Map<string, number>();
+  // Checks with no update, and failed checks that a later check recovered from, fold into one quiet row; opening it shows them unchanged below.
+  const scheduledCheckGroups = new Map<string, ScheduledChecksSummary>();
   const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
     if (item.kind === "message") return [conversationMessage(item.message)];
-    scheduledCheckGroups.set(item.id, item.checks);
+    scheduledCheckGroups.set(item.id, item.summary);
     const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
     return openScheduledChecks.has(item.id) ? [row, ...item.messages.map(conversationMessage)] : [row];
   });
@@ -1312,8 +1317,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     if (checks !== undefined) {
       return (
         <ScheduledChecksRowV2
-          checks={checks}
           expanded={openScheduledChecks.has(message.id)}
+          summary={checks}
           onToggle={() => toggleScheduledChecks(message.id)}
         />
       );
@@ -1344,6 +1349,20 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       // Neither is the turn that wakes the main agent with sub-agent results.
       return <SubagentCallbackTurnV2 anchorId={source.id} names={source.subagentCallback?.names ?? []} />;
     }
+    if (source.role === "user" && source.scheduledTask) {
+      // A turn the task posted: one quiet line with its instructions folded, never the user's editable speech.
+      return (
+        <ScheduledTurnV2
+          anchorId={source.id}
+          content={messageText(source)}
+          createdAt={scheduledTurnCreatedAt(source)}
+          pagerSlot={pagerSlot}
+          title={source.scheduledTask.title}
+          onCopy={actions.onCopy}
+          onOpen={settings.studio ? () => settings.studio?.open("scheduled") : undefined}
+        />
+      );
+    }
     if (source.role === "user") {
       // Owner-only files sent with this exact message, above its bubble,
       // rendered from the labels the thread snapshot already exposes.
@@ -1359,12 +1378,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           actions={actions}
           afterContent={pagerSlot}
           anchorId={source.id}
-          beforeContent={source.scheduledTask ? (
-            <ScheduledMessageChipV2
-              title={source.scheduledTask.title}
-              onOpen={settings.studio ? () => settings.studio?.open("scheduled") : undefined}
-            />
-          ) : undefined}
           content={messageText(source)}
           quoteEligible={source.status === "complete"}
           edit={thread.editingMessageId === source.id ? {

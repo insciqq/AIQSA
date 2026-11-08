@@ -6294,16 +6294,23 @@ model ScheduledTaskOccurrence {
   startedAt      DateTime?
   /// Set exactly when the state is COMPLETED, FAILED or SKIPPED.
   finishedAt     DateTime?
+  /// When the result email was claimed for sending, at most once.
   notifiedAt     DateTime?
+  /// When this settlement's result email became due: set in the transaction
+  /// that settles a notifying occurrence of a task with email on, cleared when
+  /// the email is claimed or can no longer be sent. A due email survives a
+  /// restart and is sent within a bounded window.
+  emailDueAt     DateTime?
   /// The task generation frozen when a run accepted this occurrence.
   taskGeneration Int?
   /// The task revision a run accepted this occurrence under; a goal completes
-  /// the task only while it is unchanged.
+  /// the task while it is unchanged, or while the task is still active.
   taskRevision   Int?
   /// The task's chat epoch after the run's admission linked this occurrence.
   chatEpoch      Int?
-  /// A monitoring check's model-reported outcome (`update`, `no_update` or
-  /// `goal_reached`); the last report of the run wins, null when it never reported.
+  /// A monitoring check's model-reported outcome (`update`, `no_update`,
+  /// `goal_reached` or `could_not_check`); the last report of the run wins, null
+  /// when it never reported.
   verdict        String?                      @db.VarChar(16)
   /// A settled result the owner has not seen yet: a finished answer or a failure that paused the task.
   unseenAt       DateTime?
@@ -6332,6 +6339,7 @@ model ScheduledTaskOccurrence {
   @@index([chatId])
   @@index([runId])
   @@index([userMessageId])
+  @@index([emailDueAt])
 }
 
 /// A same-chat task's previous shown result carried into the chat its monthly

@@ -21,7 +21,8 @@ import {
   formatScheduledDay,
   formatScheduledInstant,
   scheduledTaskFailureMessage,
-  scheduledTaskHistoryLine,
+  scheduledTaskAdvancedSummary,
+  scheduledTaskHistoryActivity,
   scheduledTaskLastRunLine,
   scheduledTaskResultNotice,
   scheduledTaskRunReasonText,
@@ -60,6 +61,23 @@ describe("scheduled task presentation", () => {
     expect(unknown.text).toBe("Paused: it could not run. Edit or resume to try again.");
     expect(unknown.text).not.toContain("quota");
     expect(scheduledTaskStatusLine(scheduledTaskFixture({ status: "completed", nextRunAt: null }), now).text).toBe("Completed");
+  });
+
+  it("puts a last run that needs the owner in place of the next run, and only that", () => {
+    const last = (state: "completed" | "failed" | "skipped", reasonCode: string | null) =>
+      ({ scheduledFor: "2026-10-03T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-03T08:01:00.000Z", unseen: false });
+    expect(scheduledTaskStatusLine(scheduledTaskFixture({ lastRun: last("failed", "chat_busy") }), now)).toEqual({
+      text: "Last run Sat 3 Oct, 09:00 · Failed: the automation's chat was busy with another answer", tone: "attention" });
+    expect(scheduledTaskStatusLine(scheduledTaskFixture({ kind: "monitoring", lastRun: last("completed", "could_not_check") }), now))
+      .toEqual({ text: "Last run Sat 3 Oct, 09:00 · Could not check", tone: "attention" });
+    // An answer, a quiet check or a skip leaves the next run in place.
+    for (const run of [last("completed", null), last("completed", "no_update"), last("skipped", "missed")]) {
+      expect(scheduledTaskStatusLine(scheduledTaskFixture({ lastRun: run }), now).text).toBe("Next run Tue 6 Oct, 09:00");
+    }
+    // Running, paused and completed outrank it.
+    expect(scheduledTaskStatusLine(scheduledTaskFixture({ running: true, lastRun: last("failed", null) }), now).text).toBe("Running now");
+    expect(scheduledTaskStatusLine(scheduledTaskFixture({ status: "paused", nextRunAt: null, lastRun: last("failed", null) }), now).text)
+      .toBe("Paused");
   });
 
   it("describes the last run's outcome in words", () => {
@@ -182,9 +200,13 @@ describe("scheduled task drafts", () => {
       .toEqual({ kind: "weekly", time: "09:00", days: ["mon", "fri"] });
   });
 
-  it("starts new tasks daily at 09:00 with the catalog default model", () => {
+  it("starts new tasks daily at 09:00 with the catalog default model, continuing in one chat", () => {
     const draft = blankScheduledTaskDraft(catalog, "Europe/London", now);
-    expect(draft).toMatchObject({ repeat: "daily", time: "09:00", modelId: "model-a", provider: "provider-a", date: "2026-10-05" });
+    expect(draft).toMatchObject({ repeat: "daily", time: "09:00", modelId: "model-a", provider: "provider-a", date: "2026-10-05",
+      chatMode: "same" });
+    expect(scheduledTaskCreateRequest({ ...draft, title: "Brief", prompt: "Do it" })).toMatchObject({ chatMode: "same" });
+    // A new chat per run stays the owner's explicit choice.
+    expect(scheduledTaskCreateRequest({ ...draft, title: "Brief", prompt: "Do it", chatMode: "new" })).toMatchObject({ chatMode: "new" });
   });
 
   it("validates names, days, past once times and Search before saving", () => {
@@ -261,11 +283,12 @@ describe("scheduled task drafts", () => {
     expect(scheduledTaskDraftSchedule({ ...window, until: "" })).toMatchObject({ time: "09:00", until: null });
   });
 
-  it("starts new tasks in a new chat per run and switches to the same chat only for hourly schedules", () => {
+  it("starts new tasks in one chat, keeps a chosen new chat per run, and forces the same chat for hourly schedules", () => {
     const draft = blankScheduledTaskDraft(catalog, "Europe/London", now, { title: "Brief", prompt: "Do it" });
-    expect(draft.chatMode).toBe("new");
-    expect(scheduledTaskCreateRequest(draft)?.chatMode).toBe("new");
-    expect(scheduledTaskCreateRequest({ ...draft, repeat: "hourly" })?.chatMode).toBe("same");
+    expect(draft.chatMode).toBe("same");
+    expect(scheduledTaskCreateRequest(draft)?.chatMode).toBe("same");
+    expect(scheduledTaskCreateRequest({ ...draft, chatMode: "new" })?.chatMode).toBe("new");
+    expect(scheduledTaskCreateRequest({ ...draft, chatMode: "new", repeat: "hourly" })?.chatMode).toBe("same");
     const daily = scheduledTaskFixture({ chatMode: "new", schedule: { kind: "daily", time: "09:00" } });
     const edit = scheduledTaskDraftFromTask(daily, now);
     expect(scheduledTaskUpdateRequest({ ...edit, repeat: "hourly" }, daily)).toMatchObject({ chatMode: "same", schedule: { kind: "hourly" } });
@@ -484,19 +507,29 @@ describe("scheduled task history", () => {
       .toEqual({ expectedRevision: 1, historyRetentionDays: null });
   });
 
-  it("states how long old chats are kept, when the next one goes and how many went, as counts only", () => {
+  it("states when the next old chat goes and how many went, as counts only", () => {
     const task = scheduledTaskFixture({ historyDeletedChats: 3, historyNextDeletionAt: "2026-11-12T09:00:00.000Z", historyRetentionDays: 90 });
-    expect(scheduledTaskHistoryLine(task, now)).toBe("History: 90 days · next cleanup Thu 12 Nov · 3 old chats deleted");
-    expect(scheduledTaskHistoryLine({ ...task, historyDeletedChats: 1, historyNextDeletionAt: null, historyRetentionDays: 30 }, now))
-      .toBe("History: 30 days · 1 old chat deleted");
-    expect(scheduledTaskHistoryLine({ ...task, historyDeletedChats: 0, historyNextDeletionAt: null, historyRetentionDays: 365 }, now))
-      .toBe("History: 1 year");
+    expect(scheduledTaskHistoryActivity(task, now)).toBe("Next cleanup Thu 12 Nov · 3 old chats deleted.");
+    expect(scheduledTaskHistoryActivity({ ...task, historyDeletedChats: 1, historyNextDeletionAt: null, historyRetentionDays: 30 }, now))
+      .toBe("1 old chat deleted.");
+    expect(scheduledTaskHistoryActivity({ ...task, historyDeletedChats: 0, historyNextDeletionAt: null, historyRetentionDays: 365 }, now))
+      .toBeNull();
     // Due already: the sweep takes it within minutes.
-    expect(scheduledTaskHistoryLine({ ...task, historyNextDeletionAt: "2026-10-04T09:00:00.000Z" }, now))
-      .toBe("History: 90 days · next cleanup soon · 3 old chats deleted");
+    expect(scheduledTaskHistoryActivity({ ...task, historyNextDeletionAt: "2026-10-04T09:00:00.000Z" }, now))
+      .toBe("Next cleanup soon · 3 old chats deleted.");
     // Forever deletes nothing more; what went before stays counted.
-    expect(scheduledTaskHistoryLine({ ...task, historyRetentionDays: null }, now)).toBe("History: kept forever · 3 old chats deleted");
+    expect(scheduledTaskHistoryActivity({ ...task, historyRetentionDays: null }, now)).toBe("3 old chats deleted.");
     expect(formatScheduledDay("2027-01-05T09:00:00.000Z", "UTC", now)).toBe("Tue 5 Jan 2027");
+  });
+
+  it("sums up the folded Advanced settings in one line", () => {
+    const base = { chatMode: "same", historyRetentionDays: 90, memoryEnabled: true, model: "Model A", pinnedSkills: 0,
+      searchEnabled: true, toolsEnabled: true, workspaceEnabled: false } as const;
+    expect(scheduledTaskAdvancedSummary(base)).toBe("Model A · One chat · Old chats kept 90 days · Web search, Tools, Memory");
+    expect(scheduledTaskAdvancedSummary({ ...base, chatMode: "new", historyRetentionDays: null, memoryEnabled: false, pinnedSkills: 2,
+      searchEnabled: false, workspaceEnabled: true })).toBe("Model A · New chat each run · Old chats kept forever · Tools, 2 pinned Skills, Workspace");
+    expect(scheduledTaskAdvancedSummary({ ...base, model: "", historyRetentionDays: 365, memoryEnabled: false, searchEnabled: false,
+      toolsEnabled: false })).toBe("One chat · Old chats kept 1 year");
   });
 
   it("explains a Workspace carry-over failure with what to do", () => {

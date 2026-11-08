@@ -15,6 +15,9 @@ describe("monitoring verdict tool", () => {
   it("is a strict, server-owned report that never reaches another run", () => {
     expect(monitoringVerdictTool).toMatchObject({ capability: "session", name: "report_monitoring_result", strict: true,
       inputSchema: { additionalProperties: false, required: ["status"] } });
+    expect(monitoringVerdictTool.inputSchema.properties).toEqual({
+      status: { enum: ["update", "no_update", "goal_reached", "could_not_check"], type: "string" }
+    });
     expect(isMonitoringVerdictCall({ monitoringVerdictTool: true }, MONITORING_VERDICT_TOOL_NAME)).toBe(true);
     for (const request of [{}, { monitoringVerdictTool: "true" }]) {
       expect(isMonitoringVerdictCall(request, MONITORING_VERDICT_TOOL_NAME)).toBe(false);
@@ -31,6 +34,10 @@ describe("monitoring verdict tool", () => {
       name: MONITORING_VERDICT_TOOL_NAME, status: "complete" });
     expect(again).toEqual(first);
     expect(recorded).toEqual([{ ...actor, verdict: "no_update" }, { ...actor, verdict: "no_update" }]);
+    // A check that could not reach what it needed says so instead of a hidden no_update.
+    expect(await executeMonitoringVerdict(call({ status: "could_not_check" }), actor, record)).toMatchObject({
+      content: [{ type: "json", value: { recorded: true, status: "could_not_check" } }], status: "complete" });
+    expect(recorded.at(-1)).toEqual({ ...actor, verdict: "could_not_check" });
   });
 
   it("answers an invalid or unrecordable report with an error and records nothing invalid", async () => {
@@ -52,5 +59,28 @@ describe("monitoring verdict tool", () => {
     for (const previousResult of [true, false]) {
       expect(monitoringCheckInstruction({ previousResult })).toContain(`call ${MONITORING_VERDICT_TOOL_NAME} exactly once`);
     }
+  });
+
+  it("tells the model that only a reached goal ends the automation and that a failed check is no no_update", () => {
+    for (const previousResult of [true, false]) {
+      const instruction = monitoringCheckInstruction({ previousResult });
+      // A scheduled run has no other way to stop its automation.
+      expect(instruction).toContain("\"goal_reached\" if what the user is waiting for has happened: it ends the automation permanently " +
+        "and is the only way this run can stop it");
+      expect(instruction).toContain("report it rather than \"update\"");
+      expect(instruction).toContain("\"could_not_check\" if a page, search or tool the check needs failed or could not be reached");
+      expect(instruction).toContain("never report \"no_update\" then");
+      expect(instruction).toContain("Then write your answer as usual.");
+    }
+    expect(monitoringCheckInstruction({ previousResult: true })).toContain("\"update\" if something the user asked to watch changed " +
+      "since the last shown result; the automation keeps checking.");
+    expect(monitoringCheckInstruction({ previousResult: false })).toContain("\"update\" on this first check");
+    // The tool's own description says the same.
+    expect(monitoringVerdictTool.description).toContain("goal_reached: what the user is waiting for has happened; this ends the " +
+      "automation for good, and nothing else in this run can stop it.");
+    expect(monitoringVerdictTool.description).toContain("update: something the user watches changed since the last shown result; " +
+      "the automation keeps checking.");
+    expect(monitoringVerdictTool.description).toContain("could_not_check: a page, search or tool the check needs failed or could " +
+      "not be reached, so you cannot tell whether anything changed; never report no_update then.");
   });
 });

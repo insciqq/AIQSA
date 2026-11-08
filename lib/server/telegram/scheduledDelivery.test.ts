@@ -50,14 +50,15 @@ function completed(markdown = `Morning brief\n\n- ${SENTINEL}`): TelegramSchedul
 function memoryStore(context: () => TelegramScheduledDeliveryContext | null) {
   const rows = new Map<string, StoredRow>();
   const files = new Map<string, Buffer>();
+  /** The row a notifying settlement writes in its transaction (`recordTelegramScheduledDelivery`), once per occurrence. */
+  function enqueue(occurrenceId: string, now: Date): boolean {
+    if ([...rows.values()].some((row) => row.occurrenceId === occurrenceId)) return false;
+    const id = `delivery-${rows.size + 1}`;
+    rows.set(id, { attempts: 0, createdAt: now, id, lastFailureCode: null, nextAttemptAt: now, occurrenceId, sentAt: null,
+      state: "pending", userId: "user-1" });
+    return true;
+  }
   const store: TelegramScheduledDeliveryStore = {
-    enqueue: vi.fn(async (occurrenceId: string, now: Date) => {
-      if ([...rows.values()].some((row) => row.occurrenceId === occurrenceId)) return false;
-      const id = `delivery-${rows.size + 1}`;
-      rows.set(id, { attempts: 0, createdAt: now, id, lastFailureCode: null, nextAttemptAt: now, occurrenceId, sentAt: null,
-        state: "pending", userId: "user-1" });
-      return true;
-    }),
     listDue: async (now) => [...rows.values()].filter((row) => row.state === "pending" && row.nextAttemptAt <= now)
       .map(({ state: _state, sentAt: _sentAt, ...row }): TelegramScheduledDeliveryRow => row),
     load: async () => context(),
@@ -79,7 +80,7 @@ function memoryStore(context: () => TelegramScheduledDeliveryContext | null) {
     },
     readFile: async ({ attachmentId }) => files.get(attachmentId) ?? null
   };
-  return { files, rows, store };
+  return { enqueue, files, rows, store };
 }
 
 function link(telegramChatId: number, botId: number, id = "link-1"): TelegramLinkRecord {
@@ -135,6 +136,11 @@ function setup(options: Readonly<{
     setBot(value: TelegramBotSession | null) { bot = value; },
     setContext(next: () => TelegramScheduledDeliveryContext | null) { current = next; },
     row() { return [...memory.rows.values()][0]!; },
+    /** A notifying settlement recorded the occurrence's row, and the runner woke the sender. */
+    async queue(occurrenceId: string) {
+      memory.enqueue(occurrenceId, new Date(now));
+      sender.wake();
+    },
     /** A second sender over the same outbox: the application after a restart. */
     restarted() {
       return createTelegramScheduledDeliverySender({
@@ -152,9 +158,9 @@ describe("Telegram scheduled delivery", () => {
   it("sends a result as one message: the heading and the rendered result, with no button, referenced to the run's chat", async () => {
     const capture = await captureRunObservation();
     const h = setup();
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
-    expect(h.memory.store.enqueue).toHaveBeenCalledWith("occurrence-1", new Date(START));
+    expect(h.row()).toMatchObject({ createdAt: new Date(START), occurrenceId: "occurrence-1" });
     const [sent, ...more] = h.fake.calls("sendRichMessage");
     expect(more).toHaveLength(0);
     const message = sent!.params.rich_message as TelegramInputRichMessage;
@@ -168,7 +174,7 @@ describe("Telegram scheduled delivery", () => {
       telegramChatId: h.user.id, telegramMessageId: 1, userId: "user-1" }]);
     expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: null, sentAt: new Date(START), state: "sent" });
     // A second notification of the same occurrence records nothing more and sends nothing.
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.sweep();
     expect(h.fake.calls("sendRichMessage")).toHaveLength(1);
     expect(JSON.stringify(capture.records())).not.toContain(SENTINEL);
@@ -182,7 +188,7 @@ describe("Telegram scheduled delivery", () => {
       result: null,
       task: { pauseReason: "model_unavailable", telegramNotify: true, title: "Morning brief" }
     }) });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.fake.calls("sendRichMessage")).toHaveLength(0);
     const [sent] = h.fake.calls("sendMessage");
@@ -199,7 +205,7 @@ describe("Telegram scheduled delivery", () => {
       result: null,
       task: { pauseReason: "skill_unavailable", telegramNotify: true, title: "Brief" }
     }) });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.fake.lastCall("sendMessage")!.params).not.toHaveProperty("reply_markup");
     expect(h.refs).toEqual([]);
@@ -215,7 +221,7 @@ describe("Telegram scheduled delivery", () => {
     }, TELEGRAM_SCHEDULED_CODES.notNews]
   ] as const)("skips with a recorded state when %s", async (_case, change, code) => {
     const h = setup({ context: () => ({ ...completed(), ...change }) as TelegramScheduledDeliveryContext });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.fake.calls()).toHaveLength(0);
     expect(h.row()).toMatchObject({ attempts: 0, lastFailureCode: code, state: "skipped" });
@@ -225,7 +231,7 @@ describe("Telegram scheduled delivery", () => {
     "skips with the access reason when %s", async (reason) => {
       const h = setup();
       h.refuse(reason);
-      await h.sender.queue("occurrence-1");
+      await h.queue("occurrence-1");
       await h.sender.idle();
       expect(h.fake.calls()).toHaveLength(0);
       expect(h.row()).toMatchObject({ lastFailureCode: reason, state: "skipped" });
@@ -235,12 +241,12 @@ describe("Telegram scheduled delivery", () => {
   it("skips when the bot is off or another bot now runs", async () => {
     const off = setup();
     off.setBot(null);
-    await off.sender.queue("occurrence-1");
+    await off.queue("occurrence-1");
     await off.sender.idle();
     expect(off.row()).toMatchObject({ lastFailureCode: "telegram_access_off", state: "skipped" });
     const changed = setup();
     changed.setBot({ ...changed.session, botId: changed.session.botId + 1 });
-    await changed.sender.queue("occurrence-1");
+    await changed.queue("occurrence-1");
     await changed.sender.idle();
     expect(changed.row()).toMatchObject({ lastFailureCode: "telegram_bot_changed", state: "skipped" });
   });
@@ -249,7 +255,7 @@ describe("Telegram scheduled delivery", () => {
     const h = setup();
     // The client waits out one 429 itself; the second reaches the outbox.
     h.fake.failNext("sendRichMessage", { retryAfter: 7, status: 429 }, 2);
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: "telegram_rate_limited", nextAttemptAt: new Date(START + 7_000),
       state: "pending" });
@@ -272,7 +278,7 @@ describe("Telegram scheduled delivery", () => {
         ? { category: "connect", kind: "network_before_send", ok: false }
         : base.call(input)
     }) });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: "telegram_network_before_send", state: "pending" });
     h.advance(30_000);
@@ -286,7 +292,7 @@ describe("Telegram scheduled delivery", () => {
       ...base,
       call: async (input) => input.method === "sendRichMessage" ? { kind: "timeout", ok: false } : base.call(input)
     }) });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: "telegram_delivery_unknown", state: "unknown" });
     h.advance(60 * 60_000);
@@ -300,7 +306,7 @@ describe("Telegram scheduled delivery", () => {
       call: async (input) => input.method === "sendRichMessage" ? { category: "connect", kind: "network_before_send", ok: false }
         : base.call(input)
     }) });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     for (let attempt = 0; attempt < 6 && h.row().state === "pending"; attempt += 1) {
       h.at(h.row().nextAttemptAt);
@@ -314,15 +320,15 @@ describe("Telegram scheduled delivery", () => {
     const h = setup({ context: () => ({ ...completed(), occurrence: {
       reasonCode: "budget_spent", state: "SKIPPED", trigger: "schedule", unavailableSources: [] }, result: null }) });
     h.fake.failNext("sendMessage", { status: 403 });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.row()).toMatchObject({ lastFailureCode: "telegram_api_error", state: "failed" });
   });
 
   it("after a restart sends pending rows once and settles an attempt that never finished as unknown", async () => {
     const h = setup();
-    await h.memory.store.enqueue("occurrence-1", new Date(START));
-    await h.memory.store.enqueue("occurrence-2", new Date(START));
+    h.memory.enqueue("occurrence-1", new Date(START));
+    h.memory.enqueue("occurrence-2", new Date(START));
     // The previous process claimed the second row and ended while sending it.
     await h.memory.store.claim({ attempts: 0, id: "delivery-2", leaseUntil: new Date(START + TELEGRAM_SCHEDULED_CLAIM_LEASE_MS) });
     const restarted = h.restarted();
@@ -352,7 +358,7 @@ describe("Telegram scheduled delivery", () => {
       }
     });
     const h = setup({ context: () => completed(LONG), transport: flakySecond({ calls: 0 }) });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     // Only this process knows how far it got: the row stays claimed until it goes on.
     expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: "telegram_delivery_unknown", nextAttemptAt: new Date(START + 3_000),
@@ -368,7 +374,7 @@ describe("Telegram scheduled delivery", () => {
 
     // A process that does not know how far the attempt got settles it unknown instead of sending it again.
     const other = setup({ context: () => completed(LONG), transport: flakySecond({ calls: 0 }) });
-    await other.sender.queue("occurrence-1");
+    await other.queue("occurrence-1");
     await other.sender.idle();
     other.advance(3_000);
     await other.restarted().sweep();
@@ -399,7 +405,7 @@ describe("Telegram scheduled delivery", () => {
       })
     });
     afterSend = () => change(h);
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.fake.calls()).toHaveLength(1);
     expect(JSON.stringify(h.fake.calls())).not.toContain(SENTINEL);
@@ -420,7 +426,7 @@ describe("Telegram scheduled delivery", () => {
       })
     });
     h.hooks.onSleep = (ms) => { if (ms === 60_000) h.refuse("telegram_not_linked"); };
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(richSends).toBe(2);
     expect(h.fake.botMessages(h.user.id)).toHaveLength(1);
@@ -435,7 +441,7 @@ describe("Telegram scheduled delivery", () => {
       h.refuse("telegram_access_off");
       return Buffer.from("%PDF-1.7 synthetic");
     });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.fake.calls("sendRichMessage")).toHaveLength(1);
     expect(h.fake.calls("sendDocument")).toHaveLength(0);
@@ -452,7 +458,7 @@ describe("Telegram scheduled delivery", () => {
     const h = setup({ context: () => ({ ...completed("Done."), result: result("Done.", files) }) });
     h.memory.files.set("image-1", telegramPhotoFixture());
     h.memory.files.set("report-1", Buffer.from("%PDF-1.7 synthetic"));
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(JSON.stringify(h.fake.lastCall("sendRichMessage")!.params.rich_message)).toContain("1 more file is in AIQSA.");
     expect(h.fake.lastCall("sendPhoto")).toMatchObject({ file: { field: "photo", filename: "chart.jpg" } });
@@ -471,7 +477,7 @@ describe("Telegram scheduled delivery", () => {
     h.memory.files.set("image-1", telegramPhotoFixture());
     h.memory.files.set("report-1", Buffer.from("%PDF-1.7 synthetic"));
     h.fake.failNext("sendPhoto", { description: "Bad Request: PHOTO_INVALID_DIMENSIONS", status: 400 });
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.fake.calls("sendPhoto").map((call) => call.status)).toEqual([400]);
     expect(h.fake.calls("sendDocument").map((call) => [call.file?.filename, call.status])).toEqual([
@@ -493,7 +499,7 @@ describe("Telegram scheduled delivery", () => {
         : { ...completed("Done."), result: result("Done.", [report]) };
     } });
     h.memory.files.set("report-1", Buffer.from("%PDF-1.7 synthetic"));
-    await h.sender.queue("occurrence-1");
+    await h.queue("occurrence-1");
     await h.sender.idle();
     expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
     expect(h.timers.map((timer) => timer.ms)).toEqual([TELEGRAM_FILES_EXPORT_POLL_MS]);
@@ -510,7 +516,7 @@ describe("Telegram scheduled delivery", () => {
     expect(h.row()).toMatchObject({ attempts: 1, state: "sent" });
 
     const slow = setup({ context: () => ({ ...completed("Done."), result: { ...result("Done."), outputs: "pending" as const } }) });
-    await slow.sender.queue("occurrence-1");
+    await slow.queue("occurrence-1");
     await slow.sender.idle();
     slow.advance(TELEGRAM_FILES_EXPORT_WAIT_MS);
     slow.timers[0]!.wake();

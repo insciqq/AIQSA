@@ -7,13 +7,15 @@ import {
   type ScheduledTaskRunTrigger
 } from "../../contracts/scheduledTasks";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import { SMTP_CONTROL_ID } from "../email/repository";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { applyMemorySourceMutations, type LockedMemorySourceChat } from "../memory/sourceState";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
+import { moveShownMonitoringCheck } from "../runs/chatListTime";
 import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
-import type { ScheduledTaskNotification } from "./notifications";
+import { recordTelegramScheduledDelivery } from "../telegram/scheduledDeliveryOutbox";
+import { SCHEDULED_TASK_EMAIL_RECIPIENT } from "./emailRecipient";
+import { SCHEDULED_TASK_EMAIL_WINDOW_MS, type ScheduledTaskNotification } from "./notifications";
 import { BROWSER_HANDOFF_SIGN_IN_REASONS, BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
 import {
   SCHEDULED_TASK_LATENESS_MS,
@@ -26,6 +28,7 @@ import {
   planClaimOverlap,
   planOccurrenceSettlement,
   planScheduledTaskClaim,
+  settlementHidden,
   type MonitoringCheckSettlement,
   type ScheduledTaskBaseline,
   type ScheduledTaskOpenOccurrence,
@@ -35,12 +38,14 @@ import {
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
 import {
+  directMcpCallSourceFailures,
   occurrenceCheckSourcesMissing,
   occurrenceSourcesIncomplete,
   unavailableSourcesWire,
   discoveryUnavailableSources,
   withCodeCallUnavailableSources,
-  type ScheduledCodeCallSourceFailure
+  type ScheduledCodeCallSourceFailure,
+  type ScheduledDirectMcpCall
 } from "./sourceHealth";
 import {
   pruneScheduledTaskOccurrences,
@@ -65,9 +70,10 @@ export type ScheduledTaskSettlement = Readonly<{
   sourceAlert: boolean;
   /**
    * Source health of the settled run: it completed without a relevant source
-   * its admission recorded as missing. A monitoring check whose previous shown
-   * result relied on that source settled as "could not check" (see
-   * `occurrenceCheckSourcesMissing`).
+   * its admission or its own calls recorded as missing, or as a monitoring
+   * check that could not check. A monitoring check whose previous shown result
+   * relied on such a source, or whose model reported that it could not check,
+   * settled as "could not check" (see `occurrenceCheckSourcesMissing`).
    */
   sourcesIncomplete: boolean;
   state: ScheduledTaskSettledState;
@@ -201,7 +207,17 @@ export interface ScheduledTaskRunnerStore {
     Promise<ScheduledTaskSettlement | null>;
   /** Settles a running occurrence once its run ended; null while the run is active. */
   settleLinked(occurrenceId: string, now: Date): Promise<ScheduledTaskSettlement | null>;
-  /** Claims the single result email of a settled occurrence when the owner can receive it. */
+  /**
+   * Occurrences whose result email is due and still unclaimed, oldest first,
+   * within `SCHEDULED_TASK_EMAIL_WINDOW_MS` of their settlement: the
+   * settlement recorded it durably, so a restart picks it up here.
+   */
+  listDueNotifications(now: Date, limit: number): Promise<readonly string[]>;
+  /**
+   * Claims the single due result email of a settled occurrence when its task
+   * still has email on and the owner can receive it (`SCHEDULED_TASK_EMAIL_RECIPIENT`);
+   * a due email that can no longer be sent is dropped.
+   */
   claimNotification(occurrenceId: string, now: Date): Promise<ScheduledTaskNotification | null>;
   /**
    * Active scheduled runs admitted before `now` minus the run deadline, oldest
@@ -269,16 +285,37 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
 }
 
 /**
- * The monitoring settlement of a completed linked run (see `completedRunCheck`),
- * health first: a check whose admission missed a source its previous shown
- * result relied on settles as `could_not_check`, from the same frozen source
- * health that extends the task's incomplete streak in `applySettlement`.
+ * Whether a monitoring check's context carried the previous shown result, as
+ * its run froze it with the instruction that says so; null when the run
+ * recorded nothing (admitted before this was recorded, or gone).
  */
-function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSettlement | null {
+async function checkContextHeldPreviousResult(tx: Prisma.TransactionClient, runId: string): Promise<boolean | null> {
+  const [run] = await tx.$queryRaw<Array<{ shown: Prisma.JsonValue | null }>>(Prisma.sql`
+    SELECT run."normalizedRequest" -> 'monitoringPreviousResult' AS "shown"
+    FROM "ModelRun" AS run
+    WHERE run."id" = ${runId}
+  `);
+  const shown = run?.shown;
+  return typeof shown === "boolean" ? shown : null;
+}
+
+/**
+ * The monitoring settlement of a completed linked run (see `completedRunCheck`),
+ * health first: a check whose admission or own calls missed a source its
+ * previous shown result relied on settles as `could_not_check`, from the same
+ * source health that extends the task's incomplete streak in `applySettlement`.
+ * A check whose context held no previous result is a first check.
+ */
+async function monitoringSettlementOf(tx: Prisma.TransactionClient, { occurrence, task }: Locked):
+  Promise<MonitoringCheckSettlement | null> {
+  const kind = scheduledTaskKindFromColumn(task.kind);
+  const previousResultShown = kind === "monitoring" && occurrence.runId
+    ? await checkContextHeldPreviousResult(tx, occurrence.runId) : null;
   return completedRunCheck({
     healthIncomplete: occurrenceCheckSourcesMissing(occurrence.unavailableSources),
     occurrence,
-    task: { ...task, kind: scheduledTaskKindFromColumn(task.kind) }
+    previousResultShown,
+    task: { ...task, kind }
   });
 }
 
@@ -286,7 +323,7 @@ function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSe
  * Settles one locked occurrence and writes its task's bookkeeping per
  * `planOccurrenceSettlement`: the counters and the incomplete-run streak, an
  * automatic pause, a monitoring goal's completion (decided under the task lock
- * against the revision the run was accepted under), the unread result and the
+ * by `completedRunCheck`), the unread result and the
  * baseline the next same-chat run sees, only under the chat epoch its run was
  * admitted under, which retires a result carried into a rotated chat. A
  * monitoring check's outcome is also kept on its run, where the transcript
@@ -304,11 +341,12 @@ async function applySettlement(
   }> = {}
 ): Promise<ScheduledTaskSettlement> {
   const check = options.check ?? null;
-  const sourcesIncomplete = outcome.state === "COMPLETED" && occurrenceSourcesIncomplete(occurrence.unavailableSources);
   const plan = planOccurrenceSettlement({
     assistantMessageId: options.assistantMessageId ?? null, check, observedRevision: options.observedRevision,
-    occurrence: { ...occurrence, trigger: trigger(occurrence.trigger) }, outcome, sourcesIncomplete, task
+    occurrence: { ...occurrence, trigger: trigger(occurrence.trigger) }, outcome,
+    sourcesIncomplete: occurrenceSourcesIncomplete(occurrence.unavailableSources), task
   });
+  const { sourcesIncomplete } = plan;
   await tx.scheduledTaskOccurrence.update({
     data: {
       finishedAt: now, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
@@ -351,10 +389,37 @@ async function applySettlement(
       WHERE "id" = ${occurrence.runId} AND "userId" = ${occurrence.userId} AND "scheduledOccurrenceId" = ${occurrence.id}
     `);
   }
+  if (plan.notifies) await recordResultNotifications(tx, occurrence.id, now);
   return {
     occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, sourceAlert: plan.sourceAlert,
     sourcesIncomplete, state: outcome.state, taskPaused: plan.pauseReason !== null
   };
+}
+
+/**
+ * The durable notifications of a settlement that notifies its owner, written
+ * in its transaction so a crash after the commit loses none: the Telegram
+ * outbox row when the task sends to Telegram, and the due result email when
+ * it has email on. Both are delivered outside the tick, at most once; browser
+ * push stays best effort.
+ */
+async function recordResultNotifications(tx: Prisma.TransactionClient, occurrenceId: string, now: Date): Promise<void> {
+  await recordTelegramScheduledDelivery(tx, occurrenceId, now);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "ScheduledTaskOccurrence" AS occurrence SET "emailDueAt" = ${now}
+    FROM "ScheduledTask" AS task
+    WHERE occurrence."id" = ${occurrenceId} AND occurrence."notifiedAt" IS NULL
+      AND task."id" = occurrence."taskId" AND task."emailNotify"
+  `);
+}
+
+/** The servers the run's Workspace code reached with a successful call. */
+async function codeReachedServers(tx: Prisma.TransactionClient, runId: string): Promise<Set<string>> {
+  return new Set((await tx.$queryRaw<Array<{ serverId: string }>>(Prisma.sql`
+    SELECT DISTINCT code_call."serverId"
+    FROM "WorkspaceCodeCall" AS code_call
+    WHERE code_call."modelRunId" = ${runId} AND code_call."state" = 'complete'
+  `)).map((row) => row.serverId));
 }
 
 /**
@@ -371,11 +436,7 @@ async function discoverySourceFailures(tx: Prisma.TransactionClient, runId: stri
   `);
   const unavailable = discoveryUnavailableSources(run?.epochs, run?.loadedServers);
   if (unavailable.length === 0) return [];
-  const reached = new Set((await tx.$queryRaw<Array<{ serverId: string }>>(Prisma.sql`
-    SELECT DISTINCT code_call."serverId"
-    FROM "WorkspaceCodeCall" AS code_call
-    WHERE code_call."modelRunId" = ${runId} AND code_call."state" = 'complete'
-  `)).map((row) => row.serverId));
+  const reached = await codeReachedServers(tx, runId);
   const names = new Map((await tx.$queryRaw<Array<{ serverId: string | null; serverName: string | null }>>(Prisma.sql`
     SELECT server ->> 'serverId' AS "serverId", server ->> 'serverName' AS "serverName"
     FROM "ModelRun" AS run
@@ -390,11 +451,40 @@ async function discoverySourceFailures(tx: Prisma.TransactionClient, runId: stri
 }
 
 /**
+ * Servers the run's model called directly whose calls failed as a source
+ * (`directMcpCallSourceFailures`) and never succeeded, by any call of the run
+ * or its code. The server and its name come from the run's frozen plan of the
+ * called tool (`normalizedRequest.mcp`, final after its tool searches). Only a
+ * failure the engine built has the closed reason read here: a result the MCP
+ * server returned always carries its `rawPreview`, so a tool's own output can
+ * never pass for a source failure.
+ */
+async function directCallSourceFailures(tx: Prisma.TransactionClient, runId: string): Promise<ScheduledCodeCallSourceFailure[]> {
+  const calls = await tx.$queryRaw<ScheduledDirectMcpCall[]>(Prisma.sql`
+    SELECT tool ->> 'serverId' AS "serverId", tool ->> 'serverName' AS "serverName", call."state"::text AS "state",
+      CASE WHEN call."state" = 'error'::"ModelRunToolCallState" AND call."result" -> 'rawPreview' IS NULL
+          AND call."result" #>> '{content,0,type}' = 'json' AND call."result" #> '{content,1}' IS NULL
+        THEN call."result" #>> '{content,0,value,reason}' END AS "failureReason"
+    FROM "ModelRun" AS run
+    CROSS JOIN LATERAL jsonb_array_elements(CASE
+      WHEN jsonb_typeof(run."normalizedRequest" #> '{mcp,tools}') = 'array' THEN run."normalizedRequest" #> '{mcp,tools}'
+      ELSE '[]'::jsonb END) AS tool
+    JOIN "ModelRunToolCall" AS call ON call."modelRunId" = run."id" AND call."toolName" = tool ->> 'namespacedName'
+    WHERE run."id" = ${runId} AND tool ->> 'serverId' IS NOT NULL
+      AND call."state" IN ('complete'::"ModelRunToolCallState", 'error'::"ModelRunToolCallState")
+  `);
+  // The code's calls are read only when a direct call failed as a source.
+  if (directMcpCallSourceFailures(calls).length === 0) return [];
+  return directMcpCallSourceFailures(calls, await codeReachedServers(tx, runId));
+}
+
+/**
  * Sources the run's Workspace code could not use (refused before dispatch as
- * unauthorized or unavailable, with no successful call), and those its tool
- * search reported unavailable and never loaded, join the sources its
- * admission recorded, on the occurrence itself, before settlement decides
- * health, the check outcome and the incomplete streak.
+ * unauthorized or unavailable, with no successful call), those its tool
+ * search reported unavailable and never loaded, and those its model's direct
+ * calls could not reach, join the sources its admission recorded, on the
+ * occurrence itself, before settlement decides health, the check outcome and
+ * the incomplete streak.
  */
 async function withCodeCallSourceHealth(tx: Prisma.TransactionClient, locked: Locked): Promise<Locked> {
   const runId = locked.occurrence.runId;
@@ -420,7 +510,7 @@ async function withCodeCallSourceHealth(tx: Prisma.TransactionClient, locked: Lo
       AND NOT bool_or(code_call."state" = 'complete')
     ORDER BY code_call."serverId"
   `);
-  const failures = [...codeFailures, ...await discoverySourceFailures(tx, runId)];
+  const failures = [...codeFailures, ...await discoverySourceFailures(tx, runId), ...await directCallSourceFailures(tx, runId)];
   if (failures.length === 0) return locked;
   const unavailableSources = withCodeCallUnavailableSources(locked.occurrence.unavailableSources, failures);
   await tx.$executeRaw(Prisma.sql`
@@ -535,8 +625,9 @@ export async function runNeededBrowserSignIn(tx: Pick<Prisma.TransactionClient, 
 }
 
 export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): ScheduledTaskRunnerStore {
-  function settleLinked(occurrenceId: string, now: Date) {
-    return prisma.$transaction(async (tx) => {
+  async function settleLinked(occurrenceId: string, now: Date): Promise<ScheduledTaskSettlement | null> {
+    let owner: string | null = null;
+    const settled = await prisma.$transaction(async (tx) => {
       const observed = await lockForSettlement(tx, occurrenceId);
       if (!observed || observed.occurrence.state !== "RUNNING") return null;
       const run = observed.occurrence.runId
@@ -553,10 +644,24 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, state: "FAILED" as const } : linked;
       const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
-      const check = outcome.state === "COMPLETED" ? monitoringSettlementOf(locked) : null;
+      const check = outcome.state === "COMPLETED" ? await monitoringSettlementOf(tx, locked) : null;
+      owner = locked.occurrence.userId;
       return applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
         { assistantMessageId: run?.assistantMessageId ?? null, check });
     });
+    // A check's own writes kept its chat's place in the chat list; a shown result moves it once the settlement committed,
+    // in a write of its own: the settlement holds the run row, and a reply's admission locks the chat before the run it
+    // follows, so moving the chat inside the settlement could deadlock with it. The move is only the list's order: a
+    // failure leaves the chat where it was and never undoes the settlement.
+    if (settled?.runId && owner && !settlementHidden(settled)) {
+      try {
+        await moveShownMonitoringCheck(prisma, { now, occurrenceId: settled.occurrenceId, runId: settled.runId, userId: owner });
+      } catch (error) {
+        logEvent("job_attempt", { action: "skip", code: "scheduled_tasks_unavailable", error, job_id: settled.occurrenceId,
+          outcome: "failed", prisma_code: databaseFailureCode(error), stage: "write", subsystem: "scheduled_tasks" });
+      }
+    }
+    return settled;
   }
 
   return {
@@ -872,30 +977,39 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
 
     settleLinked,
 
+    async listDueNotifications(now, limit) {
+      const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id" FROM "ScheduledTaskOccurrence"
+        WHERE "emailDueAt" > ${new Date(now.getTime() - SCHEDULED_TASK_EMAIL_WINDOW_MS)} AND "notifiedAt" IS NULL
+        ORDER BY "emailDueAt" ASC, "id" ASC
+        LIMIT ${limit}
+      `);
+      return rows.map((row) => row.id);
+    },
+
     async claimNotification(occurrenceId, now) {
       const [row] = await prisma.$queryRaw<Array<{
         chatId: string | null; email: string; reasonCode: string | null; state: ScheduledTaskSettledState;
         taskPauseReason: string | null; title: string; trigger: string; unavailableSources: Prisma.JsonValue | null;
       }>>(Prisma.sql`
-        UPDATE "ScheduledTaskOccurrence" AS occurrence SET "notifiedAt" = ${now}
+        UPDATE "ScheduledTaskOccurrence" AS occurrence SET "notifiedAt" = ${now}, "emailDueAt" = NULL
         FROM "ScheduledTask" AS task, "User" AS account
-        WHERE occurrence."id" = ${occurrenceId} AND occurrence."notifiedAt" IS NULL
+        WHERE occurrence."id" = ${occurrenceId} AND occurrence."notifiedAt" IS NULL AND occurrence."emailDueAt" IS NOT NULL
           AND occurrence."state" IN ('COMPLETED'::"ScheduledTaskOccurrenceState",
             'FAILED'::"ScheduledTaskOccurrenceState", 'SKIPPED'::"ScheduledTaskOccurrenceState")
           AND task."id" = occurrence."taskId" AND task."emailNotify"
-          AND account."id" = occurrence."userId" AND account."status" = 'active'::"UserStatus" AND account."email" IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM "AuthIdentity" AS verified
-            WHERE verified."userId" = account."id" AND verified."emailVerifiedAt" IS NOT NULL
-              AND verified."normalizedEmail" = lower(btrim(account."email")))
-          AND EXISTS (
-            SELECT 1 FROM "SmtpControl" AS smtp
-            WHERE smtp."id" = ${SMTP_CONTROL_ID} AND smtp."enabled" AND smtp."activeConfig" IS NOT NULL)
+          AND account."id" = occurrence."userId" AND ${SCHEDULED_TASK_EMAIL_RECIPIENT}
         RETURNING occurrence."state"::text AS "state", occurrence."reasonCode", occurrence."trigger",
           COALESCE(occurrence."chatId", task."chatId") AS "chatId", task."title", task."pauseReason" AS "taskPauseReason",
-          account."email", occurrence."unavailableSources"
+          btrim(account."email") AS "email", occurrence."unavailableSources"
       `);
-      if (!row) return null;
+      if (!row) {
+        // Email turned off, the owner can no longer receive it, or claimed already: it stops being due.
+        await prisma.$executeRaw(Prisma.sql`
+          UPDATE "ScheduledTaskOccurrence" SET "emailDueAt" = NULL WHERE "id" = ${occurrenceId} AND "emailDueAt" IS NOT NULL
+        `);
+        return null;
+      }
       const { unavailableSources, ...notification } = row;
       return { ...notification, trigger: trigger(row.trigger), unavailableSources: unavailableSourcesWire(unavailableSources) };
     },

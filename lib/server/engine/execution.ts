@@ -69,7 +69,9 @@ import {
 } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
-import { createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
+import {
+  answerEffectAnchor, createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects
+} from "./unknownEffects";
 import { createUsageLedger } from "./usage";
 import { takeNativeRunInterruption, WORKSPACE_STOPPED_INTERRUPTION } from "./runInterruption";
 import { withSubagentTools } from "./subagents/callTools";
@@ -505,12 +507,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           run.nextUserMessageId === input.created.userMessageId ? { ...run, nextUserMessageId: contextMessages.at(-1)!.id } : run));
         const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId,
           runIds: [...nativeRuns.values(), ...hiddenSteps.map((run) => run.runId)], userId: input.userId });
-        // A scheduled run's flat context takes only its previous result's own work: never a compaction of what came before
-        // it, nor user input that entered that answer (a follow-up).
-        const answerItems = (answer: readonly TranscriptItem[]) => input.scheduled
-          ? answer.filter((item) => item.kind !== "compaction" && item.kind !== "user") : answer;
-        const nativeAnswers = new Map([...nativeRuns].map(([messageId, nativeRunId]) => [messageId,
-          answerItems(runItems.get(nativeRunId) ?? [])]));
+        // A scheduled run's flat context takes its previous shown result as its saved text, like a carried copy: never that
+        // run's tool calls, results, reasoning or intermediate text, which an hourly check would otherwise send again every
+        // time, nor a compaction of what came before it or a follow-up. Its calls feed only the effect guard below.
+        const nativeAnswers = new Map(input.scheduled ? [] : [...nativeRuns].map(([messageId, nativeRunId]) => [messageId,
+          runItems.get(nativeRunId) ?? []]));
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id) });
         const conversationFor = (mode: "continuation" | "input") => buildRunConversation({ continuationTurns,
@@ -551,8 +552,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });
-        const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects),
-          hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })));
+        const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects), [
+          ...hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })),
+          // A scheduled run's earlier native answers entered as text: their calls stand where each answer does.
+          ...(input.scheduled ? [...nativeRuns].map(([messageId, nativeRunId]) => ({
+            beforeItemId: answerEffectAnchor(conversation.items, conversationMessages, messageId),
+            items: runItems.get(nativeRunId) ?? [] })) : [])]);
         // Only an earlier turn after the branch's first call could release an effect, so only those are looked up.
         const firstCall = effectItems.findIndex((item) => item.kind === "tool_call");
         const laterItems = new Set(firstCall < 0 ? [] : effectItems.slice(firstCall).map((item) => item.id));
@@ -840,6 +845,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) }));
         const timeoutMs = answerTimeoutMs;
         let pending: ModelRunSseEvent[] = [];
+        /** The current round asks only for a report after the written answer (`prepareRequest`'s `afterAnswer`). */
+        let reportOnlyRound = false;
         let followupRevision = 0;
         const recordModelUsage = (reported: ModelRunUsage, costUsd: number | undefined) => usage.add({ ...reportedAnswerCost(costUsd),
           modelId: normalizedRequest.modelId, operationCount: 1, provider: normalizedRequest.provider,
@@ -924,7 +931,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               if (pinned.type === "token") {
                 // While research runs nothing streams into the answer: it is kept per attempt, for a provider that fails mid-report.
                 if (runResearch?.holding()) runResearch.heldToken(pinned.data.delta);
-                else answer.push(pinned.data.delta);
+                else if (!reportOnlyRound) answer.push(pinned.data.delta);
               }
               // Kept outputs of an attempt are saved once it completed; the rest are live only.
               else if (projectRunOutputArtifactEvent(pinned)) pending.push(pinned);
@@ -986,8 +993,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               runDraftCall: (call, round) => runToolBatch(batchDeps, { calls: 0 }, { calls: [call], round }) })
           } } : {}),
           maxToolRounds: budgets.maxToolRounds,
-          prepareRequest: async ({ answerNow, reserved: reservedRound, toolChoice }: Readonly<{ answerNow?: true;
-            reserved?: true; round: number; toolChoice: LoopToolChoice }>) => {
+          prepareRequest: async ({ afterAnswer, answerNow, reserved: reservedRound, toolChoice }: Readonly<{
+            afterAnswer?: true; answerNow?: true; reserved?: true; round: number; toolChoice: LoopToolChoice }>) => {
+            // The round after a written answer only reports: none of its text streams into the answer, which stands.
+            reportOnlyRound = afterAnswer === true;
             const tools = [...registry.definitions()];
             const request: ProviderRunRequest = {
               ...base,
@@ -1003,7 +1012,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const prepared = await context.prepare(request);
             void recordContextStatus("request");
             // A reserved round's or an answer-now round's instruction rides on its request only, never on the transcript.
-            const instruction = reservedRound && reserved ? reserved.instruction : answerNow ? ANSWER_NOW_INSTRUCTION : null;
+            const reservedInstruction = reserved && afterAnswer && "afterAnswerInstruction" in reserved
+              ? reserved.afterAnswerInstruction : reserved?.instruction;
+            const instruction = reservedRound && reservedInstruction ? reservedInstruction
+              : answerNow ? ANSWER_NOW_INSTRUCTION : null;
             return instruction
               ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
               : prepared;
@@ -1014,6 +1026,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target,
             requestAnchor: context.requestAnchor(result.usage), usage: result.usage }),
           roundEnd: async (result) => {
+            reportOnlyRound = false;
             for (const event of pending) await sink.publish(event);
             pending = [];
             const held = runResearch?.holding() === true;

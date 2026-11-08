@@ -53,15 +53,20 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   /** One bounded sweep of the tasks' history retention, run at most every quarter hour. */
   retainHistory?: ScheduledTaskHistoryRetention;
   send: ScheduledTaskSend;
+  /**
+   * Sends a result email. The settlement records the email as due; the runner
+   * sends due emails one at a time, at most once each, after a restart too.
+   */
   sendEmail?: (message: SmtpProductMessage) => Promise<unknown>;
   /** Queues the occurrence's browser push; the sender claims it at most once and never blocks the tick. */
   sendPush?: (occurrenceId: string) => void;
   /**
-   * Records the occurrence's Telegram delivery when its task has Telegram
-   * delivery on (a durable outbox row, one per occurrence); the Telegram
-   * sender delivers it outside the tick, which this never blocks.
+   * Wakes the Telegram sender after a settlement that notifies: the
+   * settlement already wrote its durable outbox row (one per occurrence, only
+   * for a task with Telegram delivery on), which the sender's own sweep
+   * delivers anyway. Never blocks the tick.
    */
-  queueTelegram?: (occurrenceId: string) => void;
+  wakeTelegram?: () => void;
   /**
    * Stops an active run through the ordinary Stop path, keeping the given
    * terminal cause; the run deadline uses it.
@@ -90,11 +95,8 @@ const RESOLUTION_PAUSES: Readonly<Record<
   scheduled_task_tools_unavailable: "tools_unavailable",
   scheduled_task_workspace_unavailable: "workspace_unavailable"
 };
-/**
- * Result emails waiting for the one sending slot. Beyond this a burst drops
- * its emails (they are best effort) instead of growing without bound.
- */
-const EMAIL_QUEUE_LIMIT = 200;
+/** Due result emails one pass of the sender reads; it reads again while it makes progress. */
+const EMAIL_BATCH = 20;
 
 /** Content-free: occurrence and run identities, stable codes and counts only. */
 function log(fields: Readonly<{
@@ -190,39 +192,71 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
   const inFlight = new Map<string, Promise<void>>();
   /** Deadline stops in progress, by run, so a later tick does not stop a run twice. */
   const stopping = new Map<string, Promise<void>>();
-  const emailQueue: string[] = [];
+  /** The email sender's pass in progress, and whether a settlement since asks for another. */
   let emailing: Promise<void> | null = null;
+  let emailAgain = false;
   /** The history sweep in progress, and when the last one started. */
   let sweeping: Promise<void> | null = null;
   let sweptAt: number | null = null;
 
-  async function sendResultEmail(occurrenceId: string, sendEmail: NonNullable<ScheduledTaskRunnerDeps["sendEmail"]>): Promise<void> {
+  /**
+   * Claims and sends one due result email. False only when the claim itself
+   * failed, so the email stays due for a later pass; at most once otherwise,
+   * since the claim is recorded before sending and a failed send is not repeated.
+   */
+  async function sendResultEmail(occurrenceId: string, sendEmail: NonNullable<ScheduledTaskRunnerDeps["sendEmail"]>): Promise<boolean> {
+    let claimed = false;
     try {
-      // Best effort and at most once: the claim is recorded before sending.
       const notification = await deps.store.claimNotification(occurrenceId, clock());
+      claimed = true;
       if (notification) await sendEmail(scheduledTaskResultEmail({ ...notification, appBaseUrl: deps.appBaseUrl }));
     } catch (error) {
-      log({ action: "skip", code: "email_repository_failed", job_id: occurrenceId, outcome: "failed",
+      log({ action: claimed ? "skip" : "retry", code: "email_repository_failed", job_id: occurrenceId, outcome: "failed",
         prisma_code: databaseFailureCode(error), stage: "release" });
     }
+    return claimed;
   }
 
   /**
-   * Sends queued result emails one at a time outside every tick and admission,
-   * so slow SMTP never delays a run and a burst holds at most one slot of the
-   * shared SMTP gate that sign-in and verification emails also use.
+   * Sends the due result emails the settlements recorded, one at a time,
+   * outside every tick and admission, so slow SMTP never delays a run and a
+   * burst holds at most one slot of the shared SMTP gate that sign-in and
+   * verification emails also use. Every tick starts a pass too, so emails a
+   * restart interrupted go out (within `SCHEDULED_TASK_EMAIL_WINDOW_MS`).
    */
   function pumpEmails(): void {
     const sendEmail = deps.sendEmail;
-    const occurrenceId = emailing || !sendEmail ? undefined : emailQueue.shift();
-    if (!sendEmail || occurrenceId === undefined) return;
-    emailing = background(() => sendResultEmail(occurrenceId, sendEmail)).catch(() => undefined).finally(() => {
+    if (!sendEmail) return;
+    if (emailing) {
+      emailAgain = true;
+      return;
+    }
+    emailing = background(async () => {
+      let more = true;
+      while (more) {
+        emailAgain = false;
+        let due: readonly string[];
+        try {
+          due = await deps.store.listDueNotifications(clock(), EMAIL_BATCH);
+        } catch (error) {
+          log({ action: "retry", code: "email_repository_failed", outcome: "failed", prisma_code: databaseFailureCode(error),
+            stage: "release" });
+          return;
+        }
+        let settled = 0;
+        for (const occurrenceId of due) if (await sendResultEmail(occurrenceId, sendEmail)) settled += 1;
+        // A full batch that moved goes on; one whose claims all failed waits for the next tick.
+        more = emailAgain || (due.length === EMAIL_BATCH && settled > 0);
+      }
+    }).catch(() => undefined).finally(() => {
       emailing = null;
-      pumpEmails();
+      // A settlement that asked while this pass was ending.
+      if (emailAgain) pumpEmails();
     });
   }
 
   async function notify(settlements: readonly ScheduledTaskSettlement[]): Promise<void> {
+    let notifies = false;
     for (const settlement of settlements) {
       // An incomplete completed run logs its source health as its code.
       const code = settlement.reasonCode ?? (settlement.sourcesIncomplete ? "source_unavailable" : null);
@@ -233,22 +267,19 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
           : settlement.state === "SKIPPED" ? { outcome: "skipped" as const } : { action: "fail" as const, outcome: "failed" as const })
       });
       if (!settlementNotifiesOwner(settlement)) continue;
+      notifies = true;
       try {
         deps.sendPush?.(settlement.occurrenceId);
       } catch {
         // Browser push is best effort and never holds a settlement.
       }
-      try {
-        deps.queueTelegram?.(settlement.occurrenceId);
-      } catch {
-        // The Telegram outbox reports its own failures and never holds a settlement.
-      }
-      if (!deps.sendEmail) continue;
-      if (emailQueue.length >= EMAIL_QUEUE_LIMIT) {
-        log({ action: "skip", code: "email_queue_full", job_id: settlement.occurrenceId, outcome: "skipped", stage: "release" });
-        continue;
-      }
-      emailQueue.push(settlement.occurrenceId);
+    }
+    if (!notifies) return;
+    // The settlement wrote the Telegram outbox row and the due email in its own transaction.
+    try {
+      deps.wakeTelegram?.();
+    } catch {
+      // The Telegram sender's sweep delivers the row anyway.
     }
     pumpEmails();
   }
@@ -504,10 +535,12 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       await notify(claim.settlements);
       await dispatch(now);
       sweepHistory(now);
+      // Due emails a restart or an earlier failed claim left behind.
+      pumpEmails();
     },
     /**
      * Resolves when the executions, deadline stops and history sweep started
-     * so far and the queued emails have settled (tests and shutdown).
+     * so far and the email sender's pass have settled (tests and shutdown).
      */
     async idle(): Promise<void> {
       while (inFlight.size > 0 || stopping.size > 0 || emailing || sweeping) {
