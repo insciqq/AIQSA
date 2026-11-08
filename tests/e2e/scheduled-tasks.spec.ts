@@ -223,8 +223,10 @@ function chatFixture(): ChatDetailWire {
     messages: [
       // An earlier run whose result was already seen, then the unread newest one.
       message("brief-question-1", "user", "Give me a short brief of the most important news from the last 24 hours.", null,
-        { scheduledTask: { taskId: "brief", taskRunId: "brief-run-0", title: "Weekday news brief", unseen: false } }),
-      message("brief-answer-1", "assistant", "Here is your brief for Thursday:\n\n- Synthetic headline zero.", "brief-question-1"),
+        { createdAt: "2026-10-01T08:00:00.000Z",
+          scheduledTask: { taskId: "brief", taskRunId: "brief-run-0", title: "Weekday news brief", unseen: false } }),
+      message("brief-answer-1", "assistant", "Here is your brief for Thursday:\n\n- Synthetic headline zero.", "brief-question-1",
+        { createdAt: "2026-10-01T08:01:00.000Z" }),
       message("brief-question", "user", "Give me a short brief of the most important news from the last 24 hours.", "brief-answer-1",
         { scheduledTask: { taskId: "brief", taskRunId: "brief-run-3", title: "Weekday news brief", unseen: true } }),
       message("brief-answer", "assistant", "Here is your brief for Friday:\n\n- Synthetic headline one.\n- Synthetic headline two.", "brief-question")
@@ -233,27 +235,42 @@ function chatFixture(): ChatDetailWire {
 }
 
 /** A monitoring chat: its first check, checks with no update around one that could not check, then an update. */
-const watchChecks: readonly Readonly<{ answer: string; outcome: ScheduledTaskCheckOutcome }>[] = [
-  { outcome: "baseline", answer: "Watching: the latest release is 1.4.0, published on 28 September." },
-  { outcome: "no_update", answer: "Still 1.4.0. No new release since the last check." },
-  { outcome: "no_update", answer: "Still 1.4.0. The release page is unchanged." },
-  { outcome: "could_not_check", answer: "I could not reach the release tracker, so I could not check for a new release." },
-  { outcome: "no_update", answer: "Still 1.4.0. Nothing new in the changelog." },
-  { outcome: "no_update", answer: "Still 1.4.0. No new tags." },
-  { outcome: "no_update", answer: "Still 1.4.0. The download page is unchanged." },
-  { outcome: "update", answer: "Release 1.5.0 is out:\n\n- Faster sync.\n- A new export format." }
+/**
+ * A monitoring chat in Europe/London (BST): its first check, a run that failed, checks with no update around one that
+ * could not check, an update, more checks with no update, then a latest run that failed and the user's own question.
+ * A check without an outcome is a run that errored: its answer is a failure card.
+ */
+const watchPrompt = "Tell me when a new release of the project is published.";
+const watchChecks: readonly Readonly<{ answer: string; at: string; outcome?: ScheduledTaskCheckOutcome }>[] = [
+  { outcome: "baseline", at: "2026-10-03T08:00:00.000Z", answer: "Watching: the latest release is 1.4.0, published on 28 September." },
+  { at: "2026-10-03T12:00:00.000Z", answer: "" },
+  { outcome: "no_update", at: "2026-10-03T16:00:00.000Z", answer: "Still 1.4.0. The release page is unchanged." },
+  { outcome: "could_not_check", at: "2026-10-03T20:00:00.000Z", answer: "I could not reach the release tracker, so I could not check for a new release." },
+  { outcome: "no_update", at: "2026-10-04T00:00:00.000Z", answer: "Still 1.4.0. Nothing new in the changelog." },
+  { outcome: "update", at: "2026-10-04T04:00:00.000Z", answer: "Release 1.5.0 is out:\n\n- Faster sync.\n- A new export format." },
+  { outcome: "no_update", at: "2026-10-04T06:00:00.000Z", answer: "Still 1.5.0. No new tags." },
+  { outcome: "no_update", at: "2026-10-04T08:00:00.000Z", answer: "Still 1.5.0. The download page is unchanged." },
+  { at: "2026-10-04T09:00:00.000Z", answer: "" }
 ];
 
 function watchChatFixture(): ChatDetailWire {
-  const updatedAt = "2026-10-04T08:01:30.000Z";
+  const updatedAt = "2026-10-04T09:30:00.000Z";
   const messages: ChatMessageWire[] = [];
   watchChecks.forEach((check, index) => {
     const turn = `watch-${index + 1}`;
     const marker = { taskId: "watch", taskRunId: `watch-run-${index + 1}`, title: "Release watch", unseen: false };
-    messages.push(message(`${turn}-question`, "user", "Tell me when a new release of the project is published.",
-      messages.at(-1)?.id ?? null, { scheduledTask: marker, scheduledOutcome: check.outcome }));
-    messages.push(message(`${turn}-answer`, "assistant", check.answer, `${turn}-question`, { scheduledOutcome: check.outcome }));
+    const outcome = check.outcome ? { scheduledOutcome: check.outcome } : {};
+    const answeredAt = new Date(Date.parse(check.at) + 60_000).toISOString();
+    messages.push(message(`${turn}-question`, "user", watchPrompt, messages.at(-1)?.id ?? null,
+      { createdAt: check.at, scheduledTask: marker, ...outcome }));
+    messages.push(message(`${turn}-answer`, "assistant", check.answer, `${turn}-question`,
+      { createdAt: answeredAt, ...outcome, ...(check.outcome ? {} : { status: "error" }) }));
   });
+  // The user's own turn in the task chat stays an ordinary, editable question.
+  messages.push(message("watch-reply-question", "user", "Which release should I install today?", messages.at(-1)!.id,
+    { createdAt: "2026-10-04T09:20:00.000Z" }));
+  messages.push(message("watch-reply-answer", "assistant", "Install 1.5.0; it is the latest release.", "watch-reply-question",
+    { createdAt: "2026-10-04T09:20:30.000Z" }));
   const leaf = messages.at(-1)!.id;
   return {
     assistant: null, id: watchChatId, title: "Release watch", createdAt: "2026-09-28T08:00:00.000Z", updatedAt,
@@ -628,12 +645,30 @@ test("an unread scheduled chat shows a dot, clears only its rendered result and 
   // Only the unread turn the transcript renders is sent; the earlier, seen one is not.
   await expect.poll(() => seenWrites(api, "brief")).toEqual([{ runIds: ["brief-run-3"] }]);
   await expect(row).not.toHaveAttribute("aria-describedby");
+  // Each task-posted turn is one line with its run time; its instructions wait behind a disclosure and it has no edit action.
+  const thread = page.getByTestId("conversation-thread");
+  const turns = thread.getByTestId("scheduled-turn");
+  await expect(turns).toHaveCount(2);
+  await expect(turns.nth(0)).toHaveText(/^Automation · Weekday news brief\s*·\s*Thu 1 Oct, 09:00\s*·\s*Show instructions$/u);
+  await expect(turns.nth(1)).toHaveText(/^Automation · Weekday news brief\s*·\s*Fri 2 Oct, 09:00\s*·\s*Show instructions$/u);
+  await expect(thread.getByText("Give me a short brief of the most important news", { exact: false })).toHaveCount(0);
+  await expect(thread.locator('button[aria-label="Edit question"]')).toHaveCount(0);
+  const showInstructions = turns.nth(1).getByRole("button", { name: "Show instructions", exact: true });
+  await expect(showInstructions).toHaveAttribute("aria-expanded", "false");
+  await showInstructions.click();
+  await expect(thread.getByText("Give me a short brief of the most important news from the last 24 hours.", { exact: true })).toHaveCount(1);
+  await expect(turns.nth(1).getByRole("button", { name: "Copy instructions", exact: true })).toBeVisible();
+  await turns.nth(1).getByRole("button", { name: "Hide instructions", exact: true }).click();
+  await expect(thread.getByText("Give me a short brief of the most important news", { exact: false })).toHaveCount(0);
+  // The line above the composer says when the task runs next and keeps the note that replies don't change it.
   const hint = page.getByTestId("scheduled-task-chat-hint");
-  await expect(hint).toHaveText(/Replies here don't change the automation\./u);
+  await expect(hint).toContainText("Next run Mon 5 Oct, 09:00");
+  await expect(hint).toHaveAttribute("title", "Replies here don't change the automation.");
   const editTask = hint.getByRole("button", { name: "Edit automation Weekday news brief", exact: true });
   await captureState(page, info, "scheduled-transcript-chip", {
     atEachSize: async () => {
       await expect(chip).toBeVisible();
+      await expectWithinViewport(page, hint.getByText("Next run Mon 5 Oct, 09:00", { exact: true }));
       await expectWithinViewport(page, editTask);
       await expectWithinViewport(page, page.getByRole("textbox", { name: "Message", exact: true }));
       await expectNoHorizontalOverflow(page);
@@ -757,7 +792,7 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   expect(api.writes.filter((write) => write.method === "PATCH")).toEqual([]);
 });
 
-test("a monitoring chat folds checks with no update into one row and shows them unchanged on request", async ({ page }, info) => {
+test("a monitoring chat folds checks with no update and recovered failures into rows and shows them unchanged on request", async ({ page }, info) => {
   await prepare(page, monitoringFixture, "light", [chatFixture(), watchChatFixture()]);
   if ((page.viewportSize()?.width ?? 0) < 768) await page.getByRole("button", { name: "Open sidebar" }).click();
   await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
@@ -765,32 +800,51 @@ test("a monitoring chat folds checks with no update into one row and shows them 
   await expect(thread.getByText("Release 1.5.0 is out:")).toBeVisible();
   const groups = page.getByTestId("scheduled-checks-row");
   await expect(groups).toHaveCount(2);
-  await expect(groups.nth(0)).toHaveText(/2 checks with no update\s*·\s*Show/u);
-  await expect(groups.nth(1)).toHaveText(/3 checks with no update\s*·\s*Show/u);
-  // The first check, the one that could not check and the update stay visible; checks with no update do not.
+  // Each group says what it holds and when its latest check ran, in the viewer's zone (today, so without the day).
+  await expect(groups.nth(0)).toHaveText(/^2 checks with no update · 2 failed · last 01:00\s*·\s*Show$/u);
+  await expect(groups.nth(1)).toHaveText(/^2 checks with no update · last 09:00\s*·\s*Show$/u);
+  // The first check, the update, the latest failed run and the user's own question stay visible; the earlier
+  // failures, which later checks recovered from, and the checks with no update do not.
   await expect(thread.getByText("Watching: the latest release is 1.4.0")).toBeVisible();
-  await expect(thread.getByText("I could not reach the release tracker")).toBeVisible();
-  await expect(thread.getByText(/^Still 1\.4\.0/u)).toHaveCount(0);
-  const show = page.getByRole("button", { name: "Show 3 checks with no update", exact: true });
+  await expect(thread.getByText("I could not reach the release tracker")).toHaveCount(0);
+  await expect(thread.getByText(/^Still 1\.[45]\.0/u)).toHaveCount(0);
+  const failures = thread.getByRole("region", { name: "Run failed" });
+  await expect(failures).toHaveCount(1);
+  await expect(page.locator('[data-message-id="watch-9-answer"]').getByRole("region", { name: "Run failed" })).toBeVisible();
+  // Visible task turns are one line each; the user's own question keeps its edit action.
+  const turns = thread.getByTestId("scheduled-turn");
+  await expect(turns).toHaveCount(3);
+  await expect(turns.nth(0)).toHaveText(/^Automation · Release watch\s*·\s*Sat 3 Oct, 09:00\s*·\s*Show instructions$/u);
+  await expect(thread.getByText(watchPrompt, { exact: true })).toHaveCount(0);
+  await expect(turns.locator('button[aria-label="Edit question"]')).toHaveCount(0);
+  await expect(page.locator('[data-message-id="watch-reply-question"]').locator('button[aria-label="Edit question"]')).toHaveCount(1);
+  await expect(thread.getByText("Which release should I install today?", { exact: true })).toBeVisible();
+  // The composer line says when the next check runs.
+  await expect(page.getByTestId("scheduled-task-chat-hint")).toContainText("Next check Sun 4 Oct, 13:00");
+  const show = page.getByRole("button", { name: "Show 2 checks with no update, 2 failed", exact: true });
   await expect(show).toHaveAttribute("aria-expanded", "false");
   await captureState(page, info, "scheduled-transcript-checks-collapsed", {
-    anchor: groups.nth(1),
+    anchor: groups.nth(0),
     atEachSize: async () => {
       await expectWithinViewport(page, show);
       await expectNoHorizontalOverflow(page);
     }
   });
 
-  // The toggle is a keyboard control; the checks appear unchanged, each with its own turn.
+  // The toggle is a keyboard control; the checks appear unchanged, each with its own turn, failure cards included.
   await show.focus();
   await page.keyboard.press("Enter");
-  const hide = page.getByRole("button", { name: "Hide 3 checks with no update", exact: true });
+  const hide = page.getByRole("button", { name: "Hide 2 checks with no update, 2 failed", exact: true });
   await expect(hide).toHaveAttribute("aria-expanded", "true");
   await expect(hide).toBeFocused();
-  for (const text of ["Still 1.4.0. Nothing new in the changelog.", "Still 1.4.0. No new tags.", "Still 1.4.0. The download page is unchanged."]) {
+  for (const text of ["Still 1.4.0. The release page is unchanged.", "Still 1.4.0. Nothing new in the changelog.",
+    "I could not reach the release tracker, so I could not check for a new release."]) {
     await expect(thread.getByText(text, { exact: true })).toBeVisible();
   }
-  await expect(thread.getByText("Still 1.4.0. No new release since the last check.", { exact: true })).toHaveCount(0);
+  await expect(failures).toHaveCount(2);
+  await expect(page.locator('[data-message-id="watch-2-answer"]').getByRole("region", { name: "Run failed" })).toBeVisible();
+  await expect(turns).toHaveCount(7);
+  await expect(thread.getByText(/^Still 1\.5\.0/u)).toHaveCount(0);
   await captureState(page, info, "scheduled-transcript-checks-expanded", {
     anchor: hide,
     atEachSize: async () => {
@@ -799,8 +853,9 @@ test("a monitoring chat folds checks with no update into one row and shows them 
     }
   });
   await page.keyboard.press("Space");
-  await expect(page.getByRole("button", { name: "Show 3 checks with no update", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(show).toHaveAttribute("aria-expanded", "false");
   await expect(thread.getByText(/^Still 1\.4\.0/u)).toHaveCount(0);
+  await expect(failures).toHaveCount(1);
 });
 
 test.describe("touch controls", () => {
@@ -851,12 +906,26 @@ test.describe("touch controls", () => {
     await page.setViewportSize(touchSizes[0]!);
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
-    const show = page.getByRole("button", { name: "Show 3 checks with no update", exact: true });
+    const show = page.getByRole("button", { name: "Show 2 checks with no update, 2 failed", exact: true });
+    const turn = page.getByTestId("scheduled-turn").first();
     for (const size of touchSizes) {
       await page.setViewportSize(size);
       await show.scrollIntoViewIfNeeded();
       await expectTouchSafe(show);
       await expectWithinViewport(page, show);
+      // A task turn's title and its disclosure are separate touch-safe targets: a tap on the disclosure opens it.
+      const instructions = turn.getByRole("button", { name: "Show instructions", exact: true });
+      await instructions.scrollIntoViewIfNeeded();
+      await expectTouchSafe(instructions);
+      await instructions.tap();
+      const hideInstructions = turn.getByRole("button", { name: "Hide instructions", exact: true });
+      await expect(hideInstructions).toHaveAttribute("aria-expanded", "true");
+      await expectTouchSafe(turn.getByRole("button", { name: "Copy instructions", exact: true }));
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`scheduled-transcript-turn-touch-${size.width}x${size.height}.png`) });
+      await hideInstructions.tap();
+      await expect(instructions).toHaveAttribute("aria-expanded", "false");
+      await show.scrollIntoViewIfNeeded();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-transcript-checks-touch-${size.width}x${size.height}.png`) });
     }
@@ -921,11 +990,19 @@ test.describe("touch controls", () => {
     await page.setViewportSize(touchSizes[0]!);
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await page.getByRole("treeitem", { name: "Weekday news brief", exact: true }).click();
-    const editTask = page.getByTestId("scheduled-task-chat-hint").getByRole("button", { name: "Edit automation Weekday news brief", exact: true });
+    const hint = page.getByTestId("scheduled-task-chat-hint");
+    const editTask = hint.getByRole("button", { name: "Edit automation Weekday news brief", exact: true });
+    const nextRun = hint.getByText("Next run Mon 5 Oct, 09:00", { exact: true });
     for (const size of touchSizes) {
       await page.setViewportSize(size);
       await expectTouchSafe(editTask);
       await expectWithinViewport(page, editTask);
+      await expectWithinViewport(page, nextRun);
+      // One line: the next run and Edit automation share a row instead of the action wrapping under the text.
+      const [status, action] = await Promise.all([nextRun.boundingBox(), editTask.boundingBox()]);
+      expect(status && action).toBeTruthy();
+      expect(Math.abs((status!.y + status!.height / 2) - (action!.y + action!.height / 2))).toBeLessThan(2);
+      expect(action!.x).toBeGreaterThan(status!.x + status!.width);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-chat-hint-touch-${size.width}x${size.height}.png`) });
     }
