@@ -625,8 +625,9 @@ export async function runNeededBrowserSignIn(tx: Pick<Prisma.TransactionClient, 
 }
 
 export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): ScheduledTaskRunnerStore {
-  function settleLinked(occurrenceId: string, now: Date) {
-    return prisma.$transaction(async (tx) => {
+  async function settleLinked(occurrenceId: string, now: Date): Promise<ScheduledTaskSettlement | null> {
+    let owner: string | null = null;
+    const settled = await prisma.$transaction(async (tx) => {
       const observed = await lockForSettlement(tx, occurrenceId);
       if (!observed || observed.occurrence.state !== "RUNNING") return null;
       const run = observed.occurrence.runId
@@ -644,16 +645,23 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
       const check = outcome.state === "COMPLETED" ? await monitoringSettlementOf(tx, locked) : null;
-      const settled = await applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
+      owner = locked.occurrence.userId;
+      return applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
         { assistantMessageId: run?.assistantMessageId ?? null, check });
-      // A check's own writes kept its chat's place in the chat list; a shown result moves it now, after the run row's
-      // outcome, in the order usage totals lock them (run, then chat).
-      if (settled.runId && !settlementHidden(settled)) {
-        await moveShownMonitoringCheck(tx, { now, occurrenceId: settled.occurrenceId, runId: settled.runId,
-          userId: locked.occurrence.userId });
-      }
-      return settled;
     });
+    // A check's own writes kept its chat's place in the chat list; a shown result moves it once the settlement committed,
+    // in a write of its own: the settlement holds the run row, and a reply's admission locks the chat before the run it
+    // follows, so moving the chat inside the settlement could deadlock with it. The move is only the list's order: a
+    // failure leaves the chat where it was and never undoes the settlement.
+    if (settled?.runId && owner && !settlementHidden(settled)) {
+      try {
+        await moveShownMonitoringCheck(prisma, { now, occurrenceId: settled.occurrenceId, runId: settled.runId, userId: owner });
+      } catch (error) {
+        logEvent("job_attempt", { action: "skip", code: "scheduled_tasks_unavailable", error, job_id: settled.occurrenceId,
+          outcome: "failed", prisma_code: databaseFailureCode(error), stage: "write", subsystem: "scheduled_tasks" });
+      }
+    }
+    return settled;
   }
 
   return {
