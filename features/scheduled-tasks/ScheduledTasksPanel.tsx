@@ -22,10 +22,7 @@ import {
 } from "./scheduledTaskDraft";
 import {
   browserTimeZone,
-  SCHEDULED_TASK_HISTORY_KEPT_TEXT,
   scheduledTaskFailureMessage,
-  scheduledTaskHistoryLine,
-  scheduledTaskLastRunLine,
   scheduledTaskStatusLine,
   scheduledTaskTriggerText,
   sortScheduledTasks,
@@ -59,6 +56,9 @@ type Editor = Readonly<{
 }>;
 
 type Idea = Readonly<{ label: string; preset: Partial<ScheduledTaskEditorDraft> }>;
+
+/** Focus goes back to New automation; a symbol, so no task id can be mistaken for it. */
+const NEW_AUTOMATION = Symbol("new automation");
 
 const IDEAS: readonly Idea[] = [
   {
@@ -181,8 +181,9 @@ export function ScheduledTasksPanel({
   const active = useRef(true);
   const editorEpoch = useRef(0);
   const newButton = useRef<HTMLButtonElement>(null);
-  const headings = useRef(new Map<string, HTMLHeadingElement>());
-  const restoreFocus = useRef<string | null>(null);
+  const titles = useRef(new Map<string, HTMLButtonElement>());
+  /** After the editor or a row change: a task id for its title, or New automation. */
+  const restoreFocus = useRef<string | typeof NEW_AUTOMATION | null>(null);
   /** Run ids the editor already marked seen (or is marking). */
   const seenRuns = useRef(new Set<string>());
   const busy = saving || rowBusy !== null;
@@ -201,7 +202,7 @@ export function ScheduledTasksPanel({
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   useEffect(() => {
     if (editor || !restoreFocus.current) return;
-    const target = restoreFocus.current === "new" ? newButton.current : headings.current.get(restoreFocus.current) ?? newButton.current;
+    const target = restoreFocus.current === NEW_AUTOMATION ? newButton.current : titles.current.get(restoreFocus.current) ?? newButton.current;
     restoreFocus.current = null;
     // The sheet restores its opener first; the row or New task owns focus after a change.
     const frame = window.requestAnimationFrame(() => { if (target?.isConnected) target.focus(); });
@@ -278,7 +279,7 @@ export function ScheduledTasksPanel({
   }, [busy, editRequest, editorState, loadState, takeEditRequest]);
 
   function closeEditor() {
-    restoreFocus.current = editor?.original?.id ?? "new";
+    restoreFocus.current = editor?.original?.id ?? NEW_AUTOMATION;
     editorEpoch.current += 1;
     setEditor(null);
   }
@@ -286,7 +287,7 @@ export function ScheduledTasksPanel({
   function closeMissing(taskId: string) {
     removeScheduledTask(taskId);
     editorEpoch.current += 1;
-    restoreFocus.current = "new";
+    restoreFocus.current = NEW_AUTOMATION;
     setEditor(null);
     setNotice("This automation is no longer available.");
   }
@@ -375,7 +376,7 @@ export function ScheduledTasksPanel({
   const remove = (task: ScheduledTask) => rowMutation(task, async () => {
     await deleteScheduledTask(task.id);
     removeScheduledTask(task.id);
-    restoreFocus.current = "new";
+    restoreFocus.current = NEW_AUTOMATION;
     setDeleting(null);
     if (active.current) setNotice(`“${task.title}” was deleted. Its chats and answers stay in your history.`);
   });
@@ -446,7 +447,7 @@ export function ScheduledTasksPanel({
               busy={busy}
               deleting={deleting === task.id}
               error={rowErrors[task.id] ?? null}
-              headingRef={(node) => { if (node) headings.current.set(task.id, node); else headings.current.delete(task.id); }}
+              titleRef={(node) => { if (node) titles.current.set(task.id, node); else titles.current.delete(task.id); }}
               rowBusy={rowBusy === task.id}
               task={task}
               viewerTimeZone={viewerTimeZone}
@@ -498,14 +499,18 @@ export function ScheduledTasksPanel({
   );
 }
 
+/**
+ * One task: its title, which opens the task's chat (or its editor before the
+ * first run made one), how it runs, and one status line. The switch and the
+ * "…" menu hold the rest.
+ */
 function ScheduledTaskRow({
-  busy, deleting, error, headingRef, onCancelDelete, onConfirmDelete, onDelete, onEdit, onOpenChat, onRunNow, onToggle,
-  rowBusy, task, viewerTimeZone
+  busy, deleting, error, onCancelDelete, onConfirmDelete, onDelete, onEdit, onOpenChat, onRunNow, onToggle,
+  rowBusy, task, titleRef, viewerTimeZone
 }: Readonly<{
   busy: boolean;
   deleting: boolean;
   error: string | null;
-  headingRef(node: HTMLHeadingElement | null): void;
   onCancelDelete(): void;
   onConfirmDelete(): void;
   onDelete(): void;
@@ -515,38 +520,38 @@ function ScheduledTaskRow({
   onToggle(resume: boolean): void;
   rowBusy: boolean;
   task: ScheduledTask;
+  titleRef(node: HTMLButtonElement | null): void;
   viewerTimeZone: string;
 }>) {
   const status = scheduledTaskStatusLine(task);
-  const lastRun = scheduledTaskLastRunLine(task);
-  const history = scheduledTaskHistoryLine(task);
-  const headingId = `v2-scheduled-task-${task.id}`;
+  const titleId = `v2-scheduled-task-${task.id}`;
+  const unreadId = `${titleId}-unread`;
+  const labelledBy = task.unseenResult ? `${titleId} ${unreadId}` : titleId;
   // A goal a monitoring check reached completes the task; it can still be resumed to keep watching.
   const resumable = task.status !== "completed" || task.completionReason === "goal_reached";
   return (
-    <li className="v2-scheduled-row" data-status={task.status} aria-labelledby={headingId}>
+    <li className="v2-scheduled-row" data-status={task.status} aria-labelledby={labelledBy}>
       <span className="v2-scheduled-row-icon" aria-hidden="true"><UiV2Icon name="clock" /></span>
       <div className="v2-scheduled-row-copy">
-        <h3 id={headingId} ref={headingRef} tabIndex={-1} className="v2-focusable">
-          <span>{task.title}</span>
-          {task.unseenResult ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span className="sr-only">New result</span></> : null}
+        {/* The heading reads as the title; the button inside it names what it does. */}
+        <h3 aria-labelledby={labelledBy}>
+          <button ref={titleRef} type="button" className="v2-scheduled-row-open v2-focusable"
+            aria-label={task.chatId ? `Open chat for ${task.title}` : `Edit ${task.title}`}
+            onClick={task.chatId ? onOpenChat : onEdit}>
+            <span id={titleId}>{task.title}</span>
+          </button>
+          {task.unseenResult
+            ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span id={unreadId} className="sr-only">New result</span></>
+            : null}
         </h3>
         <p className="v2-scheduled-row-schedule">{scheduledTaskTriggerText(task, viewerTimeZone)}</p>
         <p className="v2-scheduled-row-status" data-tone={status.tone}>
           {task.kind === "monitoring" ? <span className="v2-scheduled-row-kind">Monitoring · </span> : null}
           {status.text}
         </p>
-        {lastRun ? <p className="v2-scheduled-row-last" data-tone={task.lastRun?.state === "failed" || task.lastRun?.reasonCode === "could_not_check" ? "attention" : undefined}>{lastRun}</p> : null}
-        <p className="v2-scheduled-row-history" data-testid="scheduled-task-history-line">{history}</p>
-        <p className="v2-scheduled-row-history-hint">
-          {task.historyRetentionDays === null ? "Old chats stay until you delete them." : SCHEDULED_TASK_HISTORY_KEPT_TEXT}
-        </p>
         {error ? <p className="v2-scheduled-row-error" role="alert">{error}</p> : null}
       </div>
       <div className="v2-scheduled-row-actions">
-        {task.chatId ? (
-          <UiV2Button type="button" disabled={busy} aria-label={`Open chat for ${task.title}`} onClick={onOpenChat}>Open chat</UiV2Button>
-        ) : null}
         {resumable ? (
           <UiV2Switch
             checked={task.status === "active"}
@@ -556,7 +561,8 @@ function ScheduledTaskRow({
             onChange={onToggle}
           />
         ) : null}
-        <ScheduledTaskMenu busy={busy} running={task.running} title={task.title} onDelete={onDelete} onEdit={onEdit} onRunNow={onRunNow} />
+        <ScheduledTaskMenu busy={busy} running={task.running} title={task.title} onDelete={onDelete} onEdit={onEdit}
+          onOpenChat={task.chatId ? onOpenChat : null} onRunNow={onRunNow} />
       </div>
       {deleting ? (
         <div className="v2-scheduled-row-delete" role="group" aria-label={`Delete ${task.title}`}>
@@ -571,12 +577,14 @@ function ScheduledTaskRow({
   );
 }
 
-function ScheduledTaskMenu({ busy, running, title, onDelete, onEdit, onRunNow }: Readonly<{
+function ScheduledTaskMenu({ busy, running, title, onDelete, onEdit, onOpenChat, onRunNow }: Readonly<{
   busy: boolean;
   running: boolean;
   title: string;
   onDelete(): void;
   onEdit(): void;
+  /** Present once the task has a chat; the title opens it too. */
+  onOpenChat: (() => void) | null;
   onRunNow(): void;
 }>) {
   const [open, setOpen] = useState(false);
@@ -588,6 +596,7 @@ function ScheduledTaskMenu({ busy, running, title, onDelete, onEdit, onRunNow }:
         aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)} />
       {open ? (
         <UiV2ResponsiveMenu anchorRef={triggerRef} menuRef={menuRef} label={`Actions for ${title}`} onClose={() => setOpen(false)}>
+          {onOpenChat ? <UiV2MenuItem icon="chat" onClick={() => select(onOpenChat)}>Open chat</UiV2MenuItem> : null}
           <UiV2MenuItem icon="edit" onClick={() => select(onEdit)}>Edit</UiV2MenuItem>
           <UiV2MenuItem icon="regenerate" disabled={running} sub={running ? "A run is in progress" : undefined} onClick={() => select(onRunNow)}>Run now</UiV2MenuItem>
           <UiV2MenuItem icon="trash" tone="destructive" onClick={() => select(onDelete)}>Delete</UiV2MenuItem>

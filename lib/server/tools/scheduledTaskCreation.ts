@@ -10,6 +10,7 @@ import {
   scheduledTaskCard,
   scheduledTaskErrorMessage,
   type ScheduledTask,
+  type ScheduledTaskChatMode,
   type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskSchedule
 } from "../../contracts/scheduledTasks";
@@ -281,10 +282,11 @@ function decodeArguments(value: Record<string, unknown>): ToolArguments | Readon
     scheduleEnabled, skills: value.skills ?? [], telegram, title: value.title, webhookEnabled };
 }
 
-/** Where runs answer when the model leaves it open: one chat when the task requires it, else the editor's default. */
-function defaultChatMode(input: ToolArguments): "new" | "same" {
-  return input.kind === "monitoring" || input.schedule.kind === "hourly" ? "same" : "new";
-}
+/**
+ * Where runs answer when the model leaves it open: one chat, as in the editor
+ * (operator decision 2026-11-08: a new chat per run filled the chat list).
+ */
+const DEFAULT_CHAT_MODE: ScheduledTaskChatMode = "same";
 
 /** "Mon 2026-10-05 09:00" in the task's zone: unambiguous for the model to restate. */
 export function localInstant(value: string | null, timeZone: string): string | null {
@@ -433,7 +435,7 @@ export async function executeCreateScheduledTask(
         modelId: settings.modelId, provider: settings.provider, searchEnabled: settings.searchEnabled, emailNotify: false,
         telegramNotify, toolsEnabled: settings.toolsEnabled, workspaceEnabled: settings.workspaceEnabled,
         memoryEnabled: settings.memoryEnabled === true, pinnedSkillIds: skills.skillIds,
-        chatMode: decoded.chatMode ?? defaultChatMode(decoded), kind: decoded.kind,
+        chatMode: decoded.chatMode ?? DEFAULT_CHAT_MODE, kind: decoded.kind,
         historyRetentionDays: decoded.historyRetentionDays
       },
       callId: context.persistedToolCallId,

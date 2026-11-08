@@ -1801,31 +1801,35 @@
 .v2-scheduled-row-icon { display: grid; place-items: center; width: 2.5rem; height: 2.5rem; border: 1px solid var(--v2-color-border); border-radius: 0.625rem; color: var(--v2-color-text2); }
 .v2-scheduled-row[data-status="paused"] .v2-scheduled-row-icon,
 .v2-scheduled-row[data-status="completed"] .v2-scheduled-row-icon { color: var(--v2-color-text3); }
-.v2-scheduled-row-copy { display: grid; min-width: 0; gap: 0.1875rem; }
-.v2-scheduled-row-copy h3 { display: flex; align-items: center; gap: 0.5rem; min-width: 0; margin: 0; border-radius: var(--v2-radius-s); font-size: 0.875rem; font-weight: 600; line-height: 1.4; }
-.v2-scheduled-row-copy h3 > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+/* The title's hit area covers the row's text, so a tap on its lines opens it as a tap on the title does. */
+.v2-scheduled-row-copy { position: relative; display: grid; min-width: 0; gap: 0.1875rem; }
+.v2-scheduled-row-copy h3 { display: flex; align-items: center; gap: 0.5rem; min-width: 0; margin: 0; font-size: 0.875rem; font-weight: 600; line-height: 1.4; }
+.v2-scheduled-row-open { min-width: 0; padding: 0; border: 0; border-radius: var(--v2-radius-s); color: inherit; background: transparent; font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.v2-scheduled-row-open::after { position: absolute; inset: 0; content: ""; }
+.v2-scheduled-row-open:hover > span { text-decoration: underline; text-underline-offset: 0.125rem; }
 .v2-scheduled-row[data-status="completed"] h3 { color: var(--v2-color-text2); }
 .v2-scheduled-unread { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--v2-color-accent); }
 .v2-scheduled-row-copy p { margin: 0; font-size: 0.78125rem; line-height: 1.45; overflow-wrap: anywhere; }
 .v2-scheduled-row-schedule { color: var(--v2-color-text2); }
 .v2-scheduled-row-status { color: var(--v2-color-text); }
 .v2-scheduled-row-status[data-tone="live"] { color: var(--v2-color-accent-text); }
-.v2-scheduled-row-status[data-tone="attention"], .v2-scheduled-row-last[data-tone="attention"] { color: var(--v2-color-warn); }
-.v2-scheduled-row-last { color: var(--v2-color-text3); }
-.v2-scheduled-row-history { color: var(--v2-color-text2); }
-.v2-scheduled-row-copy .v2-scheduled-row-history-hint { color: var(--v2-color-text3); font-size: 0.75rem; }
+.v2-scheduled-row-status[data-tone="attention"] { color: var(--v2-color-warn); }
 .v2-scheduled-row-kind { color: var(--v2-color-text2); }
 .v2-scheduled-row-error { color: var(--v2-color-danger); }
 .v2-scheduled-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; padding-top: 0.25rem; }
 .v2-scheduled-row-delete { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; margin-top: 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); background: var(--v2-color-surface); }
 .v2-scheduled-row-delete > p { flex: 1 1 14rem; margin: 0; color: var(--v2-color-text); font-size: 0.8125rem; line-height: 1.45; overflow-wrap: anywhere; }
 .v2-scheduled-row-delete > span { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* A phone keeps the switch and menu beside the text and drops the decorative icon, so a row stays three lines. */
 @media (max-width: 599px) {
-  .v2-scheduled-row { grid-template-columns: 2.5rem minmax(0, 1fr); }
-  .v2-scheduled-row-actions { grid-column: 2; justify-content: flex-start; padding-top: 0.375rem; }
-  .v2-scheduled-row-actions > .v2-switch { order: -1; margin-left: -0.25rem; }
-  .v2-scheduled-row-actions > .v2-icon-button { margin-left: auto; }
+  .v2-scheduled-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.25rem 0.5rem; padding-block: 0.875rem; }
+  .v2-scheduled-row-icon { display: none; }
+  .v2-scheduled-row-actions { gap: 0.25rem; padding-top: 0; }
   .v2-scheduled-row-delete { grid-column: 1 / -1; }
+}
+@media (pointer: coarse) {
+  /* A whole touch target that keeps the title's line height. */
+  .v2-scheduled-row-open { min-width: 2.75rem; min-height: 2.75rem; margin-block: -0.75rem; }
 }
 
 .v2-scheduled-form { display: grid; gap: 1rem; min-width: 0; }
@@ -1867,7 +1871,15 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
 .v2-scheduled-option { display: flex; align-items: center; gap: 0.5rem; min-height: 1.75rem; color: var(--v2-color-text); font-size: 0.8125rem; line-height: 1.4; cursor: pointer; }
 .v2-scheduled-option input { flex: none; width: 1rem; height: 1rem; margin: 0; accent-color: var(--v2-color-accent); }
 .v2-scheduled-option:has(input:disabled) { color: var(--v2-color-text3); cursor: default; }
-.v2-scheduled-runs { display: grid; gap: 0.5rem; padding-top: 1rem; border-top: 1px solid var(--v2-color-border); }
+/* Recent runs open an edited task's form, so they close with a rule above the fields. */
+.v2-scheduled-runs { display: grid; gap: 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--v2-color-border); }
+.v2-scheduled-runs-more { justify-self: start; padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; font-size: 0.78125rem; cursor: pointer; }
+.v2-scheduled-runs-more:hover { text-decoration: underline; text-underline-offset: 0.125rem; }
+.v2-scheduled-advanced { gap: 0.5rem; }
+.v2-scheduled-advanced-toggle { display: inline-flex; justify-self: start; align-items: center; gap: 0.375rem; min-height: 2rem; padding: 0 0.25rem 0 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-text); background: transparent; font: inherit; font-size: 0.8125rem; font-weight: 600; cursor: pointer; }
+.v2-scheduled-advanced-toggle > .v2-icon { flex: none; width: 1rem; height: 1rem; color: var(--v2-color-text2); }
+.v2-scheduled-advanced-fields { display: grid; gap: 0.875rem; min-width: 0; padding-top: 0.375rem; }
+.v2-scheduled-advanced-fields[hidden] { display: none; }
 .v2-scheduled-runs h3 { margin: 0; font-size: 0.8125rem; font-weight: 600; }
 .v2-scheduled-runs ul { margin: 0; padding: 0; list-style: none; }
 .v2-scheduled-runs li { display: grid; grid-template-columns: 9.5rem 5.5rem minmax(0, 1fr) auto; align-items: baseline; gap: 0.75rem; padding-block: 0.4375rem; border-bottom: 1px solid var(--v2-color-border); font-size: 0.78125rem; line-height: 1.45; }
@@ -1907,6 +1919,7 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
 @media (pointer: coarse) {
   .v2-scheduled-field, .v2-scheduled-day, .v2-scheduled-option { min-height: 2.75rem; }
   .v2-scheduled-run-chat { min-width: 2.75rem; min-height: 2.75rem; }
+  .v2-scheduled-runs-more, .v2-scheduled-advanced-toggle { min-height: 2.75rem; }
   .v2-scheduled-skill-remove { min-width: 2.75rem; min-height: 2.75rem; }
 }
 
