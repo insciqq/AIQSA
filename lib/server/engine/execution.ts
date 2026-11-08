@@ -69,7 +69,9 @@ import {
 } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
-import { createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
+import {
+  answerEffectAnchor, createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects
+} from "./unknownEffects";
 import { createUsageLedger } from "./usage";
 import { takeNativeRunInterruption, WORKSPACE_STOPPED_INTERRUPTION } from "./runInterruption";
 import { withSubagentTools } from "./subagents/callTools";
@@ -505,12 +507,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           run.nextUserMessageId === input.created.userMessageId ? { ...run, nextUserMessageId: contextMessages.at(-1)!.id } : run));
         const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId,
           runIds: [...nativeRuns.values(), ...hiddenSteps.map((run) => run.runId)], userId: input.userId });
-        // A scheduled run's flat context takes only its previous result's own work: never a compaction of what came before
-        // it, nor user input that entered that answer (a follow-up).
-        const answerItems = (answer: readonly TranscriptItem[]) => input.scheduled
-          ? answer.filter((item) => item.kind !== "compaction" && item.kind !== "user") : answer;
-        const nativeAnswers = new Map([...nativeRuns].map(([messageId, nativeRunId]) => [messageId,
-          answerItems(runItems.get(nativeRunId) ?? [])]));
+        // A scheduled run's flat context takes its previous shown result as its saved text, like a carried copy: never that
+        // run's tool calls, results, reasoning or intermediate text, which an hourly check would otherwise send again every
+        // time, nor a compaction of what came before it or a follow-up. Its calls feed only the effect guard below.
+        const nativeAnswers = new Map(input.scheduled ? [] : [...nativeRuns].map(([messageId, nativeRunId]) => [messageId,
+          runItems.get(nativeRunId) ?? []]));
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id) });
         const conversationFor = (mode: "continuation" | "input") => buildRunConversation({ continuationTurns,
@@ -551,8 +552,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });
-        const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects),
-          hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })));
+        const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects), [
+          ...hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })),
+          // A scheduled run's earlier native answers entered as text: their calls stand where each answer does.
+          ...(input.scheduled ? [...nativeRuns].map(([messageId, nativeRunId]) => ({
+            beforeItemId: answerEffectAnchor(conversation.items, conversationMessages, messageId),
+            items: runItems.get(nativeRunId) ?? [] })) : [])]);
         // Only an earlier turn after the branch's first call could release an effect, so only those are looked up.
         const firstCall = effectItems.findIndex((item) => item.kind === "tool_call");
         const laterItems = new Set(firstCall < 0 ? [] : effectItems.slice(firstCall).map((item) => item.id));
