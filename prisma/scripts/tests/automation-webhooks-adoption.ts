@@ -38,13 +38,14 @@ CREATE TABLE "_AutomationWebhooksOccurrenceFixture" AS
 export const automationWebhooksProofSql = `
 DO $$ BEGIN
   -- Every existing task runs on its schedule with the webhook off; nothing else of it changed, its next run included.
+  -- Columns a later migration adds are not this migration's: only what the fixture saved is compared.
   IF (SELECT count(*) FROM "ScheduledTask" task JOIN "_AutomationWebhooksTaskFixture" fixture ON fixture.id = task.id
     WHERE task."scheduleEnabled" AND NOT task."webhookEnabled"
-      AND fixture.row = to_jsonb(task) - 'scheduleEnabled' - 'webhookEnabled') <> 5
+      AND to_jsonb(task) - 'scheduleEnabled' - 'webhookEnabled' @> fixture.row) <> 5
     THEN RAISE EXCEPTION 'automation_webhooks_existing_task_changed'; END IF;
   IF (SELECT count(*) FROM "ScheduledTaskOccurrence" occurrence
     JOIN "_AutomationWebhooksOccurrenceFixture" fixture ON fixture.id = occurrence.id
-    WHERE fixture.row = to_jsonb(occurrence)) <> 2
+    WHERE to_jsonb(occurrence) @> fixture.row) <> 2
     THEN RAISE EXCEPTION 'automation_webhooks_existing_occurrence_changed'; END IF;
   IF EXISTS (SELECT 1 FROM "ScheduledTaskWebhook") OR EXISTS (SELECT 1 FROM "ScheduledTaskWebhookEvent")
     THEN RAISE EXCEPTION 'automation_webhooks_tables_not_empty'; END IF;
