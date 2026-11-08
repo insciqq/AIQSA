@@ -219,8 +219,9 @@ export type ScheduledTaskStatusLine = Readonly<{
  * The one status sentence a row shows: next run (or, without a schedule, that
  * webhook calls run it), running (or waiting for a free Workspace slot),
  * paused (with reason) or completed, and why when a monitoring check reached
- * its goal. Webhook events waiting for their run follow a running or active
- * task's sentence.
+ * its goal. An active task whose last run failed or could not check shows that
+ * run instead of its next one, since it needs the owner. Webhook events
+ * waiting for their run follow a running or active task's sentence.
  */
 export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Date()): ScheduledTaskStatusLine {
   const queued = task.webhookEnabled && task.webhook && task.webhook.queuedEvents > 0
@@ -236,6 +237,8 @@ export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Dat
     const copy = scheduledTaskPauseCopy(task.pauseReason, task);
     return { text: `Paused: ${copy.reason}. ${copy.hint}`, tone: "attention" };
   }
+  const lastRun = lastRunNeedsAttention(task) ? scheduledTaskLastRunLine(task, now) : null;
+  if (lastRun) return { text: `${lastRun}${queued}`, tone: "attention" };
   if (task.nextRunAt) return { text: `Next run ${formatScheduledInstant(task.nextRunAt, task.timeZone, now)}${queued}`, tone: "neutral" };
   return { text: !task.scheduleEnabled && task.webhookEnabled ? `Runs on each webhook call${queued}` : `No upcoming run${queued}`, tone: "neutral" };
 }
@@ -263,6 +266,12 @@ function outcomeText(state: ScheduledTaskRun["state"], reasonCode: string | null
     case "running": return "Running";
     case "pending": return reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE ? SCHEDULED_TASK_WORKSPACE_WAIT_TEXT : "Starting";
   }
+}
+
+/** A failed last run, or a check that could not reach a source: the owner should look. */
+function lastRunNeedsAttention(task: Pick<ScheduledTask, "lastRun">): boolean {
+  const run = task.lastRun;
+  return run?.state === "failed" || (run?.state === "completed" && run.reasonCode === "could_not_check");
 }
 
 /** "Last run Mon 5 Oct, 09:00 · Answered", or null before the first settled run. */
@@ -363,30 +372,55 @@ export const SCHEDULED_TASK_HISTORY_OPTIONS: readonly Readonly<{ label: string; 
   { label: "Forever", value: null }
 ];
 
-/** What the history retention never deletes, for the card and the editor. */
+/**
+ * The closed Advanced section's one line, so a choice that changes how runs
+ * behave stays in sight: "Model A · One chat · Old chats kept 90 days · Web
+ * search, Tools, Memory".
+ */
+export function scheduledTaskAdvancedSummary(input: Readonly<{
+  chatMode: ScheduledTask["chatMode"];
+  historyRetentionDays: ScheduledTaskHistoryRetentionDays;
+  memoryEnabled: boolean;
+  model: string;
+  pinnedSkills: number;
+  searchEnabled: boolean;
+  toolsEnabled: boolean;
+  workspaceEnabled: boolean;
+}>): string {
+  const history = SCHEDULED_TASK_HISTORY_OPTIONS.find((option) => option.value === input.historyRetentionDays);
+  const kept = !history || history.value === null ? "Old chats kept forever" : `Old chats kept ${history.label}`;
+  const features = [
+    input.searchEnabled && "Web search",
+    input.toolsEnabled && "Tools",
+    input.pinnedSkills > 0 && `${input.pinnedSkills} pinned ${input.pinnedSkills === 1 ? "Skill" : "Skills"}`,
+    input.workspaceEnabled && "Workspace",
+    input.memoryEnabled && "Memory"
+  ].filter((entry): entry is string => Boolean(entry));
+  return [input.model, input.chatMode === "same" ? "One chat" : "New chat each run", kept, features.join(", ")]
+    .filter(Boolean).join(" · ");
+}
+
+/** What the history retention never deletes, said once in the editor. */
 export const SCHEDULED_TASK_HISTORY_KEPT_TEXT =
   "The current chat is kept, and so is any chat you wrote in, pinned, put in a folder, shared, renamed or restored.";
 
-function historyLabel(days: ScheduledTaskHistoryRetentionDays): string {
-  return SCHEDULED_TASK_HISTORY_OPTIONS.find((option) => option.value === days)?.label ?? "Forever";
-}
-
 /**
- * The card's history line: how long old chats of the task are kept, when the
- * next one goes as things stand, and how many went (a count only).
+ * What the retention did and does next, for the editor's Keep old chats
+ * field: when the next old chat goes as things stand, and how many went (a
+ * count only); null with neither.
  */
-export function scheduledTaskHistoryLine(task: Pick<ScheduledTask, "historyDeletedChats" | "historyNextDeletionAt" |
-  "historyRetentionDays" | "timeZone">, now: Date = new Date()): string {
-  const parts = [task.historyRetentionDays === null ? "History: kept forever" : `History: ${historyLabel(task.historyRetentionDays)}`];
+export function scheduledTaskHistoryActivity(task: Pick<ScheduledTask, "historyDeletedChats" | "historyNextDeletionAt" |
+  "historyRetentionDays" | "timeZone">, now: Date = new Date()): string | null {
+  const parts: string[] = [];
   if (task.historyRetentionDays !== null && task.historyNextDeletionAt) {
     const due = new Date(task.historyNextDeletionAt);
-    parts.push(due.getTime() <= now.getTime() ? "next cleanup soon"
-      : `next cleanup ${formatScheduledDay(due, task.timeZone, now)}`);
+    parts.push(due.getTime() <= now.getTime() ? "Next cleanup soon"
+      : `Next cleanup ${formatScheduledDay(due, task.timeZone, now)}`);
   }
   if (task.historyDeletedChats > 0) {
     parts.push(`${task.historyDeletedChats} old ${task.historyDeletedChats === 1 ? "chat" : "chats"} deleted`);
   }
-  return parts.join(" · ");
+  return parts.length ? `${parts.join(" · ")}.` : null;
 }
 
 /** Copy for API failures, including codes the shared contract does not name. */

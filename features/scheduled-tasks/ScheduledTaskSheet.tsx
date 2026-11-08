@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon, UiV2Switch } from "@/components/ui-v2";
 import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
@@ -46,6 +46,8 @@ import {
   WEEKDAY_LONG_LABELS,
   WEEKDAY_SHORT_LABELS,
   formatScheduledInstant,
+  scheduledTaskAdvancedSummary,
+  scheduledTaskHistoryActivity,
   scheduledTaskQueuedEventsText,
   scheduledTaskRunRow,
   scheduledTaskTimeZoneOptions,
@@ -57,7 +59,10 @@ import { WebhookTokenReveal, useWebhookUrl } from "./WebhookTokenReveal";
 
 const field = "v2-scheduled-field w-full min-w-0 rounded-lg border border-trace bg-answer-paper px-3 py-2 text-sm text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
 const PROMPT_COUNTER_FROM = SCHEDULED_TASK_PROMPT_MAX_LENGTH - 1_000;
-const CHAT_MODES: readonly ScheduledTaskChatMode[] = ["new", "same"];
+/** One chat first: it is the default (operator decision 2026-11-08). */
+const CHAT_MODES: readonly ScheduledTaskChatMode[] = ["same", "new"];
+/** The runs the editor lists before "Show all". */
+const RECENT_RUNS_SHOWN = 3;
 const HOURLY_WINDOWS: readonly Readonly<{ label: string; value: ScheduledTaskHourlyWindow }>[] = [
   { label: "All day", value: "all_day" },
   { label: "Set hours", value: "hours" }
@@ -139,7 +144,8 @@ export function ScheduledTaskSheet({
     title: useId(), prompt: useId(), promptCount: useId(), promptLinks: useId(), repeat: useId(), time: useId(), schedule: useId(),
     days: useId(), dayOfMonth: useId(), date: useId(), timeZone: useId(), model: useId(), search: useId(),
     searchHelp: useId(), email: useId(), emailHelp: useId(), telegram: useId(), telegramHelp: useId(), form: useId(), monthHint: useId(),
-    whenHeading: useId(), scheduleHelp: useId(), webhookHelp: useId(), trigger: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
+    whenHeading: useId(), scheduleHelp: useId(), webhookHelp: useId(), trigger: useId(), notifyHeading: useId(), advanced: useId(),
+    advancedSummary: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
     chatMode: useId(), chatModeHint: useId(), chatMonthHint: useId(), kind: useId(), kindHint: useId(), tools: useId(),
     toolsHelp: useId(), workspace: useId(), workspaceHelp: useId(), memory: useId(), memoryHelp: useId(), history: useId(),
     historyHint: useId(), spreadHint: useId()
@@ -152,7 +158,8 @@ export function ScheduledTaskSheet({
   useBeforeUnloadGuard(dirty || busy);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => titleInput.current?.focus());
+    // Without scrolling, so an edited task's recent runs above the name stay in view.
+    const frame = window.requestAnimationFrame(() => titleInput.current?.focus({ preventScroll: true }));
     return () => window.cancelAnimationFrame(frame);
   }, []);
   // The preview names a wall-clock time; keep it current while the sheet stays open.
@@ -190,6 +197,24 @@ export function ScheduledTaskSheet({
     ? "Another system runs it by posting to its URL with a token. The request body reaches each run as incoming data."
     : original?.webhook ? "Off: calls to its URL are refused. The URL and token stay for when you turn it on again."
       : "Lets another system, such as GitLab, run it by calling a URL.";
+  // Advanced opens by itself while it holds something to fix: a field error, a model gone from the catalog, or a
+  // choice the model or installation no longer allows (a monitoring task's model shows its error on Type).
+  const advancedProblem = Boolean(errors.model || errors.chatMode || errors.search || errors.tools || errors.workspace ||
+    errors.skills || kindError || (catalog && !selectedModel) || (draft.searchEnabled && catalog && !searchAvailable) ||
+    (draft.toolsEnabled && blockers.tools) || (draft.workspaceEnabled && blockers.workspace) ||
+    draft.pinnedSkills.some((skill) => !skill.available));
+  const [advanced, setAdvanced] = useState(() => ({ open: advancedProblem, problem: advancedProblem }));
+  if (advanced.problem !== advancedProblem) setAdvanced({ open: advanced.open || advancedProblem, problem: advancedProblem });
+  const advancedOpen = advanced.open;
+  const advancedSummary = scheduledTaskAdvancedSummary({
+    chatMode, historyRetentionDays: draft.historyRetentionDays, memoryEnabled: draft.memoryEnabled,
+    // While the catalog loads the model is not named yet.
+    model: selectedModel?.displayName ?? (!catalog ? "" : draft.modelId ? "Unavailable model" : "No model"),
+    pinnedSkills: draft.pinnedSkills.length, searchEnabled: draft.searchEnabled, toolsEnabled: draft.toolsEnabled,
+    workspaceEnabled: draft.workspaceEnabled
+  });
+  const historyActivity = original && original.historyRetentionDays === draft.historyRetentionDays
+    ? scheduledTaskHistoryActivity(original, now) : null;
   const leave = (proceed: () => void) => {
     if (busy) return;
     if (dirty) setPendingLeave(() => proceed);
@@ -251,6 +276,16 @@ export function ScheduledTaskSheet({
       <form id={formId} className="v2-scheduled-form" noValidate aria-label={editing ? "Edit automation" : "New automation"} onSubmit={submit}>
         {notice ? <p className="v2-scheduled-sheet-notice" role="status">{notice}</p> : null}
         {errors.form ? <p className="v2-scheduled-form-error" id={ids.form} role="alert">{errors.form}</p> : null}
+        {/* Results come before settings. */}
+        {recentRuns ? (
+          <RecentRuns
+            recentRuns={recentRuns}
+            timeZone={original?.timeZone ?? draft.timeZone}
+            now={now}
+            onOpenChat={(chatId) => leave(() => onOpenRunChat(chatId))}
+            onRunsShown={onRunsShown}
+          />
+        ) : null}
         <fieldset className="v2-scheduled-fields" disabled={busy}>
           <div className="v2-scheduled-control">
             <label htmlFor={ids.title}>Name</label>
@@ -268,27 +303,6 @@ export function ScheduledTaskSheet({
             />
             {errors.title ? <FieldError id={`${ids.title}-error`}>{errors.title}</FieldError> : null}
           </div>
-          <fieldset className="v2-scheduled-choice" id={ids.kind}
-            aria-describedby={describedBy(ids.kindHint, kindError && `${ids.kind}-error`)}>
-            <legend className="v2-scheduled-label">Type</legend>
-            <div className="v2-scheduled-options" data-inline="">
-              {SCHEDULED_TASK_KIND_OPTIONS.map((option) => (
-                <label key={option.value} className="v2-scheduled-option">
-                  <input
-                    type="radio"
-                    name={`${formId}-kind`}
-                    checked={draft.kind === option.value}
-                    onChange={() => onChange({ kind: option.value })}
-                  />
-                  <span>{option.label}</span>
-                </label>
-              ))}
-            </div>
-            <p className="v2-scheduled-hint" id={ids.kindHint}>
-              Monitoring reports only when something changed and can stop itself when the goal is reached.
-            </p>
-            {kindError ? <FieldError id={`${ids.kind}-error`} live={Boolean(errors.kind)}>{kindError}</FieldError> : null}
-          </fieldset>
           <div className="v2-scheduled-control">
             <label htmlFor={ids.prompt}>Instructions</label>
             <textarea
@@ -316,6 +330,27 @@ export function ScheduledTaskSheet({
             ) : null}
             {errors.prompt ? <FieldError id={`${ids.prompt}-error`}>{errors.prompt}</FieldError> : null}
           </div>
+          <fieldset className="v2-scheduled-choice" id={ids.kind}
+            aria-describedby={describedBy(ids.kindHint, kindError && `${ids.kind}-error`)}>
+            <legend className="v2-scheduled-label">Type</legend>
+            <div className="v2-scheduled-options" data-inline="">
+              {SCHEDULED_TASK_KIND_OPTIONS.map((option) => (
+                <label key={option.value} className="v2-scheduled-option">
+                  <input
+                    type="radio"
+                    name={`${formId}-kind`}
+                    checked={draft.kind === option.value}
+                    onChange={() => onChange({ kind: option.value })}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+            <p className="v2-scheduled-hint" id={ids.kindHint}>
+              Monitoring reports only when something changed and can stop itself when the goal is reached.
+            </p>
+            {kindError ? <FieldError id={`${ids.kind}-error`} live={Boolean(errors.kind)}>{kindError}</FieldError> : null}
+          </fieldset>
 
           <div className="v2-scheduled-group" role="group" aria-labelledby={ids.whenHeading}
             aria-describedby={describedBy(errors.trigger && ids.trigger)}>
@@ -480,188 +515,195 @@ export function ScheduledTaskSheet({
             {errors.trigger ? <FieldError id={ids.trigger}>{errors.trigger}</FieldError> : null}
           </div>
 
-          <div className="v2-scheduled-group" role="group" aria-labelledby={ids.answerHeading}>
-            <h3 id={ids.answerHeading}>Answer</h3>
-            <div className="v2-scheduled-control">
-              <label htmlFor={ids.model}>Model</label>
-              <select
-                id={ids.model}
-                className={field}
-                value={draft.modelId ? modelKey(draft) : ""}
-                disabled={!catalog || models.length === 0}
-                aria-invalid={Boolean(errors.model) || undefined}
-                aria-describedby={describedBy(errors.model && `${ids.model}-error`)}
-                onChange={(event) => changeModel(event.target.value)}
-              >
-                {!draft.modelId ? <option value="" disabled>{catalog ? "No models available" : "Loading models…"}</option> : null}
-                {draft.modelId && !selectedModel ? <option value={modelKey(draft)} disabled>Unavailable model</option> : null}
-                {models.map((model) => {
-                  const provider = catalog?.providers.find((entry) => entry.id === model.provider)?.name;
-                  return <option key={modelKey(model)} value={modelKey(model)}>{provider ? `${model.displayName} · ${provider}` : model.displayName}</option>;
-                })}
-              </select>
-              {errors.model ? <FieldError id={`${ids.model}-error`}>{errors.model}</FieldError> : null}
-            </div>
-            <fieldset className="v2-scheduled-choice" id={ids.chatMode}
-              aria-describedby={describedBy(forcedChat && ids.chatModeHint, chatMode === "same" && ids.chatMonthHint,
-                errors.chatMode && `${ids.chatMode}-error`)}>
-              <legend className="v2-scheduled-label">Chat</legend>
-              <div className="v2-scheduled-options">
-                {CHAT_MODES.map((mode) => (
-                  <label key={mode} className="v2-scheduled-option">
-                    <input
-                      type="radio"
-                      name={`${formId}-chat-mode`}
-                      checked={chatMode === mode}
-                      disabled={Boolean(forcedChat) && mode === "new"}
-                      onChange={() => onChange({ chatMode: mode })}
-                    />
-                    <span>{SCHEDULED_TASK_CHAT_MODE_LABELS[mode]}</span>
-                  </label>
-                ))}
-              </div>
-              {forcedChat ? <p className="v2-scheduled-hint" id={ids.chatModeHint}>{forcedChat}</p> : null}
-              {chatMode === "same" ? (
-                <p className="v2-scheduled-hint" id={ids.chatMonthHint}>
-                  Each month starts a new chat with the last result{draft.workspaceEnabled ? " and the Workspace files" : ""}.
-                  The previous one is archived unless you pinned it, put it in a folder or shared it.
-                </p>
+          {emailAvailable || telegramAvailable ? (
+            <div className="v2-scheduled-group" role="group" aria-labelledby={ids.notifyHeading}>
+              <h3 id={ids.notifyHeading}>Notifications</h3>
+              {emailAvailable ? (
+                <div className="v2-scheduled-toggle">
+                  <span className="v2-scheduled-toggle-copy">
+                    <span id={ids.email} className="v2-scheduled-label">Email me when it runs</span>
+                    <span id={ids.emailHelp} className="v2-scheduled-hint">The email contains the automation&apos;s name and a link, never the answer.</span>
+                  </span>
+                  <UiV2Switch
+                    checked={draft.emailNotify}
+                    disabled={busy}
+                    label="Email me when it runs"
+                    aria-describedby={ids.emailHelp}
+                    onChange={(emailNotify) => onChange({ emailNotify })}
+                  />
+                </div>
               ) : null}
-              {errors.chatMode ? <FieldError id={`${ids.chatMode}-error`}>{errors.chatMode}</FieldError> : null}
-            </fieldset>
-            <div className="v2-scheduled-control">
-              <label htmlFor={ids.history}>Keep old chats</label>
-              <select
-                id={ids.history}
-                className={field}
-                data-testid="scheduled-task-history"
-                value={draft.historyRetentionDays === null ? "forever" : String(draft.historyRetentionDays)}
-                aria-describedby={ids.historyHint}
-                onChange={(event) => {
-                  const option = SCHEDULED_TASK_HISTORY_OPTIONS.find((entry) => String(entry.value ?? "forever") === event.target.value);
-                  if (option) onChange({ historyRetentionDays: option.value });
-                }}
-              >
-                {SCHEDULED_TASK_HISTORY_OPTIONS.map((option) => (
-                  <option key={option.label} value={option.value === null ? "forever" : String(option.value)}>{option.label}</option>
-                ))}
-              </select>
-              <p className="v2-scheduled-hint" id={ids.historyHint}>
-                {draft.historyRetentionDays === null
-                  ? "This automation's old chats stay until you delete them."
-                  : "Older chats of this automation are deleted this long after their last run."} {SCHEDULED_TASK_HISTORY_KEPT_TEXT}
-              </p>
+              {telegramAvailable ? (
+                <div className="v2-scheduled-toggle">
+                  <span className="v2-scheduled-toggle-copy">
+                    <span id={ids.telegram} className="v2-scheduled-label">Send results to Telegram</span>
+                    <span id={ids.telegramHelp} className="v2-scheduled-hint">Telegram receives the result itself.</span>
+                  </span>
+                  <UiV2Switch
+                    checked={draft.telegramNotify}
+                    disabled={busy}
+                    label="Send results to Telegram"
+                    aria-describedby={ids.telegramHelp}
+                    onChange={(telegramNotify) => onChange({ telegramNotify })}
+                  />
+                </div>
+              ) : null}
             </div>
-            <div className="v2-scheduled-toggle">
-              <span className="v2-scheduled-toggle-copy">
-                <span id={ids.search} className="v2-scheduled-label">Web search</span>
-                <span id={ids.searchHelp} className="v2-scheduled-hint">
-                  {searchAvailable || draft.searchEnabled
-                    ? "Lets the model look up current information for each run."
-                    : "Not available with this model."}
-                </span>
-              </span>
-              <UiV2Switch
-                checked={draft.searchEnabled}
-                disabled={busy || (!searchAvailable && !draft.searchEnabled)}
-                label="Web search"
-                aria-describedby={describedBy(ids.searchHelp, errors.search && `${ids.search}-error`)}
-                onChange={(searchEnabled) => onChange({ searchEnabled })}
-              />
-              {errors.search ? <FieldError id={`${ids.search}-error`}>{errors.search}</FieldError> : null}
-            </div>
-            <div className="v2-scheduled-toggle">
-              <span className="v2-scheduled-toggle-copy">
-                <span id={ids.tools} className="v2-scheduled-label">Tools (MCP and Skills)</span>
-                <span id={ids.toolsHelp} className="v2-scheduled-hint">{toolsReason}</span>
-              </span>
-              <UiV2Switch
-                checked={draft.toolsEnabled}
-                disabled={busy || (Boolean(blockers.tools) && !draft.toolsEnabled)}
-                label="Tools (MCP and Skills)"
-                aria-describedby={describedBy(ids.toolsHelp, errors.tools && `${ids.tools}-error`)}
-                onChange={(toolsEnabled) => onChange({ toolsEnabled })}
-              />
-              {errors.tools ? <FieldError id={`${ids.tools}-error`}>{errors.tools}</FieldError> : null}
-            </div>
-            {draft.toolsEnabled || draft.pinnedSkills.length > 0 ? (
-              <ScheduledTaskSkillPicker
-                disabled={busy}
-                error={errors.skills}
-                {...(loadSkillOptions ? { loadOptions: loadSkillOptions } : {})}
-                pinned={draft.pinnedSkills}
-                workspaceEnabled={draft.workspaceEnabled}
-                onChange={(pinnedSkills) => onChange({ pinnedSkills })}
-              />
-            ) : null}
-            <div className="v2-scheduled-toggle">
-              <span className="v2-scheduled-toggle-copy">
-                <span id={ids.workspace} className="v2-scheduled-label">Workspace</span>
-                <span id={ids.workspaceHelp} className="v2-scheduled-hint">{workspaceReason}</span>
-              </span>
-              <UiV2Switch
-                checked={draft.workspaceEnabled}
-                disabled={busy || (Boolean(blockers.workspace) && !draft.workspaceEnabled)}
-                label="Workspace"
-                aria-describedby={describedBy(ids.workspaceHelp, errors.workspace && `${ids.workspace}-error`)}
-                onChange={(workspaceEnabled) => onChange({ workspaceEnabled })}
-              />
-              {errors.workspace ? <FieldError id={`${ids.workspace}-error`}>{errors.workspace}</FieldError> : null}
-            </div>
-            <div className="v2-scheduled-toggle">
-              <span className="v2-scheduled-toggle-copy">
-                <span id={ids.memory} className="v2-scheduled-label">Use Memory</span>
-                <span id={ids.memoryHelp} className="v2-scheduled-hint">{memoryReason}</span>
-              </span>
-              <UiV2Switch
-                checked={draft.memoryEnabled}
-                disabled={busy}
-                label="Use Memory"
-                aria-describedby={ids.memoryHelp}
-                onChange={(memoryEnabled) => onChange({ memoryEnabled })}
-              />
-            </div>
-            {emailAvailable ? (
-              <div className="v2-scheduled-toggle">
-                <span className="v2-scheduled-toggle-copy">
-                  <span id={ids.email} className="v2-scheduled-label">Email me when it runs</span>
-                  <span id={ids.emailHelp} className="v2-scheduled-hint">The email contains the automation&apos;s name and a link, never the answer.</span>
-                </span>
-                <UiV2Switch
-                  checked={draft.emailNotify}
-                  disabled={busy}
-                  label="Email me when it runs"
-                  aria-describedby={ids.emailHelp}
-                  onChange={(emailNotify) => onChange({ emailNotify })}
-                />
-              </div>
-            ) : null}
-            {telegramAvailable ? (
-              <div className="v2-scheduled-toggle">
-                <span className="v2-scheduled-toggle-copy">
-                  <span id={ids.telegram} className="v2-scheduled-label">Send results to Telegram</span>
-                  <span id={ids.telegramHelp} className="v2-scheduled-hint">Telegram receives the result itself.</span>
-                </span>
-                <UiV2Switch
-                  checked={draft.telegramNotify}
-                  disabled={busy}
-                  label="Send results to Telegram"
-                  aria-describedby={ids.telegramHelp}
-                  onChange={(telegramNotify) => onChange({ telegramNotify })}
-                />
-              </div>
-            ) : null}
-          </div>
-
-          {recentRuns ? (
-            <RecentRuns
-              recentRuns={recentRuns}
-              timeZone={original?.timeZone ?? draft.timeZone}
-              now={now}
-              onOpenChat={(chatId) => leave(() => onOpenRunChat(chatId))}
-              onRunsShown={onRunsShown}
-            />
           ) : null}
+
+          <div className="v2-scheduled-group v2-scheduled-advanced">
+            <button type="button" className="v2-scheduled-advanced-toggle v2-focusable" aria-expanded={advancedOpen}
+              aria-controls={ids.advanced} aria-describedby={advancedOpen ? undefined : ids.advancedSummary}
+              onClick={() => setAdvanced((current) => ({ ...current, open: !current.open }))}>
+              <UiV2Icon name={advancedOpen ? "chevron-down" : "chevron-right"} />
+              <span>Advanced</span>
+            </button>
+            {!advancedOpen ? (
+              <p className="v2-scheduled-hint" id={ids.advancedSummary} data-testid="scheduled-task-advanced-summary">{advancedSummary}</p>
+            ) : null}
+            <div className="v2-scheduled-advanced-fields" id={ids.advanced} role="group" aria-label="Advanced settings" hidden={!advancedOpen}>
+              <div className="v2-scheduled-control">
+                <label htmlFor={ids.model}>Model</label>
+                <select
+                  id={ids.model}
+                  className={field}
+                  value={draft.modelId ? modelKey(draft) : ""}
+                  disabled={!catalog || models.length === 0}
+                  aria-invalid={Boolean(errors.model) || undefined}
+                  aria-describedby={describedBy(errors.model && `${ids.model}-error`)}
+                  onChange={(event) => changeModel(event.target.value)}
+                >
+                  {!draft.modelId ? <option value="" disabled>{catalog ? "No models available" : "Loading models…"}</option> : null}
+                  {draft.modelId && !selectedModel ? <option value={modelKey(draft)} disabled>Unavailable model</option> : null}
+                  {models.map((model) => {
+                    const provider = catalog?.providers.find((entry) => entry.id === model.provider)?.name;
+                    return <option key={modelKey(model)} value={modelKey(model)}>{provider ? `${model.displayName} · ${provider}` : model.displayName}</option>;
+                  })}
+                </select>
+                {errors.model ? <FieldError id={`${ids.model}-error`}>{errors.model}</FieldError> : null}
+              </div>
+              <fieldset className="v2-scheduled-choice" id={ids.chatMode}
+                aria-describedby={describedBy(forcedChat && ids.chatModeHint, chatMode === "same" && ids.chatMonthHint,
+                  errors.chatMode && `${ids.chatMode}-error`)}>
+                <legend className="v2-scheduled-label">Chat</legend>
+                <div className="v2-scheduled-options">
+                  {CHAT_MODES.map((mode) => (
+                    <label key={mode} className="v2-scheduled-option">
+                      <input
+                        type="radio"
+                        name={`${formId}-chat-mode`}
+                        checked={chatMode === mode}
+                        disabled={Boolean(forcedChat) && mode === "new"}
+                        onChange={() => onChange({ chatMode: mode })}
+                      />
+                      <span>{SCHEDULED_TASK_CHAT_MODE_LABELS[mode]}</span>
+                    </label>
+                  ))}
+                </div>
+                {forcedChat ? <p className="v2-scheduled-hint" id={ids.chatModeHint}>{forcedChat}</p> : null}
+                {chatMode === "same" ? (
+                  <p className="v2-scheduled-hint" id={ids.chatMonthHint}>
+                    Each month starts a new chat with the last result{draft.workspaceEnabled ? " and the Workspace files" : ""}.
+                    The previous one is archived unless you pinned it, put it in a folder or shared it.
+                  </p>
+                ) : null}
+                {errors.chatMode ? <FieldError id={`${ids.chatMode}-error`}>{errors.chatMode}</FieldError> : null}
+              </fieldset>
+              <div className="v2-scheduled-control">
+                <label htmlFor={ids.history}>Keep old chats</label>
+                <select
+                  id={ids.history}
+                  className={field}
+                  data-testid="scheduled-task-history"
+                  value={draft.historyRetentionDays === null ? "forever" : String(draft.historyRetentionDays)}
+                  aria-describedby={ids.historyHint}
+                  onChange={(event) => {
+                    const option = SCHEDULED_TASK_HISTORY_OPTIONS.find((entry) => String(entry.value ?? "forever") === event.target.value);
+                    if (option) onChange({ historyRetentionDays: option.value });
+                  }}
+                >
+                  {SCHEDULED_TASK_HISTORY_OPTIONS.map((option) => (
+                    <option key={option.label} value={option.value === null ? "forever" : String(option.value)}>{option.label}</option>
+                  ))}
+                </select>
+                <p className="v2-scheduled-hint" id={ids.historyHint}>
+                  {draft.historyRetentionDays === null
+                    ? "This automation's old chats stay until you delete them."
+                    : "Older chats of this automation are deleted this long after their last run."} {SCHEDULED_TASK_HISTORY_KEPT_TEXT}
+                  {historyActivity ? ` ${historyActivity}` : null}
+                </p>
+              </div>
+              <div className="v2-scheduled-toggle">
+                <span className="v2-scheduled-toggle-copy">
+                  <span id={ids.search} className="v2-scheduled-label">Web search</span>
+                  <span id={ids.searchHelp} className="v2-scheduled-hint">
+                    {searchAvailable || draft.searchEnabled
+                      ? "Lets the model look up current information for each run."
+                      : "Not available with this model."}
+                  </span>
+                </span>
+                <UiV2Switch
+                  checked={draft.searchEnabled}
+                  disabled={busy || (!searchAvailable && !draft.searchEnabled)}
+                  label="Web search"
+                  aria-describedby={describedBy(ids.searchHelp, errors.search && `${ids.search}-error`)}
+                  onChange={(searchEnabled) => onChange({ searchEnabled })}
+                />
+                {errors.search ? <FieldError id={`${ids.search}-error`}>{errors.search}</FieldError> : null}
+              </div>
+              <div className="v2-scheduled-toggle">
+                <span className="v2-scheduled-toggle-copy">
+                  <span id={ids.tools} className="v2-scheduled-label">Tools (MCP and Skills)</span>
+                  <span id={ids.toolsHelp} className="v2-scheduled-hint">{toolsReason}</span>
+                </span>
+                <UiV2Switch
+                  checked={draft.toolsEnabled}
+                  disabled={busy || (Boolean(blockers.tools) && !draft.toolsEnabled)}
+                  label="Tools (MCP and Skills)"
+                  aria-describedby={describedBy(ids.toolsHelp, errors.tools && `${ids.tools}-error`)}
+                  onChange={(toolsEnabled) => onChange({ toolsEnabled })}
+                />
+                {errors.tools ? <FieldError id={`${ids.tools}-error`}>{errors.tools}</FieldError> : null}
+              </div>
+              {draft.toolsEnabled || draft.pinnedSkills.length > 0 ? (
+                <ScheduledTaskSkillPicker
+                  disabled={busy}
+                  error={errors.skills}
+                  {...(loadSkillOptions ? { loadOptions: loadSkillOptions } : {})}
+                  pinned={draft.pinnedSkills}
+                  workspaceEnabled={draft.workspaceEnabled}
+                  onChange={(pinnedSkills) => onChange({ pinnedSkills })}
+                />
+              ) : null}
+              <div className="v2-scheduled-toggle">
+                <span className="v2-scheduled-toggle-copy">
+                  <span id={ids.workspace} className="v2-scheduled-label">Workspace</span>
+                  <span id={ids.workspaceHelp} className="v2-scheduled-hint">{workspaceReason}</span>
+                </span>
+                <UiV2Switch
+                  checked={draft.workspaceEnabled}
+                  disabled={busy || (Boolean(blockers.workspace) && !draft.workspaceEnabled)}
+                  label="Workspace"
+                  aria-describedby={describedBy(ids.workspaceHelp, errors.workspace && `${ids.workspace}-error`)}
+                  onChange={(workspaceEnabled) => onChange({ workspaceEnabled })}
+                />
+                {errors.workspace ? <FieldError id={`${ids.workspace}-error`}>{errors.workspace}</FieldError> : null}
+              </div>
+              <div className="v2-scheduled-toggle">
+                <span className="v2-scheduled-toggle-copy">
+                  <span id={ids.memory} className="v2-scheduled-label">Use Memory</span>
+                  <span id={ids.memoryHelp} className="v2-scheduled-hint">{memoryReason}</span>
+                </span>
+                <UiV2Switch
+                  checked={draft.memoryEnabled}
+                  disabled={busy}
+                  label="Use Memory"
+                  aria-describedby={ids.memoryHelp}
+                  onChange={(memoryEnabled) => onChange({ memoryEnabled })}
+                />
+              </div>
+            </div>
+          </div>
         </fieldset>
       </form>
       {pendingLeave ? (
@@ -738,6 +780,10 @@ function SavedWebhook({ hook, now, onTokenIssued, task }: Readonly<{
   );
 }
 
+/**
+ * The task's latest runs, first in the editor so results come before
+ * settings: the newest few, and the rest on request.
+ */
 function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Readonly<{
   recentRuns: ScheduledTaskRecentRuns;
   timeZone: string;
@@ -746,22 +792,25 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
   onRunsShown(runs: readonly ScheduledTaskRun[]): void;
 }>) {
   const headingId = useId();
+  const listId = useId();
+  const [expanded, setExpanded] = useState(false);
   const shown = useEventCallback(onRunsShown);
-  // Runs count as seen only after this list has rendered them.
+  const runs = recentRuns.state === "ready" ? recentRuns.runs : null;
+  const visible = useMemo(() => runs && (expanded ? runs : runs.slice(0, RECENT_RUNS_SHOWN)), [expanded, runs]);
+  // Runs count as seen only after this list has rendered them, so folded ones wait for Show all.
   useEffect(() => {
-    if (recentRuns.state !== "ready") return;
-    const unseen = recentRuns.runs.filter((run) => run.unseen);
+    const unseen = visible?.filter((run) => run.unseen) ?? [];
     if (unseen.length) shown(unseen);
-  }, [recentRuns, shown]);
+  }, [visible, shown]);
   return (
     <section className="v2-scheduled-runs" aria-labelledby={headingId}>
       <h3 id={headingId}>Recent runs</h3>
       {recentRuns.state === "loading" ? <p className="v2-scheduled-hint" role="status">Loading recent runs…</p>
         : recentRuns.state === "error" ? <p className="v2-scheduled-hint" role="status">Recent runs could not be loaded.</p>
-          : recentRuns.runs.length === 0 ? <p className="v2-scheduled-hint">No runs yet.</p>
+          : !visible?.length ? <p className="v2-scheduled-hint">No runs yet.</p>
             : (
-              <ul>
-                {recentRuns.runs.map((run) => {
+              <ul id={listId}>
+                {visible.map((run) => {
                   const row = scheduledTaskRunRow(run, timeZone, now);
                   const chatId = run.chatId;
                   return (
@@ -773,7 +822,6 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
                         {row.outcome}
                         {row.sources.map((source, index) => <span key={`${index}:${source}`} className="v2-scheduled-run-source">{source}</span>)}
                         {row.skills ? <span className="v2-scheduled-run-source v2-scheduled-run-skills">{row.skills}</span> : null}
-
                       </span>
                       {chatId ? (
                         <button type="button" className="v2-scheduled-run-chat v2-focusable"
@@ -786,6 +834,12 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
                 })}
               </ul>
             )}
+      {runs && runs.length > RECENT_RUNS_SHOWN ? (
+        <button type="button" className="v2-scheduled-runs-more v2-focusable" aria-expanded={expanded} aria-controls={listId}
+          onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Show fewer runs" : `Show all ${runs.length} runs`}
+        </button>
+      ) : null}
     </section>
   );
 }
