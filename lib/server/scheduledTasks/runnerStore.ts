@@ -11,6 +11,7 @@ import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { applyMemorySourceMutations, type LockedMemorySourceChat } from "../memory/sourceState";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
+import { moveShownMonitoringCheck } from "../runs/chatListTime";
 import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
 import { recordTelegramScheduledDelivery } from "../telegram/scheduledDeliveryOutbox";
 import { SCHEDULED_TASK_EMAIL_RECIPIENT } from "./emailRecipient";
@@ -27,6 +28,7 @@ import {
   planClaimOverlap,
   planOccurrenceSettlement,
   planScheduledTaskClaim,
+  settlementHidden,
   type MonitoringCheckSettlement,
   type ScheduledTaskBaseline,
   type ScheduledTaskOpenOccurrence,
@@ -642,8 +644,15 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
       const check = outcome.state === "COMPLETED" ? await monitoringSettlementOf(tx, locked) : null;
-      return applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
+      const settled = await applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
         { assistantMessageId: run?.assistantMessageId ?? null, check });
+      // A check's own writes kept its chat's place in the chat list; a shown result moves it now, after the run row's
+      // outcome, in the order usage totals lock them (run, then chat).
+      if (settled.runId && !settlementHidden(settled)) {
+        await moveShownMonitoringCheck(tx, { now, occurrenceId: settled.occurrenceId, runId: settled.runId,
+          userId: locked.occurrence.userId });
+      }
+      return settled;
     });
   }
 

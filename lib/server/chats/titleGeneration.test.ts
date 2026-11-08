@@ -120,6 +120,15 @@ describe("loadChatTitleFirstTurn", () => {
     }));
   });
 
+  it("never names a chat from a turn the server wrote, a scheduled task's prompt included", async () => {
+    const db = client({ _count: { messages: 2 }, messages: [], title: titleFromMessageContent(content), titleRevision: 0 });
+    // The query finds no such turn: the chat a task's run created keeps the title it was created with.
+    await expect(loadChatTitleFirstTurn(db, context)).resolves.toBeNull();
+    expect(db.chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({ select: expect.objectContaining({
+      messages: { select: { content: true }, where: { id: context.userMessageId, scheduledTaskPrompt: false, systemTurnKind: null } }
+    }) }));
+  });
+
   it("reports customized titles and ignores later turns or missing chats", async () => {
     await expect(loadChatTitleFirstTurn(
       client({ _count: { messages: 2 }, messages: [{ content }], title: titleFromMessageContent(content), titleRevision: 1 }), context
