@@ -1941,8 +1941,8 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
   .v2-scheduled-chat-hint > p.v2-scheduled-chat-hint-note { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 }
 
-/* Folded scheduled checks (with no update, or failed before a later check succeeded): one transcript line in the chat hint's type. */
-.v2-scheduled-checks { display: flex; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0 auto; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; padding-inline: 0.25rem; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; line-height: 1.4; }
+/* Folded scheduled checks (with no update, or failed before a later check succeeded): one transcript line in the chat hint's type, set apart from the task turn after it. */
+.v2-scheduled-checks { display: flex; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0 auto 1rem; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; padding-inline: 0.25rem; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; line-height: 1.4; }
 .v2-scheduled-checks > .v2-icon { flex: none; width: 0.875rem; height: 0.875rem; }
 .v2-scheduled-checks > p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .v2-scheduled-checks-action { padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; cursor: pointer; }
