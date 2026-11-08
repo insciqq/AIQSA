@@ -29,8 +29,8 @@ export function scheduledTaskChatHintText(task: ScheduledTaskChatHintTask | null
 /**
  * Quiet, persistent line above the composer in a task chat that later runs
  * continue: when the task runs next and its editor. Replies written here never
- * change the task; the line says so where there is room and in its tooltip.
- * It stays one line on a phone.
+ * change the task; the line says so beside them, or on a second line on a
+ * phone, and in its tooltip.
  */
 export function ScheduledTaskChatHintV2({ now, onEdit, task, timeZone, title }: Readonly<{
   /** Fixed clock and zone for tests; the viewer's by default. */

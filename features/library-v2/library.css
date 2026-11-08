@@ -1925,7 +1925,8 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
 
 /*
  * The quiet line above a task chat's composer, in the scheduled turn chip's type: when the task runs next and its editor.
- * It never wraps: the status ellipsizes first, and the note that replies don't change the task shows only where there is room.
+ * The status and Edit automation stay on one line, the status ellipsizing first. The note that replies don't change the task
+ * follows them on that line where there is room, and on a phone takes a second line below, since touch has no tooltip.
  */
 .v2-scheduled-chat-hint { display: flex; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0 auto; flex-wrap: nowrap; align-items: center; gap: 0.5rem; padding-inline: 0.25rem; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; line-height: 1.4; white-space: nowrap; }
 .v2-scheduled-chat-hint > .v2-icon { flex: none; width: 0.875rem; height: 0.875rem; }
@@ -1936,9 +1937,10 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
 .v2-scheduled-chat-hint-action { flex: none; padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; cursor: pointer; }
 .v2-scheduled-chat-hint-action:hover { text-decoration: underline; text-underline-offset: 0.125rem; }
 @media (max-width: 767px) {
+  .v2-scheduled-chat-hint { flex-wrap: wrap; row-gap: 0.125rem; }
   .v2-scheduled-chat-hint-sep.v2-scheduled-chat-hint-note { display: none; }
-  /* Kept for screen readers; the line's tooltip says it too. */
-  .v2-scheduled-chat-hint > p.v2-scheduled-chat-hint-note { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  /* Under the status, aligned with it past the icon. */
+  .v2-scheduled-chat-hint > p.v2-scheduled-chat-hint-note { flex: 1 0 100%; order: 1; padding-left: 1.375rem; }
 }
 
 /* Folded scheduled checks (with no update, or failed before a later check succeeded): one transcript line in the chat hint's type, set apart from the task turn after it. */
