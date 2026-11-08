@@ -43,7 +43,7 @@ import {
   scheduledTaskWeekdayMask,
   scheduledTaskWeekdaysFromMask
 } from "../../domain/scheduledTaskSchedule";
-import { SMTP_CONTROL_ID } from "../email/repository";
+import { readScheduledTaskEmailRecipient } from "./emailRecipient";
 import { loadScheduledTaskHistoryNextDeletions } from "./historyRetention";
 import { loadScheduledTaskPinnedSkillMap, loadScheduledTaskRunSkills, scheduledTaskPinnedSkillsFrom } from "./pinnedSkills";
 import { scheduledPromptLinksPending, type ScheduledPromptUrlDigests } from "./promptUrls";
@@ -347,12 +347,12 @@ export async function loadScheduledTaskActivity(
   return activity;
 }
 
-/** Notification email can be offered: installation SMTP is active and the account has an address. */
+/**
+ * Notification email can be offered: the account can receive automation
+ * emails by the same rule the result email's claim applies (`emailRecipient.ts`).
+ */
 export async function readScheduledTaskEmailAvailability(client: ScheduledTaskClient, userId: string): Promise<boolean> {
-  const smtp = await client.smtpControl.findUnique({ select: { activeConfig: true, enabled: true }, where: { id: SMTP_CONTROL_ID } });
-  if (!smtp?.enabled || smtp.activeConfig === null) return false;
-  const user = await client.user.findUnique({ select: { email: true }, where: { id: userId } });
-  return Boolean(user?.email);
+  return readScheduledTaskEmailRecipient(client, userId);
 }
 
 function draftColumns(draft: ScheduledTaskDraft) {

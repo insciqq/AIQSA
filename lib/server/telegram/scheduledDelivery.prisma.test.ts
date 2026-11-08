@@ -6,6 +6,7 @@ import { prisma } from "../prisma";
 import { scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import type { StorageAdapter } from "../uploads/storage";
 import { TELEGRAM_SCHEDULED_CODES, createPrismaTelegramScheduledDeliveryStore } from "./scheduledDelivery";
+import { recordTelegramScheduledDelivery } from "./scheduledDeliveryOutbox";
 
 /**
  * The Telegram outbox in PostgreSQL: one row per notifying occurrence of a
@@ -77,28 +78,28 @@ describe("Telegram scheduled delivery outbox", () => {
     const userId = await owner();
     const on = await task(userId);
     const { occurrence } = await completedRun(userId, on.id);
-    expect(await store.enqueue(occurrence.id, NOW)).toBe(true);
+    expect(await recordTelegramScheduledDelivery(prisma, occurrence.id, NOW)).toBe(true);
     // A second notification of the same occurrence changes nothing (`ON CONFLICT DO NOTHING`).
-    expect(await store.enqueue(occurrence.id, new Date(NOW.getTime() + 60_000))).toBe(false);
+    expect(await recordTelegramScheduledDelivery(prisma, occurrence.id, new Date(NOW.getTime() + 60_000))).toBe(false);
     expect(await prisma.telegramScheduledDelivery.findMany({ where: { userId } })).toEqual([expect.objectContaining({
       attempts: 0, createdAt: NOW, lastFailureCode: null, nextAttemptAt: NOW, occurrenceId: occurrence.id, sentAt: null, state: "pending"
     })]);
 
     const off = await task(userId, false);
     const quiet = await completedRun(userId, off.id);
-    expect(await store.enqueue(quiet.occurrence.id, NOW)).toBe(false);
+    expect(await recordTelegramScheduledDelivery(prisma, quiet.occurrence.id, NOW)).toBe(false);
     const running = await prisma.scheduledTaskOccurrence.create({ data: {
       scheduledFor: new Date(NOW.getTime() + 3_600_000), state: "RUNNING", taskId: on.id, trigger: "manual", userId
     } });
-    expect(await store.enqueue(running.id, NOW)).toBe(false);
-    expect(await store.enqueue(randomUUID(), NOW)).toBe(false);
+    expect(await recordTelegramScheduledDelivery(prisma, running.id, NOW)).toBe(false);
+    expect(await recordTelegramScheduledDelivery(prisma, randomUUID(), NOW)).toBe(false);
     expect(await prisma.telegramScheduledDelivery.count({ where: { userId } })).toBe(1);
   });
 
   it("claims an attempt once, releases it for later and settles it once", async () => {
     const userId = await owner();
     const { occurrence } = await completedRun(userId, (await task(userId)).id);
-    await store.enqueue(occurrence.id, NOW);
+    await recordTelegramScheduledDelivery(prisma, occurrence.id, NOW);
     const pending = await due(occurrence.id);
     const lease = new Date(NOW.getTime() + 15 * 60_000);
     const [first, second] = await Promise.all([0, 1].map(() => store.claim({ attempts: 0, id: pending.id, leaseUntil: lease })));
@@ -119,7 +120,7 @@ describe("Telegram scheduled delivery outbox", () => {
     const userId = await owner();
     const brief = await task(userId);
     const { answer, chat, occurrence } = await completedRun(userId, brief.id, "Synthetic **result**");
-    await store.enqueue(occurrence.id, NOW);
+    await recordTelegramScheduledDelivery(prisma, occurrence.id, NOW);
     const context = await store.load(await due(occurrence.id));
     expect(context).toMatchObject({
       chat: { id: chat.id, usable: true },
@@ -148,7 +149,7 @@ describe("Telegram scheduled delivery outbox", () => {
     const userId = await owner();
     const brief = await task(userId);
     const { chat, occurrence } = await completedRun(userId, brief.id);
-    await store.enqueue(occurrence.id, NOW);
+    await recordTelegramScheduledDelivery(prisma, occurrence.id, NOW);
     await prisma.chat.delete({ where: { id: chat.id } });
     expect(await store.load(await due(occurrence.id))).toMatchObject({ chat: null, result: null });
 
@@ -159,7 +160,7 @@ describe("Telegram scheduled delivery outbox", () => {
       finishedAt: NOW, reasonCode: "model_unavailable", scheduledFor: new Date(NOW.getTime() + 60_000), state: "FAILED", taskId: brief.id,
       trigger: "schedule", userId
     } });
-    await store.enqueue(failed.id, NOW);
+    await recordTelegramScheduledDelivery(prisma, failed.id, NOW);
     expect(await store.load(await due(failed.id))).toMatchObject({
       chat: { id: current.id, usable: true },
       occurrence: { reasonCode: "model_unavailable", state: "FAILED", trigger: "schedule" },
@@ -185,7 +186,7 @@ describe("Telegram scheduled delivery outbox", () => {
     const userId = await owner();
     const brief = await task(userId);
     const { occurrence } = await completedRun(userId, brief.id);
-    await store.enqueue(occurrence.id, NOW);
+    await recordTelegramScheduledDelivery(prisma, occurrence.id, NOW);
     await prisma.scheduledTask.delete({ where: { id: brief.id } });
     expect(await prisma.telegramScheduledDelivery.count({ where: { userId } })).toBe(0);
   });

@@ -7,13 +7,14 @@ import {
   type ScheduledTaskRunTrigger
 } from "../../contracts/scheduledTasks";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import { SMTP_CONTROL_ID } from "../email/repository";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { applyMemorySourceMutations, type LockedMemorySourceChat } from "../memory/sourceState";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
-import type { ScheduledTaskNotification } from "./notifications";
+import { recordTelegramScheduledDelivery } from "../telegram/scheduledDeliveryOutbox";
+import { SCHEDULED_TASK_EMAIL_RECIPIENT } from "./emailRecipient";
+import { SCHEDULED_TASK_EMAIL_WINDOW_MS, type ScheduledTaskNotification } from "./notifications";
 import { BROWSER_HANDOFF_SIGN_IN_REASONS, BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
 import {
   SCHEDULED_TASK_LATENESS_MS,
@@ -204,7 +205,17 @@ export interface ScheduledTaskRunnerStore {
     Promise<ScheduledTaskSettlement | null>;
   /** Settles a running occurrence once its run ended; null while the run is active. */
   settleLinked(occurrenceId: string, now: Date): Promise<ScheduledTaskSettlement | null>;
-  /** Claims the single result email of a settled occurrence when the owner can receive it. */
+  /**
+   * Occurrences whose result email is due and still unclaimed, oldest first,
+   * within `SCHEDULED_TASK_EMAIL_WINDOW_MS` of their settlement: the
+   * settlement recorded it durably, so a restart picks it up here.
+   */
+  listDueNotifications(now: Date, limit: number): Promise<readonly string[]>;
+  /**
+   * Claims the single due result email of a settled occurrence when its task
+   * still has email on and the owner can receive it (`SCHEDULED_TASK_EMAIL_RECIPIENT`);
+   * a due email that can no longer be sent is dropped.
+   */
   claimNotification(occurrenceId: string, now: Date): Promise<ScheduledTaskNotification | null>;
   /**
    * Active scheduled runs admitted before `now` minus the run deadline, oldest
@@ -376,10 +387,28 @@ async function applySettlement(
       WHERE "id" = ${occurrence.runId} AND "userId" = ${occurrence.userId} AND "scheduledOccurrenceId" = ${occurrence.id}
     `);
   }
+  if (plan.notifies) await recordResultNotifications(tx, occurrence.id, now);
   return {
     occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, sourceAlert: plan.sourceAlert,
     sourcesIncomplete, state: outcome.state, taskPaused: plan.pauseReason !== null
   };
+}
+
+/**
+ * The durable notifications of a settlement that notifies its owner, written
+ * in its transaction so a crash after the commit loses none: the Telegram
+ * outbox row when the task sends to Telegram, and the due result email when
+ * it has email on. Both are delivered outside the tick, at most once; browser
+ * push stays best effort.
+ */
+async function recordResultNotifications(tx: Prisma.TransactionClient, occurrenceId: string, now: Date): Promise<void> {
+  await recordTelegramScheduledDelivery(tx, occurrenceId, now);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "ScheduledTaskOccurrence" AS occurrence SET "emailDueAt" = ${now}
+    FROM "ScheduledTask" AS task
+    WHERE occurrence."id" = ${occurrenceId} AND occurrence."notifiedAt" IS NULL
+      AND task."id" = occurrence."taskId" AND task."emailNotify"
+  `);
 }
 
 /** The servers the run's Workspace code reached with a successful call. */
@@ -931,30 +960,39 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
 
     settleLinked,
 
+    async listDueNotifications(now, limit) {
+      const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id" FROM "ScheduledTaskOccurrence"
+        WHERE "emailDueAt" > ${new Date(now.getTime() - SCHEDULED_TASK_EMAIL_WINDOW_MS)} AND "notifiedAt" IS NULL
+        ORDER BY "emailDueAt" ASC, "id" ASC
+        LIMIT ${limit}
+      `);
+      return rows.map((row) => row.id);
+    },
+
     async claimNotification(occurrenceId, now) {
       const [row] = await prisma.$queryRaw<Array<{
         chatId: string | null; email: string; reasonCode: string | null; state: ScheduledTaskSettledState;
         taskPauseReason: string | null; title: string; trigger: string; unavailableSources: Prisma.JsonValue | null;
       }>>(Prisma.sql`
-        UPDATE "ScheduledTaskOccurrence" AS occurrence SET "notifiedAt" = ${now}
+        UPDATE "ScheduledTaskOccurrence" AS occurrence SET "notifiedAt" = ${now}, "emailDueAt" = NULL
         FROM "ScheduledTask" AS task, "User" AS account
-        WHERE occurrence."id" = ${occurrenceId} AND occurrence."notifiedAt" IS NULL
+        WHERE occurrence."id" = ${occurrenceId} AND occurrence."notifiedAt" IS NULL AND occurrence."emailDueAt" IS NOT NULL
           AND occurrence."state" IN ('COMPLETED'::"ScheduledTaskOccurrenceState",
             'FAILED'::"ScheduledTaskOccurrenceState", 'SKIPPED'::"ScheduledTaskOccurrenceState")
           AND task."id" = occurrence."taskId" AND task."emailNotify"
-          AND account."id" = occurrence."userId" AND account."status" = 'active'::"UserStatus" AND account."email" IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM "AuthIdentity" AS verified
-            WHERE verified."userId" = account."id" AND verified."emailVerifiedAt" IS NOT NULL
-              AND verified."normalizedEmail" = lower(btrim(account."email")))
-          AND EXISTS (
-            SELECT 1 FROM "SmtpControl" AS smtp
-            WHERE smtp."id" = ${SMTP_CONTROL_ID} AND smtp."enabled" AND smtp."activeConfig" IS NOT NULL)
+          AND account."id" = occurrence."userId" AND ${SCHEDULED_TASK_EMAIL_RECIPIENT}
         RETURNING occurrence."state"::text AS "state", occurrence."reasonCode", occurrence."trigger",
           COALESCE(occurrence."chatId", task."chatId") AS "chatId", task."title", task."pauseReason" AS "taskPauseReason",
-          account."email", occurrence."unavailableSources"
+          btrim(account."email") AS "email", occurrence."unavailableSources"
       `);
-      if (!row) return null;
+      if (!row) {
+        // Email turned off, the owner can no longer receive it, or claimed already: it stops being due.
+        await prisma.$executeRaw(Prisma.sql`
+          UPDATE "ScheduledTaskOccurrence" SET "emailDueAt" = NULL WHERE "id" = ${occurrenceId} AND "emailDueAt" IS NOT NULL
+        `);
+        return null;
+      }
       const { unavailableSources, ...notification } = row;
       return { ...notification, trigger: trigger(row.trigger), unavailableSources: unavailableSourcesWire(unavailableSources) };
     },
