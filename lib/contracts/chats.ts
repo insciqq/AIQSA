@@ -229,6 +229,8 @@ export type ThreadMessage = {
   assistantIdentity?: ThreadAssistantIdentity | null;
   citationMessageId?: string | null;
   content: unknown;
+  /** See `ChatMessageWire.createdAt`; absent on a message the browser made before the server saved it. */
+  createdAt?: string;
   id: string;
   modelId?: string;
   parentMessageId: string | null;
