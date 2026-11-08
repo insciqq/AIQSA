@@ -52,6 +52,16 @@ function renderPanel(onOpenChat = vi.fn(), workspace: ScheduledTaskWorkspaceAvai
   return { onOpenChat };
 }
 
+function advancedToggle(sheet: HTMLElement): HTMLElement {
+  return within(sheet).getByRole("button", { name: "Advanced" });
+}
+
+/** Unfolds the editor's Advanced settings, closed by default. */
+function openAdvanced(sheet: HTMLElement) {
+  const toggle = advancedToggle(sheet);
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+}
+
 function expectDirty(value: boolean) {
   const event = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(event);
@@ -81,10 +91,15 @@ describe("ScheduledTasksPanel", () => {
       "Market notesNew result", "Weekday news brief", "Model check", "Launch reminder"
     ]);
     expect(screen.getByText("2 of 10 active")).toBeInTheDocument();
+    // One status line per row: running outranks the failed last run.
     expect(within(rows[0]!).getByText("Running now")).toBeInTheDocument();
-    expect(within(rows[0]!).getByText("Last run Sat 3 Oct, 09:00 · Failed: the automation's chat was busy with another answer")).toBeInTheDocument();
+    expect(rows[0]).not.toHaveTextContent("Last run");
     expect(within(rows[0]!).getByRole("button", { name: "Open chat for Market notes" })).toBeEnabled();
+    expect(rows[0]).toHaveAccessibleName("Market notes New result");
     expect(within(rows[1]!).getByText("Next run Tue 6 Oct, 09:00")).toBeInTheDocument();
+    // A task without a chat yet opens its editor from the title.
+    expect(within(rows[1]!).getByRole("button", { name: "Edit Weekday news brief" })).toBeInTheDocument();
+    for (const row of rows) expect(row).not.toHaveTextContent(/History:|The current chat is kept/u);
     expect(within(rows[1]!).getByRole("switch", { name: "Run Weekday news brief on schedule" })).toHaveAttribute("aria-checked", "true");
     expect(within(rows[2]!).getByText("Paused: the model is no longer available. Edit to choose another model.")).toBeInTheDocument();
     expect(within(rows[2]!).getByRole("switch")).toHaveAttribute("aria-checked", "false");
@@ -125,10 +140,12 @@ describe("ScheduledTasksPanel", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       title: "Weekly summary", schedule: { kind: "weekly", time: "17:00", days: ["fri"] }, modelId: "model-a", provider: "provider-a",
-      searchEnabled: true, emailNotify: false, memoryEnabled: true, chatMode: "new"
+      searchEnabled: true, emailNotify: false, memoryEnabled: true, chatMode: "same"
     }));
     expect(screen.getByRole("status")).toHaveTextContent("“Weekly summary” is scheduled.");
     expect(screen.getByRole("heading", { name: "Weekly summary" })).toBeInTheDocument();
+    // Focus returns to the new row's title, which opens its editor until a run made its chat.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Weekly summary" })).toHaveFocus());
   });
 
   it("attaches server codes to their fields and disables Search for a model without it", async () => {
@@ -140,14 +157,19 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Brief" } });
     fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Summarize" } });
     expect(within(sheet).getByRole("switch", { name: "Email me when it runs" })).toBeEnabled();
+    openAdvanced(sheet);
     fireEvent.click(within(sheet).getByRole("switch", { name: "Web search" }));
     fireEvent.change(within(sheet).getByLabelText("Model"), { target: { value: "provider-a:model-b" } });
     expect(within(sheet).getByRole("switch", { name: "Web search" })).toHaveAttribute("aria-checked", "false");
     expect(within(sheet).getByRole("switch", { name: "Web search" })).toBeDisabled();
     expect(within(sheet).getByText("Not available with this model.")).toBeInTheDocument();
+    // Folded again, Advanced reopens by itself when the save reports one of its fields.
+    fireEvent.click(advancedToggle(sheet));
+    expect(within(sheet).queryByRole("combobox", { name: "Model" })).toBeNull();
     fireEvent.click(within(sheet).getByRole("button", { name: "Create automation" }));
     const error = await within(sheet).findByText("This model is not available to you for automations. Choose another model.");
-    expect(within(sheet).getByLabelText("Model")).toHaveAttribute("aria-describedby", error.id);
+    expect(advancedToggle(sheet)).toHaveAttribute("aria-expanded", "true");
+    expect(within(sheet).getByRole("combobox", { name: "Model" })).toHaveAttribute("aria-describedby", error.id);
     expect(within(sheet).getByLabelText("Name")).toHaveValue("Brief");
   });
 
@@ -298,11 +320,14 @@ describe("ScheduledTasksPanel", () => {
         startedAt: null, finishedAt: "2026-10-02T08:00:01.000Z", chatId: null, unseen: false, unavailableSources: [], skills: [] },
       { id: "run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "manual", state: "completed", reasonCode: null,
         startedAt: "2026-10-01T08:00:01.000Z", finishedAt: "2026-10-01T08:01:00.000Z", chatId: "chat-1", unseen: true,
+        unavailableSources: [], skills: [] },
+      { id: "run-0", scheduledFor: "2026-09-30T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
+        startedAt: "2026-09-30T08:00:01.000Z", finishedAt: "2026-09-30T08:01:00.000Z", chatId: "chat-0", unseen: true,
         unavailableSources: [], skills: [] }
     ] });
     const seen = vi.mocked(markScheduledTaskSeen).mockReset().mockResolvedValue();
     const { onOpenChat } = renderPanel();
-    expect(await screen.findByRole("heading", { name: "Weekday news briefNew result" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Weekday news brief New result" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
     // Nothing is seen before the history renders it.
@@ -314,9 +339,19 @@ describe("ScheduledTasksPanel", () => {
       "Fri 2 Oct, 09:00ScheduledSkipped: the previous run was still in progress",
       "Thu 1 Oct, 09:00Run nowNew result: AnsweredOpen chat"
     ]);
+    // Results come first: the runs open the sheet's form, above its Name field.
+    expect(runs.compareDocumentPosition(within(sheet).getByLabelText("Name")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await waitFor(() => expect(seen).toHaveBeenCalledWith(task.id, ["run-3", "run-1"]));
     expect(seen).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(useScheduledTasksStore.getState().tasks[0]?.unseenResult).toBe(false));
+    // The older run stays folded, and unseen, until the owner shows it.
+    const more = within(runs).getByRole("button", { name: "Show all 4 runs" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(more);
+    expect(within(runs).getAllByRole("listitem")).toHaveLength(4);
+    await waitFor(() => expect(seen).toHaveBeenLastCalledWith(task.id, ["run-0"]));
+    expect(seen).toHaveBeenCalledTimes(2);
+    expect(within(runs).getByRole("button", { name: "Show fewer runs" })).toHaveAttribute("aria-expanded", "true");
 
     // Each run opens its own chat; unsaved edits are confirmed first.
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Edited" } });
@@ -337,7 +372,11 @@ describe("ScheduledTasksPanel", () => {
     const sheet = screen.getByRole("dialog", { name: "New automation" });
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Inbox check" } });
     fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Summarize new mail." } });
-    expect(within(sheet).getByRole("radio", { name: "Each run starts a new chat" })).toBeChecked();
+    // The chat choice sits in Advanced; a new task continues in one chat.
+    expect(within(sheet).getByTestId("scheduled-task-advanced-summary")).toHaveTextContent("One chat");
+    openAdvanced(sheet);
+    expect(within(sheet).getByRole("radio", { name: "Continue in this automation's chat" })).toBeChecked();
+    expect(within(sheet).getByRole("radio", { name: "Each run starts a new chat" })).toBeEnabled();
     fireEvent.change(within(sheet).getByLabelText("Time zone"), { target: { value: "Europe/London" } });
     fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "hourly" } });
     expect(within(sheet).queryByLabelText("Time")).toBeNull();
@@ -378,6 +417,9 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
     const sheet = screen.getByRole("dialog", { name: "Edit automation" });
+    // A task that starts a new chat per run says so while Advanced is folded.
+    expect(within(sheet).getByTestId("scheduled-task-advanced-summary")).toHaveTextContent("New chat each run");
+    openAdvanced(sheet);
     fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "hourly" } });
     fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "daily" } });
     expect(within(sheet).getByRole("radio", { name: "Each run starts a new chat" })).toBeChecked();
@@ -459,6 +501,22 @@ describe("ScheduledTasksPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("This chat is no longer available.");
   });
 
+  it("opens a task's chat from its title or its menu, and its editor from the title before it has a chat", async () => {
+    list.mockResolvedValue(listed([scheduledTaskFixture({ chatId: "chat-1" }),
+      scheduledTaskFixture({ id: "fresh", title: "Fresh task" })]));
+    detail.mockResolvedValue({ task: scheduledTaskFixture({ id: "fresh", title: "Fresh task" }), recentRuns: [] });
+    const { onOpenChat } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open chat" }));
+    await waitFor(() => expect(onOpenChat).toHaveBeenCalledWith("chat-1"));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Fresh task" }));
+    expect(screen.queryByRole("menuitem", { name: "Open chat" })).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Fresh task" }));
+    expect(screen.getByRole("dialog", { name: "Edit automation" })).toBeInTheDocument();
+    expect(onOpenChat).toHaveBeenCalledTimes(1);
+  });
+
   it("drops the running notice once that run settles", async () => {
     const task = scheduledTaskFixture({ chatId: "chat-1", chatMode: "new" });
     list.mockResolvedValue(listed([task]));
@@ -484,6 +542,10 @@ describe("ScheduledTasksPanel", () => {
     const type = within(sheet).getByRole("group", { name: "Type" });
     expect(within(type).getByRole("radio", { name: "Regular" })).toBeChecked();
     expect(type).toHaveAccessibleDescription("Monitoring reports only when something changed and can stop itself when the goal is reached.");
+    // The owner picks a new chat per run over the one-chat default.
+    openAdvanced(sheet);
+    expect(within(sheet).getByRole("radio", { name: "Continue in this automation's chat" })).toBeChecked();
+    fireEvent.click(within(sheet).getByRole("radio", { name: "Each run starts a new chat" }));
     expect(within(sheet).getByRole("radio", { name: "Each run starts a new chat" })).toBeChecked();
 
     fireEvent.click(within(type).getByRole("radio", { name: "Monitoring" }));
@@ -523,6 +585,7 @@ describe("ScheduledTasksPanel", () => {
     renderPanel(vi.fn(), "installation_disabled");
     fireEvent.click(await screen.findByRole("button", { name: "New automation" }));
     const sheet = screen.getByRole("dialog", { name: "New automation" });
+    openAdvanced(sheet);
     const tools = within(sheet).getByRole("switch", { name: "Tools (MCP and Skills)" });
     expect(tools).toHaveAttribute("aria-checked", "true");
     expect(tools).toHaveAccessibleDescription("Lets each run use your MCP tools and Skills in Auto mode, as in a chat.");
@@ -544,6 +607,7 @@ describe("ScheduledTasksPanel", () => {
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "New automation" }));
     const sheet = screen.getByRole("dialog", { name: "New automation" });
+    openAdvanced(sheet);
     const memory = within(sheet).getByRole("switch", { name: "Use Memory" });
     expect(memory).toHaveAttribute("aria-checked", "true");
     expect(memory).toBeEnabled();
@@ -568,6 +632,8 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
     const sheet = screen.getByRole("dialog", { name: "Edit automation" });
+    expect(within(sheet).queryByRole("switch", { name: "Use Memory" })).toBeNull();
+    openAdvanced(sheet);
     const control = within(sheet).getByRole("switch", { name: "Use Memory" });
     expect(control).toHaveAttribute("aria-checked", "false");
     expect(control).toHaveAccessibleDescription(hint);
@@ -577,23 +643,29 @@ describe("ScheduledTasksPanel", () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith(task.id, { expectedRevision: 1, memoryEnabled: true }));
   });
 
-  it("shows each task's history retention on its card with what is kept, and saves a new task with 90 days", async () => {
-    list.mockResolvedValue(listed([
-      scheduledTaskFixture({ id: "kept", title: "Kept brief", historyDeletedChats: 2, historyNextDeletionAt: "2026-11-12T09:00:00.000Z" }),
-      scheduledTaskFixture({ id: "forever", title: "Old task", historyRetentionDays: null })
-    ]));
+  it("explains history retention once in the editor with what it did, never on each row, and saves a new task with 90 days", async () => {
+    const kept = scheduledTaskFixture({ id: "kept", title: "Kept brief", historyDeletedChats: 2, historyNextDeletionAt: "2026-11-12T09:00:00.000Z" });
+    list.mockResolvedValue(listed([kept, scheduledTaskFixture({ id: "forever", title: "Old task", historyRetentionDays: null })]));
+    detail.mockResolvedValue({ task: kept, recentRuns: [] });
     create.mockResolvedValue(scheduledTaskFixture({ id: "new", title: "Brief" }));
     renderPanel();
-    const [kept, forever] = await screen.findAllByRole("listitem");
-    expect(within(kept!).getByTestId("scheduled-task-history-line"))
-      .toHaveTextContent("History: 90 days · next cleanup Thu 12 Nov · 2 old chats deleted");
-    expect(within(kept!).getByText("The current chat is kept, and so is any chat you wrote in, pinned, put in a folder, shared, " +
-      "renamed or restored.")).toBeInTheDocument();
-    expect(within(forever!).getByTestId("scheduled-task-history-line")).toHaveTextContent("History: kept forever");
-    expect(within(forever!).getByText("Old chats stay until you delete them.")).toBeInTheDocument();
+    for (const row of await screen.findAllByRole("listitem")) {
+      expect(row).not.toHaveTextContent(/History|old chats|current chat is kept|Old chats stay/u);
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Kept brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const editor = screen.getByRole("dialog", { name: "Edit automation" });
+    expect(within(editor).getByTestId("scheduled-task-advanced-summary")).toHaveTextContent("Old chats kept 90 days");
+    openAdvanced(editor);
+    expect(within(editor).getByLabelText("Keep old chats")).toHaveAccessibleDescription("Older chats of this automation are deleted " +
+      "this long after their last run. The current chat is kept, and so is any chat you wrote in, pinned, put in a folder, shared, " +
+      "renamed or restored. Next cleanup Thu 12 Nov · 2 old chats deleted.");
+    fireEvent.click(within(editor).getByRole("button", { name: "Cancel" }));
 
     fireEvent.click(screen.getByRole("button", { name: "New automation" }));
     const sheet = screen.getByRole("dialog", { name: "New automation" });
+    openAdvanced(sheet);
     const history = within(sheet).getByLabelText("Keep old chats");
     expect(history).toHaveValue("90");
     expect(within(history).getAllByRole("option").map((option) => option.textContent)).toEqual(["30 days", "90 days", "1 year", "Forever"]);
@@ -613,6 +685,8 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
     const sheet = screen.getByRole("dialog", { name: "Edit automation" });
+    expect(within(sheet).getByTestId("scheduled-task-advanced-summary")).toHaveTextContent("Old chats kept forever");
+    openAdvanced(sheet);
     const history = within(sheet).getByLabelText("Keep old chats");
     expect(history).toHaveValue("forever");
     expect(history).toHaveAccessibleDescription(/^This automation's old chats stay until you delete them\./u);
@@ -622,7 +696,8 @@ describe("ScheduledTasksPanel", () => {
   });
 
   it("labels monitoring tasks, keeps Resume for a reached goal and shows check outcomes and missing sources in the history", async () => {
-    const watching = scheduledTaskFixture({ id: "watch", title: "Release watch", kind: "monitoring", chatId: "chat-w" });
+    const watching = scheduledTaskFixture({ id: "watch", title: "Release watch", kind: "monitoring", chatId: "chat-w",
+      lastRun: { scheduledFor: "2026-10-02T08:00:00.000Z", state: "completed", reasonCode: "could_not_check", finishedAt: "2026-10-02T08:01:00.000Z", unseen: false } });
     const done = scheduledTaskFixture({ id: "done", title: "Ticket watch", kind: "monitoring", status: "completed", nextRunAt: null,
       completionReason: "goal_reached", schedule: { kind: "daily", time: "09:00" },
       lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: "goal_reached", finishedAt: "2026-10-03T08:01:00.000Z", unseen: false } });
@@ -640,9 +715,12 @@ describe("ScheduledTasksPanel", () => {
     ] });
     renderPanel();
     const rows = await screen.findAllByRole("listitem");
-    expect(rows[0]).toHaveTextContent("Monitoring · Next run Tue 6 Oct, 09:00");
+    // A check that could not reach a source takes the status line until a later run settles.
+    expect(rows[0]).toHaveTextContent("Monitoring · Last run Fri 2 Oct, 09:00 · Could not check");
+    expect(rows[0]).not.toHaveTextContent("Next run");
+    expect(within(rows[0]!).getByText(/Could not check$/u)).toHaveAttribute("data-tone", "attention");
     expect(rows[1]).toHaveTextContent("Monitoring · Goal reached — completed");
-    expect(rows[1]).toHaveTextContent("Last run Sat 3 Oct, 09:00 · Goal reached");
+    expect(rows[1]).not.toHaveTextContent("Last run");
     const resume = within(rows[1]!).getByRole("switch", { name: "Run Ticket watch on schedule" });
     expect(resume).toHaveAttribute("aria-checked", "false");
     fireEvent.click(resume);

@@ -341,17 +341,21 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   const brief = rows.filter({ hasText: "Weekday news brief" });
   await expect(brief).toContainText("Every weekday at 09:00");
   await expect(brief).toContainText("Next run Mon 5 Oct, 09:00");
-  await expect(brief).toContainText("Last run Fri 2 Oct, 09:00 · Answered");
   await expect(brief.getByText("New result")).toHaveCount(1);
+  // The title opens the task's chat; the row has no separate Open chat button.
+  await expect(brief.getByRole("button", { name: "Open chat for Weekday news brief", exact: true })).toBeVisible();
+  await expect(brief.getByRole("button", { name: "Open chat", exact: true })).toHaveCount(0);
   await expect(rows.filter({ hasText: "Market open notes" })).toContainText("Running now");
   const inbox = rows.filter({ hasText: "Inbox check" });
   await expect(inbox).toContainText("Every 2 hours, 09:00–18:00, Mon–Fri");
-  await expect(inbox).toContainText("Skipped: the previous run was still in progress");
+  // One status line: a skipped run leaves the next run in place.
+  await expect(inbox).toContainText("Next run Mon 5 Oct, 09:00");
   await expect(rows.filter({ hasText: "Model check-in" })).toContainText("Paused: the model is no longer available. Edit to choose another model.");
-  await expect(rows.filter({ hasText: "Model check-in" })).toContainText("Failed: the model was unavailable");
   await expect(rows.filter({ hasText: "New York team" })).toContainText("Every Fri at 17:00 · America/New York");
   await expect(rows.filter({ hasText: "Launch reminder" })).toContainText("Completed");
-  await expect(rows.filter({ hasText: "Monthly bills" })).toContainText("Skipped: the scheduled time passed while runs were unavailable");
+  await expect(rows.filter({ hasText: "Monthly bills" })).toContainText("Next run Sat 31 Oct, 10:00");
+  // Neither the last run nor the history retention repeats on every row.
+  await expect(panel.getByRole("list", { name: "Automations" })).not.toContainText(/Last run|Skipped|History:|current chat is kept/u);
   await expect(panel).not.toContainText(/model_unavailable|chat_busy|previous_running|missed\b/u);
   await captureState(page, info, "scheduled-list", {
     atEachSize: async () => {
@@ -360,7 +364,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
     }
   });
 
-  // Create: a weekly task through the sheet, with validation, a live preview and a new chat per run.
+  // Create: a weekly task through the sheet, with validation, a live preview and one chat for every run.
   await panel.getByRole("button", { name: "New automation", exact: true }).click();
   const sheet = page.getByTestId("scheduled-task-sheet");
   const dialog = sheet.getByRole("dialog", { name: "New automation", exact: true });
@@ -378,9 +382,11 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   await expect(sheet.getByRole("button", { name: "Monday", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.getByTestId("scheduled-task-preview")).toHaveText("Next run: Mon 5 Oct, 17:00");
   await expect(sheet.getByText("The email contains the automation's name and a link, never the answer.")).toBeVisible();
-  const chatChoice = sheet.getByRole("group", { name: "Chat", exact: true });
-  await expect(chatChoice.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeChecked();
-  await expect(chatChoice.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeEnabled();
+  // Model, chat and tools wait behind Advanced, summed up in one line.
+  const advanced = sheet.getByRole("button", { name: "Advanced", exact: true });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(sheet.getByTestId("scheduled-task-advanced-summary")).toContainText("One chat · Old chats kept 90 days");
+  await expect(sheet.getByRole("group", { name: "Chat", exact: true })).toHaveCount(0);
   expect(api.writes).toEqual([]);
   await captureState(page, info, "scheduled-create-weekly", {
     atEachSize: async (step) => {
@@ -390,6 +396,11 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
       await expectNoHorizontalOverflow(page);
     }
   });
+  await advanced.click();
+  await expect(advanced).toHaveAttribute("aria-expanded", "true");
+  const chatChoice = sheet.getByRole("group", { name: "Chat", exact: true });
+  await expect(chatChoice.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeChecked();
+  await expect(chatChoice.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeEnabled();
   await captureState(page, info, "scheduled-create-chat-mode", {
     anchor: chatChoice,
     atEachSize: async () => {
@@ -404,10 +415,11 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, scheduleEnabled: true, webhookEnabled: false, timeZone: "Europe/London",
     // New automations start with Search on where the model can search (v0.4.1).
     modelId: model.modelId, provider: model.provider, searchEnabled: true, emailNotify: false, telegramNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "same", kind: "standard", historyRetentionDays: 90,
     pinnedSkillIds: []
   } }]);
-  await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
+  // Focus returns to the new row's title, which opens its editor until a run made its chat.
+  await expect(panel.getByRole("button", { name: "Edit Weekly planning", exact: true })).toBeFocused();
   await expect(panel.getByText("“Weekly planning” is scheduled.")).toBeVisible();
 
   // Edit: the sheet lists recent runs compactly, marks the rendered unread one seen and links each run's chat.
@@ -420,6 +432,10 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   await expect(runs.getByRole("listitem").nth(1)).toContainText("Run now");
   await expect(runs.getByRole("listitem").nth(1)).toContainText("Failed: the automation's chat was busy with another answer");
   await expect(runs.getByRole("button", { name: /^Open chat from /u })).toHaveCount(2);
+  // Results come before settings: the runs sit right under the header, above Name.
+  const [runsBox, nameBox] = await Promise.all([runs.boundingBox(), edit.getByLabel("Name", { exact: true }).boundingBox()]);
+  expect(runsBox!.y).toBeLessThan(nameBox!.y);
+  await expect(edit.getByRole("button", { name: "Advanced", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect.poll(() => seenWrites(api, "brief")).toEqual([{ runIds: ["brief-run-3"] }]);
   await expect(edit.getByLabel("Repeat", { exact: true })).toHaveValue("weekdays");
   await expect(sheet.getByTestId("scheduled-task-preview")).toHaveText("Next run: Mon 5 Oct, 09:00");
@@ -447,6 +463,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   await expect(hourly.getByLabel("Until", { exact: true })).toHaveValue("18:00");
   await expect(hourly.getByRole("button", { name: "Friday", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(hourly.getByRole("button", { name: "Saturday", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await hourly.getByRole("button", { name: "Advanced", exact: true }).click();
   const hourlyChat = hourly.getByRole("group", { name: "Chat", exact: true });
   await expect(hourlyChat.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeDisabled();
   await expect(hourlyChat.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeChecked();
@@ -695,10 +712,11 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   const rows = panel.getByRole("list", { name: "Automations" }).getByRole("listitem");
   const watch = rows.filter({ hasText: "Release watch" });
   await expect(watch).toContainText("Monitoring · Next run Sun 4 Oct, 13:00");
-  await expect(watch).toContainText("Last run Sun 4 Oct, 09:00 · Update");
   const tickets = rows.filter({ hasText: "Concert ticket watch" });
   await expect(tickets).toContainText("Monitoring · Goal reached — completed");
-  await expect(tickets).toContainText("Last run Sat 3 Oct, 09:00 · Goal reached");
+  // One status line per row: an update or a reached goal needs no second line.
+  await expect(watch).not.toContainText("Last run");
+  await expect(tickets).not.toContainText("Last run");
   // A reached goal completes the task, and it can still be resumed.
   await expect(tickets.getByRole("switch", { name: "Run Concert ticket watch on schedule", exact: true })).toHaveAttribute("aria-checked", "false");
   await expect(rows.filter({ hasText: "Weekday news brief" })).not.toContainText("Monitoring");
@@ -718,6 +736,8 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   const type = dialog.getByRole("group", { name: "Type", exact: true });
   await expect(type.getByRole("radio", { name: "Monitoring", exact: true })).toBeChecked();
   await expect(type).toContainText("Monitoring reports only when something changed and can stop itself when the goal is reached.");
+  await expect(dialog.getByTestId("scheduled-task-advanced-summary")).toContainText("One chat · Old chats kept 90 days · Tools, Workspace");
+  await dialog.getByRole("button", { name: "Advanced", exact: true }).click();
   const chat = dialog.getByRole("group", { name: "Chat", exact: true });
   await expect(chat.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeDisabled();
   await expect(chat.getByRole("radio", { name: "Continue in this automation's chat", exact: true })).toBeChecked();
@@ -729,7 +749,13 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   await expect(workspace).toHaveAccessibleDescription("Runs share this automation's Workspace, so its files stay from run to run and move to each new month's chat.");
   const runs = dialog.getByRole("region", { name: "Recent runs", exact: true });
   const entries = runs.getByRole("listitem");
+  // The newest three show; the rest unfold on request.
+  await expect(entries).toHaveCount(3);
+  const showAll = runs.getByRole("button", { name: `Show all ${runsFixture.tickets!.length} runs`, exact: true });
+  await expect(showAll).toHaveAttribute("aria-expanded", "false");
+  await showAll.click();
   await expect(entries).toHaveCount(runsFixture.tickets!.length);
+  await expect(runs.getByRole("button", { name: "Show fewer runs", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(entries.nth(0)).toContainText("Goal reached — automation completed");
   await expect(entries.nth(1)).toContainText("Could not check: a source was unavailable");
   await expect(entries.nth(1)).toContainText("Ticket marketplace needs sign-in.");
@@ -778,6 +804,7 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   await create.getByLabel("Name", { exact: true }).fill("Docs watch");
   await create.getByRole("group", { name: "Type", exact: true }).getByRole("radio", { name: "Monitoring", exact: true }).check();
   await create.getByLabel("Instructions", { exact: true }).fill("Tell me when the documentation changes.");
+  await create.getByRole("button", { name: "Advanced", exact: true }).click();
   await expect(create.getByRole("switch", { name: "Tools (MCP and Skills)", exact: true })).toHaveAttribute("aria-checked", "true");
   await expect(create.getByRole("switch", { name: "Workspace", exact: true })).toHaveAttribute("aria-checked", "false");
   await expect(create.getByRole("switch", { name: "Workspace", exact: true }))
@@ -875,7 +902,13 @@ test.describe("touch controls", () => {
       const sheet = page.getByTestId("scheduled-task-sheet");
       await sheet.getByLabel("Repeat", { exact: true }).selectOption("weekly");
       for (const day of await sheet.getByRole("group", { name: "Days" }).getByRole("button").all()) await expectTouchSafe(day);
-      for (const control of await sheet.getByRole("switch").all()) await expectTouchSafe(control);
+      const advanced = sheet.getByRole("button", { name: "Advanced", exact: true });
+      await expectTouchSafe(advanced);
+      await advanced.click();
+      for (const control of await sheet.getByRole("switch").all()) {
+        await control.scrollIntoViewIfNeeded();
+        await expectTouchSafe(control);
+      }
       for (const name of ["Cancel", "Create automation"]) {
         const button = sheet.getByRole("button", { name, exact: true });
         await expectTouchSafe(button);
@@ -939,6 +972,7 @@ test.describe("touch controls", () => {
       for (const name of ["Regular", "Monitoring"]) {
         await expectTouchSafe(sheet.getByRole("radio", { name, exact: true }).locator("xpath=.."));
       }
+      await sheet.getByRole("button", { name: "Advanced", exact: true }).click();
       for (const name of ["Tools (MCP and Skills)", "Workspace", "Use Memory"]) {
         const control = sheet.getByRole("switch", { name, exact: true });
         await control.scrollIntoViewIfNeeded();
