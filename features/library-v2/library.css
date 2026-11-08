@@ -1910,14 +1910,25 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
   .v2-scheduled-skill-remove { min-width: 2.75rem; min-height: 2.75rem; }
 }
 
-/* The quiet line above a task chat's composer, in the scheduled turn chip's type. */
-.v2-scheduled-chat-hint { display: flex; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0 auto; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; padding-inline: 0.25rem; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; line-height: 1.4; }
+/*
+ * The quiet line above a task chat's composer, in the scheduled turn chip's type: when the task runs next and its editor.
+ * It never wraps: the status ellipsizes first, and the note that replies don't change the task shows only where there is room.
+ */
+.v2-scheduled-chat-hint { display: flex; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0 auto; flex-wrap: nowrap; align-items: center; gap: 0.5rem; padding-inline: 0.25rem; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; line-height: 1.4; white-space: nowrap; }
 .v2-scheduled-chat-hint > .v2-icon { flex: none; width: 0.875rem; height: 0.875rem; }
-.v2-scheduled-chat-hint > p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-.v2-scheduled-chat-hint-action { padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; cursor: pointer; }
+.v2-scheduled-chat-hint > p { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; }
+.v2-scheduled-chat-hint-status { flex: 0 1 auto; font-variant-numeric: tabular-nums; }
+.v2-scheduled-chat-hint > p.v2-scheduled-chat-hint-note { flex: 0 1000 auto; color: var(--v2-color-text3); }
+.v2-scheduled-chat-hint-sep { flex: none; }
+.v2-scheduled-chat-hint-action { flex: none; padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; cursor: pointer; }
 .v2-scheduled-chat-hint-action:hover { text-decoration: underline; text-underline-offset: 0.125rem; }
+@media (max-width: 767px) {
+  .v2-scheduled-chat-hint-sep.v2-scheduled-chat-hint-note { display: none; }
+  /* Kept for screen readers; the line's tooltip says it too. */
+  .v2-scheduled-chat-hint > p.v2-scheduled-chat-hint-note { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+}
 
-/* Consecutive monitoring checks with no update, folded into one transcript line in the chat hint's type. */
+/* Folded scheduled checks (with no update, or failed before a later check succeeded): one transcript line in the chat hint's type. */
 .v2-scheduled-checks { display: flex; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0 auto; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; padding-inline: 0.25rem; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; line-height: 1.4; }
 .v2-scheduled-checks > .v2-icon { flex: none; width: 0.875rem; height: 0.875rem; }
 .v2-scheduled-checks > p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
@@ -1927,14 +1938,39 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
   .v2-scheduled-checks-action { min-width: 2.75rem; min-height: 2.75rem; }
 }
 
-/* A user turn that a scheduled task posted. */
-.v2-scheduled-message-chip { display: inline-flex; max-width: 100%; align-items: center; gap: 0.3125rem; margin: 0 0 0.375rem; padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-text2); background: transparent; font: inherit; font-size: 0.75rem; font-weight: 500; line-height: 1.3; text-align: left; }
+/*
+ * A user turn that a scheduled task posted: one quiet line in the folded checks' type, the instructions behind a disclosure.
+ * On a phone the time and the disclosure move to a second line aligned with the title.
+ */
+.v2-conversation-turn.v2-scheduled-turn[data-role="user"] { display: block; padding-bottom: 1.25rem; }
+.v2-scheduled-turn-line { display: flex; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0 auto; align-items: center; gap: 0.5rem; padding-inline: 0.25rem; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; line-height: 1.4; }
+.v2-scheduled-turn-line > .v2-scheduled-message-chip { flex: 0 1 auto; min-width: 0; }
+.v2-scheduled-turn-meta { display: inline-flex; flex: none; align-items: center; gap: 0.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.v2-scheduled-turn-toggle { padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; cursor: pointer; }
+.v2-scheduled-turn-toggle:hover { text-decoration: underline; text-underline-offset: 0.125rem; }
+.v2-scheduled-turn-instructions { display: grid; justify-items: start; gap: 0.25rem; width: min(var(--v2-measure), 100%); min-width: 0; margin: 0.5rem auto 0; padding-inline: 0.25rem; }
+.v2-scheduled-turn-instructions > p { justify-self: stretch; min-width: 0; margin: 0 0 0 0.375rem; padding-left: 0.75rem; border-left: 2px solid var(--v2-color-border); color: var(--v2-color-text); font-size: 0.875rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.v2-scheduled-turn-copy { display: inline-flex; align-items: center; gap: 0.3125rem; margin-left: 0.875rem; padding: 0.25rem 0.375rem; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-text2); background: transparent; font: inherit; font-size: 0.75rem; font-weight: 500; cursor: pointer; }
+.v2-scheduled-turn-copy:hover { color: var(--v2-color-text); background: var(--v2-color-surface2); }
+.v2-scheduled-turn-copy .v2-icon { flex: none; width: 0.875rem; height: 0.875rem; }
+@media (max-width: 639px) {
+  .v2-scheduled-turn-line { flex-direction: column; align-items: flex-start; gap: 0.125rem; }
+  .v2-scheduled-turn-line > .v2-scheduled-message-chip { max-width: 100%; }
+  .v2-scheduled-turn-meta { padding-inline-start: 1.1875rem; }
+  .v2-scheduled-turn-meta > .v2-scheduled-turn-sep:first-child { display: none; }
+}
+@media (pointer: coarse) {
+  /* Positioned after the title's enlarged hit area, so the title never takes the disclosure's taps. */
+  .v2-scheduled-turn-toggle, .v2-scheduled-turn-copy { position: relative; min-width: 2.75rem; min-height: 2.75rem; }
+}
+
+.v2-scheduled-message-chip { display: inline-flex; max-width: 100%; align-items: center; gap: 0.3125rem; margin: 0; padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-text2); background: transparent; font: inherit; font-size: 0.75rem; font-weight: 500; line-height: 1.3; text-align: left; }
 .v2-scheduled-message-chip .v2-icon { flex: none; width: 0.875rem; height: 0.875rem; }
 .v2-scheduled-message-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button.v2-scheduled-message-chip { cursor: pointer; }
 button.v2-scheduled-message-chip:hover { color: var(--v2-color-text); }
 @media (pointer: coarse) {
-  /* A larger invisible hit area keeps the label quiet inside the bubble. */
+  /* A larger invisible hit area keeps the label quiet. */
   button.v2-scheduled-message-chip { position: relative; }
   button.v2-scheduled-message-chip::after { position: absolute; inset: -0.75rem -0.5rem; content: ""; }
   /* Right above the composer an invisible hit area could take its taps: the action itself grows. */
