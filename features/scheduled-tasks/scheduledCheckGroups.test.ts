@@ -59,12 +59,25 @@ describe("groupScheduledChecks", () => {
       { checks: 4, failed: 2, id: "scheduled-checks:c2-q", lastAt: "2026-10-04T08:00:00.000Z", noun: "check",
         messages: ["c2-q", "c2-a", "c3-q", "c3-a", "c4-q", "c4-a", "c5-q", "c5-a"] }
     ]);
-    // A failure between a first check and an update folds on its own, and a stopped run or one that did not report counts too.
-    expect(shape([...check("c1", "baseline"), ...check("c2", undefined, { status: "cancelled" }), ...check("c3", "unreported"),
+    // A failure between a first check and an update folds on its own, and a stopped run counts too.
+    expect(shape([...check("c1", "baseline"), ...check("c2", undefined, { status: "cancelled" }), ...check("c3", "could_not_check"),
       ...check("c4", "update")])).toEqual([
       "c1-q", "c1-a",
       { checks: 2, failed: 2, id: "scheduled-checks:c2-q", lastAt: null, messages: ["c2-q", "c2-a", "c3-q", "c3-a"], noun: "check" },
       "c4-q", "c4-a"
+    ]);
+  });
+
+  it("never folds a check that answered without its verdict, since its answer may hold news", () => {
+    // The answer said what happened but recorded no verdict; the next check compares with it and has no update.
+    expect(shape([...check("c1", "unreported"), ...check("c2", "no_update")])).toEqual([
+      "c1-q", "c1-a",
+      { checks: 1, failed: 0, id: "scheduled-checks:c2-q", lastAt: null, messages: ["c2-q", "c2-a"], noun: "check" }
+    ]);
+    // It shows that checks run again, so a failure before it folds.
+    expect(shape([...failedRun("c1"), ...check("c2", "unreported")])).toEqual([
+      { checks: 1, failed: 1, id: "scheduled-checks:c1-q", lastAt: null, messages: ["c1-q", "c1-a"], noun: "check" },
+      "c2-q", "c2-a"
     ]);
   });
 
