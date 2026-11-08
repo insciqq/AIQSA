@@ -72,6 +72,15 @@ export function monitoringVerdictReservedInstruction(toolName: string = MONITORI
     "now with the outcome of this check and no other tool, then answer using only the results already obtained.";
 }
 
+/**
+ * The ephemeral last provider message of the one round that asks for a verdict the model skipped after writing its answer
+ * (`lib/server/engine/loop.ts`): the answer stands as written, so the round only reports.
+ */
+export function monitoringVerdictAfterAnswerInstruction(toolName: string = MONITORING_VERDICT_TOOL_NAME): string {
+  return `Your answer is written and stands as it is, but you did not call ${toolName}. Call ${toolName} now with the ` +
+    "outcome of this check and no other tool, and write no further text.";
+}
+
 export type MonitoringVerdictRecorder = (input: Readonly<{ runId: string; userId: string; verdict: MonitoringVerdict }>) =>
   Promise<boolean>;
 
