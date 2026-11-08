@@ -32,15 +32,17 @@ export type ScheduledTranscriptItem<T extends TranscriptMessage> =
 /** Group ids never collide with message ids. */
 const GROUP_PREFIX = "scheduled-checks:";
 
-const SETTLED_SUCCESS: ReadonlySet<ScheduledTaskCheckOutcome> = new Set(["baseline", "update", "no_update", "goal_reached"]);
-
 type CheckState = "quiet" | "success" | "failed" | "pending";
 type Unit<T> = { check: boolean; messages: T[] };
 
-/** A check's turn and its answer carry the same settled outcome; a failed run has none and an answer that errored or stopped. */
+/**
+ * A check's turn and its answer carry the same settled outcome; a failed run has none and an answer that errored or stopped.
+ * Only `could_not_check` is a settled failure: an `unreported` check answered without its verdict, so its answer may hold
+ * news and stays shown, like an update.
+ */
 function checkState<T extends TranscriptMessage>(unit: Unit<T>, last: boolean): CheckState {
   const outcome = unit.messages.find((message) => message.scheduledOutcome)?.scheduledOutcome;
-  if (outcome) return outcome === "no_update" ? "quiet" : SETTLED_SUCCESS.has(outcome) ? "success" : "failed";
+  if (outcome) return outcome === "no_update" ? "quiet" : outcome === "could_not_check" ? "failed" : "success";
   const answer = unit.messages.filter((message) => message.role === "assistant").at(-1);
   if (!answer) return last ? "pending" : "failed";
   if (answer.status === "error" || answer.status === "cancelled") return "failed";
@@ -52,8 +54,8 @@ function checkState<T extends TranscriptMessage>(unit: Unit<T>, last: boolean): 
 /**
  * Folds scheduled checks that need no attention into quiet groups; every
  * other message stays its own entry, in order. A check with no update always
- * folds. A check that failed (could not check, did not report, or a run that
- * errored or stopped without an outcome) folds only once a later check in
+ * folds. A check that failed (could not check, or a run that errored or
+ * stopped without an outcome) folds only once a later check in
  * this transcript settled successfully: the latest failure stays visible
  * until then. Consecutive folded checks form one group; anything else
  * (an update, a running check, the user's own turns) ends it. A check counts
