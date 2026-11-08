@@ -184,7 +184,11 @@ export function scheduledTaskStartingTools(
   return { toolsEnabled: defaults.toolsEnabled, workspaceEnabled: defaults.workspaceEnabled && workspace !== "installation_disabled" };
 }
 
-/** A new task: on a schedule, daily at 09:00 in the viewer's zone, with the catalog's default model and a new chat per run. */
+/**
+ * A new task: on a schedule, daily at 09:00 in the viewer's zone, with the
+ * catalog's default model, continuing in one chat (operator decision
+ * 2026-11-08: a daily task with a new chat per run filled the chat list).
+ */
 export function blankScheduledTaskDraft(
   catalog: Catalog | null,
   timeZone: string,
@@ -218,7 +222,7 @@ export function blankScheduledTaskDraft(
     ...scheduledTaskStartingTools(catalog, model, workspace),
     memoryEnabled: true,
     pinnedSkills: [],
-    chatMode: "new",
+    chatMode: "same",
     kind: "standard",
     historyRetentionDays: SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
     ...preset
