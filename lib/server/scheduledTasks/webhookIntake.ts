@@ -72,7 +72,8 @@ const HEADERS = { "cache-control": "no-store" } as const;
 /**
  * The one refusal, the same body and headers for an unknown webhook, a
  * missing, malformed or wrong token (one sent only in the URL included), a
- * trigger that is off, a task that is not active and an owner who is not.
+ * cross-site browser post, a trigger that is off, a task that is not active
+ * and an owner who is not.
  */
 function refusal(): Response {
   return Response.json({ error: SCHEDULED_TASK_WEBHOOK_REFUSAL.error },
@@ -127,13 +128,15 @@ export function createScheduledTaskWebhookIntake(deps: Readonly<{
     if (isPersonalMcpEgressRequest(request.headers)) {
       return new Response(null, { headers: PERSONAL_MCP_EGRESS_HEADERS, status: PERSONAL_MCP_EGRESS_REFUSAL_STATUS });
     }
+    // A cross-site browser post is one more unauthenticated refusal: the same
+    // 404 as every other, decided before the token or the database is read.
     if (!isAllowedMutationOrigin({
       appBaseUrl: env.AIQSA_APP_BASE_URL,
       origin: request.headers.get("origin"),
       requestOrigin: new URL(request.url).origin,
       secFetchSite: request.headers.get("sec-fetch-site")
     })) {
-      return Response.json({ error: "invalid_origin" }, { headers: HEADERS, status: 403 });
+      return refusal();
     }
     const token = scheduledWebhookRequestToken(request.headers);
     if (!isScheduledTaskWebhookPublicId(publicId) || token === null) return refusal();

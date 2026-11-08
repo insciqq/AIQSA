@@ -46,10 +46,11 @@ describe("automation webhook intake", () => {
     const f = fixture();
     const egress = await f.receive(post({ headers: { ...bearer, "x-aiqsa-egress": "personal-mcp" } }), PUBLIC_ID);
     expect([egress.status, await egress.text()]).toEqual([421, ""]);
+    // A cross-site browser post gets the one refusal of every unauthenticated request, with a valid token too.
     const crossSiteHeaders: Record<string, string>[] = [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }];
     for (const headers of crossSiteHeaders) {
       const crossSite = await f.receive(post({ headers: { ...bearer, ...headers } }), PUBLIC_ID);
-      expect([crossSite.status, await crossSite.json()]).toEqual([403, { error: "invalid_origin" }]);
+      expect([crossSite.status, await crossSite.json()]).toEqual([404, { error: "not_found" }]);
     }
     expect(f.store.find).not.toHaveBeenCalled();
     expect(f.store.accept).not.toHaveBeenCalled();
@@ -74,6 +75,8 @@ describe("automation webhook intake", () => {
       ["no token header", target, post(), "unread"],
       ["malformed token", target, post({ headers: { authorization: "Bearer aiqsa_wh_short" } }), "unread"],
       ["headers that disagree", target, post({ headers: { ...bearer, "x-gitlab-token": OTHER } }), "unread"],
+      ["cross-site browser origin", target, post({ headers: { ...bearer, origin: "https://attacker.example" } }), "unread"],
+      ["cross-site fetch metadata", target, post({ headers: { ...bearer, "sec-fetch-site": "cross-site" } }), "unread"],
       ["no token issued yet", { ...target, tokenHash: null }, post({ headers: bearer })],
       ["webhook off, task paused or completed, owner inactive", { ...target, open: false }, post({ headers: bearer })]
     ];

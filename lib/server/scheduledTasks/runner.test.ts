@@ -10,6 +10,7 @@ import { getContext } from "../observability";
 import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
 import type { ScheduledTaskSend } from "./admission";
 import type { ScheduledTaskRunCatalog } from "./catalog";
+import { SCHEDULED_TASK_EMAIL_WINDOW_MS } from "./notifications";
 import { createScheduledTaskRunner } from "./runner";
 import {
   SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD,
@@ -49,7 +50,8 @@ type Task = {
 };
 type Occurrence = {
   chatEpoch?: number | null;
-  chatId: string | null; createdAt: number; finishedAt: Date | null; id: string; leaseExpiresAt: Date | null; notifiedAt: Date | null;
+  chatId: string | null; createdAt: number; emailDueAt?: Date | null; finishedAt: Date | null; id: string; leaseExpiresAt: Date | null;
+  notifiedAt: Date | null;
   reasonCode: string | null; runId: string | null; scheduledFor: Date; startedAt: Date | null; state: string; taskGeneration: number | null;
   taskId: string; taskRevision: number | null; trigger: ScheduledTaskRunTrigger; unavailableSources: unknown; unseenAt: Date | null;
   userId: string; userMessageId: string | null; verdict: MonitoringVerdict | null; workspaceWaitStartedAt?: Date | null;
@@ -82,9 +84,13 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
   const inactiveUsers = new Set<string>();
   const emails: SmtpProductMessage[] = [];
   const pushes: string[] = [];
-  /** Occurrences whose Telegram delivery the runner recorded; one that throws never holds a settlement. */
+  /** Occurrences whose Telegram outbox row a settlement wrote, in its own transaction. */
   const telegram: string[] = [];
+  /** How often the runner woke the Telegram sender; a wake that throws never holds a settlement. */
+  let telegramWakes = 0;
   let telegramFails = false;
+  /** Claims of a result email that fail before claiming, as a database outage would. */
+  let claimFailures = 0;
   const sent: Array<{ body: Record<string, unknown>; chatId: string; occurrence: ScheduledOccurrenceAdmission }> = [];
   /** The waiting event each webhook occurrence carries, as the store reads it by the occurrence's instant. */
   const webhookEvents = new Map<string, ScheduledWebhookEvent>();
@@ -117,6 +123,11 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
     const { sourcesIncomplete } = plan;
     Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
       unseenAt: plan.notifies ? clock : null });
+    // The durable notifications the settlement's transaction writes (`recordResultNotifications`).
+    if (plan.notifies) {
+      telegram.push(occurrence.id);
+      if (task.emailNotify && !occurrence.notifiedAt) occurrence.emailDueAt = clock;
+    }
     Object.assign(task, { consecutiveFailures: plan.consecutiveFailures, consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns,
       consecutiveMissingVerdicts: plan.consecutiveMissingVerdicts },
       // The rotated chat's own shown result retires the copy carried into it.
@@ -286,11 +297,24 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
           carriedGeneration: task.carryover?.chatEpoch === task.chatEpoch ? task.carryover.taskGeneration : null } }) : null;
       return settle(row, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, undefined, check);
     },
+    async listDueNotifications(now, limit) {
+      return occurrences.filter((row) => row.emailDueAt && !row.notifiedAt &&
+          row.emailDueAt.getTime() > now.getTime() - SCHEDULED_TASK_EMAIL_WINDOW_MS)
+        .sort((left, right) => left.emailDueAt!.getTime() - right.emailDueAt!.getTime()).slice(0, limit).map((row) => row.id);
+    },
     async claimNotification(id, now) {
+      if (claimFailures > 0) {
+        claimFailures -= 1;
+        throw new Error("database unavailable");
+      }
       const row = find(id);
       const task = row && tasks.get(row.taskId);
-      if (!row || !task || row.notifiedAt || !["COMPLETED", "FAILED", "SKIPPED"].includes(row.state) || !task.emailNotify) return null;
-      row.notifiedAt = now;
+      if (!row || !task || row.notifiedAt || !row.emailDueAt || !["COMPLETED", "FAILED", "SKIPPED"].includes(row.state) ||
+        !task.emailNotify) {
+        if (row) row.emailDueAt = null;
+        return null;
+      }
+      Object.assign(row, { emailDueAt: null, notifiedAt: now });
       return { chatId: row.chatId ?? task.chatId, email: "owner@example.test", reasonCode: row.reasonCode,
         state: row.state as "COMPLETED", taskPauseReason: task.pauseReason, title: task.title, trigger: row.trigger,
         unavailableSources: unavailableSourcesWire(row.unavailableSources) };
@@ -389,9 +413,9 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
     send,
     sendEmail: async (message) => { emails.push(message); },
     sendPush: (occurrenceId) => { pushes.push(occurrenceId); },
-    queueTelegram: (occurrenceId) => {
-      if (telegramFails) throw new Error("outbox unavailable");
-      telegram.push(occurrenceId);
+    wakeTelegram: () => {
+      if (telegramFails) throw new Error("Telegram sender unavailable");
+      telegramWakes += 1;
     },
     // The Stop path: an active run becomes cancelled with the given cause.
     stopRun: async ({ code, runId, userId }) => {
@@ -437,6 +461,8 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
     addOccurrence, addTask, answers, availableSkills, carried, chats, emails, inactiveUsers, kick, occurrences, pushes, runs, seeds,
     sent, settled, stops, store, sweeps, tasks, telegram, tick, webhookEvents,
     failTelegram() { telegramFails = true; },
+    failClaims(count: number) { claimFailures = count; },
+    telegramWakes: () => telegramWakes,
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
     now: () => clock,
     setCarry(next: typeof carry) { carry = next; },
@@ -959,22 +985,80 @@ describe("scheduled task runner", () => {
     expect(h.pushes).toHaveLength(1);
   });
 
-  it("records one Telegram delivery per notifying settlement beside the push, and a failing outbox holds nothing", async () => {
+  it("records one Telegram delivery per notifying settlement in the settlement, and a failing wake holds nothing", async () => {
     const h = harness();
     const task = h.addTask({ nextRunAt: new Date("2026-10-02T06:00:00.000Z") });
     h.advance(2 * 60 * MINUTE);
     await h.tick();
     const [missed, completed] = h.forTask(task);
     expect(missed).toMatchObject({ reasonCode: "missed", state: "SKIPPED" });
-    // The outbox decides by the task's switch; the runner only applies the owner's notification rule.
+    // The outbox row is the settlement's own (the store decides by the task's switch); the runner only wakes the sender.
     expect(h.telegram).toEqual([completed!.id]);
     expect(h.telegram).toEqual(h.pushes);
+    expect(h.telegramWakes()).toBe(1);
+    // A tick with nothing to notify wakes nobody.
+    await h.tick();
+    expect(h.telegramWakes()).toBe(1);
     h.failTelegram();
     const manual = h.addOccurrence(task);
     await h.tick();
     expect(manual).toMatchObject({ state: "COMPLETED" });
     expect(h.pushes).toEqual([completed!.id, manual.id]);
-    expect(h.telegram).toEqual([completed!.id]);
+    // The row was written with the settlement; the sender's sweep delivers it without the wake.
+    expect(h.telegram).toEqual([completed!.id, manual.id]);
+  });
+
+  it("sends a result email the settlement left due after a restart, exactly once", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: true });
+    // The process that settled the occurrence ends before its email goes out.
+    const crashed = createScheduledTaskRunner({
+      appBaseUrl: "https://aiqsa.example.test",
+      loadPinnedSkills: async () => [],
+      loadCatalog: async () => null,
+      dispatchOffsetMs: () => 0,
+      now: () => h.now(),
+      stopRun: async () => "not_found",
+      send: async () => { throw new Error("never sent"); },
+      store: h.store
+    });
+    await crashed.tick();
+    await crashed.idle();
+    const [settled] = h.forTask(task);
+    expect(settled).toMatchObject({ notifiedAt: null, reasonCode: "model_unavailable", state: "FAILED" });
+    expect(settled!.emailDueAt).toEqual(h.now());
+    expect(h.emails).toHaveLength(0);
+    // The next process's first tick picks it up, and later ticks never send it again.
+    await h.tick();
+    expect(h.emails.map((email) => email.subject)).toEqual(["Automation paused"]);
+    expect(settled).toMatchObject({ emailDueAt: null, notifiedAt: h.now() });
+    await h.tick();
+    expect(h.emails).toHaveLength(1);
+  });
+
+  it("keeps a due email whose claim failed for a later tick, and never sends one past its window", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: true, nextRunAt: null, status: "PAUSED" });
+    const stale = h.addOccurrence(task, { emailDueAt: new Date(h.now().getTime() - SCHEDULED_TASK_EMAIL_WINDOW_MS),
+      finishedAt: h.now(), state: "COMPLETED" });
+    const due = h.addOccurrence(task, { emailDueAt: h.now(), finishedAt: h.now(), state: "COMPLETED" });
+    h.failClaims(1);
+    await h.tick();
+    expect(h.emails).toHaveLength(0);
+    expect(due).toMatchObject({ emailDueAt: h.now(), notifiedAt: null });
+    await h.tick();
+    expect(h.emails.map((email) => email.subject)).toEqual(["Automation finished"]);
+    expect(due.notifiedAt).toEqual(h.now());
+    expect(stale.notifiedAt).toBeNull();
+  });
+
+  it("drops a due email the owner turned off before it was claimed", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: false, nextRunAt: null, status: "PAUSED" });
+    const occurrence = h.addOccurrence(task, { emailDueAt: h.now(), finishedAt: h.now(), state: "COMPLETED" });
+    await h.tick();
+    expect(h.emails).toHaveLength(0);
+    expect(occurrence).toMatchObject({ emailDueAt: null, notifiedAt: null });
   });
 
   it("tolerates a task deleted while its occurrence is pending", async () => {

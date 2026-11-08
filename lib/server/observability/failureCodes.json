@@ -135,7 +135,6 @@
   "display_name_invalid",
   "draft_conflict",
   "email_invalid",
-  "email_queue_full",
   "email_repository_failed",
   "embedding-sweep-v1",
   "embedding_batch_invalid",
