@@ -5,6 +5,7 @@ import { sumEstimatedCostMicros, sumTokenUsage } from "../../domain/usage";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { signalRunTerminal } from "../push/runTerminalSignal";
+import { monitoringCheckChatTime } from "../runs/chatListTime";
 import { settleTerminalMemorySource } from "../runs/prismaRepositoryPreparation";
 import { runFollowupsAllowCompletion } from "../runs/prismaRepositoryFollowups";
 import {
@@ -198,10 +199,13 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
           where: { engine: "native", id: scope.runId, inputTokens: null, outputTokens: null, totalTokens: null, userId: scope.userId }
         });
         if (first.count !== 1) return;
+        // A monitoring check's bookkeeping keeps its chat's place in the chat list (`chatListTime.ts`).
+        const keptChatTime = await monitoringCheckChatTime(tx, scope);
         await tx.chat.update({ data: {
           totalInputTokens: { increment: usage.inputTokens ?? 0 },
           totalOutputTokens: { increment: usage.outputTokens ?? 0 },
-          totalReasoningTokens: { increment: usage.reasoningTokens ?? 0 }
+          totalReasoningTokens: { increment: usage.reasoningTokens ?? 0 },
+          ...(keptChatTime ? { updatedAt: keptChatTime } : {})
         }, where: { id: scope.chatId } });
         await tx.message.updateMany({ data: { outputTokens: usage.outputTokens, reasoningTokens: usage.reasoningTokens },
           where: { chatId: scope.chatId, id: scope.assistantMessageId } });
