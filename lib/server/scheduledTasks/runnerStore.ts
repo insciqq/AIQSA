@@ -35,12 +35,14 @@ import {
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
 import {
+  directMcpCallSourceFailures,
   occurrenceCheckSourcesMissing,
   occurrenceSourcesIncomplete,
   unavailableSourcesWire,
   discoveryUnavailableSources,
   withCodeCallUnavailableSources,
-  type ScheduledCodeCallSourceFailure
+  type ScheduledCodeCallSourceFailure,
+  type ScheduledDirectMcpCall
 } from "./sourceHealth";
 import {
   pruneScheduledTaskOccurrences,
@@ -65,9 +67,10 @@ export type ScheduledTaskSettlement = Readonly<{
   sourceAlert: boolean;
   /**
    * Source health of the settled run: it completed without a relevant source
-   * its admission recorded as missing. A monitoring check whose previous shown
-   * result relied on that source settled as "could not check" (see
-   * `occurrenceCheckSourcesMissing`).
+   * its admission or its own calls recorded as missing, or as a monitoring
+   * check that could not check. A monitoring check whose previous shown result
+   * relied on such a source, or whose model reported that it could not check,
+   * settled as "could not check" (see `occurrenceCheckSourcesMissing`).
    */
   sourcesIncomplete: boolean;
   state: ScheduledTaskSettledState;
@@ -269,16 +272,37 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
 }
 
 /**
- * The monitoring settlement of a completed linked run (see `completedRunCheck`),
- * health first: a check whose admission missed a source its previous shown
- * result relied on settles as `could_not_check`, from the same frozen source
- * health that extends the task's incomplete streak in `applySettlement`.
+ * Whether a monitoring check's context carried the previous shown result, as
+ * its run froze it with the instruction that says so; null when the run
+ * recorded nothing (admitted before this was recorded, or gone).
  */
-function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSettlement | null {
+async function checkContextHeldPreviousResult(tx: Prisma.TransactionClient, runId: string): Promise<boolean | null> {
+  const [run] = await tx.$queryRaw<Array<{ shown: Prisma.JsonValue | null }>>(Prisma.sql`
+    SELECT run."normalizedRequest" -> 'monitoringPreviousResult' AS "shown"
+    FROM "ModelRun" AS run
+    WHERE run."id" = ${runId}
+  `);
+  const shown = run?.shown;
+  return typeof shown === "boolean" ? shown : null;
+}
+
+/**
+ * The monitoring settlement of a completed linked run (see `completedRunCheck`),
+ * health first: a check whose admission or own calls missed a source its
+ * previous shown result relied on settles as `could_not_check`, from the same
+ * source health that extends the task's incomplete streak in `applySettlement`.
+ * A check whose context held no previous result is a first check.
+ */
+async function monitoringSettlementOf(tx: Prisma.TransactionClient, { occurrence, task }: Locked):
+  Promise<MonitoringCheckSettlement | null> {
+  const kind = scheduledTaskKindFromColumn(task.kind);
+  const previousResultShown = kind === "monitoring" && occurrence.runId
+    ? await checkContextHeldPreviousResult(tx, occurrence.runId) : null;
   return completedRunCheck({
     healthIncomplete: occurrenceCheckSourcesMissing(occurrence.unavailableSources),
     occurrence,
-    task: { ...task, kind: scheduledTaskKindFromColumn(task.kind) }
+    previousResultShown,
+    task: { ...task, kind }
   });
 }
 
@@ -286,7 +310,7 @@ function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSe
  * Settles one locked occurrence and writes its task's bookkeeping per
  * `planOccurrenceSettlement`: the counters and the incomplete-run streak, an
  * automatic pause, a monitoring goal's completion (decided under the task lock
- * against the revision the run was accepted under), the unread result and the
+ * by `completedRunCheck`), the unread result and the
  * baseline the next same-chat run sees, only under the chat epoch its run was
  * admitted under, which retires a result carried into a rotated chat. A
  * monitoring check's outcome is also kept on its run, where the transcript
@@ -304,11 +328,12 @@ async function applySettlement(
   }> = {}
 ): Promise<ScheduledTaskSettlement> {
   const check = options.check ?? null;
-  const sourcesIncomplete = outcome.state === "COMPLETED" && occurrenceSourcesIncomplete(occurrence.unavailableSources);
   const plan = planOccurrenceSettlement({
     assistantMessageId: options.assistantMessageId ?? null, check, observedRevision: options.observedRevision,
-    occurrence: { ...occurrence, trigger: trigger(occurrence.trigger) }, outcome, sourcesIncomplete, task
+    occurrence: { ...occurrence, trigger: trigger(occurrence.trigger) }, outcome,
+    sourcesIncomplete: occurrenceSourcesIncomplete(occurrence.unavailableSources), task
   });
+  const { sourcesIncomplete } = plan;
   await tx.scheduledTaskOccurrence.update({
     data: {
       finishedAt: now, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
@@ -357,6 +382,15 @@ async function applySettlement(
   };
 }
 
+/** The servers the run's Workspace code reached with a successful call. */
+async function codeReachedServers(tx: Prisma.TransactionClient, runId: string): Promise<Set<string>> {
+  return new Set((await tx.$queryRaw<Array<{ serverId: string }>>(Prisma.sql`
+    SELECT DISTINCT code_call."serverId"
+    FROM "WorkspaceCodeCall" AS code_call
+    WHERE code_call."modelRunId" = ${runId} AND code_call."state" = 'complete'
+  `)).map((row) => row.serverId));
+}
+
 /**
  * Servers the run's tool search reported unavailable and never loaded, unless
  * its code reached them after all, with their frozen catalog names. The
@@ -371,11 +405,7 @@ async function discoverySourceFailures(tx: Prisma.TransactionClient, runId: stri
   `);
   const unavailable = discoveryUnavailableSources(run?.epochs, run?.loadedServers);
   if (unavailable.length === 0) return [];
-  const reached = new Set((await tx.$queryRaw<Array<{ serverId: string }>>(Prisma.sql`
-    SELECT DISTINCT code_call."serverId"
-    FROM "WorkspaceCodeCall" AS code_call
-    WHERE code_call."modelRunId" = ${runId} AND code_call."state" = 'complete'
-  `)).map((row) => row.serverId));
+  const reached = await codeReachedServers(tx, runId);
   const names = new Map((await tx.$queryRaw<Array<{ serverId: string | null; serverName: string | null }>>(Prisma.sql`
     SELECT server ->> 'serverId' AS "serverId", server ->> 'serverName' AS "serverName"
     FROM "ModelRun" AS run
@@ -390,11 +420,40 @@ async function discoverySourceFailures(tx: Prisma.TransactionClient, runId: stri
 }
 
 /**
+ * Servers the run's model called directly whose calls failed as a source
+ * (`directMcpCallSourceFailures`) and never succeeded, by any call of the run
+ * or its code. The server and its name come from the run's frozen plan of the
+ * called tool (`normalizedRequest.mcp`, final after its tool searches). Only a
+ * failure the engine built has the closed reason read here: a result the MCP
+ * server returned always carries its `rawPreview`, so a tool's own output can
+ * never pass for a source failure.
+ */
+async function directCallSourceFailures(tx: Prisma.TransactionClient, runId: string): Promise<ScheduledCodeCallSourceFailure[]> {
+  const calls = await tx.$queryRaw<ScheduledDirectMcpCall[]>(Prisma.sql`
+    SELECT tool ->> 'serverId' AS "serverId", tool ->> 'serverName' AS "serverName", call."state"::text AS "state",
+      CASE WHEN call."state" = 'error'::"ModelRunToolCallState" AND call."result" -> 'rawPreview' IS NULL
+          AND call."result" #>> '{content,0,type}' = 'json' AND call."result" #> '{content,1}' IS NULL
+        THEN call."result" #>> '{content,0,value,reason}' END AS "failureReason"
+    FROM "ModelRun" AS run
+    CROSS JOIN LATERAL jsonb_array_elements(CASE
+      WHEN jsonb_typeof(run."normalizedRequest" #> '{mcp,tools}') = 'array' THEN run."normalizedRequest" #> '{mcp,tools}'
+      ELSE '[]'::jsonb END) AS tool
+    JOIN "ModelRunToolCall" AS call ON call."modelRunId" = run."id" AND call."toolName" = tool ->> 'namespacedName'
+    WHERE run."id" = ${runId} AND tool ->> 'serverId' IS NOT NULL
+      AND call."state" IN ('complete'::"ModelRunToolCallState", 'error'::"ModelRunToolCallState")
+  `);
+  // The code's calls are read only when a direct call failed as a source.
+  if (directMcpCallSourceFailures(calls).length === 0) return [];
+  return directMcpCallSourceFailures(calls, await codeReachedServers(tx, runId));
+}
+
+/**
  * Sources the run's Workspace code could not use (refused before dispatch as
- * unauthorized or unavailable, with no successful call), and those its tool
- * search reported unavailable and never loaded, join the sources its
- * admission recorded, on the occurrence itself, before settlement decides
- * health, the check outcome and the incomplete streak.
+ * unauthorized or unavailable, with no successful call), those its tool
+ * search reported unavailable and never loaded, and those its model's direct
+ * calls could not reach, join the sources its admission recorded, on the
+ * occurrence itself, before settlement decides health, the check outcome and
+ * the incomplete streak.
  */
 async function withCodeCallSourceHealth(tx: Prisma.TransactionClient, locked: Locked): Promise<Locked> {
   const runId = locked.occurrence.runId;
@@ -420,7 +479,7 @@ async function withCodeCallSourceHealth(tx: Prisma.TransactionClient, locked: Lo
       AND NOT bool_or(code_call."state" = 'complete')
     ORDER BY code_call."serverId"
   `);
-  const failures = [...codeFailures, ...await discoverySourceFailures(tx, runId)];
+  const failures = [...codeFailures, ...await discoverySourceFailures(tx, runId), ...await directCallSourceFailures(tx, runId)];
   if (failures.length === 0) return locked;
   const unavailableSources = withCodeCallUnavailableSources(locked.occurrence.unavailableSources, failures);
   await tx.$executeRaw(Prisma.sql`
@@ -553,7 +612,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, state: "FAILED" as const } : linked;
       const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
-      const check = outcome.state === "COMPLETED" ? monitoringSettlementOf(locked) : null;
+      const check = outcome.state === "COMPLETED" ? await monitoringSettlementOf(tx, locked) : null;
       return applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
         { assistantMessageId: run?.assistantMessageId ?? null, check });
     });

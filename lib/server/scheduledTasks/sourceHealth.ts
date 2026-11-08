@@ -6,6 +6,7 @@ import {
   type ScheduledTaskUnavailableSource
 } from "../../contracts/scheduledTasks";
 import type { McpCatalogOmission } from "../mcp/runPlan";
+import type { McpToolFailureReason } from "../mcp/toolFailureGuidance";
 import type { ScheduledUnavailableSource } from "../runs/runRepositoryContract";
 
 /**
@@ -18,9 +19,10 @@ import type { ScheduledUnavailableSource } from "../runs/runRepositoryContract";
  * unrelated unavailable server degrades at most a task's first result. The
  * fact is frozen at admission on the run's occurrence; the run itself still
  * answers, told which source is missing. Settlement adds the sources the
- * run's Workspace code found unavailable and those its tool search reported
- * unavailable without loading them later; servers its code called or its
- * model searched count as relied on, like servers its model called.
+ * run's Workspace code found unavailable, those its tool search reported
+ * unavailable without loading them later and those its model's own calls
+ * could not reach; servers its code or its model called, or its model
+ * searched, count as relied on.
  */
 
 const SOURCE_REASONS: readonly unknown[] = SCHEDULED_TASK_SOURCE_REASONS;
@@ -82,8 +84,9 @@ export function decodeStoredUnavailableSources(value: unknown): ScheduledUnavail
 
 /**
  * One source the run could not use: its guest code was refused before
- * dispatch with no successful call, or its tool search reported it
- * unavailable and never loaded it.
+ * dispatch with no successful call, its tool search reported it unavailable
+ * and never loaded it, or its model's direct calls failed as a source with no
+ * successful call (`directMcpCallSourceFailures`).
  */
 export type ScheduledCodeCallSourceFailure = Readonly<{ authorization: boolean; serverId: string; serverName: string | null }>;
 
@@ -113,10 +116,59 @@ export function discoveryUnavailableSources(epochs: unknown, loadedServers: unkn
 }
 
 /**
- * Settlement adds the sources the run's own code could not use to those its
- * admission recorded: the run relied on them now, so a monitoring check that
- * reached a source only through code becomes `could_not_check`, never a
- * healthy `no_update`, and the incomplete-run streak counts it.
+ * One direct MCP tool call of the run, by the server its frozen plan names
+ * for the tool (`normalizedRequest.mcp.tools`), with its settled state.
+ * `failureReason` is the closed class of a failure the engine itself recorded
+ * after the batch's retries (`mcpToolFailureGuidance`); null for a result or
+ * an error the server returned, and for anything else.
+ */
+export type ScheduledDirectMcpCall = Readonly<{
+  failureReason: string | null;
+  serverId: string;
+  serverName: string | null;
+  state: string;
+}>;
+
+/**
+ * Direct call failures that mean the source itself could not be used: it did
+ * not answer in time, was unavailable or kept failing with HTTP 5xx, refused
+ * the connection's authorization, or the tool was switched off. Arguments the
+ * model got wrong, a result too large, a configuration that changed during the
+ * run, a rate limit and an error the tool returned are the check's own, never
+ * the source's.
+ */
+const DIRECT_SOURCE_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  "authorization", "server_error", "timeout", "tool_disabled", "unavailable"
+] satisfies McpToolFailureReason[]);
+
+/**
+ * The servers whose direct calls in the run failed as a source and never
+ * succeeded, by the run's own calls or by any server in `reached` (its
+ * Workspace code's successful calls). The model called them, so the run relied
+ * on them, as on servers its code called.
+ */
+export function directMcpCallSourceFailures(
+  calls: readonly ScheduledDirectMcpCall[],
+  reached: ReadonlySet<string> = new Set()
+): ScheduledCodeCallSourceFailure[] {
+  const succeeded = new Set(calls.filter((call) => call.state === "complete").map((call) => call.serverId));
+  const failed = new Map<string, Readonly<{ authorization: boolean; serverName: string | null }>>();
+  for (const call of calls) {
+    if (call.state !== "error" || call.failureReason === null || !DIRECT_SOURCE_FAILURE_REASONS.has(call.failureReason) ||
+      !ID.test(call.serverId) || succeeded.has(call.serverId) || reached.has(call.serverId)) continue;
+    const known = failed.get(call.serverId);
+    failed.set(call.serverId, { authorization: known?.authorization === true || call.failureReason === "authorization",
+      serverName: known?.serverName ?? call.serverName });
+  }
+  return [...failed].map(([serverId, { authorization, serverName }]) => ({ authorization, serverId, serverName }));
+}
+
+/**
+ * Settlement adds the sources the run's own code and direct calls could not
+ * use to those its admission recorded: the run relied on them now, so a
+ * monitoring check that could not reach a source it called becomes
+ * `could_not_check`, never a healthy `no_update`, and the incomplete-run
+ * streak counts it.
  */
 export function withCodeCallUnavailableSources(
   stored: unknown,

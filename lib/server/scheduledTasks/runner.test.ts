@@ -112,9 +112,9 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
     check: MonitoringCheckSettlement | null = null): ScheduledTaskSettlement {
     const task = tasks.get(occurrence.taskId)!;
     const run = occurrence.runId ? runs.get(occurrence.runId) : undefined;
-    const sourcesIncomplete = outcome.state === "COMPLETED" && occurrenceSourcesIncomplete(occurrence.unavailableSources);
     const plan = planOccurrenceSettlement({ assistantMessageId: run?.assistantMessageId ?? null, check, observedRevision, occurrence,
-      outcome, sourcesIncomplete, task });
+      outcome, sourcesIncomplete: occurrenceSourcesIncomplete(occurrence.unavailableSources), task });
+    const { sourcesIncomplete } = plan;
     Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
       unseenAt: plan.notifies ? clock : null });
     Object.assign(task, { consecutiveFailures: plan.consecutiveFailures, consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns,
@@ -1312,7 +1312,7 @@ describe("scheduled monitoring checks", () => {
     expect(reported).toMatchObject({ consecutiveMissingVerdicts: 0, status: "ACTIVE" });
   });
 
-  it("completes the task when its goal is reached and notifies, unless the owner changed it meanwhile", async () => {
+  it("completes the task when its goal is reached and notifies, unless the owner paused it meanwhile", async () => {
     const h = harness();
     const task = h.addTask({ emailNotify: true, kind: "monitoring" });
     h.setReply(() => ({ runStatus: "complete", verdict: "goal_reached" }));
@@ -1324,18 +1324,29 @@ describe("scheduled monitoring checks", () => {
     await h.tick();
     expect(h.sent).toHaveLength(1);
 
-    // An owner edit after admission wins: the reached goal is shown as an update and the task goes on.
-    const edited = h.addTask({ kind: "monitoring", nextRunAt: new Date("2026-10-06T06:00:00.000Z"), userId: "owner-2" });
+    // A save that kept the question, or a pause and resume, during the check leaves the reached goal standing.
+    const saved = h.addTask({ kind: "monitoring", nextRunAt: new Date("2026-10-06T06:00:00.000Z"), userId: "owner-2" });
     h.setReply(() => ({ runStatus: "streaming", verdict: "goal_reached" }));
     await h.tick();
-    const running = h.forTask(edited)[0]!;
+    const resumed = h.forTask(saved)[0]!;
+    expect(resumed.state).toBe("RUNNING");
+    saved.revision += 2;
+    h.runs.get(resumed.runId!)!.status = "complete";
+    await h.tick();
+    expect(resumed).toMatchObject({ reasonCode: "goal_reached", state: "COMPLETED" });
+    expect(saved).toMatchObject({ completionReason: "goal_reached", nextRunAt: null, status: "COMPLETED" });
+
+    // An owner pause meanwhile wins: the reached goal is shown as an update and the task stays paused.
+    const paused = h.addTask({ kind: "monitoring", nextRunAt: new Date("2026-10-06T06:00:00.000Z"), userId: "owner-3" });
+    await h.tick();
+    const running = h.forTask(paused)[0]!;
     expect(running.state).toBe("RUNNING");
-    edited.revision += 1;
+    Object.assign(paused, { nextRunAt: null, revision: paused.revision + 1, status: "PAUSED" });
     h.runs.get(running.runId!)!.status = "complete";
     await h.tick();
     expect(running).toMatchObject({ reasonCode: "update", state: "COMPLETED" });
     expect(running.unseenAt).not.toBeNull();
-    expect(edited).toMatchObject({ completionReason: null, status: "ACTIVE" });
+    expect(paused).toMatchObject({ completionReason: null, status: "PAUSED" });
   });
 
   it("pauses a monitoring task whose model can no longer call its reporting tool", async () => {
@@ -1414,6 +1425,35 @@ describe("scheduled monitoring checks and source health", () => {
     expect(h.emails[1]!.text).toContain("Could not check: a source was unavailable.\nTracker is unavailable.");
     expect(h.emails[2]!.text).toContain("could not reach a source the automation uses");
     expect(h.emails[2]!.text).toContain("Tracker is unavailable.");
+  });
+
+  it("settles checks whose own model could not check like a missing source: shown, alerting once, pausing at the third", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: true, kind: "monitoring" });
+    h.setReply(() => ({ runStatus: "complete", verdict: "update" }));
+    await h.tick();
+    const shown = task.baseline;
+    // Its page or tool failed: the model says it could not check instead of reporting a hidden no update.
+    h.setReply(() => ({ runStatus: "complete", verdict: "could_not_check" }));
+    for (let day = 0; day < 3; day += 1) {
+      h.advance(DAY);
+      await h.tick();
+    }
+    const [baseline, alert, quiet, pausing] = h.forTask(task);
+    expect(baseline).toMatchObject({ reasonCode: "baseline" });
+    const checks = [alert!, quiet!, pausing!];
+    expect(checks.map((row) => row.reasonCode)).toEqual(["could_not_check", "could_not_check", "could_not_check"]);
+    expect(checks.map((row) => h.runs.get(row.runId!)?.scheduledOutcome)).toEqual(["could_not_check", "could_not_check", "could_not_check"]);
+    // Never the next comparison basis, and the report neither counts nor resets the missing-report count.
+    expect(task.baseline).toEqual(shown);
+    expect(task).toMatchObject({ completionReason: null, consecutiveIncompleteRuns: 3, consecutiveMissingVerdicts: 0, nextRunAt: null,
+      pauseReason: "source_unavailable", status: "PAUSED" });
+    const notified = [baseline!, alert!, pausing!].map((row) => row.id);
+    expect(h.forTask(task).filter((row) => row.unseenAt !== null).map((row) => row.id)).toEqual(notified);
+    expect(h.pushes).toEqual(notified);
+    expect(h.emails.map((email) => email.subject)).toEqual(["Automation finished", "Automation finished", "Automation paused"]);
+    expect(h.emails[1]!.text).toContain("finished.\nCould not check: a source was unavailable.\n\n");
+    expect(h.emails[2]!.text).toContain("was paused.\nPaused after 3 runs in a row could not reach a source the automation uses.");
   });
 
   it("says in its email and push that the third check in a row without a report paused the task", async () => {
