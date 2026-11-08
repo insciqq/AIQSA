@@ -144,7 +144,10 @@ describe("a scheduled run's flat context on the native engine", () => {
     { followup: true, id: "followup", kind: "user", text: "SYNTHETIC OLDER RESULTS" },
     { arguments: "{\"key\":\"A-1\"}", callId: "pc1", id: "p1", kind: "tool_call", name: "mcp_jira_get_issue", origin: NATIVE_RUN_ORIGIN },
     { callId: "pc1", id: "p2", kind: "tool_result", name: "mcp_jira_get_issue", outcome: "complete", output: "A-1: open" },
-    { id: "p3", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "A-1 is open." }
+    { id: "p3", kind: "reasoning", native: { fields: { encrypted_content: "SYNTHETIC REASONING", id: "rs_1", type: "reasoning" },
+      format: "openai_responses" }, origin: NATIVE_RUN_ORIGIN },
+    { id: "p4", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "SYNTHETIC INTERMEDIATE TEXT" },
+    { id: "p5", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "A-1 is open." }
   ];
   const context = { messages: [nativeSay("previous-user", "user", "Check A-1"), nativeSay("previous-answer", "assistant", "A-1 is open."),
     nativeSay("current-user-message", "user", "Check A-1")], mode: "branch_path" as const };
@@ -159,12 +162,17 @@ describe("a scheduled run's flat context on the native engine", () => {
     return requests[0]!.history!;
   }
 
-  it("carries the previous result's own items, never a compaction of what came before it nor a follow-up", async () => {
+  it("carries the previous shown result as its saved text, never its tool work, a compaction before it nor a follow-up", async () => {
     const flat = await firstHistory(true);
-    expect(flat.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "assistant_text", "user", "user"]);
-    expect(JSON.stringify(flat)).not.toContain("SYNTHETIC OLDER RESULTS");
-    // An ordinary chat continues from the compaction.
-    expect(JSON.stringify(await firstHistory(false))).toContain("SYNTHETIC OLDER RESULTS");
+    expect(flat.map((item) => item.type)).toEqual(["user", "assistant_text", "user", "user"]);
+    expect(flat[0]).toMatchObject({ text: "Check A-1", type: "user" });
+    expect(flat[1]).toMatchObject({ text: "A-1 is open.", type: "assistant_text" });
+    for (const hidden of ["SYNTHETIC OLDER RESULTS", "SYNTHETIC REASONING", "SYNTHETIC INTERMEDIATE TEXT", "A-1: open"]) {
+      expect(JSON.stringify(flat)).not.toContain(hidden);
+    }
+    // An ordinary chat continues from the compaction with the previous run's own work.
+    const ordinary = JSON.stringify(await firstHistory(false));
+    for (const kept of ["SYNTHETIC OLDER RESULTS", "SYNTHETIC INTERMEDIATE TEXT", "A-1: open"]) expect(ordinary).toContain(kept);
   });
 });
 
@@ -200,7 +208,8 @@ describe("an unknown effect on the native engine", () => {
       repository: asRepository(options.repo ?? nativeRunRepository()), ...(options.scheduled ? { scheduled: true as const } : {}),
       services: {}, userId: "owner", workspace: workspace as unknown as WorkspaceCoordinator }));
     const result = requests[1]?.history?.find((item) => item.type === "tool_result" && item.callId === "again");
-    return { execute: workspace.execute, output: result?.type === "tool_result" ? result.output : null };
+    return { execute: workspace.execute, first: requests[0]!.history!,
+      output: result?.type === "tool_result" ? result.output : null };
   }
 
   const occurrence = [nativeSay("previous-user", "user", "Post the daily report"), nativeSay("answer-0", "assistant", "Maybe posted."),
@@ -210,6 +219,9 @@ describe("an unknown effect on the native engine", () => {
     const scheduled = await retry(occurrence, { scheduled: true });
     expect(scheduled.execute).not.toHaveBeenCalled();
     expect(scheduled.output).toBe(UNKNOWN_OUTCOME_REPEAT_OUTPUT);
+    // The baseline run's calls guard the occurrence without entering its flat context, which holds the shown answer's text.
+    expect(scheduled.first.map((item) => item.type)).toEqual(["user", "assistant_text", "user", "user"]);
+    expect(scheduled.first[1]).toMatchObject({ text: "Maybe posted.", type: "assistant_text" });
     // The user's own message is what releases it.
     const asked = await retry(occurrence);
     expect(asked.execute).toHaveBeenCalledTimes(1);
