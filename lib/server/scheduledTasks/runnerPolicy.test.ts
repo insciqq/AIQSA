@@ -10,7 +10,9 @@ import {
   classifySendRefusal,
   completedRunCheck,
   expiredPendingOutcome,
+  isMonitoringVerdict,
   linkedRunOutcome,
+  MONITORING_VERDICTS,
   monitoringCheckSettlement,
   planClaimOverlap,
   planOccurrenceSettlement,
@@ -257,9 +259,9 @@ describe("settlement bookkeeping", () => {
 });
 
 describe("monitoring check settlement", () => {
-  const verdicts: readonly (MonitoringVerdict | null)[] = ["update", "no_update", "goal_reached", null];
+  const verdicts: readonly (MonitoringVerdict | null)[] = ["update", "no_update", "goal_reached", "could_not_check", null];
   const settle = (verdict: MonitoringVerdict | null, overrides: Partial<Parameters<typeof monitoringCheckSettlement>[0]> = {}) =>
-    monitoringCheckSettlement({ firstCheck: false, healthIncomplete: false, ownerUnchanged: true, verdict, ...overrides });
+    monitoringCheckSettlement({ firstCheck: false, goalCompletes: true, healthIncomplete: false, verdict, ...overrides });
   const effects = (outcome: string) => ({
     baseline: settlementBaseline({ assistantMessageId: "answer", occurrence: { runId: "run", taskGeneration: 1, userMessageId: "user" },
       outcome: { reasonCode: outcome, state: "COMPLETED" }, taskGeneration: 1 }) !== null,
@@ -275,20 +277,47 @@ describe("monitoring check settlement", () => {
       // Nothing changed: hidden, silent and never the next check's previous result.
       { baseline: false, completesTask: false, notifies: false, outcome: "no_update", verdictMissing: false },
       { baseline: true, completesTask: true, notifies: true, outcome: "goal_reached", verdictMissing: false },
+      // The model could not reach what it needed: shown, never a basis, judged like a missing source.
+      { baseline: false, completesTask: false, notifies: false, outcome: "could_not_check", verdictMissing: null },
       // Fail-open: a check that never reported is shown, and counts towards the pause.
       { baseline: true, completesTask: false, notifies: true, outcome: "unreported", verdictMissing: true }
     ]);
   });
 
-  it("always shows the first check of a generation unless it already reached the goal", () => {
+  it("always shows the first check of a generation unless it already reached the goal or could not check", () => {
     expect(verdicts.map((verdict) => settle(verdict, { firstCheck: true }).outcome))
-      .toEqual(["baseline", "baseline", "goal_reached", "unreported"]);
+      .toEqual(["baseline", "baseline", "goal_reached", "could_not_check", "unreported"]);
+    expect(effects("baseline")).toEqual({ baseline: true, notifies: true });
+  });
+
+  it("knows the model-reported outcomes, the could-not-check report among them", () => {
+    expect(MONITORING_VERDICTS).toEqual(["update", "no_update", "goal_reached", "could_not_check"]);
+    for (const verdict of MONITORING_VERDICTS) expect(isMonitoringVerdict(verdict)).toBe(true);
+    for (const value of ["baseline", "unreported", "maybe", null, undefined]) expect(isMonitoringVerdict(value)).toBe(false);
+  });
+
+  it("settles a check whose own context held no previous result as the starting point, never a hidden no update", () => {
+    // The task has a baseline of this generation, but the check ran without it (an owner Regenerate or branch left it
+    // off the active path): its instruction said no result was shown, so it is shown and becomes the next baseline.
+    const occurrence = { taskGeneration: 2, taskRevision: 5, verdict: "no_update" };
+    const task = { baselineGeneration: 2, generation: 2, kind: "monitoring", revision: 5, status: "ACTIVE" } as const;
+    expect(completedRunCheck({ healthIncomplete: false, occurrence, previousResultShown: false, task }))
+      .toMatchObject({ outcome: "baseline" });
+    expect(completedRunCheck({ healthIncomplete: false, occurrence, previousResultShown: true, task }))
+      .toMatchObject({ outcome: "no_update" });
+    // A run admitted before the context was recorded keeps the task's own record.
+    for (const previousResultShown of [null, undefined]) {
+      expect(completedRunCheck({ healthIncomplete: false, occurrence, previousResultShown, task })).toMatchObject({ outcome: "no_update" });
+    }
+    // A context that held a result never hides a check the task has no basis for: fail open.
+    expect(completedRunCheck({ healthIncomplete: false, occurrence, previousResultShown: true, task: { ...task, baselineGeneration: 1 } }))
+      .toMatchObject({ outcome: "baseline" });
     expect(effects("baseline")).toEqual({ baseline: true, notifies: true });
   });
 
   it("compares the first check of a rotated chat with the result carried into it, not as a first check", () => {
     const occurrence = { taskGeneration: 2, taskRevision: 5, verdict: "no_update" };
-    const task = { baselineGeneration: null, generation: 2, kind: "monitoring", revision: 5 } as const;
+    const task = { baselineGeneration: null, generation: 2, kind: "monitoring", revision: 5, status: "ACTIVE" } as const;
     // The carried copy of this generation is the previous result: nothing changed stays hidden.
     expect(completedRunCheck({ healthIncomplete: false, occurrence, task: { ...task, carriedGeneration: 2 } }))
       .toMatchObject({ outcome: "no_update" });
@@ -337,9 +366,61 @@ describe("monitoring check settlement", () => {
     expect(streakOf(settleWith(2, null))).toEqual({ consecutiveIncompleteRuns: 3, pauseReason: "source_unavailable", sourceAlert: false });
   });
 
-  it("completes the task on a reached goal only while no owner transition happened since admission", () => {
-    expect(settle("goal_reached", { ownerUnchanged: false })).toEqual({ completesTask: false, outcome: "update", verdictMissing: false });
-    expect(settle("goal_reached", { firstCheck: true, ownerUnchanged: false }).outcome).toBe("update");
+  it("settles a check whose model could not check exactly like one whose source the server saw missing", () => {
+    const task = {
+      baselineGeneration: 1, consecutiveFailures: 1, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 2, generation: 1,
+      kind: "monitoring", revision: 4, status: "ACTIVE"
+    } as const;
+    const occurrence = { runId: "run", taskGeneration: 1, taskRevision: 4, trigger: "schedule", userMessageId: "user" } as const;
+    const settleWith = (streak: number, reported: boolean, trigger: "manual" | "schedule" = "schedule") => {
+      const current = { ...task, consecutiveIncompleteRuns: streak };
+      // Reported by the model with every admitted source present, or observed by the server under any report.
+      const check = completedRunCheck({ healthIncomplete: !reported,
+        occurrence: { ...occurrence, verdict: reported ? "could_not_check" : "no_update" }, task: current });
+      expect(check).toEqual({ completesTask: false, outcome: "could_not_check", verdictMissing: null });
+      return planOccurrenceSettlement({
+        assistantMessageId: "answer", check, occurrence: { ...occurrence, trigger },
+        outcome: { reasonCode: check!.outcome, state: "COMPLETED" }, sourcesIncomplete: !reported, task: current
+      });
+    };
+    for (const streak of [0, 1, 2]) {
+      for (const trigger of ["manual", "schedule"] as const) {
+        expect(settleWith(streak, true, trigger)).toEqual(settleWith(streak, false, trigger));
+      }
+    }
+    // Shown, never a basis or a goal; the first of a streak alerts, the third pauses with the source reason.
+    expect(settleWith(0, true)).toMatchObject({ baseline: null, consecutiveFailures: 0, consecutiveIncompleteRuns: 1,
+      consecutiveMissingVerdicts: 2, goalCompletes: false, notifies: true, pauseReason: null, sourceAlert: true, sourcesIncomplete: true });
+    expect(settleWith(1, true)).toMatchObject({ consecutiveIncompleteRuns: 2, notifies: false, pauseReason: null, sourceAlert: false });
+    expect(settleWith(2, true)).toMatchObject({ consecutiveIncompleteRuns: 3, notifies: true, pauseReason: "source_unavailable" });
+    // Run now neither extends the streak nor alerts.
+    expect(settleWith(2, true, "manual")).toMatchObject({ consecutiveIncompleteRuns: 2, notifies: false, pauseReason: null });
+    // A check that could check ends the streak.
+    const healthy = completedRunCheck({ healthIncomplete: false, occurrence: { ...occurrence, verdict: "no_update" }, task });
+    expect(planOccurrenceSettlement({ assistantMessageId: "answer", check: healthy, occurrence,
+      outcome: { reasonCode: healthy!.outcome, state: "COMPLETED" }, sourcesIncomplete: false,
+      task: { ...task, consecutiveIncompleteRuns: 2 } })).toMatchObject({ consecutiveIncompleteRuns: 0, sourcesIncomplete: false });
+  });
+
+  it("completes the task on a reached goal while the task can still take it", () => {
+    expect(settle("goal_reached", { goalCompletes: false })).toEqual({ completesTask: false, outcome: "update", verdictMissing: false });
+    expect(settle("goal_reached", { firstCheck: true, goalCompletes: false }).outcome).toBe("update");
+    type CheckedTask = Parameters<typeof completedRunCheck>[0]["task"];
+    const occurrence = { taskGeneration: 2, taskRevision: 5, verdict: "goal_reached" };
+    const task: CheckedTask = { baselineGeneration: 2, generation: 2, kind: "monitoring", revision: 5, status: "ACTIVE" };
+    const outcome = (changes: Partial<CheckedTask>) => completedRunCheck({ healthIncomplete: false, occurrence, task: { ...task, ...changes } });
+    expect(outcome({})).toEqual({ completesTask: true, outcome: "goal_reached", verdictMissing: false });
+    // A save that kept the question (a rename, a no-op save) or a pause and resume during the check bumps only the revision.
+    expect(outcome({ revision: 6 })).toMatchObject({ completesTask: true, outcome: "goal_reached" });
+    expect(outcome({ revision: 7 })).toMatchObject({ completesTask: true, outcome: "goal_reached" });
+    // Paused or completed meanwhile: shown as an update, the owner's transition stands.
+    expect(outcome({ revision: 6, status: "PAUSED" })).toMatchObject({ completesTask: false, outcome: "update" });
+    expect(outcome({ revision: 6, status: "COMPLETED" })).toMatchObject({ completesTask: false, outcome: "update" });
+    // Run now of a paused task, or a once task its own claim completed before admission, unchanged since: the goal stands.
+    expect(outcome({ status: "PAUSED" })).toMatchObject({ completesTask: true, outcome: "goal_reached" });
+    expect(outcome({ status: "COMPLETED" })).toMatchObject({ completesTask: true, outcome: "goal_reached" });
+    // A changed prompt, schedule kind or type is a new question: the result is no check of it.
+    expect(outcome({ generation: 3, revision: 6 })).toBeNull();
   });
 
   it("treats every outcome as news but no update, and a check that could not check only as an alert or pause", () => {

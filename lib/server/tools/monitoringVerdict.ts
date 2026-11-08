@@ -1,4 +1,4 @@
-import { isMonitoringVerdict, type MonitoringVerdict } from "../scheduledTasks/runnerPolicy";
+import { isMonitoringVerdict, MONITORING_VERDICTS, type MonitoringVerdict } from "../scheduledTasks/runnerPolicy";
 import type { ModelToolCall, RunTool, ToolExecutionContext, ToolExecutionResult } from "./types";
 
 /**
@@ -15,11 +15,14 @@ export const MONITORING_VERDICT_TOOL_NAME = "report_monitoring_result";
 export const monitoringVerdictTool: RunTool = {
   capability: "session",
   description: "Report the outcome of this automation's monitoring check. Call it exactly once, after checking and before " +
-    "your final answer: update (something the user watches changed since the last shown result), no_update (nothing " +
-    "relevant changed) or goal_reached (what the user is waiting for has happened).",
+    "your final answer. goal_reached: what the user is waiting for has happened; this ends the automation for good, and " +
+    "nothing else in this run can stop it. update: something the user watches changed since the last shown result; the " +
+    "automation keeps checking. no_update: you checked everything the request needs and nothing relevant changed. " +
+    "could_not_check: a page, search or tool the check needs failed or could not be reached, so you cannot tell whether " +
+    "anything changed; never report no_update then.",
   inputSchema: {
     additionalProperties: false,
-    properties: { status: { enum: ["update", "no_update", "goal_reached"], type: "string" } },
+    properties: { status: { enum: [...MONITORING_VERDICTS], type: "string" } },
     required: ["status"],
     type: "object"
   },
@@ -36,7 +39,10 @@ export function isMonitoringVerdictCall(request: Readonly<{ monitoringVerdictToo
  * Server-owned run instruction of a monitoring check, frozen with the accepted
  * prompt (never stored as user text): compare with the previous shown result
  * the context holds, or report the starting point on a first check, and report
- * the outcome once at the end.
+ * the outcome once at the end. A scheduled run has no other way to stop its
+ * automation, so the instruction says that only `goal_reached` ends it, and
+ * that a check that could not reach what it needed reports `could_not_check`,
+ * never a `no_update` that would hide it.
  */
 export function monitoringCheckInstruction(input: Readonly<{ previousResult: boolean }>): string {
   return [
@@ -44,11 +50,19 @@ export function monitoringCheckInstruction(input: Readonly<{ previousResult: boo
     input.previousResult
       ? "The earlier exchange in this conversation is the last result the user was shown. Check again and compare what you find with that result."
       : "No earlier result has been shown: report the current state as the starting point later checks compare with.",
-    `When you have finished checking, call ${MONITORING_VERDICT_TOOL_NAME} exactly once before your final answer: ` +
-      "\"update\" if something the user asked to watch changed since the last shown result, \"no_update\" if nothing " +
-      "relevant changed, \"goal_reached\" if what the user is waiting for has happened." +
-      (input.previousResult ? "" : " On this first check report \"update\", or \"goal_reached\" if it has already happened."),
-    "Then write your answer as usual. A check with no update is not shown to the user."
+    `When you have finished checking, call ${MONITORING_VERDICT_TOOL_NAME} exactly once before your final answer with one status.`,
+    "\"goal_reached\" if what the user is waiting for has happened: it ends the automation permanently and is the only way " +
+      "this run can stop it, so when the user asked to be told once something happens, or to stop monitoring then, report " +
+      "it rather than \"update\".",
+    input.previousResult
+      ? "\"update\" if something the user asked to watch changed since the last shown result; the automation keeps checking. " +
+        "\"no_update\" if you checked everything the request needs and nothing relevant changed."
+      : "\"update\" on this first check, with the current state as the starting point.",
+    "\"could_not_check\" if a page, search or tool the check needs failed or could not be reached, so you cannot tell " +
+      "whether anything changed; never report \"no_update\" then.",
+    input.previousResult
+      ? "Then write your answer as usual. A check with no update is not shown to the user."
+      : "Then write your answer as usual."
   ].join(" ");
 }
 
@@ -78,7 +92,9 @@ export async function executeMonitoringVerdict(
 ): Promise<ToolExecutionResult> {
   const status = call.arguments.status;
   if (Object.keys(call.arguments).length !== 1 || !isMonitoringVerdict(status)) {
-    return result(call, "error", [{ text: `${MONITORING_VERDICT_TOOL_NAME} takes one status: update, no_update or goal_reached.`, type: "text" }]);
+    return result(call, "error", [{
+      text: `${MONITORING_VERDICT_TOOL_NAME} takes one status: goal_reached, update, no_update or could_not_check.`, type: "text"
+    }]);
   }
   const recorded = record && context.runId && context.userId
     ? await record({ runId: context.runId, userId: context.userId, verdict: status })

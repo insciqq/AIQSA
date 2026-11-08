@@ -6298,12 +6298,13 @@ model ScheduledTaskOccurrence {
   /// The task generation frozen when a run accepted this occurrence.
   taskGeneration Int?
   /// The task revision a run accepted this occurrence under; a goal completes
-  /// the task only while it is unchanged.
+  /// the task while it is unchanged, or while the task is still active.
   taskRevision   Int?
   /// The task's chat epoch after the run's admission linked this occurrence.
   chatEpoch      Int?
-  /// A monitoring check's model-reported outcome (`update`, `no_update` or
-  /// `goal_reached`); the last report of the run wins, null when it never reported.
+  /// A monitoring check's model-reported outcome (`update`, `no_update`,
+  /// `goal_reached` or `could_not_check`); the last report of the run wins, null
+  /// when it never reported.
   verdict        String?                      @db.VarChar(16)
   /// A settled result the owner has not seen yet: a finished answer or a failure that paused the task.
   unseenAt       DateTime?
