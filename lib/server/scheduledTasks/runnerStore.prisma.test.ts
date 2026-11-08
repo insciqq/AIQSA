@@ -11,9 +11,15 @@ import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ScheduledOccurrenceConflictError, type CreateRunInput, type ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
-import { SCHEDULED_TASK_OCCURRENCE_RETENTION, type MonitoringVerdict } from "./runnerPolicy";
+import { SCHEDULED_TASK_EMAIL_WINDOW_MS } from "./notifications";
+import { SCHEDULED_TASK_OCCURRENCE_RETENTION, pausingOutcome, type MonitoringVerdict } from "./runnerPolicy";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
-import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns, ScheduledTaskError } from "./store";
+import {
+  createPrismaScheduledTaskStore,
+  readScheduledTaskEmailAvailability,
+  scheduledTaskScheduleColumns,
+  ScheduledTaskError
+} from "./store";
 
 const users: string[] = [];
 const runner = createPrismaScheduledTaskRunnerStore(prisma);
@@ -499,24 +505,91 @@ describe("persisted scheduled task runner", () => {
     expect(await prisma.chat.findUniqueOrThrow({ where: { id: chat.id } })).toMatchObject({ workspaceEnabled: false });
   });
 
-  it("claims a result email once and only for a verified address with SMTP active", async () => {
+  it("claims a due result email once exactly when the editor offers email, an LDAP account without a verified identity included",
+    async () => {
+      const userId = await owner();
+      // An LDAP sign-in creates its identity unverified while the account keeps the address the directory is trusted for.
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+      await prisma.authIdentity.create({ data: { normalizedEmail: user.email!.toLowerCase(), provider: "ldap",
+        providerAccountId: `uid=${userId}`, source: "ldap:synthetic", userId } });
+      const created = await task(userId, null, { emailNotify: true });
+      const now = new Date();
+      const settledAt = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+      const due = await prisma.scheduledTaskOccurrence.create({ data: { emailDueAt: now, finishedAt: now, scheduledFor: settledAt(1),
+        state: "COMPLETED", taskId: created.id, trigger: "manual", userId } });
+      // A result the previous release settled carries no due email and is never claimed.
+      const legacy = await prisma.scheduledTaskOccurrence.create({ data: { finishedAt: now, scheduledFor: settledAt(2),
+        state: "COMPLETED", taskId: created.id, trigger: "manual", userId } });
+      const offered = await readScheduledTaskEmailAvailability(prisma, userId);
+      const smtp = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
+      expect(offered).toBe(Boolean(smtp?.enabled && smtp.activeConfig !== null));
+      expect(await runner.listDueNotifications(now, 10)).toContain(due.id);
+      const claimed = await runner.claimNotification(due.id, now);
+      expect(claimed !== null).toBe(offered);
+      if (claimed) {
+        expect(claimed).toMatchObject({ email: user.email, state: "COMPLETED", title: "Synthetic brief", trigger: "manual",
+          unavailableSources: [] });
+      }
+      // Claimed or no longer sendable, it stops being due either way, and is never claimed twice.
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: due.id } }))
+        .toMatchObject({ emailDueAt: null, notifiedAt: offered ? now : null });
+      expect(await runner.claimNotification(due.id, now)).toBeNull();
+      expect(await runner.listDueNotifications(now, 10)).not.toContain(due.id);
+      expect(await runner.claimNotification(legacy.id, now)).toBeNull();
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: legacy.id } })).toMatchObject({ notifiedAt: null });
+    });
+
+  it("offers and claims no email for an account without an address", async () => {
     const userId = await owner();
+    await prisma.user.update({ data: { email: null }, where: { id: userId } });
     const created = await task(userId, null, { emailNotify: true });
-    const settled = await prisma.scheduledTaskOccurrence.create({ data: { finishedAt: new Date(), scheduledFor: new Date(),
-      state: "COMPLETED", taskId: created.id, trigger: "manual", userId } });
-    const smtp = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
-    if (!smtp?.enabled || smtp.activeConfig === null) {
-      expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
-      return;
-    }
-    expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    await prisma.authIdentity.create({ data: { emailVerifiedAt: new Date(), normalizedEmail: user.email!.toLowerCase(),
-      provider: "password", providerAccountId: user.email!.toLowerCase(), userId } });
-    expect(await runner.claimNotification(settled.id, new Date())).toMatchObject({ email: user.email, state: "COMPLETED",
-      title: "Synthetic brief", trigger: "manual", unavailableSources: [] });
-    expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
+    const now = new Date();
+    const due = await prisma.scheduledTaskOccurrence.create({ data: { emailDueAt: now, finishedAt: now, scheduledFor: now,
+      state: "FAILED", taskId: created.id, trigger: "manual", userId } });
+    expect(await readScheduledTaskEmailAvailability(prisma, userId)).toBe(false);
+    expect(await runner.claimNotification(due.id, now)).toBeNull();
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: due.id } }))
+      .toMatchObject({ emailDueAt: null, notifiedAt: null });
   });
+
+  it("writes a notifying settlement's Telegram outbox row and due email in the settlement itself, and a quiet one writes neither",
+    async () => {
+      const userId = await owner();
+      const tomorrow = new Date(Date.now() + 24 * 60 * 60_000);
+      const notifying = await task(userId, tomorrow, { emailNotify: true, telegramNotify: true });
+      const now = new Date();
+      const failing = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+        taskId: notifying.id, trigger: "schedule", userId } });
+      // A pausing failure is news: no tick, wake or later write is needed for its notifications to exist.
+      expect(await runner.settlePending(failing.id, pausingOutcome("model_unavailable"), now, notifying.revision))
+        .toMatchObject({ state: "FAILED", taskPaused: true });
+      expect(await prisma.telegramScheduledDelivery.findMany({ where: { occurrenceId: failing.id } }))
+        .toEqual([expect.objectContaining({ attempts: 0, nextAttemptAt: now, state: "pending", userId })]);
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: failing.id } }))
+        .toMatchObject({ emailDueAt: now, notifiedAt: null, state: "FAILED" });
+      expect(await runner.listDueNotifications(now, 500)).toContain(failing.id);
+      // Past its window a due email is never picked up.
+      expect(await runner.listDueNotifications(new Date(now.getTime() + SCHEDULED_TASK_EMAIL_WINDOW_MS), 500))
+        .not.toContain(failing.id);
+
+      const quiet = await task(userId, tomorrow, { emailNotify: true, telegramNotify: true });
+      const busy = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+        taskId: quiet.id, trigger: "schedule", userId } });
+      expect(await runner.settlePending(busy.id, { reasonCode: "chat_busy", state: "SKIPPED" }, now))
+        .toMatchObject({ state: "SKIPPED", taskPaused: false });
+      expect(await prisma.telegramScheduledDelivery.count({ where: { occurrenceId: busy.id } })).toBe(0);
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: busy.id } })).toMatchObject({ emailDueAt: null });
+
+      // A notifying settlement of a task with both switches off writes neither.
+      const silent = await task(userId, tomorrow, { emailNotify: false, telegramNotify: false });
+      const silentFailure = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+        taskId: silent.id, trigger: "schedule", userId } });
+      expect(await runner.settlePending(silentFailure.id, pausingOutcome("model_unavailable"), now, silent.revision))
+        .toMatchObject({ taskPaused: true });
+      expect(await prisma.telegramScheduledDelivery.count({ where: { occurrenceId: silentFailure.id } })).toBe(0);
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: silentFailure.id } }))
+        .toMatchObject({ emailDueAt: null });
+    });
 });
 
 describe("persisted monitoring checks", () => {

@@ -59,7 +59,7 @@ export function getDefaultScheduledTaskRunner(): RunRecoveryScheduler {
       send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps }),
       sendEmail: (message) => emailDispatcher.send(message),
       sendPush: (occurrenceId) => getDefaultBrowserPush().sender.notifyOccurrence(occurrenceId),
-      queueTelegram: (occurrenceId) => void getDefaultTelegramScheduledDelivery().queue(occurrenceId),
+      wakeTelegram: () => getDefaultTelegramScheduledDelivery().wake(),
       // The run deadline uses the chat's own Stop path in this process, where the runs execute.
       stopRun: ({ code, message, runId, userId }) => stopModelRun(sendDeps, { payload: { code, message }, runId, userId }),
       store: createPrismaScheduledTaskRunnerStore(prisma),

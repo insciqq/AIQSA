@@ -6294,7 +6294,13 @@ model ScheduledTaskOccurrence {
   startedAt      DateTime?
   /// Set exactly when the state is COMPLETED, FAILED or SKIPPED.
   finishedAt     DateTime?
+  /// When the result email was claimed for sending, at most once.
   notifiedAt     DateTime?
+  /// When this settlement's result email became due: set in the transaction
+  /// that settles a notifying occurrence of a task with email on, cleared when
+  /// the email is claimed or can no longer be sent. A due email survives a
+  /// restart and is sent within a bounded window.
+  emailDueAt     DateTime?
   /// The task generation frozen when a run accepted this occurrence.
   taskGeneration Int?
   /// The task revision a run accepted this occurrence under; a goal completes
@@ -6333,6 +6339,7 @@ model ScheduledTaskOccurrence {
   @@index([chatId])
   @@index([runId])
   @@index([userMessageId])
+  @@index([emailDueAt])
 }
 
 /// A same-chat task's previous shown result carried into the chat its monthly

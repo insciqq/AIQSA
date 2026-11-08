@@ -7,6 +7,13 @@ import {
 import type { SmtpProductMessage } from "../email/definitions";
 import type { ScheduledTaskSettledState } from "./runnerPolicy";
 
+/**
+ * How long a due result email may wait to be sent, after a restart or behind
+ * a slow mail server. Past it the email is never sent, so an old backlog
+ * cannot flood an inbox with stale results.
+ */
+export const SCHEDULED_TASK_EMAIL_WINDOW_MS = 6 * 60 * 60_000;
+
 /** A settled occurrence whose result email was claimed for sending. */
 export type ScheduledTaskNotification = Readonly<{
   chatId: string | null;
