@@ -4394,6 +4394,8 @@ describe("monitoring check admission", () => {
     expect(offered(check)).toBe(true);
     expect(check.normalizedRequest.prompt.system).toContain("an automation's monitoring check");
     expect(check.normalizedRequest.prompt.system).toContain("last result the user was shown");
+    // The run keeps what its context held, for its settlement.
+    expect(check.normalizedRequest.monitoringPreviousResult).toBe(true);
     // The instruction is server-owned: the user's turn keeps only the task prompt.
     expect(JSON.stringify(check.normalizedRequest.content)).not.toContain("report_monitoring_result");
 
@@ -4401,6 +4403,7 @@ describe("monitoring check admission", () => {
     for (const input of [scheduled({ monitoring: false, previousResult: previous }), sendInput(toolBody)]) {
       const prepared = preparedFrom(await prepareRun(h.deps, input));
       expect(prepared.normalizedRequest.monitoringVerdictTool).toBeUndefined();
+      expect(prepared.normalizedRequest.monitoringPreviousResult).toBeUndefined();
       expect(offered(prepared)).toBe(false);
       expect(prepared.normalizedRequest.prompt.system ?? "").not.toContain("monitoring check");
     }
@@ -4414,13 +4417,23 @@ describe("monitoring check admission", () => {
       ...input.source.scheduledOccurrence, previousResultCopy: { answer: "Version 1.0 is current", reliedServerIds: [],
         sourceAssistantMessageId: "old-answer", sourceChatId: "old-chat" }, taskChatEpoch: 1 } } }));
     expect(check.normalizedRequest.prompt.system).toContain("last result the user was shown");
-    expect(check.normalizedRequest.prompt.system).not.toContain("On this first check");
+    expect(check.normalizedRequest.prompt.system).not.toContain("on this first check");
+    expect(check.normalizedRequest.monitoringPreviousResult).toBe(true);
   });
 
   it("tells a first check that no result was shown yet", async () => {
     const first = preparedFrom(await prepareRun(harness().deps, scheduled()));
     expect(first.normalizedRequest.prompt.system).toContain("No earlier result has been shown");
     expect(first.normalizedRequest.prompt.system).not.toContain("last result the user was shown");
+    expect(first.normalizedRequest.monitoringPreviousResult).toBe(false);
+  });
+
+  it("freezes a check whose task's previous result left the chat's active path as one without a previous result", async () => {
+    // An owner Regenerate or a branch took the baseline pair off the path the run appends to: the run sees the prompt alone.
+    const offPath = preparedFrom(await prepareRun(harness().deps,
+      scheduled({ previousResult: { assistantMessageId: "regenerated-away", userMessageId: "result-user" } })));
+    expect(offPath.normalizedRequest.prompt.system).toContain("No earlier result has been shown");
+    expect(offPath.normalizedRequest.monitoringPreviousResult).toBe(false);
   });
 
   it("refuses a check whose model cannot call the reporting tool before anything is accepted", async () => {

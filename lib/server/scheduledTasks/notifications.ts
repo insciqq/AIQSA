@@ -17,7 +17,11 @@ export type ScheduledTaskNotification = Readonly<{
   taskPauseReason: string | null;
   title: string;
   trigger: ScheduledTaskRunTrigger;
-  /** The relevant sources the run could not reach (its source health); empty when complete. */
+  /**
+   * The relevant sources the run could not reach (its source health); empty
+   * when complete. A check only its own model reported as could not check
+   * names none.
+   */
   unavailableSources: readonly ScheduledTaskUnavailableSource[];
 }>;
 
@@ -35,11 +39,13 @@ type OutcomeInput = Pick<ScheduledTaskNotification, "reasonCode" | "state" | "ta
  * that paused its task: one that missed sources so often
  * (`source_unavailable`), or a monitoring check that ended a streak without a
  * report (`verdict_missing`). The settled run's own record shows it caused
- * that pause.
+ * that pause: the sources it missed, or a check that could not check, which
+ * its own model may have reported without naming a source.
  */
 function completedRunPausedTask(input: OutcomeInput): boolean {
   if (input.state !== "COMPLETED" || input.trigger === "manual") return false;
-  return (input.taskPauseReason === "source_unavailable" && input.unavailableSources.length > 0) ||
+  return (input.taskPauseReason === "source_unavailable" &&
+      (input.unavailableSources.length > 0 || input.reasonCode === "could_not_check")) ||
     (input.taskPauseReason === "verdict_missing" && input.reasonCode === "unreported");
 }
 

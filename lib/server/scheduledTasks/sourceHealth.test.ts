@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  discoveryUnavailableSources, occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, withCodeCallUnavailableSources
+  directMcpCallSourceFailures, discoveryUnavailableSources, occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete,
+  withCodeCallUnavailableSources
 } from "./sourceHealth";
 
 describe("code-call source health", () => {
@@ -49,6 +50,51 @@ describe("tool-search source health", () => {
     for (const [value, loaded] of [[null, null], [[], []], ["x", {}], [[epoch("x")], []]] as const) {
       expect(discoveryUnavailableSources(value, loaded)).toEqual([]);
     }
+  });
+});
+
+describe("direct MCP call source health", () => {
+  const call = (serverId: string, state: string, failureReason: string | null = null, serverName: string | null = "GitLab") =>
+    ({ failureReason, serverId, serverName, state });
+
+  it("counts a server the model's own calls could not reach, never one it reached or got wrong", () => {
+    const failures = directMcpCallSourceFailures([
+      // Source failures after the batch's retries: the source itself could not be used.
+      call("server-gitlab", "error", "timeout"),
+      call("server-gitlab", "error", "authorization"),
+      call("server-tracker", "error", "unavailable", "Tracker"),
+      call("server-wiki", "error", "server_error", null),
+      call("server-drive", "error", "tool_disabled", "Drive"),
+      // The check's own mistakes and the tool's own errors (no engine reason): never the source's.
+      call("server-mail", "error", "arguments_invalid", "Mail"),
+      call("server-mail", "error", "result_too_large", "Mail"),
+      call("server-mail", "error", "configuration_changed", "Mail"),
+      call("server-mail", "error", "rate_limited", "Mail"),
+      call("server-mail", "error", null, "Mail"),
+      // A failure beside a successful call of the same server in the same run.
+      call("server-calendar", "error", "timeout", "Calendar"),
+      call("server-calendar", "complete", null, "Calendar"),
+      // Still running or cancelled, and a malformed server id.
+      call("server-chat", "running", "timeout", "Chat"),
+      call("server-chat", "cancelled", "timeout", "Chat"),
+      call("not an id", "error", "timeout", "Broken")
+    ]);
+    expect(failures).toEqual([
+      // A sign-in on any call asks the owner to sign in.
+      { authorization: true, serverId: "server-gitlab", serverName: "GitLab" },
+      { authorization: false, serverId: "server-tracker", serverName: "Tracker" },
+      { authorization: false, serverId: "server-wiki", serverName: null },
+      { authorization: false, serverId: "server-drive", serverName: "Drive" }
+    ]);
+    // A server the run's Workspace code reached is no missing source either.
+    expect(directMcpCallSourceFailures([call("server-gitlab", "error", "timeout")], new Set(["server-gitlab"]))).toEqual([]);
+    expect(directMcpCallSourceFailures([])).toEqual([]);
+
+    // A relied-on missing source: a check that reported no update could not check.
+    const merged = withCodeCallUnavailableSources(null, failures);
+    expect(merged[0]).toEqual({ name: "GitLab", reason: "mcp_reauthorization_required", relied: true, serverId: "server-gitlab" });
+    expect(merged[2]).toEqual({ name: "MCP server", reason: "mcp_server_unavailable", relied: true, serverId: "server-wiki" });
+    expect([occurrenceSourcesIncomplete(merged), occurrenceCheckSourcesMissing(merged)]).toEqual([true, true]);
   });
 });
 
