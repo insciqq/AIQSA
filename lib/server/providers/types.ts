@@ -207,6 +207,10 @@ export type NormalizedRunRequest = {
    * scheduled occurrence admitted: it offers `report_monitoring_result`,
    * reserved outside the tool budgets. Never set from a request field. */
   monitoringVerdictTool?: true;
+  /** Server-owned with `monitoringVerdictTool`: whether the check's context carried the task's previous shown result (on
+   * the chat path or carried into a rotated chat), as its instruction says. Settlement settles a check without one as the
+   * starting point, never a hidden `no_update` (`completedRunCheck`). Absent on runs admitted before it was recorded. */
+  monitoringPreviousResult?: boolean;
   /** The user chose Deep research for this message (`DEEP_RESEARCH_SEND_FIELD`), frozen at admission and kept by a
    * regenerate of it: the run offers research, and its first step is `start_research` (`lib/server/research/run.ts`). */
   deepResearch?: true;

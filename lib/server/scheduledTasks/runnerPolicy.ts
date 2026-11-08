@@ -75,9 +75,16 @@ export type ScheduledTaskOutcome = Readonly<{
   pauseReason?: ScheduledTaskPauseReason;
 }>;
 
-/** What a monitoring check's model reported through its built-in tool. */
-export type MonitoringVerdict = "update" | "no_update" | "goal_reached";
-export const MONITORING_VERDICTS = ["update", "no_update", "goal_reached"] as const satisfies readonly MonitoringVerdict[];
+/**
+ * What a monitoring check's model reported through its built-in tool.
+ * `could_not_check` is the model's own word that something the check needed
+ * (a page, a search, a tool) could not be reached; it settles like a check
+ * whose relied-on source the server saw missing.
+ */
+export type MonitoringVerdict = "update" | "no_update" | "goal_reached" | "could_not_check";
+export const MONITORING_VERDICTS = [
+  "update", "no_update", "goal_reached", "could_not_check"
+] as const satisfies readonly MonitoringVerdict[];
 
 export function isMonitoringVerdict(value: unknown): value is MonitoringVerdict {
   return (MONITORING_VERDICTS as readonly unknown[]).includes(value);
@@ -106,26 +113,30 @@ export type MonitoringCheckSettlement = Readonly<{
 /**
  * The verdict-to-settlement mapping of a completed monitoring check of the
  * task's current generation, free of I/O. Health comes first: a check whose
- * relevant source was unavailable (`healthIncomplete`) never settles as a
- * healthy `no_update` or `goal_reached`; it is shown as `could_not_check`. A
- * missing (or invalid, hence unrecorded) verdict is shown as `unreported`: an
- * update is never hidden by mistake. The first check of a generation (no
- * previous shown result) is always shown, as the `baseline`, unless it already
- * reached the goal. A reached goal completes the task only while no owner
- * transition happened since admission (`ownerUnchanged`); otherwise it is shown
- * as an ordinary `update`.
+ * relevant source was unavailable (`healthIncomplete`), or whose model reported
+ * that it could not check, never settles as a healthy `no_update`, a `baseline`
+ * or `goal_reached`; it is shown as `could_not_check`, and its report neither
+ * counts nor resets the missing-report count. A missing (or invalid, hence
+ * unrecorded) verdict is shown as `unreported`: an update is never hidden by
+ * mistake. The first check of a generation (no previous shown result in its
+ * context) is always shown, as the `baseline`, unless it already reached the
+ * goal. A reached goal completes the task only while the task can still take
+ * it (`goalCompletes`); otherwise it is shown as an ordinary `update`.
  */
 export function monitoringCheckSettlement(input: Readonly<{
   firstCheck: boolean;
+  /** The task can still take a reached goal (see `completedRunCheck`). */
+  goalCompletes: boolean;
   healthIncomplete: boolean;
-  ownerUnchanged: boolean;
   verdict: MonitoringVerdict | null;
 }>): MonitoringCheckSettlement {
   const settle = (outcome: ScheduledTaskCheckOutcome, completesTask = false): MonitoringCheckSettlement =>
     ({ completesTask, outcome, verdictMissing: input.verdict === null });
-  if (input.healthIncomplete) return { completesTask: false, outcome: "could_not_check", verdictMissing: null };
+  if (input.healthIncomplete || input.verdict === "could_not_check") {
+    return { completesTask: false, outcome: "could_not_check", verdictMissing: null };
+  }
   if (input.verdict === null) return settle("unreported");
-  if (input.verdict === "goal_reached") return input.ownerUnchanged ? settle("goal_reached", true) : settle("update");
+  if (input.verdict === "goal_reached") return input.goalCompletes ? settle("goal_reached", true) : settle("update");
   if (input.firstCheck) return settle("baseline");
   return settle(input.verdict);
 }
@@ -363,26 +374,39 @@ export function settlementBaseline(input: Readonly<{
  * bumps the generation, so the kind is still the admitted one); a result of an
  * older generation stays an ordinary shown result. Neither a baseline nor a
  * result carried into a rotated chat of the current generation means a first
- * check; the revision the run was accepted under proves that no owner
- * transition happened since.
+ * check, and neither does a check whose own context, frozen with its run, held
+ * no previous result (the baseline left the chat's active path), so that check
+ * is shown and becomes the next baseline instead of a hidden `no_update`.
+ *
+ * A reached goal completes the task while the task is unchanged since the run
+ * was accepted, or is active now: the generation already proves the question
+ * is the same, so a save that kept it, or a pause and resume during the check,
+ * never demotes the goal, while a task paused or completed meanwhile does.
  */
 export function completedRunCheck(input: Readonly<{
   /** A relevant source was unavailable during the check (source health of scheduled runs). */
   healthIncomplete: boolean;
   occurrence: Readonly<{ taskGeneration: number | null; taskRevision: number | null; verdict: string | null }>;
+  /**
+   * Whether the check's context carried the previous shown result, as its run
+   * froze it (`NormalizedRunRequest.monitoringPreviousResult`); null for a run
+   * admitted before that was recorded.
+   */
+  previousResultShown?: boolean | null;
   task: Readonly<{
     baselineGeneration: number | null;
     /** The generation of the result carried into the task's current chat, if any. */
     carriedGeneration?: number | null;
-    generation: number; kind: ScheduledTaskKind; revision: number;
+    generation: number; kind: ScheduledTaskKind; revision: number; status: ScheduledTaskStatusColumn;
   }>;
 }>): MonitoringCheckSettlement | null {
   const { occurrence, task } = input;
   if (task.kind !== "monitoring" || occurrence.taskGeneration !== task.generation) return null;
   return monitoringCheckSettlement({
-    firstCheck: task.baselineGeneration !== task.generation && task.carriedGeneration !== task.generation,
+    firstCheck: (task.baselineGeneration !== task.generation && task.carriedGeneration !== task.generation) ||
+      input.previousResultShown === false,
+    goalCompletes: occurrence.taskRevision === task.revision || task.status === "ACTIVE",
     healthIncomplete: input.healthIncomplete,
-    ownerUnchanged: occurrence.taskRevision === task.revision,
     verdict: isMonitoringVerdict(occurrence.verdict) ? occurrence.verdict : null
   });
 }
@@ -394,6 +418,8 @@ export type ScheduledTaskSettlementPlan = ScheduledTaskBookkeeping & Readonly<{
   goalCompletes: boolean;
   /** The result is news: an unread result, an email and a push. */
   notifies: boolean;
+  /** The completed run counted as incomplete: a source was missing, or its check could not check. */
+  sourcesIncomplete: boolean;
 }>;
 
 /**
@@ -401,8 +427,9 @@ export type ScheduledTaskSettlementPlan = ScheduledTaskBookkeeping & Readonly<{
  * task's counters, health alert and automatic pause, a monitoring goal's
  * completion (only when nothing paused the task), the notification matrix and
  * the baseline the next same-chat run sees. `sourcesIncomplete` is the source
- * health its admission froze; a monitoring `check` was settled from the same
- * record.
+ * health recorded on the occurrence; a monitoring `check` was settled from the
+ * same record, and one that could not check, whoever saw it (the server or
+ * the check's own model), counts in the same incomplete streak.
  */
 export function planOccurrenceSettlement(input: Readonly<{
   assistantMessageId: string | null;
@@ -420,8 +447,9 @@ export function planOccurrenceSettlement(input: Readonly<{
   }>;
 }>): ScheduledTaskSettlementPlan {
   const { check, occurrence, outcome, task } = input;
+  const sourcesIncomplete = outcome.state === "COMPLETED" && (input.sourcesIncomplete || check?.outcome === "could_not_check");
   const plan = planTaskSettlement({
-    observedRevision: input.observedRevision, outcome, sourcesIncomplete: input.sourcesIncomplete, task,
+    observedRevision: input.observedRevision, outcome, sourcesIncomplete, task,
     trigger: occurrence.trigger, ...(check && check.verdictMissing !== null ? { verdictMissing: check.verdictMissing } : {})
   });
   const taskPaused = plan.pauseReason !== null;
@@ -430,7 +458,8 @@ export function planOccurrenceSettlement(input: Readonly<{
     baseline: settlementBaseline({ assistantMessageId: input.assistantMessageId, occurrence, outcome,
       ...(task.chatEpoch !== undefined ? { taskChatEpoch: task.chatEpoch } : {}), taskGeneration: task.generation }),
     goalCompletes: check?.completesTask === true && !taskPaused,
-    notifies: settlementNotifiesOwner({ reasonCode: outcome.reasonCode, sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused })
+    notifies: settlementNotifiesOwner({ reasonCode: outcome.reasonCode, sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused }),
+    sourcesIncomplete
   };
 }
 
