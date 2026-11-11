@@ -441,6 +441,72 @@ describe("the run's reserved report", () => {
     });
   });
 
+  describe("the text a shown report needs", () => {
+    /** `shown`: the report, once its call ran, is shown to the user, so an answer without text owes it. */
+    function shownHarness(responses: readonly ProviderRunResult[], shown = true, options: Parameters<typeof reservedHarness>[1] = {}) {
+      const run = reservedHarness(responses, options);
+      const outstanding = run.ports.reservedCall!.outstanding;
+      return { ...run, ports: { ...run.ports, reservedCall: { name: "report", outstanding, textOwed: () => shown && !outstanding() } } };
+    }
+
+    it("asks once, without tools, for an empty answer's text, and that text is the answer's", async () => {
+      const { inputs, ports } = shownHarness([response("", [call("v1", "report")]), response(""), response("Version 2.0 is out.")]);
+      await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+      expect(inputs[2]).toEqual({ round: 3, textOwed: true, toolChoice: "none" });
+      expect(inputs.slice(0, 2).some((input) => input.textOwed)).toBe(false);
+      expect(vi.mocked(ports.roundEnd).mock.calls.map(([result, round]) => [result.finalText, round]))
+        .toEqual([["", 1], ["", 2], ["Version 2.0 is out.", 3]]);
+      // Its follow-ups are settled once, after the text.
+      expect(ports.closeFollowups).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not asked for a hidden report, an answer that has text, or a second time", async () => {
+      const hidden = shownHarness([response("", [call("v1", "report")]), response(""), response("never")], false);
+      await expect(runAgentLoop(hidden.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(hidden.ports.callModel).toHaveBeenCalledTimes(2);
+      const written = shownHarness([response("", [call("v1", "report")]), response("Version 2.0 is out."), response("never")]);
+      await expect(runAgentLoop(written.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(written.ports.callModel).toHaveBeenCalledTimes(2);
+      // Asked once and still without text: the answer stands as it is.
+      const silent = shownHarness([response("", [call("v1", "report")]), response(""), response(""), response("never")]);
+      await expect(runAgentLoop(silent.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+      expect(silent.ports.callModel).toHaveBeenCalledTimes(3);
+      // Nor while the report is unmade.
+      const unmade = shownHarness([response(""), response("Reported.", [call("c1")]), response("never")]);
+      await expect(runAgentLoop(unmade.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+      expect(unmade.inputs.some((input) => input.textOwed)).toBe(false);
+    });
+
+    it("is asked after a report made only after the answer", async () => {
+      const { inputs, ports } = shownHarness([response(""), response("", [call("v1", "report")]), response("A-1 moved.")]);
+      await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+      expect(inputs.map((input) => input.afterAnswer ? "report" : input.textOwed ? "text" : "answer")).toEqual(["answer", "report", "text"]);
+      expect(vi.mocked(ports.roundEnd).mock.calls.map(([result]) => result.finalText)).toEqual(["", "", "A-1 moved."]);
+    });
+
+    it("answers a call made in that round without running it", async () => {
+      const { items, ports } = shownHarness([response("", [call("v1", "report")]), response(""), response("Text.", [call("c9")])]);
+      await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+      expect(vi.mocked(ports.runTools).mock.calls.map(([calls]) => calls.map((entry) => entry.id))).toEqual([["v1"]]);
+      expect(items.find((item) => item.kind === "tool_result" && item.callId === "c9")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+    });
+
+    it("leaves the answer when that round fails, and still ends at Stop or the deadline", async () => {
+      const failing = shownHarness([response("", [call("v1", "report")]), response("")]);
+      vi.mocked(failing.ports.callModel).mockResolvedValueOnce(response("", [call("v1", "report")])).mockResolvedValueOnce(response(""))
+        .mockRejectedValueOnce(new Error("provider down"));
+      await expect(runAgentLoop(failing.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+      expect(vi.mocked(failing.ports.roundEnd).mock.calls.map(([result, round]) => [result.finalText, round]))
+        .toEqual([["", 1], ["", 2], ["", 3]]);
+      const deadline = new AbortController();
+      const reason = new Error("run time limit");
+      const stopped = shownHarness([response("")], true, { signal: deadline.signal });
+      vi.mocked(stopped.ports.callModel).mockResolvedValueOnce(response("", [call("v1", "report")])).mockResolvedValueOnce(response(""))
+        .mockImplementationOnce(async () => { deadline.abort(reason); throw reason; });
+      await expect(runAgentLoop(stopped.ports)).rejects.toBe(reason);
+    });
+  });
+
   describe("a held draft", () => {
     const sentBack: TranscriptUserItem = { id: "back", kind: "user", text: "Submit it." };
 
