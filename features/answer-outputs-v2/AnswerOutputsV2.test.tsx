@@ -73,7 +73,8 @@ describe("answer outputs v2", () => {
     const { rerender } = render(<AnswerProcessV2 toolActivity={{ calls: [{ ...call, mcpUnavailable: [
       { name: "Gitlab", reason: "mcp_reauthorization_required" },
       { name: "Kaiten", reason: "mcp_personal_credential_rejected" },
-      { name: "Tracker", reason: "mcp_server_unavailable" }
+      { name: "Tracker", reason: "mcp_server_unavailable" },
+      { name: "Wiki", reason: "mcp_server_starting" }
     ] }] }} />);
     openProcess();
     expect(screen.getByText("Found relevant tools")).toBeVisible();
@@ -82,7 +83,8 @@ describe("answer outputs v2", () => {
     expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
       "Gitlab · Sign-in needed Reconnect it in MCP settings.",
       "Kaiten · Credential rejected Update the personal value or reconnect it in MCP settings.",
-      "Tracker · Unavailable right now Try again later or check it in MCP settings."
+      "Tracker · Unavailable right now Try again later or check it in MCP settings.",
+      "Wiki · Still starting Ask again in a minute."
     ]);
     // A search that loaded everything shows no list.
     rerender(<AnswerProcessV2 toolActivity={{ calls: [call] }} />);

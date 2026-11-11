@@ -101,6 +101,28 @@ export function withHiddenRunEffects(items: readonly TranscriptItem[],
 }
 
 /**
+ * The calls a hidden run left unresolved, alone: those whose last record is no result, an in-flight attempt or an
+ * unknown outcome, each with that last record. A quiet check from anywhere in the chat feeds the guard this way, so it
+ * can add uncertainty to the reply's fence but never settle one: an equivalent call it completed, possibly on another
+ * branch, must not release the reply's own unknown effect (review 2026-11-11).
+ */
+export function unresolvedCallItems(items: readonly TranscriptItem[]): TranscriptItem[] {
+  const calls = new Map<string, TranscriptItem>();
+  const last = new Map<string, TranscriptItem>();
+  for (const item of items) {
+    if (item.kind === "tool_call") calls.set(item.callId, item);
+    else if (item.kind === "tool_result") last.set(item.callId, item);
+  }
+  const kept: TranscriptItem[] = [];
+  for (const [callId, call] of calls) {
+    const result = last.get(callId);
+    if (result && result.kind === "tool_result" && !result.inFlight && result.outcome !== "unknown") continue;
+    kept.push(call, ...(result ? [result] : []));
+  }
+  return kept;
+}
+
+/**
  * Where `withHiddenRunEffects` puts the calls of a native answer that entered
  * the conversation as its saved text (a scheduled run's previous shown
  * result): just before that answer's item, or before the next branch

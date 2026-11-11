@@ -117,6 +117,7 @@ import { withSelectedSkillContext } from "../skills/userContext";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { skillCatalogAuthorization, usesPersonalSkillCatalog } from "../skills/catalogRelevanceAuthority";
 import { SkillCatalogAuthorityChangedError, type SkillCatalogRelevanceService } from "../skills/catalogRelevanceService";
+import { scheduledOccurrenceContext } from "../scheduledTasks/occurrenceContext";
 import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "../scheduledTasks/sourceHealth";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { skillToolsForRequest } from "../tools/skill";
@@ -694,11 +695,12 @@ function resolveWorkspaceEnabled(
 ): boolean | null {
   if (!body || !Object.hasOwn(body, "workspace")) return persisted === true;
   const value = body.workspace;
+  // `reason` only labels the run_accepted record and never decides admission.
   if (
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
-    Object.keys(value).length !== 1 ||
+    Object.keys(value).some((key) => key !== "enabled" && key !== "reason") ||
     !("enabled" in value) ||
     typeof (value as { enabled?: unknown }).enabled !== "boolean"
   ) {
@@ -1819,6 +1821,9 @@ export async function prepareRun(
   // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
+  // A scheduled run knows it already is its automation, and since when its previous shown result stands.
+  appendTurnGuidance(scheduledOccurrenceContext(scheduledOccurrence?.automation,
+    { previousResultInContext: (scheduledContext?.messages.length ?? 0) > 0 }));
   // The frozen prompt names a scheduled run's missing sources through recovery.
   appendTurnGuidance(scheduledUnavailableSourcesNotice(scheduledMissingSources));
   if (artifactIntent) appendTurnGuidance("The user explicitly asked for an artifact: call create_artifact for this message.");

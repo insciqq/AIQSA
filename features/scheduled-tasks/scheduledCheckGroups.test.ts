@@ -3,6 +3,7 @@ import type { ScheduledTaskCheckOutcome } from "@/lib/contracts/scheduledTasks";
 import {
   formatScheduledTranscriptTime,
   groupScheduledChecks,
+  quietChecksLabel,
   scheduledChecksLabel,
   scheduledTurnCreatedAt
 } from "./scheduledCheckGroups";
@@ -125,6 +126,13 @@ describe("groupScheduledChecks", () => {
   it("counts a check whose turn is on an earlier page by its answer", () => {
     expect(shape([{ id: "c1-a", role: "assistant", scheduledOutcome: "no_update" }, ...check("c2", "no_update")]))
       .toEqual([{ checks: 2, failed: 0, id: "scheduled-checks:c1-a", lastAt: null, messages: ["c1-a", "c2-q", "c2-a"], noun: "check" }]);
+  });
+});
+
+describe("quietChecksLabel", () => {
+  it("counts the checks the history leaves out", () => {
+    expect(quietChecksLabel(1)).toBe("Checked once, no change");
+    expect(quietChecksLabel(202)).toBe("Checked 202 times, no change");
   });
 });
 

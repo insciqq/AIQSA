@@ -16,7 +16,7 @@ import { activeRunControllers } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { TURN_HANDOFF_RESERVE_MS } from "../runs/turnDeadline";
 import {
-  monitoringCheckInstruction, monitoringVerdictAfterAnswerInstruction, monitoringVerdictReservedInstruction
+  monitoringAnswerTextInstruction, monitoringCheckInstruction, monitoringVerdictAfterAnswerInstruction, monitoringVerdictReservedInstruction
 } from "../tools/monitoringVerdict";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
@@ -144,6 +144,44 @@ describe("a scheduled monitoring check on the native engine", () => {
     // Nothing of the report-only round streamed live either.
     expect(JSON.stringify(events)).not.toContain("Extra words.");
     expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text === afterAnswer)).toBe(false);
+  });
+
+  it("is asked once for the text a shown verdict's empty answer lacks, and that text becomes the answer", async () => {
+    const textInstruction = monitoringAnswerTextInstruction();
+    for (const [status, previousResult] of [["update", true], ["no_update", false]] as const) {
+      // An update, and a first check's starting point whatever it reported: both are shown.
+      const { adapter, requests } = scriptedNativeAdapter([
+        { calls: [{ arguments: { status }, id: "v1", name: VERDICT }] }, { text: "" }, { text: "Version 2.0 is out." }
+      ]);
+      const memory = memoryNativeEngine();
+      const repo = nativeRunRepository();
+      const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+        prepared: nativePrepared({ monitoringPreviousResult: previousResult, monitoringVerdictTool: true }),
+        repository: asRepository(repo), scheduled: true, services: {}, userId: "owner" }));
+      expect(events.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+      expect(requests).toHaveLength(3);
+      expect(requests[2]!.toolChoice).toBe("none");
+      expect(requests[2]!.history!.at(-1)).toEqual({ text: textInstruction, type: "user" });
+      expect(requests[1]!.history!.some((item) => item.type === "user" && item.text === textInstruction)).toBe(false);
+      expect(memory.published()).toBe("Version 2.0 is out.");
+      // The instruction rides on its request only.
+      expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text === textInstruction)).toBe(false);
+    }
+  });
+
+  it("is not asked for text when its no_update is hidden, or when it could not check", async () => {
+    for (const status of ["no_update", "could_not_check"] as const) {
+      const { adapter, requests } = scriptedNativeAdapter([
+        { calls: [{ arguments: { status }, id: "v1", name: VERDICT }] }, { text: "" }, { text: "never" }
+      ]);
+      const memory = memoryNativeEngine();
+      const repo = nativeRunRepository();
+      await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+        prepared: nativePrepared({ monitoringPreviousResult: true, monitoringVerdictTool: true }),
+        repository: asRepository(repo), scheduled: true, services: {}, userId: "owner" }));
+      expect(requests).toHaveLength(2);
+      expect(memory.published()).not.toBe("never");
+    }
   });
 
   it("tells the model when its occurrence can no longer take a verdict", async () => {
@@ -724,6 +762,53 @@ describe("a stopped step of a recorded answer review", () => {
     expect(callTool).not.toHaveBeenCalled();
     expect(memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(),
       toolName: write.name }));
+  });
+});
+
+// Review 2026-11-11: quiet monitoring checks leave the context the owner's next message reads, so their tool results and
+// reasoning never return to it, while a call of theirs whose outcome is unknown still holds an equivalent call back.
+describe("a quiet check the conversation leaves out", () => {
+  const write = { arguments: { summary: "x" }, id: "again", name: "mcp_jira_create_issue" };
+  const quietText = "SYNTHETIC QUIET CHECK REASONING";
+  const quiet: TranscriptItem[] = [
+    { id: "q1", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: quietText },
+    { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "q2", kind: "tool_call", name: write.name, origin: NATIVE_RUN_ORIGIN }
+  ];
+
+  async function reply(options: Readonly<{ quietRuns: readonly Readonly<{ nextMessageId: string; runId: string }>[]; scheduled?: true }>) {
+    const messages = [nativeSay("user-1", "user", "Check the release page"), nativeSay("answer-1", "assistant", "Version 1.0 is current."),
+      nativeSay("current-user-message", "user", "What changed?")];
+    const { adapter, requests } = scriptedNativeAdapter([{ calls: [write] }, { text: "Done." }]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.loadRuns.mockImplementation(async ({ runIds }) =>
+      new Map(runIds.map((runId): [string, TranscriptItem[]] => [runId, runId === "run-quiet" ? quiet : []])));
+    const repo = { ...nativeRunRepository(), loadQuietCheckEffectRuns: vi.fn(async () => options.quietRuns) };
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Created A-2"], unsupportedContentTypes: [] }));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-2", runId: "run-2",
+      userMessageId: "user-2" }, engine: memory.engine,
+    mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+    prepared: nativePrepared({ context: { messages, mode: "branch_path" }, mcp: NATIVE_MCP_SNAPSHOT,
+      // Always allow: only the guard can hold the write back.
+      mcpApproval: mcpApprovalAdmission(["jira"]) }),
+    repository: asRepository(repo as never), ...(options.scheduled ? { scheduled: true as const } : {}), services: {}, userId: "owner" }));
+    return { callTool, history: requests[0]!.history!, memory, repo };
+  }
+
+  it("never returns to the model, while its unknown write still waits for the user", async () => {
+    const run = await reply({ quietRuns: [{ nextMessageId: "user-2", runId: "run-quiet" }] });
+    expect(run.repo.loadQuietCheckEffectRuns).toHaveBeenCalledWith({ chatId: "chat", userId: "owner", userMessageId: "user-2" });
+    expect(JSON.stringify(run.history)).not.toContain(quietText);
+    expect(run.history.some((item) => item.type === "tool_call" && item.callId === "call-1")).toBe(false);
+    expect(run.callTool).not.toHaveBeenCalled();
+    expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(), toolName: write.name }));
+  });
+
+  it("reads no transcript when no quiet check left an unknown call, and none in a scheduled run's flat context", async () => {
+    const plain = await reply({ quietRuns: [] });
+    expect(plain.memory.transcripts.loadRuns).not.toHaveBeenCalledWith(expect.objectContaining({ runIds: ["run-quiet"] }));
+    expect(plain.callTool).toHaveBeenCalledTimes(1);
+    const scheduled = await reply({ quietRuns: [{ nextMessageId: "user-2", runId: "run-quiet" }], scheduled: true });
+    expect(scheduled.repo.loadQuietCheckEffectRuns).not.toHaveBeenCalled();
   });
 });
 

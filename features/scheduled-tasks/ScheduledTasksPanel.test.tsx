@@ -718,7 +718,7 @@ describe("ScheduledTasksPanel", () => {
     // A check that could not reach a source takes the status line until a later run settles.
     expect(rows[0]).toHaveTextContent("Monitoring · Last run Fri 2 Oct, 09:00 · Could not check");
     expect(rows[0]).not.toHaveTextContent("Next run");
-    expect(within(rows[0]!).getByText(/Could not check$/u)).toHaveAttribute("data-tone", "attention");
+    expect(within(rows[0]!).getByText(/Could not check$/u).closest("[data-tone]")).toHaveAttribute("data-tone", "attention");
     expect(rows[1]).toHaveTextContent("Monitoring · Goal reached — completed");
     expect(rows[1]).not.toHaveTextContent("Last run");
     const resume = within(rows[1]!).getByRole("switch", { name: "Run Ticket watch on schedule" });

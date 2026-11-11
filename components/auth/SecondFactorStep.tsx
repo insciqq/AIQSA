@@ -9,6 +9,7 @@ import {
   primaryButtonClassName,
   secondaryButtonClassName
 } from "./authFormStyles";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 
 type CodeKind = "recovery" | "totp";
 
@@ -152,7 +153,7 @@ export function SecondFactorStep({
 
       <button className={primaryButtonClassName} disabled={submitting} type="submit">
         {submitting ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
-        {submitting ? "Verifying…" : "Verify"}
+        <TranslatableLabel>{submitting ? "Verifying…" : "Verify"}</TranslatableLabel>
       </button>
 
       {error ? (

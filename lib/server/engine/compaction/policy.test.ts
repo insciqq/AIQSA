@@ -6,7 +6,9 @@ import { projectTranscript, selectTranscript, type TranscriptItem, type Transcri
 import { CODEX, charTokens, transcriptBuilder } from "./compaction.testFixtures";
 import { APPROVAL_PENDING_TEXT, engineItemRules } from "./items";
 import {
+  compactableFixedTokens,
   COMPACTION_THRESHOLDS,
+  COMPACTION_WORKING_MARGIN,
   compactionCutCurrent,
   compactionRetention,
   findCompactionCut,
@@ -242,10 +244,11 @@ describe("a turn's input while its request carries attachments", () => {
       chat.compaction({ keepFromId: cut.keepFromId, summary: "Eight pages read so far." });
       const history = projectTranscript(chat.items, target, { currentInputId: input });
       expect(() => assertProviderHistoryRequest({ attachments: [report], history })).not.toThrow();
+      // Run context and the input go before the summary, so the request keeps its cached prefix.
       expect(history.slice(0, 3)).toEqual([
-        { text: expect.stringContaining("Eight pages read so far."), type: "user" },
         { text: "It is Monday morning.", type: "user" },
-        { currentInput: true, text: "Compare the attached report with these pages.", type: "user" }
+        { currentInput: true, text: "Compare the attached report with these pages.", type: "user" },
+        { text: expect.stringContaining("Eight pages read so far."), type: "user" }
       ]);
       // The tail follows in its own order and what the compaction covers is gone.
       expect(history[3]).toMatchObject({ type: "tool_call" });
@@ -281,10 +284,10 @@ describe("a turn's input while its request carries attachments", () => {
       expect(second.keepFromId).not.toBe(input);
       expect(second.keepFromId).not.toBe(first.keepFromId);
       expect(compactionCutCurrent(second, chat.items, target)).toBe(true);
-      chat.compaction({ keepFromId: second.keepFromId, summary: "More rounds." });
+      const base = chat.compaction({ keepFromId: second.keepFromId, summary: "More rounds." });
       const after = selectTranscript(chat.items, target).window.map((item) => item.id);
-      expect(after.slice(1).filter((id) => !before.has(id))).toEqual([]);
-      expect(after.slice(1, 3)).toEqual(["ctx-turn", input]);
+      expect(after.filter((id) => id !== base && !before.has(id))).toEqual([]);
+      expect(after.slice(0, 3)).toEqual(["ctx-turn", input, base]);
       expect(projectTranscript(chat.items, target, { currentInputId: input }).filter((item) => item.type === "user" && item.currentInput))
         .toHaveLength(1);
     }
@@ -368,12 +371,203 @@ describe("compaction plan", () => {
     expect(planCompaction({ ...input, tokens: 75_000 }).kind).toBe("none");
   });
 
-  it("compacts a giant pasted message, whose head and tail the retained messages keep", () => {
+  it("leaves a giant pasted message in place while the request fits, and compacts it, head and tail retained, once it does not", () => {
     const pasted = transcriptBuilder();
     pasted.user("x".repeat(90_000));
     pasted.call("mcp_crm_create_ticket_0123456789", { title: "x" });
-    const result = planCompaction({ background: "idle", estimate: charTokens, items: pasted.items, target: CODEX,
-      tokens: measure(pasted.items), window });
-    expect(result).toMatchObject({ kind: "foreground", reason: "threshold" });
+    const input = { background: "idle" as const, estimate: charTokens, items: pasted.items, target: CODEX, window };
+    // The only cut keeps the pending call alone, less than a quarter of the recent budget.
+    expect(planCompaction({ ...input, tokens: measure(pasted.items) })).toMatchObject({ kind: "unavailable", reason: "threshold" });
+    expect(planCompaction({ ...input, tokens: 101_000 })).toMatchObject({ kind: "foreground", reason: "threshold" });
+    expect(planCompaction({ ...input, overflow: {}, tokens: measure(pasted.items) })).toMatchObject({ kind: "foreground",
+      reason: "overflow" });
+  });
+});
+
+describe("the progress guarantee", () => {
+  const window = { contextWindow: 120_000, maxOutputTokens: 20_000 };
+
+  it("offers no cut that frees less than the recent budget, or keeps less than its quarter, while the request fits", () => {
+    // usable 100 000: recent budget 15 000, its quarter 3 750, a summary of 4 096 and retained text replacing the span.
+    const chat = longChat(4, 4_000);
+    chat.user("one more question");
+    chat.tool("read_file", { path: "/workspace/project/guide.md" }, "g".repeat(3_000));
+    const base = { background: "idle" as const, estimate: charTokens, items: chat.items, target: CODEX, window };
+    const tokens = 86_000;
+    const free = (plan: ReturnType<typeof planCompaction>) => plan.kind === "foreground" ? tokens - plan.expectedTokens : 0;
+    // The window after the cut points holds about 20k: no cut keeps 3 750 and frees 15 000 at once.
+    expect(planCompaction({ ...base, tokens })).toMatchObject({ kind: "unavailable", reason: "threshold" });
+    // Past the window the same transcript compacts as it always did.
+    expect(planCompaction({ ...base, tokens: 101_000 })).toMatchObject({ kind: "foreground", reason: "threshold" });
+    // With more behind it, a cut that lands under the threshold frees enough and keeps the newest round whole.
+    for (let turn = 5; turn <= 9; turn += 1) chat.tool("read_file", { path: `/workspace/project/f${turn}.txt` }, "r".repeat(4_000));
+    const plan = planCompaction({ ...base, items: chat.items, tokens });
+    expect(plan).toMatchObject({ kind: "foreground", reason: "threshold" });
+    expect(free(plan)).toBeGreaterThanOrEqual(15_000);
+    if (plan.kind !== "foreground") return;
+    expect(plan.expectedTokens).toBeLessThanOrEqual(72_000);
+    expect(plan.cut.keptTokens).toBeGreaterThanOrEqual(3_750);
+    const kept = selectTranscript(chat.items, CODEX).window.slice(windowPosition(chat.items, plan.cut.keepFromId));
+    expect(kept.some((item) => item.kind === "tool_result" && item.output === "r".repeat(4_000))).toBe(true);
+  });
+
+  it("counts what replay keeps from before the cut as staying, so a Skills run context never passes for freed room", () => {
+    // An earlier message with a file, the run's context (a Skills index with a pinned Skill, about 16 000 tokens) and the
+    // input the turn's attachment renders on, then page reads.
+    const chat = transcriptBuilder();
+    chat.items.push({ attachmentNotice: "[Attached file: old.xlsx]", id: "msg-old", kind: "user", text: `Old question ${"o".repeat(2_000)}` });
+    chat.answer("Old answer.");
+    chat.items.push({ id: "ctx-skills", kind: "user", runContext: true, text: `Skills index and pinned Skills ${"k".repeat(16_000)}` });
+    const input = chat.user("Compare the attached report with these pages.");
+    const target: TranscriptTarget = { ...CODEX, carriedInputId: input };
+    const round = (index: number) => chat.tool("fetch_url", { url: `https://example.test/${index}` }, `page ${index} ${"p".repeat(4_000)}`);
+    const sized = (items: readonly TranscriptItem[]) => measureContext({ estimate: charTokens, fixedTokens: 0, items, target }).tokens;
+    const weight = (item: TranscriptItem) => contextItemTokens(item, target, charTokens, "opaque");
+    /** Applies the cut and checks that its figures are exactly what replay drops and keeps: the old ones counted the
+     * Skills and the file mark as freed. */
+    const apply = (cut: NonNullable<ReturnType<typeof findCompactionCut>>, summary: string) => {
+      const before = sized(chat.items);
+      const id = chat.compaction({ keepFromId: cut.keepFromId, summary });
+      expect(sized(chat.items)).toBe(before - cut.compactedTokens + weight(chat.items.find((item) => item.id === id)!));
+      expect(cut.keptTokens + cut.compactedTokens).toBe(before);
+      return id;
+    };
+    for (let index = 1; index <= 8; index += 1) round(index);
+    apply(findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 6_000, target })!, "Six pages read.");
+    // The old file's mark, the run's context and the input stay before the summary; the old message's words do not.
+    expect(selectTranscript(chat.items, target).window.slice(0, 3).map((item) => item.id)).toEqual(["msg-old", "ctx-skills", input]);
+    for (let index = 9; index <= 11; index += 1) round(index);
+    const second = apply(findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 3_750, target })!, "Ten pages read.");
+
+    // A plan on the same figures: before the second compaction the cut would free only about 7k, under the 15k recent
+    // budget of a 100k usable window, though counting the Skills as compacted would have made it look like 23k.
+    chat.items.splice(chat.items.findIndex((item) => item.id === second), 1);
+    const plan = (items: readonly TranscriptItem[]) => planCompaction({ background: "idle", estimate: charTokens, items, target,
+      tokens: 86_000, window: { contextWindow: 120_000, maxOutputTokens: 20_000 } });
+    expect(plan(chat.items)).toMatchObject({ kind: "unavailable", reason: "threshold" });
+    for (let index = 12; index <= 14; index += 1) round(index);
+    const later = plan(chat.items);
+    expect(later).toMatchObject({ kind: "foreground", reason: "threshold" });
+    if (later.kind === "foreground") expect(later.tokens - later.expectedTokens).toBeGreaterThanOrEqual(15_000);
+  });
+
+  it("keeps a quarter of the recent budget after the cut: no cut point keeps that much, no cut", () => {
+    const chat = longChat(6, 2_000);
+    chat.user("Check the small file too.");
+    chat.tool("read_file", { path: "/workspace/project/small.txt" }, "s".repeat(500));
+    const last = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target: CODEX })!;
+    expect(last.keptTokens).toBeLessThan(1_000);
+    const floored = findCompactionCut({ estimate: charTokens, items: chat.items, minKeptTokens: 1_000, recentTokens: 1, target: CODEX })!;
+    expect(floored.keptTokens).toBeGreaterThanOrEqual(1_000);
+    expect(windowPosition(chat.items, floored.keepFromId)).toBeLessThan(windowPosition(chat.items, last.keepFromId));
+    // The newest result read stays whole in the kept tail.
+    const kept = selectTranscript(chat.items, CODEX).window.slice(windowPosition(chat.items, floored.keepFromId));
+    expect(kept.filter((item) => item.kind === "tool_result").map((item) => item.kind === "tool_result" && item.output.length))
+      .toContain(500);
+    expect(findCompactionCut({ estimate: charTokens, items: chat.items, minKeptTokens: 1_000_000, recentTokens: 1, target: CODEX }))
+      .toBeNull();
+  });
+
+  describe("on the production figures (psaux, 2026-11-11)", () => {
+    // gpt-6-astra: window 700 000, output 65 536, so usable 634 464, background goal 456 814, swap at 539 294.
+    const PRODUCTION = { contextWindow: 700_000, maxOutputTokens: 65_536 };
+    // Prompt, tools and the text of 19 spreadsheets, about 570k on every request.
+    const FIXED = 570_000;
+
+    /**
+     * One answer's turn: its input carries the attachments, and each request adds one tool round of `size` tokens. A planned
+     * compaction is applied at once. Returns each request's plan and the requests where the result the model read last time
+     * was gone.
+     */
+    function answer(requests: number, size: number, told: boolean) {
+      const chat = transcriptBuilder();
+      const input = chat.user("Build the summary workbook from the attached spreadsheets.");
+      const target: TranscriptTarget = { ...CODEX, carriedInputId: input };
+      const plans: ReturnType<typeof planCompaction>[] = [];
+      const lost: number[] = [];
+      const outputs: string[] = [];
+      for (let request = 1; request <= requests; request += 1) {
+        const tokens = FIXED + measureContext({ estimate: charTokens, fixedTokens: 0, items: chat.items, target }).tokens;
+        const plan = planCompaction({ background: "idle", estimate: charTokens, ...(told ? { irreducibleTokens: FIXED } : {}),
+          items: chat.items, target, tokens, window: PRODUCTION });
+        plans.push(plan);
+        if (plan.kind === "foreground" || plan.kind === "background") {
+          chat.compaction({ keepFromId: plan.cut.keepFromId, summary: `Steps 1-${request - 1} done.` });
+        }
+        const history = projectTranscript(chat.items, target, { currentInputId: input });
+        expect(history.filter((item) => item.type === "user" && item.currentInput)).toHaveLength(1);
+        // The newest result the previous request carried.
+        const seen = outputs.at(-2);
+        if (seen !== undefined && !history.some((item) => item.type === "tool_result" && item.output === seen)) lost.push(request);
+        outputs.push(`step ${request} ${"r".repeat(size)}`);
+        chat.tool("sandbox_exec", { step: request }, outputs.at(-1)!);
+      }
+      return { lost, plans };
+    }
+
+    const compacting = (plans: readonly ReturnType<typeof planCompaction>[]) =>
+      plans.flatMap((plan, index) => plan.kind === "foreground" || plan.kind === "background" ? [index + 1] : []);
+
+    it("never compacts a request that fits while the fixed part alone passes the threshold, and keeps what the model read", () => {
+      expect(usableContextTokens(PRODUCTION)).toBe(634_464);
+      const { lost, plans } = answer(30, 8_000, true);
+      // Before the change every request from the third on compacted in the foreground (20 and 23 times in production).
+      const compacted = compacting(plans);
+      expect(compacted.length).toBeGreaterThan(0);
+      expect(compacted.length).toBeLessThanOrEqual(5);
+      for (const [index, plan] of plans.entries()) {
+        if (compacted.includes(index + 1)) {
+          // Only a request past the usable window compacts, and the compaction makes it fit.
+          expect(plan).toMatchObject({ kind: "foreground", reason: "threshold" });
+          expect(plan.tokens).toBeGreaterThan(plan.usable);
+          if (plan.kind === "foreground") expect(plan.expectedTokens).toBeLessThan(plan.usable);
+        } else {
+          expect(plan).toMatchObject({ kind: "unavailable", reason: "threshold" });
+          expect(plan.tokens).toBeLessThanOrEqual(plan.usable);
+        }
+      }
+      // The result read last stays verbatim on every request that fits; only a compaction past the window may fold it.
+      expect(lost.every((request) => compacted.includes(request))).toBe(true);
+    });
+
+    it("frees at least the recent budget each time even without the fixed part's figure, keeping the newest rounds", () => {
+      const { lost, plans } = answer(30, 8_000, false);
+      const compacted = compacting(plans);
+      expect(compacted.length).toBeGreaterThan(0);
+      expect(compacted.length).toBeLessThanOrEqual(8);
+      // Never two requests in a row, and every one frees what it promised.
+      expect(compacted.every((request, index) => index === 0 || request - compacted[index - 1]! > 1)).toBe(true);
+      for (const request of compacted) {
+        const plan = plans[request - 1]!;
+        expect(plan.kind === "foreground" ? plan.tokens - plan.expectedTokens : 0).toBeGreaterThanOrEqual(20_000);
+      }
+      expect(lost).toEqual([]);
+    });
+
+    it("still compacts a provider overflow, and reports when nothing can make room", () => {
+      const { plans } = answer(6, 8_000, true);
+      expect(plans.every((plan) => plan.kind === "unavailable")).toBe(true);
+      const chat = transcriptBuilder();
+      const input = chat.user("Build the summary workbook from the attached spreadsheets.");
+      for (let request = 1; request <= 6; request += 1) chat.tool("sandbox_exec", { step: request }, "r".repeat(8_000));
+      const target: TranscriptTarget = { ...CODEX, carriedInputId: input };
+      const tokens = FIXED + measureContext({ estimate: charTokens, fixedTokens: 0, items: chat.items, target }).tokens;
+      const plan = { background: "idle" as const, estimate: charTokens, irreducibleTokens: FIXED, items: chat.items, target, tokens,
+        window: PRODUCTION };
+      expect(planCompaction({ ...plan, overflow: {} })).toMatchObject({ kind: "foreground", reason: "overflow" });
+      // A window the provider states below the fixed part leaves nothing a compaction could do: the run fails visibly.
+      expect(planCompaction({ ...plan, overflow: { reportedMaximumTokens: 600_000 } })).toMatchObject({ kind: "unavailable",
+        reason: "overflow" });
+    });
+  });
+});
+
+describe("the fixed part admission leaves compaction", () => {
+  it("is the background threshold less the working margin of the usable window", () => {
+    // 72% of 634 464 is 456 814; the 15% margin is 95 170.
+    expect(compactableFixedTokens({ contextWindow: 700_000, maxOutputTokens: 65_536 })).toBe(456_814 - 95_170);
+    expect(compactableFixedTokens({ contextWindow: 120_000, maxOutputTokens: 20_000 })).toBe(72_000 - 15_000);
+    expect(compactableFixedTokens({ contextWindow: 1_000, maxOutputTokens: 4_000 })).toBe(0);
+    expect(COMPACTION_WORKING_MARGIN).toBeLessThan(COMPACTION_THRESHOLDS.background);
   });
 });

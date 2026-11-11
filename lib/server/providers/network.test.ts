@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_PROVIDER_STREAM_LIMITS, getProviderStreamLimits, isProviderRetryableHttpStatus, PROVIDER_STREAM_LIMIT_CEILINGS, ProviderRequestTimeoutError, ProviderResponseTooLargeError, providerResponseMaxBytes, providerStreamTimingLimits, readBoundedResponseText, resolveProviderStreamLimits, withTimeoutSignal } from "./network";
+import { DEFAULT_PROVIDER_STREAM_LIMITS, getProviderStreamLimits, isProviderRetryableHttpStatus, PROVIDER_STREAM_CEILING_MS,
+  PROVIDER_STREAM_KEEPALIVE_IDLE_MS, PROVIDER_STREAM_LIMIT_CEILINGS, ProviderRequestTimeoutError, ProviderResponseTooLargeError,
+  providerResponseMaxBytes, providerStreamCeilingMs, providerStreamTimingLimits, readBoundedResponseText, resolveProviderStreamLimits,
+  withTimeoutSignal } from "./network";
 
 const encoder = new TextEncoder();
 
@@ -85,12 +88,51 @@ describe("provider network response bounds", () => {
     }, {})).toEqual(DEFAULT_PROVIDER_STREAM_LIMITS);
   });
 
-  it("derives both stream timing guards from the response deadline", () => {
-    for (const timeout of [800_000, 3_600_000, 86_400_000]) {
-      expect(resolveProviderStreamLimits(providerStreamTimingLimits(timeout))).toMatchObject({
-        idleTimeoutMs: timeout,
-        maxDurationMs: timeout
-      });
+  it("lets a live stream run to its ceiling, and only a keepalive route's silence end it within a minute", () => {
+    // The response timeout bounds silence on a route that proved nothing; the ceiling is never below 30 minutes.
+    for (const [timeout, ceiling] of [[5_000, 1_800_000], [300_000, 1_800_000], [900_000, 1_800_000], [3_600_000, 3_600_000],
+      [86_400_000, 86_400_000]] as const) {
+      expect(resolveProviderStreamLimits(providerStreamTimingLimits(timeout))).toMatchObject({ idleTimeoutMs: timeout, maxDurationMs: ceiling });
+      expect(resolveProviderStreamLimits(providerStreamTimingLimits(timeout, "keepalive"))).toMatchObject({
+        idleTimeoutMs: Math.min(timeout, PROVIDER_STREAM_KEEPALIVE_IDLE_MS), maxDurationMs: ceiling });
+      expect(providerStreamCeilingMs(timeout)).toBe(ceiling);
+    }
+    expect(PROVIDER_STREAM_KEEPALIVE_IDLE_MS).toBe(60_000);
+    expect(PROVIDER_STREAM_CEILING_MS).toBe(1_800_000);
+    expect(providerStreamTimingLimits()).toEqual({ idleTimeoutMs: 300_000, maxDurationMs: 1_800_000 });
+  });
+
+  it("moves a deadline later from the same start, never earlier, and never after it ended", async () => {
+    vi.useFakeTimers();
+    try {
+      const timeout = withTimeoutSignal(undefined, 5_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+      timeout.extend(3_000);
+      timeout.extend(Number.POSITIVE_INFINITY);
+      timeout.extend(20_000);
+      expect(timeout.remainingMs()).toBe(16_000);
+      await vi.advanceTimersByTimeAsync(15_999);
+      expect(timeout.signal.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(timeout.signal.reason).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 20_000 });
+      timeout.extend(60_000);
+      expect(vi.getTimerCount()).toBe(0);
+      timeout.clear();
+
+      const cleared = withTimeoutSignal(undefined, 5_000);
+      cleared.clear();
+      cleared.extend(60_000);
+      expect(vi.getTimerCount()).toBe(0);
+
+      const parent = new AbortController();
+      const stopped = withTimeoutSignal(parent.signal, 5_000);
+      parent.abort(new Error("stop"));
+      stopped.extend(60_000);
+      stopped.clear();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

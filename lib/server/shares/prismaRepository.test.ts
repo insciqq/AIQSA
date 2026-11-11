@@ -66,6 +66,40 @@ describe("createChatShare with answer reviews", () => {
   });
 });
 
+describe("createChatShare with quiet checks", () => {
+  const turn = (id: string, parentMessageId: string | null) => ({ ...row(id, parentMessageId, "user", "Check the release page"),
+    branchSourceModelRunId: null, scheduledTaskPrompt: true });
+  const checks = [turn("b", null), row("b-a", "b", "assistant", "Version 1.0 is current."), turn("q1", "b-a"),
+    row("q1-a", "q1", "assistant", ""), turn("u", "q1-a"), row("u-a", "u", "assistant", "Version 2.0 is out."), turn("q2", "u-a"),
+    row("q2-a", "q2", "assistant", "")];
+  const outcomes: Record<string, string> = { b: "baseline", q1: "no_update", q2: "no_update", u: "update" };
+
+  async function shareChecks(activeLeafMessageId: string | null) {
+    const created: Array<{ snapshot: { messages: Array<{ content: { blocks: Array<{ text: string }> }; role: string }> } }> = [];
+    const tx = {
+      answerReviewSession: { findMany: async () => [] },
+      chat: { findFirst: async () => ({ activeLeafMessageId: "q2-a", id: "c", messages: checks, title: "Chat" }) },
+      message: { findMany: async () => [] },
+      modelRun: { findMany: async (args: { where: { userMessageId: { in: string[] } } }) => args.where.userMessageId.in
+        .map((userMessageId) => ({ scheduledOutcome: outcomes[userMessageId] ?? null, userMessageId })) },
+      sharedChatSnapshot: { create: async ({ data }: { data: (typeof created)[number] }) => { created.push(data); return { id: "share" }; } }
+    };
+    const repository = createPrismaShareRepository({ $transaction: async (work: (client: typeof tx) => unknown) => work(tx) } as never);
+    await repository.createChatShare({ activeLeafMessageId, chatId: "c", shareToken: "synthetic", slugHash: "synthetic", userId: "u" });
+    return created[0]!.snapshot;
+  }
+
+  it("leaves quiet checks out of the snapshot and shares up to the latest shown result", async () => {
+    // The chat's stored leaf is a quiet check; the browser names the result it was shown.
+    for (const leaf of [null, "q2-a", "u-a"]) {
+      const snapshot = await shareChecks(leaf);
+      expect(snapshot.messages.map((message) => `${message.role}:${message.content.blocks.map((block) => block.text).join("")}`)).toEqual([
+        "user:Check the release page", "assistant:Version 1.0 is current.", "user:Check the release page", "assistant:Version 2.0 is out."
+      ]);
+    }
+  });
+});
+
 describe("createChatShare ownership", () => {
   it("shares only the requester's own chat and records them as its owner", async () => {
     const create = vi.fn(async () => ({ id: "share" }));

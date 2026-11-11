@@ -33,7 +33,7 @@ import type { WorkspaceBrowserLiveAction, WorkspaceBrowserLiveReply } from "./ru
  * it starts and ends it before the Workspace hands off or settles, so no view or streamer outlives its turn.
  *
  * Transport (task decision 2026-10-26, measured over the exec channel): a guest streamer
- * (`aiqsa.browser.live`) started through the run's own channel under its operation (`browserLiveChannel.ts`),
+ * (`aiqsa.browser.live`) started through a member run's own channel under its operation (`browserLiveChannel.ts`),
  * polled back to back while it prints and every `idlePollMs` otherwise, keeping only the latest frame. It runs
  * only while a view is open or a command needs it, and is rotated before the pinned MCP's in-memory output
  * history grows large; a command waits for a fresh streamer's first report.
@@ -90,6 +90,8 @@ export type BrowserLiveRegistration = Readonly<{
    * dropped from the channel. Absent: the run stays a member until its `end`.
    */
   attached?(): Promise<boolean>;
+  /** The main agent's run (not a background sub-agent's): the panel's streamer is started through it first. */
+  main?: boolean;
   /** Whether a sign-in made in this browser is saved to the owner's Secrets after the turn (asked once, lazily). */
   signInRemembered(): Promise<boolean>;
   userId: string;
@@ -168,6 +170,11 @@ function failureCode(error: unknown): string {
 
 /** The guest is not (or no longer) running for this run: an open view waits for it. */
 const GUEST_GONE = new Set(["workspace_session_lost", "workspace_operation_stale"]);
+/**
+ * This member's run has no guest session in this process (a background sub-agent that has not used the Workspace
+ * yet): another member of the chat may still reach the shared guest, so a streamer is started through it instead.
+ */
+const SESSION_LOST = "workspace_session_lost";
 /** The run's runtime has no live channel. */
 const NO_CHANNEL = new Set(["workspace_runtime_incompatible"]);
 
@@ -224,7 +231,8 @@ class LiveRun implements BrowserLiveRunHandle {
 
   /**
    * The runs of the chat that use this browser (main agent and sub-agent runs of one shared Workspace): the live
-   * channel belongs to the session and ends with its last run. The newest member starts streamers and reports.
+   * channel belongs to the session and ends with its last run. A streamer starts through a member whose run has a live
+   * guest session (`transports`); any member serves as transport, since every command names its agent itself.
    */
   private readonly members: BrowserLiveRegistration[];
 
@@ -254,7 +262,7 @@ class LiveRun implements BrowserLiveRunHandle {
   }
 
   handle(runId: string): BrowserLiveRunHandle {
-    return { end: (reason) => this.leave(runId, reason), handoff: (input) => this.handoff(input) };
+    return { end: (reason) => this.leave(runId, reason), handoff: (input) => this.handoff(input, runId) };
   }
 
   /**
@@ -375,20 +383,23 @@ class LiveRun implements BrowserLiveRunHandle {
    * the run's Stop or deadline (`signal`) ends it too, by throwing its reason. Each agent has at most one pending, and
    * the panel shows the oldest first. On Done the guest saves the site of that agent's tab, only for a handoff about
    * signing in (sign-in, code, check, consent; operator decision 2026-10-27): the end carries the reason.
+   * `askingRunId`, the asking agent's run, is tried first as the transport; the commands still name only `agent`'s tab.
    */
-  async handoff(input: BrowserLiveHandoffInput): Promise<BrowserLiveHandoffResult> {
+  async handoff(input: BrowserLiveHandoffInput, askingRunId?: string): Promise<BrowserLiveHandoffResult> {
     input.signal.throwIfAborted();
     const agent = input.agent ?? BROWSER_LIVE_MAIN_REF;
     if (this.ended || this.unavailable) return { kind: "unavailable" };
     if (this.agents.handoffBusy(agent.id)) return { kind: "busy" };
     this.agents.beginStarting(agent.id);
     try {
-      const begin = await this.command({ action: "begin", [AGENT_FIELD]: agent.id, t: "handoff" });
+      const begin = await this.command({ action: "begin", [AGENT_FIELD]: agent.id, t: "handoff" }, undefined, askingRunId);
       // `no_page`: the agent has no tab. Anything else, `browser_not_running` (no host answered) included, is a
       // browser the user cannot be shown now.
       if (begin.ok !== true) return begin.code === "no_page" ? { kind: "no_browser" } : { kind: "unavailable" };
-    } catch (error) {
-      return GUEST_GONE.has(failureCode(error)) ? { kind: "no_browser" } : { kind: "unavailable" };
+    } catch {
+      // No member reached the guest (none has a live session, or a channel failed): only the guest's own `no_page`
+      // says that the agent has no tab.
+      return { kind: "unavailable" };
     } finally {
       this.agents.endStarting(agent.id);
     }
@@ -417,17 +428,17 @@ class LiveRun implements BrowserLiveRunHandle {
     else this.broadcastState();
     if (outcome === "aborted") {
       // The run is ending: its guest stops with it, so the guest's control is ended without waiting.
-      void this.command({ action: "end", [AGENT_FIELD]: agent.id, outcome: "cancelled", reason: input.reason, t: "handoff" }, 2_000)
-        .catch(() => undefined);
+      void this.command({ action: "end", [AGENT_FIELD]: agent.id, outcome: "cancelled", reason: input.reason, t: "handoff" }, 2_000,
+        askingRunId).catch(() => undefined);
       throw input.signal.reason ?? new Error("browser_handoff_aborted");
     }
     const ending = { action: "end", [AGENT_FIELD]: agent.id, outcome, reason: input.reason, t: "handoff" };
-    let end = await this.command(ending).catch(() => null);
+    let end = await this.command(ending, undefined, askingRunId).catch(() => null);
     if (end?.ok !== true && !this.ended) {
       // Once more on a fresh streamer: the guest's control must not stay with the user for the rest of the turn.
       const missed = this.streamer;
       if (missed) await this.close(missed);
-      end = await this.command(ending).catch(() => null);
+      end = await this.command(ending, undefined, askingRunId).catch(() => null);
     }
     return { kind: "ended", outcome, page: end?.ok === true ? pageOf(end.page) : null,
       saved: end?.ok === true && typeof end.saved === "string" ? end.saved.slice(0, 200) : null };
@@ -528,24 +539,53 @@ class LiveRun implements BrowserLiveRunHandle {
     }
   }
 
-  /** The current streamer, or the one starting (a rotation's replacement included). */
-  private start(frames: boolean): Promise<Streamer> {
+  /**
+   * The members a streamer may start through, in order: the run `prefer` names (the agent asking for a handoff), else
+   * the main agent's run, then the others newest first. All of them are runs of this chat and its owner (`join`).
+   */
+  private transports(prefer?: string): BrowserLiveRegistration[] {
+    const newest = [...this.members].reverse();
+    const first = (prefer === undefined ? undefined : newest.find((member) => member.runId === prefer)) ??
+      newest.find((member) => member.main === true);
+    return first ? [first, ...newest.filter((member) => member !== first)] : newest;
+  }
+
+  /**
+   * The current streamer, or the one starting (a rotation's replacement included). A member whose run has no guest
+   * session (`workspace_session_lost`) passes the start to the next one (`transports`); any other failure ends it, and
+   * the start fails with `workspace_session_lost` only when no member has a session.
+   */
+  private start(frames: boolean, prefer?: string): Promise<Streamer> {
     if (this.streamer && !this.streamer.closed && !this.streamer.retiring) return Promise.resolve(this.streamer);
     this.starting ??= (async () => {
-      if (this.ended || this.unavailable) throw Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" });
-      const owner = this.registration;
-      // The selected agent rides with the first command, so a new streamer streams its tab from the start.
-      const reply = await owner.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) +
-        streamerLine({ [AGENT_FIELD]: this.agents.selected, t: WORKSPACE_AGENT_PROTOCOL.LIVE_SELECT_MESSAGE }) });
-      if (reply.action !== "start") throw Object.assign(new Error("browser_live_invalid"), { code: "workspace_runtime_incompatible" });
-      const streamer = new Streamer(reply.execSessionId, frames, owner);
-      this.streamer = streamer;
-      if (this.ended) {
-        await this.close(streamer);
-        throw Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" });
+      const closed = () => Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" });
+      let lost: unknown = Object.assign(new Error(SESSION_LOST), { code: SESSION_LOST });
+      for (const owner of this.transports(prefer)) {
+        if (this.ended || this.unavailable) throw closed();
+        // A member that left while an earlier one was tried has no authority any more.
+        if (!this.members.includes(owner)) continue;
+        let reply: WorkspaceBrowserLiveReply;
+        try {
+          // The selected agent rides with the first command, so a new streamer streams its tab from the start.
+          reply = await owner.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) +
+            streamerLine({ [AGENT_FIELD]: this.agents.selected, t: WORKSPACE_AGENT_PROTOCOL.LIVE_SELECT_MESSAGE }) });
+        } catch (error) {
+          if (failureCode(error) !== SESSION_LOST) throw error;
+          lost = error;
+          continue;
+        }
+        if (reply.action !== "start") throw Object.assign(new Error("browser_live_invalid"), { code: "workspace_runtime_incompatible" });
+        const streamer = new Streamer(reply.execSessionId, frames, owner);
+        this.streamer = streamer;
+        if (this.ended) {
+          await this.close(streamer);
+          throw closed();
+        }
+        void this.pump(streamer);
+        return streamer;
       }
-      void this.pump(streamer);
-      return streamer;
+      if (this.ended || this.unavailable) throw closed();
+      throw lost;
     })().finally(() => { this.starting = null; });
     return this.starting;
   }
@@ -670,8 +710,10 @@ class LiveRun implements BrowserLiveRunHandle {
     return next.then(() => undefined);
   }
 
-  private async command(message: Readonly<Record<string, unknown>>, timeoutMs: number = BROWSER_LIVE_RELAY_LIMITS.commandMs): Promise<Ack> {
-    const streamer = await this.start(this.views.size > 0);
+  /** One acknowledged command through the current streamer, or a new one (started through `prefer`'s run if it can). */
+  private async command(message: Readonly<Record<string, unknown>>, timeoutMs: number = BROWSER_LIVE_RELAY_LIMITS.commandMs,
+    prefer?: string): Promise<Ack> {
+    const streamer = await this.start(this.views.size > 0, prefer);
     // A streamer started a moment ago may not have reached the guest's host yet (an older guest refuses then).
     if (!streamer.reported) await Promise.race([streamer.firstState, delay(BROWSER_LIVE_RELAY_LIMITS.firstStateMs)]);
     const id = randomUUID();

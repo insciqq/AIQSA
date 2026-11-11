@@ -10,7 +10,8 @@ import {
   ProviderStreamTooLargeError,
   type ProviderStreamSafetySnapshot
 } from "./streamSafety";
-import { beginTransportStage, createProviderAbortObserver, observeProviderDeadline, transportFailureFacts } from "./providerObservability";
+import { beginTransportStage, createProviderAbortObserver, observeProviderDeadline, observeProviderResponseStart,
+  transportFailureFacts } from "./providerObservability";
 import { markProviderStreamReset } from "./streamDrop";
 import { markProviderStreamProgress, providerStreamProgressFacts } from "./streamProgress";
 
@@ -194,10 +195,40 @@ export async function* parseSseStream(
   let lastProgressAt: number | undefined;
   // The last parsed event, never a comment: a gateway's keepalive comments keep bytes flowing while nothing happens.
   let lastEventAt: number | undefined;
-  const progress = () => preAborted ? {} : ({
-    bytes: receivedBytes, chunks,
-    last_progress_ms: lastProgressAt === undefined ? undefined : Math.max(0, performance.now() - lastProgressAt)
-  });
+  let firstEventAt: number | undefined;
+  // The longest silences between received bytes (from the stream's start) and between parsed events (from the first).
+  let maxByteGapMs = 0;
+  let maxEventGapMs = 0;
+  const receivedByte = () => {
+    const at = performance.now();
+    maxByteGapMs = Math.max(maxByteGapMs, at - (lastProgressAt ?? startedAt));
+    lastProgressAt = at;
+  };
+  // A frame with empty data carries nothing, like a comment: a proxy may send one while its upstream works.
+  const parsedEvent = (event: ParsedServerSentEvent) => {
+    if (!event.data.trim()) return;
+    const at = performance.now();
+    if (lastEventAt !== undefined) maxEventGapMs = Math.max(maxEventGapMs, at - lastEventAt);
+    lastEventAt = at;
+    if (firstEventAt !== undefined) return;
+    firstEventAt = at;
+    // The response started: the request's owner bounds it from here by the stream's idle timeout and ceiling (`network.ts`).
+    observeProviderResponseStart();
+  };
+  // The stream's final record: its counters, and its first event's wait and longest silences so far, the open one included,
+  // so a future no-events detector can be sized from data. Numbers only, never content.
+  const progress = () => {
+    if (preAborted) return {};
+    const now = performance.now();
+    return {
+      bytes: receivedBytes, chunks,
+      last_progress_ms: lastProgressAt === undefined ? undefined : Math.max(0, now - lastProgressAt),
+      max_byte_gap_ms: Math.max(maxByteGapMs, now - (lastProgressAt ?? startedAt)),
+      ...(firstEventAt === undefined || lastEventAt === undefined ? {} : {
+        first_event_ms: Math.max(0, firstEventAt - startedAt), max_event_gap_ms: Math.max(maxEventGapMs, now - lastEventAt)
+      })
+    };
+  };
   // How far the stream had got when a timeout ended it (`streamProgress.ts`); diagnostics only.
   const timeoutProgress = () => providerStreamProgressFacts({
     lastByteMs: lastProgressAt === undefined ? undefined : performance.now() - lastProgressAt,
@@ -403,7 +434,7 @@ export async function* parseSseStream(
       }
       chunks += 1;
       receivedBytes += value.byteLength;
-      if (value.byteLength > 0) lastProgressAt = performance.now();
+      if (value.byteLength > 0) receivedByte();
 
       for (let index = 0; index < value.byteLength; index += 1) {
         if ((index & 4095) === 0) {
@@ -426,7 +457,7 @@ export async function* parseSseStream(
 
         const event = parseSseChunk(decoder.decode(frame));
         if (event) {
-          lastEventAt = performance.now();
+          parsedEvent(event);
           ensureActive();
           yield attachProviderStreamSafetySnapshot(event, snapshot());
           ensureActive();
@@ -437,6 +468,7 @@ export async function* parseSseStream(
 
     const trailing = parseSseChunk(decoder.decode(framer.finish()).trim());
     if (trailing) {
+      parsedEvent(trailing);
       yield attachProviderStreamSafetySnapshot(trailing, snapshot());
     }
     observation.finish("completed", progress());

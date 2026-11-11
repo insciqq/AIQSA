@@ -56,6 +56,7 @@ import {
 import { ScheduledTaskSkillPicker } from "./ScheduledTaskSkillPicker";
 import type { ScheduledTaskSkillOption } from "./scheduledTasksApi";
 import { WebhookTokenReveal, useWebhookUrl } from "./WebhookTokenReveal";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 
 const field = "v2-scheduled-field w-full min-w-0 rounded-lg border border-trace bg-answer-paper px-3 py-2 text-sm text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
 const PROMPT_COUNTER_FROM = SCHEDULED_TASK_PROMPT_MAX_LENGTH - 1_000;
@@ -627,10 +628,11 @@ export function ScheduledTaskSheet({
                   ))}
                 </select>
                 <p className="v2-scheduled-hint" id={ids.historyHint}>
-                  {draft.historyRetentionDays === null
+                  {/* One text node: a page translator wraps text nodes, and a sibling appearing beside one crashes React. */}
+                  {[draft.historyRetentionDays === null
                     ? "This automation's old chats stay until you delete them."
-                    : "Older chats of this automation are deleted this long after their last run."} {SCHEDULED_TASK_HISTORY_KEPT_TEXT}
-                  {historyActivity ? ` ${historyActivity}` : null}
+                    : "Older chats of this automation are deleted this long after their last run.", SCHEDULED_TASK_HISTORY_KEPT_TEXT,
+                  historyActivity].filter(Boolean).join(" ")}
                 </p>
               </div>
               <div className="v2-scheduled-toggle">
@@ -819,7 +821,7 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
                       <span className="v2-scheduled-run-trigger">{row.trigger}</span>
                       <span className="v2-scheduled-run-outcome">
                         {run.unseen ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span className="sr-only">New result: </span></> : null}
-                        {row.outcome}
+                        <TranslatableLabel>{row.outcome}</TranslatableLabel>
                         {row.sources.map((source, index) => <span key={`${index}:${source}`} className="v2-scheduled-run-source">{source}</span>)}
                         {row.skills ? <span className="v2-scheduled-run-source v2-scheduled-run-skills">{row.skills}</span> : null}
                       </span>

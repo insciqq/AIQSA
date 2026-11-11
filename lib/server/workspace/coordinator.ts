@@ -1484,6 +1484,10 @@ const SECRET_ENVIRONMENT_REFUSALS = ["workspace_secret_env_invalid", "workspace_
 const RUN_PREPARATION_REFUSALS = ["workspace_secrets_prepare_failed", "workspace_skill_bundle_invalid", "workspace_skill_bundle_limit_exceeded",
   "workspace_skill_conflict", "workspace_skill_run_stale", "workspace_skills_prepare_failed", ...SECRET_ENVIRONMENT_REFUSALS] as const satisfies readonly WorkspaceOperationFailureCode[];
 
+/** What the model reads when a command's cleanup obligation could not be recorded before dispatch: nothing was sent. */
+const WORKSPACE_COMMAND_NOT_RECORDED = "This command was not sent: the Workspace could not record it first, so nothing ran. " +
+  "Sending it again is safe; tell the user if this keeps happening.";
+
 /** One run's Skills or environment could not be prepared: nothing of its call was dispatched, and the guest other runs share is intact. */
 function runPreparationRefusal(error: unknown): (typeof RUN_PREPARATION_REFUSALS)[number] | undefined {
   return error instanceof WorkspaceRuntimeError ? RUN_PREPARATION_REFUSALS.find((code) => code === error.code) : undefined;
@@ -2668,13 +2672,31 @@ export function createWorkspaceCoordinator(input: Readonly<{
         };
         try {
           if (definition.originalName === "sandbox_shell" || definition.originalName === "sandbox_exec") {
-            const registered = await input.registry.register({
-              modelRunId: binding.runId,
-              modelRunToolCallId,
-              runtimeExecSessionId: workspaceSyncCleanupId(modelRunToolCallId),
-              operation: ownedOperation(binding), sessionId: binding.sessionId
-            }).catch(() => "conflict" as const);
-            if (registered !== "registered") throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+            // The command's cleanup obligation is recorded before it is sent; the registry itself repeats an attempt a
+            // lost deadlock rolled back. A command still unrecorded was never sent: an ordinary failure the model may send
+            // again, never an effect left unknown. A row whose commit a lost reply hid stays an ordinary cleanup obligation.
+            let registered: "conflict" | "registered" = "conflict";
+            let failure: unknown;
+            try {
+              registered = await input.registry.register({
+                modelRunId: binding.runId,
+                modelRunToolCallId,
+                runtimeExecSessionId: workspaceSyncCleanupId(modelRunToolCallId),
+                operation: ownedOperation(binding), sessionId: binding.sessionId
+              });
+            } catch (error) {
+              failure = error;
+            }
+            if (registered !== "registered") {
+              logEvent("runtime_lifecycle", { ...(failure === undefined ? {} : { error: failure, prisma_code: databaseFailureCode(failure) }),
+                subsystem: "workspace", stage: "dispatch", outcome: "failed", code: "workspace_execution_registry_unavailable", action: "skip" });
+              // A fence the registry refused (the session moved to another owner, a Reset) fails the call as every other
+              // stale fence before dispatch does; only a database failure or exhausted conflicts make "send it again" right.
+              if (failure instanceof WorkspaceRuntimeError) throw failure;
+              const rejected = executionErrorResult(call, WORKSPACE_COMMAND_NOT_RECORDED);
+              return withActivity(rejected, projectWorkspaceActivity({ ...projectionInput, durationMs: Date.now() - startedAt.getTime(),
+                result: rejected }, "settled"));
+            }
           }
           invocationId = await openInvocation(binding);
           const dispatch = (active: WorkspaceExecutionBinding) =>

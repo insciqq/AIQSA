@@ -100,6 +100,64 @@ describe("permanent chat deletion store", () => {
       .toEqual({ status: "IN_PROGRESS" });
   });
 
+  it("lets a sent confirmation settle when the shell unmounts, and a remounted shell shows its status", async () => {
+    let settle!: (response: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => String(input).endsWith("/status")
+      ? Promise.resolve(Response.json({ status: "IN_PROGRESS" }))
+      : new Promise<Response>((resolve) => {
+        settle = resolve;
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    await activatePermanentChatDeletionAccount("account-a");
+    openPermanentChatDeletion({ chatId: "chat-1", location: "WORKSPACE", title: "Private chat" });
+    const confirmation = confirmPermanentChatDeletion();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+
+    // A crash screen unmounts the shell; Try again mounts a new one.
+    deactivatePermanentChatDeletionAccount("account-a");
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).not.toBe(true);
+    const reconciled = vi.fn();
+    await activatePermanentChatDeletionAccount("account-a", reconciled);
+    settle(Response.json({ status: "IN_PROGRESS" }));
+    await confirmation;
+
+    expect(reconciled).toHaveBeenCalledWith("chat-1");
+    expect(usePermanentChatDeletionStore.getState()).toMatchObject({
+      busy: false,
+      reference: { chatId: "chat-1" },
+      status: { status: "IN_PROGRESS" },
+      statusOpen: true,
+      target: null
+    });
+    expect(window.sessionStorage.getItem("aiqsa:chat-permanent-deletion:v2:account-a"))
+      .toBe(JSON.stringify({ chatId: "chat-1", version: 2 }));
+  });
+
+  it("records a confirmation that settles while no shell is mounted, for the next one to follow", async () => {
+    let settle!: (response: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).endsWith("/status")
+      ? Promise.resolve(Response.json({ status: "IN_PROGRESS" }))
+      : new Promise<Response>((resolve) => {
+        settle = resolve;
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    await activatePermanentChatDeletionAccount("account-a");
+    openPermanentChatDeletion({ chatId: "chat-1", location: "WORKSPACE", title: "Private chat" });
+    const confirmation = confirmPermanentChatDeletion();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    deactivatePermanentChatDeletionAccount("account-a");
+    settle(Response.json({ status: "IN_PROGRESS" }));
+    await confirmation;
+    expect(usePermanentChatDeletionStore.getState().reference).toBeNull();
+
+    await activatePermanentChatDeletionAccount("account-a");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("/api/chats/chat-1/delete-permanently/status");
+    expect(usePermanentChatDeletionStore.getState()).toMatchObject({
+      reference: { chatId: "chat-1" },
+      status: { status: "IN_PROGRESS" }
+    });
+  });
+
   it("keeps no reference for a deletion the server completes at once", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ status: "COMPLETE" })));
     await activatePermanentChatDeletionAccount("account-a");

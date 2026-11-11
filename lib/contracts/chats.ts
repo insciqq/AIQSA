@@ -487,6 +487,7 @@ export type ChatDetail = WorkspaceChatSummary & {
   contextStats: ChatContextStats;
   messages: ThreadMessage[];
   pageInfo: ChatMessagePageInfo;
+  quietChecks?: ChatQuietChecksSummary;
   usageStats: ChatUsageStats | null;
 };
 
@@ -563,7 +564,11 @@ export function decodeChatMessageSubagentCallback(value: unknown): ChatMessageSu
 /**
  * A user turn posted by a scheduled task occurrence: the task and its current
  * title, the run's id (`ScheduledTaskRun.id`) and whether its result is
- * unread. Deleting the task removes its occurrences, so the marker disappears.
+ * unread. Once the task's run history no longer keeps the occurrence, the
+ * turn's own run still names the task: `taskRunId` is then that run's id,
+ * which names no `ScheduledTaskRun`, and the turn is never unread, so nothing
+ * marks it seen. The shape stays the one earlier clients decode. Deleting the
+ * task removes the marker.
  */
 export type ChatMessageScheduledTaskWire = Readonly<{
   taskId: string;
@@ -571,6 +576,22 @@ export type ChatMessageScheduledTaskWire = Readonly<{
   title: string;
   unseen: boolean;
 }>;
+
+/**
+ * The open chat's quiet checks (operator decision 2026-11-11): its scheduled
+ * monitoring runs that settled with no update, which its history leaves out,
+ * and when the latest of them started. Absent while there are none, and on an
+ * archived chat's preview, whose exact keys a client of the previous release
+ * still checks during an upgrade.
+ */
+export type ChatQuietChecksSummary = Readonly<{ count: number; lastAt: string }>;
+
+export function decodeChatQuietChecksSummary(value: unknown): ChatQuietChecksSummary | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["count", "lastAt"]) || !Number.isSafeInteger(value.count) ||
+    Number(value.count) < 1) return null;
+  const lastAt = isoTimestamp(value.lastAt);
+  return lastAt ? { count: Number(value.count), lastAt } : null;
+}
 
 export type WorkspaceChatSummaryWire = Omit<
   WorkspaceChatSummary,
@@ -598,6 +619,7 @@ export type ChatDetailWire = WorkspaceChatSummaryWire & {
   contextStats: ChatContextStats;
   messages: ChatMessageWire[];
   pageInfo: ChatMessagePageInfo;
+  quietChecks?: ChatQuietChecksSummary;
   usageStats: ChatUsageStats | null;
 };
 
@@ -1851,12 +1873,14 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
   const page = decodeMessagePage(value.chat.messages, value.chat.pageInfo, {
     requireActiveLeaf: true
   });
+  const quietChecks = value.chat.quietChecks === undefined ? undefined : decodeChatQuietChecksSummary(value.chat.quietChecks);
   if (
     !chat ||
     (value.chat.assistant != null && !assistant) ||
     !contextStats ||
     usageStats === undefined ||
     !page ||
+    quietChecks === null ||
     page.pageInfo.activeLeafMessageId !== chat.activeLeafMessageId ||
     page.pageInfo.snapshotUpdatedAt !== chat.updatedAt
   ) {
@@ -1869,6 +1893,7 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
     contextStats,
     messages: page.messages,
     pageInfo: page.pageInfo,
+    ...(quietChecks ? { quietChecks } : {}),
     usageStats
   };
 }

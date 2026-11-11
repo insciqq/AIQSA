@@ -149,6 +149,7 @@ import {
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
 import { loadAnswerReviewPathView, type AnswerReviewPathView } from "../chats/legacyAnswerReviews";
+import { quietCheckStandIn } from "../chats/quietScheduledChecks";
 import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
@@ -1144,6 +1145,15 @@ export async function admitPreparingRunWithClient(
         // The prompt a scheduled run posts keeps that fact on the message
         // itself, committed with the run's scheduled origin.
         scheduledPrompt = input.scheduledOccurrence !== undefined;
+        // Any other message continues the latest turn its user was shown, never a quiet check that turn's history
+        // leaves out (operator decision 2026-11-11): the chat's leaf compared above stays the one the send expected,
+        // and only the parent skips past the quiet checks that end the branch, settled and so fixed under the chat's
+        // lock. That parent is the leaf the admission records (`preSendActiveLeafMessageId`), so finalization,
+        // retries and deferred preparation check the message as written. The quiet checks left behind were never a
+        // Memory source, so the append changes nothing Memory reads. Its context reads the branch without any quiet
+        // check (`withoutQuietChecks` in `lib/server/runs/prismaRepository.ts`).
+        const parentMessageId = !scheduledPrompt && input.expectedActiveLeafId
+          ? await quietCheckStandIn(tx, input.chatId, input.expectedActiveLeafId) : input.expectedActiveLeafId;
         const userMessage = await tx.message.create({
           data: {
             chatId: input.chatId,
@@ -1153,7 +1163,7 @@ export async function admitPreparingRunWithClient(
               : input.normalizedRequest.mcpApproval?.guard?.version === 2 && input.normalizedRequest.mcpApproval.guard.currentMessageId
                 ? { id: input.normalizedRequest.mcpApproval.guard.currentMessageId } : {}),
             modelId: input.modelId,
-            parentMessageId: input.expectedActiveLeafId,
+            parentMessageId,
             provider: input.provider,
             role: "user",
             ...(scheduledPrompt ? { scheduledTaskPrompt: true } : {}),
@@ -1194,7 +1204,7 @@ export async function admitPreparingRunWithClient(
           }
         }
         assistantMessageId = assistantMessage.id;
-        preSendActiveLeafMessageId = input.expectedActiveLeafId;
+        preSendActiveLeafMessageId = parentMessageId;
         userMessageId = userMessage.id;
 
         admittedSourceSnapshot = await applyMemorySourceMutations(tx, {
@@ -1275,8 +1285,11 @@ export async function admitPreparingRunWithClient(
           }
           return reviewedPath;
         };
+        // Quiet checks that end the branch leave its history (`lib/server/chats/quietScheduledChecks.ts`), so the
+        // latest answer the user was shown is the leaf they read; its new version leaves them on the old branch.
         if (!preSendSourceMessageId || (leafMessageId !== preSendSourceMessageId &&
-          (userLeafWithoutAssistant || (await reviewed())?.standInId !== preSendSourceMessageId))) {
+          (userLeafWithoutAssistant || ((await reviewed())?.standInId !== preSendSourceMessageId &&
+            (!leafMessageId || await quietCheckStandIn(tx, input.chatId, leafMessageId) !== preSendSourceMessageId))))) {
           throw new ActiveLeafConflictError();
         }
         let reviewedVersion = false;
@@ -3671,6 +3684,13 @@ export async function recoverPreparingRunWithClient(
   return recovered;
 }
 
+/** Whether the run asked for Workspace and, when not, the request's closed reason (`run_accepted`). */
+function runAcceptedWorkspaceFields(admission: PreparingRunAdmissionInput) {
+  return admission.workspaceEnabled === true
+    ? { workspace_requested: true }
+    : { workspace_requested: false, workspace_reason: admission.workspaceNotRequestedReason ?? "unknown" as const };
+}
+
 export async function createDormantPreparingRun(
   prismaClient: PrismaClient,
   admission: PreparingRunAdmissionInput,
@@ -3711,7 +3731,7 @@ export async function createDormantPreparingRun(
     );
     logEvent("run_accepted", { run_id: fallback.runId,
       kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-      preparation: fallback.deferredPdf ? "pdf" : "ready" });
+      preparation: fallback.deferredPdf ? "pdf" : "ready", ...runAcceptedWorkspaceFields(admission) });
     return { ...fallback, acceptedAt: new Date() };
   }
   // Temporary and scheduled task turns without a standing read (any
@@ -3721,7 +3741,8 @@ export async function createDormantPreparingRun(
     (created.scheduledPrompt === true && admission.normalizedRequest.memoryStandingVersion !== 1);
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-    preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory" });
+    preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory",
+    ...runAcceptedWorkspaceFields(admission) });
   const acceptedAt = new Date();
   if (created.deferredPdf || created.deferredWorkspace || withoutMemory) return { ...created, acceptedAt };
   // Durable acceptance transfers cancellation from the HTTP request to the

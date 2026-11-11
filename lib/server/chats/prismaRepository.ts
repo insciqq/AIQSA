@@ -26,6 +26,7 @@ import {
   loadAnswerReviewSessions
 } from "./legacyAnswerReviews";
 import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
+import { loadQuietCheckSummary, quietCheckOmission, type QuietCheckMessage } from "./quietScheduledChecks";
 import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
 import { mcpApprovalGated } from "../runs/mcpApprovalGate";
 import { unknownToolCall } from "../runs/unknownToolCall";
@@ -272,17 +273,20 @@ const hydratedMessageSelect = {
   provider: true,
   role: true,
   // A user turn a scheduled task posted: the task's current title labels it,
-  // and its run's id and unread state let the viewer mark it seen.
+  // and while its occurrence is kept, the occurrence's id and unread state let
+  // the viewer mark it seen.
   scheduledTaskOccurrences: {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: { id: true, task: { select: { id: true, title: true } }, unseenAt: true },
     take: 1
   },
-  // The settled monitoring outcome of the scheduled turn this user message
-  // started, kept on its run so it outlives the pruned occurrence history.
+  scheduledTaskPrompt: true,
+  // The scheduled turn this user message started: its task and settled
+  // monitoring outcome, kept on its run so they outlive the pruned occurrence
+  // history (`serializeHydratedMessage`).
   userModelRuns: {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { scheduledOutcome: true },
+    select: { id: true, scheduledOutcome: true, scheduledTaskId: true },
     take: 1,
     where: { scheduledOccurrenceId: { not: null } }
   },
@@ -469,7 +473,7 @@ type ToolActivityRun = {
   }[];
 };
 
-type ActiveBranchMessage = Readonly<{ id: string; parentMessageId: string | null; role: string }>;
+type ActiveBranchMessage = QuietCheckMessage;
 
 /**
  * The active branch from its root to the leaf, walked in PostgreSQL along
@@ -478,7 +482,8 @@ type ActiveBranchMessage = Readonly<{ id: string; parentMessageId: string | null
  * chat's message count) yields no branch. An answer review recorded before
  * the feature's removal reads as its question and latest version: its steps
  * leave the branch, the version hangs from the question, and a leaf that is
- * a step ends the branch at the version standing for it.
+ * a step ends the branch at the version standing for it. Quiet checks stay on
+ * it; `visibleBranch` leaves them out.
  */
 async function loadActiveBranchPath(
   tx: Prisma.TransactionClient,
@@ -495,26 +500,30 @@ async function loadActiveBranchPath(
       SELECT count(*)::int AS "messages" FROM "Message" WHERE "chatId" = ${chatId}
     ), "path" AS (
       SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
-        message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind", 0 AS "depth"
+        message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind", message."scheduledTaskPrompt",
+        message."branchSourceModelRunId", 0 AS "depth"
       FROM "Message" AS message
       WHERE message."chatId" = ${chatId} AND message."id" = ${activeLeafMessageId}
       UNION ALL
       SELECT parent."id", parent."parentMessageId", parent."role", parent."status", parent."answerReviewSessionId",
-        parent."systemTurnKind", path."depth" + 1
+        parent."systemTurnKind", parent."scheduledTaskPrompt", parent."branchSourceModelRunId", path."depth" + 1
       FROM "path" AS path
       CROSS JOIN "bound"
       -- One primary-key probe per step; a join would re-read the chat's
       -- messages on every step of the walk.
       CROSS JOIN LATERAL (
         SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
-          message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind"
+          message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind", message."scheduledTaskPrompt",
+          message."branchSourceModelRunId"
         FROM "Message" AS message
         WHERE message."id" = path."parentMessageId" AND message."chatId" = ${chatId}
         LIMIT 1
       ) AS parent
       WHERE path."depth" < "bound"."messages"
     )
-    SELECT "id", "parentMessageId", "role", "status", "answerReviewSessionId", "systemTurnKind" FROM "path" ORDER BY "depth" DESC
+    SELECT "id", "parentMessageId", "role", "status", "answerReviewSessionId", "systemTurnKind", "scheduledTaskPrompt",
+      "branchSourceModelRunId"
+    FROM "path" ORDER BY "depth" DESC
   `);
   if (rows[0]?.parentMessageId !== null) return [];
   const sessionIds = rows.flatMap((row) => row.answerReviewSessionId ?? []);
@@ -522,10 +531,52 @@ async function loadActiveBranchPath(
     parentId: row.parentMessageId, role: row.role, status: row.status, systemTurnKind: row.systemTurnKind })),
   sessionIds.length > 0 ? await loadAnswerReviewSessions(tx, chatId, sessionIds) : []);
   return rows.flatMap((row) => collapse.removed.has(row.id) ? [] : [{
+    branchSourceModelRunId: row.branchSourceModelRunId,
     id: row.id,
     parentMessageId: collapse.parents.has(row.id) ? collapse.parents.get(row.id) ?? null : row.parentMessageId,
-    role: row.role
+    role: row.role,
+    scheduledTaskPrompt: row.scheduledTaskPrompt
   }]);
+}
+
+/** The active branch as its reader sees it (`visibleBranch`). */
+type VisibleBranch = Readonly<{
+  /**
+   * The branch without its quiet checks, each kept message with the parent it
+   * reads as. It is also what a user's next message reads as its context, so
+   * the context figures measure it (`withoutQuietChecks` in
+   * `lib/server/runs/prismaRepository.ts`).
+   */
+  messages: ActiveBranchMessage[];
+  /** The branch holds a scheduled task's turn, so the chat may have quiet checks to count. */
+  scheduled: boolean;
+  /** The message the chat's leaf reads as; null when nothing of a stored branch is shown. */
+  visibleLeafMessageId: string | null;
+}>;
+
+/**
+ * Quiet checks leave what the reader is shown, however old (operator
+ * decision 2026-11-11, `lib/domain/quietScheduledChecks.ts`): pages, their
+ * cursors, the leaf and the context figures all read the branch without
+ * them, so a stretch of quiet checks never makes an empty page, and the
+ * figures and their session status come from the answers a next message's
+ * model reads. A branch walk that found no root keeps the stored leaf, as
+ * before.
+ */
+async function visibleBranch(
+  tx: Prisma.TransactionClient,
+  chatId: string,
+  path: ActiveBranchMessage[],
+  activeLeafMessageId: string | null
+): Promise<VisibleBranch> {
+  const scheduled = path.some((message) => message.scheduledTaskPrompt);
+  const omission = scheduled ? await quietCheckOmission(tx, chatId, path) : null;
+  if (!omission || omission.removed.size === 0) {
+    return { messages: path, scheduled, visibleLeafMessageId: visibleLeafMessageId(path, activeLeafMessageId) };
+  }
+  const messages = path.flatMap((message) => omission.removed.has(message.id) ? []
+    : [omission.parents.has(message.id) ? { ...message, parentMessageId: omission.parents.get(message.id) ?? null } : message]);
+  return { messages, scheduled, visibleLeafMessageId: messages.at(-1)?.id ?? null };
 }
 
 type ChatHistoryCursor = {
@@ -661,7 +712,8 @@ async function hydrateMessagePath(
     loadMemoryRunSources(tx, { runIds, userId }),
     loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
-      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
+      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId,
+    ordered.flatMap((message) => scheduledPromptTaskId(message) ?? [])),
     loadSubagentCallbackNames(tx, chatId, ordered),
     loadDeepResearchMarks(tx, { chatId, userId }, ordered.map((message) => ({ content: message.content, id: message.id, role: message.role,
       runId: message.assistantModelRuns[0]?.id ?? null, systemTurnKind: message.systemTurnKind })))
@@ -714,16 +766,30 @@ async function loadSubagentCallbackNames(tx: Prisma.TransactionClient, chatId: s
   return names;
 }
 
-/** The reader's current tasks among those the given answers' cards name; one read per page, none without cards. */
+/**
+ * The task a scheduled turn's own run names, for a turn whose occurrence was
+ * pruned: the prompt mark and the run's plain task id outlive that history.
+ */
+function scheduledPromptTaskId(message: Pick<HydratedMessageRow, "role" | "scheduledTaskOccurrences" | "scheduledTaskPrompt" |
+  "userModelRuns">): string | null {
+  return message.role === "user" && message.scheduledTaskPrompt && !message.scheduledTaskOccurrences?.length
+    ? message.userModelRuns?.[0]?.scheduledTaskId ?? null : null;
+}
+
+/**
+ * The reader's current tasks among those the given answers' cards and
+ * scheduled turns name; one read per page, none without either.
+ */
 async function loadCurrentScheduledTasks(
   tx: Prisma.TransactionClient,
   events: readonly Readonly<{ payload: unknown }>[],
-  userId: string
+  userId: string,
+  promptTaskIds: readonly string[] = []
 ): Promise<CurrentScheduledTasks> {
-  const taskIds = [...new Set(events.flatMap((event) => {
+  const taskIds = [...new Set([...events.flatMap((event) => {
     const card = artifactType(event.payload) === "scheduled_task" ? decodeScheduledTaskCard(artifactInnerPayload(event.payload)) : null;
     return card ? [card.taskId] : [];
-  }))];
+  }), ...promptTaskIds])];
   if (taskIds.length === 0) return new Map();
   const rows = await tx.scheduledTask.findMany({ select: scheduledTaskRowSelect, where: { id: { in: taskIds }, userId } });
   // A card needs the task's own fields only, never its run history.
@@ -923,6 +989,9 @@ function serializeHydratedMessage(
   const followups = projectMessageFollowups(message);
   const providerWait = message.assistantModelRuns.length && modelRun ? runProviderWait(modelRun.id) : null;
   const scheduledRun = message.scheduledTaskOccurrences?.[0];
+  // A scheduled turn whose occurrence was pruned keeps its mark from durable facts: only the unread mark goes with the row.
+  const promptTaskId = scheduledPromptTaskId(message);
+  const promptTask = promptTaskId ? scheduledTasks.get(promptTaskId) : undefined;
   // A scheduled check's turn: the user message through its scheduled run, the answer through its own run.
   const scheduledOutcome = message.role === "user" ? message.userModelRuns?.[0]?.scheduledOutcome : modelRun?.scheduledOutcome;
   const artifactSummary = modelRun
@@ -965,6 +1034,10 @@ function serializeHydratedMessage(
     role: message.role,
     ...(scheduledRun ? { scheduledTask: {
       taskId: scheduledRun.task.id, taskRunId: scheduledRun.id, title: scheduledRun.task.title, unseen: scheduledRun.unseenAt !== null
+    } } : promptTask ? { scheduledTask: {
+      // The turn's own run stands in for the pruned occurrence: no run history names it, and a turn never unread is
+      // never marked seen, while the marker keeps the shape a client of the previous release decodes.
+      taskId: promptTask.id, taskRunId: message.userModelRuns[0]!.id, title: promptTask.title, unseen: false
     } } : {}),
     ...(isScheduledTaskCheckOutcome(scheduledOutcome) ? { scheduledOutcome } : {}),
     status: message.status,
@@ -993,10 +1066,17 @@ function chatWorkspaceProjection(input: Readonly<{
 /**
  * The message the chat's leaf reads as: the visible branch's last message,
  * which stands for a leaf that is a step of an answer review recorded before
- * the feature's removal. A history cursor keeps the stored leaf.
+ * the feature's removal, or for a leaf that is a quiet check
+ * (`visibleBranch`). A history cursor keeps the stored leaf.
  */
 function visibleLeafMessageId(path: readonly ActiveBranchMessage[], activeLeafMessageId: string | null): string | null {
   return path.at(-1)?.id ?? activeLeafMessageId;
+}
+
+/** The chat's quiet checks for its summary line, read only for a branch that holds a scheduled turn. */
+async function loadBranchQuietChecks(tx: Prisma.TransactionClient, chatId: string, branch: VisibleBranch):
+  Promise<ChatDetailRecord["quietChecks"]> {
+  return branch.scheduled ? await loadQuietCheckSummary(tx, chatId) ?? undefined : undefined;
 }
 
 function serializeChatDetail(input: {
@@ -1007,6 +1087,7 @@ function serializeChatDetail(input: {
   hasOlder: boolean;
   usageStats: ChatUsageStats;
   messages: HydratedMessagePath;
+  quietChecks: ChatDetailRecord["quietChecks"];
   /** See `visibleLeafMessageId`. */
   visibleLeafMessageId: string | null;
   workspaceSnapshot: WorkspaceAvailabilitySnapshot;
@@ -1048,6 +1129,7 @@ function serializeChatDetail(input: {
       snapshotUpdatedAt: chat.updatedAt
     },
     pinned: chat.pinned,
+    ...(input.quietChecks ? { quietChecks: input.quietChecks } : {}),
     title: chat.title,
     ...(chatTitlePending(chat) ? { titlePending: true } : {}),
     updatedAt: chat.updatedAt,
@@ -1152,6 +1234,7 @@ function serializeArchivedChatDetail(input: {
   hasOlder: boolean;
   usageStats: ChatUsageStats;
   messages: HydratedMessagePath;
+  quietChecks: ChatDetailRecord["quietChecks"];
   visibleLeafMessageId: string | null;
   workspaceSnapshot: WorkspaceAvailabilitySnapshot;
 }): ArchivedChatDetailRecord {
@@ -1707,8 +1790,9 @@ export async function loadChatBranchSnapshotStats(
   // The caller supplies the leaf read in this same transaction so both
   // summaries remain fenced to the exact chat snapshot being serialized.
   const path = await loadActiveBranchPath(tx, input.chatId, input.activeLeafMessageId);
+  const branch = await visibleBranch(tx, input.chatId, path, input.activeLeafMessageId);
   return {
-    contextStats: await loadActiveBranchContextStats(tx, input.chatId, path),
+    contextStats: await loadActiveBranchContextStats(tx, input.chatId, branch.messages),
     usageStats: await loadChatUsageTotals(tx, input.chatId)
   };
 }
@@ -2016,13 +2100,16 @@ export function createPrismaChatRepository(
           }
         });
         if (!chat) return null;
-        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
+        const branch = await visibleBranch(tx, chatId, await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId),
+          chat.activeLeafMessageId);
+        const activeMessages = branch.messages;
         const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
         const [messages, contextStats, usageStats] = await Promise.all([
           hydrateMessagePath(tx, chatId, pageMessages, userId),
-          loadActiveBranchContextStats(tx, chatId, activeMessages),
+          loadActiveBranchContextStats(tx, chatId, branch.messages),
           loadChatUsageTotals(tx, chatId)
         ]);
+        // No quiet checks summary: the archived preview's keys are exact for a client of the previous release.
         return serializeArchivedChatDetail({
           viewerUserId: userId,
           availability: workspaceAvailability,
@@ -2031,7 +2118,8 @@ export function createPrismaChatRepository(
           hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
           usageStats,
           messages,
-          visibleLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
+          quietChecks: undefined,
+          visibleLeafMessageId: branch.visibleLeafMessageId,
           workspaceSnapshot
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
@@ -2060,7 +2148,9 @@ export function createPrismaChatRepository(
           cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
           cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
         ) return { kind: "stale" as const };
-        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
+        const branch = await visibleBranch(tx, chatId, await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId),
+          chat.activeLeafMessageId);
+        const activeMessages = branch.messages;
         const boundary = activeMessages.findIndex(
           (message) => message.id === cursor.beforeMessageId
         );
@@ -2083,7 +2173,7 @@ export function createPrismaChatRepository(
                 messages.parents
               )),
             pageInfo: {
-              activeLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
+              activeLeafMessageId: branch.visibleLeafMessageId,
               beforeCursor: pageCursor({
                 activeLeafMessageId: chat.activeLeafMessageId,
                 beforeMessageId: messages.messages[0]?.id,
@@ -2111,12 +2201,15 @@ export function createPrismaChatRepository(
           }
         });
         if (!chat) return null;
-        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
+        const branch = await visibleBranch(tx, chatId, await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId),
+          chat.activeLeafMessageId);
+        const activeMessages = branch.messages;
         const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
-        const [messages, contextStats, usageStats] = await Promise.all([
+        const [messages, contextStats, usageStats, quietChecks] = await Promise.all([
           hydrateMessagePath(tx, chatId, pageMessages, userId),
-          loadActiveBranchContextStats(tx, chatId, activeMessages),
-          loadChatUsageTotals(tx, chatId)
+          loadActiveBranchContextStats(tx, chatId, branch.messages),
+          loadChatUsageTotals(tx, chatId),
+          loadBranchQuietChecks(tx, chatId, branch)
         ]);
         return {
           binding: chat,
@@ -2128,7 +2221,8 @@ export function createPrismaChatRepository(
             hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
             usageStats,
             messages,
-            visibleLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
+            quietChecks,
+            visibleLeafMessageId: branch.visibleLeafMessageId,
             workspaceSnapshot
           })
         };
@@ -2197,7 +2291,9 @@ export function createPrismaChatRepository(
           cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
           cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
         ) return { kind: "stale" as const };
-        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
+        const branch = await visibleBranch(tx, chatId, await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId),
+          chat.activeLeafMessageId);
+        const activeMessages = branch.messages;
         const boundary = activeMessages.findIndex(
           (message) => message.id === cursor.beforeMessageId
         );
@@ -2220,7 +2316,7 @@ export function createPrismaChatRepository(
                 messages.parents
               )),
             pageInfo: {
-              activeLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
+              activeLeafMessageId: branch.visibleLeafMessageId,
               beforeCursor: pageCursor({
                 activeLeafMessageId: chat.activeLeafMessageId,
                 beforeMessageId: messages.messages[0]?.id,
@@ -2244,15 +2340,19 @@ export function createPrismaChatRepository(
         if (!chat) return null;
         const rows = await tx.$queryRaw<Array<{
           answerReviewSessionId: string | null;
+          branchSourceModelRunId: string | null;
           id: string;
           parentMessageId: string | null;
           preview: string;
           role: "assistant" | "user";
+          scheduledTaskPrompt: boolean;
           status: "cancelled" | "complete" | "error" | "queued" | "streaming";
           systemTurnKind: string | null;
         }>>(Prisma.sql`
           SELECT
             m."answerReviewSessionId",
+            m."branchSourceModelRunId",
+            m."scheduledTaskPrompt",
             m."systemTurnKind"::text AS "systemTurnKind",
             m."id",
             m."parentMessageId",
@@ -2280,11 +2380,16 @@ export function createPrismaChatRepository(
           answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
           status: row.status, systemTurnKind: row.systemTurnKind
         })), chat.activeLeafMessageId);
+        const collapsed = rows.flatMap((row) => collapse.removed.has(row.id) ? [] : [{ ...row,
+          parentMessageId: collapse.parents.has(row.id) ? collapse.parents.get(row.id) ?? null : row.parentMessageId }]);
+        // Nor does a quiet check show (`visibleBranch`): a version pager never offers one, and every branch that holds
+        // only quiet checks leaves the graph.
+        const quiet = await quietCheckOmission(tx, chatId, collapsed);
         const graph: ChatBranchGraphRecord = {
-          activeLeafMessageId: collapse.activeLeafId,
-          nodes: rows.flatMap((row) => collapse.removed.has(row.id) ? [] : [{
+          activeLeafMessageId: quiet.resolve(collapse.activeLeafId),
+          nodes: collapsed.flatMap((row) => quiet.removed.has(row.id) ? [] : [{
             id: row.id,
-            parentMessageId: collapse.parents.has(row.id) ? collapse.parents.get(row.id) ?? null : row.parentMessageId,
+            parentMessageId: quiet.parents.has(row.id) ? quiet.parents.get(row.id) ?? null : row.parentMessageId,
             preview: boundedChatBranchPreview(row.preview),
             role: row.role,
             status: row.status

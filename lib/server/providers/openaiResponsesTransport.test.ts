@@ -4,11 +4,13 @@ import {
   createFetchOpenAIResponsesClient,
   openAIRetryableErrorPayload
 } from "./openaiResponsesTransport";
-import { ProviderResponseTooLargeError } from "./network";
+import { ProviderRequestTimeoutError, ProviderResponseTooLargeError } from "./network";
 import { providerFailureMessage } from "./providerFailureMessage";
 import { observedFailure, providerContextRejection } from "./providerObservability";
 import { ProviderSafeFetchError } from "./providerSafeFetch";
 import { markProviderStreamDrop, providerStreamDrop } from "./streamDrop";
+import { markProviderStreamProgress, providerStreamProgress, providerStreamProgressFacts } from "./streamProgress";
+import { ProviderStreamIdleTimeoutError } from "./streamSafety";
 
 function delayedResponse(input: {
   delayMs: number;
@@ -68,6 +70,81 @@ describe("OpenAI Responses transport", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(fetchFn.mock.calls[0]![0]).toBe("https://example.test/backend-api/codex/responses");
     expect(JSON.parse(String(fetchFn.mock.calls[0]![1]?.body)).stream).toBe(false);
+  });
+
+  describe("a streamed create's deadlines (decision 2026-11-11)", () => {
+    const encoder = new TextEncoder();
+    const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
+    const item = { type: "message", id: "m1", role: "assistant", content: [{ type: "output_text", text: "OK" }] };
+    const terminal = { id: "r1", status: "completed", output: [] };
+    // A Codex LB streamed create of a 300 s request timeout whose body writes each step at its time after the headers;
+    // "close" ends it, and a cancelled body takes nothing more.
+    const create = (steps: readonly (readonly [atMs: number, text: string])[], keepalive = true) => {
+      let cancelled = 0;
+      const fetchFn = vi.fn<typeof fetch>(async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const [atMs, text] of steps) setTimeout(() => {
+            try { if (text === "close") controller.close(); else controller.enqueue(encoder.encode(text)); } catch { /* cancelled */ }
+          }, atMs);
+        },
+        cancel() { cancelled += 1; }
+      }), { headers: { "content-type": "text/event-stream" } }));
+      const client = createFetchOpenAIResponsesClient({ apiKey: "synthetic-key", baseUrl: "https://lb.example.test/backend-api/codex",
+        defaultTimeoutMs: 300_000, fetchFn, acceptStreamedCreate: true, ...(keepalive ? { streamIdle: "keepalive" as const } : {}) });
+      let outcome: unknown = "pending";
+      const settled = client.create({ stream: false }).then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+      return { cancelled: () => cancelled, outcome: () => outcome, settled };
+    };
+
+    it("lets a live streamed create run past its request timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        // Ten minutes of text, a delta every 30 s, before its item and terminal.
+        const deltas = Array.from({ length: 20 }, (_, index) => [(index + 1) * 30_000,
+          event({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "O" })] as const);
+        const call = create([[0, event({ type: "response.created", response: { id: "r1", status: "in_progress" } })], ...deltas,
+          [610_000, event({ type: "response.output_item.done", output_index: 0, item })],
+          [610_000, event({ type: "response.completed", response: terminal })], [610_000, "close"]]);
+        await vi.advanceTimersByTimeAsync(610_000);
+        await call.settled;
+        expect(call.outcome()).toEqual({ ...terminal, output: [item] });
+        expect(vi.getTimerCount()).toBe(0);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each([true, false])("ends a silent streamed create after a minute only on a keepalive route (keepalive=%s)", async (keepalive) => {
+      vi.useFakeTimers();
+      try {
+        const call = create([], keepalive);
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(call.outcome()).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await vi.advanceTimersByTimeAsync(keepalive ? 0 : 240_000);
+        expect(call.outcome()).not.toBe("pending");
+        await call.settled;
+        expect(call.outcome()).toMatchObject(keepalive
+          ? { code: "provider_stream_timeout", idleTimeoutMs: 60_000 }
+          : { code: "provider_request_timed_out", timeoutMs: 300_000 });
+        expect(compatibleDroppedRoundDecision(call.outcome())).toEqual({ retryAfterMs: null });
+        expect(call.cancelled()).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("keeps the request timeout for a streamed create kept alive by comments that never starts", async () => {
+      vi.useFakeTimers();
+      try {
+        const call = create(Array.from({ length: 29 }, (_, index) => [(index + 1) * 10_000, ": keepalive\n\n"] as const));
+        await vi.advanceTimersByTimeAsync(299_999);
+        expect(call.outcome()).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await call.settled;
+        expect(call.outcome()).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 300_000 });
+        expect(providerStreamProgress(call.outcome())).toMatchObject({ response_started: false });
+        expect(call.cancelled()).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally { vi.useRealTimers(); }
+    });
   });
 
   it.each(["[DONE]", JSON.stringify({ type: "response.completed", response: { status: "in_progress" } })])("rejects streamed creates without matching terminal proof: %s", async (data) => {
@@ -660,6 +737,16 @@ describe("compatible dropped-round decision", () => {
     for (const status of [400, 429, 500, 503, 504]) {
       expect(compatibleDroppedRoundDecision(await failureOf(() => new Response("{}", { status })))).toBeNull();
     }
+  });
+
+  it("sends a silent stream and a response that never started again, but not a stream cut at its ceiling", () => {
+    expect(compatibleDroppedRoundDecision(new ProviderStreamIdleTimeoutError({ idleTimeoutMs: 60_000, observedIdleMs: 60_000 }))).toEqual({ retryAfterMs: null });
+    const late = markProviderStreamProgress(new ProviderRequestTimeoutError(300_000), providerStreamProgressFacts({ responseStarted: false }));
+    expect(compatibleDroppedRoundDecision(late)).toEqual({ retryAfterMs: null });
+    const ceiling = markProviderStreamProgress(new ProviderRequestTimeoutError(1_800_000),
+      providerStreamProgressFacts({ lastEventMs: 1_000, responseStarted: true }));
+    expect(compatibleDroppedRoundDecision(ceiling)).toBeNull();
+    expect(compatibleDroppedRoundDecision(new ProviderRequestTimeoutError(300_000))).toBeNull();
   });
 
   it("sends a streamed create that dropped before completion again", async () => {

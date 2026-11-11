@@ -452,6 +452,8 @@ describe("persisted scheduled task runner", () => {
     const next = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(Date.now() + 1), taskId: created.id,
       trigger: "manual", userId } });
     expect([...(await runner.loadExecution(next.id))!.relevantMcpServerIds!].sort()).toEqual(["server-mail", "server-tracker"]);
+    // The run is told its schedule and when the run behind its previous shown result was admitted, read from that run.
+    expect(await runner.loadExecution(next.id)).toMatchObject({ previousResultAt: accepted.createdAt, task: { schedule: daily } });
     // Servers the result's Workspace code called are relied on like servers its model called.
     await codeReceipts(run.runId, chat.id, [{ serverId: "server-gitlab", state: "complete" }]);
     expect([...(await runner.loadExecution(next.id))!.relevantMcpServerIds!].sort())
@@ -462,6 +464,11 @@ describe("persisted scheduled task runner", () => {
     await prisma.scheduledTask.update({ data: { toolsEnabled: true }, where: { id: created.id } });
     await prisma.modelRun.delete({ where: { id: run.runId } });
     expect((await runner.loadExecution(next.id))!.relevantMcpServerIds).toBeNull();
+    expect((await runner.loadExecution(next.id))!.previousResultAt).toBeNull();
+    // A task that runs only on its webhook has no schedule to tell.
+    await prisma.scheduledTask.update({ data: { scheduleEnabled: false, webhookEnabled: true }, where: { id: created.id } });
+    expect((await runner.loadExecution(next.id))!.task.schedule).toBeNull();
+    await prisma.scheduledTask.update({ data: { scheduleEnabled: true, webhookEnabled: false }, where: { id: created.id } });
     // The prompt's page-reading snapshot is read with the task's revision.
     const digest = "c".repeat(64);
     await prisma.scheduledTask.update({ data: { promptUrlDigests: [digest] }, where: { id: created.id } });

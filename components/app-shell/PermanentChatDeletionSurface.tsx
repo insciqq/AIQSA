@@ -14,6 +14,7 @@ import {
   type PermanentChatDeletionUiCopyKey
 } from "@/components/app-shell/permanentChatDeletionUiCopy";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import {
   AlertTriangle,
   Check,
@@ -200,7 +201,7 @@ function Confirmation() {
           {busy
             ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
             : <Trash2 className="size-4" aria-hidden="true" />}
-          {t("confirmLabel")}
+          <TranslatableLabel>{t("confirmLabel")}</TranslatableLabel>
         </button>
       </div>
     </ModalFrame>
@@ -268,7 +269,7 @@ function StatusDialog() {
             onClick={() => void refreshPermanentChatDeletionStatus().catch(() => undefined)}
           >
             <RotateCw className={`size-4 ${loadState === "loading" ? "animate-spin" : ""}`} aria-hidden="true" />
-            {loadState === "loading" ? t("refreshing") : t("refresh")}
+            <TranslatableLabel>{loadState === "loading" ? t("refreshing") : t("refresh")}</TranslatableLabel>
           </button>
         ) : null}
         <button

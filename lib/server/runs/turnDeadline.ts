@@ -63,7 +63,10 @@ function imageGenerationWaitMs(plan: NonNullable<NormalizedRunRequest["imagePlan
 
 /** How long the work of one run may take once started (`toolCallBounds`). */
 export type ToolCallBounds = Readonly<{
-  /** The longest one model round may take: the answer model's own response timeout. */
+  /**
+   * The time one model round is allowed to reach its answer: the answer model's own response timeout, which bounds the
+   * wait for the response to start (a live stream may run longer, up to the turn's end, decision 2026-11-11).
+   */
   answer: number;
   /**
    * What may still be running when rounds stop offering tools: a common call (MCP's default call timeout, or a

@@ -37,6 +37,28 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
   "workspace_not_started"
 ] as const);
 
+/**
+ * Why a message request asks for no Workspace (`workspace.reason` beside
+ * `enabled: false`), only for the content-free `run_accepted` record: it never
+ * changes admission. `installation_disabled` covers any off state a successful
+ * availability read reported (disabled or runner unavailable).
+ */
+export const WORKSPACE_NOT_REQUESTED_REASONS = Object.freeze([
+  "installation_disabled",
+  "model_no_tools",
+  "user_declined",
+  "unknown"
+] as const);
+
+export type WorkspaceNotRequestedReason = (typeof WORKSPACE_NOT_REQUESTED_REASONS)[number];
+
+/** A request's reason, or `unknown` for anything outside the closed set. */
+export function decodeWorkspaceNotRequestedReason(value: unknown): WorkspaceNotRequestedReason {
+  return typeof value === "string" && (WORKSPACE_NOT_REQUESTED_REASONS as readonly string[]).includes(value)
+    ? value as WorkspaceNotRequestedReason
+    : "unknown";
+}
+
 export type WorkspaceSessionStateWire = (typeof WORKSPACE_SESSION_STATES)[number];
 export type WorkspaceUnavailableReason = (typeof WORKSPACE_UNAVAILABLE_REASONS)[number];
 export type WorkspaceErrorCode = (typeof WORKSPACE_ERROR_CODES)[number];

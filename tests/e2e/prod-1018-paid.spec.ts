@@ -15,8 +15,10 @@
  * 2. MCP oversized call isolation (codex keys + the stand's app running with
  *    AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES lowered to 4096..65536, as
  *    mcp-oversized-result-paid.spec.ts needs): in one run, the over-bound
- *    `tools/call` fails with `mcp_call_result_too_large` and the hint, and
- *    the following call on the same server succeeds over the same session.
+ *    `tools/call` (four times the limit, over the transport's wire bound)
+ *    is dispatched once and completes cut to the limit with the truncation
+ *    marker, its tail undelivered, and the following call on the same
+ *    server succeeds over the same session.
  *    AIQSA_FEATURES_FIXTURE_HOST / AIQSA_FEATURES_FIXTURE_PUBLIC_HOST place
  *    the synthetic peer. The deterministic two-turn version is
  *    mcp-oversized-call-isolation.spec.ts. Bound: one answer of about three
@@ -69,7 +71,6 @@ import { PrismaClient, type ModelRun } from "@prisma/client";
 import { expect, test, type APIRequestContext, type APIResponse, type Page, type TestInfo } from "@playwright/test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
-import { mcpOversizedResponseMessage, mcpToolFailureMessage } from "../../lib/contracts/mcpToolFailure";
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../lib/contracts/adminSearch";
 import type { ContentBlock } from "../../lib/domain/content";
 import type { ValidatedSearchQuery } from "../../lib/domain/search";
@@ -203,18 +204,27 @@ async function connection(request: APIRequestContext, connectionId: string): Pro
 
 const MCP_BIG_TOOL = "read_thread";
 const MCP_SMALL_TOOL = "read_message";
-const MCP_HINT_TAIL = (() => {
-  const message = mcpOversizedResponseMessage();
-  return message.slice(message.indexOf("Request less data"));
-})();
+/** The client's marker opens with this stable English text (`lib/server/mcp/resultTruncation.ts`). */
+const MCP_MARKER_PREFIX = "[Result truncated: the MCP tool returned ";
+/** Codes the over-bound call used to fail with, or cascade into on the next call. */
+const MCP_CASCADE_CODES = ["mcp_call_result_too_large", "mcp_response_too_large", "mcp_session_closed", "mcp_session_evicted",
+  "mcp_server_unavailable"];
 
 type McpDispatch = Readonly<{ initializedSessions: number; name: string }>;
+type McpPersistedResult = Readonly<{
+  content?: Array<{ text?: unknown }>;
+  rawPreview?: { deliveredBytes?: unknown; originalBytes?: unknown; truncated?: unknown };
+  status?: unknown;
+}>;
 
-/** A synthetic mail peer: the thread is four times the delivered limit (over the transport bound), a message is small. */
-async function startMailEndpoint(): Promise<{ dispatches: McpDispatch[]; endpoint: MutableMcpEndpoint }> {
+/**
+ * A synthetic mail peer: the thread is four times the delivered limit (over the transport bound) and ends in a unique
+ * tail token, a message is small.
+ */
+async function startMailEndpoint(tail: string): Promise<{ dispatches: McpDispatch[]; endpoint: MutableMcpEndpoint }> {
   const dispatches: McpDispatch[] = [];
   const line = "Synthetic message: a routine status note about a fictional project, with nothing to act on.\n";
-  const thread = line.repeat(Math.ceil((mcpLimit * 4) / Buffer.byteLength(line)));
+  const thread = `${line.repeat(Math.ceil((mcpLimit * 4) / Buffer.byteLength(line)))}${tail}\n`;
   let endpoint: MutableMcpEndpoint | null = null;
   const idSchema = { additionalProperties: false, properties: { id: { maxLength: 64, type: "string" } }, required: ["id"],
     type: "object" as const };
@@ -256,16 +266,17 @@ async function publishMcpServer(request: APIRequestContext, endpoint: MutableMcp
 }
 
 const MCP_PROMPT = "This is a test with one synthetic mail service. First call read_thread exactly once with id T-1. " +
-  "Then, whatever read_thread returned (also if it failed or told you to request less data), call read_message exactly once with id M-1. Do not call any other tool and do not call any tool twice. " +
+  "Then, whatever read_thread returned (also if it was cut short or failed), call read_message exactly once with id M-1. Do not call any other tool and do not call any tool twice. " +
   "Then reply in one short sentence saying which call returned text.";
 
-test("MCP: an over-bound tools/call fails alone with its hint while the next call on the server succeeds in the same run", async ({ request }, testInfo) => {
+test("MCP: an over-bound tools/call arrives cut with a marker while the next call on the server succeeds in the same run", async ({ request }, testInfo) => {
   test.skip(!codexConfigured, "paid: requires CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
   test.skip(!mcpLimitLowered, "requires AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES between 4096 and 65536 on the stand");
   test.setTimeout(30 * 60_000);
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   const summary: Record<string, unknown> = { limit: mcpLimit };
-  const { dispatches, endpoint } = await startMailEndpoint();
+  const tail = `TAIL-${randomUUID().slice(0, 8)}-NOT-DELIVERED`;
+  const { dispatches, endpoint } = await startMailEndpoint(tail);
   let chatId: string | null = null;
   let serverId: string | null = null;
   try {
@@ -281,25 +292,32 @@ test("MCP: an over-bound tools/call fails alone with its hint while the next cal
       select: { result: true, state: true, toolName: true }, where: { modelRunId: run.id, mcpRunBindingId: { not: null } } });
     const big = calls.find((call) => call.toolName.includes(MCP_BIG_TOOL));
     const small = calls.find((call) => call.toolName.includes(MCP_SMALL_TOOL));
-    const bigText = ((big?.result as { content?: Array<{ text?: unknown }> } | null)?.content ?? [])
-      .flatMap((part) => typeof part.text === "string" ? [part.text] : []).join("\n");
+    const bigResult = big?.result as McpPersistedResult | null | undefined;
+    const bigTexts = (bigResult?.content ?? []).flatMap((part) => typeof part.text === "string" ? [part.text] : []);
+    const preview = bigResult?.rawPreview;
     const serialized = JSON.stringify({ calls: calls.map((call) => call.result), error: run.errorPayload });
     Object.assign(summary, {
       status: run.status, code: runErrorCode(run), mcpCalls: calls.map((call) => ({ state: call.state,
         tool: call.toolName.includes(MCP_BIG_TOOL) ? "big" : call.toolName.includes(MCP_SMALL_TOOL) ? "small" : "other" })),
       dispatches: dispatches.map((entry) => entry.name === MCP_BIG_TOOL ? "big" : "small"),
       sessionsAtDispatch: dispatches.map((entry) => entry.initializedSessions),
-      bigHint: bigText.includes(MCP_HINT_TAIL), bigCode: serialized.includes("mcp_call_result_too_large"),
-      sessionClosed: serialized.includes("mcp_session_closed"), openSessions: endpoint.openSessions()
+      bigTruncated: preview?.truncated === true,
+      bigOriginalBytes: typeof preview?.originalBytes === "number" ? preview.originalBytes : null,
+      bigDeliveredBytes: typeof preview?.deliveredBytes === "number" ? preview.deliveredBytes : null,
+      bigMarker: bigTexts.at(-1)?.startsWith(MCP_MARKER_PREFIX) === true, tailDelivered: serialized.includes(tail),
+      cascadeCodes: MCP_CASCADE_CODES.filter((code) => serialized.includes(code)), openSessions: endpoint.openSessions()
     });
     expect(run.status, `the run completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
     expect(dispatches.map((entry) => entry.name), "each tool was sent once, the oversized one first").toEqual([MCP_BIG_TOOL, MCP_SMALL_TOOL]);
-    expect(big?.state, "the over-bound call failed").toBe("error");
-    expect(bigText).toContain(mcpToolFailureMessage("mcp_call_result_too_large"));
-    expect(summary.bigHint, "the failure tells the model to request less data").toBe(true);
-    expect(summary.bigCode, "the failure keeps its stable code").toBe(true);
+    expect(big?.state, "the over-bound call settled as an ordinary completed call").toBe("complete");
+    expect(bigResult?.status, "its result is complete, not an error").toBe("complete");
+    expect(summary.bigTruncated, "the result carries the truncation flag").toBe(true);
+    expect(summary.bigOriginalBytes, "the original size is over the transport bound").toBeGreaterThan(2 * mcpLimit);
+    expect(summary.bigDeliveredBytes, "the delivered size fits the limit").toBeLessThanOrEqual(mcpLimit);
+    expect(summary.bigMarker, "the delivered result ends with the truncation marker").toBe(true);
+    expect(summary.tailDelivered, "the cut tail was not delivered").toBe(false);
     expect(small?.state, "the following call on the same server succeeded").toBe("complete");
-    expect(summary.sessionClosed, "no session failure followed").toBe(false);
+    expect(summary.cascadeCodes, "no call or session failure in the run").toEqual([]);
     expect(dispatches[1]!.initializedSessions, "the following call reused the session (no re-initialize)").toBe(dispatches[0]!.initializedSessions);
     expect(endpoint.openSessions(), "the session was not closed").toBeGreaterThan(0);
   } finally {

@@ -101,12 +101,22 @@ const APPROVALS_GO_BACK = "MCP calls that need the user's approval are not sent:
 export const SUBAGENT_ROLE_SECTION = roleLines({ limits: [`- You cannot change ${RESOURCES} or call sub-agents. ${APPROVALS_GO_BACK}`],
   opening: MAIN_AGENT_OPENING, reader: "the main agent" });
 
-/** The role of a sub-agent with every tool, which may start children. */
-export const SUBAGENT_STARTER_ROLE_SECTION = roleLines({ limits: [
-  `- You cannot change ${RESOURCES}. ${APPROVALS_GO_BACK} Those your helpers hand back go up with your report on their own: never make them yourself.`,
-  `- \`${CALL_SUBAGENT_TOOL_NAME}\` starts a helper for a separable part of your task, at most ${SUBAGENT_LIMITS.childrenPerSubagent} at once, and helpers start none of their own. Do small things yourself. Wait for one, or start it with \`background: true\` and go on: its report arrives as a message, and when you finish with one still running you wait for its report. A helper still running when your turn ends for any other reason is stopped. \`${STOP_SUBAGENT_TOOL_NAME}\` stops yours; you cannot continue or stop anyone else's.`,
-  `- A helper's question reaches you: answer it with \`${CALL_SUBAGENT_TOOL_NAME}\` by its name, or pass it on with \`${ASK_PARENT_TOOL_NAME}\` when it is not yours to settle, which in the foreground ends your turn and stops your helpers.`
-], opening: MAIN_AGENT_OPENING, reader: "the main agent" });
+/** The role of a sub-agent with every tool, which may start children; `background`: the run lets them run in the background. */
+function starterRoleLines(background: boolean): string {
+  const waiting = background
+    ? "Wait for one, or start it with `background: true` and go on: its report arrives as a message, and when you finish with one still running you wait for its report."
+    : "In this run you wait for each helper's report: none runs in the background.";
+  return roleLines({ limits: [
+    `- You cannot change ${RESOURCES}. ${APPROVALS_GO_BACK} Those your helpers hand back go up with your report on their own: never make them yourself.`,
+    `- \`${CALL_SUBAGENT_TOOL_NAME}\` starts a helper for a separable part of your task, at most ${SUBAGENT_LIMITS.childrenPerSubagent} at once, and helpers start none of their own. Do small things yourself. ${waiting} A helper still running when your turn ends for any other reason is stopped. \`${STOP_SUBAGENT_TOOL_NAME}\` stops yours; you cannot continue or stop anyone else's.`,
+    `- A helper's question reaches you: answer it with \`${CALL_SUBAGENT_TOOL_NAME}\` by its name, or pass it on with \`${ASK_PARENT_TOOL_NAME}\` when it is not yours to settle, which in the foreground ends your turn and stops your helpers.`
+  ], opening: MAIN_AGENT_OPENING, reader: "the main agent" });
+}
+
+export const SUBAGENT_STARTER_ROLE_SECTION = starterRoleLines(true);
+
+/** The starter's role in a run whose helpers cannot run in the background (a Telegram turn, a scheduled occurrence). */
+export const SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION = starterRoleLines(false);
 
 /** The role of a child, started by a sub-agent: one level is all there is. */
 export const SUBAGENT_CHILD_ROLE_SECTION = roleLines({ limits: [`- You cannot change ${RESOURCES} or start sub-agents of your own. ${APPROVALS_GO_BACK}`],

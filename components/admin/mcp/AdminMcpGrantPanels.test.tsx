@@ -311,7 +311,7 @@ describe("Admin MCP grant ownership", () => {
       />
     );
 
-    expect(screen.getByText("Included via Full access")).toHaveAttribute(
+    expect(screen.getByText("Included via Full access").closest("[data-effective-mcp-access]")).toHaveAttribute(
       "data-effective-mcp-access",
       "granted"
     );
@@ -342,7 +342,7 @@ describe("Admin MCP grant ownership", () => {
       />
     );
 
-    expect(screen.getByText("Included via operators")).toHaveAttribute(
+    expect(screen.getByText("Included via operators").closest("[data-effective-mcp-access]")).toHaveAttribute(
       "data-effective-mcp-access",
       "granted"
     );
@@ -369,7 +369,7 @@ describe("Admin MCP grant ownership", () => {
       />
     );
 
-    expect(screen.getByText("Unavailable while account is inactive")).toHaveAttribute(
+    expect(screen.getByText("Unavailable while account is inactive").closest("[data-effective-mcp-access]")).toHaveAttribute(
       "data-effective-mcp-access",
       "not-granted"
     );

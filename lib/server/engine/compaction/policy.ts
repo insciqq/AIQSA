@@ -1,5 +1,5 @@
 import { contextItemTokens, type ContextMeasureCalibration, type ReasoningWeight } from "../contextMeasure";
-import { selectTranscript, type TranscriptImages, type TranscriptItem, type TranscriptTarget } from "../transcript";
+import { replayKeeps, selectTranscript, type TranscriptImages, type TranscriptItem, type TranscriptTarget } from "../transcript";
 import { itemRules, type CompactionItemRules } from "./items";
 import { estimateRetainedTokens } from "./retained";
 
@@ -21,7 +21,19 @@ import { estimateRetainedTokens } from "./retained";
  * user's approval stays in the kept tail. The cut may pass the run's input:
  * while its request carries attachments or a reminder, which render only there, replay keeps
  * it beside the run's own context (`TranscriptTarget.carriedInputId`), so a
- * long turn still compacts, and its figures count it as staying.
+ * long turn still compacts. Its figures count what replay keeps from before
+ * the cut (that input, the run's own context, earlier file marks) as staying,
+ * never as freed.
+ *
+ * Progress guarantee (2026-11-11): a request that fits is compacted only when
+ * the compaction frees at least the recent tail's budget, never while the
+ * fixed part alone (instructions, tools, run context, attachment text) is at
+ * or above the background threshold, and its cut keeps at least a quarter of
+ * that budget verbatim, so the newest results stay. In production a turn
+ * whose attachments alone passed the threshold compacted before every request,
+ * 23 times in one answer, each time folding the result the model had just read
+ * into the summary, so it read the same guide again and again. A request that
+ * does not fit compacts as far as it can, or fails visibly.
  */
 
 export const COMPACTION_THRESHOLDS = Object.freeze({
@@ -68,6 +80,28 @@ export function usableContextTokens(window: CompactionWindow): number {
   return Math.max(0, contextWindow - output);
 }
 
+/**
+ * The share of the usable window kept free between a request's fixed part and
+ * the background threshold. It holds what a compaction keeps (its summary, the
+ * record, retained messages and the recent tail, each budget at most
+ * `COMPACTION_RETENTION.maxShare`) and the work between two compactions. On a
+ * 700k window with 64k output it is 95k tokens, of which a compaction keeps at
+ * most about 60k, so it lands under the threshold with room for several
+ * rounds; on a small window a cut keeping the recent tail's quarter still does.
+ */
+export const COMPACTION_WORKING_MARGIN = 0.15;
+
+/**
+ * The most a request's fixed part (instructions, tools, run context, the input
+ * and its attachment text: what no compaction removes) may estimate for a
+ * compaction to make room: the background threshold less the working margin.
+ * Admission keeps attachment text within it (`lib/server/runs/requestContextBudget.ts`).
+ */
+export function compactableFixedTokens(window: CompactionWindow): number {
+  const usable = usableContextTokens(window);
+  return Math.max(0, Math.floor(usable * COMPACTION_THRESHOLDS.background) - Math.ceil(usable * COMPACTION_WORKING_MARGIN));
+}
+
 /** Retention budgets for a usable window: small windows keep proportionally less. */
 export function compactionRetention(usable: number, overrides: Partial<CompactionRetention> = {}): CompactionRetention {
   const cap = (value: number) => Math.max(0, Math.min(value, Math.floor(usable * COMPACTION_RETENTION.maxShare)));
@@ -86,12 +120,13 @@ export type CompactionCut = Readonly<{
   baseId: string | null;
   /** Window items before the kept tail, the base compaction not counted. */
   compactedItems: number;
-  /** Estimated tokens before the kept tail, the base compaction included and the input replay carries not. */
+  /** Estimated tokens before the kept tail that the compaction replaces: the base compaction included, what replay keeps
+   * from before the tail (the run's own context, the carried input, earlier file marks: `replayKeeps`) not. */
   compactedTokens: number;
   /** The first item kept verbatim. */
   keepFromId: string;
   keptItems: number;
-  /** Estimated tokens of the kept tail and the input replay carries past it. */
+  /** Estimated tokens of the kept tail and of what replay keeps from before it. */
   keptTokens: number;
 }>;
 
@@ -188,6 +223,8 @@ export type CompactionCutInput = CompactionWeights & Readonly<{
   items: readonly TranscriptItem[];
   /** The kept tail never grows past this while a later cut point exists. */
   maxKeptTokens?: number;
+  /** The kept tail never shrinks below this: only cut points with this much after them count. */
+  minKeptTokens?: number;
   /** Tokens kept verbatim at the end, at least, where cut points allow. */
   recentTokens: number;
   target: TranscriptTarget;
@@ -198,11 +235,12 @@ export type CompactionCutInput = CompactionWeights & Readonly<{
  * point with that much after it. When the whole window after the base is
  * smaller, the latest valid point (the most a compaction can remove). Null
  * when no valid point exists, for instance while the only earlier call
- * still waits for its result.
+ * still waits for its result, or none keeps `minKeptTokens`.
  */
 export function findCompactionCut(input: CompactionCutInput): CompactionCut | null {
   const { baseId, first, suffix, tail, window } = windowWeights(input.items, input.target, input);
-  const positions = cutPositions(window, tail, itemRules(input.rules));
+  const minimum = input.minKeptTokens ?? 0;
+  const positions = cutPositions(window, tail, itemRules(input.rules)).filter((position) => suffix[position]! >= minimum);
   if (positions.length === 0) return null;
   let chosen = positions[positions.length - 1]!;
   for (const position of positions) {
@@ -213,15 +251,23 @@ export function findCompactionCut(input: CompactionCutInput): CompactionCut | nu
       if (position > chosen && suffix[chosen]! > input.maxKeptTokens) chosen = position;
     }
   }
-  const carriedAt = window.findIndex((item) => item.id === input.target.carriedInputId);
-  const carried = carriedAt >= 0 && carriedAt < chosen ? suffix[carriedAt]! - suffix[carriedAt + 1]! : 0;
+  // Replay keeps the run's own context, the carried input and earlier file marks from before the cut (`replayKeeps`), so
+  // they stay in the request: the compaction neither removes nor frees them.
+  let staying = 0;
+  for (let position = 0; position < chosen; position += 1) {
+    const item = window[position]!;
+    const kept = replayKeeps(item, input.target);
+    if (!kept) continue;
+    staying += kept === item ? suffix[position]! - suffix[position + 1]!
+      : contextItemTokens(kept, input.target, input.estimate, input.reasoning ?? "opaque", input.calibration, input.images);
+  }
   return {
     baseId,
     compactedItems: chosen - first,
-    compactedTokens: suffix[0]! - suffix[chosen]! - carried,
+    compactedTokens: suffix[0]! - suffix[chosen]! - staying,
     keepFromId: window[chosen]!.id,
     keptItems: window.length - chosen,
-    keptTokens: suffix[chosen]! + carried
+    keptTokens: suffix[chosen]! + staying
   };
 }
 
@@ -239,6 +285,8 @@ export type BackgroundCompactionState = "failed" | "idle" | "ready" | "running";
 export type CompactionPlanInput = CompactionWeights & Readonly<{
   /** The loop's background compaction for this target: none, running, ready to swap, or failed this turn. */
   background: BackgroundCompactionState;
+  /** What the request carries that no compaction removes (`ContextMeasure.fixedTokens`); absent, nothing counts so. */
+  irreducibleTokens?: number;
   items: readonly TranscriptItem[];
   /** A provider context-length rejection of the request just sent. */
   overflow?: Readonly<{ reportedMaximumTokens?: number }> | null;
@@ -276,7 +324,11 @@ function overflowUsable(usable: number, window: CompactionWindow, overflow: Comp
  * What to do before the next request. A cut is offered only when it leaves
  * the context below the background threshold (so it does not trigger again
  * at once) or, in the foreground, at least makes the request fit; a tighter
- * tail is tried before giving up.
+ * tail is tried before giving up. While the request fits, a cut must also
+ * free the recent tail's budget and keep a quarter of it verbatim, only the
+ * whole recent tail is kept by a cut that lands above the threshold, and none
+ * is offered while the fixed part alone reaches the threshold: the request
+ * then goes as it is until it no longer fits.
  */
 export function planCompaction(input: CompactionPlanInput): CompactionPlan {
   const thresholds = { ...COMPACTION_THRESHOLDS, ...input.thresholds };
@@ -292,17 +344,32 @@ export function planCompaction(input: CompactionPlanInput): CompactionPlan {
 
   const retention = compactionRetention(usable, input.retention);
   const goal = Math.floor(usable * thresholds.background);
+  const nothing = (): CompactionPlan => urgent ? { ...figures, kind: "unavailable", reason } : { ...figures, kind: "none" };
+  // Only a request that fits is held to the progress guarantee; one rejected for its size or measured past the window
+  // compacts as far as it can.
+  const fits = !overflow && tokens <= usable;
+  if (fits && Math.max(0, input.irreducibleTokens ?? 0) >= goal) return nothing();
+  const minimumFreed = fits ? retention.recentTokens : 0;
   let fallback: Readonly<{ cut: CompactionCut; expectedTokens: number }> | null = null;
   for (const recentTokens of [retention.recentTokens, Math.floor(retention.recentTokens / 4)]) {
-    const cut = findCompactionCut({ ...input, maxKeptTokens: Math.floor(usable * COMPACTION_RETENTION.maxKeptShare), recentTokens });
+    const tighter = recentTokens < retention.recentTokens;
+    const cut = findCompactionCut({ ...input, maxKeptTokens: Math.floor(usable * COMPACTION_RETENTION.maxKeptShare),
+      ...(fits ? { minKeptTokens: Math.floor(retention.recentTokens / 4) } : {}), recentTokens });
     if (!cut) break;
     const expectedTokens = tokens - cut.compactedTokens + retention.summaryTokens +
       estimateRetainedTokens(input.items, cut.keepFromId, input.estimate, retention, input.rules);
+    // What it frees is the compacted span's estimate less the summary and retained text replacing it, whatever the
+    // measure is anchored on.
+    if (tokens - expectedTokens < minimumFreed) continue;
     if (expectedTokens <= goal) {
       return urgent ? { ...figures, cut, expectedTokens, kind: "foreground", reason } : { ...figures, cut, expectedTokens, kind: "background" };
     }
-    if (expectedTokens < Math.min(usable, tokens) && (!fallback || expectedTokens < fallback.expectedTokens)) fallback = { cut, expectedTokens };
+    // Short of the threshold, a request that fits keeps its whole recent tail, so the results the model read last stay;
+    // one that does not takes the most room.
+    if (expectedTokens < Math.min(usable, tokens) && (fits ? !tighter : !fallback || expectedTokens < fallback.expectedTokens)) {
+      fallback = { cut, expectedTokens };
+    }
   }
   if (urgent && fallback) return { ...figures, ...fallback, kind: "foreground", reason };
-  return urgent ? { ...figures, kind: "unavailable", reason } : { ...figures, kind: "none" };
+  return nothing();
 }

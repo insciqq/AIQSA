@@ -45,6 +45,7 @@ import {
   useScheduledTasksStore
 } from "./scheduledTasksStore";
 import { markScheduledTaskRunsSeen } from "./useScheduledTaskUpdates";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 
 type Editor = Readonly<{
   draft: ScheduledTaskEditorDraft;
@@ -547,7 +548,7 @@ function ScheduledTaskRow({
         <p className="v2-scheduled-row-schedule">{scheduledTaskTriggerText(task, viewerTimeZone)}</p>
         <p className="v2-scheduled-row-status" data-tone={status.tone}>
           {task.kind === "monitoring" ? <span className="v2-scheduled-row-kind">Monitoring · </span> : null}
-          {status.text}
+          <TranslatableLabel>{status.text}</TranslatableLabel>
         </p>
         {error ? <p className="v2-scheduled-row-error" role="alert">{error}</p> : null}
       </div>

@@ -242,8 +242,8 @@ describe("accepted provider request executor", () => {
         droppedRequestRetry: { random: () => 0, sleep: async (delayMs) => { sleeps.push(delayMs); } }
       });
       const accepted = compatible("https://lb.example.test/backend-api/codex");
-      const run = () => execute({ ...accepted, connection: { ...accepted.connection, allowPrivateNetwork: false, authenticationMode: "bearer" } },
-        compatibleRequest());
+      const run = (snapshot: ProviderExecutionSnapshot = { ...accepted, connection: { ...accepted.connection, allowPrivateNetwork: false,
+        authenticationMode: "bearer" } }) => execute(snapshot, compatibleRequest());
       return { fetchFn, run, sleeps };
     }
     const sse = (...events: readonly Record<string, unknown>[]) => () => new Response(
@@ -291,6 +291,73 @@ describe("accepted provider request executor", () => {
       await expect(call.run()).resolves.toMatchObject({ finalText: "settled" });
       expect(call.fetchFn).toHaveBeenCalledTimes(2);
       expect(call.sleeps).toHaveLength(1);
+    });
+
+    // A Codex LB create arrives as a stream; one that goes silent is a stuck upstream (decision 2026-11-11).
+    describe("a streamed create on the bearer-auth root, with a 300 s response timeout", () => {
+      const encoder = new TextEncoder();
+      // An SSE body writing each step at its time after the headers; "close" ends it, a cancelled body takes nothing more.
+      const timedSse = (steps: readonly (readonly [atMs: number, text: string])[]) => () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const [atMs, text] of steps) setTimeout(() => {
+            try { if (text === "close") controller.close(); else controller.enqueue(encoder.encode(text)); } catch { /* cancelled */ }
+          }, atMs);
+        }
+      }), { headers: { "content-type": "text/event-stream" } });
+      const frame = (value: Record<string, unknown>) => `event: ${String(value.type)}\ndata: ${JSON.stringify(value)}\n\n`;
+      async function vision(replies: readonly (() => Response)[]) {
+        const call = await bearer(replies);
+        const accepted = compatible("https://lb.example.test/backend-api/codex");
+        const execute = () => call.run({ ...accepted, connection: { ...accepted.connection, allowPrivateNetwork: false,
+          authenticationMode: "bearer", responseTimeoutMs: 300_000 } });
+        let outcome: unknown = "pending";
+        const settled = execute().then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+        return { ...call, outcome: () => outcome, settled };
+      }
+
+      it("sends a stream that sent nothing for a minute again inside the before-output window", async () => {
+        vi.useFakeTimers();
+        try {
+          const call = await vision([timedSse([]), completed]);
+          await vi.advanceTimersByTimeAsync(59_999);
+          expect(call.fetchFn).toHaveBeenCalledOnce();
+          await vi.advanceTimersByTimeAsync(1);
+          expect(call.fetchFn).toHaveBeenCalledTimes(2);
+          expect(call.sleeps).toEqual([1_000]);
+          await call.settled;
+          expect(call.outcome()).toMatchObject({ finalText: "settled" });
+          expect(vi.getTimerCount()).toBe(0);
+        } finally { vi.useRealTimers(); }
+      });
+
+      it("never sends again a stream that did not start within 300 s, past the 90 s window", async () => {
+        vi.useFakeTimers();
+        try {
+          const call = await vision([timedSse(Array.from({ length: 29 }, (_, index) => [(index + 1) * 10_000, ": keepalive\n\n"] as const)), completed]);
+          await vi.advanceTimersByTimeAsync(300_000);
+          await call.settled;
+          expect(call.outcome()).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 300_000 });
+          expect(call.fetchFn).toHaveBeenCalledOnce();
+          expect(call.sleeps).toEqual([]);
+        } finally { vi.useRealTimers(); }
+      });
+
+      it("reads a live streamed create to its end past the 300 s response timeout", async () => {
+        vi.useFakeTimers();
+        try {
+          const deltas = Array.from({ length: 20 }, (_, index) => [(index + 1) * 30_000, frame({ type: "response.reasoning_summary_text.delta",
+            item_id: "rs-1", output_index: 0, summary_index: 0, delta: "." })] as const);
+          const call = await vision([timedSse([[0, frame(created)], ...deltas,
+            [610_000, frame({ type: "response.output_item.done", output_index: 0, item: message })],
+            [610_000, frame({ type: "response.completed", response: { id: "response-1", model: "gpt-test", status: "completed", output: [message],
+              usage: { input_tokens: 40, output_tokens: 6, total_tokens: 46 } } })], [610_000, "close"]]), completed]);
+          await vi.advanceTimersByTimeAsync(610_000);
+          await call.settled;
+          expect(call.outcome()).toMatchObject({ finalText: "PRIVATE_ANALYSIS" });
+          expect(call.fetchFn).toHaveBeenCalledOnce();
+          expect(vi.getTimerCount()).toBe(0);
+        } finally { vi.useRealTimers(); }
+      });
     });
 
     it("sends a request that failed with 502 again inside the same call, accounting both", async () => {

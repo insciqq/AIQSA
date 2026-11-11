@@ -8,6 +8,7 @@ import type {
   ChatUsageStats,
   ThreadMessage
 } from "@/components/app-shell/types";
+import type { ChatQuietChecksSummary } from "@/lib/contracts/chats";
 import { create } from "zustand";
 
 export type ThreadSnapshot = {
@@ -15,6 +16,8 @@ export type ThreadSnapshot = {
   contextStats?: ChatContextStats | null;
   history?: ThreadHistoryState;
   messages: ThreadMessage[];
+  /** The chat's quiet checks as its last loaded detail counted them; absent or null while it has none. */
+  quietChecks?: ChatQuietChecksSummary | null;
   sourceUpdatedAt: string | null;
   usageStats: ChatUsageStats | null;
 };
@@ -205,6 +208,8 @@ export const useThreadStore = create<ThreadStore>((set) => ({
           : current.contextStats ?? null,
         history: current.history,
         messages: mergeThreadMessageList(current.messages, updates),
+        // Only a chat's detail counts its quiet checks; a merge keeps the count it has.
+        ...(current.quietChecks ? { quietChecks: current.quietChecks } : {}),
         sourceUpdatedAt: patchedValue(options, "sourceUpdatedAt", current.sourceUpdatedAt),
         usageStats: patchedValue(options, "usageStats", current.usageStats)
       });

@@ -239,6 +239,29 @@ export type ScheduledResultCopy = Readonly<{
 }>;
 
 /**
+ * What a scheduled run is told about the automation it runs, read with the
+ * occurrence and rendered into its turn context at admission
+ * (`scheduledOccurrenceContext`), so the run knows it already is that
+ * automation and since when its previous shown result stands.
+ */
+export type ScheduledOccurrenceFacts = Readonly<{
+  /** The task title, as the owner or a tool wrote it. */
+  title: string;
+  /** The schedule in words (`describeScheduledTaskSchedule`); null when the task runs only on its webhook. */
+  schedule: string | null;
+  /** The task's IANA zone, in which the schedule and the previous run's time are read. */
+  timeZone: string;
+  trigger: import("../../contracts/scheduledTasks").ScheduledTaskRunTrigger;
+  /**
+   * When the run behind the task's previous shown result was admitted (ISO
+   * instant): the comparison basis the run's context carries, read from that
+   * run (or, for a result a monthly rotation carried, its source answer),
+   * which outlive the pruned occurrence history. Null when there is none.
+   */
+  previousResultAt: string | null;
+}>;
+
+/**
  * The scheduled task occurrence a send admits; a server dependency, never a
  * request field. The accepted run persists the task, occurrence and generation
  * as its scheduled origin. Memory never applies to such a run.
@@ -246,6 +269,8 @@ export type ScheduledResultCopy = Readonly<{
 export type ScheduledOccurrenceAdmission = Readonly<{
   occurrenceId: string;
   taskId: string;
+  /** The automation's facts for the run's turn context; absent, the run gets none. */
+  automation?: ScheduledOccurrenceFacts;
   /** Frozen on the accepted occurrence and run. */
   taskGeneration: number;
   /**
@@ -530,6 +555,8 @@ export type CreateRunInput = {
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
+  /** Why the request asked for no Workspace, for the `run_accepted` record only. */
+  workspaceNotRequestedReason?: import("../../contracts/workspace").WorkspaceNotRequestedReason;
 };
 
 export type CreateRegenerationRunInput = {
@@ -558,6 +585,8 @@ export type CreateRegenerationRunInput = {
   userMessageId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
+  /** Why the request asked for no Workspace, for the `run_accepted` record only. */
+  workspaceNotRequestedReason?: import("../../contracts/workspace").WorkspaceNotRequestedReason;
 };
 
 export type PreparingRunAdmissionInput =
@@ -803,9 +832,19 @@ export type RunRepository = {
   /**
    * The message the browser reads `leafMessageId` as: a step of an answer
    * review recorded before the feature's removal reads as the version that
-   * replaces it, any other message as itself.
+   * replaces it, a quiet check as the nearest message before it that is no
+   * quiet check (null when there is none), any other message as itself
+   * (`lib/server/chats/quietScheduledChecks.ts`).
    */
-  loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string>;
+  loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string | null>;
+  /**
+   * The native runs of the chat's quiet checks that left a call unfinished,
+   * each with the first user message shown on this message's branch after it:
+   * their calls still count for the unknown-effect guard, though the
+   * conversation leaves them out (`lib/server/chats/quietScheduledChecks.ts`).
+   */
+  loadQuietCheckEffectRuns?(input: Readonly<{ chatId: string; userId: string; userMessageId: string }>):
+    Promise<ReadonlyArray<Readonly<{ nextMessageId: string; runId: string }>>>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
   /** Internal recovery lookup. It deliberately does not depend on the
    * initiating user's current chat access. */
