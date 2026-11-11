@@ -281,14 +281,18 @@ export function isMcpUnavailableToolReason(value: unknown): value is McpUnavaila
  * Why a selected MCP server could not load its tools for one Auto
  * `find_tools` call, stable and content-free: its user OAuth connection is
  * missing or needs a new sign-in, the upstream rejected the user's own
- * credential, the server cannot run now (runtime down, network or startup
- * failure, upstream error), or its tools do not fit the answer's tool bounds.
+ * credential, the server is still starting (queued, starting or restarting,
+ * as right after it was turned on), the server cannot run now (runtime down
+ * or in backoff, network or startup failure, upstream error), or its tools do
+ * not fit the answer's tool bounds. Reasons are persisted in discovery epochs
+ * and answer activity, so a value once written is never removed or renamed.
  */
 const MCP_UNAVAILABLE_SERVER_COPY = {
   mcp_reauthorization_required: { label: "Sign-in needed", action: "Reconnect it in MCP settings." },
   mcp_personal_credential_rejected: {
     label: "Credential rejected", action: "Update the personal value or reconnect it in MCP settings."
   },
+  mcp_server_starting: { label: "Still starting", action: "Ask again in a minute." },
   mcp_server_unavailable: { label: "Unavailable right now", action: "Try again later or check it in MCP settings." },
   mcp_plan_too_large: { label: "Too many tools for this answer", action: "Ask again in a new message." }
 } as const;
