@@ -470,7 +470,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           const holds = coordinator.holdsWorkspace;
           // A run gone without `end` (a crash) leaves the shared channel once it no longer holds the Workspace.
           live = browserLiveRelay().register({ ...(holds ? { attached: () => holds({ runId, userId: input.userId }) } : {}),
-            channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId,
+            channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId, main: true,
             runId, signInRemembered: () => coordinator.browserSaveBack?.({ runId, userId: input.userId }) ?? Promise.resolve(false),
             userId: input.userId });
         }
