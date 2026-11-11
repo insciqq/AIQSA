@@ -669,13 +669,25 @@ describe("OpenRouter Perplexity search adapter", () => {
       }
     });
 
-    const error = await adapter.search(searchRequest()).catch((value: unknown) => value);
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let lines: string[] = [];
+    let error: unknown;
+    try {
+      error = await adapter.search(searchRequest()).catch((value: unknown) => value);
+      lines = writer.mock.calls.map(([chunk]) => String(chunk));
+    } finally {
+      writer.mockRestore();
+    }
     expect(isProviderSearchExecutionError(error)).toBe(true);
     expect(error).toMatchObject({
       code: "openrouter_search_sources_invalid",
       costUsd: 0.02,
       usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
     });
+    // The refusal says which fields came and how full they were, never their text.
+    const missing = lines.map((line) => JSON.parse(line) as Record<string, unknown>).filter((record) => record.event === "search_sources_missing");
+    expect(missing).toEqual([expect.objectContaining({ annotations: 1, citations: 0, inline_links: 0, level: "warn", search_results: 2 })]);
+    expect(lines.join("")).not.toContain("No URL either");
   });
 
   it("preserves deterministic fake result, artifacts, usage, and request preview", async () => {
