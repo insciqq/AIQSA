@@ -4,11 +4,13 @@ import {
   createFetchOpenAIResponsesClient,
   openAIRetryableErrorPayload
 } from "./openaiResponsesTransport";
-import { ProviderResponseTooLargeError } from "./network";
+import { ProviderRequestTimeoutError, ProviderResponseTooLargeError } from "./network";
 import { providerFailureMessage } from "./providerFailureMessage";
 import { observedFailure, providerContextRejection } from "./providerObservability";
 import { ProviderSafeFetchError } from "./providerSafeFetch";
 import { markProviderStreamDrop, providerStreamDrop } from "./streamDrop";
+import { markProviderStreamProgress, providerStreamProgressFacts } from "./streamProgress";
+import { ProviderStreamIdleTimeoutError } from "./streamSafety";
 
 function delayedResponse(input: {
   delayMs: number;
@@ -660,6 +662,16 @@ describe("compatible dropped-round decision", () => {
     for (const status of [400, 429, 500, 503, 504]) {
       expect(compatibleDroppedRoundDecision(await failureOf(() => new Response("{}", { status })))).toBeNull();
     }
+  });
+
+  it("sends a silent stream and a response that never started again, but not a stream cut at its ceiling", () => {
+    expect(compatibleDroppedRoundDecision(new ProviderStreamIdleTimeoutError({ idleTimeoutMs: 60_000, observedIdleMs: 60_000 }))).toEqual({ retryAfterMs: null });
+    const late = markProviderStreamProgress(new ProviderRequestTimeoutError(300_000), providerStreamProgressFacts({ responseStarted: false }));
+    expect(compatibleDroppedRoundDecision(late)).toEqual({ retryAfterMs: null });
+    const ceiling = markProviderStreamProgress(new ProviderRequestTimeoutError(1_800_000),
+      providerStreamProgressFacts({ lastEventMs: 1_000, responseStarted: true }));
+    expect(compatibleDroppedRoundDecision(ceiling)).toBeNull();
+    expect(compatibleDroppedRoundDecision(new ProviderRequestTimeoutError(300_000))).toBeNull();
   });
 
   it("sends a streamed create that dropped before completion again", async () => {
