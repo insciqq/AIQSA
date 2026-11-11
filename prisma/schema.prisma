@@ -48,6 +48,12 @@ enum UserStatus {
   denied
 }
 
+/// `service` accounts run connector work and never sign in (`lib/server/auth/serviceAccounts.ts`).
+enum UserKind {
+  person
+  service
+}
+
 enum ProjectRole {
   VIEWER
   CONTRIBUTOR
@@ -929,6 +935,9 @@ model User {
   /// when the role is manual. Only that source demotes, and a manual role change clears it.
   roleManagedBy                       String?
   status                              UserStatus                         @default(pending)
+  /// A service account never signs in and SCIM never sees it; a database check keeps it a
+  /// non-administrator without an email.
+  kind                                UserKind                           @default(person)
   scimExternalId                      String?                            @unique
   /// When SCIM last asked to deactivate the account; with `disabled`, SCIM may reactivate it.
   /// With `active` (only an administrator no other one could replace) sign-in stays refused.

@@ -70,6 +70,11 @@ export function isFullAccessMember(
   return user.groups.some((membership) => fullAccessIds.has(membership.groupId));
 }
 
+/** A service account runs connector work and never signs in; the server sends its kind. */
+export function isServiceAccountUser(user: Pick<AdminUserRecord, "kind">): boolean {
+  return user.kind === "service";
+}
+
 export function hasModelAccess(entitlements: AdminEntitlementSummary): boolean {
   return entitlements.models.length > 0 || entitlements.providers.length > 0;
 }

@@ -225,6 +225,7 @@ const KNOWLEDGE_OUTAGE_EVIDENCE_SHAPE_MIGRATION =
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const TELEGRAM_CONNECT_MIGRATION = "20261019120000_telegram_connect";
+const SERVICE_ACCOUNTS_MIGRATION = "20261112100000_service_accounts";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
   "20260824014100_memory_vnext_retrieval_cutover";
 const AIQSA_CONNECT_MIGRATION = "20261019020000_aiqsa_connect";
@@ -7979,6 +7980,31 @@ function main(
     subagentFollowupBoundsFixtureSql, subagentFollowupBoundsProofSql, subagentFollowupBoundsProofSql);
   // Expand only: chats keep no computer until their owner chooses one; a choice is both columns or neither.
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_COMPUTER_MIGRATION, chatComputerFixtureSql, chatComputerProofSql);
+  // Expand only: existing accounts, and rows a previous-release writer inserts during the upgrade,
+  // are people; a service account can be neither an administrator nor carry an email.
+  runForwardAdoptionProof(shadowDatabase, migrations, SERVICE_ACCOUNTS_MIGRATION,
+    `INSERT INTO "User" (id, "displayName", role, status, "updatedAt")
+       VALUES ('service-adoption-admin', 'Synthetic admin', 'admin', 'active', now());`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM "User" WHERE id = 'service-adoption-admin' AND kind = 'person' AND role = 'admin')
+         THEN RAISE EXCEPTION 'service_accounts_existing_user_changed'; END IF;
+       INSERT INTO "User" (id, "displayName", status, "updatedAt")
+         VALUES ('service-adoption-previous-writer', 'Synthetic writer', 'active', now());
+       IF NOT EXISTS (SELECT 1 FROM "User" WHERE id = 'service-adoption-previous-writer' AND kind = 'person')
+         THEN RAISE EXCEPTION 'service_accounts_default_not_person'; END IF;
+       INSERT INTO "User" (id, "displayName", kind, status, "updatedAt")
+         VALUES ('service-adoption-service', 'Synthetic service', 'service', 'active', now());
+       BEGIN
+         UPDATE "User" SET role = 'admin' WHERE id = 'service-adoption-service';
+         RAISE EXCEPTION 'service_accounts_admin_allowed';
+       EXCEPTION WHEN check_violation THEN NULL;
+       END;
+       BEGIN
+         UPDATE "User" SET email = 'service-adoption@example.com' WHERE id = 'service-adoption-service';
+         RAISE EXCEPTION 'service_accounts_email_allowed';
+       EXCEPTION WHEN check_violation THEN NULL;
+       END;
+     END $$;`);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
