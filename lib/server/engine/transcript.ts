@@ -24,8 +24,9 @@ import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
  *   that keeps a recent tail verbatim (`keepFromId`) replays that tail right
  *   after itself, then everything appended since, and one whose tail is no
  *   longer found before it is not used; the run's own context (`runContext`)
- *   is never compacted and stays, right after the compaction, and so does the
- *   input its attachments or reminder render on (`TranscriptTarget.carriedInputId`);
+ *   is never compacted and stays, just before the summary (a native item
+ *   leads instead), and so does the input its attachments or reminder render
+ *   on (`TranscriptTarget.carriedInputId`);
  * - reasoning with no text or call after it in its response stays out;
  * - a result's image (`view_workspace_image`) is kept by reference, never as
  *   pixels: a request carries its pixels only while the run that viewed it
@@ -276,9 +277,9 @@ export type TranscriptSelection = Readonly<{
   /** Window position where the items replay keeps in place begin: 0 without a base, else past the base and what stays from
    * before its tail. */
   tail: number;
-  /** The items replay draws from, in transcript order: the base compaction,
-   * what stays from before its tail, the tail it keeps verbatim, then every
-   * item after it. */
+  /** The items replay draws from, in replay order: what stays from before the
+   * base's tail, the base compaction (first instead when it replays natively),
+   * the tail it keeps verbatim, then every item after it. */
   window: readonly TranscriptItem[];
 }>;
 
@@ -306,9 +307,15 @@ function keptTailIndex(items: readonly TranscriptItem[], index: number, item: Tr
   return keepFrom >= 0 && keepFrom < index ? keepFrom : -1;
 }
 
-/** Replay's items from the base compaction at `start`: the base, what stays
- * from before its tail (the run's own context, never compacted, and the input
- * the run carries), the tail it keeps verbatim, then the items after it. */
+/** Replay's items from the base compaction at `start`, in replay order: what
+ * stays from before its tail (the run's own context, never compacted, and the
+ * input the run carries), the base, the tail it keeps verbatim, then the items
+ * after it. What stays goes first (decision 2026-11-11), so a request after a
+ * compaction repeats the one before it up to the end of the input and its
+ * attachments and the provider's prompt cache keeps reading that prefix: put
+ * after the summary, a turn's 550k tokens of attachments were paid in full
+ * after every compaction. A route's own native compaction item still leads:
+ * it is opaque, and nothing shows that route takes input before it. */
 function replayWindow(items: readonly TranscriptItem[], start: number, base: TranscriptCompactionItem | null,
   target: TranscriptTarget): Pick<TranscriptSelection, "tail" | "window"> {
   if (!base) return { tail: 0, window: items.slice(start) };
@@ -319,7 +326,8 @@ function replayWindow(items: readonly TranscriptItem[], start: number, base: Tra
     // Keep only the file marks, without resurrecting compacted user speech or treating metadata as a new turn.
     return item.attachmentNotice ? [{ ...item, text: "", runContext: true }] : [];
   });
-  return { tail: stays.length + 1, window: [base, ...stays, ...items.slice(keepFrom, start), ...items.slice(start + 1)] };
+  const rest = [...items.slice(keepFrom, start), ...items.slice(start + 1)];
+  return { tail: stays.length + 1, window: replaysNativeCompaction(base, target) ? [base, ...stays, ...rest] : [...stays, base, ...rest] };
 }
 
 /** The transcript items a request to `target` carries, in replay order. */
@@ -340,7 +348,6 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
     }
   }
   const { tail, window } = replayWindow(items, start, base, target);
-  const leadingCompaction = base !== null;
 
   let turnStart = -1;
   if (target.reasoningScope === "current_turn") {
@@ -385,7 +392,8 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
 
   window.forEach((item, index) => {
     const entry = { item, key: item.id };
-    if (index === 0 && leadingCompaction) {
+    if (item === base) {
+      closeBlock();
       entries.push(entry);
       return;
     }

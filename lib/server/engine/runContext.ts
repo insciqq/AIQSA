@@ -49,6 +49,9 @@ import {
  *   boundary if its cut still applies (`compactionCutCurrent`), else dropped.
  * - At the swap threshold the request waits (bounded) for the running
  *   compaction, or compacts in the foreground when none runs.
+ * - A request that still fits compacts only when that frees real room: never
+ *   while the measured fixed part (instructions, tools, attachments, run
+ *   context) alone reaches the background threshold (`planCompaction`).
  * - A provider context-length rejection compacts in the foreground and the
  *   request is sent once more.
  * - The run never waits for a compaction once its answer is published: one
@@ -330,12 +333,14 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     return backgroundFailed ? "failed" : "idle";
   }
 
-  function plan(request: ProviderRunRequest, tokens: number, overflow?: Readonly<{ reportedMaximumTokens?: number }>) {
+  /** The plan for a measured request; its fixed part is what no compaction removes (the progress guarantee, `policy.ts`). */
+  function plan(request: ProviderRunRequest, measured: Pick<ContextMeasure, "fixedTokens" | "tokens">,
+    overflow?: Readonly<{ reportedMaximumTokens?: number }>) {
     const { calibration, estimate } = measuring(request);
     const reserved = window!.maxOutputTokens;
     return planCompaction({ background: state(), calibration, estimate, ...(deps.projection.images ? { images: deps.projection.images } : {}),
-      items: deps.items, ...(overflow ? { overflow } : {}), rules: deps.rules, target, tokens,
-      window: { contextWindow: usable + reserved, maxOutputTokens: reserved } });
+      irreducibleTokens: measured.fixedTokens, items: deps.items, ...(overflow ? { overflow } : {}), rules: deps.rules, target,
+      tokens: measured.tokens, window: { contextWindow: usable + reserved, maxOutputTokens: reserved } });
   }
 
   /** The marker is a display: it never fails the run. */
@@ -634,8 +639,9 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       if (window) {
         for (let step = 0; step < 4; step += 1) {
           deps.signal.throwIfAborted();
-          const tokens = measure(request);
-          const planned = plan(request, tokens);
+          const measured = measureOf(request);
+          const tokens = measured.tokens;
+          const planned = plan(request, measured);
           if (planned.kind === "swap") {
             changed = await takeBackground() || changed;
             continue;
@@ -676,7 +682,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       // The provider's count beat the measure: nothing anchors on it any more.
       anchor = null;
       const facts = providerContextLengthFacts(error);
-      const sent = measure(request);
+      const measuredSent = measureOf(request);
+      const sent = measuredSent.tokens;
       // A window the provider states smaller than the configured one holds for the rest of the run.
       const maximum = facts?.reportedMaximumTokens;
       if (maximum !== undefined) {
@@ -691,7 +698,7 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       let changed = await takeBackground();
       if (!changed && background) changed = await awaitBackground(COMPACTION_LIFECYCLE.urgentWaitMs);
       if (!changed && !foregroundFailed) {
-        const planned = plan(request, sent, { reportedMaximumTokens: fits + window.maxOutputTokens });
+        const planned = plan(request, measuredSent, { reportedMaximumTokens: fits + window.maxOutputTokens });
         if (planned.kind === "foreground") changed = await foreground(planned.cut, sent, "overflow");
       }
       let next: ProviderRunRequest | null;
