@@ -189,6 +189,13 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
       const usage = sumTokenUsage(attributions.map((attribution) => attribution.usage));
       const cost = sumEstimatedCostMicros(attributions.map((attribution) => attribution.estimatedCostMicros ?? null));
       await client.$transaction(async (tx) => {
+        // The chat row before the run's, in settlement order (owner, chat, run: `lockRunSettlementScope`), as a sub-agent's
+        // settlement and Memory's source check take them: taken run first, this deadlocked with both. The owner's row is
+        // not needed here. A monitoring check keeps its chat's place in the chat list (`chatListTime.ts`) and locks the chat
+        // for that before anything else, so no lock is raised while the run's is held. Any other run locks the chat no
+        // harder than the UPDATE below does, so a row that only references the chat never waits for it.
+        const keptChatTime = await monitoringCheckChatTime(tx, scope);
+        await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Chat" WHERE "id" = ${scope.chatId} FOR NO KEY UPDATE`);
         const first = await tx.modelRun.updateMany({
           data: {
             cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens,
@@ -199,8 +206,6 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
           where: { engine: "native", id: scope.runId, inputTokens: null, outputTokens: null, totalTokens: null, userId: scope.userId }
         });
         if (first.count !== 1) return;
-        // A monitoring check's bookkeeping keeps its chat's place in the chat list (`chatListTime.ts`).
-        const keptChatTime = await monitoringCheckChatTime(tx, scope);
         await tx.chat.update({ data: {
           totalInputTokens: { increment: usage.inputTokens ?? 0 },
           totalOutputTokens: { increment: usage.outputTokens ?? 0 },
