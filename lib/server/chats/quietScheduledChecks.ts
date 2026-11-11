@@ -101,57 +101,85 @@ export async function quietCheckStandIn(db: StandInClient, chatId: string, messa
 }
 
 /**
- * The native runs of the quiet checks on the stored branch up to `userMessageId` that hold a call whose outcome is
- * unknown, each with the first message after it that the branch shows. The conversation leaves quiet checks out, so this
- * is how the unknown-effect guard still counts their calls while the model never reads them; a chat without such a run
- * costs one read and no transcript.
+ * The native runs of the chat's quiet checks whose main agent left a call unfinished (pending, running, failed or
+ * cancelled), for the unknown-effect guard: the conversation leaves quiet checks out, so this is how their calls still
+ * count while the model never reads them. Which of those calls are still unknown is the guard's own call
+ * (`unknownEffectsOf` over the runs' transcripts, `lib/server/engine/unknownEffects.ts`), so every shape a call's
+ * uncertainty takes counts: a result the call recorded as unknown, the run's ending closing it, or no result at all.
+ * Every such run of the chat and owner counts, on any branch: a reply hangs from the latest shown turn, so the quiet
+ * checks after it leave its path, and a run from elsewhere only makes the guard stricter. Each comes with the first user
+ * message shown on the reply's branch that was written after it, the reply itself at the latest: what the user wrote
+ * since. A chat without such a run costs one read and no transcript.
  */
 export async function loadQuietCheckEffectRuns(db: StandInClient, input: Readonly<{ chatId: string; userId: string;
   userMessageId: string }>): Promise<Array<Readonly<{ nextMessageId: string; runId: string }>>> {
   const candidates = await db.modelRun.findMany({
-    select: { assistantMessageId: true, id: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { createdAt: true, id: true },
     where: { chatId: input.chatId, engine: "native", scheduledOccurrenceId: { not: null }, scheduledOutcome: QUIET_OUTCOME,
-      subagentTurnId: null, toolCalls: { some: { OR: [{ state: "running" },
-        { result: { equals: "unknown", path: ["outcome"] }, state: "error" }] } }, userId: input.userId }
+      subagentTurnId: null, toolCalls: { some: { state: { not: "complete" }, subagentThreadId: null } }, userId: input.userId }
   });
   if (candidates.length === 0) return [];
   const path = await loadStoredPath(db, input.chatId, input.userMessageId);
   const omission = await quietCheckOmission(db, input.chatId, path);
-  const index = new Map(path.map((message, position) => [message.id, position]));
-  return candidates.flatMap((run) => {
-    const at = run.assistantMessageId ? index.get(run.assistantMessageId) : undefined;
-    if (at === undefined || !omission.removed.has(run.assistantMessageId!)) return [];
-    const next = path.slice(at + 1).find((message) => !omission.removed.has(message.id));
-    return next ? [{ nextMessageId: next.id, runId: run.id }] : [];
-  });
+  const shownTurns = path.filter((message) => message.role === "user" && !omission.removed.has(message.id));
+  return candidates.map((run) => ({
+    nextMessageId: shownTurns.find((message) => message.createdAt.getTime() > run.createdAt.getTime())?.id ?? input.userMessageId,
+    runId: run.id
+  }));
 }
 
 /** The stored path from the root to `messageId`, root first, in one statement bounded by the chat's message count. */
 async function loadStoredPath(db: Pick<Prisma.TransactionClient, "$queryRaw">, chatId: string, messageId: string):
-  Promise<QuietCheckMessage[]> {
-  return db.$queryRaw<QuietCheckMessage[]>(Prisma.sql`
+  Promise<Array<QuietCheckMessage & Readonly<{ createdAt: Date }>>> {
+  return db.$queryRaw<Array<QuietCheckMessage & Readonly<{ createdAt: Date }>>>(Prisma.sql`
     WITH RECURSIVE "bound" AS MATERIALIZED (
       SELECT count(*)::int AS "messages" FROM "Message" WHERE "chatId" = ${chatId}
     ), "path" AS (
       SELECT message."id", message."parentMessageId", message."role", message."scheduledTaskPrompt",
-        message."branchSourceModelRunId", 0 AS "depth"
+        message."branchSourceModelRunId", message."createdAt", 0 AS "depth"
       FROM "Message" AS message
       WHERE message."chatId" = ${chatId} AND message."id" = ${messageId}
       UNION ALL
       SELECT parent."id", parent."parentMessageId", parent."role", parent."scheduledTaskPrompt", parent."branchSourceModelRunId",
-        path."depth" + 1
+        parent."createdAt", path."depth" + 1
       FROM "path" AS path
       CROSS JOIN "bound"
       CROSS JOIN LATERAL (
-        SELECT message."id", message."parentMessageId", message."role", message."scheduledTaskPrompt", message."branchSourceModelRunId"
+        SELECT message."id", message."parentMessageId", message."role", message."scheduledTaskPrompt", message."branchSourceModelRunId",
+          message."createdAt"
         FROM "Message" AS message
         WHERE message."id" = path."parentMessageId" AND message."chatId" = ${chatId}
         LIMIT 1
       ) AS parent
       WHERE path."depth" < "bound"."messages"
     )
-    SELECT "id", "parentMessageId", "role", "scheduledTaskPrompt", "branchSourceModelRunId" FROM "path" ORDER BY "depth" DESC
+    SELECT "id", "parentMessageId", "role", "scheduledTaskPrompt", "branchSourceModelRunId", "createdAt" FROM "path"
+    ORDER BY "depth" DESC
   `);
+}
+
+/**
+ * The quiet-turn rule of `loadQuietCheckTurnIds` as SQL over the message row named `alias` (an identifier of the calling
+ * query, never input), for a query that cannot load its rows first, such as message search over every chat: a scheduled
+ * prompt whose first scheduled run settled `no_update`, or, for a branch copy without a run of its own, one with an answer
+ * whose source run did. It is never null.
+ */
+export function quietTurnSql(alias: "message" | "parent"): Prisma.Sql {
+  const row = Prisma.raw(`"${alias}"`);
+  return Prisma.sql`(${row}."role" = 'user' AND ${row}."scheduledTaskPrompt" AND COALESCE((
+      SELECT COALESCE(run."scheduledOutcome", '') = ${QUIET_OUTCOME}
+      FROM "ModelRun" AS run
+      WHERE run."userMessageId" = ${row}."id" AND run."chatId" = ${row}."chatId" AND run."scheduledOccurrenceId" IS NOT NULL
+      ORDER BY run."createdAt" ASC, run."id" ASC
+      LIMIT 1
+    ), EXISTS (
+      SELECT 1
+      FROM "Message" AS copy
+      INNER JOIN "ModelRun" AS source ON source."id" = copy."branchSourceModelRunId"
+      WHERE copy."chatId" = ${row}."chatId" AND copy."parentMessageId" = ${row}."id" AND copy."role" = 'assistant'
+        AND source."scheduledOccurrenceId" IS NOT NULL AND source."scheduledOutcome" = ${QUIET_OUTCOME}
+    )))`;
 }
 
 /**
