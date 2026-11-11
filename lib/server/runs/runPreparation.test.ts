@@ -4194,6 +4194,33 @@ describe("scheduled task sends", () => {
     return { contextForChat, deps };
   }
 
+  it("tells the run it already is the automation and since when its previous result stands, as turn context alone", async () => {
+    const f = scheduledDeps();
+    const automation = { previousResultAt: "2026-11-10T05:55:00.000Z", schedule: "Every weekday at 08:55", timeZone: "Europe/Moscow",
+      title: "Morning mail", trigger: "schedule" as const };
+    const withFacts = (previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null): RunPreparationInput => {
+      const input = scheduledInput(previousResult);
+      if (input.source.kind !== "send" || !input.source.scheduledOccurrence) throw new Error("invalid scheduled fixture");
+      return { ...input, source: { ...input.source, scheduledOccurrence: { ...input.source.scheduledOccurrence, automation } } };
+    };
+    const prepared = preparedFrom(await prepareRun(f.deps, withFacts({ assistantMessageId: "result-answer", userMessageId: "result-user" })));
+    const context = prepared.normalizedRequest.prompt.turnGuidance?.find((part) => part.startsWith("This turn is a run of the user's automation"));
+    expect(context).toContain("\"Morning mail\", started by its schedule. Its schedule: Every weekday at 08:55, time zone Europe/Moscow.");
+    expect(context).toContain("never tell the user to set up a schedule or an automation");
+    expect(context).toContain("came from its run started Tuesday 2026-11-10 08:55 (Europe/Moscow); it is the answer above.");
+    // Turn context only: the system prompt the native engine sends stays the chat's own.
+    expect(splitTurnGuidance(admittedRunGuidance(prepared.normalizedRequest.prompt), prepared.normalizedRequest.prompt.turnGuidance).chat)
+      .not.toContain("This turn is a run of the user's automation");
+    // A result that is no longer on the run's path is not "above", though its time still stands.
+    const gone = preparedFrom(await prepareRun(f.deps, withFacts(null)));
+    expect(gone.normalizedRequest.prompt.turnGuidance?.join("\n")).toContain("started Tuesday 2026-11-10 08:55 (Europe/Moscow). Unless");
+    expect(gone.normalizedRequest.prompt.turnGuidance?.join("\n")).not.toContain("the answer above");
+    // The owner's own message in the task's chat is an ordinary turn and gets none of it.
+    const ordinary = preparedFrom(await prepareRun(f.deps, sendInput(toolBody)));
+    expect([ordinary.normalizedRequest.prompt.system ?? "", ...ordinary.normalizedRequest.prompt.turnGuidance ?? []].join("\n"))
+      .not.toContain("automation");
+  });
+
   it("selects the previous result alone and keeps chat artifacts out", async () => {
     const f = scheduledDeps();
     const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput({ assistantMessageId: "result-answer", userMessageId: "result-user" })));

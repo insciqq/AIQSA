@@ -34,8 +34,8 @@ import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailable
 import { scheduledWebhookEventText, type ScheduledWebhookEvent } from "./webhookEvent";
 import type { ScheduledWorkspaceCarryoverResult } from "./workspaceCarryover";
 
-type Carryover = { answer: string; chatEpoch: number; reliedServerIds: readonly string[]; sourceAssistantMessageId: string;
-  sourceChatId: string; taskGeneration: number };
+type Carryover = { answer: string; answeredAt?: Date; chatEpoch: number; reliedServerIds: readonly string[];
+  sourceAssistantMessageId: string; sourceChatId: string; taskGeneration: number };
 type Task = {
   baseline: ScheduledTaskBaseline | null; carryover: Carryover | null; chatEpoch: number; chatPeriod: string | null;
   chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
@@ -44,7 +44,7 @@ type Task = {
   pauseReason: string | null; pinnedSkillIds: readonly string[]; prompt: string; promptUrlDigests: readonly string[]; provider: string;
   /** What the store derives from the previous shown result (null: every server). */
   relevantMcpServerIds: readonly string[] | null;
-  revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
+  revision: number; schedule: ScheduledTaskSchedule; scheduleEnabled?: boolean; searchEnabled: boolean;
   status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; userId: string; webhookEnabled: boolean;
   workspaceEnabled: boolean;
 };
@@ -249,12 +249,16 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
         chat: chat?.usable && !chat.archived ? { activeLeafMessageId: chat.activeLeafMessageId, id: task.chatId! } : null,
         occurrence: { id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: row.trigger, userId: row.userId },
         ownerActive: !inactiveUsers.has(row.userId),
+        // Like the store: the baseline's run admission, else the carried copy's source answer.
+        previousResultAt: task.baseline?.generation === task.generation
+          ? runs.get(task.baseline.runId)?.createdAt ?? null
+          : copy && copy.chatEpoch === task.chatEpoch && copy.taskGeneration === task.generation ? copy.answeredAt ?? null : null,
         relevantMcpServerIds: task.relevantMcpServerIds,
         task: { baseline: task.baseline, chatEpoch: task.chatEpoch, chatMode: task.chatMode, chatPeriod: task.chatPeriod,
           generation: task.generation, kind: task.kind,
           memoryEnabled: task.memoryEnabled, modelId: task.modelId, pinnedSkillIds: task.pinnedSkillIds, prompt: task.prompt,
           promptUrlDigests: task.promptUrlDigests,
-          provider: task.provider, revision: task.revision,
+          provider: task.provider, revision: task.revision, schedule: task.scheduleEnabled === false ? null : task.schedule,
           searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
           toolsEnabled: task.toolsEnabled, webhookEnabled: task.webhookEnabled, workspaceEnabled: task.workspaceEnabled },
         ...(row.trigger === "webhook" && webhookEvents.has(row.id) ? { webhookEvent: webhookEvents.get(row.id)! } : {})
@@ -490,7 +494,11 @@ describe("scheduled task runner", () => {
       searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
     });
     // The first run of a task has no earlier result to see; its chat is created with the month's title and the task as origin.
-    expect(h.sent[0]!.occurrence).toEqual({ chatPeriod: "2026-10", newChat: { title: "Synthetic brief · October 2026" },
+    // It is told it already is the automation, with the schedule in words, and that nothing came before.
+    expect(h.sent[0]!.occurrence).toEqual({
+      automation: { previousResultAt: null, schedule: "Every day at 09:00", timeZone: "Europe/Moscow", title: "Synthetic brief",
+        trigger: "schedule" },
+      chatPeriod: "2026-10", newChat: { title: "Synthetic brief · October 2026" },
       occurrenceId: h.forTask(task)[0]!.id, previousResult: null, promptUrlDigests: [], relevantMcpServerIds: null,
       taskChatEpoch: 0, taskGeneration: 1, taskId: task.id, taskRevision: 1 });
     expect(h.chats.get(h.sent[0]!.chatId)?.title).toBe("Synthetic brief · October 2026");
@@ -516,6 +524,9 @@ describe("scheduled task runner", () => {
     expect(h.sent[1]!.occurrence.previousResult).toEqual({ assistantMessageId: leaf, userMessageId: h.forTask(task)[0]!.userMessageId });
     expect(h.sent[1]!.occurrence).not.toHaveProperty("newChat");
     expect(h.sent[1]!.occurrence).toMatchObject({ chatPeriod: "2026-10", taskChatEpoch: 1 });
+    // And it is told when the run behind that result was admitted.
+    expect(h.sent[1]!.occurrence.automation).toEqual({ previousResultAt: "2026-10-05T06:00:05.000Z", schedule: "Every day at 09:00",
+      timeZone: "Europe/Moscow", title: "Synthetic brief", trigger: "schedule" });
     expect(task.chatEpoch).toBe(1);
     expect(h.emails).toHaveLength(2);
   });
@@ -1977,7 +1988,7 @@ describe("webhook occurrences", () => {
 
   it("run at once, despite a recurring task's spread, with the event after the prompt as labelled data", async () => {
     const h = harness({ dispatchOffsetMs: () => 2 * MINUTE });
-    const task = h.addTask({ nextRunAt: null, webhookEnabled: true });
+    const task = h.addTask({ nextRunAt: null, scheduleEnabled: false, webhookEnabled: true });
     const occurrence = h.addOccurrence(task, { scheduledFor: event.receivedAt, trigger: "webhook" });
     h.webhookEvents.set(occurrence.id, event);
     await h.tick();
@@ -1985,6 +1996,8 @@ describe("webhook occurrences", () => {
     // The request is the prompt alone; the event rides only on the server-only occurrence.
     expect(h.sent[0]!.body).toMatchObject({ content: { blocks: [{ text: "Summarize the synthetic fixture", type: "text" }] } });
     expect(h.sent[0]!.occurrence.webhookEvent).toEqual({ text: scheduledWebhookEventText(event) });
+    // A webhook-only task's run is told what started it and that it has no schedule.
+    expect(h.sent[0]!.occurrence.automation).toMatchObject({ previousResultAt: null, schedule: null, trigger: "webhook" });
     expect(occurrence).toMatchObject({ state: "COMPLETED", trigger: "webhook" });
     // A result is news, like a scheduled one.
     expect(occurrence.unseenAt).not.toBeNull();

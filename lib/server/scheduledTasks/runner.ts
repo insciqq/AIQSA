@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { describeScheduledTaskSchedule } from "../../domain/scheduledTaskSchedule";
 import type { SmtpProductMessage } from "../email/definitions";
 import { logEvent, runWithContext } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
@@ -374,6 +375,13 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       // meanwhile, so the task kind it carries is the one the link accepts; the
       // chat epoch fences it against another run that moved the task's chat.
       occurrence: {
+        // What the run is told about the automation it runs: it is one already, with this schedule, and since when its
+        // previous shown result stands (`scheduledOccurrenceContext`).
+        automation: {
+          previousResultAt: execution.previousResultAt?.toISOString() ?? null,
+          schedule: task.schedule ? describeScheduledTaskSchedule(task.schedule) : null,
+          timeZone: task.timeZone, title: task.title, trigger: occurrence.trigger
+        },
         chatPeriod: placement.chatPeriod, occurrenceId: occurrence.id, previousResult,
         relevantMcpServerIds: execution.relevantMcpServerIds, taskChatEpoch: task.chatEpoch,
         taskGeneration: task.generation, taskId: occurrence.taskId, taskRevision: task.revision,
