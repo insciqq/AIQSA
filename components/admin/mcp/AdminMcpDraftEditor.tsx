@@ -3,6 +3,7 @@
 import {
   type AdminMcpSharedValueDraft,
   changeMcpRemoteSource,
+  preparedMcpClientCredentialsPolicy,
   preparedMcpOAuthPolicy,
   splitMcpList
 } from "@/components/admin/mcp/adminMcpDraft";
@@ -23,13 +24,19 @@ import type {
 import { Plus, Trash2 } from "lucide-react";
 
 type AdminMcpDraftEditorProps = Readonly<{
+  /** The client secret typed in this form; the stored one is never returned. */
+  clientSecretDraft?: string;
   disabled: boolean;
   draft: McpDraftConfiguration;
   onChange(draft: McpDraftConfiguration): void;
+  onClientSecretChange?(value: string): void;
   onSharedValueChange(slotKey: string, value: McpSlotValue | null | undefined): void;
   sharedValueDraft: AdminMcpSharedValueDraft;
+  storedClientCredentials?: AdminMcpServer["clientCredentials"];
   storedSharedValues?: AdminMcpServer["sharedValues"];
 }>;
+
+type AuthMode = McpDraftConfiguration["auth"]["mode"];
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 text-metadata text-ink-muted";
@@ -144,17 +151,127 @@ function SourceEditor({
   );
 }
 
-function AuthEditor({
+function ClientCredentialsEditor({
+  clientSecretDraft,
   disabled,
   draft,
-  onChange
-}: Pick<AdminMcpDraftEditorProps, "disabled" | "draft" | "onChange">) {
-  const setMode = (mode: "none" | "oauth" | "static") => {
+  onChange,
+  onClientSecretChange,
+  storedClientCredentials
+}: Pick<AdminMcpDraftEditorProps,
+  "clientSecretDraft" | "disabled" | "draft" | "onChange" | "onClientSecretChange" | "storedClientCredentials">) {
+  if (draft.auth.mode !== "client_credentials") return null;
+  const auth = draft.auth;
+  const configured = storedClientCredentials?.secretConfigured === true;
+  return (
+    <div className="grid min-w-0 gap-3 md:grid-cols-2">
+      <p className="rounded-control bg-caution/10 px-3 py-2 text-xs leading-5 text-caution md:col-span-2">
+        Every user with access to this server acts as this client.
+      </p>
+      <label className="min-w-0 md:col-span-2">
+        <span className={fieldLabel}>Token endpoint URL</span>
+        <input
+          className={inputClass}
+          disabled={disabled}
+          onChange={(event) => onChange({ ...draft, auth: { ...auth, tokenEndpoint: event.currentTarget.value } })}
+          placeholder="https://auth.example.com/oauth/token"
+          type="url"
+          value={auth.tokenEndpoint}
+        />
+        <span className={helpText}>HTTPS only. It follows the endpoint&apos;s private network setting above.</span>
+      </label>
+      <label className="min-w-0">
+        <span className={fieldLabel}>Client ID</span>
+        <input
+          autoCapitalize="none"
+          autoComplete="off"
+          autoCorrect="off"
+          className={inputClass}
+          disabled={disabled}
+          onChange={(event) => onChange({ ...draft, auth: { ...auth, clientId: event.currentTarget.value } })}
+          spellCheck={false}
+          value={auth.clientId}
+        />
+      </label>
+      <label className="min-w-0">
+        <span className={fieldLabel}>Client secret</span>
+        <input
+          autoCapitalize="none"
+          autoComplete="off"
+          autoCorrect="off"
+          className={`${inputClass} [-webkit-text-security:disc]`}
+          disabled={disabled || !onClientSecretChange}
+          onChange={(event) => onClientSecretChange?.(event.currentTarget.value)}
+          placeholder={configured ? "Configured — leave blank to keep" : "Enter the client secret"}
+          spellCheck={false}
+          type="text"
+          value={clientSecretDraft ?? ""}
+        />
+        <span className={helpText}>Write-only: a saved secret is never shown again.</span>
+      </label>
+      <label className="min-w-0">
+        <span className={fieldLabel}>Scopes</span>
+        <textarea
+          className={`${inputClass} min-h-20 py-2`}
+          disabled={disabled}
+          onChange={(event) => onChange({ ...draft, auth: { ...auth, scopes: splitMcpList(event.currentTarget.value) } })}
+          placeholder="Optional, one per line"
+          value={auth.scopes.join("\n")}
+        />
+      </label>
+      <div className="grid min-w-0 content-start gap-3">
+        <label className="min-w-0">
+          <span className={fieldLabel}>Resource (optional)</span>
+          <input
+            className={inputClass}
+            disabled={disabled}
+            onChange={(event) => {
+              const { resource: _previous, ...rest } = auth;
+              const resource = event.currentTarget.value;
+              onChange({ ...draft, auth: resource ? { ...rest, resource } : rest });
+            }}
+            placeholder="The MCP endpoint URL"
+            type="url"
+            value={auth.resource ?? ""}
+          />
+        </label>
+        <label className="min-w-0">
+          <span className={fieldLabel}>Client authentication</span>
+          <select
+            className={inputClass}
+            disabled={disabled}
+            onChange={(event) => onChange({
+              ...draft,
+              auth: { ...auth, authMethod: event.currentTarget.value === "client_secret_post" ? "client_secret_post" : "client_secret_basic" }
+            })}
+            value={auth.authMethod}
+          >
+            <option value="client_secret_basic">HTTP Basic header</option>
+            <option value="client_secret_post">Request body</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function AuthEditor({
+  clientSecretDraft,
+  disabled,
+  draft,
+  onChange,
+  onClientSecretChange,
+  storedClientCredentials
+}: Pick<AdminMcpDraftEditorProps,
+  "clientSecretDraft" | "disabled" | "draft" | "onChange" | "onClientSecretChange" | "storedClientCredentials">) {
+  const setMode = (mode: AuthMode) => {
     if (mode === "oauth") {
       onChange({
         ...draft,
         auth: preparedMcpOAuthPolicy(draft.source)
       });
+    } else if (mode === "client_credentials") {
+      onChange({ ...draft, auth: preparedMcpClientCredentialsPolicy() });
     } else {
       onChange({ ...draft, auth: { mode } });
     }
@@ -172,14 +289,23 @@ function AuthEditor({
         <select
           className={inputClass}
           disabled={disabled}
-          onChange={(event) => setMode(event.currentTarget.value as "none" | "oauth" | "static")}
+          onChange={(event) => setMode(event.currentTarget.value as AuthMode)}
           value={draft.auth.mode}
         >
           <option value="none">No authentication</option>
           <option value="static">Static fields</option>
           <option value="oauth">Per-user OAuth</option>
+          <option value="client_credentials">OAuth client credentials</option>
         </select>
       </label>
+      <ClientCredentialsEditor
+        clientSecretDraft={clientSecretDraft}
+        disabled={disabled}
+        draft={draft}
+        onChange={onChange}
+        onClientSecretChange={onClientSecretChange}
+        storedClientCredentials={storedClientCredentials}
+      />
       {oauth ? (
         <div className="grid min-w-0 gap-3 md:grid-cols-2">
           <label>
@@ -558,7 +684,14 @@ export function AdminMcpDraftEditor(props: AdminMcpDraftEditorProps) {
   return (
     <div className="grid min-w-0 gap-3">
       <SourceEditor disabled={disabled} draft={draft} onChange={onChange} />
-      <AuthEditor disabled={disabled} draft={draft} onChange={onChange} />
+      <AuthEditor
+        clientSecretDraft={props.clientSecretDraft}
+        disabled={disabled}
+        draft={draft}
+        onChange={onChange}
+        onClientSecretChange={props.onClientSecretChange}
+        storedClientCredentials={props.storedClientCredentials}
+      />
       <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>

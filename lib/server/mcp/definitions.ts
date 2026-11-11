@@ -1,7 +1,14 @@
-import { isMcpToolName, MCP_RUNTIME_TIMEOUT_LIMITS, MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
+import {
+  isMcpAuthorizationHeader,
+  isMcpToolName,
+  MCP_CLIENT_CREDENTIALS_LIMITS,
+  MCP_RUNTIME_TIMEOUT_LIMITS,
+  MCP_SERVER_TOOL_LIMIT
+} from "../../contracts/mcp";
 import { createHash } from "node:crypto";
 import type {
   McpAuthPolicy,
+  McpClientCredentialsAuthMethod,
   McpConfigurationSlot,
   McpDraftConfiguration,
   McpSlotPolicy,
@@ -209,12 +216,69 @@ function slotsFrom(value: unknown, issues: McpValidationIssue[]): McpConfigurati
   return issues.length === 0 ? slots : null;
 }
 
+const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/u;
+/** RFC 6749 client_id characters (VSCHAR). */
+const OAUTH_CLIENT_ID = /^[\x20-\x7E]+$/u;
+
+/** An absolute https URL without credentials, query or fragment, normalized. */
+function httpsEndpoint(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim() || value.length > 2_048) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.username || url.password || url.hash || url.search) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function clientCredentialsFrom(value: ObjectValue, issues: McpValidationIssue[]): McpAuthPolicy | null {
+  const before = issues.length;
+  // The client secret goes to this endpoint, so it is https only; its address
+  // follows the server's own network permission at request time.
+  const tokenEndpoint = httpsEndpoint(value.tokenEndpoint);
+  if (!tokenEndpoint) issues.push({ code: "client_credentials_token_endpoint_invalid", path: "auth.tokenEndpoint" });
+  const clientId = typeof value.clientId === "string" ? value.clientId.trim() : "";
+  if (!clientId || clientId.length > MCP_CLIENT_CREDENTIALS_LIMITS.clientIdMaxLength || !OAUTH_CLIENT_ID.test(clientId)) {
+    issues.push({ code: "client_credentials_client_id_invalid", path: "auth.clientId" });
+  }
+  const scopes = stringArray(value.scopes ?? [], 64, 256);
+  if (!scopes || !scopes.every((scope) => OAUTH_SCOPE_TOKEN.test(scope))) {
+    issues.push({ code: "client_credentials_scopes_invalid", path: "auth.scopes" });
+  }
+  let resource: string | undefined;
+  if (value.resource !== undefined) {
+    try {
+      const url = new URL(typeof value.resource === "string" ? value.resource.trim() : "");
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash ||
+        url.toString().length > 2_048) throw new Error("invalid");
+      resource = url.toString();
+    } catch {
+      issues.push({ code: "client_credentials_resource_invalid", path: "auth.resource" });
+    }
+  }
+  const authMethod = value.authMethod ?? "client_secret_basic";
+  if (authMethod !== "client_secret_basic" && authMethod !== "client_secret_post") {
+    issues.push({ code: "client_credentials_auth_method_invalid", path: "auth.authMethod" });
+  }
+  if (issues.length > before || !tokenEndpoint || !scopes) return null;
+  return {
+    authMethod: authMethod as McpClientCredentialsAuthMethod,
+    clientId,
+    mode: "client_credentials",
+    ...(resource ? { resource } : {}),
+    scopes: [...new Set(scopes)],
+    tokenEndpoint
+  };
+}
+
 function authFrom(value: unknown, source: McpSource | null, issues: McpValidationIssue[]): McpAuthPolicy | null {
   if (!isObject(value) || typeof value.mode !== "string") {
     issues.push({ code: "auth_invalid", path: "auth" });
     return null;
   }
   if (value.mode === "none" || value.mode === "static") return { mode: value.mode };
+  if (value.mode === "client_credentials" && source) return clientCredentialsFrom(value, issues);
   if (value.mode !== "oauth" || !source) {
     issues.push({ code: "auth_mode_invalid", path: "auth.mode" });
     return null;
@@ -229,7 +293,7 @@ function authFrom(value: unknown, source: McpSource | null, issues: McpValidatio
       return false;
     }
   });
-  const validScopes = scopes?.every((scope) => /^[\x21\x23-\x5B\x5D-\x7E]+$/u.test(scope));
+  const validScopes = scopes?.every((scope) => OAUTH_SCOPE_TOKEN.test(scope));
   if (!scopes || !validScopes || !origins || !validOrigins) {
     issues.push({ code: "oauth_policy_invalid", path: "auth" });
     return null;
@@ -284,6 +348,14 @@ export function validateMcpDraft(value: unknown): McpDraftValidationResult {
   }
   const slots = slotsFrom(value.slots, issues);
   const auth = authFrom(value.auth, source, issues);
+  if (auth?.mode === "client_credentials") {
+    // The installation's bearer owns Authorization; a field there would replace it.
+    for (const [index, slot] of (slots ?? []).entries()) {
+      if (isMcpAuthorizationHeader(slot.target.name)) {
+        issues.push({ code: "client_credentials_authorization_header_reserved", path: `slots.${index}.target.name` });
+      }
+    }
+  }
   const disabledToolNames = disabledToolNamesFrom(value.disabledToolNames, issues);
   const runtime = isObject(value.runtime) ? value.runtime : null;
   const startupTimeoutMs = boundedMilliseconds(runtime?.startupTimeoutMs);
