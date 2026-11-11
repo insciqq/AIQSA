@@ -245,6 +245,7 @@
   "mcp_call_arguments_too_large",
   "mcp_call_failed",
   "mcp_call_result_invalid",
+  "mcp_call_result_permits_invalid",
   "mcp_call_result_too_large",
   "mcp_call_result_unsupported",
   "mcp_connect_failed",
