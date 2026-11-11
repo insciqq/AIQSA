@@ -282,9 +282,10 @@ describe("browser live handoff", () => {
     expect(await result).toMatchObject({ kind: "ended", outcome: "timed_out" });
     const stopped = setup();
     ended.push(() => stopped.handle.end());
+    // A run without a guest session is no answer about the agent's tab: only the guest's `no_page` is.
     stopped.guest.fail("workspace_session_lost");
     expect(await stopped.handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 1_000 }))
-      .toEqual({ kind: "no_browser" });
+      .toEqual({ kind: "unavailable" });
   });
 
   it("begins on a streamer started a moment ago and retries a missed end once on a fresh one", async () => {
