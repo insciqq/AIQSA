@@ -102,7 +102,9 @@ describe("a message after quiet checks", () => {
       .toEqual([shown.questionId, shown.answerId, created.userMessageId, created.assistantMessageId]);
     // The quiet checks left the branch with no visible fork.
     const graph = await createPrismaChatRepository(prisma).getBranches({ chatId, userId });
-    expect(graph!.nodes.map((node) => node.id)).toEqual([shown.questionId, shown.answerId, created.userMessageId, created.assistantMessageId]);
+    // The graph lists nodes by creation time; rows written in one statement tie, so compare the set and the links.
+    expect(graph!.nodes.map((node) => node.id).sort())
+      .toEqual([shown.questionId, shown.answerId, created.userMessageId, created.assistantMessageId].sort());
   });
 
   it("regenerates the latest shown result although quiet checks follow it", async () => {
