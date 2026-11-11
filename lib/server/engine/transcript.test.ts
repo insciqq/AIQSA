@@ -357,12 +357,13 @@ describe("transcript projection", () => {
     const kept = chat.items.length;
     chat.respond(codex, responsesHistoryFromOutput([{ content: [{ text: "Working on it", type: "output_text" }], role: "assistant",
       type: "message" }]));
-    // A compaction in the middle of the turn covers the Skills index's place, but not the index.
+    // A compaction in the middle of the turn covers the Skills index's place, but not the index, which stays before the
+    // summary as it stood before the span the summary covers.
     chat.items.push({ id: "c1", keepFromId: chat.items[kept]!.id, kind: "compaction", origin: codex, summary: "Earlier work." });
-    expect(selectTranscript(chat.items, gemini).window.map((item) => item.id)).toEqual(["c1", "ctx-2", chat.items[kept]!.id]);
+    expect(selectTranscript(chat.items, gemini).window.map((item) => item.id)).toEqual(["ctx-2", "c1", chat.items[kept]!.id]);
     expect(projectTranscript(chat.items, gemini)).toEqual([
-      { text: "Summary of the earlier conversation:\n\nEarlier work.", type: "user" },
       { text: "Skills index", type: "user" },
+      { text: "Summary of the earlier conversation:\n\nEarlier work.", type: "user" },
       { text: "Working on it", type: "assistant_text" }
     ]);
   });
@@ -391,19 +392,52 @@ describe("transcript projection", () => {
 
     const attached = { attachmentIds: [chart.id], attachments: [chart] };
 
-    it("replays it right after the run's context, once, with the kept tail after it", () => {
+    it("replays it right after the run's context and before the summary, once, with the kept tail after it", () => {
       const { input, items, kept } = compactedTurn(codex);
       const target = { ...gemini, carriedInputId: input };
-      expect(selectTranscript(items, target).window.map((item) => item.id).slice(0, 4)).toEqual(["c1", "ctx-2", input, kept]);
+      expect(selectTranscript(items, target).window.map((item) => item.id).slice(0, 4)).toEqual(["ctx-2", input, "c1", kept]);
       expect(projectTranscript(items, target, { currentInputId: input })).toEqual([
-        { text: "Summary of the earlier conversation:\n\nTwo lookups done.", type: "user" },
         { text: "Skills index", type: "user" },
         { currentInput: true, text: "What does the chart say?", type: "user" },
+        { text: "Summary of the earlier conversation:\n\nTwo lookups done.", type: "user" },
         { arguments: "{\"order_id\":\"A-3\"}", callId: "call_3", name: "lookup_order", type: "tool_call" },
         { callId: "call_3", name: "lookup_order", output: "result 3", type: "tool_result" }
       ]);
       // Without attachments to carry it for, it goes with the cut, as it always did.
-      expect(selectTranscript(items, gemini).window.map((item) => item.id).slice(0, 3)).toEqual(["c1", "ctx-2", kept]);
+      expect(selectTranscript(items, gemini).window.map((item) => item.id).slice(0, 3)).toEqual(["ctx-2", "c1", kept]);
+    });
+
+    it("keeps the request's prefix through a compaction: run context, input and attachments come before every summary", () => {
+      const { input, items } = compactedTurn(codex);
+      const target = { ...gemini, carriedInputId: input };
+      const prefix = (history: readonly ProviderHistoryItem[]) => history.slice(0, 2);
+      const first = projectTranscript(items, target, { currentInputId: input });
+      // The turn goes on and compacts again: the summary changes, what precedes it does not.
+      items.push({ arguments: "{}", callId: "call_4", id: "r4-call", kind: "tool_call", name: "lookup_order", origin: codex },
+        { callId: "call_4", id: "r4-result", kind: "tool_result", name: "lookup_order", outcome: "complete", output: "result 4" },
+        { id: "c2", keepFromId: "r4-call", kind: "compaction", origin: codex, summary: "Three lookups done." });
+      const second = projectTranscript(items, target, { currentInputId: input });
+      expect(prefix(second)).toEqual(prefix(first));
+      expect(prefix(first)).toEqual([{ text: "Skills index", type: "user" },
+        { currentInput: true, text: "What does the chart say?", type: "user" }]);
+      expect(second[2]).toEqual({ text: "Summary of the earlier conversation:\n\nThree lookups done.", type: "user" });
+      expect(second.slice(3).map((item) => item.type)).toEqual(["tool_call", "tool_result"]);
+      // The provider bodies agree: each adapter sends the same bytes up to the end of the input and its attachment.
+      const builders: readonly ((history: readonly ProviderHistoryItem[]) => unknown)[] = [
+        (history) => buildOpenAIResponsesRequest(request(openai, history, { ...attached,
+          params: { background: false, maxOutputTokens: 256, reasoning: { effort: "low" }, store: false, stream: true }, provider: "openai" })),
+        (history) => buildGeminiInteractionsRequest(request(gemini, history, attached)),
+        (history) => buildAnthropicMessagesRequest(request(openai, history, { ...attached, params: { maxTokens: 256 },
+          provider: "anthropic" }))
+      ];
+      for (const build of builders) {
+        const body = (history: readonly ProviderHistoryItem[]) => JSON.stringify(build(history));
+        const before = body(first);
+        const summaryAt = before.indexOf("Summary of the earlier conversation");
+        expect(before.indexOf("AAAA")).toBeGreaterThan(-1);
+        expect(summaryAt).toBeGreaterThan(before.indexOf("AAAA"));
+        expect(body(second).slice(0, summaryAt)).toBe(before.slice(0, summaryAt));
+      }
     });
 
     it("stays where it stands while the kept tail holds it, and stays too after a route's own compaction, which keeps no tail", () => {

@@ -201,6 +201,10 @@ const firstText = (request: ProviderRunRequest) => {
   return first?.type === "user" ? first.text : "";
 };
 
+/** Where the request's summary stands; -1 without one. The run's context and carried input go before it. */
+const summaryAt = (request: ProviderRunRequest) =>
+  request.history?.findIndex((item) => item.type === "user" && item.text.startsWith(COMPACTION_SUMMARY_HEADING)) ?? -1;
+
 describe("native run compaction", () => {
   it("asks a small window for no more output than its reserve, so input and output together fit it", async () => {
     for (const [window, expected] of [[40_000, 10_000], [200_000, undefined]] as const) {
@@ -334,13 +338,15 @@ describe("native run compaction", () => {
     expect(memory.published()).toBe("Compared the report with the pages.");
     expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
 
-    // The compaction cut inside the turn: only its last rounds are kept, and the requests after it start from its summary.
+    // The compaction cut inside the turn: only its last rounds are kept, and the requests after it carry its summary right
+    // after the input, which keeps the prefix the requests before it sent.
     const compaction = memory.transcriptRows.find((item) => item.kind === "compaction");
     expect(compaction?.kind === "compaction" ? compaction.keepFromId : null).toEqual(expect.any(String));
     expect(memory.transcriptRows.map((item) => item.id)).toContain(compaction?.kind === "compaction" ? compaction.keepFromId : null);
-    const after = scripted.answers.filter((request) => firstText(request).startsWith(COMPACTION_SUMMARY_HEADING));
+    const after = scripted.answers.filter((request) => summaryAt(request) >= 0);
     expect(after.length).toBeGreaterThan(0);
     expect(after[0]!.history!.filter((item) => item.type === "tool_result").length).toBeLessThan(5);
+    for (const request of after) expect(summaryAt(request)).toBe(request.history!.findIndex(isCurrentInput) + 1);
 
     // The model still receives the attachment; the summary call never does.
     for (const request of scripted.answers) {
@@ -359,7 +365,7 @@ describe("native run compaction", () => {
     await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine, prepared: run,
       repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
     expect(memory.published()).toBe("Compared the pages.");
-    expect(scripted.answers.some((request) => firstText(request).startsWith(COMPACTION_SUMMARY_HEADING))).toBe(true);
+    expect(scripted.answers.some((request) => summaryAt(request) > request.history!.findIndex(isCurrentInput))).toBe(true);
     for (const request of scripted.answers) expect(request.history!.filter(isCurrentInput)).toHaveLength(1);
   });
 
