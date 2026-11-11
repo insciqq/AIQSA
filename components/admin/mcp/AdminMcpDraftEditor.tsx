@@ -282,7 +282,7 @@ function AuthEditor({
     <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
       <div>
         <h4 className="text-xs font-semibold text-ink">Authentication</h4>
-        <p className={helpText}>Static credentials come from the explicit fields below.</p>
+        <p className={helpText}>How AIQSA signs in to this server.</p>
       </div>
       <label>
         <span className={fieldLabel}>Mode</span>
