@@ -58,105 +58,134 @@ export function extractOpenRouterUsage(response: OpenRouterResponseRecord): Mode
   });
 }
 
+type CitationShape = "annotation" | "flat";
+
+type CitationPayload = Readonly<{
+  index: number;
+  snippet: string | undefined;
+  title: string;
+  url: string;
+}>;
+
+/** A URL with raw whitespace inside it (a space in a path or query) goes
+ * through the WHATWG parser, which percent-encodes it, so one stray space does
+ * not cost the source. The result still has to pass every rule of
+ * `normalizeSearchSources`; any other value is passed on unchanged. */
+function citationUrl(value: unknown): unknown {
+  if (typeof value !== "string" || !/\s/u.test(value.trim())) return value;
+  try {
+    return new URL(value.trim()).href;
+  } catch {
+    return value;
+  }
+}
+
+/** The fields of one citation record. An OpenAI-style `url_citation` object is
+ * read whether or not `type` names it; without that object, a record of type
+ * `url_citation` or of no type carries its fields flat. A `url_citation` that
+ * is present but not an object is malformed. An annotation of any other type
+ * is not a citation, while a flat citation list keeps every record. */
+function citationRecordFields(
+  value: Record<string, unknown>,
+  shape: CitationShape
+): Record<string, unknown> | null {
+  const flat = { snippet: value.snippet ?? value.content, title: value.title, url: value.url ?? value.href };
+  if (value.type !== undefined && value.type !== "url_citation") {
+    return shape === "flat" ? flat : null;
+  }
+  const nested = value.url_citation;
+  if (isOpenAIChatRecord(nested)) {
+    return { snippet: nested.content ?? nested.snippet, title: nested.title, url: nested.url ?? nested.href };
+  }
+  return nested === undefined || value.type === undefined ? flat : null;
+}
+
 function citationFromValue(
   value: unknown,
   index: number,
-  shape: "annotation" | "flat"
-): Record<string, unknown> | null {
-  let candidate: Record<string, unknown> | null = null;
-  if (shape === "annotation") {
-    if (!isOpenAIChatRecord(value)) return null;
-    if (value.type === undefined) {
-      candidate = {
-        snippet: value.snippet ?? value.content,
-        title: value.title ?? `Source ${index + 1}`,
-        url: value.url ?? value.href
-      };
-    } else {
-      if (value.type !== "url_citation" || !isOpenAIChatRecord(value.url_citation)) return null;
-      candidate = {
-        snippet: value.url_citation.content ?? value.url_citation.snippet,
-        title: value.url_citation.title ?? `Source ${index + 1}`,
-        url: value.url_citation.url ?? value.url_citation.href
-      };
-    }
-  } else if (typeof value === "string") {
-    candidate = { title: `Source ${index + 1}`, url: value };
-  } else if (isOpenAIChatRecord(value)) {
-    if (value.type === "url_citation") {
-      if (!isOpenAIChatRecord(value.url_citation)) return null;
-      candidate = {
-        snippet: value.url_citation.content ?? value.url_citation.snippet,
-        title: value.url_citation.title ?? `Source ${index + 1}`,
-        url: value.url_citation.url ?? value.url_citation.href
-      };
-    } else {
-      candidate = {
-        snippet: value.snippet ?? value.content,
-        title: value.title ?? `Source ${index + 1}`,
-        url: value.url ?? value.href
-      };
-    }
-  }
-  if (!candidate) return null;
-  const source = normalizeSearchSources([candidate])[0];
+  shape: CitationShape
+): Readonly<{ payload: CitationPayload; titled: boolean }> | null {
+  const fields = typeof value === "string" && shape === "flat"
+    ? { url: value }
+    : isOpenAIChatRecord(value) ? citationRecordFields(value, shape) : null;
+  if (!fields) return null;
+  const source = normalizeSearchSources([{
+    snippet: fields.snippet,
+    title: fields.title ?? `Source ${index + 1}`,
+    url: citationUrl(fields.url)
+  }])[0];
   return source
     ? {
-        index: index + 1,
-        snippet: source.snippet,
-        title: source.title,
-        url: source.url
+        payload: {
+          index: index + 1,
+          snippet: source.snippet,
+          title: source.title,
+          url: source.url
+        },
+        titled: typeof fields.title === "string" && fields.title.trim() !== ""
       }
     : null;
-}
-
-function citationArtifacts(
-  values: unknown,
-  source: string,
-  shape: "annotation" | "flat" = "flat"
-): ModelRunSseEvent[] {
-  if (!Array.isArray(values)) {
-    return [];
-  }
-
-  const seen = new Set<string>();
-  const artifacts: ModelRunSseEvent[] = [];
-
-  for (const [index, value] of values.entries()) {
-    const citation = citationFromValue(value, index, shape);
-    if (!citation) {
-      continue;
-    }
-
-    const key = String(citation.url);
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    artifacts.push({
-      data: {
-        artifactType: "citation",
-        payload: {
-          ...citation,
-          source
-        }
-      },
-      type: "artifact"
-    });
-  }
-
-  return artifacts;
 }
 
 function appendCitationArtifacts(
   target: ModelRunSseEvent[],
   values: unknown,
   source: string,
-  shape: "annotation" | "flat" = "flat"
+  shape: CitationShape = "flat"
 ): void {
-  for (const artifact of citationArtifacts(values, source, shape)) {
-    target.push(artifact);
+  if (!Array.isArray(values)) {
+    return;
+  }
+
+  const seen = new Set<string>();
+  for (const [index, value] of values.entries()) {
+    const citation = citationFromValue(value, index, shape);
+    if (!citation || seen.has(citation.payload.url)) {
+      continue;
+    }
+
+    seen.add(citation.payload.url);
+    target.push({ data: { artifactType: "citation", payload: { ...citation.payload, source } }, type: "artifact" });
+  }
+}
+
+/** Perplexity's documented `search_results` (`{title, url, date, ...}`, in the
+ * order of its `citations`). A result whose URL another field already cited
+ * gives that citation its title and excerpt when it had none and is not
+ * repeated; every other result becomes a citation of its own. */
+function appendSearchResultArtifacts(target: ModelRunSseEvent[], values: unknown): void {
+  if (!Array.isArray(values)) {
+    return;
+  }
+
+  const cited = new Map<string, Record<string, unknown>>();
+  for (const event of target) {
+    if (event.type === "artifact" && event.data.artifactType === "citation" &&
+      isOpenAIChatRecord(event.data.payload) && typeof event.data.payload.url === "string" &&
+      !cited.has(event.data.payload.url)) {
+      cited.set(event.data.payload.url, event.data.payload);
+    }
+  }
+
+  for (const [index, value] of values.entries()) {
+    const result = citationFromValue(value, index, "flat");
+    if (!result) {
+      continue;
+    }
+
+    const existing = cited.get(result.payload.url);
+    if (!existing) {
+      const payload = { ...result.payload, source: "openrouter-search-results" };
+      cited.set(payload.url, payload);
+      target.push({ data: { artifactType: "citation", payload }, type: "artifact" });
+      continue;
+    }
+    if (result.titled && existing.title === `Source ${String(existing.index)}`) {
+      existing.title = result.payload.title;
+    }
+    if (existing.snippet === undefined && result.payload.snippet !== undefined) {
+      existing.snippet = result.payload.snippet;
+    }
   }
 }
 
@@ -183,6 +212,7 @@ export function extractOpenRouterArtifacts(response: OpenRouterResponseRecord): 
     "openrouter-annotations",
     "annotation"
   );
+  appendSearchResultArtifacts(artifacts, response.search_results);
 
   return artifacts;
 }
