@@ -44,19 +44,29 @@ const SIGN_IN_READINESS: ReadonlySet<McpReadiness> = new Set(["authorizing", "ne
 const SIGN_IN_ERROR_CODES: ReadonlySet<string> = new Set([
   "mcp_oauth_reauthorization_required", "oauth_reauthorization_required", "oauth_required"
 ]);
+/**
+ * Persisted runtime transitions with no failure recorded: no generation yet,
+ * one being started, or one stopping for its replacement. A persisted-ready
+ * generation this process does not hold live (`mcp_runtime_not_live`) is not
+ * one of them, since a runtime in backoff after failed starts reads the same.
+ */
+const STARTING_READINESS: ReadonlySet<McpReadiness> = new Set(["queued", "restarting", "starting"]);
 
 /**
  * The stable reason a failed plan of one server gives: a rejected personal
  * credential, a missing or lapsed user OAuth connection, tools beyond the plan
- * bounds, or otherwise a server that cannot run now (runtime failure or
- * backoff, startup, network or upstream error, setup, a changed revision).
+ * bounds, a runtime still starting (every issue a failure-free transition, as
+ * right after the server was turned on), or otherwise a server that cannot run
+ * now (runtime failure or backoff, startup, network or upstream error, setup,
+ * a changed revision).
  */
 export function mcpUnavailableServerReason(plan: FailedPlan): McpUnavailableServerReason {
   if (plan.code === "mcp_plan_too_large") return "mcp_plan_too_large";
   if (plan.issues.some((issue) => issue.personalCredentialRejected === true)) return "mcp_personal_credential_rejected";
-  return plan.issues.some((issue) => issue.signInRequired === true || SIGN_IN_READINESS.has(issue.readiness) ||
-    (issue.errorCode !== null && SIGN_IN_ERROR_CODES.has(issue.errorCode)))
-    ? "mcp_reauthorization_required"
+  if (plan.issues.some((issue) => issue.signInRequired === true || SIGN_IN_READINESS.has(issue.readiness) ||
+    (issue.errorCode !== null && SIGN_IN_ERROR_CODES.has(issue.errorCode)))) return "mcp_reauthorization_required";
+  return plan.issues.length > 0 && plan.issues.every((issue) => issue.errorCode === null && STARTING_READINESS.has(issue.readiness))
+    ? "mcp_server_starting"
     : "mcp_server_unavailable";
 }
 

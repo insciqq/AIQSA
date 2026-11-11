@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { isMcpUnavailableServerReason, mcpUnavailableServerCopy } from "@/lib/contracts/mcp";
+import { mcpFindToolsExecutionResult } from "./discovery";
 import { discoverMcpTools, mcpUnavailableServerReason } from "./discoveryService";
 import type { McpCapabilityCatalog, McpRunPlanIssue, McpRunPlanResult, McpRunPlanSnapshot } from "./runPlan";
 
@@ -73,8 +75,20 @@ describe("per-server MCP discovery", () => {
     ["a startup or initialize failure", notReady({ errorCode: "mcp_initialize_failed", name: "A", readiness: "unavailable" }),
       "mcp_server_unavailable"],
     ["a network failure", notReady({ errorCode: "mcp_network_failed", name: "A", readiness: "unavailable" }), "mcp_server_unavailable"],
-    ["a runtime in backoff or restarting", notReady({ errorCode: "mcp_runtime_not_live", name: "A", readiness: "restarting" }),
+    // Persisted ready but not live here: a runtime in backoff after failed starts reads the same.
+    ["a ready runtime this process does not hold live", notReady({ errorCode: "mcp_runtime_not_live", name: "A", readiness: "restarting" }),
       "mcp_server_unavailable"],
+    ["a just-enabled server with no runtime yet", notReady({ errorCode: null, name: "A", readiness: "queued" }), "mcp_server_starting"],
+    ["a runtime being started", notReady({ errorCode: null, name: "A", readiness: "starting" }), "mcp_server_starting"],
+    ["a runtime stopping for its replacement", notReady({ errorCode: null, name: "A", readiness: "restarting" }), "mcp_server_starting"],
+    ["a starting runtime beside a failed one", notReady({ errorCode: null, name: "A", readiness: "starting" },
+      { errorCode: "mcp_network_failed", name: "B", readiness: "unavailable" }), "mcp_server_unavailable"],
+    ["a stale or idle runtime", notReady({ errorCode: "mcp_runtime_stale", name: "A", readiness: "unavailable" },
+      { errorCode: null, name: "B", readiness: "idle" }), "mcp_server_unavailable"],
+    ["a missing server of the subset", notReady({ errorCode: "mcp_server_unavailable", name: "A", readiness: "unavailable" }),
+      "mcp_server_unavailable"],
+    ["a queued server that needs a new sign-in", notReady({ errorCode: null, name: "A", readiness: "queued", signInRequired: true },
+      { errorCode: null, name: "B", readiness: "starting" }), "mcp_reauthorization_required"],
     ["an upstream error", notReady({ errorCode: "mcp_connect_failed", name: "A", readiness: "unavailable" }), "mcp_server_unavailable"],
     ["an administrator's rejected shared credential",
       notReady({ errorCode: "mcp_authorization_required", name: "A", readiness: "unavailable" }), "mcp_server_unavailable"],
@@ -122,6 +136,23 @@ describe("per-server MCP discovery", () => {
       loaded_count: 2, outcome: "completed", unavailable_server_count: 2
     });
     expect(JSON.stringify(records)).not.toMatch(/PRIVATE_NAME|server-beta|server-gamma|mcp_beta_action/u);
+  });
+
+  it("tells the model and the user that a just-enabled server is still starting, without an operator warning", async () => {
+    const observation = await captureRunObservation();
+    const discovered = await discover(async (_userId, tools) => tools[0]!.serverId === "server-beta"
+      ? notReady({ errorCode: null, name: "PRIVATE_NAME_beta", readiness: "starting" })
+      : plan(tools), "select:mcp_alpha_action_1,mcp_beta_action_1");
+
+    expect(discovered.unavailable).toEqual([{ reason: "mcp_server_starting", serverId: "server-beta" }]);
+    expect(isMcpUnavailableServerReason("mcp_server_starting")).toBe(true);
+    expect(mcpUnavailableServerCopy("mcp_server_starting")).toEqual({ action: "Ask again in a minute.", label: "Still starting" });
+    const found = mcpFindToolsExecutionResult({ arguments: { query: "x" }, id: "call", name: "find_tools" },
+      { loaded: [], unavailable: [{ reason: "mcp_server_starting", serverName: "Tracker" }] });
+    expect((found.content[0] as { text: string }).text).toContain("- Tracker: Still starting. Ask again in a minute.\n");
+    expect(observation.records().filter((record) => record.event === "mcp_discovery_server_unavailable")).toEqual([
+      expect.objectContaining({ cause: "mcp_not_ready", code: "mcp_server_starting", level: "info" })
+    ]);
   });
 
   it("reports a server whose own runtime threw, and fails the call on an internal error", async () => {
