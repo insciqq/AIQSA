@@ -24,7 +24,13 @@ import {
   type WorkspaceCoordinatorRepository,
   type WorkspaceExecutionBinding
 } from "./coordinator";
-import { workspaceSyncCleanupId, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
+import {
+  WORKSPACE_EXECUTION_REGISTER_ATTEMPTS,
+  createPrismaWorkspaceExecutionRegistry,
+  workspaceSyncCleanupId,
+  type WorkspaceExecutionRecord,
+  type WorkspaceExecutionRegistry
+} from "./executionRegistry";
 import type {
   WorkspaceBoundTool,
   WorkspaceRuntime,
@@ -121,6 +127,35 @@ function memoryRegistry() {
     }
   };
   return { registry, rows };
+}
+
+/**
+ * `memory` with registration through the Prisma registry, whose guarded transaction loses its first `deadlocks`
+ * attempts to a deadlock (rolled back whole) and then writes the row into `memory`.
+ */
+function deadlockedRegistration(memory: WorkspaceExecutionRegistry, deadlocks: number) {
+  let failing = deadlocks;
+  const tx = {
+    $queryRaw: vi.fn(async () => []),
+    workspaceExecution: { create: vi.fn(async ({ data }: { data: Readonly<{ modelRunId: string; modelRunToolCallId: string;
+      runtimeExecSessionId: string; workspaceSessionId: string }> }) => {
+      await memory.register({ modelRunId: data.modelRunId, modelRunToolCallId: data.modelRunToolCallId,
+        runtimeExecSessionId: data.runtimeExecSessionId, sessionId: data.workspaceSessionId });
+      return { id: "execution_1" };
+    }) },
+    workspaceSession: { findFirst: vi.fn(async () => ({ id: "session" })) }
+  };
+  const database = {
+    $transaction: vi.fn(async (work: (value: typeof tx) => Promise<unknown>) => {
+      if (failing > 0) {
+        failing -= 1;
+        throw new Prisma.PrismaClientKnownRequestError("fixture", { clientVersion: "test", code: "P2010", meta: { code: "40P01" } });
+      }
+      return work(tx);
+    })
+  };
+  const registration = createPrismaWorkspaceExecutionRegistry(database as unknown as PrismaClient);
+  return { database, registry: { ...memory, register: registration.register } satisfies WorkspaceExecutionRegistry };
 }
 
 function fixture() {
@@ -1302,6 +1337,40 @@ describe("Workspace coordinator settlement", () => {
     expect(value.runtime.stopSession).toHaveBeenCalledTimes(1);
     expect(value.settledSessions).toEqual([]);
     expect(value.sessionState()).toBe("RUNNING");
+  });
+
+  it.each(["sandbox_shell", "sandbox_exec"] as const)(
+    "sends no %s whose cleanup obligation a deadlock kept from being recorded, and says it may be sent again", async (tool) => {
+      const value = fixture();
+      const { database, registry } = deadlockedRegistration(value.registry, WORKSPACE_EXECUTION_REGISTER_ATTEMPTS);
+      const coordinator = createWorkspaceCoordinator({ ...value, registry });
+      const result = await coordinator.execute({
+        call: { arguments: { command: "pwd" }, id: "call", name: namespacedWorkspaceToolName(tool) },
+        modelRunToolCallId: "stored", runId: value.runId, userId: "user_1", workspace: value.workspace
+      });
+      // The registry made the rolled-back registration again up to its bound; the guest call was never made.
+      expect(database.$transaction).toHaveBeenCalledTimes(WORKSPACE_EXECUTION_REGISTER_ATTEMPTS);
+      expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+      expect(value.registryRows).toEqual([]);
+      // An ordinary error result, never a thrown failure, which the engine would keep as an effect that may have happened.
+      expect(result).toMatchObject({ status: "error" });
+      const [part] = result.content;
+      expect(part?.type === "text" && JSON.parse(part.text)).toEqual({ error: { code: "operation_failed",
+        message: expect.stringMatching(/^This command was not sent: .*so nothing ran\. Sending it again is safe/u) }, ok: false });
+      // The step the user saw start settles as failed.
+      expect(result.artifacts).toEqual([expect.objectContaining({ data: expect.objectContaining({ artifactType: "workspace_activity",
+        payload: expect.objectContaining({ phase: "failed" }) }) })]);
+    });
+
+  it("dispatches a command whose registration lost a deadlock once it is recorded on a later attempt", async () => {
+    const value = fixture();
+    const { database, registry } = deadlockedRegistration(value.registry, WORKSPACE_EXECUTION_REGISTER_ATTEMPTS - 1);
+    const coordinator = createWorkspaceCoordinator({ ...value, registry });
+    await expect(coordinator.execute({ call: { arguments: { command: "pwd" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "stored", runId: value.runId, userId: "user_1", workspace: value.workspace })).resolves.toMatchObject({ status: "complete" });
+    expect(database.$transaction).toHaveBeenCalledTimes(WORKSPACE_EXECUTION_REGISTER_ATTEMPTS);
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+    expect(value.registryRows).toEqual([expect.objectContaining({ modelRunToolCallId: "stored", runtimeExecSessionId: workspaceSyncCleanupId("stored") })]);
   });
 
   it("settles a cancelled run by terminating registered executions once", async () => {
@@ -2580,15 +2649,19 @@ describe("Workspace synchronous cleanup ownership", () => {
     expect(value.runtime.callBoundTool).toHaveBeenCalledTimes(1);
   });
 
-  it("does not dispatch a synchronous mutation if its cleanup obligation cannot be persisted", async () => {
-    const value = fixture();
-    vi.spyOn(value.registry, "register").mockRejectedValueOnce(new Error("synthetic unavailable registry"));
-    await expect(value.coordinator.execute({
-      call: { arguments: { command: "touch /workspace/project/marker" }, id: "sync_call", name: value.shellToolName },
-      modelRunToolCallId: "stored_sync", runId: value.runId, userId: "user_1", workspace: value.workspace
-    })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
-    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
-  });
+  it.each(["unavailable", "claimed"] as const)(
+    "does not dispatch a synchronous mutation whose cleanup obligation the registry left %s, and says nothing ran", async (failure) => {
+      const value = fixture();
+      const register = vi.spyOn(value.registry, "register");
+      if (failure === "unavailable") register.mockRejectedValueOnce(new Error("synthetic unavailable registry"));
+      else register.mockResolvedValueOnce("conflict");
+      // A result, not a thrown failure: nothing reached the guest, so the call is no effect left unknown.
+      await expect(value.coordinator.execute({
+        call: { arguments: { command: "touch /workspace/project/marker" }, id: "sync_call", name: value.shellToolName },
+        modelRunToolCallId: "stored_sync", runId: value.runId, userId: "user_1", workspace: value.workspace
+      })).resolves.toMatchObject({ content: [{ text: expect.stringContaining("This command was not sent"), type: "text" }], status: "error" });
+      expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+    });
 });
 
 
@@ -3111,6 +3184,32 @@ describe("Workspace coordinator under a native engine run", () => {
     // The run logged its records, none of them with the value.
     expect(lines.some((line) => line.includes("\"run_execution\""))).toBe(true);
     expect(lines.join("\n")).not.toContain(token);
+  });
+
+  it("keeps a command a deadlock kept from being recorded an ordinary failure, so the same command goes out when asked again", async () => {
+    const value = fixture();
+    // The first command's registration loses every attempt; the second one's is recorded at once.
+    const { database, registry } = deadlockedRegistration(value.registry, WORKSPACE_EXECUTION_REGISTER_ATTEMPTS);
+    const coordinator = createWorkspaceCoordinator({ ...value, registry });
+    const command = { arguments: { command: "ls" }, name: value.shellToolName };
+    const { adapter } = scriptedNativeAdapter([{ calls: [{ ...command, id: "call-1" }] }, { calls: [{ ...command, id: "call-2" }] },
+      { text: "Listed." }]);
+    const native = memoryNativeEngine();
+    const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter,
+      created: { assistantMessageId: "assistant_1", runId: value.runId, userMessageId: "message_1" }, engine: native.engine,
+      prepared: nativePrepared({ chatId: "chat_1", workspace: value.workspace }),
+      repository: nativeRunRepository() as unknown as RunRepository, services: {}, userId: "user_1", workspace: coordinator }));
+    expect(events.at(-1)).toEqual({ data: { runId: value.runId, status: "complete" }, type: "done" });
+    expect(native.published()).toBe("Listed.");
+    // The first result is a known failure that says nothing ran, never an unknown outcome; the second command completed.
+    const results = native.transcriptRows.flatMap((item) => item.kind === "tool_result" ? [item] : []);
+    expect(results.map((item) => [item.callId, item.outcome])).toEqual([["call-1", "error"], ["call-2", "complete"]]);
+    expect(results[0]!.output).toContain("This command was not sent");
+    expect(database.$transaction).toHaveBeenCalledTimes(WORKSPACE_EXECUTION_REGISTER_ATTEMPTS + 1);
+    // Only the repeat reached the guest: the same command was not held for the user as a possible effect.
+    expect(value.runtime.callBoundTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      arguments: { command: "ls" }, originalName: "sandbox_shell" }));
+    expect(value.registryRows).toHaveLength(1);
   });
 });
 
