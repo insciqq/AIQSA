@@ -190,6 +190,33 @@ export const callChildSubagentTool: HarnessToolDescriptor = Object.freeze({
   tool: Object.freeze({ ...callSubagentTool.tool, description: CALL_CHILD_DESCRIPTION })
 });
 
+/**
+ * A call tool for a run that starts no background turns (a Telegram turn, a scheduled occurrence): the same tool without
+ * `background` in its schema and its text, so the model is not offered what would only be refused, a wasted round each
+ * time (production audit 2026-11-11). A call that still sends it is refused with `subagent_background_unavailable`
+ * (`lib/server/engine/subagents/callTools.ts`). The web chat's text stays byte for byte as it was.
+ */
+function foregroundOnly(descriptor: HarnessToolDescriptor): HarnessToolDescriptor {
+  const description = descriptor.description.split("\n").filter((line) => !line.startsWith("background: ")).join("\n")
+    .replace(`${CODES.backgroundUnavailable}, `, "");
+  const inputSchema = { ...CALL_SUBAGENT_SCHEMA,
+    properties: Object.fromEntries(Object.entries(CALL_SUBAGENT_SCHEMA.properties).filter(([key]) => key !== "background")) };
+  return Object.freeze({ ...descriptor, description, inputSchema,
+    tool: Object.freeze({ ...descriptor.tool, description, inputSchema }) });
+}
+
+/** `call_subagent` where background turns are not allowed. */
+export const callSubagentForegroundTool = foregroundOnly(callSubagentTool);
+
+/** A sub-agent's `call_subagent` for its own children where background turns are not allowed. */
+export const callChildSubagentForegroundTool = foregroundOnly(callChildSubagentTool);
+
+/** The `call_subagent` a run offers: with `background` only where it may start background turns. */
+export function callSubagentToolFor(backgroundAllowed: boolean, child = false): HarnessToolDescriptor {
+  if (child) return backgroundAllowed ? callChildSubagentTool : callChildSubagentForegroundTool;
+  return backgroundAllowed ? callSubagentTool : callSubagentForegroundTool;
+}
+
 const STOP_CHILD_DESCRIPTION = `Stops a helper you started, in the background or not, when its work is no longer needed or it went off track. It keeps what it did and its context: a later call_subagent with the same name continues it.
 name: the helper's name.
 Result: its last state, with what it reported so far, the files it wrote and its steps. Refusals: ${CODES.notOwnChild} for another agent's sub-agent, ${CODES.notFound} when no sub-agent of that name is in this conversation.`;

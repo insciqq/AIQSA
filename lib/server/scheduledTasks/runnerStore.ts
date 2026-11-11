@@ -4,7 +4,8 @@ import {
   scheduledTaskRunTrigger as trigger,
   type ScheduledTaskChatMode,
   type ScheduledTaskKind,
-  type ScheduledTaskRunTrigger
+  type ScheduledTaskRunTrigger,
+  type ScheduledTaskSchedule
 } from "../../contracts/scheduledTasks";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
@@ -94,6 +95,13 @@ export type ScheduledTaskExecution = Readonly<{
   occurrence: Readonly<{ id: string; scheduledFor: Date; taskId: string; trigger: ScheduledTaskRunTrigger; userId: string }>;
   ownerActive: boolean;
   /**
+   * When the run behind the previous shown result of the current generation
+   * was admitted: the baseline's run, else the source answer of the carried
+   * copy (created in its run's admitting transaction). Both outlive the
+   * pruned occurrence history; null when there is no such result or it is gone.
+   */
+  previousResultAt: Date | null;
+  /**
    * The personal MCP servers the previous shown result of the current
    * generation called, or relied on but already missed; null when there is no
    * such result to judge by (a first run, or its run is gone), so every
@@ -111,6 +119,8 @@ export type ScheduledTaskExecution = Readonly<{
     generation: number;
     kind: ScheduledTaskKind;
     memoryEnabled: boolean; modelId: string; prompt: string; provider: string; revision: number; searchEnabled: boolean;
+    /** The schedule while it is on; null for a task that runs only on its webhook. */
+    schedule: ScheduledTaskSchedule | null;
     /** Read with `revision`; empty unless tools are on. */
     pinnedSkillIds: readonly string[];
     /** The prompt's page-reading snapshot, read with `revision`. */
@@ -856,6 +866,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
               modelId: true, prompt: true, pinnedSkillIds: true, promptUrlDigests: true, provider: true, revision: true,
               searchEnabled: true, status: true, timeZone: true, title: true, toolsEnabled: true, webhookEnabled: true,
               workspaceEnabled: true, user: { select: { scimDeactivatedAt: true, status: true } },
+              scheduleEnabled: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
+              onceLocalDate: true, everyHours: true, untilMinutes: true,
               chat: {
                 select: {
                   activeLeafMessageId: true, archived: true, assistantId: true, id: true, permanentDeletionAt: true
@@ -864,7 +876,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
               carryover: {
                 select: {
                   answerText: true, chatEpoch: true, reliedServerIds: true, sourceAssistantMessageId: true, sourceChatId: true,
-                  taskGeneration: true, sourceChat: { select: { permanentDeletionAt: true } }
+                  taskGeneration: true, sourceAnswer: { select: { createdAt: true } },
+                  sourceChat: { select: { permanentDeletionAt: true } }
                 }
               }
             }
@@ -875,6 +888,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       if (!row || row.state !== "PENDING" || row.runId !== null) return null;
       const {
         baselineAssistantMessageId, baselineGeneration, baselineRunId, baselineUserMessageId, carryover, chat, chatMode, kind, user,
+        scheduleEnabled, scheduleKind, timeOfDayMinutes, daysOfWeekMask, dayOfMonth, onceLocalDate, everyHours, untilMinutes,
         ...task
       } = row.task;
       const usable = chat && !chat.archived && chat.permanentDeletionAt === null && chat.assistantId === null;
@@ -893,6 +907,12 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       const webhookEvent = row.trigger === "webhook"
         ? await loadScheduledTaskWebhookEvent(prisma, { scheduledFor: row.scheduledFor, taskId: row.taskId, userId: row.userId })
         : null;
+      // The result the run's context compares with, as `runTarget` picks it: the baseline, else the carried copy.
+      const currentBaseline = baseline?.generation === task.generation ? baseline : null;
+      const previousResultAt = currentBaseline
+        ? (await prisma.modelRun.findFirst({ select: { createdAt: true },
+          where: { id: currentBaseline.runId, userId: row.userId } }))?.createdAt ?? null
+        : carriedResult && carryover ? carryover.sourceAnswer.createdAt : null;
       return {
         carriedResult,
         chat: usable ? { activeLeafMessageId: chat.activeLeafMessageId, id: chat.id } : null,
@@ -901,11 +921,14 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         },
         // A recorded SCIM deactivation ends the owner's access, standing tasks included.
         ownerActive: user.status === "active" && user.scimDeactivatedAt === null,
+        previousResultAt,
         relevantMcpServerIds: !task.toolsEnabled ? null
           : baseline?.generation === task.generation
             ? await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId: row.userId })
             : carriedResult ? carriedResult.reliedServerIds : null,
-        task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode), kind: scheduledTaskKindFromColumn(kind) },
+        task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode), kind: scheduledTaskKindFromColumn(kind),
+          schedule: scheduleEnabled ? scheduledTaskScheduleFromColumns({ dayOfMonth, daysOfWeekMask, everyHours, onceLocalDate,
+            scheduleKind, timeOfDayMinutes, untilMinutes }) : null },
         ...(webhookEvent ? { webhookEvent } : {})
       };
     },
