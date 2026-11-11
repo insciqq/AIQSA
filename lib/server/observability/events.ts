@@ -255,6 +255,7 @@ export type EventFields = {
   provider_retry: ProviderFields;
   /** One refused upload request: its stable code and safe facts, never the file name, declared type, content or an upload or attachment id.
    * Only an unexpected failure (`upload_unavailable`) carries its caught error and is an error; every other refusal warns. */
+  search_sources_missing: Readonly<{ annotations: number; citations: number; inline_links: number; message_citations: number; search_results: number }>;
   upload_refused: CaughtError & Readonly<{
     operation: UploadRefusalOperation; stage?: UploadRefusalStage; code: string; httpStatus: number;
     size_class?: UploadSizeClass; mime_family?: UploadMimeFamily; client_aborted?: boolean;
