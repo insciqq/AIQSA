@@ -42,6 +42,7 @@
   "rate_limit_exceeded",
   "request_too_large",
   "resource_exhausted",
+  "safety",
   "server_error",
   "server_is_overloaded",
   "server_overloaded",

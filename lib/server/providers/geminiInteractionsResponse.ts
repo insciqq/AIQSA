@@ -34,6 +34,8 @@ import {
 } from "../search/evidence";
 import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 import { markProviderStreamDrop } from "./streamDrop";
+import { ProviderEmptyAnswerError } from "./emptyAnswer";
+import { markProviderErrorCode, providerErrorCodeOf } from "./providerErrorCode";
 
 const MAX_INTERACTION_ID_LENGTH = 512;
 const MAX_MODEL_LENGTH = 512;
@@ -169,6 +171,32 @@ export function extractGeminiInteractionUsage(response: GeminiInteractionRecord)
 
 function interactionFailure(status: string): Error {
   return new Error(`gemini_interaction_${status}`);
+}
+
+// The step kinds the parser admits; it refuses any other before a round completes (`gemini_interactions_step_unsupported`).
+const EMPTY_ANSWER_STEP_TYPES: readonly string[] = ["thought", "model_output", "function_call", "google_search_call", "google_search_result"];
+
+/** The reviewed identity of the first fault Gemini recorded on the interaction (`errors`, whose `code` is a URI). */
+function terminalFaultCode(errors: unknown): string | null {
+  const fault = Array.isArray(errors) ? errors[0] : undefined;
+  if (!isRecord(fault)) return null;
+  const code = typeof fault.code === "string" ? fault.code.slice(0, 2_048).split(/[/#:]/u).filter(Boolean).pop() : undefined;
+  return providerErrorCodeOf(code === undefined ? fault : { code });
+}
+
+/** A completed round with neither visible text nor a call, with its content-free summary (issue #71, `emptyAnswer.ts`). */
+function emptyResponseError(
+  steps: readonly Record<string, unknown>[],
+  rawFinalText: string,
+  errors: unknown
+): ProviderEmptyAnswerError {
+  const kinds = new Set(steps.map((step) => typeof step.type === "string" && EMPTY_ANSWER_STEP_TYPES.includes(step.type) ? step.type : "other"));
+  const stepTypes = [...EMPTY_ANSWER_STEP_TYPES, "other"].filter((kind) => kinds.has(kind)).join("+") || "none";
+  return markProviderErrorCode(new ProviderEmptyAnswerError("gemini_interactions_empty_response", {
+    hiddenText: rawFinalText.trim().length > 0,
+    stepCount: steps.length,
+    stepTypes
+  }), terminalFaultCode(errors));
 }
 
 function validateTerminalStatus(value: unknown): "completed" | "requires_action" {
@@ -706,7 +734,7 @@ function normalizeInteraction(
     throw new Error("gemini_interactions_required_action_missing");
   }
   if (status === "completed" && !finalText && toolCalls.length === 0) {
-    throw new Error("gemini_interactions_empty_response");
+    throw emptyResponseError(protectedSteps, rawFinalText, response.errors);
   }
   return {
     finalText,
@@ -1097,6 +1125,8 @@ export async function* parseGeminiInteractionsSse(
   let interactionId = "";
   let model = input.modelId;
   let terminalStatus: "completed" | "requires_action" | null = null;
+  // Faults Gemini recorded on the completed interaction, read only to name an empty round's.
+  let terminalErrors: unknown;
   let usage = extractGeminiInteractionsUsage(undefined);
   let groundingProven = false;
   let groundingDecisionPending = input.groundingExpected;
@@ -1378,6 +1408,7 @@ export async function* parseGeminiInteractionsSse(
       }
       if (typeof interaction.id === "string" && interaction.id) interactionId = interaction.id;
       terminalStatus = validateTerminalStatus(interaction.status);
+      terminalErrors = interaction.errors;
       if (interaction.steps !== undefined) {
         if (!Array.isArray(interaction.steps) || interaction.steps.length > MAX_STEP_COUNT) {
           throw new Error("gemini_interactions_steps_invalid");
@@ -1456,7 +1487,7 @@ export async function* parseGeminiInteractionsSse(
     throw new Error("gemini_interactions_required_action_missing");
   }
   if (terminalStatus === "completed" && !finalText && toolCalls.length === 0) {
-    throw new Error("gemini_interactions_empty_response");
+    throw emptyResponseError(protectedSteps, rawFinalText, terminalErrors);
   }
 
   const normalized: NormalizedInteraction = {

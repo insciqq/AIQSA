@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ProviderEmptyAnswerError } from "../providers/emptyAnswer";
 import { ProviderRequestTimeoutError } from "../providers/network";
 import { markProviderStreamDrop } from "../providers/streamDrop";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -29,5 +30,9 @@ describe("a run's terminal failure text", () => {
     expect(failurePayload(new Error("bookkeeping"), true, false, names).message)
       .toBe("The answer could not be completed. Its Workspace files and the answer so far are kept.");
     expect(failurePayload(new EngineFailure("run_time_limit", "Own words."), false, false, names)).toEqual({ code: "run_time_limit", message: "Own words." });
+    // A round the provider completed empty, again after its resend, is an answer that never came (issue #71).
+    expect(failurePayload(new ProviderEmptyAnswerError("gemini_interactions_empty_response",
+      { hiddenText: false, stepCount: 0, stepTypes: "none" }), false, false, names))
+      .toEqual({ code: "model_answer_empty", message: "The model returned no answer. Send your request again." });
   });
 });
