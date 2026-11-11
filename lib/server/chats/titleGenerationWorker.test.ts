@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { chatTitleWork } from "@/tests/support/chatTitles";
 import { createChatTitleWorker } from "./titleGenerationWorker";
-import { getContext, runInBackground, runWithContext } from "../observability";
+import { getContext, runInBackground, runWithContext, setRecordObserver, type ObservedRecord } from "../observability";
 
 function fixture() {
   const work = chatTitleWork();
@@ -74,6 +74,29 @@ describe("background chat title worker", () => {
     await worker.reconcile(new AbortController().signal);
     expect(execute).toHaveBeenCalledOnce();
     expect(repository.recordUsage).toHaveBeenCalledOnce();
+  });
+
+  it("applies the title when its usage cannot be recorded, and logs that without content", async () => {
+    const { repository, work } = fixture();
+    repository.recordUsage.mockRejectedValue(new Error("synthetic_usage_write_failure"));
+    const execute = vi.fn<Parameters<typeof createChatTitleWorker>[0]["execute"]>(async (_snapshot, _request, options) => {
+      options?.onUsage?.({ inputTokens: 5, outputTokens: 1, reasoningTokens: 0 });
+      return { title: "A short title" };
+    });
+    const records: ObservedRecord[] = [];
+    setRecordObserver((record) => records.push(record));
+    try {
+      await createChatTitleWorker({ execute, repository }).reconcile(new AbortController().signal);
+    } finally {
+      setRecordObserver(null);
+    }
+    expect(repository.finish).toHaveBeenCalledExactlyOnceWith(work, "A short title");
+    expect(execute).toHaveBeenCalledOnce();
+    const unrecorded = records.filter((record) => record.code === "run_usage_unrecorded");
+    expect(unrecorded).toHaveLength(1);
+    expect(unrecorded[0]).toMatchObject({ event: "service_operation", outcome: "degraded", run_id: work.runId });
+    expect(JSON.stringify(unrecorded[0])).not.toContain("A short title");
+    expect(JSON.stringify(unrecorded[0])).not.toContain(work.questionText);
   });
 
   it("does not dispatch after ownership, lifecycle or manual-title authority changes", async () => {
