@@ -268,7 +268,7 @@ function ModelsSection({ catalog, controller, disabled, group, providers }: Read
     >
       <p className={helpClass}>
         Grant all covers current models only. Existing grants for future models stay enabled. Clear also removes provider-wide grants for these models.
-        {providers.error ? " Provider keys could not be loaded." : null}
+        {providers.error ? <span> Provider keys could not be loaded.</span> : null}
       </p>
       <div className={cardClass}>
         {sortedProviders.length ? (

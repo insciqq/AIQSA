@@ -774,7 +774,8 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
                   </button>
                 ) : <strong title={file.relativePath}>{file.fileName}</strong>}
                 <small title={details && !describeDrafts ? details.join("\n") : undefined}>
-                  {file.checkpoint ? "Draft · " : null}{type} · {formatAttachmentBytes(file.byteSize)}
+                  {/* One string: a translated page's text never leaves a node React must remove. */}
+                  {`${file.checkpoint ? "Draft · " : ""}${type} · ${formatAttachmentBytes(file.byteSize)}`}
                 </small>
                 {file.checkpoint && details && describeDrafts ? <>
                   <small className="v2-generated-file-description">{details[0]}</small>

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { simulatePageTranslation } from "@/tests/support/pageTranslation";
 import { CODE_HIGHLIGHT_CACHE_LIMIT, highlightCodeBlock } from "./codeHighlighting";
 import { renderMathExpression } from "./mathRendering";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -446,6 +447,29 @@ describe("MarkdownMessage", () => {
 
     expect(writeText).toHaveBeenCalledWith("const answer = 42;\n");
     await waitFor(() => expect(screen.getAllByText("Copied").length).toBeGreaterThan(0));
+  });
+
+  it("copies from a code block on a translated page without crashing", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const crashes: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      crashes.push(event.error);
+      event.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      render(<MarkdownMessage content={["```unknown", "const answer = 42;", "```"].join("\n")} />);
+      const copy = screen.getByRole("button", { name: "Copy code" });
+      simulatePageTranslation(copy);
+      expect(copy.querySelector("font")).not.toBeNull();
+      fireEvent.click(copy);
+      await waitFor(() => expect(copy).toHaveTextContent("Copied"));
+      expect(writeText).toHaveBeenCalledWith("const answer = 42;\n");
+      expect(crashes).toEqual([]);
+    } finally {
+      window.removeEventListener("error", onError);
+    }
   });
 
   it("keeps shorter embedded fences and citation-shaped data inside a longer code block", () => {
