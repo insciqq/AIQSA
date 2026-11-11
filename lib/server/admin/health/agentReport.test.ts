@@ -179,10 +179,13 @@ const failedRunLoad: FailedRunLoad = {
 };
 
 const modelRunLoad: ModelRunLoad = { truncated: false, rows: [
-  { connectionId: "conn-openai", providerModelId: "model-gpt", accepted: 198, completed: 170, failed: 25, refusedInput: 1, cancelled: 2,
+  { connectionId: "conn-openai", providerModelId: "model-gpt", subagent: false, accepted: 198, completed: 170, failed: 25, refusedInput: 1, cancelled: 2,
     open: 0, users: 9, lastFailedAt: IN_RANGE, codes: [{ code: "provider_server_error", runs: 20 }, { code: null, runs: 5 }] },
-  { connectionId: "conn-gone", providerModelId: "model-gone", accepted: 13, completed: 13, failed: 0, refusedInput: 0, cancelled: 0,
-    open: 0, users: 2, lastFailedAt: null, codes: [] }
+  { connectionId: "conn-gone", providerModelId: "model-gone", subagent: false, accepted: 13, completed: 13, failed: 0, refusedInput: 0,
+    cancelled: 0, open: 0, users: 2, lastFailedAt: null, codes: [] },
+  // Background sub-agents' own runs on the same model: a row of their own, under that model.
+  { connectionId: "conn-openai", providerModelId: "model-gpt", subagent: true, accepted: 4, completed: 1, failed: 3, refusedInput: 0,
+    cancelled: 0, open: 0, users: 1, lastFailedAt: IN_RANGE, codes: [{ code: "provider_stream_failed", runs: 3 }] }
 ] };
 
 const streakRows: FailureStreak[] = [
@@ -367,11 +370,13 @@ describe("full agent report", () => {
     expect(input.modelRuns).toHaveBeenCalledWith({ from: new Date("2026-10-01T00:00:00.000Z"), to: new Date("2026-10-08T00:00:00.000Z"),
       limit: 200, codesPerModel: 5 });
     expect(full.models).toEqual({ truncated: false, rows: [
-      { connectionId: "conn-openai", connectionName: "OpenAI", providerModelId: "model-gpt", modelName: "gpt-5", accepted: 198,
+      { connectionId: "conn-openai", connectionName: "OpenAI", providerModelId: "model-gpt", modelName: "gpt-5", subagent: false, accepted: 198,
         completed: 170, failed: 25, refusedInput: 1, cancelled: 2, open: 0, users: 9, failureRate: 25 / 197,
         lastFailedAt: "2026-10-06T10:00:00.000Z", codes: [{ code: "provider_server_error", runs: 20 }, { code: null, runs: 5 }] },
       expect.objectContaining({ connectionName: "Deleted connection", modelName: "Deleted model", failed: 0, failureRate: 0,
-        lastFailedAt: null, codes: [] })
+        lastFailedAt: null, codes: [] }),
+      expect.objectContaining({ connectionName: "OpenAI", modelName: "gpt-5", subagent: true, failed: 3,
+        codes: [{ code: "provider_stream_failed", runs: 3 }] })
     ] });
     expect(full.failureStreaks).toEqual({ streaks: 2, users: 2, longest: 6, minRuns: 3, truncated: false, rows: [
       { userId: USER_A, runs: 6, failed: 5, cancelled: 1, firstAt: "2026-10-06T10:00:00.000Z", lastAt: "2026-10-06T10:10:00.000Z",
@@ -565,7 +570,7 @@ describe("full agent report text", () => {
       "Failure streaks (3+ failed or cancelled runs in a row in one chat: 2 streaks, 2 users, longest 6)",
       "Answer problem reports (2, newest first)",
       "Runs (accepted runs; outcomes counted once per run from its terminal write)",
-      "Runs by model (runs created in the range, most failures first) (2)",
+      "Runs by model (runs created in the range, most failures first) (3)",
       "Error groups (class · where in AIQSA; NEW = first seen in this range) (1)",
       "Failures: warn, error and fatal records by key (20)",
       "Timeouts: deadline aborts, transport timeouts, tool and run deadlines (4)",
@@ -603,6 +608,10 @@ describe("full agent report text", () => {
       "      accepted 198 · completed 170 · failed 25 (12.7%) · cancelled 2 · refused input 1 · 9 users\n" +
       "      last failure 2026-10-06 10:00\n" +
       "      codes provider_server_error ×20, no code ×5\n");
+    expect(text).toContain("  OpenAI · gpt-5 · sub-agents\n" +
+      "      accepted 4 · completed 1 · failed 3 (75.0%) · cancelled 0 · 1 user\n" +
+      "      last failure 2026-10-06 10:00\n" +
+      "      codes provider_stream_failed ×3\n");
     expect(text).toContain("  password · 9 failures · within 1 min 0 s · hour 2026-10-06 10:00\n" +
       "      first 2026-10-06 10:00:00 · last 2026-10-06 10:01:00 · invalid_credentials ×9\n");
     expect(text).toContain("  mozilla · failed · code push_delivery_failed · transport network_unreachable\n");
