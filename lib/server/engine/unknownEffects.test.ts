@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TranscriptItem, TranscriptToolCallItem, TranscriptToolResultItem, TranscriptUserItem } from "./transcript";
 import {
-  answerEffectAnchor, createAgentUnknownEffects, createUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects
+  answerEffectAnchor, createAgentUnknownEffects, createUnknownEffects, unknownEffectsOf, unresolvedCallItems, withHiddenRunEffects,
+  withRetiredEffects
 } from "./unknownEffects";
 
 const recordedAt = new Date("2026-10-29T12:00:00Z");
@@ -148,6 +149,26 @@ describe("unknown effects the old core left on a branch", () => {
     // A turn the conversation does not hold puts them last, unspoken.
     expect(withHiddenRunEffects(branch, [{ beforeItemId: "msg-gone", items: step }]).map((item) => item.id).at(-1)).toBe("call-s1");
     expect(withHiddenRunEffects(branch, [])).toEqual(branch);
+  });
+
+  it("lets a quiet check from elsewhere add an unknown effect but never settle the reply's own", () => {
+    // The reply's branch left the write unknown; a quiet check elsewhere completed the same write and failed a read.
+    const active = [create("w1"), result("w1", "unknown"), user("msg-current")];
+    const quiet = [{ ...create("w2"), recordedAt: later }, { ...result("w2", "complete"), recordedAt: later },
+      { ...create("r1", "read"), name: "mcp_jira_read" } as TranscriptItem, { ...result("r1", "error"), name: "mcp_jira_read" } as TranscriptItem];
+    // Merged whole, its completed write would settle the reply's unknown one.
+    expect(unknownEffectsOf(withHiddenRunEffects(active, [{ beforeItemId: "msg-current", items: quiet }]), userAuthored).find(call())).toBeNull();
+    expect(unresolvedCallItems(quiet)).toEqual([]);
+    const merged = withHiddenRunEffects(active, [{ beforeItemId: "msg-current", items: unresolvedCallItems(quiet) }]);
+    expect(unknownEffectsOf(merged, userAuthored).find(call())).not.toBeNull();
+    // Its own unresolved write still counts: no result, an in-flight attempt or an unknown outcome.
+    const lost = [{ ...create("w3", "other issue"), recordedAt: later }];
+    const inFlight = [create("w4", "third"), { ...result("w4", "unknown"), inFlight: true as const }];
+    const unknown = [create("w5", "fourth"), result("w5", "error"), result("w5", "unknown")];
+    expect(unresolvedCallItems([...lost, ...inFlight, ...unknown]).map((item) => item.id))
+      .toEqual(["call-w3", "call-w4", "result-w4-unknown", "call-w5", "result-w5-unknown"]);
+    const held = withHiddenRunEffects([user("msg-current")], [{ beforeItemId: "msg-current", items: unresolvedCallItems(lost) }]);
+    expect(unknownEffectsOf(held, userAuthored).find(call("other issue"))).not.toBeNull();
   });
 
   it("puts the calls of a native answer that entered as text where that answer stands", () => {
