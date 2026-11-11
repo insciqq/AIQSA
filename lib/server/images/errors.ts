@@ -97,7 +97,8 @@ export function imageGenerationFailure(error: unknown): Readonly<{ evidence: Ima
 /**
  * The model-facing code and message of a dispatched image call whose adapter
  * evidence proves the provider produced no image: an HTTP 4xx rejection (any
- * diagnostic category), a refusal, or a completed response without an image.
+ * diagnostic category, except the 408 and 499 timeouts), a refusal, or a
+ * completed response without an image.
  * The engine settles it as an ordinary error, so a later call is not held
  * back as a repeat of an unknown effect. Null for everything else: a timeout,
  * a lost connection, a 5xx or an unreadable response may hide a produced and
@@ -107,7 +108,7 @@ export function imageProviderRejection(error: unknown): Readonly<{ code: string;
   if (!(error instanceof ImageGenerationError)) return null;
   const status = error.httpStatus;
   const rejected = error.code === "image_provider_http_error"
-    ? Number.isInteger(status) && status! >= 400 && status! <= 499
+    ? Number.isInteger(status) && status! >= 400 && status! <= 499 && status !== 408 && status !== 499
     : error.code === "image_generation_refused" || error.code === "image_output_missing";
   if (!rejected) return null;
   const { evidence, message } = imageGenerationFailure(error);
