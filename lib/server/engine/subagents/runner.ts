@@ -62,6 +62,7 @@ import { callModel, type ModelCallRetryPolicy } from "../modelCall";
 import {
   SUBAGENT_CHILD_ROLE_SECTION,
   SUBAGENT_ROLE_SECTION,
+  SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION,
   SUBAGENT_STARTER_ROLE_SECTION,
   subagentAgentMessageText,
   subagentChildQuestionText,
@@ -784,7 +785,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         if (!turn.mailbox.some((entry) => entry.nonce === message.nonce)) turn.mailbox.push(message);
       }
       const history = runIds.flatMap((runId) => loaded.get(runId) ?? []);
-      const roleSection = input.parentAgent ? SUBAGENT_CHILD_ROLE_SECTION : starts ? SUBAGENT_STARTER_ROLE_SECTION : SUBAGENT_ROLE_SECTION;
+      const roleSection = input.parentAgent ? SUBAGENT_CHILD_ROLE_SECTION
+        : starts ? starts.backgroundAllowed ? SUBAGENT_STARTER_ROLE_SECTION : SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION : SUBAGENT_ROLE_SECTION;
       const role = input.type?.instructions.trim() ? `${roleSection}\n\n# Your instructions\n${input.type.instructions.trim()}` : roleSection;
       const native = await withNativeSystemPrompt({ now: new Date(host.now()), request, scope: { runId: input.hostRunId, userId: host.userId },
         ...(host.secrets ? { secrets: host.secrets } : {}), selfService: role, snapshot: route.snapshot, tools: registry.definitions() });

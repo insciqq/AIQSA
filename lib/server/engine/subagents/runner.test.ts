@@ -21,7 +21,7 @@ import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackgro
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
 import { runToolBatch, TURN_TOOL_CALL_LIMIT_OUTPUT } from "../toolBatch";
 import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
-import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "../prompts";
+import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
@@ -1022,6 +1022,14 @@ describe("a sub-agent's children", () => {
     expect(offered(first)).toEqual(expect.arrayContaining(["call_subagent", "stop_subagent"]));
     expect(first.prompt.system).toContain(SUBAGENT_STARTER_ROLE_SECTION);
     expect(first.tools?.find((tool) => tool.name === "call_subagent")?.description).toContain("Starts a helper");
+  });
+
+  it("tells a starter in a run without background turns to wait for its helpers", async () => {
+    const ctx = setup([{ text: "Outcome: done\nDone." }], { children: childHost({ backgroundAllowed: false }) });
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    const first = ctx.requests[0]!;
+    expect(first.prompt.system).toContain(SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION);
+    expect(first.prompt.system).not.toContain("background: true");
   });
 
   it("offers them to no sub-agent narrowed to tool groups: a list keeps narrowing, and a child must not have what its parent was denied", async () => {
