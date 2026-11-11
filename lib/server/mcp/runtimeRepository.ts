@@ -36,6 +36,12 @@ import {
   mcpSharedConfigEnvelopeContext,
   type McpEnvelopeContext
 } from "./encryption";
+import {
+  mcpClientCredentialsGrant,
+  mcpClientCredentialsSecretFor,
+  openMcpClientCredentialsSecret,
+  type McpClientCredentialsLaunch
+} from "./clientCredentials";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type {
   McpRuntimeCoordinatorRepository,
@@ -87,11 +93,25 @@ type StoredValues = {
   version: 1;
 };
 
+/** The client secret a client-credentials generation was accepted with, frozen like its slot values. */
+type FrozenClientCredentials = { secret: string; secretGeneration: number };
+
 type StoredEffectiveSnapshot = StoredValues & {
+  clientCredentials?: FrozenClientCredentials;
   plan: EffectiveMcpSlotPlanItem[];
   /** Frozen ownership boundary for personal remote runtimes. */
   personalRuntime?: boolean;
 };
+
+/**
+ * The credential a runtime fingerprint binds besides its values: the user's
+ * OAuth connection, or the installation secret generation of a
+ * client-credentials server, so a rotated secret starts a new generation
+ * while accepted runs keep theirs.
+ */
+function credentialRevision(oauthConnectionId: string | null, secretGeneration: number | null): string | null {
+  return oauthConnectionId ?? (secretGeneration === null ? null : `client_credentials:${secretGeneration}`);
+}
 
 function isSlotValue(value: unknown): value is McpSlotValue {
   return typeof value === "string" || typeof value === "boolean" ||
@@ -172,10 +192,22 @@ function storedEffectiveSnapshot(
     }
     personalRuntime = decoded.personalRuntime;
   }
+  let clientCredentials: FrozenClientCredentials | undefined;
+  if ("clientCredentials" in decoded) {
+    const frozen = decoded.clientCredentials;
+    if (!frozen || typeof frozen !== "object" || Array.isArray(frozen) ||
+      !("secret" in frozen) || typeof frozen.secret !== "string" || !frozen.secret ||
+      !("secretGeneration" in frozen) || !Number.isSafeInteger(frozen.secretGeneration) ||
+      Number(frozen.secretGeneration) <= 0) {
+      throw runtimeConfigurationError("mcp_values_invalid");
+    }
+    clientCredentials = { secret: frozen.secret, secretGeneration: Number(frozen.secretGeneration) };
+  }
   return {
     plan,
     values,
     version: 1,
+    ...(clientCredentials ? { clientCredentials } : {}),
     ...(personalRuntime !== undefined ? { personalRuntime } : {})
   };
 }
@@ -215,7 +247,9 @@ type DesiredRecord = Prisma.McpUserServerGetPayload<{
 type RemoteRuntimeFields = {
   allowPrivateNetwork: boolean;
   callTimeoutMs: number;
+  clientCredentials?: McpClientCredentialsLaunch;
   effectiveEnvelope: {
+    clientCredentials?: FrozenClientCredentials;
     plan: ReturnType<typeof resolveEffectiveMcpValues>["plan"];
     personalRuntime?: boolean;
     values: Record<string, McpSlotValue>;
@@ -240,6 +274,7 @@ type UserRuntimeOwner = { userId: string; userServerId: string };
 export type RemoteRuntimeCandidate = RemoteRuntimeFields & UserRuntimeOwner;
 
 type EffectiveRuntimeBase = Readonly<{
+  clientCredentials: McpClientCredentialsLaunch | null;
   configuration: McpDraftConfiguration;
   credentialSources: readonly McpCredentialSource[];
   effectiveEnvelope: RemoteRuntimeFields["effectiveEnvelope"];
@@ -262,6 +297,8 @@ function safeCredentialSources(
     .map((slot) => slot.slotKey));
   const sources = new Set<McpCredentialSource>();
   if (oauth) sources.add("oauth");
+  // The installation's client credentials are one shared identity.
+  if (configuration.auth.mode === "client_credentials") sources.add("shared");
   for (const item of plan) {
     if (!item.authorized || !sensitiveKeys.has(item.slotKey)) continue;
     if (item.source === "personal") sources.add("personal");
@@ -364,16 +401,36 @@ function effectiveRuntimeCandidate(input: {
     oauthConnectionId = connection.id;
     externalAccountLabel = connection.externalAccountLabel;
   }
+  let clientCredentials: McpClientCredentialsLaunch | null = null;
+  if (configuration.auth.mode === "client_credentials") {
+    // Installation servers only: a personal server never acts as the installation.
+    if (input.record.server.ownerUserId != null) return null;
+    // No per-user connection: every entitled user signs in as the installation's client.
+    const secretGeneration = input.record.server.clientCredentialsSecretGeneration;
+    const secret = mcpClientCredentialsSecretFor(openMcpClientCredentialsSecret({
+      envelope: input.record.server.clientCredentialsSecretEnvelope,
+      generation: secretGeneration,
+      key: input.key,
+      serverId: input.record.serverId
+    }), configuration);
+    const grant = secret ? mcpClientCredentialsGrant(configuration, secret) : null;
+    if (!grant) return null;
+    clientCredentials = { grant, secretGeneration, serverId: input.record.serverId };
+  }
   const fingerprint = mcpRuntimeFingerprint({
-    oauthConnectionRevision: oauthConnectionId,
+    oauthConnectionRevision: credentialRevision(oauthConnectionId, clientCredentials?.secretGeneration ?? null),
     plan: effective.plan,
     revisionId: revision.id,
     userId: input.record.userId
   });
   return {
+    clientCredentials,
     configuration,
     credentialSources: safeCredentialSources(configuration, effective.plan, Boolean(oauthConnectionId)),
     effectiveEnvelope: {
+      ...(clientCredentials ? {
+        clientCredentials: { secret: clientCredentials.grant.clientSecret, secretGeneration: clientCredentials.secretGeneration }
+      } : {}),
       plan: effective.plan,
       values: effective.values,
       version: 1,
@@ -402,6 +459,7 @@ function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields {
   return {
     allowPrivateNetwork: source.allowPrivateNetwork === true,
     callTimeoutMs: configuration.runtime.callTimeoutMs,
+    ...(base.clientCredentials ? { clientCredentials: base.clientCredentials } : {}),
     credentialSources: base.credentialSources,
     ...(configuration.disabledToolNames?.length
       ? { disabledToolNames: configuration.disabledToolNames }
@@ -413,7 +471,10 @@ function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields {
     ...(base.oauthConnectionId ? { oauthConnectionId: base.oauthConnectionId } : {}),
     ...(base.personalRuntime ? { personalRuntime: true } : {}),
     publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
-    redactionValues: effectiveRedactionValues(configuration, base.effectiveEnvelope.values),
+    redactionValues: [
+      ...effectiveRedactionValues(configuration, base.effectiveEnvelope.values),
+      ...(base.clientCredentials ? [base.clientCredentials.grant.clientSecret] : [])
+    ],
     revisionId: base.revision.id,
     startupTimeoutMs: configuration.runtime.startupTimeoutMs,
     url: source.url
@@ -436,6 +497,7 @@ function generationLaunch(
 ): McpRuntimeGenerationLaunch {
   return {
     callTimeoutMs: candidate.callTimeoutMs,
+    ...(candidate.clientCredentials ? { clientCredentials: candidate.clientCredentials } : {}),
     ...(candidate.disabledToolNames?.length
       ? { disabledToolNames: candidate.disabledToolNames }
       : {}),
@@ -512,8 +574,14 @@ export function createPrismaMcpRuntimeRepository(input: {
           snapshot.plan.some((item) => !configuredSlotKeys.has(item.slotKey)) ||
           configuration.slots.some((slot) => !Object.hasOwn(snapshot.values, slot.slotKey) ||
             !validateMcpSlotValue(slot, snapshot.values[slot.slotKey]))) return null;
+        // A client-credentials generation carries the secret it was accepted
+        // with; nothing else does, and a personal runtime never.
+        const frozen = snapshot.clientCredentials ?? null;
+        if ((configuration.auth.mode === "client_credentials") !== Boolean(frozen) ||
+          (frozen && snapshot.personalRuntime)) return null;
+        const grant = frozen ? mcpClientCredentialsGrant(configuration, frozen.secret) : null;
         const fingerprint = mcpRuntimeFingerprint({
-          oauthConnectionRevision: generation.oauthConnectionId,
+          oauthConnectionRevision: credentialRevision(generation.oauthConnectionId, frozen?.secretGeneration ?? null),
           plan: snapshot.plan,
           revisionId: generation.revision.id,
           userId: owner.userId
@@ -521,6 +589,9 @@ export function createPrismaMcpRuntimeRepository(input: {
         if (fingerprint !== generation.fingerprint) return null;
         const commonLaunch = {
           callTimeoutMs: configuration.runtime.callTimeoutMs,
+          ...(frozen && grant ? {
+            clientCredentials: { grant, secretGeneration: frozen.secretGeneration, serverId: owner.serverId }
+          } : {}),
           ...(configuration.disabledToolNames?.length
             ? { disabledToolNames: configuration.disabledToolNames }
             : {}),
@@ -532,7 +603,10 @@ export function createPrismaMcpRuntimeRepository(input: {
           // The accepted revision, not the active one, bounds what this generation offers.
           publishedTools: mcpPublishedToolDefinitions(generation.revision.validationEvidence),
           ...(snapshot.personalRuntime ? { personalRuntime: true } : {}),
-          redactionValues: effectiveRedactionValues(configuration, snapshot.values),
+          redactionValues: [
+            ...effectiveRedactionValues(configuration, snapshot.values),
+            ...(frozen ? [frozen.secret] : [])
+          ],
           retryAt: generation.retryAt,
           startupTimeoutMs: configuration.runtime.startupTimeoutMs
         };
@@ -703,6 +777,12 @@ export function createPrismaMcpRuntimeRepository(input: {
                 archivedAt: null,
                 enabled: true,
                 ...(candidate.personalRuntime ? { ownerUserId: candidate.userId } : {}),
+                // A sync that read the secret before a replacement never
+                // re-desires the generation of the replaced secret.
+                ...(candidate.clientCredentials ? {
+                  clientCredentialsSecretGeneration: candidate.clientCredentials.secretGeneration,
+                  ownerUserId: null
+                } : {}),
                 ...(candidate.oauthConnectionId ? {
                   oauthConnections: {
                     some: {
