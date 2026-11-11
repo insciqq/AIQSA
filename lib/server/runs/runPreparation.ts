@@ -694,11 +694,12 @@ function resolveWorkspaceEnabled(
 ): boolean | null {
   if (!body || !Object.hasOwn(body, "workspace")) return persisted === true;
   const value = body.workspace;
+  // `reason` only labels the run_accepted record and never decides admission.
   if (
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
-    Object.keys(value).length !== 1 ||
+    Object.keys(value).some((key) => key !== "enabled" && key !== "reason") ||
     !("enabled" in value) ||
     typeof (value as { enabled?: unknown }).enabled !== "boolean"
   ) {
