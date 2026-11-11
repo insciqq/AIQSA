@@ -1146,9 +1146,12 @@ export async function admitPreparingRunWithClient(
         // itself, committed with the run's scheduled origin.
         scheduledPrompt = input.scheduledOccurrence !== undefined;
         // Any other message continues the latest turn its user was shown, never a quiet check that turn's history
-        // leaves out (operator decision 2026-11-11): the chat's leaf stays the one the send expected, and only the
-        // parent skips past the quiet checks that end the branch, settled and so fixed under the chat's lock.
-        // Its context reads the same branch (`withoutQuietTail` in `lib/server/runs/prismaRepository.ts`).
+        // leaves out (operator decision 2026-11-11): the chat's leaf compared above stays the one the send expected,
+        // and only the parent skips past the quiet checks that end the branch, settled and so fixed under the chat's
+        // lock. That parent is the leaf the admission records (`preSendActiveLeafMessageId`), so finalization,
+        // retries and deferred preparation check the message as written. The quiet checks left behind were never a
+        // Memory source, so the append changes nothing Memory reads. Its context reads the branch without any quiet
+        // check (`withoutQuietChecks` in `lib/server/runs/prismaRepository.ts`).
         const parentMessageId = !scheduledPrompt && input.expectedActiveLeafId
           ? await quietCheckStandIn(tx, input.chatId, input.expectedActiveLeafId) : input.expectedActiveLeafId;
         const userMessage = await tx.message.create({
@@ -1201,7 +1204,7 @@ export async function admitPreparingRunWithClient(
           }
         }
         assistantMessageId = assistantMessage.id;
-        preSendActiveLeafMessageId = input.expectedActiveLeafId;
+        preSendActiveLeafMessageId = parentMessageId;
         userMessageId = userMessage.id;
 
         admittedSourceSnapshot = await applyMemorySourceMutations(tx, {

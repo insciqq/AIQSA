@@ -436,12 +436,9 @@ describe("chat wire contracts", () => {
     expect(decode({ ...marker, unseen: false })?.messages[0]?.scheduledTask).toEqual({ ...marker, unseen: false });
     expect(decode(null)?.messages[0]?.scheduledTask).toBeNull();
     expect(decode(undefined)?.messages[0]).not.toHaveProperty("scheduledTask");
-    // A turn whose occurrence the run history no longer keeps: no run id, and never unread.
-    const pruned = { taskId: "task-1", title: "Morning brief", unseen: false };
-    expect(decode(pruned)?.messages[0]?.scheduledTask).toEqual(pruned);
     for (const malformed of [{ taskId: "task-1", title: "Morning brief" }, { ...marker, title: "" }, { ...marker, prompt: "secret" },
       { ...marker, title: "x".repeat(CHAT_TITLE_MAX_LENGTH + 1) }, { ...marker, taskRunId: "" }, { ...marker, unseen: "yes" },
-      { ...pruned, unseen: true }, { ...marker, taskRunId: undefined }]) {
+      { taskId: "task-1", title: "Morning brief", unseen: false }]) {
       expect(decode(malformed)).toBeNull();
     }
   });

@@ -84,10 +84,8 @@ afterEach(() => {
 describe("scheduled chat projections", () => {
   it("collects only the unread scheduled turns a transcript renders", () => {
     const marker = (taskRunId: string, unseen: boolean) => ({ scheduledTask: { taskId: "task-1", taskRunId, title: "Brief", unseen } });
-    // A turn whose occurrence was pruned has no run id and is never unread.
-    const pruned = { scheduledTask: { taskId: "task-1", title: "Brief", unseen: false } };
-    expect(renderedUnseenScheduledRuns([marker("run-1", true), {}, { scheduledTask: null }, marker("run-2", false), pruned,
-      marker("run-3", true)])).toEqual([{ taskId: "task-1", taskRunId: "run-1" }, { taskId: "task-1", taskRunId: "run-3" }]);
+    expect(renderedUnseenScheduledRuns([marker("run-1", true), {}, { scheduledTask: null }, marker("run-2", false), marker("run-3", true)]))
+      .toEqual([{ taskId: "task-1", taskRunId: "run-1" }, { taskId: "task-1", taskRunId: "run-3" }]);
   });
 
   it("finds the task that continues in a chat only for its newest same-mode chat", () => {
