@@ -298,6 +298,7 @@
   "mcp_runtime_stale",
   "mcp_runtime_startup_failed",
   "mcp_runtime_unavailable",
+  "mcp_server_starting",
   "mcp_server_unavailable",
   "mcp_session_closed",
   "mcp_session_configuration_invalid",
