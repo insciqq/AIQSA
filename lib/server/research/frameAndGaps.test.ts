@@ -537,7 +537,8 @@ describe("change_research_frame through the real engine", () => {
       return [toolsOf(requests[0]).includes(CHANGE_RESEARCH_FRAME_TOOL_NAME), toolsOf(requests[1]).includes(CHANGE_RESEARCH_FRAME_TOOL_NAME)];
     };
     await expect(offered({})).resolves.toEqual([true, true]);
-    await expect(offered({ telegram: true })).resolves.toEqual([false, false]);
+    await expect(offered({ connectorTurn: "telegram" })).resolves.toEqual([false, false]);
+    await expect(offered({ connectorTurn: "discord" })).resolves.toEqual([false, false]);
     await expect(offered({ scheduled: true })).resolves.toEqual([false, false]);
   });
 

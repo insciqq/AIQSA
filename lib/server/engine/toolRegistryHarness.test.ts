@@ -98,11 +98,13 @@ describe("native harness and self-service tools", () => {
     expect(without.definitions().map((tool) => tool.name)).toEqual(expect.arrayContaining(["save_skill"]));
     expect(without.definitions().map((tool) => tool.name)).not.toContain("manage_skill");
     expect(without.replacement?.("save_skill")).toBeUndefined();
-    // A Telegram turn takes neither: its bridge shows no change card.
-    const telegram = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), workspace: fakeWorkspace().coordinator },
-      { telegram: true }));
-    expect(telegram.definitions().map((tool) => tool.name)).not.toContain("save_skill");
-    expect(telegram.definitions().map((tool) => tool.name)).not.toContain("manage_skill");
+    // A connector's turn takes neither: its bridge shows no change card.
+    for (const connectorTurn of ["telegram", "discord"] as const) {
+      const turn = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), workspace: fakeWorkspace().coordinator },
+        { connectorTurn }));
+      expect(turn.definitions().map((tool) => tool.name)).not.toContain("save_skill");
+      expect(turn.definitions().map((tool) => tool.name)).not.toContain("manage_skill");
+    }
   });
 
   it("declares each tool's own effects, approval-free, in one vocabulary", async () => {

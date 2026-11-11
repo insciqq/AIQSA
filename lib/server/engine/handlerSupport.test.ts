@@ -30,10 +30,12 @@ describe("the self-service tools' chats", () => {
     expect(selfServiceToolsFor(prepared(), { scheduled: false })).toEqual(all);
   });
 
-  it("never include a Telegram turn, whose bridge cannot show their cards", () => {
-    expect(selfServiceToolsFor(prepared(), { telegram: true })).toEqual([]);
-    expect(selfServiceToolsFor(prepared({ assistant: { id: "a" } }), { telegram: true })).toEqual([]);
-    expect(selfServiceToolsFor(prepared(), { telegram: false })).toEqual(all);
+  it("never include a connector's turn, whose bridge cannot show their cards", () => {
+    for (const connectorTurn of ["telegram", "discord"] as const) {
+      expect(selfServiceToolsFor(prepared(), { connectorTurn })).toEqual([]);
+      expect(selfServiceToolsFor(prepared({ assistant: { id: "a" } }), { connectorTurn })).toEqual([]);
+    }
+    expect(selfServiceToolsFor(prepared(), {})).toEqual(all);
   });
 });
 

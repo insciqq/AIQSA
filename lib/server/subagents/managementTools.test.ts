@@ -56,7 +56,7 @@ describe("sub-agent management tools", () => {
   it("are offered only to the main agent of an interactive web chat", () => {
     const names = SUBAGENT_MANAGEMENT_TOOLS.map((tool) => tool.name);
     expect(subagentManagementToolNames({ assistant: false })).toEqual(names);
-    for (const blocked of [{ assistant: true }, { assistant: false, telegram: true }, { assistant: false, scheduled: true },
+    for (const blocked of [{ assistant: true }, { assistant: false, connector: true }, { assistant: false, scheduled: true },
       { assistant: false, monitoring: true }, { assistant: false, subagent: true }]) {
       expect(subagentManagementToolNames(blocked)).toEqual([]);
     }

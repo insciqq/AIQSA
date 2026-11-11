@@ -520,6 +520,11 @@ export type CreateRunInput = {
   expectedActiveLeafId: string | null;
   initialChatMode?: MemoryInitialChatMode;
   mcpBindings?: McpRunPlanBinding[];
+  /**
+   * A Discord turn: it counts toward no per-user message limit, so no `UsageMessageAdmission` row is written (its
+   * limits are per Discord author and thread, D-12e); budgets still bind it.
+   */
+  messageLimitExempt?: true;
   skillBindings?: AcceptedSkillRun[];
   modelId: string;
   memoryMaterializer?: PreparingRunMemoryMaterializer;

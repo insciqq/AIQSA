@@ -459,6 +459,19 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("writes no message-limit row for a Discord turn, which counts toward no per-user message limit", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const chat = await prisma.chat.create({
+        data: { defaultProviderModelId: providerTemplateIds.fakeModel, memoryMode: "EXCLUDED", title: "Discord thread", userId }
+      });
+      const sent = await repository.createRun({ ...createRunInput({ chatId: chat.id, question: "A thread's question", userId }),
+        messageLimitExempt: true });
+      expect(sent.runId).toEqual(expect.any(String));
+      await expect(prisma.usageMessageAdmission.count({ where: { userId } })).resolves.toBe(0);
+    });
+  });
+
   it("rolls back a reserved personal chat when first-send attachment admission conflicts", async () => {
     await withRunUser(async ({ userId }) => {
       const chatId = randomUUID();

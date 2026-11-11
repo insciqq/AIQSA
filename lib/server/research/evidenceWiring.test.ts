@@ -311,7 +311,8 @@ describe("record_evidence through the real engine", () => {
     };
     await expect(offered({})).resolves.toEqual([true, true]);
     // Telegram and a scheduled occurrence never research: the message is refused before any request.
-    await expect(offered({ telegram: true })).resolves.toEqual([false, false]);
+    await expect(offered({ connectorTurn: "telegram" })).resolves.toEqual([false, false]);
+    await expect(offered({ connectorTurn: "discord" })).resolves.toEqual([false, false]);
     await expect(offered({ scheduled: true })).resolves.toEqual([false, false]);
     // A message sent without Deep research is an ordinary turn, and its sub-agent records nothing.
     const { deepResearch: _chosen, ...ordinary } = prepared().normalizedRequest;

@@ -5,6 +5,7 @@ import {
   scriptedNativeAdapter
 } from "@/tests/support/nativeRunExecution";
 import { resolveAssistantChatBaseline } from "../../domain/promptTemplates";
+import type { ConnectorTurn } from "../connectors/turn";
 import { mergeMcpRunPlanSnapshots } from "../mcp/discovery";
 import type { McpCapabilityCatalog, McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
@@ -570,7 +571,7 @@ describe("the tools a native run is offered by kind", () => {
   });
 
   async function offered(data: Partial<MaterializedPreparedRunData>, extra: Partial<ProviderRunRequest> = {},
-    entry: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}) {
+    entry: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean }> = {}) {
     const { adapter, requests } = scriptedNativeAdapter([{ text: "Hi." }]);
     const memory = memoryNativeEngine();
     await nativeSseEvents(nativeRunResponse(native(memory), { adapter, created, prepared: nativePrepared(extra, data),
@@ -586,7 +587,8 @@ describe("the tools a native run is offered by kind", () => {
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");
     }
-    for (const run of [await offered({}, {}, { scheduled: true }), await offered({}, {}, { telegram: true })]) {
+    for (const run of [await offered({}, {}, { scheduled: true }), await offered({}, {}, { connectorTurn: "telegram" }),
+      await offered({}, {}, { connectorTurn: "discord" })]) {
       expect(run.tools).toContain("read_secret");
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");
