@@ -1333,6 +1333,12 @@ export function PowerAppShellV2({
       });
     },
     rejectAttachments(fileNames: readonly string[]) {
+      if (workspaceInstallation === null && currentModel?.capabilities.toolCalling === true) {
+        // No availability read has succeeded: Workspace may take these files, so it reads again instead of blaming the model.
+        readWorkspaceAvailability();
+        setNotice({ kind: "error", text: "Checking whether Workspace is available. Try again in a moment." });
+        return;
+      }
       void reportRejectedAttachments(fileNames, currentModel, {
         workspaceAvailable: workspaceUsable
       });
