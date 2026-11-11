@@ -7,7 +7,10 @@ import type { AdminHealthQueueClient } from "./queuesRepository";
 /**
  * Runs created in a window per answer connection and model, read from the
  * runs and their answer binding, so every run counts once whatever recorded
- * it: preparation and recovery failures included. A user's Stop is
+ * it: preparation and recovery failures included. A background sub-agent's
+ * own run holds no answer binding (it reads its parent's by reference), so it
+ * counts under the connection and model its turn ran on, in a row apart from
+ * the main agent's runs of that model, never as a run without a model. A user's Stop is
  * `cancelled`; a refusal of the user's own input (`RUN_FAILURE_USER_INPUT_CODES`)
  * is `refusedInput`, not a failure. Only failure codes leave the error
  * payload, never messages; ids are installation configuration.
@@ -15,9 +18,11 @@ import type { AdminHealthQueueClient } from "./queuesRepository";
 export type ModelRunCode = Readonly<{ code: string | null; runs: number }>;
 
 export type ModelRunRow = Readonly<{
-  /** The answer binding's connection and model; null for a run without one. */
+  /** The answer binding's connection and model, a sub-agent run's its turn's; null for a run without one. */
   connectionId: string | null;
   providerModelId: string | null;
+  /** Background sub-agents' own runs, never the main agent's. */
+  subagent: boolean;
   /** Runs created in the window. */
   accepted: number;
   completed: number;
@@ -47,7 +52,7 @@ const MAX_ROWS = 1_000;
 const MAX_CODES = 20;
 
 type Row = Readonly<{
-  connectionId: string | null; providerModelId: string | null; accepted: number | bigint; completed: number | bigint;
+  connectionId: string | null; providerModelId: string | null; subagent: boolean; accepted: number | bigint; completed: number | bigint;
   failed: number | bigint; refusedInput: number | bigint; cancelled: number | bigint; users: number | bigint;
   lastFailedAt: Date | null; codes: unknown;
 }>;
@@ -66,8 +71,9 @@ function validDate(value: unknown): value is Date {
 
 /**
  * The statement: the window's runs (a range over creation time) with their
- * answer binding (unique per run), counted per connection and model, and
- * per model its most frequent failure codes.
+ * answer binding (unique per run), or a sub-agent run's turn (one per run),
+ * counted per connection, model and agent, and per row its most frequent
+ * failure codes.
  */
 export function adminHealthModelRunsStatement(query: ModelRunQuery): Prisma.Sql {
   const { codesPerModel, from, limit, to } = query;
@@ -78,18 +84,22 @@ export function adminHealthModelRunsStatement(query: ModelRunQuery): Prisma.Sql 
   }
   return Prisma.sql`
     WITH runs AS (
-      SELECT run."userId", run."status", run."createdAt", binding."connectionId", binding."providerModelId",
+      SELECT run."userId", run."status", run."createdAt",
+        CASE WHEN turn."id" IS NULL THEN binding."connectionId" ELSE turn."provider" END AS "connectionId",
+        CASE WHEN turn."id" IS NULL THEN binding."providerModelId" ELSE turn."providerModelId" END AS "providerModelId",
+        run."subagentTurnId" IS NOT NULL AS "subagent",
         CASE WHEN run."status" = 'error'::"ModelRunStatus" AND jsonb_typeof(run."errorPayload" -> 'code') = 'string'
           THEN left(run."errorPayload" ->> 'code', 128) END AS "code"
       FROM "ModelRun" AS run
       LEFT JOIN "ProviderRunBinding" AS binding ON binding."modelRunId" = run."id" AND binding."bindingKey" = 'answer'
+      LEFT JOIN "SubagentTurn" AS turn ON turn."id" = run."subagentTurnId"
       WHERE run."createdAt" >= ${utc(from)} AND run."createdAt" < ${utc(to)}
     ), classified AS (
       SELECT runs.*, runs."status" = 'error'::"ModelRunStatus" AND runs."code" IS NOT NULL
         AND runs."code" = ANY(${[...RUN_FAILURE_USER_INPUT_CODES]}::text[]) AS "refused"
       FROM runs
     ), models AS (
-      SELECT "connectionId", "providerModelId", count(*)::integer AS "accepted",
+      SELECT "connectionId", "providerModelId", "subagent", count(*)::integer AS "accepted",
         count(*) FILTER (WHERE "status" = 'complete'::"ModelRunStatus")::integer AS "completed",
         count(*) FILTER (WHERE "status" = 'error'::"ModelRunStatus" AND NOT "refused")::integer AS "failed",
         count(*) FILTER (WHERE "refused")::integer AS "refusedInput",
@@ -97,22 +107,24 @@ export function adminHealthModelRunsStatement(query: ModelRunQuery): Prisma.Sql 
         count(DISTINCT "userId")::integer AS "users",
         max("createdAt") FILTER (WHERE "status" = 'error'::"ModelRunStatus" AND NOT "refused") AS "lastFailedAt"
       FROM classified
-      GROUP BY 1, 2
+      GROUP BY 1, 2, 3
     ), codes AS (
-      SELECT "connectionId", "providerModelId", "code", count(*)::integer AS "runs",
-        row_number() OVER (PARTITION BY "connectionId", "providerModelId" ORDER BY count(*) DESC, "code" ASC NULLS LAST) AS "rank"
+      SELECT "connectionId", "providerModelId", "subagent", "code", count(*)::integer AS "runs",
+        row_number() OVER (PARTITION BY "connectionId", "providerModelId", "subagent" ORDER BY count(*) DESC, "code" ASC NULLS LAST) AS "rank"
       FROM classified
       WHERE "status" = 'error'::"ModelRunStatus" AND NOT "refused"
-      GROUP BY 1, 2, 3
+      GROUP BY 1, 2, 3, 4
     )
     SELECT models.*, COALESCE((
       SELECT jsonb_agg(jsonb_build_object('code', codes."code", 'runs', codes."runs") ORDER BY codes."rank")
       FROM codes
       WHERE codes."connectionId" IS NOT DISTINCT FROM models."connectionId"
-        AND codes."providerModelId" IS NOT DISTINCT FROM models."providerModelId" AND codes."rank" <= ${codesPerModel}
+        AND codes."providerModelId" IS NOT DISTINCT FROM models."providerModelId" AND codes."subagent" = models."subagent"
+        AND codes."rank" <= ${codesPerModel}
     ), '[]'::jsonb) AS "codes"
     FROM models
-    ORDER BY models."failed" DESC, models."accepted" DESC, models."connectionId" ASC NULLS LAST, models."providerModelId" ASC NULLS LAST
+    ORDER BY models."failed" DESC, models."accepted" DESC, models."connectionId" ASC NULLS LAST, models."providerModelId" ASC NULLS LAST,
+      models."subagent" ASC
     LIMIT ${limit + 1}
   `;
 }
@@ -143,7 +155,7 @@ export async function readModelRunLoad(client: AdminHealthQueueClient, query: Mo
       const refusedInput = count(row.refusedInput);
       const cancelled = count(row.cancelled);
       return {
-        connectionId: row.connectionId, providerModelId: row.providerModelId, accepted, completed, failed, refusedInput, cancelled,
+        connectionId: row.connectionId, providerModelId: row.providerModelId, subagent: row.subagent === true, accepted, completed, failed, refusedInput, cancelled,
         open: Math.max(0, accepted - completed - failed - refusedInput - cancelled),
         users: count(row.users), lastFailedAt: validDate(row.lastFailedAt) ? row.lastFailedAt : null,
         codes: codes(row.codes, query.codesPerModel)

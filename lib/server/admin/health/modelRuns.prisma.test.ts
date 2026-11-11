@@ -23,7 +23,7 @@ afterAll(async () => {
 });
 
 describe("runs by model on PostgreSQL", () => {
-  it("counts every run of the window once per answer connection and model, with its failure codes and no content", async () => {
+  it("counts every run of the window once per answer connection, model and agent, with its failure codes and no content", async () => {
     await prisma.providerConnection.create({ data: { displayName: "Model runs connection", family: `${MARK}-family`, id: CONNECTION } });
     for (const id of MODELS) {
       await prisma.providerModel.create({ data: { capabilities: {}, connectionId: CONNECTION, defaultParams: {}, displayName: id, id,
@@ -48,8 +48,10 @@ describe("runs by model on PostgreSQL", () => {
       // Outside the window.
       { model: 0, minutes: -5, status: "error", code: "provider_server_error" }
     ];
+    const ids: string[] = [];
     for (const run of runs) {
       const id = randomUUID();
+      ids.push(id);
       await prisma.modelRun.create({
         data: {
           id, chatId: chat.id, userId: OWNER, userMessageId: message.id, provider: `${MARK}-family`, modelId: "model-runs-model",
@@ -65,14 +67,30 @@ describe("runs by model on PostgreSQL", () => {
       }
     }
 
+    // Background sub-agents' own runs, as `backgroundRunner.ts` admits them: no answer binding, the turn names the model it ran on.
+    const parentRunId = ids[0]!;
+    for (const minutes of [11, 12]) {
+      const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: parentRunId, ordinal: minutes,
+        providerCallId: `${MARK}-call-${minutes}`, roundIndex: 1, state: "complete", toolName: "call_subagent" } });
+      const thread = await prisma.subagentThread.create({ data: { anchorRunId: parentRunId, chatId: chat.id, name: `agent-${minutes}`,
+        userId: OWNER } });
+      const turn = await prisma.subagentTurn.create({ data: { chatId: chat.id, mode: "background", modelId: "model-runs-model", parentRunId,
+        parentToolCallId: call.id, provider: CONNECTION, providerModelId: MODELS[1], threadId: thread.id, userId: OWNER } });
+      await prisma.modelRun.create({ data: { chatId: chat.id, createdAt: at(minutes), engine: "native", modelId: "model-runs-model",
+        errorPayload: { code: "provider_stream_failed", message: "Sub-agent failed" }, normalizedRequest: {}, provider: `${MARK}-family`,
+        status: "error", subagentThreadId: thread.id, subagentTurnId: turn.id, userId: OWNER, userMessageId: message.id } });
+    }
+
     const load = await readModelRunLoad(prisma, { from: at(0), to: at(60), limit: 10, codesPerModel: 1 });
     expect(load).toEqual({ truncated: false, rows: [
-      { connectionId: CONNECTION, providerModelId: MODELS[0], accepted: 8, completed: 2, failed: 3, refusedInput: 1, cancelled: 1, open: 1,
-        users: 1, lastFailedAt: at(5), codes: [{ code: "provider_server_error", runs: 2 }] },
-      { connectionId: null, providerModelId: null, accepted: 1, completed: 0, failed: 1, refusedInput: 0, cancelled: 0, open: 0, users: 1,
-        lastFailedAt: at(10), codes: [{ code: null, runs: 1 }] },
-      { connectionId: CONNECTION, providerModelId: MODELS[1], accepted: 1, completed: 1, failed: 0, refusedInput: 0, cancelled: 0, open: 0,
-        users: 1, lastFailedAt: null, codes: [] }
+      { connectionId: CONNECTION, providerModelId: MODELS[0], subagent: false, accepted: 8, completed: 2, failed: 3, refusedInput: 1,
+        cancelled: 1, open: 1, users: 1, lastFailedAt: at(5), codes: [{ code: "provider_server_error", runs: 2 }] },
+      { connectionId: CONNECTION, providerModelId: MODELS[1], subagent: true, accepted: 2, completed: 0, failed: 2, refusedInput: 0,
+        cancelled: 0, open: 0, users: 1, lastFailedAt: at(12), codes: [{ code: "provider_stream_failed", runs: 2 }] },
+      { connectionId: null, providerModelId: null, subagent: false, accepted: 1, completed: 0, failed: 1, refusedInput: 0, cancelled: 0,
+        open: 0, users: 1, lastFailedAt: at(10), codes: [{ code: null, runs: 1 }] },
+      { connectionId: CONNECTION, providerModelId: MODELS[1], subagent: false, accepted: 1, completed: 1, failed: 0, refusedInput: 0,
+        cancelled: 0, open: 0, users: 1, lastFailedAt: null, codes: [] }
     ] });
     expect(JSON.stringify(load)).not.toMatch(/Private/u);
     await expect(readModelRunLoad(prisma, { from: at(0), to: at(60), limit: 1, codesPerModel: 5 }))
