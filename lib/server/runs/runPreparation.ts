@@ -117,6 +117,7 @@ import { withSelectedSkillContext } from "../skills/userContext";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { skillCatalogAuthorization, usesPersonalSkillCatalog } from "../skills/catalogRelevanceAuthority";
 import { SkillCatalogAuthorityChangedError, type SkillCatalogRelevanceService } from "../skills/catalogRelevanceService";
+import { scheduledOccurrenceContext } from "../scheduledTasks/occurrenceContext";
 import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "../scheduledTasks/sourceHealth";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { skillToolsForRequest } from "../tools/skill";
@@ -1820,6 +1821,9 @@ export async function prepareRun(
   // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
+  // A scheduled run knows it already is its automation, and since when its previous shown result stands.
+  appendTurnGuidance(scheduledOccurrenceContext(scheduledOccurrence?.automation,
+    { previousResultInContext: (scheduledContext?.messages.length ?? 0) > 0 }));
   // The frozen prompt names a scheduled run's missing sources through recovery.
   appendTurnGuidance(scheduledUnavailableSourcesNotice(scheduledMissingSources));
   if (artifactIntent) appendTurnGuidance("The user explicitly asked for an artifact: call create_artifact for this message.");

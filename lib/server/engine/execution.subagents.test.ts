@@ -540,6 +540,16 @@ describe("native run with the user's custom sub-agents and default", () => {
     expect(historyText(requests[0]!)).toContain("default sub-agent is \\\"deleted-one\\\"");
   });
 
+  it("offers background in a web chat only: a scheduled occurrence and a Telegram turn see call_subagent without it", async () => {
+    const offered = async (entry: Readonly<{ scheduled?: true; telegram?: true }>) => {
+      const call = (await run(entry)).requests[0]!.tools?.find((tool) => tool.name === CALL_SUBAGENT_TOOL_NAME);
+      return Object.keys((call!.inputSchema as { properties: object }).properties);
+    };
+    expect(await offered({})).toContain("background");
+    expect(await offered({ scheduled: true })).toEqual(["name", "message", "type", "model", "effort"]);
+    expect(await offered({ telegram: true })).toEqual(["name", "message", "type", "model", "effort"]);
+  });
+
   it("follows the same rule in a scheduled occurrence and a Telegram turn", async () => {
     for (const entry of [{ scheduled: true as const }, { telegram: true as const }]) {
       const { memory } = await run({ ...entry, calls: [{ arguments: { message: "Go.", name: "work" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], defaultType: frozen(GEMINI) });

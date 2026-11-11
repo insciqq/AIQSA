@@ -8,8 +8,11 @@ import {
   AGENT_MESSAGE_TOOLS,
   SUBAGENT_CHILD_TOOLS,
   SUBAGENT_TOOLS,
+  callChildSubagentForegroundTool,
   callChildSubagentTool,
+  callSubagentForegroundTool,
   callSubagentTool,
+  callSubagentToolFor,
   createSubagentTool,
   editSubagentTool,
   parseAskParentArguments,
@@ -58,6 +61,28 @@ describe("what a sub-agent starts its own children with", () => {
     for (const code of ["subagent_child_limit_reached", "subagent_not_own_child"]) expect(callChildSubagentTool.description).toContain(code);
     expect(callChildSubagentTool.description).toContain(`At most ${SUBAGENT_LIMITS.childrenPerSubagent} helpers`);
     expect(SUBAGENT_CHILD_TOOLS[1]!.description).toContain("subagent_not_own_child");
+  });
+
+  it("leaves background out of a run that may not start background turns, and keeps the web chat's tool as it was", () => {
+    expect(callSubagentToolFor(true)).toBe(callSubagentTool);
+    expect(callSubagentToolFor(true, true)).toBe(callChildSubagentTool);
+    for (const [foreground, full] of [[callSubagentToolFor(false), callSubagentTool], [callSubagentToolFor(false, true), callChildSubagentTool]] as const) {
+      expect(foreground).toBe(full === callSubagentTool ? callSubagentForegroundTool : callChildSubagentForegroundTool);
+      expect(Object.keys(full.inputSchema.properties as object)).toContain("background");
+      expect(Object.keys(foreground.inputSchema.properties as object)).toEqual(["name", "message", "type", "model", "effort"]);
+      expect(foreground.inputSchema).toMatchObject({ additionalProperties: false, required: ["name", "message"], type: "object" });
+      expect(foreground.tool).toMatchObject({ description: foreground.description, inputSchema: foreground.inputSchema, name: full.name });
+      expect(full.description).toMatch(/^background: /mu);
+      expect(full.description).toContain("subagent_background_unavailable");
+      expect(foreground.description).not.toMatch(/^background: /mu);
+      expect(foreground.description).not.toContain("background: true");
+      expect(foreground.description).not.toContain("subagent_background_unavailable");
+      // Only the background lines and that refusal go; everything else reads as in a web chat.
+      expect(foreground.description).toBe(full.description.split("\n").filter((line) => !line.startsWith("background: ")).join("\n")
+        .replace("subagent_background_unavailable, ", ""));
+      expect(foreground.description).toContain("subagent_usage_limited");
+      expect(foreground.effects).toBe("external");
+    }
   });
 
   it("tells the main agent a sub-agent may have helpers, how many, and that they are not its to continue", () => {
