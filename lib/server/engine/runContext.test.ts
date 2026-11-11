@@ -572,7 +572,10 @@ describe("a native run's context", () => {
       expect(run.appended).toHaveLength(1);
       expect(run.appended[0]).toMatchObject({ kind: "compaction" });
       expect(run.appended[0]).not.toMatchObject({ keepFromId: input });
-      expect(firstText(prepared).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+      // The input and its attachment lead, as in the requests before the compaction; the summary follows them.
+      expect(prepared.history?.[0]).toMatchObject({ currentInput: true, type: "user" });
+      expect(prepared.history?.[1]).toMatchObject({ text: expect.stringMatching(new RegExp(`^${COMPACTION_SUMMARY_HEADING}`, "u")),
+        type: "user" });
       expect(prepared.attachments).toEqual([pdf]);
       expect(prepared.history?.filter((item) => item.type === "user" && item.currentInput)).toHaveLength(1);
       // The attachment counts in what the context measures after the compaction.
@@ -599,6 +602,47 @@ describe("a native run's context", () => {
       await expect(run.context.prepare(sent())).rejects.toThrow("context_too_large");
       expect(run.calls).toEqual([]);
     });
+
+    it("on the production figures, sends each request that fits as it is and compacts only one that no longer fits (2026-11-11)",
+      async () => {
+        // gpt-6-astra: window 700 000, output 65 536, usable 634 464. The attachment text alone measures about 570 000.
+        const window = { contextWindow: 700_000, maxOutputTokens: 65_536 };
+        const perChar = estimate("s".repeat(10_000)) / 10_000;
+        const sheets: ProviderRunRequest["attachments"][number] = { ...pdf, byteSize: 2_000_000,
+          extractedText: "s".repeat(Math.ceil(570_000 / perChar)), fileName: "sheets.pdf", id: "sheets" };
+        const chat = transcriptBuilder();
+        const input = chat.user("Build the summary workbook from the attached spreadsheets.");
+        const target: TranscriptTarget = { ...TARGET, carriedInputId: input };
+        const projection: TranscriptProjectionOptions = { currentInputId: input };
+        const sent = (): ProviderRunRequest => ({ ...request(chat.items, target), attachmentIds: [sheets.id], attachments: [sheets],
+          history: projectTranscript(chat.items, target, projection) });
+        const run = harness(chat.items, { call: async () => summaryReply(), projection, target, window });
+        const compactedAt: number[] = [];
+        const lost: number[] = [];
+        const outputs: string[] = [];
+        for (let step = 1; step <= 24; step += 1) {
+          const calls = run.calls.length;
+          const prepared = await run.context.prepare(sent());
+          if (run.calls.length > calls) compactedAt.push(step);
+          // The result the previous request carried last, still verbatim?
+          const seen = outputs.at(-2);
+          if (seen !== undefined && !prepared.history!.some((item) => item.type === "tool_result" && item.output === seen)) lost.push(step);
+          expect(prepared.history!.filter((item) => item.type === "user" && item.currentInput)).toHaveLength(1);
+          expect(run.context.measured()!.tokens).toBeLessThanOrEqual(634_464);
+          // One tool round of about 8 000 tokens per request.
+          outputs.push(`step ${step} ${"r".repeat(Math.ceil(8_000 / perChar))}`);
+          chat.tool("sandbox_exec", { step }, outputs.at(-1)!);
+        }
+        // Before, every request from the third on compacted in the foreground: 20 and 23 times per answer in production.
+        expect(compactedAt.length).toBeGreaterThan(0);
+        expect(compactedAt.length).toBeLessThanOrEqual(4);
+        expect(compactedAt[0]).toBeGreaterThanOrEqual(8);
+        expect(compactedAt.every((step, index) => index === 0 || step - compactedAt[index - 1]! > 4)).toBe(true);
+        // Only a request past the window lost the result read last; every compaction ran in the foreground and applied.
+        expect(lost.every((step) => compactedAt.includes(step))).toBe(true);
+        expect(run.appended.filter((item) => item.kind === "compaction")).toHaveLength(compactedAt.length);
+        expect(run.statuses.filter((status) => status.state === "complete")).toHaveLength(compactedAt.length);
+      });
   });
 
   it("summarizes a run-scoped result only as the note later turns read", async () => {
