@@ -6,6 +6,7 @@ import { SUBAGENT_LIMITS } from "@/lib/contracts/subagents";
 import {
   SUBAGENT_CHILD_ROLE_SECTION,
   SUBAGENT_ROLE_SECTION,
+  SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION,
   SUBAGENT_STARTER_ROLE_SECTION,
   subagentAgentMessageText,
   subagentChildQuestionText,
@@ -58,6 +59,13 @@ describe("a sub-agent's children", () => {
     expect(SUBAGENT_STARTER_ROLE_SECTION).toContain("you cannot continue or stop anyone else's");
     expect(SUBAGENT_STARTER_ROLE_SECTION).toContain("go up with your report on their own: never make them yourself");
     expect(SUBAGENT_STARTER_ROLE_SECTION).not.toContain("or call sub-agents");
+    expect(SUBAGENT_STARTER_ROLE_SECTION).toContain("background: true");
+  });
+
+  it("never offer a background helper in a run that cannot start one", () => {
+    expect(SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION).not.toContain("background: true");
+    expect(SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION).toContain("none runs in the background");
+    expect(SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION).toContain(`at most ${SUBAGENT_LIMITS.childrenPerSubagent} at once`);
   });
 
   it("keep the other two roles from starting any, and tell a child who reads its report", () => {
