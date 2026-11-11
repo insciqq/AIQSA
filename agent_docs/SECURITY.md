@@ -129,4 +129,5 @@ Operator decisions 2026-11-01.
 | `postcss`, `acorn` | Parse untrusted CSS and JavaScript; the PostCSS override enforces the advisory floor. |
 | `@mozilla/readability`, `linkedom` | Extract page text for `fetch_url`, only inside the parser process, because parse5 is quadratic on hostile markup. |
 | `markdown-it` | Parses untrusted Markdown under input, node and depth bounds; raw HTML and images never reach the DOM. |
+| `undici` | Exact pin: Discord Connect's gateway WebSocket and its pinned-address dispatcher; 7.30.2 is the floor for the TLS-option advisory of 7.30.0. |
 | `mermaid` | Strict security level, no HTML labels or links, bounded input, then DOMPurify and an SVG allowlist; CSP needs no `unsafe-eval` (`components/chat/mermaidRendering.ts`). |
