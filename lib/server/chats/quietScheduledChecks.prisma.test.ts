@@ -10,6 +10,7 @@ import { prisma } from "../prisma";
 import { scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import { createPrismaShareRepository } from "../shares/prismaRepository";
 import { loadAuthorizedChatExportSource } from "./exportChat";
+import { findMessageMatches } from "./messageSearch";
 import { createPrismaChatRepository } from "./prismaRepository";
 
 /**
@@ -139,15 +140,36 @@ describe("a task chat's quiet checks", () => {
     expect(loaded).toEqual(chat.shown);
     expect(pages).toBe(Math.ceil(chat.shown.length / CHAT_HISTORY_PAGE_SIZE));
 
-    // Every shown turn is the task's, with its prompt behind the mark; only a kept occurrence names its run and can be unread.
+    // Every shown turn is the task's, with its prompt behind the mark; only a kept occurrence can be unread. A pruned one
+    // is named by the turn's own run, in the shape a client of the previous release decodes.
     const turns = [...detail!.messages];
+    const runs = new Map(chat.checks.map((check) => [check.questionId, check.runId]));
     for (const message of turns.filter((entry) => entry.role === "user")) {
       const occurrence = chat.occurrences.get(message.id);
-      expect(message.scheduledTask).toEqual({ taskId: chat.task.id, title: "Release watch",
-        unseen: message.id === chat.unread.questionId, ...(occurrence ? { taskRunId: occurrence } : {}) });
+      expect(message.scheduledTask).toEqual({ taskId: chat.task.id, taskRunId: occurrence ?? runs.get(message.id),
+        title: "Release watch", unseen: message.id === chat.unread.questionId });
     }
-    expect(turns.some((message) => message.role === "user" && !message.scheduledTask?.taskRunId)).toBe(true);
+    expect(turns.some((message) => message.role === "user" && !chat.occurrences.has(message.id))).toBe(true);
     expect(turns.filter((message) => message.scheduledOutcome === "no_update")).toEqual([]);
+    // The chat's context figures measure what a reply reads: the shown branch.
+    expect(detail!.contextStats.approximateActiveBranchInputTokens).toBeGreaterThan(0);
+  });
+
+  it("never match a message search, while the shown checks still do", async () => {
+    const chat = await grownChat();
+    const matches = await findMessageMatches(prisma, { after: null, limit: 10, query: "release page", userId: chat.userId });
+    if (matches === "timeout") throw new Error("search timed out");
+    expect(matches).toHaveLength(1);
+    // The baseline, the failure and the 30 updates: the shown turns that hold the prompt.
+    expect(matches[0]).toMatchObject({ chatId: chat.chatId, matchCount: 32, messageId: chat.shown.at(-2) });
+  });
+
+  it("leave an archived preview without a summary, whose keys a previous client checks exactly", async () => {
+    const chat = await grownChat();
+    await prisma.chat.update({ data: { archived: true }, where: { id: chat.chatId } });
+    const archived = await createPrismaChatRepository(prisma).getArchivedChat({ chatId: chat.chatId, userId: chat.userId });
+    expect(archived!.messages.map((message) => message.id)).toEqual(chat.shown.slice(-CHAT_HISTORY_PAGE_SIZE));
+    expect(archived).not.toHaveProperty("quietChecks");
   });
 
   it("leave the branch graph, and a branch switched to a quiet check reads as its last shown message", async () => {

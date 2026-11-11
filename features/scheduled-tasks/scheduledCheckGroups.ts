@@ -7,8 +7,8 @@ type TranscriptMessage = Readonly<{
   id: string;
   role: "assistant" | "user";
   scheduledOutcome?: ScheduledTaskCheckOutcome;
-  /** Present on a user turn that a scheduled task posted, whether or not its run history still keeps it. */
-  scheduledTask?: Readonly<{ taskId: string }> | null;
+  /** Present on a user turn that a scheduled task posted. */
+  scheduledTask?: Readonly<{ taskRunId: string }> | null;
   status?: "cancelled" | "complete" | "error" | "streaming";
 }>;
 
