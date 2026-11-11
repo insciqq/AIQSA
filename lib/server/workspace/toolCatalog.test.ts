@@ -9,7 +9,8 @@ import {
   namespacedWorkspaceToolNameFromOriginal,
   normalizeWorkspaceProviderToolName,
   originalWorkspaceToolName,
-  WORKSPACE_BOUND_TOOL_CATALOG_HASH
+  WORKSPACE_BOUND_TOOL_CATALOG_HASH,
+  workspaceHiddenArgumentRefusal
 } from "./toolCatalog";
 
 function officialTools() {
@@ -24,7 +25,10 @@ function officialTools() {
         ...(["sandbox_exec_poll", "sandbox_exec_write_stdin", "sandbox_exec_signal", "sandbox_exec_close"].includes(name)
           ? { execSessionId: { type: "string" } }
           : { name: { type: "string" } }),
-        ...(name === "sandbox_fs_copy" ? { toSandbox: { type: "string" } } : {})
+        ...(name === "sandbox_fs_copy" ? { toSandbox: { type: "string" } } : {}),
+        ...(["sandbox_exec", "sandbox_shell", "sandbox_exec_start"].includes(name)
+          ? { rlimits: { items: { type: "object" }, type: "array" } }
+          : {})
       },
       required: [
         ...(["sandbox_exec_poll", "sandbox_exec_write_stdin", "sandbox_exec_signal", "sandbox_exec_close"].includes(name)
@@ -83,6 +87,7 @@ describe("official Microsandbox MCP binding", () => {
       expect(tool.inputSchema).not.toHaveProperty("properties.toSandbox");
       expect(tool.inputSchema).not.toHaveProperty("properties.maxBytes");
       expect(tool.inputSchema).not.toHaveProperty("properties.timeoutMs");
+      expect(tool.inputSchema).not.toHaveProperty("properties.rlimits");
       expect(tool.inputSchema.required).not.toContain("name");
       expect(originalWorkspaceToolName(catalog, tool.namespacedName)).toBe(tool.originalName);
     }
@@ -111,5 +116,30 @@ describe("official Microsandbox MCP binding", () => {
         sandboxName: "aiqsa-ws-opaque"
       })).toThrow("workspace_tool_identity_forbidden");
     }
+  });
+
+  it("refuses a hidden argument the model still sends as an ordinary, correctable error", () => {
+    const shellName = namespacedWorkspaceToolNameFromOriginal("sandbox_shell")!;
+    // The production shape: uppercase names the guest rejects.
+    const rlimits = [{ hard: 60, resource: "RLIMIT_CPU", soft: 30 }, { resource: "RLIMIT_NOFILE", soft: 1024 }];
+    for (const originalName of ["sandbox_exec", "sandbox_shell", "sandbox_exec_start"] as const) {
+      const refusal = workspaceHiddenArgumentRefusal(originalName, { command: "python3 job.py", rlimits });
+      expect(refusal).toMatchObject({ errorCode: "workspace_request_invalid", status: "error" });
+      const body = JSON.parse(refusal!.content[0]!.text!) as { error: { code: string; message: string }; ok: boolean };
+      expect(body).toMatchObject({ error: { code: "workspace_request_invalid" }, ok: false });
+      expect(body.error.message).toContain("Nothing ran");
+      expect(body.error.message).toContain("`rlimits`");
+      expect(body.error.message).toContain(`\`ulimit\` before it in ${shellName}`);
+      // The model's own values never come back in the refusal.
+      expect(body.error.message).not.toContain("RLIMIT_");
+      // The catalog's own fence stays behind it.
+      expect(() => injectWorkspaceToolArguments({ arguments: { command: "true", rlimits }, originalName,
+        sandboxName: "aiqsa-ws-opaque" })).toThrow("workspace_tool_identity_forbidden");
+    }
+    const timeout = workspaceHiddenArgumentRefusal("sandbox_shell", { command: "sleep 1", timeoutMs: 1, maxBytes: 1 });
+    expect(JSON.parse(timeout!.content[0]!.text!).error.message).toMatch(/does not take `maxBytes`, `timeoutMs` here\. Send the call again without them\.$/u);
+    expect(workspaceHiddenArgumentRefusal("sandbox_fs_copy", { toSandbox: "other" })).toMatchObject({ errorCode: "workspace_request_invalid" });
+    expect(workspaceHiddenArgumentRefusal("sandbox_shell", { command: "ulimit -t 30; python3 job.py" })).toBeNull();
+    expect(workspaceHiddenArgumentRefusal("sandbox_exec_poll", { execSessionId: "exec-1" })).toBeNull();
   });
 });
