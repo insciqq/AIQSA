@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { hydrateRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { simulatePageTranslation } from "@/tests/support/pageTranslation";
 import { AuthLogin } from "./AuthLogin";
 
 describe("AuthLogin", () => {
@@ -823,6 +824,42 @@ describe("AuthLogin", () => {
       );
     });
     await waitFor(() => expect(navigateAfterLogin).toHaveBeenCalledWith("/"));
+  });
+
+  it("keeps signing in on a translated page, where a translator replaced the button's text", async () => {
+    let settleLogin!: (response: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      settleLogin = resolve;
+    }));
+    const crashes: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      crashes.push(event.error);
+      event.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      const { container } = render(<AuthLogin nextPath="/" />);
+      fillCredentialForm();
+      expect(simulatePageTranslation(container)).toBeGreaterThan(0);
+      const submit = container.querySelector<HTMLButtonElement>("button[type='submit']")!;
+      expect(submit.querySelector("font")).not.toBeNull();
+
+      fireEvent.submit(submit.closest("form")!);
+      expect(await screen.findByTestId("auth-submit-spinner")).toBeInTheDocument();
+      expect(submit).toBeDisabled();
+      expect(submit).toHaveTextContent("Signing in…");
+      await act(async () => {
+        settleLogin(new Response(JSON.stringify({ error: "invalid_credentials" }), { status: 401 }));
+      });
+      expect(await screen.findByRole("alert")).toBeInTheDocument();
+      expect(screen.queryByTestId("auth-submit-spinner")).not.toBeInTheDocument();
+      expect(submit).toBeEnabled();
+      expect(submit).toHaveTextContent("Sign in");
+      expect(submit.closest("form")).toBeInTheDocument();
+      expect(crashes).toEqual([]);
+    } finally {
+      window.removeEventListener("error", onError);
+    }
   });
 
   it("sanitizes unsafe post-login redirect targets at navigation time", async () => {

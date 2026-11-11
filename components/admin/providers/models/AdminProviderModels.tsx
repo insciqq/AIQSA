@@ -39,6 +39,7 @@ import {
   type UiV2MenuAction
 } from "@/components/ui-v2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import type { AdminProviderConnection, AdminProviderModel, AdminProviderModelClass } from "@/lib/contracts/adminProviders";
 import { embeddingModelConfiguration, embeddingPresetsForFamily } from "@/lib/domain/embeddingModels";
@@ -75,7 +76,7 @@ function Chip({ chip }: Readonly<{ chip: ModelChip }>) {
         data-testid={`model-chip-${chip.key}`}
       >
         {chip.tone === "ok" ? <UiV2Icon aria-hidden="true" className="size-3" name="check" /> : null}
-        {chip.label}
+        <TranslatableLabel>{chip.label}</TranslatableLabel>
       </summary>
       <p className={`mt-1 max-h-40 max-w-72 overflow-y-auto break-words text-xs leading-5 text-ink-secondary ${focusRing}`} tabIndex={0}>
         {help ?? (chip.tone === "ok" ? "Verified with this key." : "This model is not available to the selected key.")}

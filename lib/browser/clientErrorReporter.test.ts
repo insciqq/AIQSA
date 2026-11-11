@@ -47,11 +47,12 @@ describe("client error reporter", () => {
     window.dispatchEvent(rejection(new Error("private canary")));
     window.dispatchEvent(rejection(chunkError()));
     window.dispatchEvent(errorEvent({ error: new TypeError("Failed to fetch dynamically imported module: /x.js"), filename: `${origin}/a.js` }));
+    const plain = { dom_conflict: false, page_translated: false };
     expect(h.sent).toEqual([
-      { kind: "error", pathname: "/c/private-chat" },
-      { kind: "unhandled_rejection", pathname: "/c/private-chat" },
-      { kind: "chunk_load", pathname: "/c/private-chat" },
-      { kind: "chunk_load", pathname: "/c/private-chat" }
+      { kind: "error", pathname: "/c/private-chat", error_name: "TypeError", ...plain },
+      { kind: "unhandled_rejection", pathname: "/c/private-chat", error_name: "Error", ...plain },
+      { kind: "chunk_load", pathname: "/c/private-chat", error_name: "other", ...plain },
+      { kind: "chunk_load", pathname: "/c/private-chat", error_name: "TypeError", ...plain }
     ]);
     expect(JSON.stringify(h.sent)).not.toContain("canary");
   });
@@ -77,7 +78,7 @@ describe("client error reporter", () => {
     const error = new Error("same");
     reporter.report("render", error);
     reporter.report("render", error);
-    expect(sent).toEqual([{ kind: "render" }]);
+    expect(sent).toEqual([{ kind: "render", error_name: "Error", dom_conflict: false, page_translated: false }]);
     for (let index = 0; index < CLIENT_ERROR_PAGE_BUDGET + 3; index += 1) reporter.report("error", new Error(String(index)));
     expect(sent).toHaveLength(CLIENT_ERROR_PAGE_BUDGET);
   });
@@ -93,10 +94,49 @@ describe("client error reporter", () => {
         credentials: "same-origin", keepalive: true, method: "POST"
       }));
       const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-      expect(JSON.parse(String(init.body))).toEqual({ kind: "render", pathname: window.location.pathname });
+      expect(JSON.parse(String(init.body))).toEqual({
+        kind: "render", pathname: window.location.pathname, error_name: "other", dom_conflict: false, page_translated: false
+      });
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("names React's DOM conflicts on a translated page without sending the message", () => {
+    const sent: ClientErrorReportRequest[] = [];
+    const reporter = createClientErrorReporter({ budget: 10, pathname: () => "/login", send: (report) => sent.push(report) });
+    const root = document.documentElement;
+    const lang = root.getAttribute("lang");
+    try {
+      root.classList.add("translated-ltr");
+      reporter.report("render", new DOMException(
+        "Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node. private canary",
+        "NotFoundError"
+      ));
+      root.classList.remove("translated-ltr");
+      root.setAttribute("lang", "ru");
+      reporter.report("render", new DOMException("Node.removeChild: The node to be removed is not a child of this node", "NotFoundError"));
+      root.setAttribute("lang", "en");
+      reporter.report("render", new DOMException("The object can not be found here.", "NotFoundError"));
+      reporter.report("render", new DOMException("Failed to execute 'appendChild' on 'Node': private canary", "HierarchyRequestError"));
+      const custom = new Error("private canary");
+      custom.name = "PrivateCanaryError";
+      reporter.report("error", custom);
+      reporter.report("unhandled_rejection", "private canary");
+    } finally {
+      root.classList.remove("translated-ltr");
+      if (lang === null) root.removeAttribute("lang");
+      else root.setAttribute("lang", lang);
+    }
+    expect(sent).toEqual([
+      { kind: "render", pathname: "/login", error_name: "NotFoundError", dom_conflict: true, page_translated: true },
+      { kind: "render", pathname: "/login", error_name: "NotFoundError", dom_conflict: true, page_translated: true },
+      { kind: "render", pathname: "/login", error_name: "NotFoundError", dom_conflict: true, page_translated: false },
+      { kind: "render", pathname: "/login", error_name: "HierarchyRequestError", dom_conflict: true, page_translated: false },
+      { kind: "error", pathname: "/login", error_name: "other", dom_conflict: false, page_translated: false },
+      { kind: "unhandled_rejection", pathname: "/login", error_name: "other", dom_conflict: false, page_translated: false }
+    ]);
+    expect(JSON.stringify(sent)).not.toMatch(/canary|insertBefore|removeChild|child of this node/u);
   });
 
   it("stops listening after cleanup", () => {

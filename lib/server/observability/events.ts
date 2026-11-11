@@ -129,7 +129,10 @@ export type EventFields = {
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
   "http.route_resolver_unavailable": Readonly<{ reason: "missing" | "invalid" | "unsupported" }>;
-  "client.error": Readonly<{ kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown" }>;
+  "client.error": Readonly<{
+    kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown";
+    error_name?: "Error" | "TypeError" | "NotFoundError" | "HierarchyRequestError" | "other"; dom_conflict?: boolean; page_translated?: boolean;
+  }>;
   /** One step of a sign-in attempt; `code` is a key of signInCodes.json. */
   sign_in: CaughtError & Readonly<{
     /** Absent while the step cannot tell the method yet (a second factor before its challenge). */

@@ -7,6 +7,7 @@ import {
   type UiV2MenuAction
 } from "@/components/ui-v2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { useState, type ReactNode } from "react";
 
@@ -106,7 +107,7 @@ export function FilterPill({
       type="button"
     >
       {dot ? <span aria-hidden="true" className="size-1.5 rounded-full bg-current" /> : null}
-      {count === undefined ? label : `${label} · ${count}`}
+      <TranslatableLabel>{count === undefined ? label : `${label} · ${count}`}</TranslatableLabel>
     </button>
   );
 }

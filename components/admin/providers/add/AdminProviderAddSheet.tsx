@@ -791,7 +791,7 @@ function BuiltInFields({
           <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-xs leading-5 text-ink-secondary">
             <li>
               Verifies the key and turns on{" "}
-              {candidateNames ? <span className="font-medium text-ink">{candidateNames}</span> : "the recommended models"}
+              {candidateNames ? <span className="font-medium text-ink">{candidateNames}</span> : <span>the recommended models</span>}
             </li>
             <li>Checks each model for tools, JSON output, PDF and image input</li>
             <li>Makes this key the default for everyone on this connection</li>

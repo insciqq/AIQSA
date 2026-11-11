@@ -65,6 +65,27 @@ describe("client error reports", () => {
     expect(line).not.toContain("canary");
   });
 
+  it("records the closed error name and the browser's booleans, never anything else", async () => {
+    const h = harness();
+    const response = await h.handler(post({
+      dom_conflict: true, error_name: "NotFoundError", kind: "render", page_translated: true, pathname: "/c/private-chat-canary"
+    }));
+    expect(response.status).toBe(204);
+    await h.handler(post({ dom_conflict: false, error_name: "other", kind: "error", page_translated: false }));
+    expect(h.records).toEqual([
+      { dom_conflict: true, error_name: "NotFoundError", kind: "render", page_translated: true, routePath: "/c/[chatId]", route_source: "manifest" },
+      { dom_conflict: false, error_name: "other", kind: "error", page_translated: false, route_source: "unknown" }
+    ]);
+    const record = JSON.parse(serializeEvent("client.error", h.records[0]!)!);
+    expect(record).toMatchObject({ dom_conflict: true, error_name: "NotFoundError", event: "client.error", kind: "render", page_translated: true });
+    // The runtime catalog drops a name outside the closed set and a non-boolean.
+    const forged = JSON.parse(serializeEvent("client.error", {
+      dom_conflict: "private canary", error_name: "private canary", kind: "render", route_source: "unknown"
+    } as unknown as EventFields["client.error"])!);
+    expect(forged).not.toHaveProperty("error_name");
+    expect(forged).not.toHaveProperty("dom_conflict");
+  });
+
   it("omits the route when the build manifest cannot place the path", async () => {
     const h = harness();
     await h.handler(post({ kind: "chunk_load", pathname: "/unknown/private-canary" }));
@@ -91,8 +112,14 @@ describe("client error reports", () => {
 
   it("refuses oversized, malformed and content-bearing bodies", async () => {
     const h = harness();
-    const oversized = await h.handler(post({ kind: "render", pathname: `/${"a".repeat(600)}` }));
+    const oversized = await h.handler(post({ kind: "render", pathname: `/${"a".repeat(700)}` }));
     expect(oversized.status).toBe(413);
+    // The largest report the browser can send still fits.
+    const largest = await h.handler(post({
+      kind: "unhandled_rejection", pathname: `/${"a".repeat(399)}`, error_name: "HierarchyRequestError", dom_conflict: false, page_translated: false
+    }));
+    expect(largest.status).toBe(204);
+    h.records.length = 0;
     for (const body of [
       "not json",
       [],
@@ -100,7 +127,12 @@ describe("client error reports", () => {
       { kind: "render", message: "private canary" },
       { kind: "render", stack: "at secret" },
       { kind: "render", pathname: "https://elsewhere.example/c/1" },
-      { kind: "render", pathname: 42 }
+      { kind: "render", pathname: 42 },
+      { kind: "render", error_name: "PrivateCanaryError" },
+      { kind: "render", error_name: 1 },
+      { kind: "render", dom_conflict: "true" },
+      { kind: "render", page_translated: 1 },
+      { kind: "render", message_matched: true }
     ]) {
       const response = await h.handler(post(body));
       expect(response.status).toBe(400);
