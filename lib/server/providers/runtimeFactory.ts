@@ -45,7 +45,8 @@ import {
   type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
 } from "./providerConfiguration";
-import { withTimeoutSignal } from "./network";
+import { isProviderDeadlineExceededError, providerStreamCeilingMs, withTimeoutSignal, type ProviderStreamIdle } from "./network";
+import { markProviderStreamProgress, providerStreamProgressFacts } from "./streamProgress";
 import { effectiveOpenAIBackgroundPollTimeoutMs } from "./openaiBackgroundPolling";
 import { compatibleDroppedRoundDecision } from "./openaiResponsesTransport";
 import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } from "./providerRetry";
@@ -140,6 +141,11 @@ function droppedRoundRetry(
     ? { droppedRoundRetry: { beforeOutput: PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW, decision: compatibleDroppedRoundDecision,
         maxAttempts: CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS } }
     : {};
+}
+
+/** Only Codex LB was measured keeping its streams alive (an SSE comment every 5-10 s, decision 2026-11-11). */
+function compatibleResponsesStreamIdle(snapshot: ProviderExecutionSnapshot): ProviderStreamIdle {
+  return codexLbConnection(snapshot.connection) ? "keepalive" : "response_timeout";
 }
 
 export type ProviderRuntimeBinding = ProviderRuntimeComponents & Readonly<{
@@ -363,7 +369,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       return {
         adapter: createCompatibleResponsesAdapter({
           client,
-          reasoningRequestMapping: snapshot.model.reasoningRequestMapping
+          reasoningRequestMapping: snapshot.model.reasoningRequestMapping,
+          streamIdle: compatibleResponsesStreamIdle(snapshot)
         }),
         ...droppedRoundRetry(snapshot, input.options),
         structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
@@ -506,7 +513,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       return {
         adapter: createCompatibleResponsesAdapter({
           client,
-          reasoningRequestMapping: snapshot.model.reasoningRequestMapping
+          reasoningRequestMapping: snapshot.model.reasoningRequestMapping,
+          streamIdle: compatibleResponsesStreamIdle(snapshot)
         }),
         ...droppedRoundRetry(snapshot, input.options),
         structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
@@ -635,14 +643,25 @@ function withProviderStreamSafetyObservability(
         useBackgroundPollTimeout ? "polling" : "operation",
         { identity, stage: "answer" }
       );
+      // The response timeout bounds the wait for the response to start, its headers and first event; once a stream's
+      // first event arrived it runs to its idle timeout or ceiling (decision 2026-11-11). A deadline that passed before
+      // the start is named so (`streamProgress.ts`), and the run sends that request again (`modelCall.ts`).
+      let responseStarted = false;
+      const onResponseStart = useBackgroundPollTimeout ? undefined : () => {
+        responseStarted = true;
+        timeout.extend(providerStreamCeilingMs(timeoutMs));
+      };
       try {
         return yield* observeProviderStream(identity, adapter.stream(request, {
           ...options,
           signal: timeout.signal,
           timeoutMs
-        }), { onResponseHead: options?.onResponseHead, signal: timeout.signal, timeoutMs: runTimeoutMs,
+        }), { onResponseHead: options?.onResponseHead, onResponseStart, signal: timeout.signal, timeoutMs: runTimeoutMs,
           requestTimeoutMs: timeoutMs });
       } catch (error) {
+        if (onResponseStart && !responseStarted && isProviderDeadlineExceededError(error)) {
+          markProviderStreamProgress(error, providerStreamProgressFacts({ responseStarted: false }));
+        }
         warnProviderStreamSafetyOnce(error, {
           adapterKind: snapshot.model.adapterKind,
           connectionId: snapshot.connectionId,

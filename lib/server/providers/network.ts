@@ -156,12 +156,41 @@ export function resolveProviderStreamLimits(
   });
 }
 
+/**
+ * How long an answer stream may go without a single byte, an SSE comment
+ * included, on a route whose provider keeps sending bytes while it works
+ * (decision 2026-11-11, PROVIDERS.md): Codex LB sends a keepalive comment
+ * every 5-10 s, before the first event as well.
+ */
+export const PROVIDER_STREAM_KEEPALIVE_IDLE_MS = 60_000;
+
+/** The shortest hard ceiling of a stream whose response started (`providerStreamCeilingMs`). */
+export const PROVIDER_STREAM_CEILING_MS = 30 * 60_000;
+
+/**
+ * What an adapter knows of its route's stream between events: `keepalive`
+ * where the provider documents, or was measured, sending bytes while it
+ * works, so a minute of silence is a stuck upstream; otherwise a stream may
+ * stay silent as long as the response timeout.
+ */
+export type ProviderStreamIdle = "keepalive" | "response_timeout";
+
+/**
+ * The response timeout bounds only the wait for a response's headers and
+ * first event; a stream whose events flow ends only on its idle timeout or
+ * this ceiling (decision 2026-11-11: live streams were cut at 300 s).
+ */
+export function providerStreamCeilingMs(responseTimeoutMs: number = DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS): number {
+  return Math.max(responseTimeoutMs, PROVIDER_STREAM_CEILING_MS);
+}
+
 export function providerStreamTimingLimits(
-  responseTimeoutMs: number = DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
+  responseTimeoutMs: number = DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
+  idle: ProviderStreamIdle = "response_timeout"
 ): Pick<ProviderStreamLimits, "idleTimeoutMs" | "maxDurationMs"> {
   return Object.freeze({
-    idleTimeoutMs: responseTimeoutMs,
-    maxDurationMs: responseTimeoutMs
+    idleTimeoutMs: idle === "keepalive" ? Math.min(PROVIDER_STREAM_KEEPALIVE_IDLE_MS, responseTimeoutMs) : responseTimeoutMs,
+    maxDurationMs: providerStreamCeilingMs(responseTimeoutMs)
   });
 }
 
@@ -205,10 +234,10 @@ export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = provid
   const startedAt = performance.now();
   const observeAbort = createProviderAbortObserver(owner);
   const timeoutController = new AbortController();
-  const timeout = setTimeout(
-    () => timeoutController.abort(new ProviderRequestTimeoutError(timeoutMs)),
-    timeoutMs
-  );
+  let deadlineMs = timeoutMs;
+  let cleared = false;
+  const expire = () => timeoutController.abort(new ProviderRequestTimeoutError(deadlineMs));
+  let timeout = setTimeout(expire, timeoutMs);
   const signal = parentSignal
     ? AbortSignal.any([parentSignal, timeoutController.signal])
     : timeoutController.signal;
@@ -216,18 +245,29 @@ export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = provid
     stage: "delivery",
     abort_source: timeoutController.signal.aborted && signal.reason === timeoutController.signal.reason
       ? "provider_deadline" : parentSignal?.aborted ? "parent_signal" : "unknown",
-    duration_ms: Math.max(0, performance.now() - startedAt), timeout_ms: timeoutMs, deadline_kind: deadlineKind
+    duration_ms: Math.max(0, performance.now() - startedAt), timeout_ms: deadlineMs, deadline_kind: deadlineKind
   });
   if (signal.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", timeout_ms: timeoutMs, deadline_kind: deadlineKind });
   else signal.addEventListener("abort", onAbort, { once: true });
 
   return {
     clear() {
+      cleared = true;
       clearTimeout(timeout);
       signal.removeEventListener("abort", onAbort);
     },
+    /**
+     * Moves the deadline to `nextTimeoutMs` after the same start: only later,
+     * and never once it fired, was cleared or its parent ended.
+     */
+    extend(nextTimeoutMs: number) {
+      if (cleared || signal.aborted || !Number.isFinite(nextTimeoutMs) || nextTimeoutMs <= deadlineMs) return;
+      clearTimeout(timeout);
+      deadlineMs = nextTimeoutMs;
+      timeout = setTimeout(expire, Math.max(0, deadlineMs - (performance.now() - startedAt)));
+    },
     /** Time left before this deadline; a parent signal may end sooner. */
-    remainingMs: () => Math.max(0, timeoutMs - (performance.now() - startedAt)),
+    remainingMs: () => Math.max(0, deadlineMs - (performance.now() - startedAt)),
     signal
   };
 }

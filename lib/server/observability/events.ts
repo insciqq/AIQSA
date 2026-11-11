@@ -221,6 +221,7 @@ export type EventFields = {
     category?: "dns" | "tls" | "connect" | "timeout" | "parse" | "http" | "aborted" | "unknown";
     bytes?: number; chunks?: number; last_progress_ms?: number; timeout_ms?: number; attempt?: number;
     last_event_ms?: number; response_started?: boolean;
+    first_event_ms?: number; max_byte_gap_ms?: number; max_event_gap_ms?: number;
   }>;
   provider_operation: ProviderFields;
   /** Provider-reported input tokens of one dispatched round against the
