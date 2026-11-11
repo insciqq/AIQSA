@@ -38,8 +38,8 @@ async function taskChat() {
   users.push(userId);
   await prisma.user.create({ data: { displayName: "Quiet checks test", id: userId, status: "active" } });
   const task = await prisma.scheduledTask.create({ data: {
-    ...scheduledTaskScheduleColumns({ kind: "daily", time: "09:00" }), kind: "MONITORING", modelId: "fake-qsa", prompt: PROMPT,
-    provider: "fake", timeZone: "UTC", title: "Release watch", userId
+    ...scheduledTaskScheduleColumns({ kind: "daily", time: "09:00" }), chatMode: "SAME", kind: "MONITORING", modelId: "fake-qsa",
+    prompt: PROMPT, provider: "fake", timeZone: "UTC", title: "Release watch", userId
   } });
   const chatId = randomUUID();
   await prisma.chat.create({ data: { id: chatId, title: "Release watch", userId } });
@@ -217,7 +217,8 @@ describe("a task chat's quiet checks", () => {
   it("leave exports and shares, whose export keeps its published version", async () => {
     const chat = await grownChat();
     const source = await loadAuthorizedChatExportSource(prisma, { chatId: chat.chatId, userId: chat.userId });
-    expect(source!.messages.map((message) => message.key)).toEqual(chat.shown);
+    expect(source!.messages.map((message) => message.key).sort()).toEqual([...chat.shown].sort());
+    expect(source!.messages.find((message) => message.key === chat.shown[4])?.parentKey).toBe(chat.shown[3]);
     expect(source!.chat.activeLeafKey).toBe(chat.shown.at(-1));
     const document = chatExportDocument(source!, new Date(start));
     expect(document.version).toBe(CHAT_EXPORT_VERSION);
