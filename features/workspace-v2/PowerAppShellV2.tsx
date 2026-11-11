@@ -1692,6 +1692,12 @@ export function PowerAppShellV2({
   /** Files that only Workspace can take attach while it is usable; nothing turns it on. */
   function workspaceUsableForFiles(): boolean {
     if (workspaceUsable) return true;
+    if (workspaceInstallation === null && currentModel?.capabilities.toolCalling === true) {
+      // No read has succeeded yet: unknown is not "unavailable", so it reads again instead of saying so.
+      readWorkspaceAvailability();
+      setNotice({ kind: "error", text: "Checking whether Workspace is available. Try again in a moment." });
+      return false;
+    }
     setNotice({
       kind: "error",
       text: workspaceUnavailableReason === "model_tools_required"
