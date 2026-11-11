@@ -13,8 +13,9 @@ import { Prisma } from "@prisma/client";
 type ChatTimeClient = Pick<Prisma.TransactionClient, "$queryRaw" | "chat" | "modelRun">;
 
 /**
- * The time a monitoring check's chat keeps through the check's own writes, read under the chat row lock this takes (the
- * order the run's terminal and usage writes already lock in: run, then chat); null for any other run.
+ * The time a monitoring check's chat keeps through the check's own writes, read under the chat row lock this takes. Every
+ * writer that locks both takes the chat before the run (owner → chat → run: the settlement scope and usage totals), so
+ * call this before locking the run; null for any other run.
  */
 export async function monitoringCheckChatTime(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
