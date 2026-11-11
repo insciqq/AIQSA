@@ -307,6 +307,10 @@ describe("provider runtime factory", () => {
         expect(completed).toBe(false);
         await vi.advanceTimersByTimeAsync(3_600_000 - 900_001);
         await timeoutExpectation;
+        // Only a streamed request's deadline before its first event is named a late start, which a run sends again; a
+        // request sent without streaming had its whole answer to wait for, and is not (decision 2026-11-11).
+        const failure = await timedOut.catch((error: unknown) => error);
+        expect(providerStreamProgress(failure)).toEqual(streaming ? { response_started: false } : null);
         expect(vi.getTimerCount()).toBe(0);
 
         const controller = new AbortController();
