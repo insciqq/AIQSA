@@ -1,11 +1,13 @@
 /**
  * How far a provider stream had got when a timeout ended it: milliseconds since
  * its last received byte and since its last parsed event (an SSE comment, such
- * as a gateway's keepalive, is no event), and whether any event had arrived, so
- * the response had started. Diagnostics only: numbers and a flag, never content,
- * and nothing decides on them (decision 2026-11-07: Codex LB sends a keepalive
- * comment about every five seconds, so a long timeout's record says whether the
- * upstream was stuck or the model was reasoning silently).
+ * as a gateway's keepalive, or an empty data frame is no event), and whether any event had arrived, so
+ * the response had started. Numbers and a flag, never content (decision
+ * 2026-11-07: a long timeout's record says whether the upstream was stuck or the
+ * model was reasoning silently). Only the flag decides anything: a request
+ * deadline whose response had not started is sent again (`modelCall.ts`,
+ * decision 2026-11-11); a request's owner names the start when no stream did
+ * (`runtimeFactory.ts`).
  */
 export type ProviderStreamProgress = Readonly<{
   last_byte_ms?: number;

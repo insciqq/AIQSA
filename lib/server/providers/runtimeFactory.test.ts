@@ -9,6 +9,8 @@ import {
   normalizeProviderExecutionSnapshot
 } from "./runtimeFactory";
 import { markProviderStreamDrop } from "./streamDrop";
+import { providerStreamProgress } from "./streamProgress";
+import { ProviderStreamIdleTimeoutError } from "./streamSafety";
 import { captureRunObservation } from "@/tests/support/runObservation";
 
 const runtimeAdapterKinds = [
@@ -874,6 +876,161 @@ describe("provider runtime factory", () => {
       secret: null,
       snapshot: fake
     }).adapter).toBeDefined();
+  });
+
+  describe("a streamed answer's response timeout, idle timeout and ceiling (decision 2026-11-11)", () => {
+    const streamedRequest = (): ProviderRunRequest => ({ ...compatibleRequest(), forceNonStreaming: false,
+      modelCapabilities: { ...compatibleRequest().modelCapabilities, streaming: true }, params: { stream: true } });
+    const compatible = (codexLb: boolean): ProviderExecutionSnapshot => {
+      const base = snapshot("openai_responses_compatible");
+      return { ...base, connection: { ...base.connection, responseTimeoutMs: 300_000, ...(codexLb ? { responsesRequestIsolationDetected: true } : {}) } };
+    };
+    const created = 'event: response.created\ndata: {"type":"response.created","response":{"id":"r1","status":"in_progress"}}\n\n';
+    const delta = (text: string) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", response_id: "r1", delta: text })}\n\n`;
+    const completed = (text: string) => `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: {
+      id: "r1", model: "upstream/model", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text, annotations: [] }] }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })}\n\n`;
+    const encoder = new TextEncoder();
+    // One response whose headers arrive after `headersAfterMs` and whose body the test writes.
+    const upstream = (headersAfterMs = 0) => {
+      const body: { controller?: ReadableStreamDefaultController<Uint8Array>; cancelled: number } = { cancelled: 0 };
+      const fetchFn = vi.fn<typeof fetch>((_input, init) => new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(new Response(new ReadableStream<Uint8Array>({
+          start(controller) { body.controller = controller; },
+          cancel() { body.cancelled += 1; }
+        }), { headers: { "content-type": "text/event-stream" } })), headersAfterMs);
+        const signal = init?.signal;
+        if (signal) signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+      }));
+      const send = (text: string) => {
+        // A cancelled body takes nothing more.
+        try { body.controller?.enqueue(encoder.encode(text)); } catch { /* closed */ }
+      };
+      return { body, fetchFn, send };
+    };
+    // Writes `text` every `everyMs` until `untilMs` of fake time passed.
+    const every = async (everyMs: number, untilMs: number, write: () => void) => {
+      for (let elapsed = 0; elapsed + everyMs <= untilMs; elapsed += everyMs) {
+        await vi.advanceTimersByTimeAsync(everyMs);
+        write();
+      }
+    };
+    const run = (fetchFn: typeof fetch, codexLb = true) => {
+      const runtime = createProviderRuntimeBinding({ options: { allowFake: false, fetchFn }, secret: "secret", snapshot: compatible(codexLb) });
+      let outcome: unknown = "pending";
+      const settled = collect(runtime.adapter.stream(streamedRequest(), { timeoutMs: 300_000 }))
+        .then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+      return { outcome: () => outcome, settled };
+    };
+
+    it("lets a live stream answer past the response timeout, and leaves no timer behind", async () => {
+      const observation = await captureRunObservation();
+      vi.useFakeTimers();
+      try {
+        const provider = upstream();
+        const call = run(provider.fetchFn);
+        await vi.advanceTimersByTimeAsync(0);
+        provider.send(created);
+        // Ten minutes of text, a delta every 30 s: twice the 300 s response timeout.
+        await every(30_000, 600_000, () => provider.send(delta("x")));
+        expect(call.outcome()).toBe("pending");
+        provider.send(completed("x".repeat(20)));
+        provider.body.controller?.close();
+        await call.settled;
+        expect(call.outcome()).toMatchObject({ finalText: "x".repeat(20) });
+        expect(vi.getTimerCount()).toBe(0);
+        expect(observation.records()).toContainEqual(expect.objectContaining({ event: "provider_deadline",
+          stream_idle_timeout_ms: 60_000, stream_absolute_timeout_ms: 1_800_000 }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ends a live stream at its 30-minute ceiling, which no attempt would pass, and releases it", async () => {
+      vi.useFakeTimers();
+      try {
+        // The ceiling counts from the request, so it ends the stream before the parser's own, counted from the headers.
+        const provider = upstream(1_000);
+        const call = run(provider.fetchFn);
+        await vi.advanceTimersByTimeAsync(1_000);
+        provider.send(created);
+        // A delta every 50 s up to 1751 s, then the ceiling 1800 s after the request started.
+        await every(50_000, 1_750_000, () => provider.send(delta("x")));
+        await vi.advanceTimersByTimeAsync(48_999);
+        expect(call.outcome()).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await call.settled;
+        expect(call.outcome()).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 1_800_000 });
+        expect(providerStreamProgress(call.outcome())).toMatchObject({ response_started: true });
+        expect(provider.body.cancelled).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ends a Codex LB stream after a minute without a byte, keepalive included, as an idle timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const provider = upstream();
+        const call = run(provider.fetchFn);
+        await vi.advanceTimersByTimeAsync(0);
+        provider.send(created);
+        await every(10_000, 120_000, () => provider.send(": keepalive\n\n"));
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(call.outcome()).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await call.settled;
+        expect(call.outcome()).toBeInstanceOf(ProviderStreamIdleTimeoutError);
+        expect(call.outcome()).toMatchObject({ code: "provider_stream_timeout", idleTimeoutMs: 60_000 });
+        expect(provider.body.cancelled).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the response timeout as the silence another compatible endpoint may keep", async () => {
+      vi.useFakeTimers();
+      try {
+        const provider = upstream();
+        const call = run(provider.fetchFn, false);
+        await vi.advanceTimersByTimeAsync(0);
+        provider.send(created);
+        await vi.advanceTimersByTimeAsync(299_999);
+        expect(call.outcome()).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await call.settled;
+        expect(call.outcome()).toMatchObject({ code: "provider_stream_timeout", idleTimeoutMs: 300_000 });
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      ["no headers", Number.POSITIVE_INFINITY, ": keepalive\n\n"],
+      ["headers after 200 s, then only keepalive comments", 200_000, ": keepalive\n\n"],
+      ["headers, then only a proxy's empty data frames", 0, "data: \n\n"]
+    ] as const)("names a request whose response did not start within the response timeout: %s", async (_label, headersAfterMs, keepalive) => {
+      vi.useFakeTimers();
+      try {
+        const provider = upstream(headersAfterMs === Number.POSITIVE_INFINITY ? 2_000_000_000 : headersAfterMs);
+        const call = run(provider.fetchFn);
+        // Keepalives every 10 s once the body is open; the response timeout counts from the request, not the headers.
+        await every(10_000, 290_000, () => provider.send(keepalive));
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(call.outcome()).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await call.settled;
+        expect(call.outcome()).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 300_000 });
+        expect(providerStreamProgress(call.outcome())).toMatchObject({ response_started: false });
+        if (headersAfterMs !== Number.POSITIVE_INFINITY) expect(provider.body.cancelled).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("rejects cross-shape, oversized, and credential-less snapshots", () => {
