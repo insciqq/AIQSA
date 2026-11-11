@@ -5,11 +5,13 @@ import {
   type McpClientSessionLimits
 } from "./clientSession";
 import { redactMcpToolCallResult } from "./resultRedaction";
+import type { McpCallResultCeiling } from "./responseGuard";
 import type { McpResponseWireLimits } from "./responseLimits";
 import type { McpRuntimeLaunch, McpRuntimeSessionFactory } from "./runtimeCoordinator";
 
 export function createMcpClientSessionFactory(input: Readonly<{
   authProviderForLaunch?: (launch: McpRuntimeLaunch) => Promise<OAuthClientProvider | undefined>;
+  callResultCeiling?: McpCallResultCeiling;
   fetch: FetchLike;
   fetchForLaunch?: (launch: McpRuntimeLaunch) => FetchLike | Promise<FetchLike>;
   limits: McpClientSessionLimits;
@@ -40,6 +42,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
       }
       const session = new McpClientSession({
         ...(authProvider ? { authProvider } : {}),
+        ...(input.callResultCeiling ? { callResultCeiling: input.callResultCeiling } : {}),
         fetch: await input.fetchForLaunch?.(launch) ?? input.fetch,
         headers: launch.headers,
         limits: input.limits,

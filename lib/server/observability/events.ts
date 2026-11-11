@@ -95,6 +95,14 @@ export type DbTransactionJobKind = "MEMORY_COMMAND" | "INDEX_HISTORY" | "EXTRACT
 export type PushTransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "unknown";
 /** The browser push service a subscription's endpoint belongs to, by its host alone. */
 export type PushServiceClass = "fcm" | "mozilla" | "apple" | "other";
+/** The upload route that refused a request (`lib/server/uploads/uploadRefusal.ts`). */
+export type UploadRefusalOperation = "upload" | "session_config" | "session_create" | "session_status" | "session_cancel" | "session_part" | "session_complete";
+/** The step that refused it, where the route can tell: origin, sign-in, capacity, an unreadable body, the declared file, Workspace availability, the bytes, the PDF. */
+export type UploadRefusalStage = "origin" | "auth" | "capacity" | "body" | "declaration" | "workspace" | "content" | "pdf";
+/** A byte size by bucket, never the exact count; bounds are inclusive. */
+export type UploadSizeClass = "empty" | "to_1mb" | "to_10mb" | "to_25mb" | "to_64mb" | "to_512mb" | "over_512mb";
+/** The top-level part of the declared MIME type, never the type itself; `none` when none was declared. */
+export type UploadMimeFamily = "application" | "audio" | "font" | "image" | "message" | "model" | "multipart" | "text" | "video" | "none" | "other";
 /**
  * Why a Workspace tool call failed where its code alone cannot say, as the
  * runner observed it: the pinned MCP reported the guest operation failed
@@ -121,7 +129,10 @@ export type EventFields = {
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
   "http.route_resolver_unavailable": Readonly<{ reason: "missing" | "invalid" | "unsupported" }>;
-  "client.error": Readonly<{ kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown" }>;
+  "client.error": Readonly<{
+    kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown";
+    error_name?: "Error" | "TypeError" | "NotFoundError" | "HierarchyRequestError" | "other"; dom_conflict?: boolean; page_translated?: boolean;
+  }>;
   /** One step of a sign-in attempt; `code` is a key of signInCodes.json. */
   sign_in: CaughtError & Readonly<{
     /** Absent while the step cannot tell the method yet (a second factor before its challenge). */
@@ -136,7 +147,9 @@ export type EventFields = {
   "subsystem.recovered": Readonly<{ subsystem: Subsystem; stage: LifecycleStage; duration_ms?: number; repeat_count?: number }>;
   "readiness.changed": Readonly<{ state: "ready" | "not_ready"; code?: string; issue_count?: number }>;
   "logging.dropped_records": Readonly<{ count: number }>;
-  run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf" }>;
+  /** `workspace_reason` is the request's closed reason for asking no Workspace (`WORKSPACE_NOT_REQUESTED_REASONS`). */
+  run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf";
+    workspace_requested?: boolean; workspace_reason?: "installation_disabled" | "model_no_tools" | "user_declined" | "unknown" }>;
   run_preparation: CaughtError & Readonly<{ run_id: string; stage: "preparing"; outcome: PreparationOutcome; duration_ms?: number; code?: string }>;
   run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion" | "first_output"; outcome: OperationOutcome; duration_ms?: number; after?: "dispatch" | "tools"; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number; provider_error_code?: string }>;
   run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string; db_failure?: DatabaseFailureKind; duration_ms?: number; lock_wait_ms?: number }>;
@@ -219,6 +232,7 @@ export type EventFields = {
     category?: "dns" | "tls" | "connect" | "timeout" | "parse" | "http" | "aborted" | "unknown";
     bytes?: number; chunks?: number; last_progress_ms?: number; timeout_ms?: number; attempt?: number;
     last_event_ms?: number; response_started?: boolean;
+    first_event_ms?: number; max_byte_gap_ms?: number; max_event_gap_ms?: number;
   }>;
   provider_operation: ProviderFields;
   /** Provider-reported input tokens of one dispatched round against the
@@ -242,5 +256,12 @@ export type EventFields = {
   }>;
   provider_request: ProviderFields;
   provider_retry: ProviderFields;
+  /** One refused upload request: its stable code and safe facts, never the file name, declared type, content or an upload or attachment id.
+   * Only an unexpected failure (`upload_unavailable`) carries its caught error and is an error; every other refusal warns. */
+  search_sources_missing: Readonly<{ annotations: number; citations: number; inline_links: number; message_citations: number; search_results: number }>;
+  upload_refused: CaughtError & Readonly<{
+    operation: UploadRefusalOperation; stage?: UploadRefusalStage; code: string; httpStatus: number;
+    size_class?: UploadSizeClass; mime_family?: UploadMimeFamily; client_aborted?: boolean;
+  }>;
   provider_stream_safety_terminated: ProviderIdentity & Readonly<{ code: string; durationMs: number; limit: number; observed: number; totalStreamBytes: number; termination: string; unit: string }>;
 };

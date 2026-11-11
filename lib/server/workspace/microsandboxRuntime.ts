@@ -77,6 +77,7 @@ import {
   bindOfficialWorkspaceTools,
   injectWorkspaceToolArguments,
   WORKSPACE_BOUND_TOOL_CATALOG_HASH,
+  workspaceHiddenArgumentRefusal,
   type OfficialWorkspaceTool
 } from "./toolCatalog";
 import {
@@ -1334,6 +1335,13 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {
     if (!workspaceToolIsAllowed(input.originalName)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    // An argument the catalog hides is refused before the guest is even looked up, as an error the model can correct.
+    const hiddenArgument = workspaceHiddenArgumentRefusal(input.originalName, input.arguments);
+    if (hiddenArgument) {
+      logEvent("tool_execution", { tool_kind: "workspace", stage: "admission", outcome: "failed",
+        code: hiddenArgument.errorCode, operation: input.originalName });
+      return hiddenArgument;
     }
     // A call refused before dispatch: one runner record of its operation and
     // state cause, which the app also receives beside the error's code.

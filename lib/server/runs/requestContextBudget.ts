@@ -1,3 +1,4 @@
+import { compactableFixedTokens } from "../engine/compaction/policy";
 import { workspaceImageTokenReserve } from "../workspace/directImageEvidence";
 import { calculateContextBudgetLimits, type ContextTruncationSummary } from "../../domain/contextBudget";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
@@ -30,6 +31,18 @@ import type { SkillBudgetFacts } from "../../contracts/skills";
  * the model's input budget (prompt, pinned context, the current message, its
  * attachments, tools and the follow-up reserve). Extracted attachment text is
  * elastic and takes the room that is left; nothing else is ever cut.
+ *
+ * That room ends where compaction would stop working (decision 2026-11-11):
+ * attachment text never takes the fixed part past the background threshold
+ * less a working margin (`compactableFixedTokens`), since no compaction can
+ * remove it. In production the text of 19 spreadsheets filled about 90% of
+ * the usable window, and the turn compacted before every request without
+ * freeing room. Text past that point is cut with the usual marker, and the
+ * original stays readable (`TRUNCATION_MARKER`). The cap applies only where it
+ * gives compaction room back: when the rest of the fixed part (instructions,
+ * tools, a loaded MCP catalog, pinned Skills) alone reaches it, cutting the
+ * text frees nothing a compaction could use, so the text keeps the room the
+ * budget leaves, as before. The cap never refuses a request either.
  */
 
 /** Room for extracted attachment text when the model's window is unknown. */
@@ -145,14 +158,16 @@ function textAttachmentCandidates(attachments: ProviderRunRequest["attachments"]
   });
 }
 
+/** What ends attachment text cut to fit. The original stays in the Workspace inbox, or readable by `read_chat_file` without one. */
+const TRUNCATION_MARKER = "\n[truncated for model context]";
+
 /** The longest prefix of `text` whose provider line (label, prefix and, when
  * cut, the marker) fits the budget, measured as one string. */
 function fitTextToTokenBudget(text: string, tokenBudget: number, estimate: (value: unknown) => number, label: string): string {
   if (estimate(`${label}${text}`) <= tokenBudget) return text;
-  const marker = "\n[truncated for model context]";
   const firstCharacter = String.fromCodePoint(text.codePointAt(0)!);
-  const candidate = (length: number, withMarker: boolean) => `${takeUtf16SafePrefix(text, length)}${withMarker ? marker : ""}`;
-  const useMarker = estimate(`${label}${firstCharacter}${marker}`) <= tokenBudget;
+  const candidate = (length: number, withMarker: boolean) => `${takeUtf16SafePrefix(text, length)}${withMarker ? TRUNCATION_MARKER : ""}`;
+  const useMarker = estimate(`${label}${firstCharacter}${TRUNCATION_MARKER}`) <= tokenBudget;
   let low = firstCharacter.length;
   let high = text.length;
   while (low < high) {
@@ -200,16 +215,15 @@ function allocateAttachmentText(attachments: ProviderRunRequest["attachments"], 
 /**
  * Estimated tokens of everything in the request that no compaction removes,
  * with extracted attachment text left out (it is fitted to the room left).
- * `withReserve` adds the follow-up reserve a fit check keeps free.
+ * A fit check keeps the follow-up reserve free beside it.
  */
 function irreducibleTokens(request: ProviderRunRequest, attachments: ProviderRunRequest["attachments"],
-  bridge: ProviderToolBridge | undefined, withReserve: boolean): number {
+  bridge: ProviderToolBridge | undefined): number {
   const estimate = contextTokenEstimator(request);
   const withoutText = attachments.map((attachment) =>
     textModeAttachment(attachment, request.modelCapabilities) ? { ...attachment, extractedText: null } : attachment);
   return promptTokens(request, estimate) +
     irreducibleMessageTokens(request, estimate) +
-    (withReserve ? followupReserveTokens(request) : 0) +
     estimate(providerFacingSerializedTools(request, bridge)) +
     estimate(request.providerToolMessages ?? []) + workspaceImageTokenReserve(request.providerToolMessages) +
     estimate(request.personalContext?.text ?? "") +
@@ -255,8 +269,16 @@ function fitRequest(request: ProviderRunRequest, bridge: ProviderToolBridge | un
     const fitted = allocateAttachmentText(attachments, candidates, UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS - labelTokens, estimate);
     return fitted ? { attachments: fitted, ok: true } : { budgetTokens: UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS, ok: false };
   }
-  const available = limits.budgetTokens - irreducibleTokens(request, attachments, bridge, true) - labelTokens;
-  const fitted = allocateAttachmentText(attachments, candidates, available, estimate);
+  const fixed = irreducibleTokens(request, attachments, bridge);
+  const available = limits.budgetTokens - fixed - followupReserveTokens(request) - labelTokens;
+  // Follow-ups are transcript items a compaction removes, so the cap counts no reserve for them.
+  const compactable = compactableFixedTokens({ contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens }) -
+    fixed - labelTokens;
+  // A cap that leaves the texts no more than their first characters and markers means the rest of the fixed part reaches
+  // it alone: cutting them would free nothing a compaction could use, so they keep the budget's room.
+  const marked = candidates.reduce((total, candidate) => total + candidate.minimumTokens + estimate(TRUNCATION_MARKER), 0);
+  const fitted = allocateAttachmentText(attachments, candidates, compactable > marked ? Math.min(available, compactable) : available,
+    estimate);
   return fitted ? { attachments: fitted, ok: true } : { budgetTokens: limits.budgetTokens, ok: false };
 }
 
@@ -300,7 +322,7 @@ export function requestHeadroomTokens(request: ProviderRunRequest, bridge?: Prov
   const attachments = clampedProviderAttachments(request);
   const text = textAttachmentCandidates(attachments, request.modelCapabilities, estimate)
     .reduce((total, candidate) => total + candidate.labelTokens + candidate.sourceTokens, 0);
-  return Math.max(0, limits.budgetTokens - irreducibleTokens(request, attachments, bridge, false) - text);
+  return Math.max(0, limits.budgetTokens - irreducibleTokens(request, attachments, bridge) - text);
 }
 
 /** Returns the bounded room for a future Personal Memory block after the

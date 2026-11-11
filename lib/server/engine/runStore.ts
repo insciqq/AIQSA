@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Prisma, type ModelRunEngine, type ModelRunStatus, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
-import { sumEstimatedCostMicros, sumTokenUsage } from "../../domain/usage";
+import { TOKEN_USAGE_FIELDS, sumEstimatedCostMicros, sumTokenUsage, type TokenUsageField } from "../../domain/usage";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { signalRunTerminal } from "../push/runTerminalSignal";
@@ -36,6 +36,15 @@ export type NativeRunScope = Readonly<{ assistantMessageId: string; chatId: stri
  * none and its thread's late compaction is matched by the thread's turn instead (`recordDetachedCompaction`).
  */
 export const SUBAGENT_RUN_NO_ANSWER = "";
+
+/** A chat title's usage receipt, as the run's usage totals add it. */
+const titleUsageSelect = { cachedInputTokens: true, cacheWriteInputTokens: true, estimatedCostMicros: true, inputTokens: true,
+  outputTokens: true, reasoningTokens: true, totalTokens: true, usageCompleteness: true } as const;
+
+/** The token figures a usage row and a run both carry: to add, or to match a run's columns exactly. */
+function tokenFigures(row: Readonly<Record<TokenUsageField, number | null>>): Record<TokenUsageField, number | null> {
+  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, row[field]])) as Record<TokenUsageField, number | null>;
+}
 
 type LockedRun = Readonly<{
   answerCompletedAt: Date | null;
@@ -183,12 +192,31 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
 
     /**
      * The run's and its answer's token totals from the provider-reported rows
-     * written for it; the chat's totals grow by them once.
+     * written for it; the chat's totals grow by them once. The chat's automatic
+     * title adds its own usage to the run and the chat
+     * (`lib/server/chats/titleGenerationRepository.ts`), in either order.
      */
     async applyUsageTotals(scope: NativeRunScope, attributions: readonly RunUsageAttribution[]): Promise<void> {
-      const usage = sumTokenUsage(attributions.map((attribution) => attribution.usage));
-      const cost = sumEstimatedCostMicros(attributions.map((attribution) => attribution.estimatedCostMicros ?? null));
+      const answer = sumTokenUsage(attributions.map((attribution) => attribution.usage));
+      const answerCost = sumEstimatedCostMicros(attributions.map((attribution) => attribution.estimatedCostMicros ?? null));
       await client.$transaction(async (tx) => {
+        // The chat row before the run's, in settlement order (owner, chat, run: `lockRunSettlementScope`), as a sub-agent's
+        // settlement and Memory's source check take them: taken run first, this deadlocked with both. The owner's row is
+        // not needed here. A monitoring check keeps its chat's place in the chat list (`chatListTime.ts`) and locks the chat
+        // for that before anything else, so no lock is raised while the run's is held. Any other run locks the chat no
+        // harder than the UPDATE below does, so a row that only references the chat never waits for it.
+        const keptChatTime = await monitoringCheckChatTime(tx, scope);
+        await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Chat" WHERE "id" = ${scope.chatId} FOR NO KEY UPDATE`);
+        // A chat title's usage written before these totals left the run holding the title's figures alone: the answer's are
+        // still to be written, and the run's become both, the title's counted once. Any other figures mean the answer's
+        // were written already. The title's write takes the chat first as well, so the two never interleave. The chat
+        // already counts the title's usage; it grows here by the answer's alone.
+        const receipt = await tx.usageEvent.findUnique({ select: titleUsageSelect, where: { chatTitleGenerationId: scope.runId } });
+        const title = receipt && receipt.usageCompleteness !== "UNAVAILABLE" &&
+          await tx.modelRun.count({ where: { id: scope.runId, ...tokenFigures(receipt) } }) === 1 ? receipt : null;
+        const usage = title ? sumTokenUsage([answer, { ...tokenFigures(title),
+          completeness: title.usageCompleteness === "COMPLETE" ? "complete" : "partial" }]) : answer;
+        const cost = title ? sumEstimatedCostMicros([answerCost, title.estimatedCostMicros]) : answerCost;
         const first = await tx.modelRun.updateMany({
           data: {
             cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens,
@@ -196,18 +224,17 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
             outputTokens: usage.outputTokens, reasoningTokens: usage.reasoningTokens, totalTokens: usage.totalTokens,
             usageCompleteness: usage.completeness === "complete" ? "COMPLETE" : usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE"
           },
-          where: { engine: "native", id: scope.runId, inputTokens: null, outputTokens: null, totalTokens: null, userId: scope.userId }
+          where: { engine: "native", id: scope.runId, userId: scope.userId,
+            ...(title ? tokenFigures(title) : { inputTokens: null, outputTokens: null, totalTokens: null }) }
         });
         if (first.count !== 1) return;
-        // A monitoring check's bookkeeping keeps its chat's place in the chat list (`chatListTime.ts`).
-        const keptChatTime = await monitoringCheckChatTime(tx, scope);
         await tx.chat.update({ data: {
-          totalInputTokens: { increment: usage.inputTokens ?? 0 },
-          totalOutputTokens: { increment: usage.outputTokens ?? 0 },
-          totalReasoningTokens: { increment: usage.reasoningTokens ?? 0 },
+          totalInputTokens: { increment: answer.inputTokens ?? 0 },
+          totalOutputTokens: { increment: answer.outputTokens ?? 0 },
+          totalReasoningTokens: { increment: answer.reasoningTokens ?? 0 },
           ...(keptChatTime ? { updatedAt: keptChatTime } : {})
         }, where: { id: scope.chatId } });
-        await tx.message.updateMany({ data: { outputTokens: usage.outputTokens, reasoningTokens: usage.reasoningTokens },
+        await tx.message.updateMany({ data: { outputTokens: answer.outputTokens, reasoningTokens: answer.reasoningTokens },
           where: { chatId: scope.chatId, id: scope.assistantMessageId } });
       });
     }

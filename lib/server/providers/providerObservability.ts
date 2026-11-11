@@ -23,6 +23,8 @@ type ProviderObservation = Readonly<{
   timeoutMs?: number;
   requestTimeoutMs?: number;
   onResponseHead?: () => void;
+  /** A stream parser read the response's first event (`observeProviderResponseStart`). */
+  onResponseStart?: () => void;
 }>;
 
 const scopeKey = Symbol.for("aiqsa.providerObservation");
@@ -32,7 +34,7 @@ const codeSet = new Set<string>(observedFailureCodes);
 const providerStatuses = new Set<string>(["completed", "failed", "cancelled", "incomplete", "queued", "in_progress", "retrying"]);
 type TransportFields = EventFields["transport_stage"];
 type TransportFacts = Pick<TransportFields, "category" | "code" | "bytes" | "chunks" | "last_progress_ms" | "timeout_ms" |
-  "last_event_ms" | "response_started">;
+  "last_event_ms" | "response_started" | "first_event_ms" | "max_byte_gap_ms" | "max_event_gap_ms">;
 type TransportBinding = Readonly<{
   fields: Pick<TransportFields, "transport" | "operation" | "adapterKind" | "connectionId" | "providerFamily" | "providerModelId" | "attempt" | "httpStatus" | "timeout_ms">;
   emit: (fields: TransportFields) => void;
@@ -88,7 +90,8 @@ export function beginTransportStage(stage: TransportFields["stage"],
     ...binding.fields, stage, outcome, duration_ms: Math.max(0, performance.now() - startedAt),
     category: facts.category, code: facts.code, bytes: facts.bytes, chunks: facts.chunks,
     last_progress_ms: facts.last_progress_ms, timeout_ms: facts.timeout_ms ?? binding.fields.timeout_ms,
-    last_event_ms: facts.last_event_ms, response_started: facts.response_started
+    last_event_ms: facts.last_event_ms, response_started: facts.response_started,
+    first_event_ms: facts.first_event_ms, max_byte_gap_ms: facts.max_byte_gap_ms, max_event_gap_ms: facts.max_event_gap_ms
   });
   emit("started");
   return {
@@ -182,6 +185,11 @@ export function observeProviderDeadline(fields: EventFields["provider_deadline"]
     effective_timeout_ms: fields.effective_timeout_ms, poll_timeout_ms: fields.poll_timeout_ms,
     stream_idle_timeout_ms: fields.stream_idle_timeout_ms, stream_absolute_timeout_ms: fields.stream_absolute_timeout_ms
   });
+}
+
+/** A stream parser read its response's first event, so the response started: the request's owner moves its deadline. */
+export function observeProviderResponseStart(): void {
+  scopes.getStore()?.onResponseStart?.();
 }
 
 export function observeJsonParse<T>(source: Response | ReadableStream<Uint8Array> | undefined, parse: () => T): T {
@@ -486,10 +494,10 @@ export function observeProviderOperation<T>(identity: Partial<ProviderStreamSafe
 /** Context belongs to each iterator advance, including return/throw. It never
  * becomes mutable configuration of the shared adapter or caller's context. */
 export function observeProviderStream<T, R>(identity: ProviderStreamSafetyIdentity,
-  iterator: AsyncGenerator<T, R>, options: { onResponseHead?: () => void; timeoutMs: number; requestTimeoutMs?: number;
-    signal: AbortSignal }): AsyncGenerator<T, R> {
+  iterator: AsyncGenerator<T, R>, options: { onResponseHead?: () => void; onResponseStart?: () => void; timeoutMs: number;
+    requestTimeoutMs?: number; signal: AbortSignal }): AsyncGenerator<T, R> {
   const scope: ProviderObservation = { identity, stage: "answer", attempt: 1, onResponseHead: options.onResponseHead,
-    timeoutMs: options.timeoutMs, requestTimeoutMs: options.requestTimeoutMs ?? options.timeoutMs };
+    onResponseStart: options.onResponseStart, timeoutMs: options.timeoutMs, requestTimeoutMs: options.requestTimeoutMs ?? options.timeoutMs };
   const startedAt = Date.now();
   let started = false;
   let finished = false;
@@ -566,8 +574,7 @@ export function observeProviderFetch(fetchFn: typeof fetch): typeof fetch {
 
 export function withProviderAttempt<T>(attempt: number, operation: () => Promise<T>): Promise<T> {
   const scope = scopes.getStore();
-  return scope ? scopes.run({ identity: scope.identity, stage: scope.stage, timeoutMs: scope.timeoutMs,
-    requestTimeoutMs: scope.requestTimeoutMs, onResponseHead: scope.onResponseHead, attempt }, operation) : operation();
+  return scope ? scopes.run({ ...scope, attempt }, operation) : operation();
 }
 
 export function observeProviderRetry(error: unknown, attempt: number, action: "retry" | "stop", delayMs?: number) {

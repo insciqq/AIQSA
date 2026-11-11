@@ -13,6 +13,7 @@ import {
   type ProviderRetryBackoff
 } from "../providers/providerRetry";
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
+import { providerStreamProgress } from "../providers/streamProgress";
 import { ProviderStreamIdleTimeoutError } from "../providers/streamSafety";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { NO_ENGINE_TEST_FAULTS, syntheticProviderBadGateway, syntheticStreamDrop, type EngineTestFaults } from "./faults";
@@ -34,7 +35,8 @@ export type ModelCallRetryPolicy = Readonly<{
 /**
  * One model request of a native run, sent again transparently when it fails
  * in transport (answer first, PROVIDERS.md): a network error, a rate limit
- * or server error, or a stream that dropped before its terminal proof. Each
+ * or server error, a stream that dropped or went silent before its terminal
+ * proof, or a response that did not start within the response timeout. Each
  * new attempt is the same request to the same destination, after a jittered
  * backoff, under Stop and before the turn's deadline. The failed attempt's
  * partial output is discarded (`onDiscard`), and its reported usage is still
@@ -93,9 +95,15 @@ function ownNumber(error: unknown, key: string): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-/** Whether a failed model request may be sent again, with the provider's Retry-After. */
+/**
+ * Whether a failed model request may be sent again, with the provider's Retry-After. A stream silent past its idle
+ * timeout is sent again like a dropped one. A request deadline is sent again only when it passed before the response
+ * started (no headers, or no first event, within the response timeout: a stuck upstream, decision 2026-11-11); one
+ * that passed while events flowed is the stream's ceiling, which another attempt would only meet again.
+ */
 export function modelCallRetryDecision(error: unknown, signal: AbortSignal): Readonly<{ retryAfterMs: number | null }> | null {
-  if (signal.aborted || isProviderDeadlineExceededError(error)) return null;
+  if (signal.aborted) return null;
+  if (isProviderDeadlineExceededError(error)) return providerStreamProgress(error)?.response_started === false ? { retryAfterMs: null } : null;
   const failure = observedFailure(error);
   if (DETERMINISTIC_CODES.has(failure.code)) return null;
   if (failure.stream_drop !== undefined || error instanceof ProviderStreamIdleTimeoutError) return { retryAfterMs: null };

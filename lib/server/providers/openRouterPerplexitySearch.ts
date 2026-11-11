@@ -1,4 +1,5 @@
 import { dispatchSearchRequest } from "./searchDispatch";
+import { logEvent } from "../observability";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildOpenRouterPerplexitySearchRequest,
@@ -57,6 +58,20 @@ function searchArtifact(
       }
     },
     type: "artifact"
+  };
+}
+
+const fieldLength = (value: unknown): number => Array.isArray(value) ? Math.min(value.length, 1_000) : -1;
+
+/** Content-free counts of the fields a search response may carry sources in; -1 when a field is absent. */
+function sourceFieldCounts(response: Readonly<Record<string, unknown>>, message: unknown, text: string) {
+  const record = message !== null && typeof message === "object" ? message as Readonly<Record<string, unknown>> : {};
+  return {
+    annotations: fieldLength(record.annotations),
+    citations: fieldLength(response.citations),
+    inline_links: Math.min((text.match(/\]\(https?:\/\//gu) ?? []).length, 1_000),
+    message_citations: fieldLength(record.citations),
+    search_results: fieldLength(response.search_results)
   };
 }
 
@@ -125,6 +140,9 @@ export function createOpenRouterPerplexitySearchAdapter(
         });
       }
       if (sources.length === 0) {
+        // Which fields came and how full they were, never their text: the next refusal says whether the provider sent
+        // no sources or the parser missed a shape (13 unexplained refusals, production audit 2026-11-11).
+        logEvent("search_sources_missing", sourceFieldCounts(response, message, finalText));
         throw new ProviderSearchExecutionError({
           artifacts: [operationArtifact],
           code: "openrouter_search_sources_invalid",

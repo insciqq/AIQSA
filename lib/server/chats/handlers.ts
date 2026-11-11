@@ -121,6 +121,8 @@ export type ChatDetailRecord = ChatSummaryRecord & {
   pageInfo: Omit<ChatMessagePageInfo, "snapshotUpdatedAt"> & {
     snapshotUpdatedAt: Date | string;
   };
+  /** See `ChatQuietChecksSummary`; absent while the chat has none. */
+  quietChecks?: Readonly<{ count: number; lastAt: Date | string }>;
   usageStats: ChatUsageStats | null;
 };
 
@@ -356,6 +358,7 @@ export function serializeChatDetail(chat: ChatDetailRecord): ChatDetailWire {
       ...chat.pageInfo,
       snapshotUpdatedAt: iso(chat.pageInfo.snapshotUpdatedAt)
     },
+    ...(chat.quietChecks ? { quietChecks: { count: chat.quietChecks.count, lastAt: iso(chat.quietChecks.lastAt) } } : {}),
     usageStats: chat.usageStats
   };
 }

@@ -43,6 +43,29 @@ export const MCP_RESPONSE_WIRE_LIMIT_CEILINGS: McpResponseWireLimits = Object.fr
   unknownResponseMaxBytes: 16 * 1_024 * 1_024
 });
 
+/**
+ * The hard per-call ceiling of a tools/call response body (decision
+ * 2026-11-11). A call's body past its wire limit is still read and parsed up
+ * to this bound, then cut to the result limit with a marker: the tool already
+ * ran, and refusing its whole result only made the model fetch the items one
+ * by one and miss some. Only a body above this bound fails the call.
+ *
+ * Memory: a body of B bytes peaks at about 4 B of V8 heap (the decoded text,
+ * up to 2 B for mixed ASCII and Cyrillic, beside its parsed copy, then the
+ * parsed result beside its measuring JSON string) and about 3 B of transient
+ * buffers (received chunks, their concatenation or the SSE event buffer).
+ * Bodies past the wire limit hold one of `MCP_CALL_RESULT_CEILING_PERMITS`
+ * process-wide permits from the moment they cross it until the result is cut,
+ * so at most 1 × 64 MiB × 7 ≈ 450 MiB rides on the app container's 2 GiB
+ * (`AIQSA_APP_MEMORY_LIMIT` in `compose.yaml`), above the bounded bodies under
+ * the wire limit; its heap share (256 MiB) stays well inside the about 1.1 GiB
+ * heap Node sizes for a 2 GiB cgroup. A per-run batch runs up to 4 calls at once
+ * (`TOOL_BATCH_LIMITS.concurrency`) and nothing bounds runs per process, so a
+ * second oversized body waits for the permit instead of failing.
+ */
+export const MCP_CALL_RESULT_CEILING_BYTES = 64 * 1_024 * 1_024;
+export const MCP_CALL_RESULT_CEILING_PERMITS = 1;
+
 const environmentNames = Object.freeze({
   callToolResponseMaxBytes: "AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES",
   initializeResponseMaxBytes: "AIQSA_MCP_INITIALIZE_RESPONSE_MAX_BYTES",

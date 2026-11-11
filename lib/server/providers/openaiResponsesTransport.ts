@@ -6,11 +6,14 @@ import {
   providerResponseFailure
 } from "./responseFailure";
 import {
+  isProviderDeadlineExceededError,
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
+  providerStreamCeilingMs,
   providerStreamTimingLimits,
   readBoundedResponseText,
-  withTimeoutSignal
+  withTimeoutSignal,
+  type ProviderStreamIdle
 } from "./network";
 import {
   executeWithProviderRetry,
@@ -24,6 +27,8 @@ import { parseRetryAfterMs } from "../retryAfter";
 import { randomUUID } from "node:crypto";
 import { parseProviderSseStream } from "./sse";
 import { markProviderOutputObserved, markProviderStreamDrop, providerStreamDrop, responsesOutputItem } from "./streamDrop";
+import { providerStreamProgress } from "./streamProgress";
+import { ProviderStreamIdleTimeoutError } from "./streamSafety";
 import { inheritProviderErrorCode, markProviderErrorDetail } from "./providerErrorCode";
 
 export type OpenAIResponseObject = Record<string, unknown>;
@@ -97,12 +102,15 @@ function streamedOutputEvent(payload: Record<string, unknown>): boolean {
  * provider-issued completed items, under explicit terminal proof, without a
  * retry. After any output the fact (`outputObserved`) rides on the failure,
  * or on the terminal response (non-enumerable, never serialized), whose
- * adapter carries it onto the failure a failed or incomplete status becomes. */
-async function collectStreamedResponse(response: Response, signal: AbortSignal, timeoutMs?: number): Promise<OpenAIResponseObject> {
+ * adapter carries it onto the failure a failed or incomplete status becomes.
+ * As for an answer stream (decision 2026-11-11), the request's deadline bounds
+ * only its headers and first event; the stream then runs to its idle timeout,
+ * a minute on a route that keeps bytes flowing (`idle`), or its ceiling. */
+async function collectStreamedResponse(response: Response, deadline: StreamedCreateDeadline): Promise<OpenAIResponseObject> {
   let observed = false;
   let terminal: OpenAIResponseObject;
   try {
-    terminal = await collectStreamedEvents(response, signal, timeoutMs, (payload) => {
+    terminal = await collectStreamedEvents(response, deadline, (payload) => {
       if (!observed && streamedOutputEvent(payload)) observed = true;
     });
   } catch (error) {
@@ -111,12 +119,24 @@ async function collectStreamedResponse(response: Response, signal: AbortSignal, 
   return observed ? markProviderOutputObserved(terminal) : terminal;
 }
 
-async function collectStreamedEvents(response: Response, signal: AbortSignal, timeoutMs: number | undefined,
+type StreamedCreateDeadline = Readonly<{
+  idle?: ProviderStreamIdle;
+  timeout: ReturnType<typeof withTimeoutSignal>;
+  timeoutMs?: number;
+}>;
+
+async function collectStreamedEvents(response: Response, deadline: StreamedCreateDeadline,
   observe: (payload: Record<string, unknown>) => void): Promise<OpenAIResponseObject> {
   if (!response.body) throw new Error("openai_stream_body_missing");
   const items = new Map<number, OpenAIResponseObject>();
-  for await (const event of parseProviderSseStream(response.body, { signal, maxBytes: 16 * 1024 * 1024,
-    maxEventBytes: 16 * 1024 * 1024, ...providerStreamTimingLimits(timeoutMs) })) {
+  let started = false;
+  for await (const event of parseProviderSseStream(response.body, { signal: deadline.timeout.signal, maxBytes: 16 * 1024 * 1024,
+    maxEventBytes: 16 * 1024 * 1024, ...providerStreamTimingLimits(deadline.timeoutMs, deadline.idle) })) {
+    // A frame with empty data is a keepalive, as for the parser; the first other event starts the response.
+    if (!started && event.data.trim()) {
+      started = true;
+      deadline.timeout.extend(providerStreamCeilingMs(deadline.timeoutMs));
+    }
     if (event.data === "[DONE]") break;
     let value: unknown;
     try { value = JSON.parse(event.data); } catch { throw markProviderStreamDrop(new Error("openai_response_invalid_json"), "truncated"); }
@@ -233,6 +253,11 @@ export function compatibleDroppedRoundDecision(error: unknown): ProviderRetryDec
   if (typeof error !== "object" || error === null || deterministicFailureCodes.has(ownErrorValue(error, "code")) ||
     ownErrorValue(error, "capabilityFailureReason") !== undefined) return null;
   if (error instanceof OpenAIHttpError) return error.status === 502 ? { retryAfterMs: error.retryAfterMs } : null;
+  // A silent stream, and a deadline that passed before the response started, are a stuck upstream: sent again like a
+  // drop, as a run's model calls are (decision 2026-11-11, `modelCallRetryDecision`). A deadline met while events flowed
+  // is the stream's ceiling.
+  if (error instanceof ProviderStreamIdleTimeoutError) return { retryAfterMs: null };
+  if (isProviderDeadlineExceededError(error)) return providerStreamProgress(error)?.response_started === false ? { retryAfterMs: null } : null;
   return providerStreamDrop(error) ? { retryAfterMs: null } : null;
 }
 
@@ -266,6 +291,8 @@ export function createFetchOpenAIResponsesClient(input: {
   requestIsolation?: boolean;
   /** Compatible Responses may deliver an SSE representation of a nonstream create. */
   acceptStreamedCreate?: boolean;
+  /** How long such a streamed create may stay silent (`providerStreamTimingLimits`): `keepalive` only on Codex LB. */
+  streamIdle?: ProviderStreamIdle;
 }): OpenAIResponsesClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.openai.com/v1";
   const fetchFn = input.fetchFn ?? fetch;
@@ -357,7 +384,8 @@ export function createFetchOpenAIResponsesClient(input: {
 
       try {
         if (input.acceptStreamedCreate && exchange.response.headers.get("content-type")?.includes("text/event-stream")) {
-          return await collectStreamedResponse(exchange.response, exchange.timeout.signal, options?.timeoutMs ?? input.defaultTimeoutMs);
+          return await collectStreamedResponse(exchange.response, { idle: input.streamIdle, timeout: exchange.timeout,
+            timeoutMs: options?.timeoutMs ?? input.defaultTimeoutMs });
         }
         return await parseOpenAIJsonResponse(exchange.response, exchange.timeout.signal);
       } finally {

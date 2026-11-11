@@ -2,8 +2,9 @@ import { describe, expect, it, vi, type Mock } from "vitest";
 import { createTestAuth } from "@/tests/support/auth";
 import { messageFromApi } from "@/components/app-shell/shellApi";
 import { visibleMessagePath } from "@/components/app-shell/threadPath";
-import { decodeChatExportDocument } from "../../contracts/chatExport";
+import { CHAT_EXPORT_VERSION, decodeChatExportDocument } from "../../contracts/chatExport";
 import { chatExportMarkdown } from "../../domain/chatExport";
+import { chatExportActiveBranchMarkdown, chatExportDocument } from "../../domain/chatExportDocument";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import {
   createExportChatHandler,
@@ -94,6 +95,33 @@ describe("chat export source", () => {
     // A leaf that is the wake-up turn itself reads as the answer before it.
     const atWakeUp = await loadChatExportSource(fakeReadClient(rows.slice(0, -1)) as never, { ...chatRow, activeLeafMessageId: "db-wake" });
     expect(atWakeUp.chat.activeLeafKey).toBe("db-a2");
+  });
+
+  it("leaves out quiet checks however old, hangs the next result from the message before them, and keeps the version", async () => {
+    const turn = (id: string, parentMessageId: string | null, minute: number) => ({ ...noRuns, content: text("Check the release page"),
+      createdAt: at(minute), id, modelId: null, parentMessageId, provider: null, role: "user", scheduledTaskPrompt: true,
+      status: "complete" });
+    const answer = (id: string, parentMessageId: string, value: string, minute: number) => ({ ...noRuns, content: text(value),
+      createdAt: at(minute), id, modelId: "m", parentMessageId, provider: "p", role: "assistant", status: "complete" });
+    const rows = [turn("b", null, 1), answer("b-a", "b", "Version 1.0 is current.", 2), turn("q1", "b-a", 3), answer("q1-a", "q1", "", 4),
+      turn("q2", "q1-a", 5), answer("q2-a", "q2", "", 6), turn("u", "q2-a", 7), answer("u-a", "u", "Version 2.0 is out.", 8),
+      turn("q3", "u-a", 9), answer("q3-a", "q3", "", 10)];
+    const outcomes: Record<string, string> = { b: "baseline", q1: "no_update", q2: "no_update", q3: "no_update", u: "update" };
+    const findMany = vi.fn(async (args: { where: { userMessageId: { in: string[] } } }) => args.where.userMessageId.in
+      .map((userMessageId) => ({ scheduledOutcome: outcomes[userMessageId] ?? null, userMessageId })));
+    const source = await loadChatExportSource({ ...fakeReadClient(rows), modelRun: { findMany } } as never,
+      { ...chatRow, activeLeafMessageId: "q3-a" });
+    expect(source.messages.map((message) => [message.key, message.parentKey])).toEqual([
+      ["b", null], ["b-a", "b"], ["u", "b-a"], ["u-a", "u"]
+    ]);
+    expect(source.chat.activeLeafKey).toBe("u-a");
+    expect(findMany).toHaveBeenCalledTimes(1);
+    // The same published version, which import still reads.
+    const exported = chatExportDocument(source, at(11));
+    expect(exported.version).toBe(CHAT_EXPORT_VERSION);
+    expect(decodeChatExportDocument(JSON.parse(JSON.stringify(exported))).ok).toBe(true);
+    // The readable branch holds the starting point and the update only.
+    expect(chatExportActiveBranchMarkdown(source).match(/Check the release page/gu)).toHaveLength(2);
   });
 
   it("skips the attachment query for a chat without attachments", async () => {

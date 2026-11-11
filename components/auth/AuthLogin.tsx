@@ -11,6 +11,7 @@ import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "re
 import { safeInternalPath } from "@/lib/auth/internalPath";
 import type { OAuthLoginOutcome, OAuthProviderId } from "@/lib/auth/oauth";
 import type { SamlLoginOutcome } from "@/lib/contracts/samlSignIn";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import {
   fieldClassName,
   focusRingClassName,
@@ -1173,7 +1174,7 @@ export function AuthLogin({
                     aria-hidden="true"
                   />
                 ) : null}
-                {pendingAction === "login" ? "Signing in…" : "Sign in"}
+                <TranslatableLabel>{pendingAction === "login" ? "Signing in…" : "Sign in"}</TranslatableLabel>
               </button>
 
               {!showInitialAuthFeedback ? (
@@ -1326,7 +1327,9 @@ export function AuthLogin({
                 type="submit"
               >
                 {submitting ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {pendingAction === "register" || pendingAction === "accept-invite" ? busyMessage : registerLabel}
+                <TranslatableLabel>
+                  {(pendingAction === "register" || pendingAction === "accept-invite" ? busyMessage : null) ?? registerLabel}
+                </TranslatableLabel>
               </button>
               <button
                 className={`${secondaryButtonClassName} w-full`}
@@ -1403,7 +1406,7 @@ export function AuthLogin({
               </div>
               <button className={primaryButtonClassName} disabled={submitting} type="submit">
                 {pendingAction === "verify" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {pendingAction === "verify" ? "Setting password…" : "Set password and verify"}
+                <TranslatableLabel>{pendingAction === "verify" ? "Setting password…" : "Set password and verify"}</TranslatableLabel>
               </button>
               <button
                 className={`${secondaryButtonClassName} w-full`}
@@ -1445,7 +1448,7 @@ export function AuthLogin({
 
               <button className={primaryButtonClassName} disabled={submitting} type="submit">
                 {pendingAction === "reset-request" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {pendingAction === "reset-request" ? "Requesting reset link…" : "Send reset link"}
+                <TranslatableLabel>{pendingAction === "reset-request" ? "Requesting reset link…" : "Send reset link"}</TranslatableLabel>
               </button>
               <button
                 className={`${secondaryButtonClassName} w-full`}
@@ -1500,7 +1503,7 @@ export function AuthLogin({
 
               <button className={primaryButtonClassName} disabled={submitting} type="submit">
                 {pendingAction === "reset-complete" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
-                {pendingAction === "reset-complete" ? "Updating password…" : "Update password"}
+                <TranslatableLabel>{pendingAction === "reset-complete" ? "Updating password…" : "Update password"}</TranslatableLabel>
               </button>
               <button
                 className={`${secondaryButtonClassName} w-full`}

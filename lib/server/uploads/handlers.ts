@@ -8,6 +8,7 @@ import { getRequestBodyConfig, type RequestBodyConfig } from "../http/requestBod
 import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPermitGate";
 import { normalizeUploadRaster } from "./rasterNormalization";
 import { createS3StorageAdapter, type StorageAdapter } from "./storage";
+import { declaredContentLength, refuseUpload, type UploadRefusalFacts } from "./uploadRefusal";
 import { defaultUploadMaxBytes, validateUpload, type UploadKind, type UploadValidationResult } from "./validation";
 
 export type CreatedAttachment = {
@@ -59,9 +60,20 @@ function checksum(buffer: Buffer): string {
 
 export function createUploadHandler(deps: UploadHandlerDeps) {
   return async function POST(request: Request): Promise<Response> {
+    // Every refusal goes through `refuse`, which logs its code with a size
+    // bucket and MIME family: the declared body length until the form is
+    // read, then the file's own size and declared type.
+    const facts: UploadRefusalFacts = { byteSize: declaredContentLength(request) };
+    const refuse = (
+      stage: NonNullable<UploadRefusalFacts["stage"]>,
+      code: string,
+      status: number,
+      extra: { body?: Readonly<Record<string, unknown>>; headers?: HeadersInit } = {}
+    ) => refuseUpload({ ...facts, ...extra, code, operation: "upload", stage, status });
+
     const auth = await deps.resolveAuth(request);
     if (!auth) {
-      return Response.json({ error: "unauthorized" }, { status: 401 });
+      return refuse("auth", "unauthorized", 401);
     }
 
     const maxBytes = deps.getMaxBytes?.() ?? defaultUploadMaxBytes();
@@ -70,10 +82,10 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
     const releasePermit = permitGate.tryAcquire();
 
     if (!releasePermit) {
-      return Response.json(
-        { error: "upload_busy", message: "Upload capacity is busy. Try again shortly." },
-        { headers: { "retry-after": "1" }, status: 429 }
-      );
+      return refuse("capacity", "upload_busy", 429, {
+        body: { message: "Upload capacity is busy. Try again shortly." },
+        headers: { "retry-after": "1" }
+      });
     }
 
     try {
@@ -82,33 +94,31 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         form = await readBoundedFormData(request, bodyConfig.uploadMultipartMaxBytes);
       } catch (error) {
         if (error instanceof RequestBodyTooLargeError) {
-          return Response.json(
-            {
-              error: "file_too_large",
-              limit: bodyConfig.uploadMultipartMaxBytes,
-              message: `Upload envelope exceeds the ${bodyConfig.uploadMultipartMaxBytes}-byte limit.`
-            },
-            { status: 413 }
-          );
+          return refuse("body", "file_too_large", 413, { body: {
+            limit: bodyConfig.uploadMultipartMaxBytes,
+            message: `Upload envelope exceeds the ${bodyConfig.uploadMultipartMaxBytes}-byte limit.`
+          } });
         }
 
         if (request.signal.aborted) {
           throw error;
         }
 
-        return Response.json({ error: "file_required" }, { status: 400 });
+        return refuse("body", "file_required", 400);
       }
 
       const file = form.get("file");
 
       if (!(file instanceof File)) {
-        return Response.json({ error: "file_required" }, { status: 400 });
+        return refuse("declaration", "file_required", 400);
       }
+      facts.byteSize = file.size;
+      facts.mimeType = file.type;
 
       const requestedScope = form.get("scope");
       const scope = requestedScope === "workspace" ? "workspace" as const : "attachment" as const;
       if (requestedScope !== null && requestedScope !== "" && requestedScope !== "workspace") {
-        return Response.json({ error: "unsupported_type" }, { status: 400 });
+        return refuse("declaration", "unsupported_type", 400);
       }
       const initialValidation = validateUpload({
         byteSize: file.size,
@@ -119,7 +129,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       });
 
       if (!initialValidation.ok) {
-        return Response.json({ error: initialValidation.code }, { status: refusalStatus(initialValidation.code) });
+        return refuse("declaration", initialValidation.code, refusalStatus(initialValidation.code));
       }
       if (initialValidation.kind === "file") {
         let workspaceAvailable = false;
@@ -129,7 +139,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           workspaceAvailable = false;
         }
         if (!workspaceAvailable) {
-          return Response.json({ error: "workspace_runtime_unavailable" }, { status: 503 });
+          return refuse("workspace", "workspace_runtime_unavailable", 503);
         }
       }
 
@@ -144,7 +154,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       });
 
       if (!validation.ok) {
-        return Response.json({ error: validation.code }, { status: refusalStatus(validation.code) });
+        return refuse("content", validation.code, refusalStatus(validation.code));
       }
 
       let fileName = file.name;
@@ -153,7 +163,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         const normalized = await normalizeUploadRaster(buffer, {
           fileName: file.name, format: validation.rasterCheck, signal: request.signal
         });
-        if (!normalized.ok) return Response.json({ error: normalized.code }, { status: normalized.status });
+        if (!normalized.ok) return refuse("content", normalized.code, normalized.status);
         ({ fileName, mimeType } = normalized);
       }
 
@@ -168,10 +178,10 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         } catch (error) {
           if (request.signal.aborted) throw error;
           if (error instanceof DocumentParserError && error.code === "parser_output_too_large") {
-            return Response.json({ error: "pdf_page_limit_exceeded", maxPages: config.maxPages,
-              message: "The PDF exceeds the page limit." }, { status: 413 });
+            return refuse("pdf", "pdf_page_limit_exceeded", 413, { body: { maxPages: config.maxPages,
+              message: "The PDF exceeds the page limit." } });
           }
-          return Response.json({ error: "pdf_invalid", message: "The PDF is corrupted, encrypted, or unsupported." }, { status: 400 });
+          return refuse("pdf", "pdf_invalid", 400, { body: { message: "The PDF is corrupted, encrypted, or unsupported." } });
         }
       }
 

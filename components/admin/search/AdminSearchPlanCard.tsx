@@ -9,6 +9,7 @@ import {
   type SearchPlanOption
 } from "@/components/admin/search/searchSourceView";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
 import type { SearchPlan } from "@/lib/domain/search";
 import { useEffect, useRef, useState } from "react";
@@ -101,7 +102,7 @@ export function AdminSearchPlanCard({
                   type="button"
                 >
                   {active ? <UiV2Icon className="size-3.5 text-proof" name="check" /> : null}
-                  {source.displayName}
+                  <TranslatableLabel>{source.displayName}</TranslatableLabel>
                 </button>
               );
             })}

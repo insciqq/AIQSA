@@ -426,6 +426,30 @@ describe("call_subagent with the background port", () => {
     expect(background.turns).toHaveLength(0);
   });
 
+  it("offers background only where the run may start one: a web chat, never a Telegram turn or a scheduled occurrence", () => {
+    const parentAgent: SubagentParentAgent = { name: "lead", runId: "run", threadId: "thread-lead", toolState: { calls: 0 }, turnId: "turn-lead" };
+    const properties = (tools: readonly { definition: { inputSchema: Record<string, unknown>; name: string } }[]) =>
+      Object.keys(tools.find((tool) => tool.definition.name === "call_subagent")!.definition.inputSchema.properties as object);
+    const web = setup().deps;
+    const unattended = setup({ backgroundAllowed: false }).deps;
+    expect(properties(subagentEngineTools(web))).toContain("background");
+    expect(properties(subagentChildEngineTools({ ...web, parentAgent }, () => {}))).toContain("background");
+    expect(properties(subagentEngineTools(unattended))).not.toContain("background");
+    expect(properties(subagentChildEngineTools({ ...unattended, parentAgent }, () => {}))).not.toContain("background");
+    expect(properties(subagentEngineTools(unattended))).toEqual(["name", "message", "type", "model", "effort"]);
+  });
+
+  it("still refuses background visibly when a run that is not offered it sends it anyway", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const ctx = setup({ background, backgroundAllowed: false });
+    const call = subagentEngineTools(ctx.deps).find((tool) => tool.definition.name === "call_subagent")!;
+    expect(value(await call.execute(execution({ background: true, message: "Go", name: "shop" }))).error)
+      .toBe(SUBAGENT_ERROR_CODES.backgroundUnavailable);
+    expect(background.turns).toHaveLength(0);
+    // Without it the same call runs in the foreground.
+    expect(value(await call.execute(execution({ message: "Go", name: "shop" }, "c2")))).toMatchObject({ kind: "ended", state: "done" });
+  });
+
   it("lets a run that may not start one answer and stop what runs on its branch", async () => {
     const background = new FakeSubagentBackgroundControl();
     await executeCallSubagent(setup({ background }).deps, execution({ background: true, message: "Go", name: "shop" }));

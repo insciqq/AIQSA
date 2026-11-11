@@ -112,4 +112,13 @@ describe("a child in the tree", () => {
     expect(subagentReasonText(SUBAGENT_END_REASONS.parentStopped)).toBe("Stopped with its answer");
     expect(subagentDetailText(subagentThread("thread-left", "stopped", { parent, reason: SUBAGENT_END_REASONS.parentStopped }))).toBe("Stopped with parent");
   });
+
+  it("says why a sub-agent failed on its model provider, and shows no identifier for a code it does not know", () => {
+    expect(subagentReasonText("provider_stream_failed")).toBe("The model provider's answer broke off");
+    expect(subagentReasonText("provider_request_timed_out")).toBe("The model provider did not answer in time");
+    expect(subagentDetailText(subagentThread("thread-left", "failed", { reason: "provider_stream_timeout" })))
+      .toBe("The model provider stopped sending its answer");
+    expect(subagentReasonText("subagent_failed")).toBeNull();
+    expect(subagentDetailText(subagentThread("thread-left", "failed", { reason: "subagent_failed" }))).toBe("Failed");
+  });
 });

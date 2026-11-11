@@ -40,7 +40,8 @@ describe("the copy of an oversized image", () => {
     expect(copy.format).toBe(format);
     expect({ height: copy.height, width: copy.width }).toEqual({ height: fitted.height, width: fitted.width });
     expect(measured(copy.width!, copy.height!)).toBeLessThanOrEqual(PROVIDER_IMAGE_MAX_PATCHES);
-  });
+    // Encoding a 6500×4900 source twice takes seconds; under a loaded full suite the webp case passed 5 s.
+  }, 30_000);
 
   it("keeps a photo that lies on its side upright", async () => {
     // A landscape sensor image a phone held upright: orientation 6 means it shows as portrait.

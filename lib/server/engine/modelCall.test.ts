@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { gatewayRoutingLane } from "../providers/gatewayRouting";
+import { ProviderRequestTimeoutError } from "../providers/network";
 import { providerFailureMessage } from "../providers/providerFailureMessage";
 import { providerResponseFailure } from "../providers/responseFailure";
+import { createProviderRuntimeBinding } from "../providers/runtimeFactory";
 import { markProviderStreamDrop } from "../providers/streamDrop";
+import { markProviderStreamProgress, providerStreamProgressFacts } from "../providers/streamProgress";
+import { ProviderStreamIdleTimeoutError } from "../providers/streamSafety";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { engineTestFaults } from "./faults";
 import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_RETRY, MODEL_CALL_UNATTENDED_RETRY, modelCallRetryDecision, type ModelCallPorts } from "./modelCall";
@@ -274,6 +278,147 @@ describe("native model call", () => {
 
     it("leaves Deep research's ten minutes from the first attempt as they were", () => {
       expect(MODEL_CALL_RESEARCH_RETRY).toEqual({ backoff: MODEL_CALL_RETRY.backoff, maxAttempts: 50, windowMs: 600_000 });
+    });
+
+    // A Codex LB stream that went silent (found a minute after its last byte) and a response that never started within
+    // the 300 s response timeout (decision 2026-11-11): each run keeps its own policy for them.
+    const stalled = () => new ProviderStreamIdleTimeoutError({ idleTimeoutMs: 60_000, observedIdleMs: 60_000 });
+    const neverStarted = () => markProviderStreamProgress(new ProviderRequestTimeoutError(300_000), providerStreamProgressFacts({ responseStarted: false }));
+    it.each([
+      ["a silent stream", stalled, 90_000],
+      ["a response that never started", neverStarted, 300_000]
+    ] as const)("sends %s again under each run's own policy", async (_label, failure, attemptMs) => {
+      const chat = clocked([{ fail: failure() }], attemptMs);
+      await expect(callModel(ports(chat.provider, { deadlineAt: chat.start + 3_600_000, now: chat.now, sleep: chat.sleep }), request))
+        .rejects.toMatchObject({ code: failure().code });
+      const firstFailedAt = chat.starts[0]! + attemptMs;
+      expect(chat.provider.calls).toBeGreaterThan(1);
+      expect(chat.starts.at(-1)! - firstFailedAt).toBeLessThanOrEqual(MODEL_CALL_RETRY.failureWindowMs!);
+      expect(chat.now() - firstFailedAt).toBeGreaterThan(MODEL_CALL_RETRY.failureWindowMs!);
+
+      const scheduled = clocked([{ fail: failure() }], attemptMs);
+      await expect(callModel(ports(scheduled.provider, { deadlineAt: scheduled.start + 3_600_000, now: scheduled.now,
+        retry: MODEL_CALL_UNATTENDED_RETRY, sleep: scheduled.sleep }), request)).rejects.toMatchObject({ code: failure().code });
+      expect(scheduled.provider.calls).toBe(6);
+
+      const research = clocked([{ fail: failure() }], attemptMs);
+      await expect(callModel(ports(research.provider, { deadlineAt: research.start + 3_600_000, now: research.now,
+        retry: MODEL_CALL_RESEARCH_RETRY, sleep: research.sleep }), request)).rejects.toMatchObject({ code: failure().code });
+      expect(research.provider.calls).toBeGreaterThan(1);
+      expect(research.starts.at(-1)! - research.starts[0]!).toBeLessThanOrEqual(MODEL_CALL_RESEARCH_RETRY.windowMs!);
+      expect(research.now() - research.starts[0]!).toBeGreaterThan(MODEL_CALL_RESEARCH_RETRY.windowMs! - MODEL_CALL_RETRY.backoff.maxBackoffMs);
+
+      const recovered = clocked([{ fail: failure() }, { events: [token("Hello")], text: "Hello" }], attemptMs);
+      await expect(callModel(ports(recovered.provider, { deadlineAt: recovered.start + 3_600_000, now: recovered.now, sleep: recovered.sleep }),
+        request)).resolves.toMatchObject({ finalText: "Hello" });
+    });
+  });
+
+  it("sends a request deadline again only when its response had not started", () => {
+    const live = new AbortController().signal;
+    expect(modelCallRetryDecision(new ProviderRequestTimeoutError(300_000), live)).toBeNull();
+    expect(modelCallRetryDecision(markProviderStreamProgress(new ProviderRequestTimeoutError(1_800_000),
+      providerStreamProgressFacts({ lastByteMs: 4_000, lastEventMs: 4_000, responseStarted: true })), live)).toBeNull();
+    expect(modelCallRetryDecision(markProviderStreamProgress(new ProviderRequestTimeoutError(300_000),
+      providerStreamProgressFacts({ lastByteMs: 6_000, responseStarted: false })), live)).toEqual({ retryAfterMs: null });
+    expect(modelCallRetryDecision(new ProviderStreamIdleTimeoutError({ idleTimeoutMs: 60_000, observedIdleMs: 60_000 }), live))
+      .toEqual({ retryAfterMs: null });
+    expect(modelCallRetryDecision(markProviderStreamProgress(new ProviderRequestTimeoutError(300_000),
+      providerStreamProgressFacts({ responseStarted: false })), AbortSignal.abort())).toBeNull();
+  });
+
+  describe("through a Codex LB binding's transport", () => {
+    const encoder = new TextEncoder();
+    const created = 'event: response.created\ndata: {"type":"response.created","response":{"id":"r1","status":"in_progress"}}\n\n';
+    const delta = (text: string) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", response_id: "r1", delta: text })}\n\n`;
+    const completed = (text: string) => `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: {
+      id: "r1", model: "upstream/model", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text, annotations: [] }] }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })}\n\n`;
+    // The text "close" ends the body.
+    type Step = readonly (readonly [atMs: number, text: string])[];
+    // Each request's headers arrive after `headersAfterMs` and its body writes its steps at their times after them; a
+    // cancelled body takes nothing more.
+    const upstream = (bodies: readonly Step[], headersAfterMs = 0) => {
+      let calls = 0;
+      const cancelled: number[] = [];
+      const fetchFn = vi.fn<typeof fetch>(async () => {
+        const call = calls;
+        const steps = bodies[Math.min(call, bodies.length - 1)]!;
+        calls += 1;
+        if (headersAfterMs > 0) await new Promise((resolve) => setTimeout(resolve, headersAfterMs));
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const [atMs, text] of steps) setTimeout(() => {
+              try { if (text === "close") controller.close(); else controller.enqueue(encoder.encode(text)); } catch { /* cancelled */ }
+            }, atMs);
+          },
+          cancel() { cancelled.push(call); }
+        }), { headers: { "content-type": "text/event-stream" } });
+      });
+      return { cancelled, fetchFn };
+    };
+    const codexLb = (fetchFn: typeof fetch) => {
+      const runtime = createProviderRuntimeBinding({ options: { allowFake: false, fetchFn }, secret: "secret", snapshot: {
+        connection: { allowPrivateNetwork: false, apiRoot: "https://lb.example.test/v1", authenticationMode: "bearer",
+          responseTimeoutMs: 300_000, responsesRequestIsolationDetected: true },
+        connectionDisplayName: "Codex LB", connectionId: "connection-1", credentialId: "credential-1", credentialVersionId: "credential-version-1",
+        model: { adapterKind: "openai_responses_compatible", answerSelectable: true, capabilities: { nativePdfInput: false, nativeSearch: false,
+          pdf: false, reasoning: false, streaming: true, vision: false }, defaultParams: {}, modelClass: "answer", upstreamModelId: "upstream/model" },
+        modelDisplayName: "Model", providerFamily: "openai_compatible", providerModelId: "deployment-1", version: 1 } });
+      return runtime.adapter;
+    };
+    const streamed = { ...request, attachmentIds: [], attachments: [], chatId: "chat-1", content: { blocks: [{ text: "hello", type: "text" }] },
+      modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true, vision: false },
+      modelId: "upstream/model", params: { stream: true }, prompt: { developer: null, system: null }, provider: "openai_compatible",
+      searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto" } as ProviderRunRequest;
+    const answer: Step = [[0, created], [1_000, delta("Hello")], [2_000, completed("Hello")], [2_000, "close"]];
+
+    it.each([
+      // Every byte stopped a minute after the stream's last one, keepalive included: found at 80 s.
+      ["a stream that went silent", [[0, created], [10_000, ": keepalive\n\n"], [20_000, delta("Hel")]] as Step, 80_000],
+      // Keepalive comments every 10 s and no event: the response did not start within its 300 s.
+      ["a response that never started", Array.from({ length: 29 }, (_, index) => [(index + 1) * 10_000, ": keepalive\n\n"] as const), 300_000]
+    ] as const)("sends %s again and answers without user action", async (_label, hang, failsAtMs) => {
+      vi.useFakeTimers();
+      try {
+        const provider = upstream([hang, answer]);
+        const call = ports(codexLb(provider.fetchFn), { deadlineAt: Date.now() + 3_600_000 });
+        let outcome: unknown = "pending";
+        const settled = callModel(call, streamed).then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+        await vi.advanceTimersByTimeAsync(failsAtMs - 1);
+        expect(provider.fetchFn).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1);
+        await vi.advanceTimersByTimeAsync(2_000);
+        await settled;
+        expect(outcome).toMatchObject({ finalText: "Hello" });
+        expect(provider.fetchFn).toHaveBeenCalledTimes(2);
+        // The failed attempt's body is released (the answer's too, once its terminal event arrived).
+        expect(provider.cancelled[0]).toBe(0);
+        expect(call.discarded).toEqual([1]);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("never sends again a live stream that reached its ceiling", async () => {
+      vi.useFakeTimers();
+      try {
+        // Headers after 1 s, then a delta every 50 s: the ceiling counts from the request, so it ends the stream first.
+        const live: Step = [[0, created], ...Array.from({ length: 36 }, (_, index) => [(index + 1) * 50_000, delta("x")] as const)];
+        const provider = upstream([live, answer], 1_000);
+        let outcome: unknown = "pending";
+        const settled = callModel(ports(codexLb(provider.fetchFn), { deadlineAt: Date.now() + 3_600_000 }), streamed)
+          .then((value) => { outcome = value; }, (error: unknown) => { outcome = error; });
+        await vi.advanceTimersByTimeAsync(1_800_000);
+        await settled;
+        expect(outcome).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 1_800_000 });
+        expect(provider.fetchFn).toHaveBeenCalledOnce();
+        await vi.runAllTimersAsync();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

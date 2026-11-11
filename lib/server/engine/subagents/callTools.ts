@@ -18,7 +18,7 @@ import type {
 } from "../../subagents/ports";
 import {
   callChildSubagentTool,
-  callSubagentTool,
+  callSubagentToolFor,
   parseCallSubagentArguments,
   parseStopSubagentArguments,
   stopChildSubagentTool,
@@ -47,8 +47,9 @@ import type { SubagentThreadStore, SubagentTurnRecord } from "./threadStore";
  * running background turn of this branch takes the message in its mailbox,
  * and anything else is `subagent_busy`. A run that may not start a background
  * turn (`backgroundAllowed`: a Telegram turn, a scheduled occurrence) still
- * answers and stops those of its branch; `background: true` is refused with
- * `subagent_background_unavailable` there, and the same call without it still
+ * answers and stops those of its branch; its schema leaves `background` out,
+ * a call that sends `background: true` anyway is refused with
+ * `subagent_background_unavailable`, and the same call without it still
  * works. Every refusal is a visible stable code; nothing is substituted. The
  * result is the sub-agent's own account: untrusted data for the main agent.
  *
@@ -392,10 +393,14 @@ const addressedActivity = (toolName: string) => (call: ModelToolCall) => {
   return { origin: "tool" as const, ...(name ? { serverName: name } : {}), toolName };
 };
 
-/** The registry entries of the two tools, for the main agent's registry. */
+/**
+ * The registry entries of the two tools, for the main agent's registry. `call_subagent` offers `background` only where
+ * the run may start background turns (`callSubagentToolFor`); the refusal stays for a call that sends it anyway.
+ */
 export function subagentEngineTools(deps: SubagentCallDeps): readonly EngineTool[] {
+  const call = callSubagentToolFor(deps.backgroundAllowed);
   return [
-    { activity: addressedActivity(callSubagentTool.name), definition: callSubagentTool.tool, delegated: true, effects: callSubagentTool.effects,
+    { activity: addressedActivity(call.name), definition: call.tool, delegated: true, effects: call.effects,
       observationSource: "workspace", execute: (execution) => executeCallSubagent(deps, execution) },
     { activity: addressedActivity(stopSubagentTool.name), definition: stopSubagentTool.tool, effects: stopSubagentTool.effects,
       observationSource: "workspace", execute: (execution) => executeStopSubagent(deps, execution) },
@@ -406,8 +411,9 @@ export function subagentEngineTools(deps: SubagentCallDeps): readonly EngineTool
 /** The two tools for a sub-agent's own children, with their texts: its registry is otherwise the filtered one (`registry.ts`). */
 export function subagentChildEngineTools(deps: SubagentCallDeps & Readonly<{ parentAgent: SubagentParentAgent }>,
   onCall: () => void): readonly EngineTool[] {
+  const call = callSubagentToolFor(deps.backgroundAllowed, true);
   return [
-    { activity: addressedActivity(callChildSubagentTool.name), definition: callChildSubagentTool.tool, delegated: true, effects: callChildSubagentTool.effects,
+    { activity: addressedActivity(call.name), definition: call.tool, delegated: true, effects: call.effects,
       observationSource: "workspace", execute: (execution) => {
         onCall();
         return executeCallSubagent(deps, execution);

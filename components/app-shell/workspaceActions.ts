@@ -236,6 +236,7 @@ export function useWorkspaceActions({
         hasOlder: history.hasOlder,
         snapshotUpdatedAt: history.snapshotUpdatedAt ?? summary.updatedAt
       },
+      ...(thread.quietChecks ? { quietChecks: thread.quietChecks } : {}),
       usageStats: thread.usageStats
     };
   }
@@ -321,6 +322,8 @@ export function useWorkspaceActions({
               current.messages !== requestContext.thread?.messages
                 ? mergeLocalThreadMessages(detail.messages, current.messages)
                 : detail.messages,
+            // Only a detail counts quiet checks, so the newest one read is the count.
+            quietChecks: detail.quietChecks ?? null,
             sourceUpdatedAt:
               current.sourceUpdatedAt !== (requestContext.thread?.sourceUpdatedAt ?? null)
                 ? current.sourceUpdatedAt
@@ -335,6 +338,7 @@ export function useWorkspaceActions({
             contextStats: detail.contextStats,
             history: serverHistory,
             messages: detail.messages,
+            quietChecks: detail.quietChecks ?? null,
             sourceUpdatedAt: detail.updatedAt,
             usageStats: detail.usageStats
           };

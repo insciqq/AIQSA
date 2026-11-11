@@ -8,6 +8,7 @@ import {
 } from "../../domain/shareSnapshot";
 import { prisma } from "../prisma";
 import { collapseChatAnswerReviews } from "../chats/legacyAnswerReviews";
+import { quietCheckOmission } from "../chats/quietScheduledChecks";
 import { getVisibleMessagePath, type MessageRole } from "../../domain/branching";
 import type { ShareRepository } from "./handlers";
 
@@ -58,13 +59,19 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
           role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
         })));
-        // A sub-agent wake-up turn is the server's, never the user's speech: the share leaves it out.
-        const kept = path.filter((message) => !collapse.removed.has(message.id)).map((message) => ({ ...message,
+        const collapsed = path.filter((message) => !collapse.removed.has(message.id)).map((message) => ({ ...message,
           parentMessageId: collapse.parents.has(message.id) ? collapse.parents.get(message.id) ?? null : message.parentMessageId }));
+        // A quiet check is no result: the share leaves it out as the chat's history does (`lib/server/chats/quietScheduledChecks.ts`).
+        const quiet = await quietCheckOmission(tx, chat.id, collapsed);
+        const kept = collapsed.filter((message) => !quiet.removed.has(message.id)).map((message) => ({ ...message,
+          parentMessageId: quiet.parents.has(message.id) ? quiet.parents.get(message.id) ?? null : message.parentMessageId }));
+        // A sub-agent wake-up turn is the server's, never the user's speech: the share leaves it out.
         const wakeUps = omitSubagentCallbackTurns(kept.map((message) => ({ id: message.id, parentId: message.parentMessageId,
           role: message.role, systemTurnKind: message.systemTurnKind })));
+        const shownLeaf = quiet.resolve(collapse.replacements.get(leaf) ?? leaf);
+        if (!shownLeaf) return { error: "invalid_active_leaf" as const };
         const snapshot = buildPublicShareSnapshot({
-          activeLeafMessageId: wakeUps.resolve(collapse.replacements.get(leaf) ?? leaf) ?? leaf,
+          activeLeafMessageId: wakeUps.resolve(shownLeaf) ?? shownLeaf,
           messages: kept.filter((message) => !wakeUps.removed.has(message.id)).map((message) => ({
             content: message.content,
             id: message.id,

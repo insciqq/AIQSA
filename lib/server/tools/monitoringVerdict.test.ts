@@ -3,10 +3,13 @@ import {
   executeMonitoringVerdict,
   isMonitoringVerdictCall,
   MONITORING_VERDICT_TOOL_NAME,
+  monitoringAnswerTextInstruction,
   monitoringCheckInstruction,
+  monitoringVerdictNeedsText,
   monitoringVerdictTool,
   type MonitoringVerdictRecorder
 } from "./monitoringVerdict";
+import { reservedToolCallForRequest } from "./reservedToolCall";
 
 const call = (args: Record<string, unknown>) => ({ arguments: args, id: "report-1", name: MONITORING_VERDICT_TOOL_NAME });
 const actor = { runId: "run-1", userId: "user-1" };
@@ -70,7 +73,7 @@ describe("monitoring verdict tool", () => {
       expect(instruction).toContain("report it rather than \"update\"");
       expect(instruction).toContain("\"could_not_check\" if a page, search or tool the check needs failed or could not be reached");
       expect(instruction).toContain("never report \"no_update\" then");
-      expect(instruction).toContain("Then write your answer as usual.");
+      expect(instruction).toContain("Then write your answer as text, as usual, never the call alone.");
     }
     expect(monitoringCheckInstruction({ previousResult: true })).toContain("\"update\" if something the user asked to watch changed " +
       "since the last shown result; the automation keeps checking.");
@@ -82,5 +85,31 @@ describe("monitoring verdict tool", () => {
       "the automation keeps checking.");
     expect(monitoringVerdictTool.description).toContain("could_not_check: a page, search or tool the check needs failed or could " +
       "not be reached, so you cannot tell whether anything changed; never report no_update then.");
+  });
+
+  it("asks a shown check for its answer's text, never a hidden one or one that could not check", () => {
+    // A later check: only an update or a reached goal is shown.
+    expect(monitoringVerdictNeedsText("update", true)).toBe(true);
+    expect(monitoringVerdictNeedsText("goal_reached", true)).toBe(true);
+    expect(monitoringVerdictNeedsText("no_update", true)).toBe(false);
+    expect(monitoringVerdictNeedsText("could_not_check", true)).toBe(false);
+    // A first check is shown as the starting point whatever it reports, unless it could not check.
+    expect(monitoringVerdictNeedsText("update", false)).toBe(true);
+    expect(monitoringVerdictNeedsText("no_update", false)).toBe(true);
+    expect(monitoringVerdictNeedsText("could_not_check", false)).toBe(false);
+    expect(monitoringAnswerTextInstruction()).toContain("Do not call any tool.");
+  });
+
+  it("reserves the text instruction with the verdict, deciding from the recorded call's arguments", () => {
+    const later = reservedToolCallForRequest({ monitoringPreviousResult: true, monitoringVerdictTool: true });
+    expect(later?.textInstruction).toBe(monitoringAnswerTextInstruction());
+    expect(later?.textNeeded({ status: "update" })).toBe(true);
+    expect(later?.textNeeded({ status: "no_update" })).toBe(false);
+    expect(later?.textNeeded({ status: "maybe" })).toBe(false);
+    expect(reservedToolCallForRequest({ monitoringPreviousResult: false, monitoringVerdictTool: true })?.textNeeded({ status: "no_update" }))
+      .toBe(true);
+    // A run admitted before the previous result was recorded reads as a later check.
+    expect(reservedToolCallForRequest({ monitoringVerdictTool: true })?.textNeeded({ status: "no_update" })).toBe(false);
+    expect(reservedToolCallForRequest({})).toBeNull();
   });
 });

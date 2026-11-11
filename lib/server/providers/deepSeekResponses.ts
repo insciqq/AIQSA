@@ -73,6 +73,8 @@ export function createDeepSeekResponsesAdapter(
             responseBody: response.body,
             signal: runOptions.signal,
             stream: true,
+            // DeepSeek documents keep-alive comments only while a streamed request waits to start, and nothing measured
+            // its gaps once inference runs, so a silence keeps the response timeout (decision 2026-11-11).
             streamLimits: providerStreamTimingLimits(runOptions.timeoutMs)
           });
         } catch (error) {

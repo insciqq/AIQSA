@@ -19,7 +19,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/
 import packageMetadata from "@/package.json";
 import { MCP_SERVER_TOOL_LIMIT } from "@/lib/contracts/mcp";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
-import { McpResponseGuard } from "./responseGuard";
+import { defaultMcpCallResultCeiling, McpResponseGuard, type McpCallResultCeiling } from "./responseGuard";
 import { McpSafeFetchError, mcpNetworkPolicyRefusal } from "./safeFetch";
 import { logEvent } from "../observability";
 import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
@@ -238,6 +238,9 @@ export type McpClientRequestOptions = Readonly<{
 
 export type McpClientSessionOptions = Readonly<{
   authProvider?: OAuthClientProvider;
+  /** How far past the transport's tools/call bound one result is still read;
+   * defaults to the process's ceiling and permits. */
+  callResultCeiling?: McpCallResultCeiling;
   fetch: FetchLike;
   headers?: Readonly<Record<string, string>>;
   limits: McpClientSessionLimits;
@@ -408,6 +411,21 @@ function isCallResultValue(value: unknown): value is Readonly<{
   return value.content.every((item) => isRecord(item) && typeof item.type === "string");
 }
 
+/**
+ * Measures a tools/call result's JSON once and parses it back only when it
+ * fits `maxBytes`; an oversized result's measuring copy ends with this call.
+ */
+function measuredCallResult(result: unknown, maxBytes: number): Readonly<{ bytes: number; snapshot?: unknown }> {
+  try {
+    const json = JSON.stringify(result);
+    if (json === undefined) throw new Error("not_json");
+    const bytes = Buffer.byteLength(json, "utf8");
+    return bytes <= maxBytes ? { bytes, snapshot: JSON.parse(json) as unknown } : { bytes };
+  } catch {
+    throw sessionError("mcp_call_result_invalid", "call_tool");
+  }
+}
+
 function jsonSnapshot(
   value: unknown,
   invalidCode: McpClientSessionErrorCode,
@@ -425,6 +443,33 @@ function jsonSnapshot(
   } catch {
     throw sessionError(invalidCode, operation);
   }
+}
+
+/**
+ * A validated JSON snapshot of a tools/call result, cut to `maxBytes` with a
+ * marker when larger: the tool already ran and its whole result is here, so
+ * its prefix is delivered rather than the call failing. Nothing is re-sent.
+ * An oversized result is measured once and cut from the SDK's parsed value,
+ * and only the cut value is copied, so it never exists twice in full.
+ */
+function boundedCallResult(result: unknown, maxBytes: number): Readonly<{
+  truncation?: McpResultTruncation;
+  value: Parameters<typeof normalizeCallResult>[0];
+}> {
+  const { bytes, snapshot: whole } = measuredCallResult(result, maxBytes);
+  if (bytes <= maxBytes) {
+    if (!isCallResultValue(whole)) throw sessionError("mcp_call_result_invalid", "call_tool");
+    return { value: whole };
+  }
+  if (!isCallResultValue(result)) throw sessionError("mcp_call_result_invalid", "call_tool");
+  const truncated = truncateMcpCallResult(result, bytes, maxBytes);
+  if (!truncated) {
+    throw new McpClientSessionError({ code: "mcp_call_result_too_large", maxBytes, operation: "call_tool" });
+  }
+  // The snapshot also copies the kept prefix off the received text.
+  const snapshot = jsonSnapshot(truncated.value, "mcp_call_result_invalid", "call_tool");
+  if (!isCallResultValue(snapshot.value)) throw sessionError("mcp_call_result_invalid", "call_tool");
+  return { truncation: truncated.truncation, value: snapshot.value };
 }
 
 function canonicalSchema(inputSchema: Record<string, unknown>): Readonly<{
@@ -696,11 +741,16 @@ export class McpClientSession {
     };
     this.onInventoryStale = options.onInventoryStale;
     // The transport accepts twice the configured tools/call limit (within its
-    // ceiling), so a result over the limit arrives whole and is truncated to
-    // it. Only a response beyond that bound fails the call, and only the call.
-    this.responseGuard = new McpResponseGuard({ limits: { ...responseLimits,
-      callToolResponseMaxBytes: Math.min(2 * responseLimits.callToolResponseMaxBytes,
-        MCP_RESPONSE_WIRE_LIMIT_CEILINGS.callToolResponseMaxBytes) } });
+    // ceiling), and one call's body past that under a process-wide permit up
+    // to the call result ceiling, so a result over the limit arrives whole and
+    // is truncated to it. Only a body beyond the ceiling fails the call, and
+    // only the call.
+    this.responseGuard = new McpResponseGuard({
+      callResultCeiling: options.callResultCeiling ?? defaultMcpCallResultCeiling(),
+      limits: { ...responseLimits,
+        callToolResponseMaxBytes: Math.min(2 * responseLimits.callToolResponseMaxBytes,
+          MCP_RESPONSE_WIRE_LIMIT_CEILINGS.callToolResponseMaxBytes) }
+    });
     const staticHeaders = new Headers(options.headers);
     const guardedFetch = this.responseGuard.wrapFetch(options.fetch);
     const transport = new StreamableHTTPClientTransport(new URL(options.url.toString()), {
@@ -1042,29 +1092,16 @@ export class McpClientSession {
     else options?.signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      const result = await this.callContext.run({ sent: false }, () => this.guardedRequest(
+      // The result is cut inside the guarded request, so a body read past its
+      // wire limit keeps its permit until only the cut result remains.
+      const { truncation, value } = await this.callContext.run({ sent: false }, () => this.guardedRequest(
           "call_tool",
           sdkOptions.timeout,
-          () => this.client.callTool(
-            { arguments: validatedArguments, name },
-            sdkOptions
+          async () => boundedCallResult(
+            await this.client.callTool({ arguments: validatedArguments, name }, sdkOptions),
+            this.limits.maxToolResultBytes
           )
         ));
-      const resultSnapshot = jsonSnapshot(result, "mcp_call_result_invalid", "call_tool");
-      if (!isCallResultValue(resultSnapshot.value)) {
-        throw sessionError("mcp_call_result_invalid", "call_tool");
-      }
-      // The tool already ran and its whole result is here: deliver its prefix
-      // with a marker rather than failing the call. Nothing is re-sent.
-      let value: Parameters<typeof normalizeCallResult>[0] = resultSnapshot.value;
-      let truncation: McpResultTruncation | undefined;
-      if (resultSnapshot.bytes > this.limits.maxToolResultBytes) {
-        const truncated = truncateMcpCallResult(resultSnapshot.value, resultSnapshot.bytes, this.limits.maxToolResultBytes);
-        if (!truncated) {
-          throw new McpClientSessionError({ code: "mcp_call_result_too_large", maxBytes: this.limits.maxToolResultBytes, operation: "call_tool" });
-        }
-        ({ truncation, value } = truncated);
-      }
       const normalized = normalizeCallResult(value);
       finish({ outcome: normalized.isError ? "failed" : "completed", ...mcpTruncationTelemetry(truncation) });
       return truncation ? { ...normalized, truncation } : normalized;

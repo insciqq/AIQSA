@@ -31,6 +31,11 @@ describe("pinned official Microsandbox MCP catalog", () => {
         }))
       });
       expect(catalog.hash).toBe(WORKSPACE_BOUND_TOOL_CATALOG_HASH);
+      // The pinned MCP offers resource limits the guest rejects under the names models send; no Workspace tool shows them.
+      expect(response.tools.filter((tool) => Object.hasOwn(tool.inputSchema.properties ?? {}, "rlimits"))
+        .map((tool) => tool.name)).toEqual(expect.arrayContaining(["sandbox_exec", "sandbox_exec_start", "sandbox_shell"]));
+      expect(catalog.tools.filter((tool) => JSON.stringify(tool.inputSchema).includes("rlimit"))
+        .map((tool) => tool.originalName)).toEqual([]);
       // Every provider accepts it: no type list naming a container type (`lib/server/tools/toolSchemaPortability.test.ts`).
       expect(catalog.tools.filter((tool) => /"type":\[[^\]]*"(?:array|object)"/u.test(JSON.stringify(tool.inputSchema)))
         .map((tool) => tool.originalName)).toEqual([]);

@@ -265,6 +265,8 @@ export type HealthModelRow = {
   connectionName: string | null;
   providerModelId: string | null;
   modelName: string | null;
+  /** Background sub-agents' own runs on that model, in a row apart from the main agent's. */
+  subagent: boolean;
   /** Runs created in the range with this answer connection and model. */
   accepted: number;
   completed: number;
@@ -774,6 +776,7 @@ function modelSection(load: ModelRunLoad, names: AdminHealthProviderNames): Heal
       connectionName: row.connectionId === null ? null : adminHealthConnectionLabel(row.connectionId, names).connectionName,
       providerModelId: row.providerModelId,
       modelName: adminHealthModelLabel(row.providerModelId, names),
+      subagent: row.subagent,
       accepted: row.accepted, completed: row.completed, failed: row.failed, refusedInput: row.refusedInput,
       cancelled: row.cancelled, open: row.open, users: row.users,
       failureRate: rate(row.failed, row.completed + row.failed + row.cancelled),

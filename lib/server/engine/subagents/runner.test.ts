@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SUBAGENT_BLOCKED_REASONS, SUBAGENT_FILES_TRUNCATED_NOTICE, SUBAGENT_FOLLOWUP_LIMITS, SUBAGENT_LIMITS, SUBAGENT_USAGE_PURPOSE,
   decodeSubagentCallResult, type SubagentToolGroup
@@ -8,7 +8,11 @@ import {
 import type { ModelRunSseEvent } from "../../../domain/modelRunEvents";
 import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
+import { setRecordObserver, type ObservedRecord } from "../../observability";
+import { ProviderRequestTimeoutError } from "../../providers/network";
+import { markProviderErrorCode } from "../../providers/providerErrorCode";
 import { markProviderStreamDrop } from "../../providers/streamDrop";
+import { ProviderStreamIdleTimeoutError } from "../../providers/streamSafety";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
 import { FakeSubagentCallbackSink, FakeSubagentRunner } from "@/tests/support/subagentPorts";
@@ -21,7 +25,7 @@ import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackgro
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
 import { runToolBatch, TURN_TOOL_CALL_LIMIT_OUTPUT } from "../toolBatch";
 import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
-import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "../prompts";
+import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
@@ -37,13 +41,14 @@ import {
   endedSubagentCallResult,
   handedBackApproval,
   parseSubagentOutcome,
+  subagentFailureCode,
   subagentRequest,
   withChildApprovals,
   type SubagentChildHost,
   type SubagentHost
 } from "./runner";
 
-type Step = Readonly<{ calls?: ModelToolCall[]; drop?: true; events?: ModelRunSseEvent[]; hang?: true; text?: string }>;
+type Step = Readonly<{ calls?: ModelToolCall[]; drop?: true; events?: ModelRunSseEvent[]; fail?: () => unknown; hang?: true; text?: string }>;
 
 function scriptedAdapter(steps: readonly Step[]) {
   const requests: ProviderRunRequest[] = [];
@@ -54,6 +59,7 @@ function scriptedAdapter(steps: readonly Step[]) {
       const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
       for (const event of step.events ?? []) yield event;
       if (step.drop) throw markProviderStreamDrop(new Error("stream_incomplete"), "reset");
+      if (step.fail) throw step.fail();
       if (step.hang) {
         await new Promise<void>((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true }));
       }
@@ -305,6 +311,57 @@ describe("sub-agent runner", () => {
     const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
     expect(result).toMatchObject({ kind: "ended", outcome: "done", state: "done" });
     expect(ctx.requests).toHaveLength(8);
+  });
+
+  describe("a turn that failed on its provider", () => {
+    afterEach(() => setRecordObserver(null));
+
+    it("ends with the provider's cause in the result its parent reads and the turn it stores, its records under its own run", async () => {
+      const records: ObservedRecord[] = [];
+      // Clears what waited for a first observer, earlier tests' records.
+      setRecordObserver(null);
+      setRecordObserver((record) => records.push(record));
+      const modelRetry = { backoff: { baseDelayMs: 1, maxBackoffMs: 1 }, maxAttempts: 2 };
+      const ctx = setup([{ drop: true }], { modelRetry });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ hostRunId: "background-run", mode: "background" })));
+      expect(ctx.requests).toHaveLength(2);
+      expect(result).toMatchObject({ kind: "ended", reason: "provider_stream_failed", state: "failed" });
+      // What the parent reads and what the turn's row keeps decode as they are, the cause included.
+      expect(decodeSubagentCallResult(JSON.parse(JSON.stringify(result)))).toMatchObject({ reason: "provider_stream_failed" });
+      expect(ctx.settled.map((settled) => settled.result)).toEqual([expect.objectContaining({ reason: "provider_stream_failed", state: "failed" })]);
+      // The model calls' records name the run that holds the turn, never the parent that started it.
+      const failed = records.filter((record) => record.event === "run_execution");
+      expect(failed).toEqual([expect.objectContaining({ code: "provider_stream_failed", outcome: "failed", run_id: "background-run" })]);
+      expect(records.filter((record) => record.event === "provider_retry").map((record) => record.run_id)).toEqual(["background-run", "background-run"]);
+      expect(JSON.stringify(records)).not.toContain("stream_incomplete");
+    });
+
+    it("names a provider's reviewed error identity on its failure record, never in its reason", async () => {
+      const records: ObservedRecord[] = [];
+      // Clears what waited for a first observer, earlier tests' records.
+      setRecordObserver(null);
+      setRecordObserver((record) => records.push(record));
+      const fail = () => markProviderErrorCode(markProviderStreamDrop(new Error("upstream said: secret text"), "error_event"), "stream_incomplete");
+      const ctx = setup([{ fail }], { modelRetry: { backoff: { baseDelayMs: 1, maxBackoffMs: 1 }, maxAttempts: 1 } });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(result).toMatchObject({ reason: "provider_response_failed", state: "failed" });
+      const failed = records.find((record) => record.event === "run_execution");
+      expect(failed).toMatchObject({ code: "provider_response_failed", provider_error_code: "stream_incomplete", run_id: "run" });
+      expect(JSON.stringify(records)).not.toContain("secret text");
+    });
+
+    it.each([
+      ["a request deadline", () => new ProviderRequestTimeoutError(300_000), "provider_request_timed_out"],
+      ["a silent stream", () => new ProviderStreamIdleTimeoutError({ idleTimeoutMs: 60_000, observedIdleMs: 60_001 }), "provider_stream_timeout"],
+      ["a dropped stream", () => markProviderStreamDrop(new Error("stream_incomplete"), "truncated"), "provider_stream_failed"],
+      ["a failed response", () => markProviderErrorCode(new Error("x"), "stream_incomplete"), "provider_response_failed"],
+      ["a rate limit", () => Object.assign(new Error("slow down"), { httpStatus: 429 }), "provider_rate_limited"],
+      ["an unclassified error", () => new Error("provider_stream_failed"), "subagent_failed"],
+      ["a code outside the observed set", () => Object.assign(new Error("x"), { code: "made_up_code" }), "subagent_failed"],
+      ["a value that is no error", () => "provider_request_timed_out", "subagent_failed"]
+    ])("names %s by a stable code, never by its text", (_name, error, code) => {
+      expect(subagentFailureCode(error())).toBe(code);
+    });
   });
 
   it("delivers a 30,000-character foreground report through the ordinary tool excerpt and reads all of it later", async () => {
@@ -1022,6 +1079,14 @@ describe("a sub-agent's children", () => {
     expect(offered(first)).toEqual(expect.arrayContaining(["call_subagent", "stop_subagent"]));
     expect(first.prompt.system).toContain(SUBAGENT_STARTER_ROLE_SECTION);
     expect(first.tools?.find((tool) => tool.name === "call_subagent")?.description).toContain("Starts a helper");
+  });
+
+  it("tells a starter in a run without background turns to wait for its helpers", async () => {
+    const ctx = setup([{ text: "Outcome: done\nDone." }], { children: childHost({ backgroundAllowed: false }) });
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    const first = ctx.requests[0]!;
+    expect(first.prompt.system).toContain(SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION);
+    expect(first.prompt.system).not.toContain("background: true");
   });
 
   it("offers them to no sub-agent narrowed to tool groups: a list keeps narrowing, and a child must not have what its parent was denied", async () => {

@@ -582,3 +582,154 @@ describe("upload handler static-raster normalization", () => {
     expect(validateStaticRaster).not.toHaveBeenCalled();
   });
 });
+
+describe("upload handler refusal records", () => {
+  const PRIVATE_NAME = "PRIVATE-name-canary";
+
+  async function refusalRecords(run: () => Promise<Response>) {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const response = await run();
+      const lines = writer.mock.calls.map(([chunk]) => String(chunk));
+      const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((record) => record.event === "upload_refused");
+      return { lines, records, response };
+    } finally {
+      writer.mockRestore();
+    }
+  }
+
+  function handler(overrides: Partial<Parameters<typeof createUploadHandler>[0]> = {}) {
+    return createUploadHandler({
+      createAttachment: async () => { throw new Error("should_not_create"); },
+      resolveAuth: auth.resolveAuth,
+      storage: createMemoryStorageAdapter(),
+      ...overrides
+    });
+  }
+
+  function formRequest(form: FormData): Request {
+    return new Request("http://app.local/api/uploads", { body: form, headers: { cookie: auth.cookie }, method: "POST" });
+  }
+
+  async function pdf(pages: number): Promise<Uint8Array> {
+    const document = await PDFDocument.create();
+    for (let page = 0; page < pages; page += 1) document.addPage();
+    return document.save();
+  }
+
+  const cases: Array<{
+    label: string; code: string; status: number; stage: string; fields?: Record<string, unknown>;
+    run: () => Promise<Response>;
+  }> = [
+    {
+      label: "an unauthenticated request", code: "unauthorized", status: 401, stage: "auth",
+      run: () => handler()(new Request("http://app.local/api/uploads", { method: "POST" }))
+    },
+    {
+      label: "busy upload capacity", code: "upload_busy", status: 429, stage: "capacity",
+      run: async () => {
+        const gate = createUploadPermitGate(1);
+        const release = gate.tryAcquire();
+        try {
+          return await handler({ uploadPermitGate: gate })(
+            authenticatedUploadRequest(new File([oneByOnePng], `${PRIVATE_NAME}.png`, { type: "image/png" })));
+        } finally { release?.(); }
+      }
+    },
+    {
+      label: "an oversized multipart envelope", code: "file_too_large", status: 413, stage: "body",
+      run: () => handler({ getBodyConfig: () => ({ uploadMaxConcurrency: 1, uploadMultipartMaxBytes: 16 }) })(
+        new Request("http://app.local/api/uploads", {
+          body: `--b\r\nContent-Disposition: form-data; name="file"; filename="${PRIVATE_NAME}.png"\r\nContent-Type: image/png\r\n\r\noversized`,
+          headers: { cookie: auth.cookie, "content-type": "multipart/form-data; boundary=b" },
+          method: "POST"
+        }))
+    },
+    {
+      label: "an unreadable form", code: "file_required", status: 400, stage: "body",
+      run: () => handler()(new Request("http://app.local/api/uploads", {
+        body: "not-multipart", headers: { cookie: auth.cookie, "content-type": "multipart/form-data; boundary=missing" }, method: "POST"
+      }))
+    },
+    {
+      label: "a form without a file", code: "file_required", status: 400, stage: "declaration",
+      run: () => { const form = new FormData(); form.set("note", PRIVATE_NAME); return handler()(formRequest(form)); }
+    },
+    {
+      label: "an unknown scope", code: "unsupported_type", status: 400, stage: "declaration",
+      fields: { mime_family: "image", size_class: "to_1mb" },
+      run: () => {
+        const form = new FormData();
+        form.set("file", new File([oneByOnePng], `${PRIVATE_NAME}.png`, { type: "image/png" }));
+        form.set("scope", "PRIVATE-scope");
+        return handler()(formRequest(form));
+      }
+    },
+    {
+      label: "a refused declared type", code: "unsupported_type", status: 400, stage: "declaration",
+      fields: { mime_family: "image" },
+      run: () => handler()(authenticatedUploadRequest(new File(["<svg/>"], `${PRIVATE_NAME}.svg`, { type: "image/svg+xml" })))
+    },
+    {
+      label: "a declared size over the limit", code: "file_too_large", status: 413, stage: "declaration",
+      fields: { mime_family: "text", size_class: "to_1mb" },
+      run: () => handler({ getMaxBytes: () => 4 })(
+        authenticatedUploadRequest(new File(["0123456789"], `${PRIVATE_NAME}.txt`, { type: "text/plain" })))
+    },
+    {
+      label: "an unavailable Workspace", code: "workspace_runtime_unavailable", status: 503, stage: "workspace",
+      fields: { mime_family: "application" },
+      run: () => handler({ workspaceScopeAvailable: async () => false })(authenticatedUploadRequest(
+        new File([Buffer.from([0, 1, 2, 3])], `${PRIVATE_NAME}.aiqsa-opaque`, { type: "application/x-aiqsa-opaque" }), undefined, "workspace"))
+    },
+    {
+      label: "content that is not its declared type", code: "unsupported_type", status: 400, stage: "content",
+      fields: { mime_family: "image", size_class: "to_1mb" },
+      run: () => handler()(authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], `${PRIVATE_NAME}.png`, { type: "image/png" })))
+    },
+    {
+      label: "a raster that does not decode", code: "image_invalid", status: 400, stage: "content",
+      fields: { mime_family: "image" },
+      run: () => {
+        vi.mocked(validateStaticRaster).mockRejectedValueOnce(new StaticRasterError("raster_invalid"));
+        return handler()(authenticatedUploadRequest(new File([syntheticPng()], `${PRIVATE_NAME}.jpeg`, { type: "image/jpeg" })));
+      }
+    },
+    {
+      label: "a malformed PDF", code: "pdf_invalid", status: 400, stage: "pdf",
+      fields: { mime_family: "application" },
+      run: () => handler()(authenticatedUploadRequest(new File(["%PDF-1.4\nbroken"], `${PRIVATE_NAME}.pdf`, { type: "application/pdf" })))
+    },
+    {
+      label: "a PDF over the page limit", code: "pdf_page_limit_exceeded", status: 413, stage: "pdf",
+      fields: { mime_family: "application" },
+      run: async () => {
+        const bytes = await pdf(2);
+        vi.stubEnv("AIQSA_PDF_MAX_PAGES", "1");
+        try {
+          return await handler()(authenticatedUploadRequest(new File([bytes], `${PRIVATE_NAME}.pdf`, { type: "application/pdf" })));
+        } finally { vi.unstubAllEnvs(); }
+      }
+    }
+  ];
+
+  it.each(cases)("logs one content-free record for $label ($code)", async ({ code, fields, run, stage, status }) => {
+    const { lines, records, response } = await refusalRecords(run);
+
+    expect(response.status).toBe(status);
+    expect((await response.json()).error).toBe(code);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ code, event: "upload_refused", httpStatus: status, level: "warn", operation: "upload", stage, ...fields });
+    expect(lines.join("")).not.toContain("PRIVATE");
+    expect(lines.join("")).not.toMatch(/image\/|application\/|text\/plain/u);
+  });
+
+  it("logs nothing for an accepted upload", async () => {
+    const { records, response } = await refusalRecords(() => handler({ createAttachment: async (input) => created(input) })(
+      authenticatedUploadRequest(new File([oneByOnePng], `${PRIVATE_NAME}.png`, { type: "image/png" }))));
+
+    expect(response.status).toBe(200);
+    expect(records).toEqual([]);
+  });
+});
