@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { bindContext, logEvent, type EventFields } from "../observability";
 import { isProviderDeadlineExceededError } from "./network";
+import { isProviderEmptyAnswer } from "./emptyAnswer";
 import { GeminiHttpError, type GeminiHttpErrorCode } from "./geminiInteractionsTransport";
 import { isProviderResponseFailure, PROVIDER_CONTEXT_LENGTH_EXCEEDED, reportedContextTokens } from "./responseFailure";
 import { isProviderSearchExecutionError } from "./types";
@@ -411,7 +412,7 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
         code === "provider_request_outcome_unknown" ? "network"
       : status !== undefined ? "http"
       : code === PROVIDER_CONTEXT_LENGTH_EXCEEDED ? "safety_limit"
-      : code.startsWith("gemini_interactions_stream_") ||
+      : code.startsWith("gemini_interactions_stream_") || code === "gemini_interactions_empty_response" ||
         code === "provider_response_failed" || code === "openai_response_incomplete" || code === "openai_response_failed" ||
         code === "openai_response_not_completed" || code === "knowledge_answer_contract_failed" || code === "knowledge_citation_contract_failed" ||
         code === "image_response_invalid" ? "invalid_response"
@@ -437,16 +438,19 @@ function writeOperation(scope: ProviderObservation, startedAt: number,
   const code = result?.code ?? failure.code;
   // How far a stream had got when a timeout ended it (`streamProgress.ts`).
   const progress = providerStreamProgress(error);
+  // What a round the provider completed empty held (`emptyAnswer.ts`).
+  const empty = isProviderEmptyAnswer(error) ? error.facts : null;
   logEvent("provider_operation", {
     adapterKind: scope.identity.adapterKind, connectionId: scope.identity.connectionId,
     providerFamily: scope.identity.providerFamily, providerModelId: scope.identity.providerModelId,
     error, stage: scope.stage, outcome, duration_ms: Math.max(0, Date.now() - startedAt),
     action: result?.action ?? "none", timeout_ms: failure.timeout_ms ?? scope.timeoutMs, code: code !== "unknown" ? code : isProviderResponseFailure(error) ? "provider_response_failed"
       : failure.stream_drop !== undefined ? "provider_stream_failed" : code, reason: failure.reason,
-    provider_status: result?.provider_status ?? failure.provider_status, cause: failure.cause,
+    provider_status: result?.provider_status ?? failure.provider_status ?? (empty ? "completed" : undefined), cause: failure.cause,
     httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop,
     provider_error_code: result?.provider_error_code ?? failure.provider_error_code,
-    ...(progress ? { last_byte_ms: progress.last_byte_ms, last_event_ms: progress.last_event_ms, response_started: progress.response_started } : {})
+    ...(progress ? { last_byte_ms: progress.last_byte_ms, last_event_ms: progress.last_event_ms, response_started: progress.response_started } : {}),
+    ...(empty ? { hidden_text: empty.hiddenText, step_count: empty.stepCount, step_types: empty.stepTypes } : {})
   });
 }
 

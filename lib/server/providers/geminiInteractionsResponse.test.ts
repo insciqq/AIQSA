@@ -8,6 +8,9 @@ import {
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 import { decodeGroundingDisplay } from "../../domain/groundingDisplay";
+import { ProviderEmptyAnswerError } from "./emptyAnswer";
+import { providerErrorCode } from "./providerErrorCode";
+import { observedFailure } from "./providerObservability";
 
 const suggestionsHtml = [
   "<style>#provider-css-canary { pos\\69 tion: fixed; inset: 0; z-index: 2147483647; }</style>",
@@ -131,6 +134,36 @@ describe("Gemini Interactions response normalization", () => {
         frame("interaction.created", { event_type: "interaction.created", interaction: {} }),
         frame("done", "[DONE]")
       ]) }))).rejects.toThrow("gemini_interactions_stream_truncated");
+  });
+
+  it("refuses an empty completed round with a code and a content-free summary of what it held (issue #71)", async () => {
+    const secret = "private-fault-message";
+    const caught = async (completed: Record<string, unknown>) =>
+      collect(metadataStream({}, { status: "completed", ...completed })).then(() => null, (error: unknown) => error);
+
+    const thoughtOnly = await caught({
+      errors: [{ code: "https://generativelanguage.googleapis.com/errors/safety", message: secret }],
+      steps: [{ signature: "private-signature", type: "thought" }]
+    });
+    expect(thoughtOnly).toBeInstanceOf(ProviderEmptyAnswerError);
+    expect(thoughtOnly).toMatchObject({ code: "gemini_interactions_empty_response",
+      facts: { hiddenText: false, stepCount: 1, stepTypes: "thought" } });
+    expect(providerErrorCode(thoughtOnly)).toBe("safety");
+    expect(observedFailure(thoughtOnly)).toMatchObject({ code: "gemini_interactions_empty_response", reason: "invalid_response" });
+    expect(JSON.stringify(thoughtOnly) + String(thoughtOnly)).not.toContain(secret);
+
+    // Text the visible answer leaves out is named, never kept; no recorded fault names none.
+    const hidden = await caught({ steps: [{ signature: "s", type: "thought" },
+      { type: "model_output", content: [{ type: "text", text: "## Answer\n## Usage\ninternal" }] }] });
+    expect(hidden).toMatchObject({ facts: { hiddenText: true, stepCount: 2, stepTypes: "thought+model_output" } });
+    expect(providerErrorCode(hidden)).toBeNull();
+    expect(await caught({ steps: [] })).toMatchObject({ facts: { hiddenText: false, stepCount: 0, stepTypes: "none" } });
+
+    // The JSON path refuses the same round the same way, and an unreviewed fault is `other`.
+    const json = await collect(streamGeminiInteractionsJsonResponse({ errors: [{ code: "urn:vendor:unlisted" }],
+      status: "completed", steps: [] }, { modelId: "gemini-3.8-flash" })).then(() => null, (error: unknown) => error);
+    expect(json).toMatchObject({ code: "gemini_interactions_empty_response", facts: { stepTypes: "none" } });
+    expect(providerErrorCode(json)).toBe("other");
   });
 
   it("retains signed no-call steps for a required-tool correction without exposing the signature", async () => {

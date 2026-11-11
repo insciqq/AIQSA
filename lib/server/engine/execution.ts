@@ -9,6 +9,7 @@ import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { logEvent, runWithContext } from "../observability";
 import { gatewayRoutingLane } from "../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../providers/history";
+import { isProviderEmptyAnswer } from "../providers/emptyAnswer";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { codexLbConnection, effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
@@ -119,6 +120,8 @@ export class EngineFailure extends Error {
 
 export const CONTEXT_TOO_LARGE_MESSAGE =
   "This conversation no longer fits the model's context window. Start a new chat, or continue in a new chat from this answer.";
+
+const MODEL_ANSWER_EMPTY_MESSAGE = "The model returned no answer. Send your request again.";
 
 /**
  * The note an agent's message carries when it arrives as a written answer ends, on its delivered item and never in the
@@ -299,6 +302,8 @@ export function failurePayload(error: unknown, workspaceRun: boolean, answerPubl
       message: "Your answer is saved, but Workspace cleanup could not be confirmed and files may not be ready for download. Ask the agent to check the existing files and export them again; if Workspace remains unavailable, ask an administrator to restore it." };
   }
   if (error instanceof WorkspaceRuntimeError) return { code: error.code, message: "The Workspace could not complete this turn." };
+  // A round the provider completed empty, again after its one resend (`modelCall.ts`), is an answer that never came.
+  if (isProviderEmptyAnswer(error)) return { code: "model_answer_empty", message: MODEL_ANSWER_EMPTY_MESSAGE };
   const failure = observedFailure(error);
   if (failure.code === PROVIDER_CONTEXT_LENGTH_EXCEEDED) return { code: "context_too_large", message: CONTEXT_TOO_LARGE_MESSAGE };
   const kept = workspaceRun ? "Its Workspace files and the answer so far are kept." : "The answer so far is kept.";
@@ -324,6 +329,8 @@ function failureCauseFields(input: Readonly<{ cancelled: boolean; failure: unkno
   const observed = observedFailure(input.failure);
   return {
     reason: observed.reason,
+    // The provider's own code behind a generic one the user sees (an empty round is `model_answer_empty`).
+    ...(isProviderEmptyAnswer(input.failure) ? { provider_code: observed.code } : {}),
     ...(observed.httpStatus !== undefined ? { httpStatus: observed.httpStatus } : {}),
     ...(observed.provider_error_code ? { provider_error_code: observed.provider_error_code } : {}),
     ...(observed.abort_source === "provider_deadline"
@@ -1131,7 +1138,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         if (researched !== null) await showResearchAnswer(researched);
         // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
         if (researched === null && (outcome.kind === "empty" || outcome.kind === "answered" && runResearch?.holding() === true && !answer.text.trim())) {
-          throw new EngineFailure("model_answer_empty", "The model returned no answer. Send your request again.");
+          throw new EngineFailure("model_answer_empty", MODEL_ANSWER_EMPTY_MESSAGE);
         }
 
         // Answer first: the text is published before hand-off, completion and usage.

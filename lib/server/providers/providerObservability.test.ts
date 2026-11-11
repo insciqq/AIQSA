@@ -311,6 +311,32 @@ describe("provider diagnostics", () => {
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 
+  it("records an empty completed Gemini round by its code and a content-free summary (issue #71)", async () => {
+    const records = capture();
+    const frames = [
+      ["interaction.created", { event_type: "interaction.created", interaction: { id: "empty-1", status: "in_progress" } }],
+      ["interaction.completed", { event_type: "interaction.completed", interaction: { id: "empty-1", status: "completed",
+        errors: [{ code: "https://generativelanguage.googleapis.com/errors/safety", message: "PRIVATE_FAULT_CANARY" }],
+        steps: [{ signature: "PRIVATE_SIGNATURE_CANARY", type: "thought" },
+          { content: [{ text: "## Answer\n## Usage\nPRIVATE_HIDDEN_CANARY", type: "text" }], type: "model_output" }] } }]
+    ] as const;
+    const responseBody = new ReadableStream<Uint8Array>({ start(controller) {
+      for (const [event, data] of frames) controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      controller.enqueue(new TextEncoder().encode("event: done\ndata: [DONE]\n\n"));
+      controller.close();
+    } });
+    const iterator = observeProviderStream({ ...identity, adapterKind: "gemini_interactions_native", providerFamily: "gemini" },
+      parseGeminiInteractionsSse({ responseBody, modelId: "gemini-test", groundingExpected: false }),
+      { timeoutMs: 1000, signal: new AbortController().signal });
+    await iterator.next();
+    await expect(iterator.next()).rejects.toMatchObject({ code: "gemini_interactions_empty_response" });
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed", level: "error",
+      code: "gemini_interactions_empty_response", reason: "invalid_response", provider_status: "completed",
+      provider_error_code: "safety", step_types: "thought+model_output", step_count: 2, hidden_text: true,
+      error_class: "ProviderEmptyAnswerError" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
   it("names why a Responses stream dropped on the failed operation, never its content", async () => {
     const records = capture();
     const frames = [{ response: { id: "resp-drop", status: "in_progress" }, type: "response.created" },

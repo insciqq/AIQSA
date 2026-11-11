@@ -102,11 +102,11 @@ export const ADMIN_HEALTH_INCIDENT_DETAIL_KEYS: ReadonlySet<string> = new Set([
   "db_constraint", "fetch_reason", "http_status_class", "mcp_server", "tool_identity", "tool_scope",
   "cause_class", "cause_site", "configured_timeout_ms", "count", "db_failure", "deadline_kind", "delay_ms", "duration_ms", "durationMs", "effective_timeout_ms",
   "engine_index", "error_category", "error_class", "error_fingerprint", "error_site", "failed_count", "headers_ms", "issue_count",
-  "job_kind", "kind", "layer", "limit", "lock_wait_ms", "method",
+  "hidden_text", "job_kind", "kind", "layer", "limit", "lock_wait_ms", "method",
   "mode", "node_version", "observed", "operation", "operation_index", "operation_stage", "outcome", "pending_count",
   "prisma_code", "providerFamily", "provider_code", "provider_error_code", "provider_status", "push_service", "reason", "repeat_count",
   "retry_at",
-  "routePath", "route_source", "sign_in_method", "sqlstate", "state", "status", "step", "stream", "stream_drop", "sys_code", "syscall",
+  "routePath", "route_source", "sign_in_method", "sqlstate", "state", "status", "step", "step_count", "step_types", "stream", "stream_drop", "sys_code", "syscall",
   "termination", "timeout_ms", "tx_elapsed_ms", "tx_timeout_ms",
   "tool_kind",
   "totalStreamBytes", "transport", "unit", "work_stage"
