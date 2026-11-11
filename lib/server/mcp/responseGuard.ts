@@ -4,6 +4,8 @@ import type { FetchLike } from "@modelcontextprotocol/client";
 import { beginTransportStage, transportFailureFacts } from "../providers/providerObservability";
 import {
   getMcpRequestMaxBytes,
+  MCP_CALL_RESULT_CEILING_BYTES,
+  MCP_CALL_RESULT_CEILING_PERMITS,
   McpResponseTooLargeError,
   mcpResponseMaxBytes,
   resolveMcpResponseWireLimits,
@@ -24,7 +26,73 @@ export type McpResponseGuardFatalHandler = (
   error: McpResponseTooLargeError
 ) => void | Promise<void>;
 
+/**
+ * Process-wide permits for tools/call bodies read past their wire limit. A
+ * permit is held from the moment a body crosses that limit until its request
+ * finishes, which is after the client has cut the parsed result, so the
+ * permits bound how many such bodies are in memory at once. Waiters are served
+ * in order; an aborted wait takes no permit.
+ */
+export class McpCallResultPermits {
+  #free: number;
+  readonly #waiters: Array<() => void> = [];
+
+  constructor(size: number) {
+    if (!Number.isSafeInteger(size) || size < 1) throw new Error("mcp_call_result_permits_invalid");
+    this.#free = size;
+  }
+
+  acquire(signal: AbortSignal): Promise<() => void> {
+    if (signal.aborted) return Promise.reject(abortReason(signal));
+    if (this.#free > 0) {
+      this.#free -= 1;
+      return Promise.resolve(this.#release());
+    }
+    return new Promise((resolve, reject) => {
+      const grant = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(this.#release());
+      };
+      const onAbort = () => {
+        const index = this.#waiters.indexOf(grant);
+        if (index >= 0) this.#waiters.splice(index, 1);
+        reject(abortReason(signal));
+      };
+      this.#waiters.push(grant);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  #release(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.#waiters.shift();
+      if (next) next();
+      else this.#free += 1;
+    };
+  }
+}
+
+/** How far past its wire limit one tools/call body may be read, under which permits. */
+export type McpCallResultCeiling = Readonly<{ maxBytes: number; permits: McpCallResultPermits }>;
+
+const CALL_RESULT_PERMITS = Symbol.for("aiqsa.mcp.call-result-permits.v1");
+const permitState = globalThis as typeof globalThis & { [CALL_RESULT_PERMITS]?: McpCallResultPermits };
+
+/** The process's ceiling: one permit pool even when route bundles load this module apart. */
+export function defaultMcpCallResultCeiling(): McpCallResultCeiling {
+  return {
+    maxBytes: MCP_CALL_RESULT_CEILING_BYTES,
+    permits: permitState[CALL_RESULT_PERMITS] ??= new McpCallResultPermits(MCP_CALL_RESULT_CEILING_PERMITS)
+  };
+}
+
 export type McpResponseGuardOptions = Readonly<{
+  /** Lets a single tools/call body past its wire limit be read up to this
+   * ceiling; without it every body stops at the wire limit. */
+  callResultCeiling?: McpCallResultCeiling;
   environment?: Readonly<Record<string, string | undefined>>;
   limits?: Partial<McpResponseWireLimits>;
   now?: () => number;
@@ -55,6 +123,8 @@ type RequestContext = {
   failure?: McpResponseTooLargeError;
   finished: boolean;
   readonly operation: GuardedOperation;
+  /** Ceiling permits this request's bodies hold until it finishes. */
+  readonly permits: Array<() => void>;
   timer: ReturnType<typeof setTimeout> | null;
 };
 
@@ -359,20 +429,22 @@ class SseByteFramer {
   private byteLength = 0;
   private lineBytes = 0;
   private pendingCr = false;
-  private readonly maxEventBytes: number;
+  /** Read per byte: a call's raised bound widens its event bound too. */
+  private readonly maxEventBytes: () => number;
   private readonly overflow: (observedBytes: number) => never;
 
-  constructor(maxEventBytes: number, overflow: (observedBytes: number) => never) {
+  constructor(maxEventBytes: () => number, overflow: (observedBytes: number) => never) {
     this.maxEventBytes = maxEventBytes;
     this.overflow = overflow;
-    this.bytes = new Uint8Array(Math.min(1_024, maxEventBytes));
+    this.bytes = new Uint8Array(Math.min(1_024, maxEventBytes()));
   }
 
   private append(byte: number): void {
-    if (this.byteLength >= this.maxEventBytes) this.overflow(this.byteLength + 1);
+    const maxEventBytes = this.maxEventBytes();
+    if (this.byteLength >= maxEventBytes) this.overflow(this.byteLength + 1);
     if (this.byteLength === this.bytes.byteLength) {
       const capacity = Math.min(
-        this.maxEventBytes,
+        maxEventBytes,
         Math.max(this.byteLength + 1, this.bytes.byteLength * 2)
       );
       const next = new Uint8Array(capacity);
@@ -390,7 +462,7 @@ class SseByteFramer {
     const frame = this.bytes.slice(0, this.byteLength);
     this.byteLength = 0;
     if (this.bytes.byteLength > 1_024) {
-      this.bytes = new Uint8Array(Math.min(1_024, this.maxEventBytes));
+      this.bytes = new Uint8Array(Math.min(1_024, this.maxEventBytes()));
     }
     return frame;
   }
@@ -428,7 +500,7 @@ class SseByteFramer {
       const trailing = this.bytes.slice(0, this.byteLength);
       this.byteLength = 0;
       if (this.bytes.byteLength > 1_024) {
-        this.bytes = new Uint8Array(Math.min(1_024, this.maxEventBytes));
+        this.bytes = new Uint8Array(Math.min(1_024, this.maxEventBytes()));
       }
       return [trailing];
     }
@@ -480,6 +552,56 @@ function responseIdsFromEvent(frame: Uint8Array): readonly (readonly string[])[]
   return ids;
 }
 
+function releasePermits(context: RequestContext): void {
+  for (const release of context.permits.splice(0)) release();
+}
+
+/**
+ * The byte bound of one tools/call's own response: its wire limit, raised
+ * once to the call result ceiling under a permit the live request holds.
+ */
+class CallResponseBound {
+  #raised = false;
+  readonly #ceiling: McpCallResultCeiling | undefined;
+  readonly #context: RequestContext | undefined;
+  readonly #wireMaxBytes: number;
+
+  constructor(wireMaxBytes: number, ceiling: McpCallResultCeiling | undefined, context: RequestContext | undefined) {
+    this.#wireMaxBytes = wireMaxBytes;
+    this.#ceiling = ceiling && ceiling.maxBytes > wireMaxBytes ? ceiling : undefined;
+    this.#context = context;
+  }
+
+  /** The bound in force. A raise ends with its request, which returns the permit. */
+  get maxBytes(): number {
+    return this.#raised && this.#ceiling && this.#context && !this.#context.finished
+      ? this.#ceiling.maxBytes
+      : this.#wireMaxBytes;
+  }
+
+  /** The bound a declared length must meet before any byte is read. */
+  get declaredMaxBytes(): number {
+    return this.canRaise() && this.#ceiling ? this.#ceiling.maxBytes : this.maxBytes;
+  }
+
+  canRaise(): boolean {
+    return !this.#raised && this.#ceiling !== undefined && this.#context !== undefined && !this.#context.finished;
+  }
+
+  /** Waits for a permit, then admits bytes up to the ceiling. */
+  async raise(signal: AbortSignal): Promise<void> {
+    if (!this.#ceiling) return;
+    const release = await this.#ceiling.permits.acquire(signal);
+    // A request that ended while waiting keeps its wire limit and fails on it.
+    if (!this.#context || this.#context.finished) {
+      release();
+      return;
+    }
+    this.#context.permits.push(release);
+    this.#raised = true;
+  }
+}
+
 function closedError(): Error {
   return new Error("mcp_response_guard_closed");
 }
@@ -497,11 +619,13 @@ export class McpResponseGuard {
   private fatalCause: McpResponseTooLargeError | undefined;
   private fatalHandler: McpResponseGuardFatalHandler | undefined;
   private closed = false;
+  private readonly callResultCeiling: McpCallResultCeiling | undefined;
   private readonly limits: McpResponseWireLimits;
   private readonly now: () => number;
 
   constructor(options: McpResponseGuardOptions = {}) {
     this.limits = resolveMcpResponseWireLimits(options.limits, options.environment);
+    this.callResultCeiling = options.callResultCeiling;
     this.now = options.now ?? Date.now;
   }
 
@@ -519,6 +643,7 @@ export class McpResponseGuard {
       expiresAt: this.now() + ttl,
       finished: false,
       operation,
+      permits: [],
       timer: null
     };
     this.activeContexts.add(context);
@@ -529,6 +654,7 @@ export class McpResponseGuard {
       if (context.timer) clearTimeout(context.timer);
       context.timer = null;
       for (const correlation of [...context.correlations]) this.removeCorrelation(correlation);
+      releasePermits(context);
       this.activeContexts.delete(context);
     };
     context.timer = setTimeout(finish, ttl);
@@ -562,6 +688,7 @@ export class McpResponseGuard {
       context.timer = null;
       context.finished = true;
       context.correlations.clear();
+      releasePermits(context);
     }
     this.activeContexts.clear();
     this.correlations.clear();
@@ -689,11 +816,16 @@ export class McpResponseGuard {
   ): Response {
     const isSse = mediaType(response.headers) === "text/event-stream";
     const persistentGet = request.method === "GET" && isSse;
-    const maxBytes = mcpResponseMaxBytes(this.limits, request.operation);
+    // Only a POST carrying one tools/call may read past its wire limit.
+    const bound = new CallResponseBound(
+      mcpResponseMaxBytes(this.limits, request.operation),
+      request.callId !== undefined ? this.callResultCeiling : undefined,
+      request.context
+    );
     const contentLength = persistentGet ? undefined : validContentLength(response.headers);
-    if (contentLength !== undefined && contentLength > maxBytes) {
+    if (contentLength !== undefined && contentLength > bound.declaredMaxBytes) {
       const error = new McpResponseTooLargeError({
-        maxBytes,
+        maxBytes: bound.declaredMaxBytes,
         observedBytes: contentLength,
         operation: request.operation
       });
@@ -709,8 +841,8 @@ export class McpResponseGuard {
     }
 
     return isSse
-      ? this.guardSseResponse(response, request, persistentGet)
-      : this.guardFiniteResponse(response, request, maxBytes);
+      ? this.guardSseResponse(response, request, persistentGet, bound)
+      : this.guardFiniteResponse(response, request, bound);
   }
 
   private guardFiniteResponse(
@@ -722,9 +854,26 @@ export class McpResponseGuard {
       signal: AbortSignal | undefined;
       operation: McpResponseOperation;
     }>,
-    maxBytes: number
+    bound: CallResponseBound
   ): Response {
     let observedBytes = 0;
+    const count = (chunk: Uint8Array): readonly Uint8Array[] => {
+      const nextBytes = observedBytes + chunk.byteLength;
+      const maxBytes = bound.maxBytes;
+      if (nextBytes > maxBytes) {
+        const error = new McpResponseTooLargeError({
+          maxBytes,
+          observedBytes: maxBytes + 1,
+          operation: request.operation
+        });
+        // Erroring the body rejects only this POST's request in the SDK.
+        if (request.callId !== undefined) this.failCall(error, request);
+        else this.triggerFatal(error, request.context ? [[request.context, error]] : []);
+        throw error;
+      }
+      observedBytes = nextBytes;
+      return [chunk];
+    };
     return this.wrapBody(response, request.signal, {
       observation: beginTransportStage("body", response, "mcp"),
       finish: () => {
@@ -734,22 +883,11 @@ export class McpResponseGuard {
           for (const correlation of request.registered) this.removeCorrelation(correlation);
         }
       },
-      transform: (chunk) => {
-        const nextBytes = observedBytes + chunk.byteLength;
-        if (nextBytes > maxBytes) {
-          const error = new McpResponseTooLargeError({
-            maxBytes,
-            observedBytes: maxBytes + 1,
-            operation: request.operation
-          });
-          // Erroring the body rejects only this POST's request in the SDK.
-          if (request.callId !== undefined) this.failCall(error, request);
-          else this.triggerFatal(error, request.context ? [[request.context, error]] : []);
-          throw error;
-        }
-        observedBytes = nextBytes;
-        return [chunk];
-      }
+      transform: (chunk, signal) => (
+        observedBytes + chunk.byteLength > bound.maxBytes && bound.canRaise()
+          ? bound.raise(signal).then(() => count(chunk))
+          : count(chunk)
+      )
     });
   }
 
@@ -762,10 +900,14 @@ export class McpResponseGuard {
       signal: AbortSignal | undefined;
       operation: McpResponseOperation;
     }>,
-    persistentGet: boolean
+    persistentGet: boolean,
+    bound: CallResponseBound
   ): Response {
-    const cumulativeLimit = mcpResponseMaxBytes(this.limits, request.operation);
     let cumulativeBytes = 0;
+    // A call's own stream is bounded as a whole, so one event may fill it.
+    const eventMaxBytes = (): number => request.callId !== undefined && !persistentGet
+      ? Math.max(this.limits.sseEventMaxBytes, bound.maxBytes)
+      : this.limits.sseEventMaxBytes;
     const overflow = (error: McpResponseTooLargeError): never => {
       if (request.callId !== undefined) {
         this.failCall(error, request);
@@ -777,9 +919,9 @@ export class McpResponseGuard {
       );
       throw error;
     };
-    const framer = new SseByteFramer(this.limits.sseEventMaxBytes, (observedBytes) => overflow(
+    const framer = new SseByteFramer(eventMaxBytes, (observedBytes) => overflow(
       new McpResponseTooLargeError({
-        maxBytes: this.limits.sseEventMaxBytes,
+        maxBytes: eventMaxBytes(),
         observedBytes,
         operation: persistentGet ? "unknown" : request.operation
       })
@@ -817,6 +959,29 @@ export class McpResponseGuard {
       return frame;
     };
 
+    const frameChunk = (chunk: Uint8Array): readonly Uint8Array[] => {
+      const frames: Uint8Array[] = [];
+      const cumulativeLimit = bound.maxBytes;
+      try {
+        for (let index = 0; index < chunk.byteLength; index += 1) {
+          cumulativeBytes += 1;
+          if (!persistentGet && cumulativeBytes > cumulativeLimit) {
+            overflow(new McpResponseTooLargeError({
+              maxBytes: cumulativeLimit,
+              observedBytes: cumulativeBytes,
+              operation: request.operation
+            }));
+          }
+          for (const frame of framer.push(chunk[index])) frames.push(inspectFrame(frame));
+        }
+      } catch (error) {
+        // Events completed before a call's overflow still reach the SDK.
+        if (error instanceof McpCallStreamEnd) error.frames = [...frames, ...error.frames];
+        throw error;
+      }
+      return frames;
+    };
+
     return this.wrapBody(response, request.signal, {
       finish: () => {
         // Request-bound SSE may reconnect through GET after a priming event.
@@ -826,27 +991,11 @@ export class McpResponseGuard {
         }
       },
       flush: () => framer.finish().map(inspectFrame),
-      transform: (chunk) => {
-        const frames: Uint8Array[] = [];
-        try {
-          for (let index = 0; index < chunk.byteLength; index += 1) {
-            cumulativeBytes += 1;
-            if (!persistentGet && cumulativeBytes > cumulativeLimit) {
-              overflow(new McpResponseTooLargeError({
-                maxBytes: cumulativeLimit,
-                observedBytes: cumulativeBytes,
-                operation: request.operation
-              }));
-            }
-            for (const frame of framer.push(chunk[index])) frames.push(inspectFrame(frame));
-          }
-        } catch (error) {
-          // Events completed before a call's overflow still reach the SDK.
-          if (error instanceof McpCallStreamEnd) error.frames = [...frames, ...error.frames];
-          throw error;
-        }
-        return frames;
-      }
+      transform: (chunk, signal) => (
+        !persistentGet && cumulativeBytes + chunk.byteLength > bound.maxBytes && bound.canRaise()
+          ? bound.raise(signal).then(() => frameChunk(chunk))
+          : frameChunk(chunk)
+      )
     });
   }
 
@@ -856,13 +1005,15 @@ export class McpResponseGuard {
     callbacks: Readonly<{
       finish(): void;
       flush?(): readonly Uint8Array[];
-      transform(chunk: Uint8Array): readonly Uint8Array[];
+      /** May wait for a ceiling permit; `signal` ends with the stream. */
+      transform(chunk: Uint8Array, signal: AbortSignal): readonly Uint8Array[] | Promise<readonly Uint8Array[]>;
       observation?: ReturnType<typeof beginTransportStage>;
     }>
   ): Response {
     const reader = response.body?.getReader();
     if (!reader) return response;
     let terminated = false;
+    const streamAbort = new AbortController();
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
     let localFailure: unknown;
     const preAborted = signal?.aborted === true;
@@ -896,6 +1047,7 @@ export class McpResponseGuard {
         callbacks.observation.finish(consumerCancelled || facts.category === "aborted" ? "cancelled" : "failed", { ...progress(), ...facts });
       }
       cleanup();
+      streamAbort.abort(reason);
       cancelReader(reader, reason);
       try {
         if (end) {
@@ -937,7 +1089,9 @@ export class McpResponseGuard {
               receivedChunks += 1;
               if (value.byteLength > 0) lastProgressAt = performance.now();
             }
-            const chunks = callbacks.transform(value);
+            const transformed = callbacks.transform(value, streamAbort.signal);
+            const chunks = transformed instanceof Promise ? await transformed : transformed;
+            if (terminated) return;
             for (const chunk of chunks) streamController.enqueue(chunk);
             if (chunks.length > 0) return;
           }
