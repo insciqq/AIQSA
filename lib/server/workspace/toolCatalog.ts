@@ -7,7 +7,7 @@ import {
 } from "@/lib/domain/workspace";
 import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
 import { namespacedMcpToolName } from "@/lib/server/mcp/runPlan";
-import type { WorkspaceBoundTool, WorkspaceToolCatalog } from "./runtime";
+import type { WorkspaceBoundTool, WorkspaceToolCatalog, WorkspaceToolResult } from "./runtime";
 
 export type OfficialWorkspaceTool = Readonly<{
   description?: string;
@@ -25,7 +25,11 @@ const HIDDEN_ARGUMENTS = Object.freeze([
   "keepRunning",
   "maxBytes",
   "timeout",
-  "timeoutMs"
+  "timeoutMs",
+  // The pinned MCP takes any resource name, while the guest accepts only its own lowercase ones: in production 21 of
+  // 22 calls naming `RLIMIT_*` failed in the guest with no cause the model could act on. `ulimit` in a shell sets the
+  // same limits, and the VM's own memory and CPU stay the real bounds.
+  "rlimits"
 ] as const);
 const HIDDEN_ARGUMENT_SET = new Set<string>(HIDDEN_ARGUMENTS);
 const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
@@ -55,7 +59,7 @@ function descriptionGuidance(
 
 /** Canonical provider-facing catalog proven against microsandbox-mcp 0.6.16 plus the guidance above. */
 export const WORKSPACE_BOUND_TOOL_CATALOG_HASH =
-  "26bae7776ac918094cb46933bf7cf431576597a9c58fff85de9ee0813e094290";
+  "c660a566446a5bdc45ff959ff13011cda9c443e47a04879c0fe94344ab226828";
 
 export function namespacedWorkspaceToolName(originalName: WorkspaceMcpToolName): string {
   return namespacedMcpToolName(WORKSPACE_MCP_NAMESPACE, originalName);
@@ -162,6 +166,28 @@ export function bindOfficialWorkspaceTools(input: Readonly<{
     runtimeVersion: input.runtimeVersion,
     tools
   };
+}
+
+/**
+ * A call naming an argument the catalog hides, which a model may still send, is refused before anything starts or
+ * reaches the guest, as an ordinary error the model corrects by sending the call again without it. Thrown, it would
+ * read as a command whose effect is unknown, and the model could never send it again.
+ */
+export function workspaceHiddenArgumentRefusal(
+  originalName: WorkspaceMcpToolName,
+  args: Readonly<Record<string, unknown>>
+): WorkspaceToolResult | null {
+  const hidden = HIDDEN_ARGUMENTS.filter((key) => Object.hasOwn(args, key));
+  if (hidden.length === 0) return null;
+  const code = "workspace_request_invalid";
+  const them = hidden.length === 1 ? "it" : "them";
+  const message = `Nothing ran: ${namespacedWorkspaceToolName(originalName)} does not take ` +
+    `${hidden.map((key) => `\`${key}\``).join(", ")} here. Send the call again without ${them}.` +
+    (hidden.includes("rlimits")
+      ? ` To limit a command's resources, run \`ulimit\` before it in ${namespacedWorkspaceToolName("sandbox_shell")}.`
+      : "");
+  return { content: [{ text: JSON.stringify({ error: { code, message }, ok: false }), type: "text" }], errorCode: code,
+    status: "error" };
 }
 
 export function injectWorkspaceToolArguments(input: Readonly<{
