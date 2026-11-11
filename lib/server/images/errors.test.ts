@@ -130,7 +130,8 @@ describe("image generation failure causes", () => {
 
   it("leaves a failure that may hide a produced image unknown", () => {
     const forged = Object.assign(new Error("image_provider_http_error"), { code: "image_provider_http_error", httpStatus: 400 });
-    for (const error of [httpFailure(500), httpFailure(503), new ImageGenerationError("image_provider_http_error"),
+    for (const error of [httpFailure(500), httpFailure(503), httpFailure(408), httpFailure(499),
+      new ImageGenerationError("image_provider_http_error"),
       new ImageGenerationError("image_provider_http_error", 302), new ImageGenerationError("image_request_timed_out"),
       new ImageGenerationError("image_provider_request_failed"), new ImageGenerationError("image_request_cancelled"),
       new ImageGenerationError("image_response_invalid"), new ImageGenerationError("image_response_too_large"),
