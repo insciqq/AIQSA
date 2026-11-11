@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { imageDispatchMustStop, imageGenerationFailure } from "./errors";
+import { imageDispatchMustStop, imageGenerationFailure, imageProviderRejection } from "./errors";
 import { ImageGenerationError, type ImageGenerationErrorCode } from "../providers/imageGeneration";
 import { ImageInputError } from "./inputError";
 import { observedFailureCode } from "../providers/providerObservability";
@@ -111,5 +111,31 @@ describe("image generation failure causes", () => {
     for (const code of ["image_reference_unavailable", "image_reference_invalid"]) expect(imageDispatchMustStop(new Error(code))).toBe(false);
     expect(imageDispatchMustStop(httpFailure(429))).toBe(true);
     expect(imageDispatchMustStop(new ImageGenerationError("image_request_timed_out"))).toBe(true);
+  });
+
+  it.each([
+    ["a 4xx safety rejection", () => httpFailure(400, { code: "content_policy_violation" }), "declined the request under its content policy"],
+    ["a 4xx without a recognized category", () => httpFailure(404), "rejected the request with HTTP 404"],
+    ["a 4xx rate limit", () => httpFailure(429), "is limiting the request rate"],
+    ["a refusal", () => new ImageGenerationError("image_generation_refused", null, undefined, "other"), "without a completed image"],
+    ["a response without an image", () => new ImageGenerationError("image_output_missing"), "responded without an image"]
+  ] as const)("names %s as a known failure with its classified text", (_name, make, cause) => {
+    const error = make();
+    const rejection = imageProviderRejection(error);
+    expect(rejection).toEqual({ code: error.code, message: imageGenerationFailure(error).message });
+    expect(rejection!.message).toContain(cause);
+    expect(rejection!.message).not.toMatch(/outcome is unknown|could not finish/u);
+    for (const value of PRIVATE) expect(JSON.stringify(rejection)).not.toContain(value);
+  });
+
+  it("leaves a failure that may hide a produced image unknown", () => {
+    const forged = Object.assign(new Error("image_provider_http_error"), { code: "image_provider_http_error", httpStatus: 400 });
+    for (const error of [httpFailure(500), httpFailure(503), new ImageGenerationError("image_provider_http_error"),
+      new ImageGenerationError("image_provider_http_error", 302), new ImageGenerationError("image_request_timed_out"),
+      new ImageGenerationError("image_provider_request_failed"), new ImageGenerationError("image_request_cancelled"),
+      new ImageGenerationError("image_response_invalid"), new ImageGenerationError("image_response_too_large"),
+      new ImageGenerationError("image_request_timed_out", 400), forged, new Error("image_dispatch_claimed"), null]) {
+      expect(imageProviderRejection(error)).toBeNull();
+    }
   });
 });
