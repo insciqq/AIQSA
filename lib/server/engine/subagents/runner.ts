@@ -25,6 +25,7 @@ import type { ModelRunUsage } from "../../../domain/modelRunEvents";
 import { logEvent, runWithContext } from "../../observability";
 import { gatewayRoutingLane } from "../../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../../providers/history";
+import { isProviderEmptyAnswer } from "../../providers/emptyAnswer";
 import { isProviderDeadlineExceededError } from "../../providers/network";
 import { observedFailure } from "../../providers/providerObservability";
 import { isProviderResponseFailure } from "../../providers/responseFailure";
@@ -597,6 +598,7 @@ function endingOf(error: unknown, turn: TurnRecord, host: SubagentHost): Readonl
  */
 export function subagentFailureCode(error: unknown): string {
   if (isProviderDeadlineExceededError(error)) return "provider_request_timed_out";
+  if (isProviderEmptyAnswer(error)) return "model_answer_empty";
   const failure = observedFailure(error);
   const code = failure.code !== "unknown" ? failure.code : isProviderResponseFailure(error) ? "provider_response_failed"
     : failure.stream_drop !== undefined ? "provider_stream_failed" : "subagent_failed";

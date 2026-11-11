@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { ProviderEmptyAnswerError } from "../providers/emptyAnswer";
 import { gatewayRoutingLane } from "../providers/gatewayRouting";
 import { ProviderRequestTimeoutError } from "../providers/network";
 import { providerFailureMessage } from "../providers/providerFailureMessage";
@@ -143,6 +144,40 @@ describe("native model call", () => {
     expect(call.discarded).toEqual([1]);
     expect(call.usages).toHaveLength(2);
     expect(call.usages[0]).toMatchObject({ completeness: "partial" });
+  });
+
+  it("sends a round the provider completed empty again once, and fails on a second empty one (issue #71)", async () => {
+    const empty = () => new ProviderEmptyAnswerError("gemini_interactions_empty_response",
+      { hiddenText: false, stepCount: 1, stepTypes: "thought" });
+    const usage: ModelRunSseEvent = { data: { inputTokens: 900, outputTokens: 3 }, type: "usage" };
+
+    const recovered = adapter([{ events: [usage], fail: empty() }, { events: [token("Hi")], text: "Hi" }]);
+    const first = ports(recovered);
+    expect((await callModel(first, request)).finalText).toBe("Hi");
+    expect(recovered.calls).toBe(2);
+    expect(first.discarded).toEqual([1]);
+    // The empty round's reported input is accounted like any failed attempt's.
+    expect(first.usages[0]).toMatchObject({ completeness: "partial", inputTokens: 900 });
+
+    // What the last empty round streamed is no part of the answer so far either.
+    const stuck = adapter([{ events: [token("## Usage"), usage], fail: empty() }]);
+    const last = ports(stuck);
+    await expect(callModel(last, request)).rejects.toBeInstanceOf(ProviderEmptyAnswerError);
+    expect(stuck.calls).toBe(2);
+    expect(last.discarded).toEqual([1, 2]);
+
+    // A drop before it does not spend the empty round's one resend.
+    const mixed = adapter([{ fail: markProviderStreamDrop(new Error("socket"), "reset") }, { fail: empty() },
+      { events: [token("Hi")], text: "Hi" }]);
+    expect((await callModel(ports(mixed), request)).finalText).toBe("Hi");
+    expect(mixed.calls).toBe(3);
+
+    // Stop ends it like any other failure.
+    const stopped = new AbortController();
+    stopped.abort();
+    const halted = adapter([{ fail: empty() }, { text: "late" }]);
+    await expect(callModel(ports(halted, { signal: stopped.signal }), request)).rejects.toBeDefined();
+    expect(halted.calls).toBeLessThanOrEqual(1);
   });
 
   it("never sends a deterministic rejection again", async () => {
