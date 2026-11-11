@@ -18,6 +18,8 @@ export type UploadRefusalFacts = {
 };
 
 export type UploadRefusal = UploadRefusalFacts & {
+  /** The client went away (a cancelled part): the failure is logged at info, with no error projection. */
+  clientAborted?: boolean;
   code: string;
   /** Only for an unexpected failure: its content-free projection is logged. */
   error?: unknown;
@@ -67,7 +69,7 @@ export function logUploadRefusal(refusal: UploadRefusal): void {
     operation: refusal.operation,
     ...(refusal.stage ? { stage: refusal.stage } : {}),
     ...sizeAndFamily(refusal),
-    ...(refusal.error !== undefined ? { error: refusal.error } : {})
+    ...(refusal.clientAborted ? { client_aborted: true } : refusal.error !== undefined ? { error: refusal.error } : {})
   });
 }
 

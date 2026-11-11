@@ -37,7 +37,7 @@ export function createWorkspaceUploadHandlers(deps: {
         const code = known ? error.code : error instanceof RequestBodyTooLargeError ? "request_body_too_large" : "upload_unavailable";
         const status = known ? error.status : error instanceof RequestBodyTooLargeError ? 413 : 503;
         response = refuseUpload({ ...facts, code, operation: name, status,
-          ...(code === "upload_unavailable" ? { error } : {}),
+          ...(code === "upload_unavailable" ? request.signal.aborted ? { clientAborted: true } : { error } : {}),
           ...(status === 429 ? { headers: { "retry-after": "2" } } : {}) });
       }
       if (!request.bodyUsed) await request.body?.cancel().catch(() => undefined);
