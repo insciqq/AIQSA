@@ -2,6 +2,7 @@ import type { RunProviderWait } from "../../contracts/runs";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import { logEvent } from "../observability";
+import { isProviderEmptyAnswer } from "../providers/emptyAnswer";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import type { GatewayRoutingLane } from "../providers/gatewayRouting";
 import { observedFailure } from "../providers/providerObservability";
@@ -36,9 +37,12 @@ export type ModelCallRetryPolicy = Readonly<{
  * One model request of a native run, sent again transparently when it fails
  * in transport (answer first, PROVIDERS.md): a network error, a rate limit
  * or server error, a stream that dropped or went silent before its terminal
- * proof, or a response that did not start within the response timeout. Each
- * new attempt is the same request to the same destination, after a jittered
- * backoff, under Stop and before the turn's deadline. The failed attempt's
+ * proof, or a response that did not start within the response timeout. A
+ * round the provider completed with neither text nor a call is sent again
+ * once (issue #71): it is usually transient, while a provider that keeps
+ * answering so would only bill the same input again. Each new attempt is
+ * the same request to the same destination, after a jittered backoff, under
+ * Stop and before the turn's deadline. The failed attempt's
  * partial output is discarded (`onDiscard`), and its reported usage is still
  * accounted. A deterministic rejection is never sent again. A model request
  * has no effect beyond the answer: its tool calls run only after it
@@ -120,7 +124,7 @@ export type ModelCallPorts = Readonly<{
   deadlineAt: number;
   faults?: EngineTestFaults;
   now?: () => number;
-  /** The attempt failed and is sent again: drop what it streamed. */
+  /** The attempt failed and is sent again, or was a final empty round: drop what it streamed. */
   onDiscard(attempt: number): Promise<void>;
   /** A live event of the current attempt (text, reasoning headings, outputs). */
   onEvent(event: ModelRunSseEvent, attempt: number): Promise<void>;
@@ -167,6 +171,7 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
   const policy = ports.retry ?? MODEL_CALL_RETRY;
   const firstStartedAt = now();
   let firstFailedAt: number | null = null;
+  let emptyResent = false;
   let waiting: RunProviderWait | null = null;
   const wait = (next: RunProviderWait | null) => {
     if (next === waiting) return;
@@ -207,7 +212,9 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
       ports.routing?.failed();
       // A request that reported usage before it failed may be billed: keep it.
       if (usage) ports.onUsage(normalizeTokenUsage({ ...usage, completeness: "partial" }), undefined);
-      const decision = modelCallRetryDecision(error, ports.signal);
+      const empty = isProviderEmptyAnswer(error);
+      const decision = empty ? emptyResent || ports.signal.aborted ? null : { retryAfterMs: null }
+        : modelCallRetryDecision(error, ports.signal);
       const delayMs = decision && attempt < policy.maxAttempts
         ? providerRetryDelayMs(attempt, decision.retryAfterMs, ports.random, policy.backoff) : null;
       const failure = observedFailure(error);
@@ -216,12 +223,15 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
       if (delayMs === null || failedAt + delayMs >= ports.deadlineAt ||
         (policy.windowMs !== undefined && failedAt + delayMs - firstStartedAt > policy.windowMs) ||
         (policy.failureWindowMs !== undefined && failedAt + delayMs - firstFailedAt > policy.failureWindowMs)) {
-        if (decision) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage,
+        if (decision || empty) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage,
           ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
+        // What an empty round streamed is text its visible answer leaves out, never part of the answer so far.
+        if (empty) await ports.onDiscard(attempt);
         throw error;
       }
       logEvent("provider_retry", { action: "retry", attempt, code: failure.code, delay_ms: delayMs, reason: failure.reason, stage,
         ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
+      emptyResent ||= empty;
       await ports.onDiscard(attempt);
       wait("retrying");
       await (ports.sleep ?? sleepWithSignal)(delayMs, ports.signal);

@@ -80,6 +80,9 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   provider_error_code?: string;
   /** A timed-out stream's progress: milliseconds since its last byte and last parsed event, and whether an event arrived. */
   last_byte_ms?: number; last_event_ms?: number; response_started?: boolean;
+  /** A round completed with neither text nor a call (`providers/emptyAnswer.ts`): its step kinds joined by `+` (or
+   * `none`), its step count and whether it held text the visible answer left out. */
+  step_types?: string; step_count?: number; hidden_text?: boolean;
 }>;
 /** Subsystems whose hot-path interactive transactions are timed (`db_transaction`). */
 export type DbTransactionSubsystem = "memory" | "workspace" | "runs";

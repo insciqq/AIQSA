@@ -3,6 +3,7 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
+import { ProviderEmptyAnswerError } from "../providers/emptyAnswer";
 import { providerResponseFailure } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
@@ -1018,6 +1019,35 @@ describe("native run execution", () => {
     expect(failed).toMatchObject([{ code: "run_execution_failed" }, { code: "provider_response_failed", provider_error_code: "overloaded_error" },
       { code: "provider_stream_failed" }]);
     expect(JSON.stringify(failed)).not.toContain("PRIVATE_");
+  });
+
+  it("answers after one empty completed round, and names a second one as an empty answer with the provider's code (issue #71)", async () => {
+    const observation = await captureRunObservation();
+    const empty = () => new ProviderEmptyAnswerError("gemini_interactions_empty_response", { hiddenText: false, stepCount: 1, stepTypes: "thought" });
+    const recovered = scriptedAdapter([{ fail: empty() }, { text: "Here it is." }]);
+    // Text a round streamed that its visible answer leaves out (`visibleAnswerText`) never stays as the answer so far.
+    const stuck = scriptedAdapter([{ fail: empty(), text: "PRIVATE_HIDDEN_SECTION " }]);
+    const repos = [repository(), repository()];
+    const sent: ModelRunSseEvent[][] = [];
+    vi.useFakeTimers();
+    try {
+      for (const [index, adapter] of [recovered.adapter, stuck.adapter].entries()) {
+        const reading = events(createNativeRunExecutionResponse({ adapter, created: { ...created, runId: `empty-run-${index}` },
+          engine: memoryEngine().engine, prepared: prepared(), repository: repos[index] as unknown as RunRepository, services: {}, userId: "user" }));
+        await vi.advanceTimersByTimeAsync(120_000);
+        sent.push(await reading);
+      }
+    } finally { vi.useRealTimers(); }
+    expect(recovered.requests).toHaveLength(2);
+    expect(sent[0]!.some((event) => event.type === "done")).toBe(true);
+    expect(stuck.requests).toHaveLength(2);
+    expect(sent[1]!.find((event) => event.type === "error")).toMatchObject({ data: { code: "model_answer_empty",
+      message: "The model returned no answer. Send your request again." } });
+    expect(observation.records().find((row) => row.event === "run_execution" && row.outcome === "failed")).toMatchObject({
+      code: "model_answer_empty", provider_code: "gemini_interactions_empty_response", reason: "invalid_response", run_id: "empty-run-1" });
+    expect(repos[1]!.failRun).toHaveBeenCalledWith("empty-run-1", expect.anything(), expect.objectContaining({ code: "model_answer_empty" }),
+      expect.anything());
+    expect(JSON.stringify([repos[1]!.appendAssistantText.mock.calls, repos[1]!.failRun.mock.calls])).not.toContain("PRIVATE_HIDDEN");
   });
 
 });

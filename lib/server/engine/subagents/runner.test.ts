@@ -9,6 +9,7 @@ import type { ModelRunSseEvent } from "../../../domain/modelRunEvents";
 import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import { setRecordObserver, type ObservedRecord } from "../../observability";
+import { ProviderEmptyAnswerError } from "../../providers/emptyAnswer";
 import { ProviderRequestTimeoutError } from "../../providers/network";
 import { markProviderErrorCode } from "../../providers/providerErrorCode";
 import { markProviderStreamDrop } from "../../providers/streamDrop";
@@ -356,6 +357,8 @@ describe("sub-agent runner", () => {
       ["a dropped stream", () => markProviderStreamDrop(new Error("stream_incomplete"), "truncated"), "provider_stream_failed"],
       ["a failed response", () => markProviderErrorCode(new Error("x"), "stream_incomplete"), "provider_response_failed"],
       ["a rate limit", () => Object.assign(new Error("slow down"), { httpStatus: 429 }), "provider_rate_limited"],
+      ["a round the provider completed empty", () => new ProviderEmptyAnswerError("gemini_interactions_empty_response",
+        { hiddenText: false, stepCount: 1, stepTypes: "thought" }), "model_answer_empty"],
       ["an unclassified error", () => new Error("provider_stream_failed"), "subagent_failed"],
       ["a code outside the observed set", () => Object.assign(new Error("x"), { code: "made_up_code" }), "subagent_failed"],
       ["a value that is no error", () => "provider_request_timed_out", "subagent_failed"]
