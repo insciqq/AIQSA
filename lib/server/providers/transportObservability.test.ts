@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
 import { createFetchDeepSeekResponsesClient } from "./deepSeekResponsesTransport";
 import { ProviderRequestTimeoutError, readBoundedResponseText, withTimeoutSignal } from "./network";
-import { observeProviderFetch, observeProviderOperation, transportFailureFacts } from "./providerObservability";
+import { observeProviderFetch, observeProviderOperation, observeProviderStream, transportFailureFacts } from "./providerObservability";
+import { serializeEvent } from "../observability/runtime.cjs";
+import { ProviderStreamIdleTimeoutError } from "./streamSafety";
 import { createProviderSafeFetch } from "./providerSafeFetch";
 import { mcpSafeFetch } from "../mcp/safeFetch";
 import { parseSseStream } from "./sse";
@@ -206,6 +208,64 @@ describe("provider transport observations", () => {
       last_byte_ms: 20, last_event_ms: 20, response_started: true });
     expect(records().find((entry) => entry.event === "provider_operation" && entry.outcome === "failed")).toMatchObject({
       code: "provider_stream_timeout", last_byte_ms: 20, last_event_ms: 20, response_started: true });
+  });
+
+  it("records a stream's first event wait and longest silences on its final record, as numbers only", async () => {
+    vi.useFakeTimers();
+    const records = capture();
+    const streamController: { current?: ReadableStreamDefaultController<Uint8Array> } = {};
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { streamController.current = controller; } });
+    const started = vi.fn();
+    const result = observeProviderStream(identity, (async function* () {
+      for await (const event of parseSseStream(stream, { idleTimeoutMs: 1_000, maxDurationMs: 1_000 })) yield event;
+      return null;
+    })(), { onResponseStart: started, signal: new AbortController().signal, timeoutMs: 1_000 });
+    const drained = (async () => { for (let next = await result.next(); !next.done; next = await result.next()) void next.value; })();
+    const send = async (afterMs: number, text: string) => {
+      await vi.advanceTimersByTimeAsync(afterMs);
+      streamController.current?.enqueue(encoder.encode(text));
+    };
+    await send(5, ": PRIVATE_KEEPALIVE_CANARY\n\n");
+    await send(25, 'data: {"PRIVATE_EVENT_CANARY":1}\n\n');
+    await send(5, ": PRIVATE_KEEPALIVE_CANARY\n\n");
+    expect(started).toHaveBeenCalledOnce();
+    await send(45, 'data: {"PRIVATE_EVENT_CANARY":2}\n\n');
+    await vi.advanceTimersByTimeAsync(5);
+    streamController.current?.close();
+    await drained;
+    // The first event 30 ms in, then 45 ms without a byte and 50 ms between events; one response start.
+    expect(started).toHaveBeenCalledOnce();
+    expect(records().filter((entry) => entry.event === "transport_stage" && entry.stage === "stream").at(-1)).toMatchObject({
+      outcome: "completed", first_event_ms: 30, max_byte_gap_ms: 45, max_event_gap_ms: 50 });
+
+    // A stream that went silent: its open silence counts, so the failure's record shows the gap that ended it.
+    const silent = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode("data: first\n\n")); } });
+    const failed = observeProviderOperation(identity, "answer", async () => {
+      for await (const event of parseSseStream(silent, { idleTimeoutMs: 20, maxDurationMs: 1_000 })) void event;
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(await failed).toBeInstanceOf(ProviderStreamIdleTimeoutError);
+    expect(records().filter((entry) => entry.event === "transport_stage" && entry.stage === "stream").at(-1)).toMatchObject({
+      outcome: "failed", first_event_ms: 0, max_byte_gap_ms: 20, max_event_gap_ms: 20 });
+
+    // A stream without an event has no event fields.
+    const empty = observeProviderOperation(identity, "answer", async () => {
+      for await (const event of parseSseStream(new ReadableStream<Uint8Array>(), { idleTimeoutMs: 20, maxDurationMs: 1_000 })) void event;
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(20);
+    await empty;
+    const eventless = records().filter((entry) => entry.event === "transport_stage" && entry.stage === "stream").at(-1);
+    expect(eventless).toMatchObject({ outcome: "failed", max_byte_gap_ms: 20 });
+    expect(eventless).not.toHaveProperty("first_event_ms");
+    expect(eventless).not.toHaveProperty("max_event_gap_ms");
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+
+    // The allowlist keeps them only as non-negative numbers.
+    const serialized = JSON.parse(serializeEvent("transport_stage", { transport: "provider", stage: "stream", outcome: "completed",
+      first_event_ms: "PRIVATE_CANARY", max_byte_gap_ms: -1, max_event_gap_ms: 12.4 } as never)!) as Record<string, unknown>;
+    expect(serialized).toMatchObject({ max_event_gap_ms: 12 });
+    expect(serialized).not.toHaveProperty("first_event_ms");
+    expect(serialized).not.toHaveProperty("max_byte_gap_ms");
   });
 
   it("records a real malformed SSE JSON frame once without logging successful frames", async () => {
