@@ -542,6 +542,31 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool).toHaveBeenCalledTimes(2);
   });
 
+  it("answers a hidden argument with an ordinary refusal before any guest lookup or dispatch", async () => {
+    const value = fixture();
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const rlimits = [{ resource: "RLIMIT_CPU", soft: 30, hard: 60 }];
+    // No session was ever ensured: the refusal comes before the guest is looked up, let alone started.
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      const result = await value.runtime.callBoundTool({ ...callInput, originalName, arguments: { command: "true", rlimits } });
+      expect(result).toMatchObject({ errorCode: "workspace_request_invalid", status: "error" });
+      expect(JSON.stringify(result)).toContain("ulimit");
+    }
+    await value.runtime.ensureSession(ensureInput);
+    sdk.get.mockClear();
+    await expect(value.runtime.callBoundTool({ ...callInput, arguments: { command: "true", rlimits } }))
+      .resolves.toMatchObject({ errorCode: "workspace_request_invalid", status: "error" });
+    expect(sdk.get).not.toHaveBeenCalled();
+    expect(sdk.callTool).not.toHaveBeenCalled();
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "admission", outcome: "failed",
+      code: "workspace_request_invalid", operation: "sandbox_exec_start" }));
+    expect(JSON.stringify(records)).not.toContain("RLIMIT_");
+    // Without it the same command is dispatched as usual.
+    await value.runtime.callBoundTool({ ...callInput, arguments: { command: "true" } });
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+  });
+
   it("returns a failed command's mid-log cause within the configured output budget from one dispatch", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
