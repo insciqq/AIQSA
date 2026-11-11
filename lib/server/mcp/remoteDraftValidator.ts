@@ -32,6 +32,13 @@ import { McpDraftValidationAbortedError } from "./draftValidator";
 import { compactMcpToolInventoryEntry } from "./catalogMetadata";
 import { getMcpRequestMaxBytes } from "./responseLimits";
 import { discoverGitLabMcpEndpoint, type McpValidationOAuthProvider } from "./endpointCorrection";
+import {
+  McpClientCredentialsError,
+  mcpClientCredentialsFetch,
+  mcpClientCredentialsGrant,
+  requestMcpClientCredentialsToken,
+  type McpClientCredentialsGrant
+} from "./clientCredentials";
 
 const MAX_EVIDENCE_TOOLS = MCP_SERVER_TOOL_LIMIT;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
@@ -61,6 +68,8 @@ export type McpRemoteDraftValidationSessionFactory = (
 ) => McpRemoteDraftValidationSession;
 
 export type McpRemoteDraftValidatorOptions = Readonly<{
+  /** The token endpoint transport of a client-credentials draft; defaults to the safe fetch under the draft's address rules. */
+  clientCredentialsFetch?: (grant: McpClientCredentialsGrant) => McpClientSessionOptions["fetch"];
   fetch: McpClientSessionOptions["fetch"];
   fetchForDraft?: (
     draft: McpDraftConfiguration,
@@ -179,12 +188,20 @@ function sanitizedInventory(
   return { inventory, issue: null };
 }
 
-function safeFailure(error: unknown, input: McpDraftValidationInput, authProvider: McpValidationOAuthProvider | null): McpDraftValidationOutcome {
+function safeFailure(
+  error: unknown,
+  input: McpDraftValidationInput,
+  authProvider: McpValidationOAuthProvider | null,
+  signInSecrets: readonly string[] = []
+): McpDraftValidationOutcome {
+  // The token endpoint's refusal keeps its stable code and the field it names; never its text.
+  if (error instanceof McpClientCredentialsError) return invalid(error.code, error.path);
   if (error instanceof McpClientSessionError) {
     const path = error.operation === "list_tools" ? "tools" : "source";
     let endpoint = safeMcpEndpoint(input.draft.source.url);
     try {
-      const secrets = [...sensitiveStrings(input, false), ...(authProvider?.exactKnownSecrets?.() ?? [])].filter(Boolean);
+      const secrets = [...sensitiveStrings(input, false), ...(authProvider?.exactKnownSecrets?.() ?? []), ...signInSecrets]
+        .filter(Boolean);
       if (endpoint && containsSensitiveValue(decodeURIComponent(endpoint), secrets)) endpoint = undefined;
     } catch { endpoint = undefined; }
     return { kind: "invalid", issues: [mcpValidationIssue({ code: error.code, path, httpStatus: error.httpStatus, operation: error.operation, endpoint })] };
@@ -251,6 +268,14 @@ export function createRemoteMcpDraftValidator(
       if (input.draft.auth.mode === "oauth" && !authProvider) {
         return invalid("mcp_oauth_validation_deferred", "auth.mode");
       }
+      // Client credentials sign in as the installation: never for a personal connection.
+      if (input.draft.auth.mode === "client_credentials" && input.personal) {
+        return invalid("auth_mode_invalid", "auth.mode");
+      }
+      const signInGrant = input.clientSecret ? mcpClientCredentialsGrant(input.draft, input.clientSecret) : null;
+      if (input.draft.auth.mode === "client_credentials" && !signInGrant) {
+        return invalid("client_secret_required", "clientSecret");
+      }
 
       const headerResult = headersForDraft(input);
       if (headerResult.headers === null) {
@@ -260,9 +285,13 @@ export function createRemoteMcpDraftValidator(
       let session: McpRemoteDraftValidationSession | null = null;
       let checkedDraft = input.draft;
       let endpointCorrection: McpEndpointCorrection | undefined;
+      // The check's own fresh token: no cache, and a 401 is not answered with another one.
+      let signInToken: string | null = null;
+      const signInSecrets = () => signInGrant ? [signInGrant.clientSecret, ...(signInToken ? [signInToken] : [])] : [];
       const fetch = options.fetchForDraft?.(input.draft, { personal: input.personal === true }) ?? options.fetch;
       const openSession = () => sessionFactory({
           ...(authProvider ? { authProvider } : {}),
+          ...(signInGrant ? { authProvider: { token: async () => signInToken ?? undefined } } : {}),
           fetch,
           headers: headerResult.headers,
           limits,
@@ -272,10 +301,16 @@ export function createRemoteMcpDraftValidator(
       try {
         session = openSession();
         await input.onProgress?.("connecting");
+        if (signInGrant) {
+          signInToken = (await requestMcpClientCredentialsToken(signInGrant, {
+            fetch: (options.clientCredentialsFetch ?? mcpClientCredentialsFetch)(signInGrant)
+          })).accessToken;
+        }
         try {
           await session.initialize({ timeoutMs: input.draft.runtime.startupTimeoutMs });
         } catch (error) {
-          if (!(error instanceof McpClientSessionError) || error.operation !== "initialize" ||
+          // A signed-in check never moves its bearer to another endpoint.
+          if (signInGrant || !(error instanceof McpClientSessionError) || error.operation !== "initialize" ||
             error.code !== "mcp_initialize_failed" || (error.httpStatus !== undefined && error.httpStatus !== 404)) throw error;
           await session.close().catch(() => undefined);
           session = null;
@@ -303,7 +338,8 @@ export function createRemoteMcpDraftValidator(
         }
         const secrets = [...new Set([
           ...sensitiveStrings(input),
-          ...oauthSecrets.filter((value): value is string => typeof value === "string" && value.length > 0)
+          ...oauthSecrets.filter((value): value is string => typeof value === "string" && value.length > 0),
+          ...signInSecrets()
         ])];
         if (session.serverEvidence &&
           containsSensitiveValue(JSON.stringify(session.serverEvidence), secrets)) {
@@ -333,7 +369,7 @@ export function createRemoteMcpDraftValidator(
         });
       } catch (error) {
         if (error instanceof McpDraftValidationAbortedError) throw error;
-        const failure = safeFailure(error, { ...input, draft: checkedDraft }, authProvider);
+        const failure = safeFailure(error, { ...input, draft: checkedDraft }, authProvider, signInSecrets());
         return endpointCorrection && failure.kind === "invalid"
           ? { ...failure, issues: [...failure.issues, { code: "mcp_gitlab_endpoint_failed", path: "source" }] }
           : failure;

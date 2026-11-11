@@ -59,6 +59,11 @@ import {
   type McpEnvelopeContext
 } from "./encryption";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
+import {
+  mcpClientCredentialsSecretFor,
+  openMcpClientCredentialsSecret,
+  sealMcpClientCredentialsSecret
+} from "./clientCredentials";
 import { correctedMcpDraft } from "./endpointCorrection";
 import { McpEndpointBindingChangedError, rebindMcpValidationEndpoint } from "./oauthRepository";
 import { mcpInventoryExclusions } from "./runPlan";
@@ -168,6 +173,46 @@ function emptyStoredValues(): StoredValues {
 function isSlotValue(value: unknown): value is McpSlotValue {
   return typeof value === "string" || typeof value === "boolean" ||
     (typeof value === "number" && Number.isFinite(value));
+}
+
+type ClientCredentialsSecretRow = Readonly<{
+  clientCredentialsSecretEnvelope: string | null;
+  clientCredentialsSecretGeneration: number;
+  id: string;
+}>;
+
+/**
+ * The client secret a check of `draft` sends: the one entered with this
+ * request, else the one stored for the draft's token endpoint origin. Null
+ * for any other mode, or when no secret may go to that origin.
+ */
+function clientCredentialsSecretForCheck(
+  draft: McpDraftConfiguration,
+  server: ClientCredentialsSecretRow,
+  key: Buffer,
+  entered?: string
+): string | null {
+  if (draft.auth.mode !== "client_credentials") return null;
+  return entered ?? mcpClientCredentialsSecretFor(openMcpClientCredentialsSecret({
+    envelope: server.clientCredentialsSecretEnvelope,
+    generation: server.clientCredentialsSecretGeneration,
+    key,
+    serverId: server.id
+  }), draft);
+}
+
+/** A secret only travels with a client-credentials draft, and that draft needs one. */
+function clientCredentialsSecretIssues(
+  draft: McpDraftConfiguration,
+  entered: string | undefined,
+  available: boolean
+): McpValidationIssue[] {
+  if (entered !== undefined && draft.auth.mode !== "client_credentials") {
+    return [{ code: "client_secret_unexpected", path: "clientSecret" }];
+  }
+  return draft.auth.mode === "client_credentials" && !available
+    ? [{ code: "client_secret_required", path: "clientSecret" }]
+    : [];
 }
 
 function readStoredValues(
@@ -704,6 +749,10 @@ function serializeAdminServer(
       : null,
     archivedAt: record.archivedAt?.toISOString() ?? null,
     autoApplyToolUpdates: record.autoApplyToolUpdates,
+    // Write-only: whether a secret may go to the draft's token endpoint, never the secret.
+    ...(draft.auth.mode === "client_credentials" ? {
+      clientCredentials: { secretConfigured: clientCredentialsSecretForCheck(draft, record, key) !== null }
+    } : {}),
     description: record.description,
     draft,
     draftTest,
@@ -953,7 +1002,8 @@ function serializeUserServer(input: {
     ...(personalOwner ? { userDisabledToolNames: [...(personalTools?.disabled ?? [])].sort() } : {}),
     ...(personalOwner ? {
       authHeaderName: draft.auth.mode === "static" ? personalAuthorizationSlot(draft)?.target.name ?? null : null,
-      authMode: draft.auth.mode
+      // Personal connections never sign in with client credentials (create refuses it).
+      authMode: draft.auth.mode === "client_credentials" ? "none" as const : draft.auth.mode
     } : {}),
     fields,
     id: input.record.id,
@@ -1469,6 +1519,10 @@ export function createPrismaMcpRepository(input: {
       const definition = validateMcpDraft(draft);
       if (!definition.ok) return { kind: "invalid_values" as const, issues: definition.issues };
       draft = definition.value;
+      // Client credentials act as the installation; a personal connection never does.
+      if (draft.auth.mode === "client_credentials") {
+        return { kind: "invalid_values" as const, issues: [{ code: "auth_mode_invalid", path: "auth.mode" }] };
+      }
       const user = await client.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } });
       if (!user) return { kind: "not_found" as const };
       const validation = draftValidationValues({ draft, oneTimeValues: values, sharedValues: {} });
@@ -1731,13 +1785,18 @@ export function createPrismaMcpRepository(input: {
 
     createServer: async ({
       activate,
+      clientSecret,
       description,
       draft,
       name,
       sharedValues,
       validationUserId
     }) => {
-      const issues = valueIssues(draft.slots, sharedValues, (slot) => slot.policy.kind === "shared");
+      const issues = [
+        ...valueIssues(draft.slots, sharedValues, (slot) => slot.policy.kind === "shared"),
+        // A draft saved without its first check may get the secret later, with Test & Save.
+        ...clientCredentialsSecretIssues(draft, clientSecret, clientSecret !== undefined || !activate)
+      ];
       if (issues.length) return { issues, kind: "invalid_values" };
       const key = encryptionKey();
       const now = new Date();
@@ -1787,7 +1846,18 @@ export function createPrismaMcpRepository(input: {
                   mcpSharedConfigEnvelopeContext(serverId, sharedConfigVersion)
                 )
               : null,
-            sharedConfigVersion
+            sharedConfigVersion,
+            ...(clientSecret !== undefined && draft.auth.mode === "client_credentials" ? {
+              clientCredentialsSecretEnvelope: sealMcpClientCredentialsSecret({
+                generation: 1,
+                key,
+                secret: clientSecret,
+                serverId,
+                tokenEndpoint: draft.auth.tokenEndpoint,
+                updatedAt: now
+              }),
+              clientCredentialsSecretGeneration: 1
+            } : {})
           },
           select: { id: true }
         });
@@ -2021,7 +2091,10 @@ export function createPrismaMcpRepository(input: {
           select: {
             activeRevisionId: true,
             archivedAt: true,
+            clientCredentialsSecretEnvelope: true,
+            clientCredentialsSecretGeneration: true,
             draft: true,
+            id: true,
             revisions: { select: { configuration: true, id: true } },
             sharedConfigEnvelope: true,
             sharedConfigVersion: true
@@ -2051,7 +2124,12 @@ export function createPrismaMcpRepository(input: {
             implicitEndpointBinding(activeConfiguration(server.activeRevisionId, server.revisions))
           )
         });
-        const issues = [...lineageIssues, ...validation.issues].slice(0, 20);
+        const clientSecret = clientCredentialsSecretForCheck(draft, server, encryptionKey());
+        const issues = [
+          ...lineageIssues,
+          ...validation.issues,
+          ...clientCredentialsSecretIssues(draft, undefined, clientSecret !== null)
+        ].slice(0, 20);
         if (issues.length) {
           invalidJobId = claimed.id;
           logEvent("job_attempt", { subsystem: "mcp", job_id: claimed.id, stage: "validate", outcome: "failed",
@@ -2070,6 +2148,7 @@ export function createPrismaMcpRepository(input: {
           return null;
         }
         return {
+          ...(clientSecret !== null ? { clientSecret } : {}),
           draft,
           id: claimed.id,
           leaseId,
@@ -2409,10 +2488,14 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    testDraft: async ({ description, draft: candidateDraft, expectedDraftHash, expectedUpdatedAt, name, oneTimeValues, publish, serverId, sharedValues, validationUserId }) => {
+    testDraft: async ({ clientSecret, description, draft: candidateDraft, expectedDraftHash, expectedUpdatedAt, name, oneTimeValues, publish, serverId, sharedValues, validationUserId }) => {
       const key = encryptionKey();
       if (!publish && (candidateDraft !== undefined || name !== undefined || description !== undefined)) {
         return { kind: "invalid_values" as const, issues: [{ code: "publication_required", path: "draft" }] };
+      }
+      // A new secret is stored only by the publication its own check passed.
+      if (!publish && clientSecret !== undefined) {
+        return { kind: "invalid_values" as const, issues: [{ code: "publication_required", path: "clientSecret" }] };
       }
       if (publish && (!expectedUpdatedAt || !validationUserId || !await client.user.findFirst({
         select: { id: true },
@@ -2423,6 +2506,8 @@ export function createPrismaMcpRepository(input: {
       const server = await client.mcpServer.findFirst({
         select: {
           activeRevisionId: true,
+          clientCredentialsSecretEnvelope: true,
+          clientCredentialsSecretGeneration: true,
           draft: true,
           id: true,
           revisions: { select: { configuration: true, id: true } },
@@ -2473,8 +2558,12 @@ export function createPrismaMcpRepository(input: {
       if (validationInput.issues.length) {
         return { issues: validationInput.issues, kind: "invalid_values" as const };
       }
+      const checkSecret = clientCredentialsSecretForCheck(draft, server, key, clientSecret);
+      const secretIssues = clientCredentialsSecretIssues(draft, clientSecret, checkSecret !== null);
+      if (secretIssues.length) return { issues: secretIssues, kind: "invalid_values" as const };
 
       const outcome = await draftValidator.validate({
+        ...(checkSecret !== null ? { clientSecret: checkSecret } : {}),
         draft,
         serverId,
         ...(validationUserId ? { validationUserId } : {}),
@@ -2524,12 +2613,19 @@ export function createPrismaMcpRepository(input: {
       return client.$transaction(async (tx) => {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const current = await tx.mcpServer.findUnique({
-          select: { archivedAt: true, draft: true, sharedConfigVersion: true, updatedAt: true },
+          select: {
+            archivedAt: true,
+            clientCredentialsSecretGeneration: true,
+            draft: true,
+            sharedConfigVersion: true,
+            updatedAt: true
+          },
           where: { id: serverId, ownerUserId: null }
         });
         if (!current || current.archivedAt) return { kind: "not_found" as const };
         if (hashCanonicalMcpValue(draftFrom(current.draft)) !== storedDraftHash ||
           current.sharedConfigVersion !== server.sharedConfigVersion ||
+          current.clientCredentialsSecretGeneration !== server.clientCredentialsSecretGeneration ||
           (publish && current.updatedAt.getTime() !== server.updatedAt.getTime())) {
           return { kind: "draft_changed" as const };
         }
@@ -2556,9 +2652,24 @@ export function createPrismaMcpRepository(input: {
                 : null
             }
           : {};
+        const secretGeneration = current.clientCredentialsSecretGeneration + 1;
+        const secretPatch = publish && clientSecret !== undefined && draft.auth.mode === "client_credentials"
+          ? {
+              clientCredentialsSecretEnvelope: sealMcpClientCredentialsSecret({
+                generation: secretGeneration,
+                key,
+                secret: clientSecret,
+                serverId,
+                tokenEndpoint: draft.auth.tokenEndpoint,
+                updatedAt: patchedAt
+              }),
+              clientCredentialsSecretGeneration: secretGeneration
+            }
+          : {};
         await tx.mcpServer.update({
           data: {
             ...sharedPatch,
+            ...secretPatch,
             ...(candidateDraft || outcome.endpointCorrection ? { draft: draft as Prisma.InputJsonValue } : {}),
             ...(name !== undefined ? { displayName: name } : {}),
             ...(description !== undefined ? { description } : {}),

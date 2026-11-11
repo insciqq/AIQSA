@@ -64,6 +64,19 @@ export function mcpOAuthClientSecretEnvelopeContext(
   );
 }
 
+/** An installation server's client-credentials secret, one context per stored generation. */
+export function mcpClientCredentialsSecretEnvelopeContext(
+  serverId: string,
+  secretGeneration: number
+): SecretEnvelopeContext {
+  return versionContext(
+    "mcp_client_credentials_secret",
+    serverId,
+    secretGeneration,
+    "client-credentials-secret"
+  );
+}
+
 export function mcpOAuthTokenEnvelopeContext(
   connectionId: string,
   tokenGeneration: number

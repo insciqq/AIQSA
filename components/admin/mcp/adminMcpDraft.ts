@@ -17,12 +17,32 @@ export type NormalizedMcpImport = Readonly<{
 export type AdminMcpSharedValueDraft = Record<string, McpSlotValue | null | undefined>;
 
 export type AdminMcpServerForm = {
+  /** A new client-credentials secret typed in this form; empty keeps the stored one. Never filled from the server. */
+  clientSecret?: string;
   expectedUpdatedAt?: string;
   description: string;
   draft: McpDraftConfiguration;
   name: string;
   sharedValues: AdminMcpSharedValueDraft;
 };
+
+type McpClientCredentialsAuthPolicy = Extract<McpDraftConfiguration["auth"], { mode: "client_credentials" }>;
+
+export function preparedMcpClientCredentialsPolicy(): McpClientCredentialsAuthPolicy {
+  return {
+    authMethod: "client_secret_basic",
+    clientId: "",
+    mode: "client_credentials",
+    scopes: [],
+    tokenEndpoint: ""
+  };
+}
+
+/** The secret the request carries: only a typed one, and only for a client-credentials draft. */
+export function requestMcpClientSecret(form: AdminMcpServerForm): string | undefined {
+  const secret = form.clientSecret?.trim();
+  return form.draft.auth.mode === "client_credentials" && secret ? secret : undefined;
+}
 
 export type McpToolInventoryDiff = Readonly<{
   added: McpToolInventoryEntry[];

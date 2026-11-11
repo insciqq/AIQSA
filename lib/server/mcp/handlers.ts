@@ -1,4 +1,4 @@
-import { decodeMcpToolAccessPolicy, mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
+import { decodeMcpToolAccessPolicy, MCP_CLIENT_CREDENTIALS_LIMITS, mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import { mcpValidationIssue } from "@/lib/contracts/mcp";
 import type {
   AdminMcpCatalogResponse,
@@ -109,6 +109,19 @@ function slotValues(value: unknown): Record<string, McpSlotValue | null> | null 
   return output;
 }
 
+/**
+ * A write-only client-credentials secret: absent, or bounded text without
+ * control characters (surrounding whitespace from a paste is dropped); null
+ * when invalid. It never appears in a response.
+ */
+function clientSecretValue(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return null;
+  const secret = value.trim();
+  return secret && secret.length <= MCP_CLIENT_CREDENTIALS_LIMITS.clientSecretMaxLength &&
+    !/[\u0000-\u001f\u007f]/u.test(secret) ? secret : null;
+}
+
 async function requireUser(request: Request, deps: McpHandlerDeps) {
   const session = await deps.resolveAuth(request);
   return session ?? null;
@@ -182,9 +195,11 @@ export function createAdminMcpCreateHandler(deps: McpHandlerDeps) {
       (typeof body?.activate !== "undefined" && typeof body.activate !== "boolean")) {
       return errorJson("invalid_draft", 400, draft.ok ? undefined : draft.issues);
     }
-    if (!sharedValues) return errorJson("invalid_mcp_values", 400);
+    const clientSecret = clientSecretValue(body?.clientSecret);
+    if (!sharedValues || clientSecret === null) return errorJson("invalid_mcp_values", 400);
     const result = await safely(() => deps.repository.createServer({
       activate: body?.activate === true,
+      ...(clientSecret !== undefined ? { clientSecret } : {}),
       description,
       draft: draft.value,
       name,
@@ -206,6 +221,8 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const [body, bodyError] = await readJsonRecord(request);
     if (bodyError) return bodyError;
     if (!body) return errorJson("invalid_draft", 400);
+    // A client secret changes only through a check that proves it (Test & Save).
+    if (body.clientSecret !== undefined) return errorJson("invalid_mcp_values", 400);
     let tool: { enabled: boolean; name: string } | undefined;
     const toolAccess = body.toolAccess === undefined ? undefined : decodeMcpToolAccessPolicy(body.toolAccess);
     if (toolAccess === null || (toolAccess && (
@@ -298,16 +315,19 @@ export function createAdminMcpDraftTestHandler(deps: McpHandlerDeps) {
       draft = validated.value;
     }
     const sharedValues = body.sharedValues === undefined ? undefined : slotValues(body.sharedValues);
+    const clientSecret = clientSecretValue(body.clientSecret);
     if ((body.publish !== undefined && typeof body.publish !== "boolean") ||
       (body.expectedUpdatedAt !== undefined && (typeof body.expectedUpdatedAt !== "string" ||
         !Number.isFinite(Date.parse(body.expectedUpdatedAt)))) ||
       (publish && typeof body.expectedUpdatedAt !== "string") ||
-      name === null || description === null || sharedValues === null ||
-      (!publish && (sharedValues !== undefined || draft !== undefined || name !== undefined || description !== undefined))) {
+      name === null || description === null || sharedValues === null || clientSecret === null ||
+      (!publish && (sharedValues !== undefined || draft !== undefined || name !== undefined || description !== undefined ||
+        clientSecret !== undefined))) {
       return errorJson("invalid_mcp_values", 400);
     }
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.testDraft({
+      ...(clientSecret !== undefined ? { clientSecret } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(draft ? { draft } : {}),
       ...(name !== undefined ? { name } : {}),

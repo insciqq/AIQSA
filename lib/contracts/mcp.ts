@@ -28,6 +28,9 @@ export function boundMcpToolDescription(description: string): string {
 const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_accepted_generation_changed: "The MCP configuration or tool changed. Start a new request to use the current configuration.",
   mcp_authorization_required: "MCP authorization is no longer valid. Reconnect in MCP settings.",
+  mcp_client_credentials_invalid_response: "The MCP server's token endpoint returned an unusable answer. Ask an administrator to check its client credentials.",
+  mcp_client_credentials_rejected: "The MCP server's token endpoint refused its client credentials. Ask an administrator to check them.",
+  mcp_client_credentials_unreachable: "The MCP server's token endpoint could not be reached. Try again later or ask an administrator to check it.",
   mcp_connect_failed: "The MCP connection failed. Check the server and try again.",
   mcp_health_check_failed: "The MCP health check failed. Check the server and try again.",
   mcp_internal_address_forbidden: "This address belongs to AIQSA or its host services, so MCP cannot use it.",
@@ -129,6 +132,9 @@ export type McpConfigurationSlot = {
   policy: McpSlotPolicy;
 };
 
+/** How a client-credentials server authenticates at its token endpoint (RFC 6749 §2.3.1). */
+export type McpClientCredentialsAuthMethod = "client_secret_basic" | "client_secret_post";
+
 export type McpAuthPolicy =
   | { mode: "none" }
   | { mode: "static" }
@@ -138,7 +144,27 @@ export type McpAuthPolicy =
       mode: "oauth";
       protectedResource?: string;
       scopes: string[];
+    }
+  /**
+   * Installation servers only: one OAuth client-credentials grant (RFC 6749
+   * §4.4) for the whole installation, so every user with access acts as this
+   * client. The client secret is write-only and travels beside the draft.
+   */
+  | {
+      authMethod: McpClientCredentialsAuthMethod;
+      clientId: string;
+      mode: "client_credentials";
+      /** The RFC 8707 `resource`; absent sends the MCP endpoint URL. */
+      resource?: string;
+      scopes: string[];
+      tokenEndpoint: string;
     };
+
+/** Bounds of the client-credentials fields an administrator enters. */
+export const MCP_CLIENT_CREDENTIALS_LIMITS = Object.freeze({
+  clientIdMaxLength: 512,
+  clientSecretMaxLength: 4_096
+});
 
 export type McpDraftConfiguration = {
   auth: McpAuthPolicy;
@@ -395,6 +421,12 @@ export type AdminMcpServer = {
   archivedAt: string | null;
   /** Trusted: tool changes the server's runtime sees are checked and applied automatically. */
   autoApplyToolUpdates: boolean;
+  /**
+   * Present while the draft signs in with client credentials. The secret is
+   * write-only: configured means one is stored for the draft's token
+   * endpoint origin; one entered for another origin reads as unset.
+   */
+  clientCredentials?: { secretConfigured: boolean };
   description: string;
   draft: McpDraftConfiguration;
   draftTest: McpDraftTestSummary | null;
@@ -567,6 +599,8 @@ export type PersonalMcpCredentialReplacementResponse = {
 
 export type AdminMcpCreateRequest = {
   activate?: boolean;
+  /** Write-only client-credentials secret; only for a `client_credentials` draft. */
+  clientSecret?: string;
   description?: string;
   draft: McpDraftConfiguration;
   name: string;
@@ -593,6 +627,11 @@ export type AdminMcpGrantRequest = {
 };
 
 export type AdminMcpDraftTestRequest = {
+  /**
+   * A new write-only client-credentials secret, checked first and stored only
+   * when the check passes; publication only. Absent keeps the stored one.
+   */
+  clientSecret?: string;
   description?: string;
   draft?: McpDraftConfiguration;
   expectedUpdatedAt?: string;
