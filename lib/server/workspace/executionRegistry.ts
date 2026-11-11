@@ -2,12 +2,19 @@ import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient, type WorkspaceExecutionState } from "@prisma/client";
 import { isWorkspaceRuntimeExecSessionId } from "@/lib/domain/workspace";
+import { isPrismaSerializationConflict } from "../runs/prismaRepositoryShared";
 import { WorkspaceRuntimeError } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 import type { WorkspaceOperation } from "./operationFence";
 import { workspaceOperationWhere } from "./sessionOperation";
 
 const SYNC_CLEANUP_PREFIX = "workspace-sync:";
+/**
+ * Attempts of one registration that loses a deadlock or a serialization conflict. Each attempt is one transaction that
+ * rolls back whole and writes only the ownership row, idempotent per tool call, so repeating it repeats nothing that
+ * reached the guest: a command is registered before it is sent, a long-lived execution after (`coordinator.ts`).
+ */
+export const WORKSPACE_EXECUTION_REGISTER_ATTEMPTS = 3;
 /** Stop proof says nothing about an unobserved command exit. No historical backfill. */
 export const WORKSPACE_EXECUTION_STOP_PROOF = "workspace_execution_stopped";
 
@@ -208,31 +215,35 @@ export function createPrismaWorkspaceExecutionRegistry(
       if (!isWorkspaceRuntimeExecSessionId(input.runtimeExecSessionId)) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
-      try {
-        await guarded(input.sessionId, input.operation, (tx) => tx.workspaceExecution.create({
-          data: {
-            modelRunId: input.modelRunId,
-            modelRunToolCallId: input.modelRunToolCallId,
-            runtimeExecSessionId: input.runtimeExecSessionId,
-            workspaceSessionId: input.sessionId
-          },
-          select: { id: true }
-        }));
-        return "registered";
-      } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-        // A replayed registration for the same accepted tool call is idempotent;
-        // any other collision means two owners claim one guest execution.
-        const existing = await prisma.workspaceExecution.findUnique({
-          select: RECORD_SELECT,
-          where: { modelRunToolCallId: input.modelRunToolCallId }
-        }).catch(retainDatabaseFailure);
-        return existing &&
-          existing.modelRunId === input.modelRunId &&
-          existing.workspaceSessionId === input.sessionId &&
-          existing.runtimeExecSessionId === input.runtimeExecSessionId
-          ? "registered"
-          : "conflict";
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          await guarded(input.sessionId, input.operation, (tx) => tx.workspaceExecution.create({
+            data: {
+              modelRunId: input.modelRunId,
+              modelRunToolCallId: input.modelRunToolCallId,
+              runtimeExecSessionId: input.runtimeExecSessionId,
+              workspaceSessionId: input.sessionId
+            },
+            select: { id: true }
+          }));
+          return "registered";
+        } catch (error) {
+          // A lost deadlock or serialization conflict rolled the attempt back whole: make it again, within the bound.
+          if (isPrismaSerializationConflict(error) && attempt < WORKSPACE_EXECUTION_REGISTER_ATTEMPTS) continue;
+          if (!isUniqueViolation(error)) throw error;
+          // A replayed registration for the same accepted tool call is idempotent;
+          // any other collision means two owners claim one guest execution.
+          const existing = await prisma.workspaceExecution.findUnique({
+            select: RECORD_SELECT,
+            where: { modelRunToolCallId: input.modelRunToolCallId }
+          }).catch(retainDatabaseFailure);
+          return existing &&
+            existing.modelRunId === input.modelRunId &&
+            existing.workspaceSessionId === input.sessionId &&
+            existing.runtimeExecSessionId === input.runtimeExecSessionId
+            ? "registered"
+            : "conflict";
+        }
       }
     },
     async transition({ errorCode, from, id, operation, to }) {
