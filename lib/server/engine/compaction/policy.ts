@@ -1,5 +1,5 @@
 import { contextItemTokens, type ContextMeasureCalibration, type ReasoningWeight } from "../contextMeasure";
-import { selectTranscript, type TranscriptImages, type TranscriptItem, type TranscriptTarget } from "../transcript";
+import { replayKeeps, selectTranscript, type TranscriptImages, type TranscriptItem, type TranscriptTarget } from "../transcript";
 import { itemRules, type CompactionItemRules } from "./items";
 import { estimateRetainedTokens } from "./retained";
 
@@ -21,7 +21,9 @@ import { estimateRetainedTokens } from "./retained";
  * user's approval stays in the kept tail. The cut may pass the run's input:
  * while its request carries attachments or a reminder, which render only there, replay keeps
  * it beside the run's own context (`TranscriptTarget.carriedInputId`), so a
- * long turn still compacts, and its figures count it as staying.
+ * long turn still compacts. Its figures count what replay keeps from before
+ * the cut (that input, the run's own context, earlier file marks) as staying,
+ * never as freed.
  *
  * Progress guarantee (2026-11-11): a request that fits is compacted only when
  * the compaction frees at least the recent tail's budget, never while the
@@ -118,12 +120,13 @@ export type CompactionCut = Readonly<{
   baseId: string | null;
   /** Window items before the kept tail, the base compaction not counted. */
   compactedItems: number;
-  /** Estimated tokens before the kept tail, the base compaction included and the input replay carries not. */
+  /** Estimated tokens before the kept tail that the compaction replaces: the base compaction included, what replay keeps
+   * from before the tail (the run's own context, the carried input, earlier file marks: `replayKeeps`) not. */
   compactedTokens: number;
   /** The first item kept verbatim. */
   keepFromId: string;
   keptItems: number;
-  /** Estimated tokens of the kept tail and the input replay carries past it. */
+  /** Estimated tokens of the kept tail and of what replay keeps from before it. */
   keptTokens: number;
 }>;
 
@@ -248,15 +251,23 @@ export function findCompactionCut(input: CompactionCutInput): CompactionCut | nu
       if (position > chosen && suffix[chosen]! > input.maxKeptTokens) chosen = position;
     }
   }
-  const carriedAt = window.findIndex((item) => item.id === input.target.carriedInputId);
-  const carried = carriedAt >= 0 && carriedAt < chosen ? suffix[carriedAt]! - suffix[carriedAt + 1]! : 0;
+  // Replay keeps the run's own context, the carried input and earlier file marks from before the cut (`replayKeeps`), so
+  // they stay in the request: the compaction neither removes nor frees them.
+  let staying = 0;
+  for (let position = 0; position < chosen; position += 1) {
+    const item = window[position]!;
+    const kept = replayKeeps(item, input.target);
+    if (!kept) continue;
+    staying += kept === item ? suffix[position]! - suffix[position + 1]!
+      : contextItemTokens(kept, input.target, input.estimate, input.reasoning ?? "opaque", input.calibration, input.images);
+  }
   return {
     baseId,
     compactedItems: chosen - first,
-    compactedTokens: suffix[0]! - suffix[chosen]! - carried,
+    compactedTokens: suffix[0]! - suffix[chosen]! - staying,
     keepFromId: window[chosen]!.id,
     keptItems: window.length - chosen,
-    keptTokens: suffix[chosen]! + carried
+    keptTokens: suffix[chosen]! + staying
   };
 }
 

@@ -17,11 +17,12 @@ function sheet(index: number, characters: number): ProviderAttachment {
     id: `sheet-${index}`, kind: "document", metadata: {}, mimeType: SHEET_TYPE, status: "ready" };
 }
 
-function request(attachments: ProviderAttachment[], system = "Be brief."): ProviderRunRequest {
+function request(attachments: ProviderAttachment[], system = "Be brief.",
+  window: Readonly<{ contextWindow: number; defaultMaxOutputTokens: number }> = PRODUCTION): ProviderRunRequest {
   return {
     attachmentIds: attachments.map((attachment) => attachment.id), attachments, chatId: "chat",
     content: { blocks: [{ text: "Build the summary workbook from the attached spreadsheets.", type: "text" }] },
-    modelCapabilities: { ...PRODUCTION, nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true,
+    modelCapabilities: { ...window, nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true,
       vision: false },
     modelId: "fake-qsa", params: {}, prompt: { developer: null, system }, provider: "fake",
     searchPlan: { mode: "all_selected", options: [] }, toolChoice: "auto", toolMode: "auto", tools: []
@@ -66,17 +67,37 @@ describe("attachment text at admission", () => {
       .toEqual(attachments.map((attachment) => attachment.extractedText));
   });
 
-  it("never refuses what the window's budget admits: past the cap each text keeps its first character and the marker", () => {
-    // The instructions alone measure 400 000: past the cap, within the budget.
+  it("keeps the budget's room where the rest of the fixed part alone reaches the cap, and refuses only past the budget", () => {
+    // The instructions alone measure 400 000, past the cap: cutting the text to nothing would free no room a compaction
+    // could use, so the two texts share what the budget leaves (564 464 less the instructions), as before the cap.
     const result = applyProviderRequestContextBudget({ request: request([sheet(1, 600_000), sheet(2, 600_000)], "i".repeat(1_600_000)) });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    for (const attachment of result.request.attachments) {
-      expect(attachment.extractedText!.endsWith(MARKER)).toBe(true);
-      expect(attachment.extractedText!.length).toBeLessThan(MARKER.length + 16);
-    }
+    expect(textTokens(result.request.attachments)).toBeGreaterThan(164_000);
+    expect(textTokens(result.request.attachments)).toBeLessThanOrEqual(164_464);
+    for (const attachment of result.request.attachments) expect(attachment.extractedText!.endsWith(MARKER)).toBe(true);
     // Past the budget the request is refused as before.
     expect(applyProviderRequestContextBudget({ request: request([sheet(1, 600_000)], "i".repeat(2_400_000)) }))
       .toMatchObject({ error: { code: "context_too_large" }, ok: false, status: 400 });
+  });
+
+  it("on a 128k window, caps the text beside a small fixed part and keeps the old allowance beside a large one", () => {
+    // Window 128 000, output 16 384: budget 98 816 (with the 10% margin), usable 111 616, cap 80 363 - 16 743 = 63 620.
+    const window = { contextWindow: 128_000, defaultMaxOutputTokens: 16_384 };
+    expect(compactableFixedTokens({ contextWindow: 128_000, maxOutputTokens: 16_384 })).toBe(63_620);
+    const small = applyProviderRequestContextBudget({ request: request([sheet(1, 400_000)], "Be brief.", window) });
+    expect(small.ok).toBe(true);
+    if (!small.ok) return;
+    expect(textTokens(small.request.attachments)).toBeLessThanOrEqual(63_620);
+    expect(textTokens(small.request.attachments)).toBeGreaterThan(63_000);
+    expect(small.request.attachments[0]!.extractedText!.endsWith(MARKER)).toBe(true);
+    // Instructions, tools and a loaded MCP catalog of 70 000 already pass the cap: the text keeps the 28 816 or so the
+    // budget leaves, instead of its first character.
+    const large = applyProviderRequestContextBudget({ request: request([sheet(1, 200_000)], "i".repeat(280_000), window) });
+    expect(large.ok).toBe(true);
+    if (!large.ok) return;
+    expect(textTokens(large.request.attachments)).toBeGreaterThan(28_000);
+    expect(textTokens(large.request.attachments)).toBeLessThanOrEqual(98_816 - 70_000);
+    expect(large.request.attachments[0]!.extractedText!.endsWith(MARKER)).toBe(true);
   });
 });

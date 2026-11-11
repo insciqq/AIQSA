@@ -411,6 +411,46 @@ describe("the progress guarantee", () => {
     expect(kept.some((item) => item.kind === "tool_result" && item.output === "r".repeat(4_000))).toBe(true);
   });
 
+  it("counts what replay keeps from before the cut as staying, so a Skills run context never passes for freed room", () => {
+    // An earlier message with a file, the run's context (a Skills index with a pinned Skill, about 16 000 tokens) and the
+    // input the turn's attachment renders on, then page reads.
+    const chat = transcriptBuilder();
+    chat.items.push({ attachmentNotice: "[Attached file: old.xlsx]", id: "msg-old", kind: "user", text: `Old question ${"o".repeat(2_000)}` });
+    chat.answer("Old answer.");
+    chat.items.push({ id: "ctx-skills", kind: "user", runContext: true, text: `Skills index and pinned Skills ${"k".repeat(16_000)}` });
+    const input = chat.user("Compare the attached report with these pages.");
+    const target: TranscriptTarget = { ...CODEX, carriedInputId: input };
+    const round = (index: number) => chat.tool("fetch_url", { url: `https://example.test/${index}` }, `page ${index} ${"p".repeat(4_000)}`);
+    const sized = (items: readonly TranscriptItem[]) => measureContext({ estimate: charTokens, fixedTokens: 0, items, target }).tokens;
+    const weight = (item: TranscriptItem) => contextItemTokens(item, target, charTokens, "opaque");
+    /** Applies the cut and checks that its figures are exactly what replay drops and keeps: the old ones counted the
+     * Skills and the file mark as freed. */
+    const apply = (cut: NonNullable<ReturnType<typeof findCompactionCut>>, summary: string) => {
+      const before = sized(chat.items);
+      const id = chat.compaction({ keepFromId: cut.keepFromId, summary });
+      expect(sized(chat.items)).toBe(before - cut.compactedTokens + weight(chat.items.find((item) => item.id === id)!));
+      expect(cut.keptTokens + cut.compactedTokens).toBe(before);
+      return id;
+    };
+    for (let index = 1; index <= 8; index += 1) round(index);
+    apply(findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 6_000, target })!, "Six pages read.");
+    // The old file's mark, the run's context and the input stay before the summary; the old message's words do not.
+    expect(selectTranscript(chat.items, target).window.slice(0, 3).map((item) => item.id)).toEqual(["msg-old", "ctx-skills", input]);
+    for (let index = 9; index <= 11; index += 1) round(index);
+    const second = apply(findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 3_750, target })!, "Ten pages read.");
+
+    // A plan on the same figures: before the second compaction the cut would free only about 7k, under the 15k recent
+    // budget of a 100k usable window, though counting the Skills as compacted would have made it look like 23k.
+    chat.items.splice(chat.items.findIndex((item) => item.id === second), 1);
+    const plan = (items: readonly TranscriptItem[]) => planCompaction({ background: "idle", estimate: charTokens, items, target,
+      tokens: 86_000, window: { contextWindow: 120_000, maxOutputTokens: 20_000 } });
+    expect(plan(chat.items)).toMatchObject({ kind: "unavailable", reason: "threshold" });
+    for (let index = 12; index <= 14; index += 1) round(index);
+    const later = plan(chat.items);
+    expect(later).toMatchObject({ kind: "foreground", reason: "threshold" });
+    if (later.kind === "foreground") expect(later.tokens - later.expectedTokens).toBeGreaterThanOrEqual(15_000);
+  });
+
   it("keeps a quarter of the recent budget after the cut: no cut point keeps that much, no cut", () => {
     const chat = longChat(6, 2_000);
     chat.user("Check the small file too.");

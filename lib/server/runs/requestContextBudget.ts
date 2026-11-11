@@ -38,9 +38,11 @@ import type { SkillBudgetFacts } from "../../contracts/skills";
  * remove it. In production the text of 19 spreadsheets filled about 90% of
  * the usable window, and the turn compacted before every request without
  * freeing room. Text past that point is cut with the usual marker, and the
- * original stays readable (`TRUNCATION_MARKER`). The cap never refuses a
- * request the budget admits: a fixed part already past it leaves each text
- * its first character and the marker.
+ * original stays readable (`TRUNCATION_MARKER`). The cap applies only where it
+ * gives compaction room back: when the rest of the fixed part (instructions,
+ * tools, a loaded MCP catalog, pinned Skills) alone reaches it, cutting the
+ * text frees nothing a compaction could use, so the text keeps the room the
+ * budget leaves, as before. The cap never refuses a request either.
  */
 
 /** Room for extracted attachment text when the model's window is unknown. */
@@ -272,9 +274,11 @@ function fitRequest(request: ProviderRunRequest, bridge: ProviderToolBridge | un
   // Follow-ups are transcript items a compaction removes, so the cap counts no reserve for them.
   const compactable = compactableFixedTokens({ contextWindow: limits.contextWindow, maxOutputTokens: limits.maxOutputTokens }) -
     fixed - labelTokens;
-  // Past the cap each text still keeps its first character and the marker, so the model learns it was cut.
+  // A cap that leaves the texts no more than their first characters and markers means the rest of the fixed part reaches
+  // it alone: cutting them would free nothing a compaction could use, so they keep the budget's room.
   const marked = candidates.reduce((total, candidate) => total + candidate.minimumTokens + estimate(TRUNCATION_MARKER), 0);
-  const fitted = allocateAttachmentText(attachments, candidates, Math.min(available, Math.max(marked, compactable)), estimate);
+  const fitted = allocateAttachmentText(attachments, candidates, compactable > marked ? Math.min(available, compactable) : available,
+    estimate);
   return fitted ? { attachments: fitted, ok: true } : { budgetTokens: limits.budgetTokens, ok: false };
 }
 
