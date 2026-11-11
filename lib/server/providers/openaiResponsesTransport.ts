@@ -6,6 +6,7 @@ import {
   providerResponseFailure
 } from "./responseFailure";
 import {
+  isProviderDeadlineExceededError,
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
   providerStreamTimingLimits,
@@ -24,6 +25,8 @@ import { parseRetryAfterMs } from "../retryAfter";
 import { randomUUID } from "node:crypto";
 import { parseProviderSseStream } from "./sse";
 import { markProviderOutputObserved, markProviderStreamDrop, providerStreamDrop, responsesOutputItem } from "./streamDrop";
+import { providerStreamProgress } from "./streamProgress";
+import { ProviderStreamIdleTimeoutError } from "./streamSafety";
 import { inheritProviderErrorCode, markProviderErrorDetail } from "./providerErrorCode";
 
 export type OpenAIResponseObject = Record<string, unknown>;
@@ -233,6 +236,11 @@ export function compatibleDroppedRoundDecision(error: unknown): ProviderRetryDec
   if (typeof error !== "object" || error === null || deterministicFailureCodes.has(ownErrorValue(error, "code")) ||
     ownErrorValue(error, "capabilityFailureReason") !== undefined) return null;
   if (error instanceof OpenAIHttpError) return error.status === 502 ? { retryAfterMs: error.retryAfterMs } : null;
+  // A silent stream, and a deadline that passed before the response started, are a stuck upstream: sent again like a
+  // drop, as a run's model calls are (decision 2026-11-11, `modelCallRetryDecision`). A deadline met while events flowed
+  // is the stream's ceiling.
+  if (error instanceof ProviderStreamIdleTimeoutError) return { retryAfterMs: null };
+  if (isProviderDeadlineExceededError(error)) return providerStreamProgress(error)?.response_started === false ? { retryAfterMs: null } : null;
   return providerStreamDrop(error) ? { retryAfterMs: null } : null;
 }
 
