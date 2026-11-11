@@ -164,6 +164,32 @@ describe("a task chat's quiet checks", () => {
     expect(matches[0]).toMatchObject({ chatId: chat.chatId, matchCount: 32, messageId: chat.shown.at(-2) });
   });
 
+  it("never match a message search in a branch copy either, which keeps the rule through its answers' source runs", async () => {
+    const chat = await taskChat();
+    const baseline = chat.add("baseline", { text: "Version 1.0 is current." });
+    const quiet = chat.add("no_update");
+    await chat.flush(quiet.answerId);
+    // A branch copy keeps the prompt mark and each answer's source run, and has no run of its own.
+    const copyId = randomUUID();
+    await prisma.chat.create({ data: { id: copyId, title: "Release watch (branch)", userId: chat.userId } });
+    const copy = async (source: Check, parentMessageId: string | null) => {
+      const question: { id: string } = await prisma.message.create({ data: { chatId: copyId, content: textMessageContent(PROMPT),
+        parentMessageId, role: "user", scheduledTaskPrompt: true, status: "complete" } });
+      const answer: { id: string } = await prisma.message.create({ data: { branchSourceModelRunId: source.runId, chatId: copyId,
+        content: textMessageContent(""), parentMessageId: question.id, role: "assistant", status: "complete" } });
+      return { answerId: answer.id, questionId: question.id };
+    };
+    const shown = await copy(baseline, null);
+    const hidden = await copy(quiet, shown.answerId);
+    await prisma.chat.update({ data: { activeLeafMessageId: hidden.answerId }, where: { id: copyId } });
+    const matches = await findMessageMatches(prisma, { after: null, limit: 10, query: "release page", userId: chat.userId });
+    if (matches === "timeout") throw new Error("search timed out");
+    expect(matches.find((match) => match.chatId === copyId)).toMatchObject({ matchCount: 1, messageId: shown.questionId });
+    // The copy's history reads the same.
+    const detail = await createPrismaChatRepository(prisma).getChat({ chatId: copyId, userId: chat.userId });
+    expect(detail!.messages.map((message) => message.id)).toEqual([shown.questionId, shown.answerId]);
+  });
+
   it("leave an archived preview without a summary, whose keys a previous client checks exactly", async () => {
     const chat = await grownChat();
     await prisma.chat.update({ data: { archived: true }, where: { id: chat.chatId } });

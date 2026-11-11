@@ -1,11 +1,30 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
+import { createTranscriptRepository } from "../engine/transcriptRepository";
+import { unknownEffectsOf, withHiddenRunEffects } from "../engine/unknownEffects";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "./prismaRepository";
 import type { RunRepository } from "./runRepositoryContract";
+import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
+
+const JIRA_WRITE = "mcp_jira_create_issue";
+
+/** A call's result as the engine records an MCP call that may have taken effect (`toolBatch.ts`). */
+function unknownResult(callId: string): Prisma.InputJsonValue {
+  return snapshotToolExecutionResult({ callId, content: [{ type: "json", value: { error: "mcp_call_result_too_large",
+    outcome: "unknown" } }], name: JIRA_WRITE, status: "error" }, 64_000) as Prisma.InputJsonValue;
+}
+
+/** One call of a run's main agent, in the state its run left it. */
+function toolCall(modelRunId: string, data: Readonly<{ completedAt?: Date; result?: Prisma.InputJsonValue;
+  state: "complete" | "error" | "running" }>) {
+  return prisma.modelRunToolCall.create({ data: { arguments: { summary: "x" }, modelRunId, ordinal: 0,
+    providerCallId: `call-${modelRunId}`, roundIndex: 0, startedAt: new Date(), toolName: JIRA_WRITE, ...data } });
+}
 
 /**
  * A message the owner writes in a monitoring automation's chat continues the
@@ -159,26 +178,51 @@ describe("a message after quiet checks", () => {
       .toEqual([baseline!.questionId, baseline!.answerId, update!.questionId, update!.answerId]);
   });
 
-  it("names a quiet check's run with an unknown call for the guard, with the next message the branch shows", async () => {
+  it("names every quiet run of the chat that left a call unfinished, after a reply admitted under the shown result", async () => {
     const userId = await owner();
-    const { chatId, checks, leaf } = await taskChat(userId, ["baseline", "no_update", "no_update", "update", "no_update"]);
-    const [, first, second, update, tail] = checks;
-    const reply: { id: string } = await prisma.message.create({ data: { chatId, content: textMessageContent("What changed?"),
-      parentMessageId: leaf, role: "user", status: "complete" } });
-    const call = (modelRunId: string, data: Readonly<{ completedAt?: Date; result?: Record<string, string>;
-      state: "complete" | "error" | "running" }>) => prisma.modelRunToolCall.create({ data: {
-      arguments: { summary: "x" }, modelRunId, ordinal: 0, providerCallId: `call-${modelRunId}`, roundIndex: 0,
-      startedAt: new Date(), toolName: "mcp_jira_create_issue", ...data } });
-    expect(await repository.loadQuietCheckEffectRuns?.({ chatId, userId, userMessageId: reply.id })).toEqual([]);
-    await call(first!.runId, { state: "running" });
-    await call(second!.runId, { completedAt: new Date(), result: { output: "Created A-1" }, state: "complete" });
-    await call(tail!.runId, { completedAt: new Date(), result: { code: "run_ended", outcome: "unknown" }, state: "error" });
-    // A shown check's own unknown call is the conversation's, never this lookup's.
-    await call(update!.runId, { state: "running" });
-    expect(new Set(await repository.loadQuietCheckEffectRuns?.({ chatId, userId, userMessageId: reply.id }))).toEqual(new Set([
+    const { chatId, checks, leaf } = await taskChat(userId, ["baseline", "no_update", "no_update", "update", "no_update",
+      "no_update"]);
+    const [, first, second, update, tail, failed] = checks;
+    const created = await repository.createRun(sendInput(chatId, userId, leaf));
+    const lookup = () => repository.loadQuietCheckEffectRuns?.({ chatId, userId, userMessageId: created.userMessageId });
+    expect(await lookup()).toEqual([]);
+    await toolCall(first!.runId, { state: "running" });
+    await toolCall(second!.runId, { completedAt: new Date(), result: { output: "Created A-1" }, state: "complete" });
+    // The engine's own record of an uncertain call, and the run's ending closing one.
+    await toolCall(tail!.runId, { completedAt: new Date(), result: unknownResult("call-tail"), state: "error" });
+    await toolCall(failed!.runId, { completedAt: new Date(), result: { code: "run_ended", outcome: "unknown" }, state: "error" });
+    // A shown check's own unfinished call is the conversation's, never this lookup's.
+    await toolCall(update!.runId, { state: "running" });
+    // The reply hangs from the update, so the quiet tail left its path; its runs still count, written before the reply.
+    expect(await lookup()).toEqual([
       { nextMessageId: update!.questionId, runId: first!.runId },
-      { nextMessageId: reply.id, runId: tail!.runId }
-    ]));
+      { nextMessageId: created.userMessageId, runId: tail!.runId },
+      { nextMessageId: created.userMessageId, runId: failed!.runId }
+    ]);
+  });
+
+  it("holds an equivalent call back for the user after a reply, when a quiet check's call left its outcome unknown", async () => {
+    const userId = await owner();
+    const { chatId, checks, leaf } = await taskChat(userId, ["baseline", "no_update"]);
+    const quiet = checks[1]!;
+    await toolCall(quiet.runId, { completedAt: new Date(), result: unknownResult("call-1"), state: "error" });
+    // What the check's run recorded as it went: the call before it was sent, then its unknown outcome.
+    const transcripts = createTranscriptRepository(prisma);
+    await transcripts.append({ chatId, runId: quiet.runId, userId }, 0, [
+      { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: randomUUID(), kind: "tool_call", name: JIRA_WRITE,
+        origin: { model: "fake-qsa", provider: "fake" } },
+      { callId: "call-1", id: randomUUID(), kind: "tool_result", name: JIRA_WRITE, outcome: "unknown",
+        output: "The call failed after it may have been sent; its effect is unknown and it was not repeated." }
+    ]);
+    const created = await repository.createRun(sendInput(chatId, userId, leaf));
+    const runs = await repository.loadQuietCheckEffectRuns?.({ chatId, userId, userMessageId: created.userMessageId }) ?? [];
+    expect(runs).toEqual([{ nextMessageId: created.userMessageId, runId: quiet.runId }]);
+    // The guard as the reply's run builds it (`lib/server/engine/execution.ts`): the quiet run's calls before the reply.
+    const items = await transcripts.loadRuns({ chatId, runIds: runs.map((run) => run.runId), userId });
+    const effects = unknownEffectsOf(withHiddenRunEffects([{ id: "msg-current", kind: "user", text: "What changed?" }],
+      runs.map((run) => ({ beforeItemId: "msg-current", items: items.get(run.runId) ?? [] }))), () => true);
+    expect(effects.find({ arguments: { summary: "x" }, name: JIRA_WRITE })).not.toBeNull();
+    expect(effects.find({ arguments: { summary: "y" }, name: JIRA_WRITE })).toBeNull();
   });
 
   it("shows a check that follows a quiet one after the latest shown result while it runs", async () => {

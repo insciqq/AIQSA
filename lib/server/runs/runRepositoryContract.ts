@@ -838,9 +838,9 @@ export type RunRepository = {
    */
   loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string | null>;
   /**
-   * The native runs of quiet checks the branch up to this user message holds
-   * that left a call's outcome unknown, each with the next message the branch
-   * shows: their calls still count for the unknown-effect guard, though the
+   * The native runs of the chat's quiet checks that left a call unfinished,
+   * each with the first user message shown on this message's branch after it:
+   * their calls still count for the unknown-effect guard, though the
    * conversation leaves them out (`lib/server/chats/quietScheduledChecks.ts`).
    */
   loadQuietCheckEffectRuns?(input: Readonly<{ chatId: string; userId: string; userMessageId: string }>):
