@@ -257,7 +257,7 @@ export type EventFields = {
    * Only an unexpected failure (`upload_unavailable`) carries its caught error and is an error; every other refusal warns. */
   upload_refused: CaughtError & Readonly<{
     operation: UploadRefusalOperation; stage?: UploadRefusalStage; code: string; httpStatus: number;
-    size_class?: UploadSizeClass; mime_family?: UploadMimeFamily;
+    size_class?: UploadSizeClass; mime_family?: UploadMimeFamily; client_aborted?: boolean;
   }>;
   provider_stream_safety_terminated: ProviderIdentity & Readonly<{ code: string; durationMs: number; limit: number; observed: number; totalStreamBytes: number; termination: string; unit: string }>;
 };

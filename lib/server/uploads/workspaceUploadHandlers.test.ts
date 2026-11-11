@@ -169,6 +169,20 @@ describe("Workspace upload refusal records", () => {
     expect(lines.join("")).not.toContain("owned-session");
   });
 
+  it("logs a part the client cancelled at info, without an error projection", async () => {
+    const abort = new AbortController();
+    const service = { part: vi.fn(async () => { abort.abort(); throw new Error(`PRIVATE aborted ${PRIVATE_NAME}`); }) } as unknown as WorkspaceUploadService;
+    const request = new Request(partRequest(), { signal: abort.signal });
+    const { lines, records, response } = await refusalRecords(() => createWorkspaceUploadHandlers({ env, resolveAuth: owner(), service })
+      .part(request, context));
+
+    expect(response.status).toBe(503);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ client_aborted: true, code: "upload_unavailable", level: "info", operation: "session_part" });
+    expect(records[0]).not.toHaveProperty("error_class");
+    expect(lines.join("")).not.toContain("PRIVATE");
+  });
+
   it("logs nothing for an accepted request", async () => {
     const service = { get: vi.fn(async () => ({ id: "owned-session" })) } as unknown as WorkspaceUploadService;
     const { records, response } = await refusalRecords(() => createWorkspaceUploadHandlers({ env, resolveAuth: owner(), service })
