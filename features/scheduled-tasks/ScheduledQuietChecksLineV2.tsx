@@ -24,7 +24,7 @@ export function ScheduledQuietChecksLineV2({ nextRunAt, now, summary, timeZone }
   const last = formatScheduledTranscriptTime(summary.lastAt, zone, now);
   const next = nextRunAt ? formatScheduledTranscriptTime(nextRunAt, zone, now) : null;
   return (
-    <div className="v2-scheduled-checks" data-testid="scheduled-quiet-checks">
+    <div className="v2-scheduled-checks v2-scheduled-quiet-checks" data-testid="scheduled-quiet-checks">
       <UiV2Icon name="clock" />
       {/* Each optional part is its own element, so a page translator's wrappers never strand a text node React removes. */}
       <p>
