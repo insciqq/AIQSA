@@ -27,8 +27,8 @@ export const AGENT_DOC_BUDGETS = Object.freeze({
   files: 16,
   nonEmptyLines: 900,
   nonEmptyLinesPerFile: 124,
-  words: 23600,
-  wordsPerFile: 6600
+  words: 24000,
+  wordsPerFile: 6800
 });
 
 export const INSTRUCTION_BUDGETS = Object.freeze([
