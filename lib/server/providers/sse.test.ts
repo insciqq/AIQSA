@@ -342,6 +342,31 @@ describe("provider SSE parser", () => {
     }
   });
 
+  it("never cuts a stream that sends only keepalive comments on its byte idle timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const streamController: { current?: ReadableStreamDefaultController<Uint8Array> } = {};
+      const stream = new ReadableStream<Uint8Array>({ start(controller) { streamController.current = controller; } });
+      let settled: unknown = "pending";
+      const collected = collectEvents(parseSseStream(stream, { idleTimeoutMs: 20, maxDurationMs: 10_000 }))
+        .then((events) => { settled = events; }, (error: unknown) => { settled = error; });
+      // A keepalive every 15 ms for ten idle timeouts: bytes keep arriving, no event does.
+      for (let index = 0; index < 13; index += 1) {
+        await vi.advanceTimersByTimeAsync(15);
+        streamController.current?.enqueue(encoder.encode(": keepalive\n\n"));
+      }
+      expect(settled).toBe("pending");
+      streamController.current?.enqueue(encoder.encode("data: done\n\n"));
+      streamController.current?.close();
+      await collected;
+      expect(settled).toEqual([{ data: "done", event: "message" }]);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(stream.locked).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops an active heartbeat stream at the absolute deadline", async () => {
     vi.useFakeTimers();
     try {

@@ -16,7 +16,7 @@ import {
 } from "./openaiResponsesResponse";
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./types";
-import { providerStreamTimingLimits } from "./network";
+import { providerStreamTimingLimits, type ProviderStreamIdle } from "./network";
 import {
   OPENAI_RESPONSES_REASONING_REQUEST_MAPPING,
   type ProviderReasoningRequestMapping
@@ -30,6 +30,12 @@ export type CompatibleResponsesAdapterOptions = {
   client: OpenAIResponsesClient;
   maxAttachmentTextChars?: number;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
+  /**
+   * `keepalive` only on a Codex LB connection, measured sending an SSE comment
+   * every 5-10 s (decision 2026-11-11); another compatible endpoint proved
+   * nothing, so its stream may stay silent as long as the response timeout.
+   */
+  streamIdle?: ProviderStreamIdle;
 };
 
 function compatibleRequest(request: ProviderRunRequest): ProviderRunRequest {
@@ -135,7 +141,7 @@ export function createCompatibleResponsesAdapter(
           responseBody: response.body,
           signal: runOptions.signal,
           stream: true,
-          streamLimits: providerStreamTimingLimits(runOptions.timeoutMs)
+          streamLimits: providerStreamTimingLimits(runOptions.timeoutMs, options.streamIdle)
         });
       }
 

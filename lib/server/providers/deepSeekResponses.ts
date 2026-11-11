@@ -73,7 +73,10 @@ export function createDeepSeekResponsesAdapter(
             responseBody: response.body,
             signal: runOptions.signal,
             stream: true,
-            streamLimits: providerStreamTimingLimits(runOptions.timeoutMs)
+            // DeepSeek documents SSE keep-alive comments sent continuously while a streamed request waits, and streams
+            // the whole chain of thought once inference runs (`response.reasoning_text.delta`): a minute without a
+            // byte is a stuck upstream (decision 2026-11-11).
+            streamLimits: providerStreamTimingLimits(runOptions.timeoutMs, "keepalive")
           });
         } catch (error) {
           throw deepSeekResponseError(error);
