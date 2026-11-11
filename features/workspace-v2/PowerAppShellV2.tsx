@@ -127,7 +127,7 @@ import { usePinnedScroll } from "@/components/app-shell/usePinnedScroll";
 import { usePowerAppShellViewModel } from "@/components/app-shell/usePowerAppShellViewModel";
 import { useRunStreaming } from "@/components/app-shell/useRunStreaming";
 import { useInterruptedRunRecovery } from "@/components/app-shell/useInterruptedRunRecovery";
-import { useRefreshOnReturn, WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS } from "@/components/app-shell/useRefreshOnReturn";
+import { useWorkspaceInstallationAvailability } from "@/components/app-shell/useWorkspaceInstallationAvailability";
 import { useShellAppearanceController } from "@/components/app-shell/useShellAppearanceController";
 import { useShellOverlayController } from "@/components/app-shell/useShellOverlayController";
 import { useShellUiActions } from "@/components/app-shell/useShellUiActions";
@@ -214,10 +214,8 @@ import {
   type AssistantRowKey,
   type AssistantSummary
 } from "@/lib/contracts/assistants";
-import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 import {
   archiveChatWorkspace,
-  loadWorkspaceAvailability,
   resetChatWorkspace
 } from "@/components/app-shell/workspaceClient";
 
@@ -442,10 +440,11 @@ export function PowerAppShellV2({
       setNotice((shown) => shown?.chatId && shown.chatId !== current.activeChatId ? null : shown);
     }
   }), []);
-  const [workspaceInstallation, setWorkspaceInstallation] =
-    useState<ChatWorkspaceState | null>(null);
-  // Sends read availability at dispatch; the reader keeps this beside the state.
-  const workspaceInstallationRef = useRef<ChatWorkspaceState | null>(null);
+  const {
+    installation: workspaceInstallation,
+    read: readWorkspaceAvailability,
+    resolve: resolveWorkspaceInstallation
+  } = useWorkspaceInstallationAvailability(accountId);
   const [workspaceCapabilityBusy, setWorkspaceCapabilityBusy] = useState(false);
   const [shareDialogTarget, setShareDialogTarget] = useState<ShareDialogTarget | null>(null);
   const [memoryResumeTarget, setMemoryResumeTarget] = useState<WorkspaceChatSummary | null>(null);
@@ -484,33 +483,6 @@ export function PowerAppShellV2({
     }
   });
 
-  // The latest read wins: a send refused for Workspace reads availability
-  // again, so the next send goes without a Workspace that went away.
-  const workspaceAvailabilityReadRef = useRef(0);
-  const readWorkspaceAvailability = useCallback(() => {
-    const read = ++workspaceAvailabilityReadRef.current;
-    void loadWorkspaceAvailability()
-      .catch((): ChatWorkspaceState => ({
-        available: false,
-        enabled: false,
-        internetEnabled: null,
-        sessionState: null,
-        unavailableReason: "runtime_unavailable"
-      }))
-      .then((workspace) => {
-        if (workspaceAvailabilityReadRef.current !== read) return;
-        workspaceInstallationRef.current = workspace;
-        setWorkspaceInstallation(workspace);
-      });
-  }, []);
-  useEffect(() => {
-    readWorkspaceAvailability();
-    return () => {
-      workspaceAvailabilityReadRef.current += 1;
-    };
-  }, [accountId, readWorkspaceAvailability]);
-  // A runner that recovered or went away shows without a reload.
-  useRefreshOnReturn(readWorkspaceAvailability, WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS);
   const activeChatIdRef = useRef<string | null>(null);
   const activeStreamAbortRef = useRef<Map<string, AbortController>>(new Map());
   const memorySourceMutationIdsRef = useRef(new Set<string>());
@@ -1286,7 +1258,7 @@ export function PowerAppShellV2({
     primeAnswerSound,
     refreshActiveChat,
     resolveCatalog: () => runCatalogRef.current,
-    resolveWorkspaceInstallationAvailable: () => workspaceInstallationRef.current?.available === true,
+    resolveWorkspaceInstallation,
     refreshWorkspaceAvailability: readWorkspaceAvailability,
     resolveComputerOffered: () => connectEntryVisible,
     resetThreadToLatest,
@@ -1656,7 +1628,7 @@ export function PowerAppShellV2({
   // exactly when the installation offers it and the model calls tools, with
   // no toggle; unknown while availability loads. A chat's stored flag and the
   // saved default never decide it. Runs decide their own value at dispatch
-  // (`resolveWorkspaceInstallationAvailable`); uploads, attachment checks and
+  // (`resolveWorkspaceInstallation`); uploads, attachment checks and
   // chat creation read the active session's flag kept here.
   const workspaceUsable = workspaceInstallation?.available === true &&
     currentModel?.capabilities.toolCalling === true;

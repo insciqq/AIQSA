@@ -793,6 +793,42 @@ describe("model run route handlers", () => {
     expect(state.regenerated).toBeNull();
   });
 
+  it.each([
+    ["send", { enabled: false, reason: "user_declined" }, "user_declined"],
+    ["send", { enabled: false, reason: "installation_disabled" }, "installation_disabled"],
+    ["send", { enabled: false, reason: "model_no_tools" }, "model_no_tools"],
+    ["send", { enabled: false, reason: "made_up" }, "unknown"],
+    ["send", { enabled: false, reason: 7 }, "unknown"],
+    ["send", { enabled: false }, "unknown"],
+    ["regenerate", { enabled: false, reason: "user_declined" }, "user_declined"]
+  ] as const)("hands a %s with Workspace intent %j its closed reason for run_accepted only", async (kind, workspace, reason) => {
+    const { repository, state } = createMemoryRepository();
+    const deps = { ...authDeps, repository, providers: { fake: createFakeProviderAdapter() } };
+    const request = new Request("http://app.local/api/model-runs/workspace-reason", {
+      method: "POST", headers: { cookie: authCookie() },
+      body: JSON.stringify({ text: "New question", expectedActiveLeafId: null, admissionId: `reason-${kind}`, workspace })
+    });
+    const response = kind === "send"
+      ? await createSendMessageHandler(deps)(request, { params: { chatId: "chat-1" } })
+      : await createRegenerateModelRunHandler(deps)(request, { params: { messageId: "assistant-message-1" } });
+    expect(response.status).toBe(200);
+    await response.text();
+    const created = kind === "send" ? state.created : state.regenerated;
+    expect(created).toMatchObject({ workspaceEnabled: false, workspaceNotRequestedReason: reason });
+  });
+
+  it("refuses a Workspace intent with a key other than enabled and reason", async () => {
+    const { repository, state } = createMemoryRepository();
+    const response = await createSendMessageHandler({ ...authDeps, repository, providers: { fake: createFakeProviderAdapter() } })(
+      new Request("http://app.local/api/model-runs/workspace-intent", {
+        method: "POST", headers: { cookie: authCookie() },
+        body: JSON.stringify({ text: "New question", expectedActiveLeafId: null, workspace: { enabled: false, internet: true } })
+      }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "workspace_intent_invalid" });
+    expect(state.created).toBeNull();
+  });
+
   it.each(["send", "regenerate"] as const)(
     "rejects an oversized %s body before recovery or repository work",
     async (kind) => {

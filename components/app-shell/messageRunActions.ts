@@ -11,6 +11,7 @@ import {
 } from "@/components/app-shell/attachmentCapabilities";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { ChatPdfRouteAvailability } from "@/lib/contracts/chatPdfPreparation";
+import type { WorkspaceNotRequestedReason } from "@/lib/contracts/workspace";
 import { attachmentRetryAvailable } from "@/components/app-shell/attachmentLifecycle";
 import { latestChatPdfRouteAvailability } from "@/components/app-shell/useChatPdfRoutePreview";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
@@ -81,6 +82,13 @@ import {
 
 type MutableRef<T> = { current: T };
 
+/**
+ * Installation Workspace availability as the shell last read it: `off` only
+ * when a successful read reported it disabled or its runner unavailable;
+ * `unknown` before any read succeeded. A failed read never turns into `off`.
+ */
+export type WorkspaceInstallationAvailability = "available" | "off" | "unknown";
+
 type MessageRunControlSnapshot = {
   contextConfigurationKey: string;
   /**
@@ -115,6 +123,8 @@ type MessageRunControlSnapshot = {
   skillIds: string[];
   toolsOverride: { tools: "none" } | Record<string, never>;
   workspaceEnabled: boolean;
+  /** Why this run asks for no Workspace; null when it asks for one. */
+  workspaceNotRequestedReason: WorkspaceNotRequestedReason | null;
 };
 
 type MessageRunActionsInput = {
@@ -148,11 +158,12 @@ type MessageRunActionsInput = {
   ): Promise<ChatDetail | null>;
   resolveCatalog?(): Catalog | null;
   /**
-   * Whether the installation offers Workspace now (loaded, enabled, runner
-   * up). Workspace is ambient: a run uses it exactly when this holds and the
-   * run's model calls tools. Absent or still loading means no Workspace.
+   * The installation's Workspace availability now. Workspace is ambient: a run
+   * asks for it unless this is `off` or the run's model calls no tools, so an
+   * unknown availability (absent, still loading, reads failing) lets the
+   * server decide and a real refusal offers sending without it.
    */
-  resolveWorkspaceInstallationAvailable?(): boolean;
+  resolveWorkspaceInstallation?(): WorkspaceInstallationAvailability;
   /** Re-reads installation availability after a run was refused for Workspace. */
   refreshWorkspaceAvailability?(): void;
   /** Whether AIQSA Connect is on for the viewer, so the composer offers a computer. Absent means off. */
@@ -354,7 +365,7 @@ export function useMessageRunActions({
   primeAnswerSound,
   refreshActiveChat,
   resolveCatalog,
-  resolveWorkspaceInstallationAvailable,
+  resolveWorkspaceInstallation,
   refreshWorkspaceAvailability,
   resolveComputerOffered,
   resetThreadToLatest,
@@ -413,10 +424,14 @@ export function useMessageRunActions({
     // Workspace is ambient (operator, 2026-10-20): decided here, at dispatch,
     // from the installation and this run's model. A chat's stored flag or a
     // saved default never turns it off, and a model without tools sends
-    // without it instead of failing.
-    const workspaceEnabled = options.withoutWorkspace !== true &&
-      resolveWorkspaceInstallationAvailable?.() === true &&
-      selectedModel?.capabilities.toolCalling === true;
+    // without it instead of failing. Only an installation confirmed off goes
+    // without it: an unknown availability asks, and the server decides.
+    const workspaceNotRequestedReason: WorkspaceNotRequestedReason | null =
+      options.withoutWorkspace === true ? "user_declined"
+        : resolveWorkspaceInstallation?.() === "off" ? "installation_disabled"
+          : selectedModel?.capabilities.toolCalling !== true ? "model_no_tools"
+            : null;
+    const workspaceEnabled = workspaceNotRequestedReason === null;
     const model = selectedModel
       ? {
           ...selectedModel,
@@ -478,7 +493,8 @@ export function useMessageRunActions({
       })),
       skillIds: selectedSkills.map((skill) => skill.id),
       toolsOverride: toolsOverride(model),
-      workspaceEnabled
+      workspaceEnabled,
+      workspaceNotRequestedReason
     };
   }
 
@@ -576,7 +592,7 @@ export function useMessageRunActions({
         ...(changed.has("skills") ? { skills: { mode: snapshot.skillsMode } } : {}),
         ...(timeZone ? { timeZone } : {}),
         ...computerField,
-        workspace: { enabled: snapshot.workspaceEnabled }
+        workspace: workspacePayload(snapshot)
       };
     }
 
@@ -600,8 +616,15 @@ export function useMessageRunActions({
       ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
       ...snapshot.toolsOverride,
       ...computerField,
-      workspace: { enabled: snapshot.workspaceEnabled }
+      workspace: workspacePayload(snapshot)
     };
+  }
+
+  /** The request's Workspace intent; a run without it names why, for the server's content-free record. */
+  function workspacePayload(snapshot: MessageRunControlSnapshot) {
+    return snapshot.workspaceEnabled
+      ? { enabled: true }
+      : { enabled: false, reason: snapshot.workspaceNotRequestedReason ?? "unknown" };
   }
 
   /** A change of the chat's Assistant or of its values is queued or in flight. */

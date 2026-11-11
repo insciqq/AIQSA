@@ -530,6 +530,8 @@ export type CreateRunInput = {
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
+  /** Why the request asked for no Workspace, for the `run_accepted` record only. */
+  workspaceNotRequestedReason?: import("../../contracts/workspace").WorkspaceNotRequestedReason;
 };
 
 export type CreateRegenerationRunInput = {
@@ -558,6 +560,8 @@ export type CreateRegenerationRunInput = {
   userMessageId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
+  /** Why the request asked for no Workspace, for the `run_accepted` record only. */
+  workspaceNotRequestedReason?: import("../../contracts/workspace").WorkspaceNotRequestedReason;
 };
 
 export type PreparingRunAdmissionInput =
