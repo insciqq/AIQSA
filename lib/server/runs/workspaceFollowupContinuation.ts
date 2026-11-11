@@ -10,7 +10,7 @@ import { observedFailure } from "../providers/providerObservability";
 import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "./attachmentLimits";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
-import type { AcceptedRunSnapshot } from "./acceptedRunSnapshot";
+import { nativeEntryConnectorTurn, type AcceptedRunSnapshot } from "./acceptedRunSnapshot";
 import { isRetiredAnswerReviewStep } from "./retiredAnswerReview";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "./runRepositoryContract";
 import { WorkspaceFollowupError, type createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
@@ -86,10 +86,11 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     if (!await deps.followups.markAnswerDispatched(claim)) throw new WorkspaceFollowupError("workspace_followup_unavailable");
     releaseRegistry();
     const entry = snapshot.native;
+    const connectorTurn = nativeEntryConnectorTurn(entry);
     const response = nativeRunResponse(deps.nativeEngine, { adapter: runtime.adapter,
       ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
-      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(entry?.telegram ? { telegram: true } : {}),
+      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(connectorTurn ? { connectorTurn } : {}),
       userId: claim.userId, ...(deps.workspace ? { workspace: deps.workspace } : {}) });
     void (async () => {
       const reader = response.body?.getReader();

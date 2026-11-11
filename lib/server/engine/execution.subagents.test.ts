@@ -4,6 +4,7 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
+import type { ConnectorTurn } from "../connectors/turn";
 import type { SubagentTypeSnapshot } from "../subagents/ports";
 import type { FrozenSubagentDefault } from "../subagents/typeCatalog";
 import { FakeSubagentBackgroundControl, FakeSubagentTypeResolver } from "../../../tests/support/subagentPorts";
@@ -389,18 +390,22 @@ describe("native run with sub-agents", () => {
     expect(hasSubagentBackgroundHost("run-unused")).toBe(false);
   });
 
-  it("offers no background port to a Telegram turn", async () => {
-    const { adapter } = scriptedAdapter([
-      { calls: [{ arguments: { background: true, message: "Watch it.", name: "watcher" }, id: "call-bg", name: CALL_SUBAGENT_TOOL_NAME }] },
-      { text: "Background is not available here." }
-    ]);
-    const memory = engine();
-    const background = new FakeSubagentBackgroundControl();
-    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-telegram" }, engine: memory.deps,
-      prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
-      telegram: true, userId: "user" }).text();
-    expect(background.turns).toEqual([]);
-    expect(hasSubagentBackgroundHost("run-telegram")).toBe(false);
+  it("offers no background port to a connector's turn", async () => {
+    for (const connectorTurn of ["telegram", "discord"] as const) {
+      const { adapter, requests } = scriptedAdapter([
+        { calls: [{ arguments: { background: true, message: "Watch it.", name: "watcher" }, id: "call-bg", name: CALL_SUBAGENT_TOOL_NAME }] },
+        { text: "Background is not available here." }
+      ]);
+      const memory = engine();
+      const background = new FakeSubagentBackgroundControl();
+      await createNativeRunExecutionResponse({ adapter, connectorTurn, created: { ...created, runId: `run-${connectorTurn}` }, engine: memory.deps,
+        prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
+        userId: "user" }).text();
+      expect(background.turns).toEqual([]);
+      expect(hasSubagentBackgroundHost(`run-${connectorTurn}`)).toBe(false);
+      // The call that still asks for the background is refused visibly, never run in the foreground instead.
+      expect(JSON.stringify(requests[1]?.history)).toContain("subagent_background_unavailable");
+    }
   });
 
   it("stays executing here after Stop until a sub-agent's slow end is over, so a recovery pass leaves that turn to it", async () => {
@@ -475,7 +480,7 @@ describe("native run with the user's custom sub-agents and default", () => {
 
   /** One run admitted with these frozen bindings, on a parent model of its own and the sub-agents' model beside it. */
   async function run(input: Readonly<{ calls?: ProviderRunResult["toolCalls"]; defaultType?: FrozenSubagentDefault; extra?: Partial<MaterializedPreparedRunData>;
-    scheduled?: true; system?: string; telegram?: true; types?: FakeSubagentTypeResolver }>) {
+    connectorTurn?: ConnectorTurn; scheduled?: true; system?: string; types?: FakeSubagentTypeResolver }>) {
     const steps: Step[] = input.calls ? [{ calls: input.calls }, { text: "Outcome: done\nDone." }, { text: "All done." }] : [{ text: "All done." }];
     const { adapter, requests } = scriptedAdapter(steps);
     const memory = engine();
@@ -490,7 +495,7 @@ describe("native run with the user's custom sub-agents and default", () => {
     runs += 1;
     await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: `run-default-${runs}` }, engine: { ...memory.deps, subagentModels: { route } },
       prepared: admitted, repository: repository() as unknown as RunRepository, ...(input.scheduled ? { scheduled: true as const } : {}), services: {},
-      subagents: { types: input.types ?? new FakeSubagentTypeResolver({ user: [GEMINI, NARROW] }) }, ...(input.telegram ? { telegram: true as const } : {}),
+      subagents: { types: input.types ?? new FakeSubagentTypeResolver({ user: [GEMINI, NARROW] }) }, ...(input.connectorTurn ? { connectorTurn: input.connectorTurn } : {}),
       userId: "user" }).text();
     return { memory, requests, route };
   }
@@ -541,17 +546,18 @@ describe("native run with the user's custom sub-agents and default", () => {
   });
 
   it("offers background in a web chat only: a scheduled occurrence and a Telegram turn see call_subagent without it", async () => {
-    const offered = async (entry: Readonly<{ scheduled?: true; telegram?: true }>) => {
+    const offered = async (entry: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: true }>) => {
       const call = (await run(entry)).requests[0]!.tools?.find((tool) => tool.name === CALL_SUBAGENT_TOOL_NAME);
       return Object.keys((call!.inputSchema as { properties: object }).properties);
     };
     expect(await offered({})).toContain("background");
     expect(await offered({ scheduled: true })).toEqual(["name", "message", "type", "model", "effort"]);
-    expect(await offered({ telegram: true })).toEqual(["name", "message", "type", "model", "effort"]);
+    expect(await offered({ connectorTurn: "telegram" })).toEqual(["name", "message", "type", "model", "effort"]);
+    expect(await offered({ connectorTurn: "discord" })).toEqual(["name", "message", "type", "model", "effort"]);
   });
 
-  it("follows the same rule in a scheduled occurrence and a Telegram turn", async () => {
-    for (const entry of [{ scheduled: true as const }, { telegram: true as const }]) {
+  it("follows the same rule in a scheduled occurrence and a connector's turn", async () => {
+    for (const entry of [{ scheduled: true as const }, { connectorTurn: "telegram" as const }, { connectorTurn: "discord" as const }]) {
       const { memory } = await run({ ...entry, calls: [{ arguments: { message: "Go.", name: "work" }, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }], defaultType: frozen(GEMINI) });
       expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ definitionId: GEMINI.definitionId, typeName: "gemini-helper" }));
     }

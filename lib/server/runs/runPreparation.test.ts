@@ -28,6 +28,7 @@ import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
 import { SKILL_MAX_AVAILABLE } from "../../contracts/skills";
 import { DEEP_RESEARCH_REFUSALS } from "../../contracts/research";
+import { DISCORD_CONNECTOR_NOTE, DISCORD_RUN_REFUSALS } from "../connectors/turn";
 import { DEEP_RESEARCH_CHOSEN_GUIDANCE } from "../tools/research";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
@@ -5127,4 +5128,85 @@ it("freezes a concrete current message reference in both accepted request shapes
   expect(marker?.messages).toEqual([{ kind: "message", id: marker?.currentMessageId }]);
   expect(marker).not.toHaveProperty("userMessages");
   expect(prepared.providerRequest.mcpApproval?.guard).toEqual(marker);
+});
+
+describe("a Discord turn under its connector rules", () => {
+  const memorySnapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
+    comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
+  const excluded = { memoryMode: "EXCLUDED" as const };
+  const as = (origin: "discord" | "telegram", input: RunPreparationInput): RunPreparationInput => ({ ...input, origin });
+
+  it("runs MCP unattended like a scheduled occurrence, while a Telegram turn keeps the guard and the approval cards", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, mcpPlan: readyMcpPlan() });
+    const admit = vi.fn(async () => undefined);
+    const deps = { ...harness.deps, mcpGuard: { admit } };
+    const body = successBody({ mcp: { mode: "load_all" } });
+    const telegram = preparedFrom(await prepareRun(deps, as("telegram", sendInput(body, excluded))));
+    expect(admit).toHaveBeenCalledOnce();
+    expect(telegram.normalizedRequest.mcpApproval).toMatchObject({ version: 1 });
+    admit.mockClear();
+    const discord = preparedFrom(await prepareRun(deps, as("discord", sendInput(body, excluded))));
+    expect(admit).not.toHaveBeenCalled();
+    expect(discord.normalizedRequest.mcpApproval).toBeUndefined();
+    expect(discord.providerRequest.mcpApproval).toBeUndefined();
+    // The tools themselves stay: not annotated read-only, they run without a card.
+    expect(discord.normalizedRequest.mcp?.tools.map((tool) => tool.namespacedName)).toEqual(["mcp_team_lookup_1"]);
+  });
+
+  it("keeps Memory off whatever the user's settings say, and refuses a chat that is not excluded from Memory", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const admit = vi.fn(async () => memorySnapshot);
+    const deps = { ...harness.deps, memorySearchAdmission: { admit } };
+    const discord = preparedFrom(await prepareRun(deps, as("discord", sendInput(successBody(), excluded))));
+    expect(admit).not.toHaveBeenCalled();
+    expect(discord.normalizedRequest.memoryStandingVersion).toBeUndefined();
+    expect(discord.normalizedRequest.memorySearch).toBeUndefined();
+    expect(discord.providerRequest.tools?.some((tool) => tool.name === "memory_search") ?? false).toBe(false);
+    // An ordinary chat, a Temporary one and a regeneration in an ordinary chat are refused before anything is accepted.
+    for (const input of [sendInput(), sendInput(successBody(), { memoryMode: "TEMPORARY" }), regenerateInput()]) {
+      await expect(prepareRun(deps, as("discord", input))).resolves.toMatchObject({ code: DISCORD_RUN_REFUSALS.chatMemory, ok: false, status: 409 });
+    }
+    expect(admit).not.toHaveBeenCalled();
+    // A Telegram turn of an ordinary chat reads Memory as the web does.
+    const telegram = preparedFrom(await prepareRun(deps, as("telegram", sendInput())));
+    expect(telegram.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(telegram.normalizedRequest.memorySearch).toEqual(memorySnapshot);
+  });
+
+  it("refuses the Workspace, asked for by the message or stored on the chat", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const workspace = contractWorkspace();
+    const deps = { ...harness.deps, workspace };
+    for (const input of [
+      sendInput(successBody({ workspace: { enabled: true } }), excluded),
+      sendInput(successBody(), { ...excluded, workspaceEnabled: true })
+    ]) {
+      await expect(prepareRun(deps, as("discord", input))).resolves.toMatchObject({ code: DISCORD_RUN_REFUSALS.workspace, ok: false, status: 409 });
+    }
+    expect(workspace.prepare).not.toHaveBeenCalled();
+    const off = preparedFrom(await prepareRun(deps, as("discord", sendInput(successBody({ workspace: { enabled: false } }), excluded))));
+    expect(off.workspaceAdmissionPlan).toBeUndefined();
+  });
+
+  it("offers no automation tools, which a Telegram turn keeps", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const deps = { ...harness.deps, repository: { ...harness.deps.repository, createScheduledTaskForCall: vi.fn() } };
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
+    expect(preparedFrom(await prepareRun(deps, as("telegram", sendInput(body, excluded)))).normalizedRequest.scheduledTaskTool).toBeDefined();
+    const discord = preparedFrom(await prepareRun(deps, as("discord", sendInput(body, excluded))));
+    expect(discord.normalizedRequest.scheduledTaskTool).toBeUndefined();
+    expect(discord.providerRequest.tools?.some((tool) => tool.name === "create_scheduled_task") ?? false).toBe(false);
+  });
+
+  it("gives the model the connector's fixed note in the chat's own system prompt, and only on a Discord turn", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const discord = preparedFrom(await prepareRun(harness.deps, as("discord", sendInput(successBody(), excluded))));
+    expect(discord.normalizedRequest.prompt.system).toContain(DISCORD_CONNECTOR_NOTE);
+    expect(discord.normalizedRequest.prompt.turnGuidance ?? []).not.toContain(DISCORD_CONNECTOR_NOTE);
+    expect(splitTurnGuidance(admittedRunGuidance(discord.normalizedRequest.prompt), discord.normalizedRequest.prompt.turnGuidance).chat)
+      .toContain(DISCORD_CONNECTOR_NOTE);
+    for (const input of [sendInput(), as("telegram", sendInput())]) {
+      expect(preparedFrom(await prepareRun(harness.deps, input)).normalizedRequest.prompt.system ?? "").not.toContain("Discord");
+    }
+  });
 });

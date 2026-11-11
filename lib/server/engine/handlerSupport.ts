@@ -1,3 +1,4 @@
+import type { ConnectorTurn } from "../connectors/turn";
 import { logEvent } from "../observability";
 import type { ProviderAdapter } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
@@ -45,20 +46,20 @@ export type NativeEngineHandlerDeps = Readonly<{
  * Skill saves (operator decision 2026-10-29), because the Assistant's
  * instructions carry its author's authority and a replaced secret or an
  * edited Assistant has no Undo, while a Skill save shows its changes with
- * Undo. Scheduled occurrences and Telegram turns (the bridge cannot show
- * their cards or Undo) take none, and every change fences its run again as
- * it commits (`selfServiceRunAllowedInTransaction`).
+ * Undo. Scheduled occurrences and connector turns (Telegram, Discord: a
+ * bridge cannot show their cards or Undo) take none, and every change fences
+ * its run again as it commits (`selfServiceRunAllowedInTransaction`).
  */
 export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
-  options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): readonly string[] {
-  if (options.scheduled === true || options.telegram === true || prepared.normalizedRequest.monitoringVerdictTool) return [];
+  options: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean }> = {}): readonly string[] {
+  if (options.scheduled === true || options.connectorTurn !== undefined || prepared.normalizedRequest.monitoringVerdictTool) return [];
   if (prepared.assistant || prepared.chatAssistant) return [READ_AIQSA_GUIDE_TOOL_NAME, MANAGE_SKILL_TOOL_NAME];
   // Custom sub-agents change like the user's other resources, in the same chats (`managementTools.ts`).
   return [...SELF_SERVICE_TOOLS.map((tool) => tool.name), ...subagentManagementToolNames({ assistant: false })];
 }
 
 /**
- * The sub-agent ports one run gets. Every run takes background turns, messaging and the runner's custom types: a Telegram
+ * The sub-agent ports one run gets. Every run takes background turns, messaging and the runner's custom types: a connector
  * turn or a scheduled occurrence starts no background turn (`backgroundAllowed`, `execution.ts`), but it answers one
  * waiting on its branch, and stops it, like any other. The browser identity is its Workspace coordinator's, whose release
  * frees an agent's browser slot when its turn ends. Absent ports are unavailable (`callTools.ts`).
@@ -155,15 +156,15 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
   scheduled?: boolean;
   searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
   services: Omit<NativeRunServices, "searchRuntimes">;
-  /** The run is a Telegram turn. */
-  telegram?: boolean;
+  /** The run is a connector's turn (Telegram, Discord). */
+  connectorTurn?: ConnectorTurn;
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>): Response {
   const tools = native.tools;
   const scheduled = input.scheduled === true;
-  const telegram = input.telegram === true;
-  const selfServiceTools = selfServiceToolsFor(input.prepared, { scheduled, telegram });
+  const connectorTurn = input.connectorTurn;
+  const selfServiceTools = selfServiceToolsFor(input.prepared, { ...(connectorTurn ? { connectorTurn } : {}), scheduled });
   return createNativeRunExecutionResponse({
     adapter: input.adapter,
     ...(input.approvalId ? { approvalContinuation: { approvalId: input.approvalId } } : {}),
@@ -174,7 +175,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     prepared: input.prepared,
     repository: input.repository,
     ...(scheduled ? { scheduled: true as const } : {}),
-    ...(telegram ? { telegram: true as const } : {}),
+    ...(connectorTurn ? { connectorTurn } : {}),
     subagents: subagentRunPorts(native, input.workspace ? { workspace: input.workspace } : {}),
     services: {
       ...input.services,

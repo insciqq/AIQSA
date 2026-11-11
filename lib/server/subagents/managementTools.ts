@@ -81,18 +81,19 @@ export const SUBAGENT_MANAGEMENT_TOOL_NAMES: readonly string[] = Object.freeze(S
 /**
  * The management tools a main-agent run is offered: only in an interactive
  * web chat without an Assistant (operator decision 2026-10-29: Assistant
- * chats take only the guide and Skill saves; Telegram turns and scheduled
- * runs take no self-service tools).
+ * chats take only the guide and Skill saves; connector turns (Telegram,
+ * Discord) and scheduled runs take no self-service tools).
  */
 export function subagentManagementToolNames(input: Readonly<{
   assistant: boolean;
+  /** A connector's turn. */
+  connector?: boolean;
   monitoring?: boolean;
   scheduled?: boolean;
   /** A sub-agent's own run: never (no resource changes, no nesting). */
   subagent?: boolean;
-  telegram?: boolean;
 }>): readonly string[] {
-  return input.assistant || input.monitoring || input.scheduled || input.subagent || input.telegram ? [] : SUBAGENT_MANAGEMENT_TOOL_NAMES;
+  return input.assistant || input.connector || input.monitoring || input.scheduled || input.subagent ? [] : SUBAGENT_MANAGEMENT_TOOL_NAMES;
 }
 
 /** What a run gives these calls; the registry builds it once at admission. */

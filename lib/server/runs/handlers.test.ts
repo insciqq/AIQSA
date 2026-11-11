@@ -49,6 +49,7 @@ import {
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { SubagentCallbackClaimConflictError } from "./subagentBackground/store";
 import { decodeUsageLimitRefusal, type UsageLimitRefusalCode } from "../../contracts/usageLimits";
+import { DISCORD_CONNECTOR_NOTE, DISCORD_RUN_REFUSALS } from "../connectors/turn";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -1242,7 +1243,7 @@ describe("model run route handlers", () => {
     const createRun = repository.createRun;
     repository.createRun = vi.fn<typeof repository.createRun>(async (input) => ({ ...await createRun(input), deferredPdf: true }));
     repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", pdfPreparation: [] });
-    const POST = createSendMessageHandler({ ...authDeps, repository, providers: { fake: createFakeProviderAdapter() }, telegramTurn: true,
+    const POST = createSendMessageHandler({ ...authDeps, connectorTurn: "telegram", repository, providers: { fake: createFakeProviderAdapter() },
       chatPdf: { kick: vi.fn(), resolve: async () => ({ route: "local_text", authority: null, snapshot: null, policyVersion: null }),
         findAdmission: async () => null },
       storage: { deleteObject: vi.fn(), putObject: vi.fn(), getObject: async (storageKey) => ({ body: bytes, contentType: "application/pdf", storageKey }) }
@@ -1254,7 +1255,7 @@ describe("model run route handlers", () => {
       })
     }), { params: { chatId: "chat-1" } });
     expect(response.status).toBe(202);
-    expect((state.created!.deferredPdf!.snapshot as import("./acceptedRunSnapshot").AcceptedRunSnapshot).native).toEqual({ telegram: true });
+    expect((state.created!.deferredPdf!.snapshot as import("./acceptedRunSnapshot").AcceptedRunSnapshot).native).toEqual({ connectorTurn: "telegram" });
   });
 
   it("returns the same committed PDF run on duplicate admission without starting the answer", async () => {
@@ -2053,7 +2054,7 @@ describe("model run route handlers", () => {
       expect(await refusal(await send({}, { [DEEP_RESEARCH_SEND_FIELD]: value }))).toEqual([400, { error: DEEP_RESEARCH_REFUSALS.invalid }]);
     }
     expect(await refusal(await send({}, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.needsSearch }]);
-    expect(await refusal(await send({ telegramTurn: true }, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.unavailable }]);
+    expect(await refusal(await send({ connectorTurn: "telegram" }, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.unavailable }]);
     expect(await refusal(await send({ nativeEngine: plain }, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.unavailable }]);
     expect(state.created).toBeNull();
 
@@ -2080,7 +2081,7 @@ describe("model run route handlers", () => {
     const refusal = async (response: Response) => [response.status, await response.json()];
 
     expect(await refusal(await send({}, { cwd: "~", deviceId: "not-a-device" }))).toEqual([400, { error: "computer_binding_invalid" }]);
-    expect(await refusal(await send({ telegramTurn: true }, { cwd: "~", deviceId: device }))).toEqual([409, { error: "computer_unavailable_here" }]);
+    expect(await refusal(await send({ connectorTurn: "telegram" }, { cwd: "~", deviceId: device }))).toEqual([409, { error: "computer_unavailable_here" }]);
     expect(await refusal(await send({}, { cwd: "~", deviceId: "9e8d7c6b-5a49-4382-a1b2-c3d4e5f60718" })))
       .toEqual([409, { error: "connect_device_unavailable" }]);
     expect(await refusal(await send({ computerAdmission: { ...computerAdmission, enabled: async () => false } }, { cwd: "~", deviceId: device })))
@@ -4980,8 +4981,8 @@ describe("interactive sends on the agent engine", () => {
     const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
     const native = nativeEngineFake({ tools: true });
     const provider = recordingProvider();
-    const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter }, repository,
-      telegramTurn: true });
+    const response = await send({ ...authDeps, connectorTurn: "telegram", nativeEngine: native.deps, providers: { fake: provider.adapter },
+      repository });
     await response.text();
     const tools = toolNames(provider.requests[0]);
     expect(tools).toContain("read_secret");
@@ -5005,5 +5006,114 @@ describe("interactive sends on the agent engine", () => {
     expect(native.deps.engine.approvedCall).toHaveBeenCalledWith({ approvalId: "approval-1", chatId: "chat-1",
       userId: config.bootstrapUserId });
     expect(native.published).toHaveLength(1);
+  });
+});
+
+describe("Discord turns through the ordinary send handler", () => {
+  const toolCallingModel = { contextWindow: 32_768, nativePdfInput: false, nativeSearch: false, pdf: true, reasoning: true,
+    streaming: true, toolCalling: true, vision: true };
+  /** The service account's one message an hour, already used. */
+  const messageLimitReached = (now: Date): UsageLimitStatus => ({ ...NO_USAGE_LIMITS,
+    effective: { ...NO_USAGE_LIMITS.effective, messagesPerHour: { source: { kind: "user" }, value: 1 } },
+    lastHour: { count: 1, freesAt: new Date(now.getTime() + 600_000) } });
+  const reading = (status: (now: Date) => UsageLimitStatus) => ({ loadUsageLimitStatus: vi.fn(async (_userId: string, now: Date) => status(now)) });
+
+  /** The memory repository with its chat excluded from Memory, as every Discord chat is. */
+  function discordRepository() {
+    const memory = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    const owned = memory.repository.findOwnedChat;
+    memory.repository.findOwnedChat = async (chatId, userId) => {
+      const chat = await owned(chatId, userId);
+      return chat ? { ...chat, memoryMode: "EXCLUDED" as const } : null;
+    };
+    return memory;
+  }
+  const send = (deps: TestRunHandlerDeps, body: Record<string, unknown> = {}) => createSendMessageHandler(deps)(
+    new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Question from a thread", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] }, ...body }),
+      headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { chatId: "chat-1" } });
+  const recording = () => {
+    const fake = createFakeProviderAdapter();
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { ...fake, stream: (request, options) => { requests.push(request); return fake.stream(request, options); } };
+    return { adapter, requests };
+  };
+
+  it("answers in a chat excluded from Memory, with no self-service, sub-agent management or Workspace tools and the connector's note", async () => {
+    const { repository, state } = discordRepository();
+    const native = nativeEngineFake({ tools: true });
+    const provider = recording();
+    const response = await send({ ...authDeps, connectorTurn: "discord", nativeEngine: native.deps, providers: { fake: provider.adapter }, repository });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(native.published).toHaveLength(1);
+    const tools = (provider.requests[0]?.tools ?? []).map((tool) => tool.name);
+    expect(tools).toContain("read_secret");
+    for (const name of ["read_aiqsa_guide", "manage_secret", "manage_skill", "manage_assistant", "manage_proxy", "create_subagent",
+      "edit_subagent", "delete_subagent", "create_scheduled_task"]) expect(tools).not.toContain(name);
+    expect(tools.some((name) => name.startsWith("sandbox_") || name.startsWith("computer_") || name === "browser_handoff")).toBe(false);
+    expect(provider.requests[0]!.prompt.system).toContain(DISCORD_CONNECTOR_NOTE);
+    expect(state.created).toMatchObject({ messageLimitExempt: true });
+    expect(state.created?.normalizedRequest.memorySearch).toBeUndefined();
+    expect(state.created?.normalizedRequest.mcpApproval).toBeUndefined();
+  });
+
+  it("refuses a chat that is not excluded from Memory and a Workspace request before anything is accepted", async () => {
+    const plain = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    const refused = await send({ ...authDeps, connectorTurn: "discord", nativeEngine: nativeEngineFake().deps,
+      providers: { fake: createFakeProviderAdapter() }, repository: plain.repository });
+    expect([refused.status, await refused.json()]).toEqual([409, { error: DISCORD_RUN_REFUSALS.chatMemory }]);
+    expect(plain.state.created).toBeNull();
+    const { repository, state } = discordRepository();
+    const workspace = await send({ ...authDeps, connectorTurn: "discord", nativeEngine: nativeEngineFake().deps,
+      providers: { fake: createFakeProviderAdapter() }, repository }, { workspace: { enabled: true } });
+    expect([workspace.status, await workspace.json()]).toEqual([409, { error: DISCORD_RUN_REFUSALS.workspace }]);
+    expect(state.created).toBeNull();
+  });
+
+  it("neither checks nor records the user's message limits, while budgets and the installation cap still refuse", async () => {
+    const deps = (connectorTurn: "discord" | "telegram", usageLimits: TestRunHandlerDeps["usageLimits"], repository: RunRepository) =>
+      ({ ...authDeps, connectorTurn, nativeEngine: nativeEngineFake().deps, providers: { fake: createFakeProviderAdapter() }, repository, usageLimits });
+    // One message an hour, already used: a second Discord turn is still admitted, and counts toward nothing.
+    for (let turn = 0; turn < 2; turn += 1) {
+      const { repository, state } = discordRepository();
+      const response = await send(deps("discord", reading(messageLimitReached), repository));
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(state.created).toMatchObject({ messageLimitExempt: true });
+    }
+    // A Telegram turn stays the linked user's own message: the limit refuses it, and an admitted one is counted.
+    const telegram = discordRepository();
+    const refused = await send(deps("telegram", reading(messageLimitReached), telegram.repository));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ error: "message_rate_limited" });
+    const counted = discordRepository();
+    const admitted = await send(deps("telegram", reading(() => NO_USAGE_LIMITS), counted.repository));
+    await admitted.text();
+    expect(counted.state.created).not.toHaveProperty("messageLimitExempt");
+    // Budgets bind every run.
+    for (const [status, code] of [
+      [{ ...NO_USAGE_LIMITS, effective: { ...NO_USAGE_LIMITS.effective, monthlyBudgetMicros: { source: { kind: "user" }, value: 1_000_000 } },
+        userSpentMicros: 1_000_000 }, "usage_budget_exhausted"],
+      [{ ...NO_USAGE_LIMITS, installationCapMicros: 1_000_000, installationSpentMicros: 1_000_000 }, "installation_budget_exhausted"]
+    ] as const) {
+      const { repository, state } = discordRepository();
+      const response = await send(deps("discord", reading(() => status as UsageLimitStatus), repository));
+      expect(response.status).toBe(429);
+      expect(await response.json()).toMatchObject({ error: code });
+      expect(state.created).toBeNull();
+    }
+  });
+
+  it("never regenerates a Discord answer: a new Discord message is a new turn", async () => {
+    const { repository, state } = discordRepository();
+    const response = await createRegenerateModelRunHandler({ ...authDeps, connectorTurn: "discord", providers: { fake: createFakeProviderAdapter() },
+      repository })(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake" }), headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { messageId: "assistant-message-1" } });
+    expect([response.status, await response.json()]).toEqual([409, { error: DISCORD_RUN_REFUSALS.regenerate }]);
+    expect(state.regenerated).toBeNull();
   });
 });

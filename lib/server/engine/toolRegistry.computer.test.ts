@@ -67,7 +67,8 @@ describe("the computer tools in a run's registry", () => {
   it("never offers them where a computer is never available, whatever the request holds", async () => {
     const bound = request({ computer: online });
     for (const registry of [
-      await buildToolRegistry(input({ request: bound, telegram: true })),
+      await buildToolRegistry(input({ connectorTurn: "telegram", request: bound })),
+      await buildToolRegistry(input({ connectorTurn: "discord", request: bound })),
       await buildToolRegistry(input({ request: bound, scheduled: true })),
       await buildToolRegistry(input({ request: { ...bound, monitoringVerdictTool: true } })),
       await buildToolRegistry(input({ request: { ...bound, prompt: { ...bound.prompt, baseline: { source: "assistant_chat", timeZone: "UTC",
