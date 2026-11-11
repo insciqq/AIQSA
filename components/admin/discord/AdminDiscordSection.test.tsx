@@ -23,7 +23,7 @@ const emptyStats = {
 };
 
 function okItems(overrides: Partial<Record<DiscordSetupItem["code"], Pick<DiscordSetupItem, "action" | "status">>> = {}) {
-  return DISCORD_SETUP_CHECK_CODES.map((code) => ({ action: null, code, status: "ok", ...overrides[code] }));
+  return DISCORD_SETUP_CHECK_CODES.map((code): DiscordSetupItem => ({ action: null, code, status: "ok", ...overrides[code] }));
 }
 
 function adminState(overrides: Partial<DiscordAdminState> = {}): DiscordAdminState {
@@ -61,7 +61,9 @@ const accept: Patch = (body, state) => {
 function mockFetch(initial: DiscordAdminState, patch: Patch = accept) {
   const state = { current: initial };
   const calls: Call[] = [];
-  let keys = [{ createdAt: "2026-11-01T10:00:00.000Z", id: "dmk_old", lastUsedAt: null, revokedAt: null }];
+  let keys: Array<{ createdAt: string; id: string; lastUsedAt: string | null; revokedAt: string | null }> = [
+    { createdAt: "2026-11-01T10:00:00.000Z", id: "dmk_old", lastUsedAt: null, revokedAt: null }
+  ];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? "GET";
