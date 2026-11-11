@@ -1236,3 +1236,93 @@ describe("MCP published tool inventory", () => {
     expect(listed.inventoryDifferences?.some(({ name }) => name?.startsWith("b_"))).toBe(false);
   });
 });
+
+describe("MCP client-credentials secret storage", () => {
+  const SECRET = "fixture-client-secret";
+  const clientCredentialsDraft: McpDraftConfiguration = {
+    auth: {
+      authMethod: "client_secret_basic", clientId: "agent", mode: "client_credentials",
+      scopes: ["agent"], tokenEndpoint: "https://auth.example.test/oauth/token"
+    },
+    runtime: { callTimeoutMs: 60000, startupTimeoutMs: 60000 },
+    slots: [],
+    source: { kind: "remote", url: "https://mcp.example.test/mcp" },
+    transport: "streamable_http"
+  };
+
+  async function clientCredentialsFixture(activate: boolean) {
+    const userId = await admin();
+    const validate = vi.fn(async (_input: McpDraftValidationInput): Promise<McpDraftValidationOutcome> => valid);
+    const repository = createPrismaMcpRepository({ prisma, draftValidator: { validate }, encryptionKey: () => Buffer.alloc(32, 1) });
+    const created = await repository.createServer({
+      activate, clientSecret: SECRET, description: "", draft: clientCredentialsDraft,
+      name: `Client credentials ${randomUUID()}`, sharedValues: {}, validationUserId: userId
+    });
+    if (created.kind !== "ok") throw new Error(`fixture_create_${created.kind}`);
+    serverIds.push(created.value.id);
+    return { created: created.value, repository, serverId: created.value.id, userId, validate };
+  }
+
+  it("stores the secret write-only, checks with it and replaces it only when its own check passes", async () => {
+    const f = await clientCredentialsFixture(true);
+    expect(f.created.clientCredentials).toEqual({ secretConfigured: true });
+    expect(JSON.stringify(f.created)).not.toContain(SECRET);
+    const claim = await f.repository.claimActivation({ now: new Date(), staleBefore: new Date(0) });
+    if (!claim || claim.serverId !== f.serverId) throw new Error("fixture_claim_missing");
+    // The background check signs in with the stored secret.
+    expect(claim.clientSecret).toBe(SECRET);
+
+    f.validate.mockResolvedValueOnce({ issues: [{ code: "mcp_client_credentials_rejected", path: "clientSecret" }], kind: "invalid" });
+    expect(await f.repository.testDraft({
+      clientSecret: "wrong-secret", expectedUpdatedAt: f.created.updatedAt, oneTimeValues: {}, publish: true,
+      serverId: f.serverId, validationUserId: f.userId
+    })).toMatchObject({ kind: "draft_validation_failed" });
+    expect(f.validate).toHaveBeenLastCalledWith(expect.objectContaining({ clientSecret: "wrong-secret" }));
+    // A failed check changes nothing.
+    expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).clientCredentialsSecretGeneration).toBe(1);
+
+    const saved = await f.repository.testDraft({
+      clientSecret: "rotated-secret", expectedUpdatedAt: f.created.updatedAt, oneTimeValues: {}, publish: true,
+      serverId: f.serverId, validationUserId: f.userId
+    });
+    if (saved.kind !== "ok") throw new Error(`fixture_save_${saved.kind}`);
+    expect(saved.value.clientCredentials).toEqual({ secretConfigured: true });
+    expect(saved.value.activeRevision).not.toBeNull();
+    const stored = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } });
+    expect(stored.clientCredentialsSecretGeneration).toBe(2);
+    expect(stored.clientCredentialsSecretEnvelope).not.toContain("rotated-secret");
+    expect(JSON.stringify(saved.value)).not.toContain("rotated-secret");
+
+    // Test & Save without a new secret checks with the stored one.
+    await f.repository.testDraft({
+      expectedUpdatedAt: saved.value.updatedAt, oneTimeValues: {}, publish: true, serverId: f.serverId, validationUserId: f.userId
+    });
+    expect(f.validate).toHaveBeenLastCalledWith(expect.objectContaining({ clientSecret: "rotated-secret" }));
+  });
+
+  it("asks again for another token endpoint origin and refuses the secret off a publication, mode or installation", async () => {
+    const f = await clientCredentialsFixture(false);
+    const moved: McpDraftConfiguration = {
+      ...clientCredentialsDraft,
+      auth: { ...clientCredentialsDraft.auth, tokenEndpoint: "https://elsewhere.example.test/token" } as McpDraftConfiguration["auth"]
+    };
+
+    expect(await f.repository.testDraft({
+      draft: moved, expectedUpdatedAt: f.created.updatedAt, oneTimeValues: {}, publish: true,
+      serverId: f.serverId, validationUserId: f.userId
+    })).toEqual({ issues: [{ code: "client_secret_required", path: "clientSecret" }], kind: "invalid_values" });
+    expect(await f.repository.testDraft({ clientSecret: SECRET, oneTimeValues: {}, serverId: f.serverId }))
+      .toEqual({ issues: [{ code: "publication_required", path: "clientSecret" }], kind: "invalid_values" });
+    expect(f.validate).not.toHaveBeenCalled();
+    expect(await f.repository.createServer({
+      clientSecret: SECRET, description: "", draft, name: `Static ${randomUUID()}`, sharedValues: { api_key: "key" }
+    })).toEqual({ issues: [{ code: "client_secret_unexpected", path: "clientSecret" }], kind: "invalid_values" });
+    expect(await f.repository.createServer({
+      activate: true, description: "", draft: clientCredentialsDraft, name: `No secret ${randomUUID()}`,
+      sharedValues: {}, validationUserId: f.userId
+    })).toEqual({ issues: [{ code: "client_secret_required", path: "clientSecret" }], kind: "invalid_values" });
+    expect(await f.repository.createPersonalServer?.({
+      description: "", draft: clientCredentialsDraft, name: "Mine", userId: f.userId, values: {}
+    })).toEqual({ issues: [{ code: "auth_mode_invalid", path: "auth.mode" }], kind: "invalid_values" });
+  });
+});

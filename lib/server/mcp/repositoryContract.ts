@@ -42,6 +42,8 @@ export type McpRepository = {
   activateDraft(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   createServer(input: {
     activate?: boolean;
+    /** Write-only client-credentials secret, stored with the new server. */
+    clientSecret?: string;
     description: string;
     draft: McpDraftConfiguration;
     name: string;
@@ -100,6 +102,8 @@ export type McpRepository = {
     userId: string | null;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   testDraft(input: {
+    /** A new client-credentials secret, stored only by the publication its own check passed. */
+    clientSecret?: string;
     description?: string;
     draft?: McpDraftConfiguration;
     expectedDraftHash?: string;

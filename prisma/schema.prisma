@@ -3451,6 +3451,11 @@ model McpServer {
   draftTestEvidence    Json?
   sharedConfigEnvelope String?
   sharedConfigVersion  Int                  @default(0)
+  /// Installation servers signing in with OAuth client credentials: the
+  /// write-only client secret, bound to the token endpoint origin it was
+  /// entered for. Tokens are never stored (`lib/server/mcp/clientCredentials.ts`).
+  clientCredentialsSecretEnvelope   String?
+  clientCredentialsSecretGeneration Int     @default(0)
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   activeRevision       McpRevision?         @relation("ActiveMcpRevision", fields: [activeRevisionId], references: [id], onDelete: SetNull)

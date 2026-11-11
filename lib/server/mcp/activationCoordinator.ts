@@ -19,6 +19,8 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 import { observedFailureCode } from "../providers/providerObservability";
 
 export type McpActivationClaim = Readonly<{
+  /** The stored client-credentials secret a client-credentials draft is checked with. */
+  clientSecret?: string;
   draft: McpDraftConfiguration;
   id: string;
   leaseId: string;
@@ -211,6 +213,7 @@ export class McpActivationCoordinator {
 
     try {
       const outcome = await this.#draftValidator.validate({
+        ...(claim.clientSecret ? { clientSecret: claim.clientSecret } : {}),
         draft: claim.draft,
         onProgress: progress,
         serverId: claim.serverId,
