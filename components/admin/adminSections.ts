@@ -9,6 +9,7 @@ import {
   LogIn,
   Mail,
   Megaphone,
+  MessagesSquare,
   MonitorSmartphone,
   Network,
   Search,
@@ -27,6 +28,7 @@ export type AdminSectionId =
   | "assistants"
   | "access-rules"
   | "connect"
+  | "discord"
   | "email"
   | "groups"
   | "health"
@@ -83,6 +85,7 @@ export const adminSections = [
   { Icon: Network, group: "platform", id: "proxies", label: "Proxies" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },
   { Icon: Send, group: "platform", id: "telegram", label: "Telegram" },
+  { Icon: MessagesSquare, group: "platform", id: "discord", label: "Discord" },
   { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }
 ] as const satisfies readonly AdminSection[];
 
