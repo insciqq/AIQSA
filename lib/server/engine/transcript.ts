@@ -307,6 +307,17 @@ function keptTailIndex(items: readonly TranscriptItem[], index: number, item: Tr
   return keepFrom >= 0 && keepFrom < index ? keepFrom : -1;
 }
 
+/** What replay keeps of an item before a compaction's kept tail: the run's own
+ * context and the input the run carries whole, an earlier message's file marks
+ * alone (without resurrecting compacted user speech or treating metadata as a
+ * new turn), nothing else. A compaction's figures count what it keeps so too
+ * (`findCompactionCut`). */
+export function replayKeeps(item: TranscriptItem, target: TranscriptTarget): TranscriptItem | null {
+  if (item.kind !== "user") return null;
+  if (item.runContext === true || item.id === target.carriedInputId) return item;
+  return item.attachmentNotice ? { ...item, text: "", runContext: true } : null;
+}
+
 /** Replay's items from the base compaction at `start`, in replay order: what
  * stays from before its tail (the run's own context, never compacted, and the
  * input the run carries), the base, the tail it keeps verbatim, then the items
@@ -321,10 +332,8 @@ function replayWindow(items: readonly TranscriptItem[], start: number, base: Tra
   if (!base) return { tail: 0, window: items.slice(start) };
   const keepFrom = base.keepFromId ? keptTailIndex(items, start, base) : start;
   const stays = items.slice(0, keepFrom).flatMap((item): TranscriptItem[] => {
-    if (item.kind !== "user") return [];
-    if (item.runContext === true || item.id === target.carriedInputId) return [item];
-    // Keep only the file marks, without resurrecting compacted user speech or treating metadata as a new turn.
-    return item.attachmentNotice ? [{ ...item, text: "", runContext: true }] : [];
+    const kept = replayKeeps(item, target);
+    return kept ? [kept] : [];
   });
   const rest = [...items.slice(keepFrom, start), ...items.slice(start + 1)];
   return { tail: stays.length + 1, window: replaysNativeCompaction(base, target) ? [base, ...stays, ...rest] : [...stays, base, ...rest] };
