@@ -1,16 +1,21 @@
 import type { PrismaClient } from "@prisma/client";
+import { connectorTurnRules, type ConnectorTurn } from "../../connectors/turn";
 import { prisma } from "../../prisma";
 import { resolveCurrentMemoryUtilityPolicy } from "../execution/policy";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import { MEMORY_SEARCH_VERSION, type MemorySearchSnapshot, type MemorySearchDestination } from "./contract";
 
-/** Local configuration admission only: no provider/index calls and no content reads. */
+/**
+ * Local configuration admission only: no provider/index calls and no content reads. A connector turn whose rules keep
+ * Memory off (Discord, owner decision 2026-11-12) gets none, whatever the user's settings say.
+ */
 export async function admitMemorySearch(input: Readonly<{
-  userId: string; timeoutSeconds: number; assistantId?: string | null;
+  userId: string; timeoutSeconds: number; assistantId?: string | null; connectorTurn?: ConnectorTurn;
 }>, client: PrismaClient = prisma): Promise<MemorySearchSnapshot | null> {
   if (!Number.isSafeInteger(input.timeoutSeconds) || input.timeoutSeconds < 1 || input.timeoutSeconds > 120) {
     throw new Error("memory_search_timeout_invalid");
   }
+  if (connectorTurnRules(input.connectorTurn)?.memory === false) return null;
   return withLockedMemoryTransaction(client, input.userId, async (tx, settings) => {
     if (!settings.useMemoryFacts) return null;
     if (input.assistantId && !(await tx.assistantDefinition.findFirst({ where: {

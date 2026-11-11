@@ -7,6 +7,7 @@ paths:
   - "lib/server/workspace/**"
   - "lib/server/scheduledTasks/**"
   - "lib/server/telegram/**"
+  - "lib/server/connectors/**"
   - "lib/server/webFetch/**"
   - "lib/server/engine/**"
   - "lib/server/subagents/**"
@@ -78,13 +79,14 @@ Code: `lib/server/scheduledTasks/`.
 - Only `goal_reached` ends a monitoring task, and its instruction says so; a goal stands unless the question changed or the task was paused or completed during the check. A model that answers without its verdict is asked for it once more, and the answer stands (decisions 2026-11-08). A shown check whose answer has no text is asked for it once, since that text is what the user reads and the next check compares with; a hidden one is not (decision 2026-11-11).
 - A task runs on a schedule, a webhook or both (operator decision 2026-10-25). Each accepted event is an ordinary occurrence; later events wait in order while a run is open.
 
-## Telegram
+## Telegram and Discord
 
-Code: `lib/server/telegram/`.
+Code: `lib/server/telegram/`, and the run bridge and rules the connectors share in `lib/server/connectors/`.
 
 - A Telegram message is the linked user's interactive personal run through the ordinary send handler; access is rechecked per message and delivery. The link belongs to the account (operator decision 2026-10-19): revoking all sessions, a password change or reset, deactivation or rejection (SCIM included) and disconnecting (settings, admin, `/unlink`) remove it, and disconnecting voids pending link codes; signing out of one browser does not. Approval buttons use the ordinary path. Telegram turns take no self-service tools or Skill saves: the bridge shows only approval cards, never confirmations or Undo (decision 2026-10-23). Telegram turns and scheduled occurrences start no background sub-agents, but answer and stop those of their branch.
 - Tasks with Telegram notification send their results and files through a durable outbox and never repeat an ambiguous send.
 - Answers and task results carry no Sources list; a `[N]` citation links to its source (operator decision 2026-10-25).
+- A Discord message is a run of the installation's service account through the ordinary send handler, one chat per Discord thread (owner decisions 2026-11-12). The server applies its rules whatever the body says (`lib/server/connectors/turn.ts`): Memory off (only a chat excluded from Memory), MCP unattended like a scheduled occurrence, foreground sub-agents only, no self-service or automation tools, Workspace, computer or Deep research, and no per-user message limits, while budgets and the installation cap still apply. A Discord answer is never regenerated.
 
 ## Follow-ups and continuation
 

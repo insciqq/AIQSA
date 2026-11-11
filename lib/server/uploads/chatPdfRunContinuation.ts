@@ -8,7 +8,7 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "../runs/attachmentLimits";
 import { applyProviderRequestContextBudget } from "../runs/requestContextBudget";
-import { acceptedRunSnapshot, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
+import { acceptedRunSnapshot, nativeEntryConnectorTurn, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "../runs/preparingRunMaterialization";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "../runs/runRepositoryContract";
 import { CHAT_PDF_READER_OUTPUT_LIMIT } from "../../contracts/chatPdfPreparation";
@@ -145,12 +145,13 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
     }
     if (!await observeChatPdfPersistence(claim.runId, "dispatch", () => deps.pdfRepository.markAnswerDispatched(claim))) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     releaseRegistry();
-    // The entry facts the admitting send kept: an approval's Allow and a Telegram turn (no self-service tools).
+    // The entry facts the admitting send kept: an approval's Allow and a connector turn (no self-service tools; Discord's rules).
     const entry = snapshot.native;
+    const connectorTurn = nativeEntryConnectorTurn(entry);
     const response = nativeRunResponse(deps.nativeEngine, { adapter: runtime.adapter,
       ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
-      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(entry?.telegram ? { telegram: true } : {}),
+      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(connectorTurn ? { connectorTurn } : {}),
       userId: claim.userId,
       ...(deps.workspace ? { workspace: deps.workspace } : {}) });
     logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "complete" });

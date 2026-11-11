@@ -1,7 +1,8 @@
 /**
  * Reads the run stream the in-process send handler answers with
  * (`event: <type>` / `data: <json>` frames, `: keepalive` comments every few
- * seconds). It never interprets content; the bridge maps the frames it needs.
+ * seconds), for a connector's bridge. It never interprets content; the
+ * connector maps the frames it needs (`connectorRunEvent`).
  * A stream silent past `idleMs` (not even a keepalive) counts as lost, and a
  * frame over its bound is skipped whole.
  */

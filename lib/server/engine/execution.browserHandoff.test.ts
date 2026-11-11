@@ -145,7 +145,7 @@ function researchThreads(): SubagentThreadStore {
 }
 
 function start(options: Readonly<{ chosen?: boolean; now?: () => number; research?: ResearchEngineDeps; scheduled?: true; steps?: readonly Step[];
-  telegram?: true; turnTimeoutSeconds?: number }> = {}) {
+  connectorTurn?: "discord" | "telegram"; turnTimeoutSeconds?: number }> = {}) {
   runs += 1;
   currentChat = `chat-${runs}`;
   const runId = `run-${runs}`;
@@ -157,7 +157,7 @@ function start(options: Readonly<{ chosen?: boolean; now?: () => number; researc
       ...options.research ? { research: options.research, subagentThreads: researchThreads() } : {} },
   prepared: prepared(currentChat, options.turnTimeoutSeconds, options.research !== undefined, options.chosen ?? options.research !== undefined),
   repository: repo as unknown as RunRepository, ...(options.scheduled ? { scheduled: true } : {}),
-  ...(options.telegram ? { telegram: true } : {}), services: {}, userId: "user", workspace: space.coordinator });
+  ...(options.connectorTurn ? { connectorTurn: options.connectorTurn } : {}), services: {}, userId: "user", workspace: space.coordinator });
   return { chatId: currentChat, model, repo, response, runId, space };
 }
 
@@ -365,7 +365,7 @@ describe("browser_handoff in a native run", () => {
     await events(scheduled.response);
     expect(handoffResult(scheduled.model.requests)).toMatchObject({ error: "browser_handoff_unavailable" });
     expect(scheduled.space.guest.started()).toBe(0);
-    const telegram = start({ telegram: true });
+    const telegram = start({ connectorTurn: "telegram" });
     await events(telegram.response);
     const result = handoffResult(telegram.model.requests);
     expect(result).toMatchObject({ error: "browser_handoff_unavailable" });

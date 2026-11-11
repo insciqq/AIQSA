@@ -1,6 +1,7 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadWorkspaceActivityEntry, WorkspaceActivityKind } from "../../contracts/workspace";
 import type { ArtifactService } from "../artifacts/service";
+import type { ConnectorTurn } from "../connectors/turn";
 import { imageNotSentFailure } from "../images/inputError";
 import { imageProviderRejection } from "../images/errors";
 import type { ImageGenerationService } from "../images/service";
@@ -106,7 +107,7 @@ import { IMAGE_ANALYZE_NOTE, IMAGE_REFERENCE_NOTE, IMAGE_VIEW_NOTE, type Transcr
  * check's verdict is the run's reserved report (`toolBatch.ts`, `loop.ts`).
  * The `computer_*` tools ride on a run admission bound to the user's computer
  * (`NormalizedRunRequest.computer`), whether or not it is online, and never on
- * a Telegram, scheduled, monitoring or Assistant run, which admission already
+ * a connector, scheduled, monitoring or Assistant run, which admission already
  * refuses and the registry checks again (`computerTools.ts`).
  */
 export type EngineToolEffects = HarnessToolEffects;
@@ -323,8 +324,8 @@ export type ToolRegistryInput = Readonly<{
   /** A scheduled task's occurrence (a schedule, a webhook or a monitoring check): it never works on the user's computer. */
   scheduled?: true;
   services: ToolRegistryServices;
-  /** A Telegram turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
-  telegram?: true;
+  /** A connector's turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
+  connectorTurn?: ConnectorTurn;
   /** How long this agent's tool time still lasts; a call on the user's computer never waits past it. Absent: its own bound. */
   toolTimeLeftMs?(): number;
   userId: string;
@@ -596,8 +597,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   }
   for (const definition of skillSaveToolsForRequest(request)) {
     // `manage_skill` saves Skills in any web chat and supersedes the Workspace folder save (`SUPERSEDED_TOOLS`);
-    // a Telegram turn saves none.
-    if (!isSkillSaveCall(request, definition.name) || selfServiceOffered || input.telegram) continue;
+    // a connector turn saves none.
+    if (!isSkillSaveCall(request, definition.name) || selfServiceOffered || input.connectorTurn) continue;
     add({ activity: named(definition, "Skills"), definition, effects: "local", observationSource: "workspace",
       execute: (execution) => executeSaveSkill(execution.call, context(execution), {
         commit: runSkillSaveCommitter(input.services.repository, { callId: execution.persistedToolCallId, ...owner }),
@@ -703,7 +704,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   // The user's computer, as admission froze it: only an interactive web run of a personal or temporary chat has one, and
   // the registry checks again that this is none of the runs that never do (D-07). Online or not, the tools are the same.
-  const computer = clientTools && !input.telegram && !input.scheduled && request.monitoringVerdictTool !== true &&
+  const computer = clientTools && !input.connectorTurn && !input.scheduled && request.monitoringVerdictTool !== true &&
     request.prompt.baseline?.source !== "assistant_chat" ? decodeFrozenComputerBinding(request.computer) : null;
   if (computer) {
     // Documents and images `computer_read` reads, in this run's memory: its previews ride on its own requests whether or not

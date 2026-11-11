@@ -66,6 +66,7 @@ import { createProviderPreviewRuntimeBinding } from "../providers/runtimeFactory
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
 import { memorySearchTool, type MemorySearchSnapshot } from "../memory/search/contract";
 import { hasExplicitMemoryCommandBoundary } from "../memory/actions/actionAdmission";
+import { connectorTurnRules, DISCORD_RUN_REFUSALS, type ConnectorTurn } from "../connectors/turn";
 import { logEvent } from "../observability";
 import type {
   ConversationFileReference,
@@ -234,7 +235,9 @@ export function scheduledRunContext(
 }
 
 export type RunPreparationDeps = Readonly<{
-  memorySearchAdmission?: Readonly<{ admit(userId: string, assistantId?: string | null): Promise<MemorySearchSnapshot | null> }>;
+  memorySearchAdmission?: Readonly<{
+    admit(userId: string, assistantId?: string | null, connectorTurn?: ConnectorTurn): Promise<MemorySearchSnapshot | null>;
+  }>;
   artifacts?: import("../artifacts/service").ArtifactService;
   mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "admit">;
   vision?: Pick<import("../vision/service").VisionAnalysisService, "resolve">;
@@ -360,10 +363,11 @@ export type RegenerateRunPreparationSource = Readonly<{
 
 export type RunPreparationInput = Readonly<{
   /**
-   * Server-only: a message that is not the owner's own from the web app (a Telegram turn, a sub-agent wake-up turn); a
-   * scheduled occurrence is known from its source. Such a message never takes a computer (D-07).
+   * Server-only: a message that is not the owner's own from the web app (a connector's turn, a sub-agent wake-up turn); a
+   * scheduled occurrence is known from its source. Such a message never takes a computer (D-07), and a connector's turn
+   * is prepared under its rules whatever the body says (`lib/server/connectors/turn.ts`).
    */
-  origin?: "telegram" | "wake_up";
+  origin?: ConnectorTurn | "wake_up";
   serverAuthoredInput?: boolean;
   mcpApprovalId?: string;
   body: Readonly<Record<string, unknown>> | null;
@@ -1126,6 +1130,10 @@ export async function prepareRun(
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
   }
+  // A connector's turn under its rules (only Discord's narrow them): no Workspace, so no browser or handoff either.
+  const connectorTurn = input.origin === "wake_up" ? undefined : input.origin;
+  const connector = connectorTurnRules(connectorTurn);
+  if (connector && !connector.workspace && workspaceEnabled) return failure(DISCORD_RUN_REFUSALS.workspace, 409);
   // A chat runs with its bound Assistant; the request may only bind an
   // unbound chat or repeat the binding.
   const assistantSource = chatAssistantSource(body, chat);
@@ -1199,6 +1207,9 @@ export async function prepareRun(
   if ("ok" in resolvedChatMode) {
     return resolvedChatMode;
   }
+  // Memory off for the connector (owner decision 2026-11-12, O-08): only a chat excluded from Memory, never learned from
+  // or carried into another, whatever the request or the stored chat says.
+  if (connector && !connector.memory && resolvedChatMode.mode !== "EXCLUDED") return failure(DISCORD_RUN_REFUSALS.chatMemory, 409);
   if (legacyKnowledgePlanRefused(body)) return failure("knowledge_plan_invalid", 400);
 
   const decodedSearchPlan = assistantRun
@@ -1418,6 +1429,9 @@ export async function prepareRun(
     responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? "",
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
   };
+  // The connector's fixed note, in the chat's own system prompt: every turn of such a chat is the connector's, so the
+  // prompt stays the same across them (provider caches).
+  if (connector?.note) prompt = { ...prompt, system: [prompt.system, connector.note].filter(Boolean).join("\n\n") };
   const branchContext =
     input.source.kind === "send"
       ? input.source.draftPersonalChat
@@ -1875,7 +1889,7 @@ export async function prepareRun(
   // A task turn with Memory reads it like an ordinary personal turn whatever its chat's mode (an
   // excluded chat keeps it out of learning, not its own reads), and never as a `/memory` command:
   // its admission reads standing facts only, so such a prompt is answered as text.
-  const memoryStandingEligible = resolvedChatMode.mode !== "TEMPORARY" && (scheduledPromptAnswer
+  const memoryStandingEligible = resolvedChatMode.mode !== "TEMPORARY" && connector?.memory !== false && (scheduledPromptAnswer
     ? scheduledMemoryRead
     : resolvedChatMode.mode === "NORMAL" && !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content)));
   const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
@@ -1885,7 +1899,9 @@ export async function prepareRun(
   let memorySearch: MemorySearchSnapshot | null = null;
   if (memorySearchAdmission) {
     try {
-      memorySearch = await memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null);
+      memorySearch = connectorTurn
+        ? await memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null, connectorTurn)
+        : await memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null);
     } catch (error) {
       // Nothing is frozen before acceptance: the run proceeds without the
       // optional tool, standing preparation is unchanged, and users see nothing.
@@ -1901,7 +1917,7 @@ export async function prepareRun(
   // Memory only when this run itself was admitted to read it: an eligible
   // chat, and the owner's Memory on (search admission, which every run that
   // may create a task attempts, reads exactly that).
-  const scheduledTaskSettings = !scheduledPromptAnswer && !assistantRun &&
+  const scheduledTaskSettings = !scheduledPromptAnswer && !assistantRun && connector?.automations !== false &&
     resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
@@ -1978,20 +1994,23 @@ export async function prepareRun(
       userUrlDigests: fetchUrlPlan?.userUrlDigests ?? [] }) : undefined;
   // A run a user started asks its initiator before an MCP tool that may change
   // data runs (operator decision 2026-10-08); a scheduled task's own run is its
-  // owner's standing authority. The initiator's "Always allow" consents for the
-  // run's servers are frozen here: a revocation applies to later runs.
+  // owner's standing authority, and a Discord turn runs unattended like it (owner
+  // decision 2026-11-12, O-10: the service account's grants hold read-only servers).
+  // The initiator's "Always allow" consents for the run's servers are frozen here:
+  // a revocation applies to later runs.
+  const unattendedMcp = scheduledOccurrence !== undefined || connector?.unattendedMcp === true;
   const approvalServerIds = [...new Set([
     ...(mcpPlan?.ok ? mcpPlan.snapshot.servers.map((server) => server.serverId) : []),
     ...(mcpDiscoveryEnabled && mcpCatalog ? mcpCatalog.servers.map((server) => server.serverId) : [])
   ])];
   const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
-  const guard = !scheduledOccurrence && approvalServerIds.length > 0 ? await deps.mcpGuard?.admit({
+  const guard = !unattendedMcp && approvalServerIds.length > 0 ? await deps.mcpGuard?.admit({
     chatId: chat.id, userId: input.userId, messages: conversationMessages,
     ...(input.source.kind === "send" && !input.serverAuthoredInput
       ? { currentMessageId: workspaceAdmissionPlan?.userMessageId ?? randomUUID() } : {}),
     ...(inheritedFollowups ? { inheritedFollowups } : {})
   }) : undefined;
-  const mcpApproval = !scheduledOccurrence && approvalServerIds.length > 0
+  const mcpApproval = !unattendedMcp && approvalServerIds.length > 0
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
         serverIds: approvalServerIds, userId: input.userId }) ?? [], guard, input.mcpApprovalId)
     : undefined;

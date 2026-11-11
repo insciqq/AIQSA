@@ -1,5 +1,5 @@
 import type { RequestAuthResolver } from "../../auth/requestAuth";
-import { prisma } from "../../prisma";
+import { connectorRequestAuth } from "../../connectors/requestAuth";
 import type { TelegramAccessResolver } from "../control/access";
 
 /**
@@ -9,13 +9,7 @@ import type { TelegramAccessResolver } from "../control/access";
  * names is `telegram`, never a browser session.
  */
 export function telegramRequestAuth(access: Pick<TelegramAccessResolver, "resolveTelegramAccess">, userId: string): RequestAuthResolver {
-  return async () => {
-    const [user, resolved] = await Promise.all([
-      prisma.user.findUnique({ select: { displayName: true, email: true, id: true, role: true, status: true }, where: { id: userId } }),
-      access.resolveTelegramAccess(userId)
-    ]);
-    return user && user.status === "active" && resolved.allowed
-      ? { expiresAt: new Date(Date.now() + 60_000), id: "telegram", user, userId: user.id }
-      : null;
-  };
+  return connectorRequestAuth({
+    allowed: async () => (await access.resolveTelegramAccess(userId)).allowed, sessionId: "telegram", userId
+  });
 }

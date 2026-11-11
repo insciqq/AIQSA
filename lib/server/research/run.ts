@@ -139,15 +139,15 @@ export type ResearchEngineDeps = Readonly<{
  */
 export type ResearchRequest = "approval" | "chosen" | "continue";
 
-/** What decides whether a run can research at all: Search, sub-agents, and an interactive web run. */
-export type ResearchAvailability = Readonly<{ monitoring: boolean; scheduled: boolean; searchOptions: number; subagents: boolean; telegram: boolean }>;
+/** What decides whether a run can research at all: Search, sub-agents, and an interactive web run (`connector`: a connector's turn). */
+export type ResearchAvailability = Readonly<{ connector: boolean; monitoring: boolean; scheduled: boolean; searchOptions: number; subagents: boolean }>;
 
 /**
- * Why a run cannot research, or null when it can: Telegram turns, scheduled occurrences, monitoring checks and a run without sub-agents never
+ * Why a run cannot research, or null when it can: connector turns, scheduled occurrences, monitoring checks and a run without sub-agents never
  * research, and with them out what is missing is Search, which the user can turn on. Admission refuses a message sent with Deep research on it.
  */
 export function deepResearchRefusal(input: ResearchAvailability): (typeof DEEP_RESEARCH_REFUSALS)["needsSearch" | "unavailable"] | null {
-  if (input.monitoring || input.scheduled || input.telegram || !input.subagents) return DEEP_RESEARCH_REFUSALS.unavailable;
+  if (input.monitoring || input.scheduled || input.connector || !input.subagents) return DEEP_RESEARCH_REFUSALS.unavailable;
   return input.searchOptions > 0 ? null : DEEP_RESEARCH_REFUSALS.needsSearch;
 }
 
