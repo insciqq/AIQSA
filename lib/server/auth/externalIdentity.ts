@@ -14,6 +14,7 @@ import {
   type ApprovalMatch
 } from "./registrationRepository";
 import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
+import { isServiceAccount } from "./serviceAccounts";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import {
   recordSignInRefusal,
@@ -168,9 +169,13 @@ function emailTrusted(input: ExternalIdentityInput): boolean {
   return input.emailVerified || input.policy.trustUnverifiedEmail;
 }
 
-/** Disabled or denied, or with a deactivation SCIM recorded. */
-function signInBlocked(user: Pick<User, "scimDeactivatedAt" | "status">): boolean {
-  return user.status === "disabled" || user.status === "denied" || user.scimDeactivatedAt !== null;
+/**
+ * Disabled or denied, with a deactivation SCIM recorded, or a service account, which never signs
+ * in even when someone linked an identity to it or gave it a matching email.
+ */
+function signInBlocked(user: Pick<User, "kind" | "scimDeactivatedAt" | "status">): boolean {
+  return user.status === "disabled" || user.status === "denied" || user.scimDeactivatedAt !== null ||
+    isServiceAccount(user);
 }
 
 /**

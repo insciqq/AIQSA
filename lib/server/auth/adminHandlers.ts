@@ -422,6 +422,8 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
         case "last_admin_forbidden":
         case "user_not_active":
           return json({ error: result }, { status: 409 });
+        case "service_account":
+          return json({ error: "service_account_role_fixed" }, { status: 409 });
         case "not_found":
           return json({ error: "user_not_found" }, { status: 404 });
       }

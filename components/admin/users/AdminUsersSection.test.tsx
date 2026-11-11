@@ -441,6 +441,43 @@ describe("AdminUsersSection", () => {
     }
   });
 
+  it("marks a service account in the list and on its page and offers only the actions that apply", async () => {
+    const dashboard = dashboardFixture();
+    const initialDashboard = {
+      ...dashboard,
+      users: [...dashboard.users, user({
+        displayName: "Connector service",
+        email: null,
+        groups: [{ groupId: "group-ops", name: "operators", role: "member" }],
+        hasVerifiedIdentity: false,
+        id: "service-1",
+        kind: "service",
+        twoFactorEnabled: true
+      })]
+    };
+
+    renderSection({ initialDashboard });
+    const row = rowFor("Connector service");
+    expect(row).toHaveAttribute("data-user-kind", "service");
+    expect(within(row).getByTestId("admin-user-service-account")).toHaveTextContent("Service account");
+    expect(within(row).queryByText("no email")).not.toBeInTheDocument();
+    expect(within(rowFor("Ada Analyst")).queryByTestId("admin-user-service-account")).not.toBeInTheDocument();
+    document.body.innerHTML = "";
+
+    const { confirmations } = renderSection({ initialDashboard, resource: "service-1" });
+    const page = await screen.findByTestId("admin-user-page");
+    expect(within(page).getByTestId("admin-user-service-account")).toHaveTextContent("Service account");
+    expect(page).toHaveTextContent("Runs connector work. It never signs in.");
+    expect(page).not.toHaveTextContent("email not verified");
+    expect(within(page).queryByRole("button", { name: "Make administrator" })).not.toBeInTheDocument();
+    expect(within(page).queryByTestId("admin-user-reset-two-factor")).not.toBeInTheDocument();
+    fireEvent.click(within(page).getByRole("button", { name: "Revoke sessions" }));
+    expect(confirmations.at(-1)).toMatchObject({ body: { action: "revoke_user_sessions", userId: "service-1" } });
+    fireEvent.click(within(page).getByRole("button", { name: "Disable" }));
+    expect(confirmations.at(-1)).toMatchObject({ body: { action: "disable_user", userId: "service-1" } });
+    expect(within(page).getByRole("checkbox", { name: "research" })).toBeEnabled();
+  });
+
   it("retains a dirty membership draft and its original baseline after a background membership change", async () => {
     const { posts } = renderSection({ rejectMembership: true, resource: "ada" });
     const page = await screen.findByTestId("admin-user-page");

@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import type { AuthSessionSignInMethod } from "@/lib/contracts/authSignInMethods";
 import type { CreateAuthSessionInput, SealedIdTokenHint } from "./requestAuth";
 import { isSecondFactorSignInMethod, type SecondFactorSignInMethod } from "./secondFactorChallenge";
+import { isServiceAccount } from "./serviceAccounts";
 import { readTotpFactorBinding, type SecondFactorProof } from "./totpFactor";
 
 /** The session fields a sign-in prepares; the issuing transaction adds the user and method. */
@@ -13,7 +14,7 @@ export type SignInSessionInput = Omit<CreateAuthSessionInput, "signInMethod" | "
 /**
  * How a verified first factor ends. `second_factor_required` carries the factor state the
  * challenge binds to, so a challenge goes stale once that state changes. `refused` creates
- * nothing: SCIM recorded a deactivation of the account.
+ * nothing: SCIM recorded a deactivation of the account, or the account is a service account.
  */
 export type SessionIssuanceDecision =
   | { kind: "refused" }
@@ -37,23 +38,24 @@ export type SignInSessionIssuance =
  * The one place that decides how a sign-in whose first factor was just verified ends. It runs
  * inside the transaction that proved that factor, so the decision sees the same locked state
  * (the password path re-checks its hash there). A pending SCIM deactivation refuses every
- * method except the bootstrap token, the break-glass sign-in. Password and LDAP sign-ins of a
- * user with a confirmed TOTP factor need a second factor; every other method (bootstrap token,
- * invite, Google, Yandex, OIDC, SAML, trusted header) ends in a session. A proof verified in the
- * same transaction for the same user satisfies the second factor.
+ * method except the bootstrap token, the break-glass sign-in; a service account refuses every
+ * method. Password and LDAP sign-ins of a user with a confirmed TOTP factor need a second
+ * factor; every other method (bootstrap token, invite, Google, Yandex, OIDC, SAML, trusted
+ * header) ends in a session. A proof verified in the same transaction for the same user
+ * satisfies the second factor.
  */
 export async function decideSessionIssuance(
   tx: Prisma.TransactionClient,
   input: { secondFactor?: SecondFactorProof; signInMethod: AuthSessionSignInMethod; userId: string }
 ): Promise<SessionIssuanceDecision> {
-  if (input.signInMethod !== "bootstrap") {
-    // A shared lock on the account row: SCIM locks the row before it records a deactivation
-    // and revokes sessions, so a session is either issued first and revoked by it, or refused.
-    const [user] = await tx.$queryRaw<Array<{ scimDeactivatedAt: Date | null }>>`
-      SELECT "scimDeactivatedAt" FROM "User" WHERE "id" = ${input.userId} FOR SHARE
-    `;
-    if (user?.scimDeactivatedAt) return { kind: "refused" };
-  }
+  // A shared lock on the account row: SCIM locks the row before it records a deactivation
+  // and revokes sessions, so a session is either issued first and revoked by it, or refused.
+  const [user] = await tx.$queryRaw<Array<{ kind?: string | null; scimDeactivatedAt: Date | null }>>`
+    SELECT "kind"::text AS "kind", "scimDeactivatedAt" FROM "User" WHERE "id" = ${input.userId} FOR SHARE
+  `;
+  // A service account never signs in, by any method, the bootstrap token included.
+  if (isServiceAccount(user)) return { kind: "refused" };
+  if (input.signInMethod !== "bootstrap" && user?.scimDeactivatedAt) return { kind: "refused" };
 
   if (!isSecondFactorSignInMethod(input.signInMethod) || input.secondFactor?.userId === input.userId) {
     return { kind: "session" };

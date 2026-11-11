@@ -9,6 +9,7 @@ import type {
 } from "./adminRepositoryContract";
 import { adminProvisioningGroupInputs } from "./adminRepositoryInputs";
 import { provisionActiveUser } from "./provisioning";
+import { isServiceAccount } from "./serviceAccounts";
 import { lockActiveAdmins, lockAuthUser } from "./transactionLocks";
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
@@ -341,6 +342,7 @@ export function createAdminUserSessionCommands(
         const target = await tx.user.findUnique({
           select: {
             id: true,
+            kind: true,
             role: true,
             status: true
           },
@@ -355,6 +357,12 @@ export function createAdminUserSessionCommands(
 
         if (target.status !== "active") {
           return "user_not_active";
+        }
+
+        // A service account never signs in, so it must never count as an administrator who
+        // keeps the installation manageable; a database check holds the same rule.
+        if (isServiceAccount(target)) {
+          return "service_account";
         }
 
         if (target.role === input.role) {

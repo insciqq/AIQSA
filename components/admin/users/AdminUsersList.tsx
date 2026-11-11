@@ -8,12 +8,13 @@ import {
   ADMIN_USERS_PAGE_SIZE,
   activeGroupIdsForUser,
   formatLastSeen,
+  isServiceAccountUser,
   userAccessSummary,
   userInitials,
   visibleAdminUserFilters,
   type AdminUserListFilter
 } from "@/components/admin/users/usersView";
-import { FilterPill, UserAvatar, UsersTag } from "@/components/admin/users/usersPrimitives";
+import { FilterPill, ServiceAccountBadge, UserAvatar, UsersTag } from "@/components/admin/users/usersPrimitives";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import { Search } from "lucide-react";
@@ -125,6 +126,7 @@ function UserRow({
   const [busy, setBusy] = useState(false);
   const isSelf = user.id === users.adminUserId;
   const pending = user.status === "pending";
+  const service = isServiceAccountUser(user);
   const currentGroupIds = activeGroupIdsForUser(user, groups);
   const canAddToGroup = user.status === "active" && currentGroupIds.length === 0;
   const access = userAccessSummary(user, groups);
@@ -156,6 +158,7 @@ function UserRow({
         pending ? "bg-caution/5" : user.status === "disabled" ? "opacity-65" : ""
       ].join(" ")}
       data-testid="admin-user-row"
+      data-user-kind={service ? "service" : undefined}
       data-user-status={user.status}
     >
       <UserAvatar initials={userInitials(user)} />
@@ -172,7 +175,11 @@ function UserRow({
         >
           {user.displayName}
         </a>
-        <p className="break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{identity}</p>
+        {service ? (
+          <div className="mt-0.5 flex"><ServiceAccountBadge /></div>
+        ) : (
+          <p className="break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{identity}</p>
+        )}
         <p className={`mt-0.5 text-xs xl:hidden ${accessTone[access.tone]}`}>
           {access.label} · <span className="text-ink-muted">{lastSeen}</span>
         </p>
