@@ -155,6 +155,7 @@ const subsystemLabels = {
   chat_title: "Chat titles",
   configuration: "Configuration",
   database: "Database",
+  discord: "Discord",
   email: "Email",
   // Knowledge and Projects were removed; incidents recorded while they were retired keep these labels.
   knowledge: "Knowledge removal",

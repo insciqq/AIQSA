@@ -1,18 +1,17 @@
-import { randomBytes } from "node:crypto";
-import { lookup as dnsLookup } from "node:dns/promises";
-import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
-import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
 import type { Readable } from "node:stream";
 import { TELEGRAM_BOT_TOKEN_PATTERN } from "../../contracts/telegram";
 import { isTestModeAllowedEnv } from "../auth/csrf";
-import { networkAddressScope, pinnedAddressLookup } from "../mcp/safeFetch";
+import {
+  createPinnedHttpsExchange, multipartBody as pinnedMultipartBody, type PinnedAddress, type PinnedBody,
+  type PinnedHttpsFailureCategory, type PinnedRequestFactory
+} from "../connectors/pinnedHttps";
 import { TELEGRAM_API_ORIGIN_INVALID_CODE, TELEGRAM_REQUEST_INVALID_CODE } from "./codes";
 
 /**
- * The Bot API transport: HTTPS to one configured origin, addresses resolved
+ * The Bot API transport: HTTPS to one configured origin over the shared
+ * pinned exchange (`lib/server/connectors/pinnedHttps.ts`: addresses resolved
  * once per call and all proved public, every connection pinned to them, no
- * shared agent, one deadline per call and bounded bodies. The bot token is
+ * shared agent, one deadline per call and bounded bodies). The bot token is
  * part of every request path, so no URL, path, raw error or Telegram
  * description ever leaves this module except as the closed outcome below,
  * whose `description` callers may branch on but never log or show.
@@ -34,9 +33,7 @@ const RETRY_AFTER_MAX_SECONDS = 24 * 60 * 60;
 export type TelegramFailureKind =
   | "http" | "telegram" | "network_before_send" | "network_after_send" | "timeout" | "too_large" | "unreachable";
 /** Content-free detail of a failure; safe to log. */
-export type TelegramFailureCategory =
-  | "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "forbidden_address"
-  | "upload_source" | "invalid_response" | "unknown";
+export type TelegramFailureCategory = PinnedHttpsFailureCategory;
 
 /**
  * A failed call. Only `network_before_send` is safe to repeat: no request byte
@@ -88,8 +85,7 @@ export class TelegramTransportConfigError extends Error {
   }
 }
 
-type ResolvedAddress = Readonly<{ address: string; family: 4 | 6 }>;
-type RequestFactory = (options: RequestOptions, response: (incoming: IncomingMessage) => void) => ClientRequest;
+type ResolvedAddress = PinnedAddress;
 type Env = Readonly<Record<string, string | undefined>>;
 
 export type TelegramApiOrigin = Readonly<{ url: URL; loopback: boolean }>;
@@ -141,227 +137,31 @@ export function telegramOutcomeFromResponse(status: number, body: Buffer | strin
   return { ok: false, kind: "http", status, ...(status >= 200 && status < 300 ? { category: "invalid_response" as const } : {}) };
 }
 
-function failureCategory(error: unknown): TelegramFailureCategory {
-  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-  if (typeof code !== "string") return "unknown";
-  if (["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL"].includes(code)) return "dns";
-  if (["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN"].includes(code)) return "network_unreachable";
-  if (["ECONNREFUSED", "EADDRNOTAVAIL"].includes(code)) return "connect";
-  if (code === "ETIMEDOUT") return "timeout";
-  if (["ECONNRESET", "ECONNABORTED", "EPIPE"].includes(code)) return "reset";
-  if (code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || code.startsWith("CERT_") || [
-    "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-    "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"
-  ].includes(code)) return "tls";
-  return "unknown";
-}
-
-async function defaultResolve(hostname: string): Promise<readonly ResolvedAddress[]> {
-  const family = isIP(hostname);
-  if (family === 4 || family === 6) return [{ address: hostname, family }];
-  const records = await dnsLookup(hostname, { all: true, verbatim: true });
-  return records.map((entry) => ({ address: entry.address, family: entry.family === 6 ? 6 : 4 }));
-}
-
-type Body = Readonly<{ parts: readonly (Buffer | Readable)[]; length: number }>;
-type Exchange = Readonly<{
-  method: "GET" | "POST"; path: string; headers: Readonly<Record<string, string>>; body?: Body;
-  timeoutMs: number; maxResponseBytes: number;
-}>;
-type ExchangeResult = Readonly<{ ok: true; status: number; body: Buffer }> | TelegramFailure;
-
-const CONNECT_RETRY_CATEGORIES: readonly TelegramFailureCategory[] = ["connect", "network_unreachable", "timeout", "reset"];
-
-function before(category: TelegramFailureCategory): TelegramFailure {
-  return { ok: false, kind: "network_before_send", category };
-}
-
-function multipartSafe(value: string, max: number): string {
-  return value.replace(/["\\\r\n\u0000-\u001f\u007f]/gu, "_").slice(0, max) || "file";
-}
+type Body = PinnedBody;
 
 function multipartBody(
   fields: Readonly<Record<string, string>>, file: TelegramUploadFile
 ): Readonly<{ body: Body; contentType: string }> | undefined {
-  const boundary = `----aiqsa-telegram-${randomBytes(16).toString("hex")}`;
-  const head: string[] = [];
-  for (const [name, value] of Object.entries(fields)) {
-    if (!/^[a-z_]{1,64}$/u.test(name)) return undefined;
-    head.push(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
-  }
-  if (!/^[a-z_]{1,64}$/u.test(file.field)) return undefined;
-  const contentType = /^[A-Za-z0-9!#$&^_.+-]{1,64}\/[A-Za-z0-9!#$&^_.+-]{1,64}$/u.test(file.contentType)
-    ? file.contentType : "application/octet-stream";
-  head.push(`--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${multipartSafe(file.filename, 200)}"\r\n`
-    + `Content-Type: ${contentType}\r\n\r\n`);
-  const prefix = Buffer.from(head.join(""), "utf8");
-  const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
-  const size = "data" in file ? file.data.length : file.size;
-  return {
-    body: { parts: [prefix, "data" in file ? file.data : file.stream, suffix], length: prefix.length + size + suffix.length },
-    contentType: `multipart/form-data; boundary=${boundary}`
-  };
+  return pinnedMultipartBody({ label: "telegram", fields: Object.entries(fields), files: [file], fieldName: /^[a-z_]{1,64}$/u });
 }
 
 export function createTelegramTransport(options: Readonly<{
   resolve?: (hostname: string) => Promise<readonly ResolvedAddress[]>;
-  request?: RequestFactory;
+  request?: PinnedRequestFactory;
   now?: () => number;
   origin?: string;
   env?: Env;
 }> = {}): TelegramTransport {
   const origin = resolveTelegramApiOrigin({ origin: options.origin, env: options.env });
-  const resolve = options.resolve ?? defaultResolve;
   const secure = origin.url.protocol === "https:";
-  const request = options.request ?? (secure ? httpsRequest : httpRequest);
-  const now = options.now ?? (() => performance.now());
   const hostname = origin.url.hostname.startsWith("[") ? origin.url.hostname.slice(1, -1) : origin.url.hostname;
   const port = origin.url.port || (secure ? 443 : 80);
   const allowedScope = origin.loopback ? "loopback" : "public";
-
-  function exchange(spec: Exchange): Promise<ExchangeResult> {
-    return new Promise((settle) => {
-      const deadline = now() + spec.timeoutMs;
-      let finished = false;
-      let sent = false;
-      let cancelAttempt = () => {};
-      const timer = setTimeout(() => finish(sent ? { ok: false, kind: "timeout" } : before("timeout")), spec.timeoutMs);
-      function finish(result: ExchangeResult): void {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        cancelAttempt();
-        for (const part of spec.body?.parts ?? []) if (!Buffer.isBuffer(part) && result.ok === false) part.destroy();
-        settle(result);
-      }
-
-      function attempt(addresses: readonly ResolvedAddress[], index: number): void {
-        if (finished) return;
-        const remaining = deadline - now();
-        if (remaining <= 0) return finish(before("timeout"));
-        const pinned = addresses[index]!;
-        let phase: "connect" | "tls" | "sending" | "response" = "connect";
-        let ended = false;
-        let outgoing: ClientRequest | undefined;
-        const connectTimer = setTimeout(() => fail("timeout"), Math.max(1, remaining / (addresses.length - index)));
-        cancelAttempt = () => {
-          if (ended) return;
-          ended = true;
-          clearTimeout(connectTimer);
-          outgoing?.destroy();
-        };
-        function fail(category: TelegramFailureCategory): void {
-          if (ended || finished) return;
-          cancelAttempt();
-          if (phase === "connect" && CONNECT_RETRY_CATEGORIES.includes(category) && index + 1 < addresses.length) {
-            attempt(addresses, index + 1);
-          } else if (phase === "sending" || phase === "response") {
-            finish({ ok: false, kind: "network_after_send", category });
-          } else {
-            finish(before(category));
-          }
-        }
-        async function writeBody(target: ClientRequest): Promise<void> {
-          // Marked before the first write: even a synchronous failure is ambiguous.
-          phase = "sending";
-          sent = true;
-          if (!spec.body) { target.end(); return; }
-          let written = 0;
-          for (const part of spec.body.parts) {
-            if (Buffer.isBuffer(part)) {
-              written += part.length;
-              if (!target.write(part)) await drained(target);
-              continue;
-            }
-            try {
-              for await (const chunk of part) {
-                if (ended || finished) return;
-                const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-                written += buffer.length;
-                if (written > spec.body.length) return finish({ ok: false, kind: "too_large" });
-                if (!target.write(buffer)) await drained(target);
-              }
-            } catch {
-              // An unfinished multipart body never reaches the Bot API method.
-              return finish(before("upload_source"));
-            }
-            if (ended || finished) return;
-          }
-          if (written !== spec.body.length) return finish(before("upload_source"));
-          target.end();
-        }
-        function drained(target: ClientRequest): Promise<void> {
-          return new Promise((resolveDrain) => {
-            const done = () => { target.off("drain", done); target.off("close", done); resolveDrain(); };
-            target.once("drain", done);
-            target.once("close", done);
-          });
-        }
-        try {
-          outgoing = request({
-            agent: false,
-            headers: { ...spec.headers, ...(spec.body ? { "content-length": String(spec.body.length) } : {}) },
-            host: hostname,
-            lookup: pinnedAddressLookup(pinned, () => ended || finished),
-            method: spec.method,
-            path: spec.path,
-            port,
-            ...(secure ? { servername: isIP(hostname) ? undefined : hostname } : {})
-          }, (response) => {
-            if (ended || finished) { response.destroy(); return; }
-            phase = "response";
-            const status = response.statusCode ?? 0;
-            const declared = Number(response.headers?.["content-length"]);
-            if (Number.isFinite(declared) && declared > spec.maxResponseBytes) {
-              finish({ ok: false, kind: "too_large", status });
-              return;
-            }
-            const chunks: Buffer[] = [];
-            let size = 0;
-            response.on("data", (chunk: Buffer) => {
-              if (ended || finished) return;
-              size += chunk.length;
-              if (size > spec.maxResponseBytes) { finish({ ok: false, kind: "too_large", status }); return; }
-              chunks.push(chunk);
-            });
-            response.once("end", () => { if (!ended) finish({ ok: true, status, body: Buffer.concat(chunks, size) }); });
-            response.once("error", (error) => fail(failureCategory(error)));
-            response.once("aborted", () => fail("reset"));
-          });
-          const target = outgoing;
-          target.once("error", (error) => fail(failureCategory(error)));
-          target.once("socket", (socket) => {
-            if (ended || finished) { socket.destroy(); return; }
-            socket.once("connect", () => {
-              clearTimeout(connectTimer);
-              if (secure) phase = "tls";
-              else if (!ended && !finished) void writeBody(target).catch((error: unknown) => fail(failureCategory(error)));
-            });
-            if (secure) {
-              socket.once("secureConnect", () => {
-                if (ended || finished) return;
-                clearTimeout(connectTimer);
-                void writeBody(target).catch((error: unknown) => fail(failureCategory(error)));
-              });
-            }
-          });
-        } catch (error) {
-          fail(failureCategory(error));
-        }
-      }
-
-      Promise.resolve().then(() => resolve(hostname)).then((addresses) => {
-        if (finished) return;
-        if (addresses.length === 0 || addresses.some((entry) =>
-          isIP(entry.address) !== entry.family || networkAddressScope(entry.address) !== allowedScope
-        )) {
-          finish(before("forbidden_address"));
-          return;
-        }
-        attempt(addresses, 0);
-      }, () => finish(before("dns")));
-    });
-  }
+  const pinnedExchange = createPinnedHttpsExchange({ resolve: options.resolve, request: options.request, now: options.now });
+  const exchange = (spec: Readonly<{
+    method: "GET" | "POST"; path: string; headers: Readonly<Record<string, string>>; body?: Body;
+    timeoutMs: number; maxResponseBytes: number;
+  }>) => pinnedExchange({ ...spec, hostname, port, secure, allowedScope });
 
   function botPath(token: string, method: string): string {
     if (!TELEGRAM_BOT_TOKEN_PATTERN.test(token) || !/^[A-Za-z]{1,64}$/u.test(method)) {
