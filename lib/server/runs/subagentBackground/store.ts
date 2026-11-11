@@ -53,6 +53,14 @@ export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, ch
  * (`aiqsa:subagent-admission:<chatId>`), so the 20-running cap and the limit on
  * a sub-agent's children are exact across both modes.
  *
+ * A run row these transactions lock is held `FOR NO KEY UPDATE`: they never
+ * delete it or change its key, and that mode still serializes every status,
+ * follow-up and deletion write of the run, but it lets a row that references
+ * the run take its foreign-key KEY SHARE meanwhile. With `FOR UPDATE`, an
+ * admission holding its parent run and waiting for the Workspace session (its
+ * binding's key) deadlocked with a Workspace registration holding that session
+ * and waiting for the same run (its execution row's key).
+ *
  * A child's run copies what its parent's holds, so it inherits the same bindings
  * however deep the parent runs. It never owes the main agent anything: its report
  * and questions go to its parent's mailbox (`control.ts`), and it ends with it.
@@ -348,7 +356,7 @@ async function receivingRun(tx: Prisma.TransactionClient, scope: SubagentChatSco
     scheduledTaskId: string | null; status: ModelRunStatus; subagentTurnId: string | null }>>`
     SELECT "answerCompletedAt", "assistantMessageId", "followupClosedAt", "followupMode", "followupRevision", "scheduledTaskId",
       "status", "subagentTurnId", "normalizedRequest" -> 'followupContextReserveTokens' AS "reserveTokens"
-    FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${scope.chatId} AND "userId" = ${scope.userId} FOR UPDATE`;
+    FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${scope.chatId} AND "userId" = ${scope.userId} FOR NO KEY UPDATE`;
   // A scheduled occurrence's context stays as admission froze it: its callbacks wait for its end.
   if (!run || run.subagentTurnId !== null || run.scheduledTaskId !== null || !run.assistantMessageId || !run.followupMode ||
     run.followupClosedAt || run.answerCompletedAt || !dispatchableModelRunStatuses.includes(run.status) ||
@@ -440,7 +448,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
             SELECT "assistantId", "assistantIdentity", "engine"::text AS "engine", "normalizedRequest", "scheduledTaskId",
               "status", "subagentTurnId", "userMessageId"
             FROM "ModelRun" WHERE "id" = ${parentRunId} AND "chatId" = ${input.chatId} AND "userId" = ${input.userId}
-            FOR UPDATE`;
+            FOR NO KEY UPDATE`;
           // A dispatchable run always has its request (`ModelRun_memory_request_shape_check`), which the background run copies.
           if (!parent || parent.engine !== "native" || (parent.subagentTurnId !== null && parent.subagentTurnId !== input.parentAgent?.turnId) ||
             parent.scheduledTaskId !== null || !dispatchableModelRunStatuses.includes(parent.status) || parent.normalizedRequest === null) {
@@ -585,7 +593,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
         const runId = turn.mode === "foreground" ? turn.parentRunId : turn.executionRun?.id;
         if (!runId) return "closed";
         const [run] = await tx.$queryRaw<Array<{ status: ModelRunStatus }>>`
-          SELECT "status" FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${chatId} AND "userId" = ${userId} FOR UPDATE`;
+          SELECT "status" FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${chatId} AND "userId" = ${userId} FOR NO KEY UPDATE`;
         if (!run || !dispatchableModelRunStatuses.includes(run.status)) return "closed";
         const previous = await tx.runFollowup.findUnique({ select: { origin: true, subagentTurnId: true, text: true },
           where: { modelRunId_nonce: { modelRunId: runId, nonce } } });
