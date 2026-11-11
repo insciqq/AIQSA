@@ -2,6 +2,7 @@ import type { FetchLike } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
 import {
+  McpCallResultPermits,
   McpRequestTooLargeError,
   McpResponseGuard
 } from "./responseGuard";
@@ -747,5 +748,140 @@ describe("McpResponseGuard over-bound call isolation", () => {
     parallel.request.finish();
     await expect(fetch("https://mcp.example", post(rpcRequest("tools/call", 4)))).rejects.toThrow("mcp_response_guard_closed");
     held.release();
+  });
+});
+
+describe("McpResponseGuard call result ceiling", () => {
+  const post = (id: number, signal?: AbortSignal) => ({ body: rpcRequest("tools/call", id), method: "POST", ...(signal ? { signal } : {}) });
+  const settledSoon = async (promise: Promise<unknown>) => {
+    let settled = false;
+    void promise.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return settled;
+  };
+  /** A permit is free when one can be taken at once. */
+  const permitFree = async (permits: McpCallResultPermits) => {
+    const waiting = new AbortController();
+    const taken = await Promise.race([
+      permits.acquire(waiting.signal),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 20))
+    ]);
+    if (taken) taken();
+    else waiting.abort();
+    return taken !== null;
+  };
+  const sseBody = (bytes: number) => {
+    const prefix = 'data: {"jsonrpc":"2.0","id":2,"result":{"padding":"';
+    const suffix = '"}}\n\n';
+    return `${prefix}${"x".repeat(bytes - prefix.length - suffix.length)}${suffix}`;
+  };
+
+  it("serves permits in order and an aborted wait takes none", async () => {
+    const permits = new McpCallResultPermits(1);
+    const first = await permits.acquire(new AbortController().signal);
+    const abandoned = new AbortController();
+    const waiting = permits.acquire(abandoned.signal);
+    const next = permits.acquire(new AbortController().signal);
+    abandoned.abort(new Error("stopped"));
+    await expect(waiting).rejects.toThrow("stopped");
+    expect(await settledSoon(next)).toBe(false);
+    first();
+    first();
+    const second = await next;
+    expect(await permitFree(permits)).toBe(false);
+    second();
+    expect(await permitFree(permits)).toBe(true);
+  });
+
+  it.each([
+    ["streamed JSON body", "application/json", (bytes: number) => "x".repeat(bytes)],
+    ["request-bound SSE body", "text/event-stream", sseBody]
+  ] as const)("reads one call's %s past its wire limit under a permit its request holds until it finishes", async (_name, contentType, body) => {
+    const permits = new McpCallResultPermits(1);
+    // A tight event bound shows that a call's raised bound widens it too.
+    const guard = new McpResponseGuard({
+      callResultCeiling: { maxBytes: 256, permits },
+      limits: limits({ callToolResponseMaxBytes: 64, sseEventMaxBytes: 64 })
+    });
+    const text = body(200);
+    const fetch = guard.wrapFetch(async () => new Response(
+      byteStream([encoder.encode(text.slice(0, 50)), encoder.encode(text.slice(50))]),
+      { headers: { "content-type": contentType } }
+    ));
+
+    const first = guard.beginRequest("call_tool");
+    await expect(first.run(() => fetch("https://mcp.example", post(2))).then((response) => response.text())).resolves.toBe(text);
+    expect(first.failure()).toBeUndefined();
+    // The body is read, but the permit stays with the request until the client has cut its result.
+    expect(await permitFree(permits)).toBe(false);
+
+    const second = guard.beginRequest("call_tool");
+    const reading = second.run(() => fetch("https://mcp.example", post(2))).then((response) => response.text());
+    expect(await settledSoon(reading)).toBe(false);
+    first.finish();
+    await expect(reading).resolves.toBe(text);
+    second.finish();
+    expect(await permitFree(permits)).toBe(true);
+    expect(guard.fatalFailure()).toBeUndefined();
+  });
+
+  it.each([
+    ["declared length", { "content-length": "300", "content-type": "application/json" }],
+    ["streamed JSON body", { "content-type": "application/json" }],
+    ["request-bound SSE body", { "content-type": "text/event-stream" }]
+  ] as const)("fails only the call whose %s passes the ceiling, naming the ceiling", async (_name, headers) => {
+    const permits = new McpCallResultPermits(1);
+    const cancel = vi.fn();
+    const guard = new McpResponseGuard({ callResultCeiling: { maxBytes: 256, permits }, limits: limits({ callToolResponseMaxBytes: 64 }) });
+    const text = headers["content-type"] === "text/event-stream" ? sseBody(300) : "x".repeat(300);
+    const fetch = guard.wrapFetch(async () => new Response(byteStream([encoder.encode(text)], cancel), { headers }));
+    const request = guard.beginRequest("call_tool");
+    const settled = await request.run(() => fetch("https://mcp.example", post(2)).then((response) => response.text()))
+      .then((value) => ({ text: value }), (error: unknown) => ({ error }));
+    if (headers["content-type"] === "text/event-stream") {
+      expect(sseMessages((settled as { text: string }).text)).toEqual([callFailure(2)]);
+    } else {
+      expect(settled).toEqual({ error: expect.any(McpResponseTooLargeError) });
+    }
+    expect(request.failure()).toMatchObject({ maxBytes: 256, operation: "call_tool" });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(guard.fatalFailure()).toBeUndefined();
+    request.finish();
+    expect(await permitFree(permits)).toBe(true);
+  });
+
+  it("stops a call that waits for the permit when its caller cancels, taking none", async () => {
+    const permits = new McpCallResultPermits(1);
+    const held = await permits.acquire(new AbortController().signal);
+    const guard = new McpResponseGuard({ callResultCeiling: { maxBytes: 256, permits }, limits: limits({ callToolResponseMaxBytes: 64 }) });
+    const parent = new AbortController();
+    const reason = new Error("caller_cancelled");
+    const request = guard.beginRequest("call_tool");
+    const response = await request.run(() => guard.wrapFetch(async () => new Response(
+      byteStream([encoder.encode("x".repeat(200))]),
+      { headers: { "content-type": "application/json" } }
+    ))("https://mcp.example", post(2, parent.signal)));
+    const reading = response.text();
+    expect(await settledSoon(reading)).toBe(false);
+    parent.abort(reason);
+    await expect(reading).rejects.toBe(reason);
+    request.finish();
+    held();
+    expect(await permitFree(permits)).toBe(true);
+  });
+
+  it("keeps the wire limit for a response that is not one call's own", async () => {
+    const permits = new McpCallResultPermits(1);
+    const guard = new McpResponseGuard({ callResultCeiling: { maxBytes: 256, permits }, limits: limits({ callToolResponseMaxBytes: 64 }) });
+    const request = guard.beginRequest("call_tool");
+    const batch = JSON.stringify([2, 3].map((id) => JSON.parse(rpcRequest("tools/call", id)) as unknown));
+    const failure = await rejected(request.run(() => guard.wrapFetch(async () => new Response(
+      byteStream([encoder.encode("x".repeat(200))]),
+      { headers: { "content-type": "application/json" } }
+    ))("https://mcp.example", { body: batch, method: "POST" }).then((response) => response.text())));
+    expect(failure).toMatchObject({ maxBytes: 64, operation: "call_tool" });
+    expect(guard.fatalFailure()).toBe(failure);
+    request.finish();
+    expect(await permitFree(permits)).toBe(true);
   });
 });
