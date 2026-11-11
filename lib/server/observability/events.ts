@@ -95,6 +95,14 @@ export type DbTransactionJobKind = "MEMORY_COMMAND" | "INDEX_HISTORY" | "EXTRACT
 export type PushTransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "unknown";
 /** The browser push service a subscription's endpoint belongs to, by its host alone. */
 export type PushServiceClass = "fcm" | "mozilla" | "apple" | "other";
+/** The upload route that refused a request (`lib/server/uploads/uploadRefusal.ts`). */
+export type UploadRefusalOperation = "upload" | "session_config" | "session_create" | "session_status" | "session_cancel" | "session_part" | "session_complete";
+/** The step that refused it, where the route can tell: origin, sign-in, capacity, an unreadable body, the declared file, Workspace availability, the bytes, the PDF. */
+export type UploadRefusalStage = "origin" | "auth" | "capacity" | "body" | "declaration" | "workspace" | "content" | "pdf";
+/** A byte size by bucket, never the exact count; bounds are inclusive. */
+export type UploadSizeClass = "empty" | "to_1mb" | "to_10mb" | "to_25mb" | "to_64mb" | "to_512mb" | "over_512mb";
+/** The top-level part of the declared MIME type, never the type itself; `none` when none was declared. */
+export type UploadMimeFamily = "application" | "audio" | "font" | "image" | "message" | "model" | "multipart" | "text" | "video" | "none" | "other";
 /**
  * Why a Workspace tool call failed where its code alone cannot say, as the
  * runner observed it: the pinned MCP reported the guest operation failed
@@ -245,5 +253,11 @@ export type EventFields = {
   }>;
   provider_request: ProviderFields;
   provider_retry: ProviderFields;
+  /** One refused upload request: its stable code and safe facts, never the file name, declared type, content or an upload or attachment id.
+   * Only an unexpected failure (`upload_unavailable`) carries its caught error and is an error; every other refusal warns. */
+  upload_refused: CaughtError & Readonly<{
+    operation: UploadRefusalOperation; stage?: UploadRefusalStage; code: string; httpStatus: number;
+    size_class?: UploadSizeClass; mime_family?: UploadMimeFamily;
+  }>;
   provider_stream_safety_terminated: ProviderIdentity & Readonly<{ code: string; durationMs: number; limit: number; observed: number; totalStreamBytes: number; termination: string; unit: string }>;
 };
