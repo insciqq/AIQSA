@@ -20,6 +20,6 @@ describe("the default Telegram gateway", () => {
     const gateway = createDefaultTelegramRunGateway({ access: { resolveTelegramAccess: vi.fn() } });
     const response = await gateway.send({ body: { text: "Hi" }, chatId: "chat-1", userId: "user-1" });
     expect(response.status).toBe(202);
-    expect(sendDeps).toHaveBeenCalledWith(expect.objectContaining({ telegramTurn: true }));
+    expect(sendDeps).toHaveBeenCalledWith(expect.objectContaining({ connectorTurn: "telegram" }));
   });
 });

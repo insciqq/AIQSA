@@ -1,6 +1,7 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { decodePreparingRunAdmission } from "../../../contracts/runs";
 import type { ContentBlock } from "../../../domain/content";
+import { CONNECTOR_RUN_FOLLOW_MS, createConnectorRunWait, followConnectorSend } from "../../connectors/runAdmission";
+import { RUN_STREAM_IDLE_MS } from "../../connectors/sse";
 import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { TelegramLinkRecord } from "../store/links";
@@ -9,9 +10,8 @@ import {
   buildTelegramSendBody, resolveTelegramModel, type TelegramRunCatalog, type TelegramSendTarget, type TelegramSystemTurn
 } from "./body";
 import type { TelegramRunStreamEvent } from "./events";
-import { TELEGRAM_TERMINAL_RUN_STATUSES, type TelegramRunGateway } from "./gateway";
+import type { TelegramRunGateway } from "./gateway";
 import type { TelegramSendRefusal } from "./refusals";
-import { createRunStreamReader, RUN_STREAM_IDLE_MS, type RunStreamFrame, type RunStreamReader } from "./sse";
 
 /**
  * Admission of one Telegram message as an ordinary AIQSA run (D-07): the
@@ -58,93 +58,6 @@ export type TelegramAdmission = TelegramAdmitted | Readonly<{ kind: "refused"; r
 
 export type TelegramSendMessage = (input: TelegramSendInput) => Promise<TelegramAdmission>;
 
-/** How often a run that streams nothing here is read: from 1 s, doubling up to 15 s. */
-export const TELEGRAM_RUN_POLL_MIN_MS = 1_000;
-export const TELEGRAM_RUN_POLL_MAX_MS = 15_000;
-/** How long a run that streams nothing here is followed before the bridge stops watching it. */
-export const TELEGRAM_RUN_FOLLOW_MS = 6 * 3_600_000;
-
-export type TelegramRunWait = (input: Readonly<{ runId: string; userId: string; deadline: number }>) =>
-  Promise<"complete" | "error" | "cancelled" | "gone" | null>;
-
-type Clock = Readonly<{ now: () => number; sleep: (ms: number) => Promise<void> }>;
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
-  });
-}
-
-/** Follows a run's state until it settles (`gone` when it can no longer be read), or null past the deadline. */
-export function createTelegramRunWait(
-  gateway: Pick<TelegramRunGateway, "runState">, clock: Partial<Clock> = {}
-): TelegramRunWait {
-  const now = clock.now ?? Date.now;
-  const sleep = clock.sleep ?? defaultSleep;
-  return async ({ deadline, runId, userId }) => {
-    let delay = TELEGRAM_RUN_POLL_MIN_MS;
-    for (;;) {
-      const state = await gateway.runState({ runId, userId }).catch(() => ({ status: "unknown" }));
-      if (!state) return "gone";
-      if (TELEGRAM_TERMINAL_RUN_STATUSES.has(state.status)) return state.status as "complete" | "error" | "cancelled";
-      if (now() + delay > deadline) return null;
-      await sleep(delay);
-      delay = Math.min(delay * 2, TELEGRAM_RUN_POLL_MAX_MS);
-    }
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** The stream frames the bridge follows, as typed events; everything else stays with the web. */
-export function telegramRunEvent(frame: RunStreamFrame): TelegramRunStreamEvent | null {
-  const data = isRecord(frame.data) ? frame.data : {};
-  switch (frame.type) {
-    case "token":
-      return typeof data.delta === "string" && data.delta ? { delta: data.delta, type: "answerDelta" } : null;
-    case "message_reset":
-      return { type: "answerReset" };
-    case "artifact":
-      if (data.artifactType === "mcp_approval") return { card: data.payload, type: "approvalRequested" };
-      if (data.artifactType === "workspace_activity") return { entry: data.payload, type: "workspaceActivity" };
-      return null;
-    case "done":
-      return { status: data.status === "cancelled" ? "cancelled" : "complete", type: "done" };
-    case "error":
-      return {
-        code: typeof data.code === "string" ? data.code : null, message: typeof data.message === "string" ? data.message : null,
-        type: "failed"
-      };
-    default:
-      return null;
-  }
-}
-
-function terminalEvent(status: "complete" | "error" | "cancelled" | "gone"): TelegramRunStreamEvent {
-  if (status === "complete" || status === "cancelled") return { status, type: "done" };
-  return { code: status === "gone" ? "model_run_not_found" : null, message: null, type: "failed" };
-}
-
-function refusalFrom(response: Response, body: unknown): TelegramSendRefusal {
-  const value = isRecord(body) ? body : {};
-  const code = response.status === 401 ? "unauthorized" : typeof value.error === "string" ? value.error : `http_${response.status}`;
-  const retryAfter = Number(response.headers.get("retry-after"));
-  const usage = isRecord(value.usageLimit) ? value.usageLimit : null;
-  const run = isRecord(value.run) ? value.run : null;
-  return {
-    code,
-    status: response.status,
-    ...(Number.isFinite(retryAfter) && retryAfter >= 0 ? { retryAfterSeconds: retryAfter } : {}),
-    ...(usage ? {
-      usageLimit: { limit: typeof usage.limit === "number" ? usage.limit : null, window: typeof usage.window === "string" ? usage.window : null }
-    } : {}),
-    ...(run && typeof run.id === "string" ? { activeRunId: run.id } : {})
-  };
-}
-
 function log(fields: Readonly<{ code: string; error?: unknown; outcome: "failed" | "skipped"; runId?: string }>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.error ? { error: fields.error, prisma_code: databaseFailureCode(fields.error) } : {}),
@@ -165,8 +78,8 @@ export function createTelegramAdmission(deps: Readonly<{
   const now = deps.now ?? Date.now;
   const newChatId = deps.newChatId ?? randomUUID;
   const newDraftId = deps.newDraftId ?? (() => randomInt(1, 2_147_483_647));
-  const followMs = deps.followMs ?? TELEGRAM_RUN_FOLLOW_MS;
-  const waitForRun = createTelegramRunWait(deps.gateway, { now, ...(deps.sleep ? { sleep: deps.sleep } : {}) });
+  const followMs = deps.followMs ?? CONNECTOR_RUN_FOLLOW_MS;
+  const waitForRun = createConnectorRunWait(deps.gateway, { now, ...(deps.sleep ? { sleep: deps.sleep } : {}) });
 
   type Prepared = Readonly<{ body: Record<string, unknown>; chatId: string }> | Readonly<{ refusal: TelegramSendRefusal }>;
 
@@ -221,95 +134,12 @@ export function createTelegramAdmission(deps: Readonly<{
     }
   }
 
-  async function* polled(runId: string, userId: string, status: string | null): AsyncGenerator<TelegramRunStreamEvent> {
-    if (status !== null) yield { status, type: "preparing" };
-    const settled = await waitForRun({ deadline: now() + followMs, runId, userId });
-    if (settled) yield terminalEvent(settled);
-  }
-
-  async function* streamed(
-    reader: RunStreamReader, runId: string, userId: string, early: readonly TelegramRunStreamEvent[]
-  ): AsyncGenerator<TelegramRunStreamEvent> {
-    try {
-      for (const event of early) {
-        yield event;
-        if (event.type === "done" || event.type === "failed") return;
-      }
-      for (;;) {
-        const read = await reader.next();
-        if (read.kind !== "frame") break;
-        const event = telegramRunEvent(read.frame);
-        if (!event) continue;
-        yield event;
-        if (event.type === "done" || event.type === "failed") return;
-      }
-    } finally {
-      await reader.cancel();
-    }
-    // The stream ended or went silent before its terminal frame: the run's state decides.
-    yield* polled(runId, userId, null);
-  }
-
-  async function admitStream(
-    response: Response, input: TelegramSendInput, chatId: string, draftId: number
-  ): Promise<TelegramAdmission> {
-    const reader = createRunStreamReader(response.body!, { idleMs: deps.idleMs ?? RUN_STREAM_IDLE_MS });
-    let runId: string | null = null;
-    let linked: Promise<boolean> = Promise.resolve(false);
-    let started: Record<string, unknown> = {};
-    const early: TelegramRunStreamEvent[] = [];
-    for (;;) {
-      const read = await reader.next();
-      if (read.kind !== "frame") break;
-      const data = isRecord(read.frame.data) ? read.frame.data : {};
-      if (!runId) {
-        if (read.frame.type === "run_start" && typeof data.runId === "string") {
-          runId = data.runId;
-          // Recorded the moment the run is known, while the run goes on: whatever the run
-          // does next (its first tool call included) can already tell it came from Telegram.
-          linked = recordRunLink(runId, input.link, draftId);
-        } else if (read.frame.type === "error") {
-          await reader.cancel();
-          const failed = telegramRunEvent(read.frame);
-          return { kind: "refused", refusal: { code: failed?.type === "failed" && failed.code ? failed.code : "run_failed", status: 500 } };
-        }
-        continue;
-      }
-      if (read.frame.type === "message_start") {
-        started = data;
-        break;
-      }
-      const event = telegramRunEvent(read.frame);
-      if (event) early.push(event);
-      if (event?.type === "done" || event?.type === "failed") break;
-    }
-    if (!runId) {
-      await reader.cancel();
-      return { kind: "refused", refusal: { code: "run_stream_unavailable", status: 500 } };
-    }
-    return {
-      assistantMessageId: typeof started.assistantMessageId === "string" ? started.assistantMessageId : null,
-      chatId, deferred: false, draftId, events: streamed(reader, runId, input.link.userId, early), kind: "admitted", runId,
-      runLinked: await linked, userMessageId: typeof started.userMessageId === "string" ? started.userMessageId : null
-    };
-  }
-
   async function classify(response: Response, input: TelegramSendInput, chatId: string, draftId: number): Promise<TelegramAdmission> {
-    if (response.ok && response.body && response.headers.get("content-type")?.startsWith("text/event-stream")) {
-      return admitStream(response, input, chatId, draftId);
-    }
-    const body: unknown = await response.json().catch(() => null);
-    if (response.status === 202) {
-      const deferred = decodePreparingRunAdmission(body);
-      if (!deferred) return { kind: "refused", refusal: { code: "run_stream_unavailable", status: 500 } };
-      const runLinked = await recordRunLink(deferred.run.id, input.link, draftId);
-      return {
-        assistantMessageId: deferred.assistantMessageId, chatId, deferred: true, draftId,
-        events: polled(deferred.run.id, input.link.userId, deferred.run.status), kind: "admitted", runId: deferred.run.id, runLinked,
-        userMessageId: deferred.userMessageId
-      };
-    }
-    return { kind: "refused", refusal: refusalFrom(response, body) };
+    const followed = await followConnectorSend(response, {
+      followMs, idleMs: deps.idleMs ?? RUN_STREAM_IDLE_MS, now, recordRun: (runId) => recordRunLink(runId, input.link, draftId),
+      userId: input.link.userId, waitForRun
+    });
+    return followed.kind === "refused" ? followed : { ...followed, chatId, draftId };
   }
 
   return async function sendTelegramMessage(input) {

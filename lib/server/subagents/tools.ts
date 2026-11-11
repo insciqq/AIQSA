@@ -191,7 +191,7 @@ export const callChildSubagentTool: HarnessToolDescriptor = Object.freeze({
 });
 
 /**
- * A call tool for a run that starts no background turns (a Telegram turn, a scheduled occurrence): the same tool without
+ * A call tool for a run that starts no background turns (a connector turn, a scheduled occurrence): the same tool without
  * `background` in its schema and its text, so the model is not offered what would only be refused, a wasted round each
  * time (production audit 2026-11-11). A call that still sends it is refused with `subagent_background_unavailable`
  * (`lib/server/engine/subagents/callTools.ts`). The web chat's text stays byte for byte as it was.

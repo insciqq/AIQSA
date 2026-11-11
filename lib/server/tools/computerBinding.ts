@@ -126,7 +126,7 @@ export function computerTurnGuidance(binding: FrozenComputerBinding): string {
 }
 
 /** Where a chat's computer is never available (D-07), for the turn note of a chat that has one chosen. */
-export type ComputerUnavailableOrigin = "scheduled" | "telegram" | "wake_up";
+export type ComputerUnavailableOrigin = "discord" | "scheduled" | "telegram" | "wake_up";
 
 /**
  * The turn note of a message that cannot use the computer its chat has chosen, so the model says so instead of looking
@@ -134,8 +134,9 @@ export type ComputerUnavailableOrigin = "scheduled" | "telegram" | "wake_up";
  */
 export function computerUnavailableNote(origin: ComputerUnavailableOrigin): string {
   const where = origin === "telegram" ? "from Telegram"
-    : origin === "scheduled" ? "in automations"
-      : "in this turn, which sub-agent reports started rather than the user";
+    : origin === "discord" ? "from Discord"
+      : origin === "scheduled" ? "in automations"
+        : "in this turn, which sub-agent reports started rather than the user";
   return `Computer access is not available ${where}: the computer chosen in this chat works only in messages the user sends ` +
     "from AIQSA in the browser, so no computer_* tools are offered here. If the user asks for something on their computer, " +
     "say that it needs a message from the browser chat.";

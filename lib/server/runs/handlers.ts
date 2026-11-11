@@ -6,6 +6,7 @@ import { COMPUTER_SEND_FIELD } from "../../contracts/computer";
 import { decodeWorkspaceNotRequestedReason } from "../../contracts/workspace";
 import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { deepResearchRefusal } from "../research/run";
+import { connectorTurnRules, DISCORD_RUN_REFUSALS, type ConnectorTurn } from "../connectors/turn";
 import type { FrozenComputerBinding } from "../tools/computerBinding";
 import {
   MCP_APPROVAL_CONTINUATION_KIND,
@@ -154,11 +155,14 @@ export type RunHandlerDeps = {
    */
   subagentWakeUp?: Readonly<{ text: string; turns: readonly import("../subagents/ports").SubagentCallbackClaim[] }>;
   /**
-   * Server-only: the sends come from the Telegram bridge. Their native runs
-   * take no self-service tools, whose confirmation cards and Undo the bridge
-   * cannot show (decision 2026-10-23).
+   * Server-only: the sends come from a chat connector's bridge (Telegram,
+   * Discord), whose rules the server applies whatever the body says
+   * (`lib/server/connectors/turn.ts`). Their native runs take no self-service
+   * tools, whose confirmation cards and Undo a bridge cannot show (decision
+   * 2026-10-23); a Discord turn also runs MCP unattended, without Memory,
+   * Workspace or the user's message limits (owner decisions 2026-11-12).
    */
-  telegramTurn?: true;
+  connectorTurn?: ConnectorTurn;
   /**
    * The usage limits every new run's admission checks (`usageLimitRefusal`).
    * Required, so no entry point can admit runs without them.
@@ -291,13 +295,13 @@ function runPreparationFailureResponse(failure: RunPreparationFailure): Response
  * A message sent with Deep research that this run cannot research is refused before anything is accepted (operator decision 2026-11-05),
  * never answered another way: the same facts decide as when the run offers research (`deepResearchRefusal`, `lib/server/engine/execution.ts`).
  */
-function deepResearchAdmissionResponse(deps: Pick<RunHandlerDeps, "nativeEngine" | "scheduledOccurrence" | "telegramTurn">,
+function deepResearchAdmissionResponse(deps: Pick<RunHandlerDeps, "connectorTurn" | "nativeEngine" | "scheduledOccurrence">,
   request: MaterializedPreparedRunData["normalizedRequest"]): Response | null {
   if (request.deepResearch !== true) return null;
   const { engine } = deps.nativeEngine;
   const code = deepResearchRefusal({ monitoring: request.monitoringVerdictTool === true, scheduled: deps.scheduledOccurrence !== undefined,
     searchOptions: request.searchPlan.options.length, subagents: Boolean(engine.research && engine.subagentThreads) && request.toolMode !== "none",
-    telegram: deps.telegramTurn === true });
+    connector: deps.connectorTurn !== undefined });
   return code ? Response.json({ error: code }, { status: 409 }) : null;
 }
 
@@ -558,7 +562,7 @@ function pdfAdmissionKey(kind: "send" | "regenerate", sourceId: string, userId: 
     nonce: body?.admissionId ?? (kind === "send" && body && "expectedActiveLeafId" in body ? null : randomUUID()) });
 }
 
-/** `native`: the entry facts the PDF continuation starts the answer with, such as a Telegram turn's (no self-service tools). */
+/** `native`: the entry facts the PDF continuation starts the answer with, such as a connector turn's (no self-service tools). */
 function deferredPdfInput(prepared: ReturnType<typeof materializePreparedRunData>, admissionKey: string, sourceMessageId?: string,
   native?: AcceptedRunSnapshot["native"]) {
   return prepared.chatPdfAdmissions?.length ? {
@@ -681,16 +685,18 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       return Response.json({ error: "expected_active_leaf_invalid" }, { status: 400 });
     }
     const expectedActiveLeafId = await storedExpectedLeaf(deps, chat, requestedActiveLeaf.value);
-    // Budgets bind every run; message windows count only the user's own messages.
+    // Budgets bind every run; message windows count only the user's own messages, never a Discord turn's
+    // (its limits are per Discord author and thread, D-12e).
+    const messageLimits = connectorTurnRules(deps.connectorTurn)?.messageLimits ?? true;
     const usageRefusal = await usageLimitRefusal(deps, {
-      interactive: !deps.scheduledOccurrence && !wakeUp, stage: "send", userId: auth.userId
+      interactive: !deps.scheduledOccurrence && !wakeUp && messageLimits, stage: "send", userId: auth.userId
     });
     if (usageRefusal) return usageRefusal;
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
       body: sendBody,
-      // Neither a Telegram turn nor a wake-up turn is the owner's own web message, so neither takes a computer (D-07).
-      ...(deps.telegramTurn ? { origin: "telegram" as const } : wakeUp ? { origin: "wake_up" as const } : {}),
+      // Neither a connector turn nor a wake-up turn is the owner's own web message, so neither takes a computer (D-07).
+      ...(deps.connectorTurn ? { origin: deps.connectorTurn } : wakeUp ? { origin: "wake_up" as const } : {}),
       serverAuthoredInput: Boolean(continuationBody) || Boolean(wakeUp),
       ...(continuationBody && body?.systemTurn && typeof body.systemTurn === "object" &&
         typeof (body.systemTurn as Record<string, unknown>).approvalId === "string"
@@ -737,7 +743,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const approvalId = typeof systemTurn?.approvalId === "string" ? systemTurn.approvalId : undefined;
     // A send behind the previous answer's Workspace hand-off waits for it, keeping the entry facts its execution needs
     // when the follow-up starts it.
-    const nativeEntry = { ...(approvalId ? { approvalId } : {}), ...(deps.telegramTurn ? { telegram: true as const } : {}) };
+    const nativeEntry = { ...(approvalId ? { approvalId } : {}), ...(deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : {}) };
     const followupSnapshot = () => ({ ...acceptedRunSnapshot(preparedData), native: nativeEntry });
     let created: CreatedRun;
     try {
@@ -789,6 +795,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         signal: request.signal,
         ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
         ...(wakeUp ? { subagentCallbackClaim: { turns: wakeUp.turns }, systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND } : {}),
+        ...(messageLimits ? {} : { messageLimitExempt: true as const }),
         userId: auth.userId
       });
     } catch (error) {
@@ -871,7 +878,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       created, prepared: preparedData, repository: deps.repository,
       ...(deps.scheduledOccurrence ? { scheduled: true } : {}),
-      ...(deps.telegramTurn ? { telegram: true } : {}),
+      ...(deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       services: nativeRunServices(deps), userId: auth.userId,
       ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
@@ -899,6 +906,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     if (bodyError) {
       return bodyError;
     }
+
+    // A Discord answer is never regenerated: a new Discord message is a new turn, admitted only through the send.
+    if (deps.connectorTurn === "discord") return Response.json({ error: DISCORD_RUN_REFUSALS.regenerate }, { status: 409 });
 
     await recoverUserNativeRuns(deps.nativeEngine, deps, auth.userId);
 
@@ -968,7 +978,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           }
         }
       },
-      ...(deps.telegramTurn ? { origin: "telegram" as const } : {}),
+      ...(deps.connectorTurn ? { origin: deps.connectorTurn } : {}),
       signal: request.signal,
       source: {
         kind: "regenerate",
@@ -994,7 +1004,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
-        ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id, deps.telegramTurn ? { telegram: true } : undefined),
+        ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id, deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : undefined),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(chatAssistant ? { chatAssistant } : {}),
         // A document retry reuses its frozen preparation and changes no choice again.

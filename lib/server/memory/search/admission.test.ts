@@ -15,4 +15,12 @@ describe("Memory search Assistant admission", () => {
       id: "foreign", ownerUserId: "user", archivedAt: null }, select: { id: true } });
     expect(mocks.policy).not.toHaveBeenCalled();
   });
+
+  it("admits none for a Discord turn, whatever the user's Memory settings say", async () => {
+    const assistantDefinition = { findFirst: vi.fn(async () => ({ id: "assistant" })) };
+    expect(await admitMemorySearch({ assistantId: "assistant", connectorTurn: "discord", timeoutSeconds: 30, userId: "service" },
+      { assistantDefinition } as unknown as PrismaClient)).toBeNull();
+    expect(assistantDefinition.findFirst).not.toHaveBeenCalled();
+    expect(mocks.policy).not.toHaveBeenCalled();
+  });
 });

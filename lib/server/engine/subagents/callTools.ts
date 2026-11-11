@@ -46,7 +46,7 @@ import type { SubagentThreadStore, SubagentTurnRecord } from "./threadStore";
  * starts a thread, a visible thread with no active turn continues, a
  * running background turn of this branch takes the message in its mailbox,
  * and anything else is `subagent_busy`. A run that may not start a background
- * turn (`backgroundAllowed`: a Telegram turn, a scheduled occurrence) still
+ * turn (`backgroundAllowed`: a connector turn, a scheduled occurrence) still
  * answers and stops those of its branch; its schema leaves `background` out,
  * a call that sends `background: true` anyway is refused with
  * `subagent_background_unavailable`, and the same call without it still
