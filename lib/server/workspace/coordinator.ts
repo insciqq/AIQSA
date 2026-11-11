@@ -2690,6 +2690,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
             if (registered !== "registered") {
               logEvent("runtime_lifecycle", { ...(failure === undefined ? {} : { error: failure, prisma_code: databaseFailureCode(failure) }),
                 subsystem: "workspace", stage: "dispatch", outcome: "failed", code: "workspace_execution_registry_unavailable", action: "skip" });
+              // A fence the registry refused (the session moved to another owner, a Reset) fails the call as every other
+              // stale fence before dispatch does; only a database failure or exhausted conflicts make "send it again" right.
+              if (failure instanceof WorkspaceRuntimeError) throw failure;
               const rejected = executionErrorResult(call, WORKSPACE_COMMAND_NOT_RECORDED);
               return withActivity(rejected, projectWorkspaceActivity({ ...projectionInput, durationMs: Date.now() - startedAt.getTime(),
                 result: rejected }, "settled"));

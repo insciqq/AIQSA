@@ -2662,6 +2662,16 @@ describe("Workspace synchronous cleanup ownership", () => {
       })).resolves.toMatchObject({ content: [{ text: expect.stringContaining("This command was not sent"), type: "text" }], status: "error" });
       expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
     });
+
+  it("fails a call whose fence the registry refused as every stale fence before dispatch, never calling a repeat safe", async () => {
+    const value = fixture();
+    vi.spyOn(value.registry, "register").mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_operation_stale"));
+    await expect(value.coordinator.execute({
+      call: { arguments: { command: "touch /workspace/project/marker" }, id: "stale_call", name: value.shellToolName },
+      modelRunToolCallId: "stored_stale", runId: value.runId, userId: "user_1", workspace: value.workspace
+    })).rejects.toMatchObject({ code: "workspace_operation_stale" });
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
 });
 
 
